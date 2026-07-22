@@ -52,17 +52,19 @@ Follows `../INIT.md` (design path & PRDs); deviations forced by verified platfor
 ## 4. On-chain model (summary — full schemas in [data-contracts.md](contracts/data-contracts.md))
 
 ### 4.1 Registry contract (deployed once; DCG/DAO-owned identity)
-`repoListing` (owner, repoContractId, name, description, defaultBranch, backend descriptor, protected-ref patterns, visibility, topics; indexed owner+name and name), `profile`, `star`, `follow`.
+Discovery + social graph only: `repoListing` (name, repoContractId, description, topics, forkOf; indexed owner+name and name; count-trees for repo/fork counts), `profile`, `star`, `follow` (count-trees for stars/followers). Operational settings live in the repo contract so MAINTAIN collaborators can change them.
 
 ### 4.2 Repo contract (per repository, from canonical template)
-- **Git data**: append-only `refUpdate` (ref name-hash, old/new OID, force flag — serves as both ref state and reflog; see reconciliation D2), `protectedRefUpdate` (same shape, MAINTAIN-gated), `packManifest` (pack SHA-256, size, chunk count, ordered chunk range *or* external CID/URL, supersedes list, per-object offset index with `manifestPart` continuation docs), `chunk` (seq + 3 × ~4.8 KiB byte fields).
-- **Collaboration**: `issue`, `comment`, `patch` (PR), `review`, `release`, `label`, `event` (close/reopen/merge/label/assign state log), `checkRun` (CI results written by runner identities), `webhook` (relay subscription, secret encrypted to relay identity).
+- **Settings**: `config` — append-only, non-deletable, MAINTAIN-gated (defaultBranch, protected-ref patterns, backend descriptor). Append-only history makes protection evaluable *as-of any past update*.
+- **Git data**: append-only, **non-deletable** `refUpdate` (ref name-hash, old/new OID, force flag — ref state *and* reflog; reconciliation D2) and `protectedRefUpdate` (MAINTAIN-gated); `packManifest` (pack SHA-256, size, chunk count, external URIs, supersedes list, per-object offset index with `manifestPart` continuation docs), `chunk` (seq + 3 × ~4.9 KiB byte fields; count-tree gives O(1) availability audits).
+- **Collaboration**: `issue`, `comment`, `patch` (PR), `review`, `release`, `label`, `event` (close/reopen/merge/label/assign audit log — non-deletable), `checkRun` (CI results written by runner identities), `webhook` (relay subscription, secret encrypted to relay identity). Count-trees on issue/patch totals and per-target comment counts; open/closed splits are event folds (see data-contracts §3).
 
 ### 4.3 Token ACL (the authorization system)
 - Tokens at position 0 (`WRITE`) and 1 (`MAINTAIN`), mintable/freezable by the contract owner, with **control-rule groups** so org admin powers can be held by multiple identities.
 - `tokenCost` on write-path types: `refUpdate`, `chunk`, `packManifest`/`manifestPart`, `checkRun` → 1 WRITE; `protectedRefUpdate`, `release`, `label`, `webhook`, contract updates → 1 MAINTAIN. Social types (`issue`, `comment`, `review`, `patch`) are un-gated — platform fees are the spam floor (patch gating: open question D3).
 - Grant = mint 10⁹ units (spend is a meter, not the control); suspend = freeze; revoke = freeze + destroy frozen funds. Balances publicly queryable → **the collaborator list is on-chain for free**.
-- Because creation is consensus-gated, clients resolve refs by *newest refUpdate per name* — no client-side authorization judgment needed (a frozen identity's push fails at consensus; INIT.md acceptance test).
+- **Delete-gating**: `tokenCost` also applies to `delete` on chunks/manifests/releases — a frozen identity cannot yank the availability of what it previously uploaded. Ref/event/config docs are non-deletable outright (rewind-proof audit trail).
+- Because creation is consensus-gated, clients resolve refs by *newest refUpdate per name* — no client-side authorization judgment needed (a frozen identity's push fails at consensus; INIT.md acceptance test). Protected refs add one client rule: updates to a pattern-matched ref only count if they are MAINTAIN-gated `protectedRefUpdate` docs, evaluated as-of each update's consensus time against the append-only config history (normative algorithm in data-contracts §4).
 
 ## 5. Storage model
 

@@ -25,6 +25,15 @@
 | D5 | Indexes "by (labels), (author)" etc. | Indexed strings ≤ 63 chars; index key ≤ 255 bytes; array-membership indexing constrained; **100 docs/query max** | Index designs in data-contracts.md conform (hashes for long names, bounded label strings, cursor pagination everywhere). |
 | D6 | — (not addressed) | No document push subscriptions on Platform | Relay subscribes to **blocks/ST stream and polls document queries**; web polls with cursors. |
 
+## v3 contract-design refinements (consistency pass; see data-contracts.md)
+
+- **Protected refs made enforceable**: `protectedPatterns` moved from the registry listing into an append-only, non-deletable, MAINTAIN-gated `config` doc type in the repo contract — protection is now evaluable as-of any past update's consensus time, and MAINTAIN collaborators (not just the listing owner) can manage settings. Consensus enforces the MAINTAIN spend on `protectedRefUpdate`; a normative client rule makes plain refUpdates against protected names inert.
+- **Rewind attack closed**: `refUpdate`/`protectedRefUpdate`/`event`/`config` are **non-deletable** (a deletable ref tip let its author silently rewind a branch with nothing to audit). Refunds stay on the big-byte types (`chunk`/`packManifest`), whose **deletes are token-gated** — a frozen ex-collaborator can no longer delete their uploads (platform verifies `tokenCost` supports create/replace/delete/transfer).
+- **Count trees assigned per user story** (platform `countable` index flag / `documentsCountable`): stars, followers, repos-per-owner, forks, issue/PR totals, per-target comment counts, chunk-presence audits. **Open/closed counts are deliberately not count-tree-backed**: state is an event fold because mutation ownership forbids an authoritative indexed state field; list pages fold per-page with an `in` query + IndexedDB cache.
+- Discovery via repo-contract `keywords` (≤ 50, auto-mirrored to the system keyword-search contract); listing `topics` display-only (array fields are never indexed/queried — platform constraint).
+- `imported {author, createdAt, url}` provenance fields on issue/patch/comment/review (consensus `$createdAt` can't carry original dates — needed by forge-import).
+- PR object bytes always live in the contributor's fork contract (`patch.sourceContractId` + `patchManifestHash` point there); base repo never needs contributor uploads.
+
 ## Open questions inherited from INIT.md (kept, unresolved)
 
 - Frozen-identity semantics: can a frozen collaborator still delete-for-refund their own docs? Should they? → Phase 0 token-ACL prototype answers empirically; needs Platform-core review.

@@ -42,7 +42,11 @@ Flake policy: writes always via the idempotent WriteEngine (a timeout-flake is a
 3. CONTRIB (no tokens) refUpdate ST rejected; un-gated `issue`/`comment`/`patch` creation succeeds.
 4. MAINTAIN gating: COLLAB (WRITE only) cannot create `protectedRefUpdate`/`release`/`label`/`webhook`; MAINTAINER can.
 5. Group-held admin: two-identity group mints/freezes (org scenario).
-6. Edge probes (documented, not asserted until semantics reviewed): frozen identity delete-for-refund; re-grant after destroy; token behavior across contract update.
+6. **Delete-gating**: FROZEN identity attempts to delete its own previously-uploaded `chunk`/`packManifest` docs → **rejected at consensus** (availability of past uploads survives revocation); active COLLAB's gated delete succeeds with storage refund.
+7. **Non-deletable audit docs**: any identity's attempt to delete its own `refUpdate`/`event`/`config` doc is rejected by the platform (`canBeDeleted: false`) — the branch-rewind and silent-reopen attacks are structurally impossible.
+8. **Protected-ref rules**: MAINTAINER posts `config` protecting `refs/heads/main` → COLLAB (WRITE-only) plain refUpdate on main is accepted at consensus but **inert under FORGE_RULES** (fresh clone ignores it; conformance vectors cover the as-of-time boundary: pre-protection updates remain valid, tie-at-same-timestamp resolves protected).
+9. **Count-tree correctness**: star/follow/fork/issue/PR/comment counts via count queries (+WithProof) match paginated ground truth after concurrent create/delete churn; `chunk(packHash)` count vs `manifest.chunkCount` audit detects a deliberately withheld chunk.
+10. Edge probes (documented, not asserted until semantics reviewed): re-grant after destroy; token behavior across contract update; unique+countable flag combination (S0.6).
 
 ## 4. E2E CLI suite
 

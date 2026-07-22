@@ -11,8 +11,8 @@ Everything else is conventional engineering; this phase is not. Spikes in `spike
 3. **S0.3 Browser proof-mode perf**: `EvoSDK.testnet()` vs `testnetTrusted()` — decides forge-web default.
 4. **S0.4 Headless identity minting**: faucet POST → asset-lock → InstantSend lock → `identities.create` in a script (reference: `../mainnet-bridge` pure modules). Becomes the e2e fixture generator.
 5. **S0.5 In-browser materialization**: isomorphic-git + lightning-fs in a worker; lazy fetch via offset index; 100 MB-repo tree view time/memory. (INIT.md risk 3: "build it early not late.")
-6. **S0.6 Contract template validation**: registry + repo-template drafts construct with `fullValidation`; serialized size vs 16 KiB (D4); split decision.
-7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token; verify **freeze actually blocks the push at consensus**; probe edge cases — frozen identity delete-for-refund, destroy-frozen semantics, group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
+6. **S0.6 Contract template validation**: registry + repo-template drafts construct with `fullValidation`; serialized size vs 16 KiB (D4); split decision. Also validates the flag combinations the design leans on: `countable` on unique indices, `documentsCountable`, `tokenCost.delete`, `documentsKeepHistory` + author replace, `canBeDeleted: false` per doc type.
+7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token; verify **freeze actually blocks the push at consensus**; verify **freeze blocks token-gated deletes** (availability protection after revocation); probe destroy-frozen semantics and group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
 
 **Exit**: all seven documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
 
