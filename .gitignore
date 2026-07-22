@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+
+# Rust
+target/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# Env & secrets — never commit identities or keys
+.env
+.env.*
+*.identity.json
+test-identities/
+dash-identity-*.json
+
+# Test artifacts
+playwright-report/
+test-results/
+coverage/
+
+# Logs
+*.log
