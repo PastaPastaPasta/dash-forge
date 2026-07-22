@@ -1,0 +1,7 @@
+{
+  "name": "@dash-forge/spike-s0.7-token-acl",
+  "version": "0.1.0",
+  "description": "S0.7 spike: validate token-cost ACL at consensus (tokenCost gating, freeze blocks create+delete, mint/freeze/destroy, baseSupply, token-history reconstruction)",
+  "type": "module",
+  "private": true
+}

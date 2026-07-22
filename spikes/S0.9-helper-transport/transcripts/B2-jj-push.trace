@@ -1,0 +1,30 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/jjpush/.git cwd=/private/tmp/s0.9/jjpush
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN list for-push
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cas refs/heads/main:2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f
+OPTION cas refs/heads/main:2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f
+OUT unsupported
+IN push 1e2db989315c83674c8f8ef49e98d66733efc426:refs/heads/main
+IN <blank>
+OUT ok refs/heads/main
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

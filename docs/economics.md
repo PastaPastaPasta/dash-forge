@@ -9,7 +9,7 @@ Forge stores **git packfiles**, not loose blobs, at every layer (push transport,
 1. **Delta compression** — similar objects (successive versions of a file, similar trees) stored as diffs against a base.
 2. **zlib deflate** — every object/delta individually compressed.
 
-Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs on the wire* (deltas against objects the remote already has), completed via `index-pack --fix-thin` before storage so stored packs are self-contained. An incremental push therefore costs the compressed change **plus its direct delta-base objects** (duplicated until the next repack reclaims them) — a small premium that keeps every stored pack independently readable.
+Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs on the wire* (deltas against objects the remote already has), completed via `index-pack --fix-thin` before storage so stored packs are self-contained. An incremental push therefore costs the compressed change **plus its direct delta-base objects** (duplicated until the next repack reclaims them) — a premium that keeps every stored pack independently readable. **S0.5 measured this fix-thin premium at 0.9–4.4% for typical pushes** (rising to ~17% for a 100-commit batch); it is fully reclaimed at the next repack.
 
 Additional levers on top:
 
@@ -17,7 +17,7 @@ Additional levers on top:
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
 | Per-pack offset index | *mandatory* for git packs (~30 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
-| Browse artifacts (`objectLocator` ~32 B/object, `flatIndex` ~30 B/file compressed) | *cost*, not saving: ~1–3.5 MB deposit for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
+| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)
@@ -35,6 +35,8 @@ Two headline numbers fall out:
 - **A churned byte** (stored, then deleted after a repack) permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3) ≈ **~$0.15–0.30/MiB**.
 
 This is why chunk geometry maximizes fill (3 × 4,900 B fields → ~14.4 KiB/doc): per-doc base fees amortize to noise, and why external backends exist: a manifest-only push is a few hundred bytes total.
+
+**Token spend is not a cost — it recirculates.** The WRITE token a push spends (and the MAINTAIN token a protected/config write spends) is **not burned**: `tokenCost` payments flow to the **contract owner's** token balance (S0.7), so the unit spent on a push returns to the repo owner rather than being destroyed. The token is a per-collaborator meter, not a fee — the only real money on a push is the storage deposit (mostly refundable) plus the small non-refundable processing burn above. Don't read the WRITE token as a spam floor that consumes value; it circulates within the repo.
 
 ## 3. Refunds: how deletion gives money back
 
@@ -68,7 +70,7 @@ Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes
 
 | Scenario | Platform backend | External backend |
 |---|---|---|
-| Create repo (contract + config + listing) | < $0.10 one-time | same |
+| Create repo (contract + config + listing) | **~0.24 DASH** one-time (S0.7-measured token contract; repo-v1 re-measured Stage 2) | same |
 | Push 100 KiB source delta (~30 KiB packed) | ~$0.28 deposit + ~$0.005 burn | ~$0.01 (manifest + refUpdate only) |
 | 1,000 issues + 5,000 comments over a year | ~$25–60 deposit (refundable on delete) | same (always on Platform) |
 | Force-push away 10 MiB of history, then repack | recover ~$90 deposit; ~$1.50–3 burned | n/a (bytes were external) |
@@ -78,7 +80,7 @@ Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes
 
 1. External or mixed backend for anything bulky (the biggest lever by 100×).
 2. Thin packs always; max-effort compression at repack.
-3. Fill chunks to ~14.4 KiB; skip the offset index unless partial clone is wanted.
+3. Fill chunks to ~14.4 KiB. The per-pack offset index is mandatory (tiny — it indexes only the push's own objects — and it's the only random-access path to objects newer than the last repack).
 4. Repack regularly — refunds fund future pushes; surface reclaimable credits in `dg cost audit`.
 5. Keep social docs lean (5 KiB body cap already enforces this); `documentsKeepHistory` means every edit re-deposits the doc — the UI shows edit cost like any write.
 6. Cost engine displays deposit vs burn separately (DASH primary), so users learn that most of a platform push is a *recoverable deposit*, not a fee.

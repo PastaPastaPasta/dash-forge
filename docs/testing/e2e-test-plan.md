@@ -59,8 +59,8 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 5. **Multi-maintainer**: grant → COLLAB pushes → third machine sees COLLAB's tip; suspend → push fails (overlaps §3.1 at git-porcelain level).
 5b. **Concurrent-push race**: OWNER and COLLAB both push fast-forwards from the identical prevOid simultaneously → both STs land at consensus; the losing helper's post-push verification reports a late non-fast-forward (never a silent success); fresh clone shows the ref as diverged/provisional per FORGE_RULES until a superseding merge/force push; conformance vectors cover the divergence fold.
 6. **Force-push / delete / protected refs**: non-FF refused without `+`; force flag recorded; zero-OID delete; protected pattern routes to `protectedRefUpdate` and WRITE-only pusher fails.
-7. **Partial/shallow clone**: `--depth 1` and sparse path fetch via offset index — bytes transferred ≪ full pack (assert ranged fetch happened).
-8. ⭐ **jj compatibility**: jj (git backend) init/fetch/push against dash:// remote unmodified.
+7. **Partial clone**: `--filter=blob:none` clone writes `.promisor` markers, then a lazy blob read triggers a bare-OID fetch via offset index — bytes transferred ≪ full pack (assert ranged fetch happened). **Shallow clone unsupported**: `--depth 1` **fails loudly** with a clear error (never a silent full clone) — Design Freeze #1, S0.9.
+8. ⭐ **jj compatibility**: jj (git backend, ≥ 0.43, **no colocation**) init/fetch/push against dash:// remote unmodified — S0.9-confirmed; kept as a CI smoke test guarding the gitoxide transport-delegation guarantee.
 9. **Repack/GC**: 10 pushes → `dg repack` → superseded docs deleted → clone exact; **storage refund observed** in balance; steady-state cost ≈ current size.
 10. **Backends**: same pack via IPFS and S3 (MinIO) clones identically; tampered URI detected + failed over; `dg reseed` after host loss restores availability; mixed-mode cold/hot split works.
 11. **dg workflow** ⭐: maintainer triages issues, reviews and lands a PR (`pr checkout`→`review`→`merge`), cuts a release — terminal only.

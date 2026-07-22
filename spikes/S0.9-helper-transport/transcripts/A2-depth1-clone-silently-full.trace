@@ -1,0 +1,39 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/clone-depth1/.git cwd=/private/tmp/s0.9
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN option depth 1
+OPTION depth 1
+OUT ok
+IN option followtags true
+OPTION followtags true
+OUT ok
+IN list
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cloning true
+OPTION cloning true
+OUT ok
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+IN <blank>
+NOTE doFetch wants=[{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/heads/main"}]
+NOTE built pack bytes=1301
+NOTE index-pack -> pack	21aa4f725b576ee9bca341520859d1c447b2e598
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

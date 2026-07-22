@@ -1,0 +1,200 @@
+{
+  "contractId": "JAmSJJZgW3qesagg1T9GZtUYZ3h2YaX3oLRwvWrVx6m5",
+  "tokenId": "6S3HidF4DJQhRxMXwFB6aCt5n6jH8GoQZzSgkLbZfmuE",
+  "ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+  "registrationCostCredits": 24092685990,
+  "deployerWriteTokenBalance": "1000000000",
+  "baseSupplyExpected": "1000000000",
+  "baseSupplyCredited": true,
+  "collabDocId": "GKz77XKFwvLnxc2KpsBKoXpuGagSYtnrSERWfyJN6gLD",
+  "collabDocProps": {
+    "refName": "refs/heads/main"
+  },
+  "exp3": {
+    "balBefore": "15",
+    "balAfter": "14",
+    "spent": "1",
+    "accepted": true
+  },
+  "exp4": {
+    "rejected": true,
+    "error": "name=StateTransitionBroadcastError | code=40700 | message=state transition broadcast error: Identity 6acfxhgD2c8siYVmJrHgzTE3HF5DcyU3599T4r1vPTr1 does not have enough balance for token 6S3HidF4DJQhRxMXwFB6aCt5n6jH8GoQZzSgkLbZfmuE: required 1, actual 0, action: Document create token payment",
+    "balBefore": "undefined",
+    "balAfter": "undefined"
+  },
+  "exp5": {
+    "freeze": {
+      "landed": true,
+      "parseBug": false
+    },
+    "frozenConfirmed": true,
+    "balanceWhileFrozen": "14",
+    "frozenCreate": {
+      "rejected": true,
+      "error": "name=StateTransitionBroadcastError | code=40702 | message=state transition broadcast error: Identity CmGHMP2VqWZng8gtF7Nr9pPXKzmFoKpJQs4mYrCHkyVw account is frozen for token 6S3HidF4DJQhRxMXwFB6aCt5n6jH8GoQZzSgkLbZfmuE. Action attempted: Document create token payment"
+    },
+    "frozenDelete": {
+      "rejected": true,
+      "error": "name=StateTransitionBroadcastError | code=40702 | message=state transition broadcast error: Identity CmGHMP2VqWZng8gtF7Nr9pPXKzmFoKpJQs4mYrCHkyVw account is frozen for token 6S3HidF4DJQhRxMXwFB6aCt5n6jH8GoQZzSgkLbZfmuE. Action attempted: Document delete token payment"
+    }
+  },
+  "exp6": {
+    "landed": true,
+    "parseBug": false,
+    "balBefore": "14",
+    "balAfter": "0",
+    "zeroed": true
+  },
+  "exp7": {
+    "mint": {
+      "queried": true,
+      "enc": "base58",
+      "count": 3,
+      "rows": [
+        {
+          "id": "EokZSLrC3jFFwygYqVbjwuN9HYvJkh3kYxw91J96zQDJ",
+          "createdAt": "1784758724483",
+          "createdAtBlockHeight": "443588",
+          "props": {
+            "$id": "EokZSLrC3jFFwygYqVbjwuN9HYvJkh3kYxw91J96zQDJ",
+            "$ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "amount": 5,
+            "note": "S0.7 grant to COLLAB",
+            "recipientId": "rsdkH+Is3o72tKFCFMI9FikWL5b7zshUQ8KKzOyUq8Y=",
+            "tokenId": "ULSKy/rOGqi0biuaNsNczzVFAJufuJ/mkQcmGZY3EHU=",
+            "$revision": null,
+            "$createdAt": 1784758724483,
+            "$updatedAt": null,
+            "$transferredAt": null,
+            "$createdAtBlockHeight": 443588,
+            "$updatedAtBlockHeight": null,
+            "$transferredAtBlockHeight": null,
+            "$createdAtCoreBlockHeight": null,
+            "$updatedAtCoreBlockHeight": null,
+            "$transferredAtCoreBlockHeight": null,
+            "$creatorId": null,
+            "$dataContractId": "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF",
+            "$type": "mint"
+          }
+        },
+        {
+          "id": "5SXwE6S5J4p5UNitgStiTYrqRZjvns67XUTxYAGapSfw",
+          "createdAt": "1784758879557",
+          "createdAtBlockHeight": "443591",
+          "props": {
+            "$id": "5SXwE6S5J4p5UNitgStiTYrqRZjvns67XUTxYAGapSfw",
+            "$ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "amount": 5,
+            "note": "S0.7 grant to COLLAB",
+            "recipientId": "rsdkH+Is3o72tKFCFMI9FikWL5b7zshUQ8KKzOyUq8Y=",
+            "tokenId": "ULSKy/rOGqi0biuaNsNczzVFAJufuJ/mkQcmGZY3EHU=",
+            "$revision": null,
+            "$createdAt": 1784758879557,
+            "$updatedAt": null,
+            "$transferredAt": null,
+            "$createdAtBlockHeight": 443591,
+            "$updatedAtBlockHeight": null,
+            "$transferredAtBlockHeight": null,
+            "$createdAtCoreBlockHeight": null,
+            "$updatedAtCoreBlockHeight": null,
+            "$transferredAtCoreBlockHeight": null,
+            "$creatorId": null,
+            "$dataContractId": "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF",
+            "$type": "mint"
+          }
+        },
+        {
+          "id": "8yEZjyz3q6vQfmnRp6YbJUtLog8GAthKhz9YBeAvW2Ei",
+          "createdAt": "1784759076204",
+          "createdAtBlockHeight": "443661",
+          "props": {
+            "$id": "8yEZjyz3q6vQfmnRp6YbJUtLog8GAthKhz9YBeAvW2Ei",
+            "$ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "amount": 5,
+            "note": "S0.7 grant to COLLAB",
+            "recipientId": "rsdkH+Is3o72tKFCFMI9FikWL5b7zshUQ8KKzOyUq8Y=",
+            "tokenId": "ULSKy/rOGqi0biuaNsNczzVFAJufuJ/mkQcmGZY3EHU=",
+            "$revision": null,
+            "$createdAt": 1784759076204,
+            "$updatedAt": null,
+            "$transferredAt": null,
+            "$createdAtBlockHeight": 443661,
+            "$updatedAtBlockHeight": null,
+            "$transferredAtBlockHeight": null,
+            "$createdAtCoreBlockHeight": null,
+            "$updatedAtCoreBlockHeight": null,
+            "$transferredAtCoreBlockHeight": null,
+            "$creatorId": null,
+            "$dataContractId": "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF",
+            "$type": "mint"
+          }
+        }
+      ]
+    },
+    "freeze": {
+      "queried": true,
+      "enc": "base58",
+      "count": 1,
+      "rows": [
+        {
+          "id": "FwXArTmbGAMvPjvdJrrVw7SqUqkiBcUgvm45NMy3NQ8o",
+          "createdAt": "1784759264371",
+          "createdAtBlockHeight": "443718",
+          "props": {
+            "$id": "FwXArTmbGAMvPjvdJrrVw7SqUqkiBcUgvm45NMy3NQ8o",
+            "$ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "frozenIdentityId": "rsdkH+Is3o72tKFCFMI9FikWL5b7zshUQ8KKzOyUq8Y=",
+            "note": "S0.7 suspend COLLAB",
+            "tokenId": "ULSKy/rOGqi0biuaNsNczzVFAJufuJ/mkQcmGZY3EHU=",
+            "$revision": null,
+            "$createdAt": 1784759264371,
+            "$updatedAt": null,
+            "$transferredAt": null,
+            "$createdAtBlockHeight": 443718,
+            "$updatedAtBlockHeight": null,
+            "$transferredAtBlockHeight": null,
+            "$createdAtCoreBlockHeight": null,
+            "$updatedAtCoreBlockHeight": null,
+            "$transferredAtCoreBlockHeight": null,
+            "$creatorId": null,
+            "$dataContractId": "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF",
+            "$type": "freeze"
+          }
+        }
+      ]
+    },
+    "destroyFrozenFunds": {
+      "queried": true,
+      "enc": "base58",
+      "count": 1,
+      "rows": [
+        {
+          "id": "76WHE4SuFFydpxF1mZKtBZQWjMk6GgR8xF2kCJ45BtEW",
+          "createdAt": "1784759299388",
+          "createdAtBlockHeight": "443723",
+          "props": {
+            "$id": "76WHE4SuFFydpxF1mZKtBZQWjMk6GgR8xF2kCJ45BtEW",
+            "$ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "destroyedAmount": 14,
+            "frozenIdentityId": "rsdkH+Is3o72tKFCFMI9FikWL5b7zshUQ8KKzOyUq8Y=",
+            "note": "S0.7 revoke COLLAB",
+            "tokenId": "ULSKy/rOGqi0biuaNsNczzVFAJufuJ/mkQcmGZY3EHU=",
+            "$revision": null,
+            "$createdAt": 1784759299388,
+            "$updatedAt": null,
+            "$transferredAt": null,
+            "$createdAtBlockHeight": 443723,
+            "$updatedAtBlockHeight": null,
+            "$transferredAtBlockHeight": null,
+            "$createdAtCoreBlockHeight": null,
+            "$updatedAtCoreBlockHeight": null,
+            "$transferredAtCoreBlockHeight": null,
+            "$creatorId": null,
+            "$dataContractId": "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF",
+            "$type": "destroyFrozenFunds"
+          }
+        }
+      ]
+    }
+  }
+}

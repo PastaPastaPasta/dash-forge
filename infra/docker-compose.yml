@@ -13,11 +13,27 @@ services:
     image: ipfs/kubo:latest
     container_name: forge-e2e-kubo
     restart: unless-stopped
+    # Local-test node only: run with the DHT disabled and no public swarm so
+    # content-addressed storage tests never announce or serve data to the public
+    # IPFS network. Swarm port 4001 is intentionally NOT published. IPFS_PROFILE
+    # 'server' disables local-network discovery; Routing.Type=none + empty Swarm
+    # addresses keep it fully private. (Set via init profile + config on boot.)
+    environment:
+      IPFS_PROFILE: server
     ports:
-      - "127.0.0.1:5001:5001" # HTTP API
-      - "127.0.0.1:8081:8080" # Gateway
+      - "127.0.0.1:5001:5001" # HTTP API (localhost only)
+      - "127.0.0.1:8081:8080" # Gateway (localhost only)
     volumes:
       - kubo-data:/data/ipfs
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ipfs init --profile server 2>/dev/null || true
+        ipfs config Routing.Type none
+        ipfs config --json Swarm.DisableNatPortMap true
+        ipfs config --json Addresses.Swarm '[]'
+        exec ipfs daemon --migrate=true --routing=none
     healthcheck:
       test: ["CMD", "ipfs", "id"]
       interval: 5s

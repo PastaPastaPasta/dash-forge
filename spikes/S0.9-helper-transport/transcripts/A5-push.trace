@@ -1,0 +1,62 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/pushtest/.git cwd=/private/tmp/s0.9
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN list
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cloning true
+OPTION cloning true
+OUT ok
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+IN <blank>
+NOTE doFetch wants=[{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/tags/v1.0"}]
+NOTE doFetch reachable filter=(none)
+NOTE built pack bytes=1301
+NOTE index-pack -> pack	21aa4f725b576ee9bca341520859d1c447b2e598 sha=21aa4f725b576ee9bca341520859d1c447b2e598
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=.git cwd=/private/tmp/s0.9/pushtest
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN list for-push
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN push refs/heads/main:refs/heads/main
+IN <blank>
+OUT ok refs/heads/main
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

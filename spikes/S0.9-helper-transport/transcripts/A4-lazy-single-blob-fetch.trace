@@ -1,0 +1,40 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=.git cwd=/private/tmp/s0.9/p2
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN option from-promisor 1
+OPTION from-promisor 1
+OUT ok
+IN list
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN fetch f1f36270ff97895ac0f75837c262cfcb3c21cc2f f1f36270ff97895ac0f75837c262cfcb3c21cc2f
+IN <blank>
+NOTE doFetch wants=[{"sha":"f1f36270ff97895ac0f75837c262cfcb3c21cc2f","name":"f1f36270ff97895ac0f75837c262cfcb3c21cc2f"}]
+NOTE doFetch reachable filter=blob:none from-promisor=1
+NOTE built pack bytes=51
+NOTE index-pack -> pack	72393a42998f4587a6c4ac46f8276a963c1e780d sha=72393a42998f4587a6c4ac46f8276a963c1e780d
+NOTE wrote .git/objects/pack/pack-72393a42998f4587a6c4ac46f8276a963c1e780d.promisor
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

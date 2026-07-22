@@ -1,0 +1,291 @@
+{
+  "contractId": "DcSeVwdaPPyA6MQWjHxNheavfKhuetEqH4rntBBa5MpJ",
+  "ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+  "hotName": "refs/heads/release/v1",
+  "hotHashHex": "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c",
+  "plan": [
+    {
+      "name": "refs/heads/release/v1",
+      "hashHex": "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c",
+      "hot": true,
+      "coldRows": 0
+    },
+    {
+      "name": "refs/heads/hotfix/x",
+      "hashHex": "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d",
+      "hot": false,
+      "coldRows": 2
+    },
+    {
+      "name": "refs/tags/v1.0.0",
+      "hashHex": "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168",
+      "hot": false,
+      "coldRows": 3
+    },
+    {
+      "name": "refs/heads/staging",
+      "hashHex": "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288",
+      "hot": false,
+      "coldRows": 1
+    },
+    {
+      "name": "refs/heads/feature/auth",
+      "hashHex": "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89",
+      "hot": false,
+      "coldRows": 2
+    },
+    {
+      "name": "refs/heads/feature/api",
+      "hashHex": "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f",
+      "hot": false,
+      "coldRows": 3
+    },
+    {
+      "name": "refs/tags/v1.1.0",
+      "hashHex": "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca",
+      "hot": false,
+      "coldRows": 1
+    },
+    {
+      "name": "refs/heads/experimental",
+      "hashHex": "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c",
+      "hot": false,
+      "coldRows": 2
+    },
+    {
+      "name": "refs/heads/main",
+      "hashHex": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "hot": false,
+      "coldRows": 3
+    },
+    {
+      "name": "refs/heads/develop",
+      "hashHex": "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4",
+      "hot": false,
+      "coldRows": 1
+    }
+  ],
+  "signingKeyId": 2,
+  "registrationCostCredits": null,
+  "docs": [],
+  "coldDone": true,
+  "expB": {
+    "early": {
+      "summary": {
+        "label": "early",
+        "hotRows": 3,
+        "distinctEnumerated": 10,
+        "hopsTotal": 11,
+        "hotHopMs": 627,
+        "advancePastHotMs": 349,
+        "coldHopMsAvg": 434,
+        "coldHopMsMin": 152,
+        "coldHopMsMax": 785
+      },
+      "hops": [
+        {
+          "hop": 0,
+          "hashHex": "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c",
+          "rowsAtKey": 3,
+          "ms": 627
+        },
+        {
+          "hop": 1,
+          "hashHex": "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d",
+          "rowsAtKey": 2,
+          "ms": 349
+        },
+        {
+          "hop": 2,
+          "hashHex": "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168",
+          "rowsAtKey": 3,
+          "ms": 785
+        },
+        {
+          "hop": 3,
+          "hashHex": "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288",
+          "rowsAtKey": 1,
+          "ms": 575
+        },
+        {
+          "hop": 4,
+          "hashHex": "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89",
+          "rowsAtKey": 2,
+          "ms": 355
+        },
+        {
+          "hop": 5,
+          "hashHex": "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f",
+          "rowsAtKey": 3,
+          "ms": 447
+        },
+        {
+          "hop": 6,
+          "hashHex": "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca",
+          "rowsAtKey": 1,
+          "ms": 516
+        },
+        {
+          "hop": 7,
+          "hashHex": "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c",
+          "rowsAtKey": 2,
+          "ms": 210
+        },
+        {
+          "hop": 8,
+          "hashHex": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+          "rowsAtKey": 3,
+          "ms": 152
+        },
+        {
+          "hop": 9,
+          "hashHex": "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4",
+          "rowsAtKey": 1,
+          "ms": 521
+        },
+        {
+          "hop": 10,
+          "empty": true,
+          "ms": 133
+        }
+      ]
+    },
+    "late": {
+      "summary": {
+        "label": "late",
+        "hotRows": 150,
+        "distinctEnumerated": 10,
+        "hopsTotal": 11,
+        "hotHopMs": 431,
+        "advancePastHotMs": 264,
+        "coldHopMsAvg": 237,
+        "coldHopMsMin": 97,
+        "coldHopMsMax": 403
+      },
+      "hops": [
+        {
+          "hop": 0,
+          "hashHex": "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c",
+          "rowsAtKey": 150,
+          "ms": 431
+        },
+        {
+          "hop": 1,
+          "hashHex": "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d",
+          "rowsAtKey": 2,
+          "ms": 264
+        },
+        {
+          "hop": 2,
+          "hashHex": "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168",
+          "rowsAtKey": 3,
+          "ms": 184
+        },
+        {
+          "hop": 3,
+          "hashHex": "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288",
+          "rowsAtKey": 1,
+          "ms": 170
+        },
+        {
+          "hop": 4,
+          "hashHex": "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89",
+          "rowsAtKey": 2,
+          "ms": 166
+        },
+        {
+          "hop": 5,
+          "hashHex": "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f",
+          "rowsAtKey": 3,
+          "ms": 97
+        },
+        {
+          "hop": 6,
+          "hashHex": "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca",
+          "rowsAtKey": 1,
+          "ms": 271
+        },
+        {
+          "hop": 7,
+          "hashHex": "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c",
+          "rowsAtKey": 2,
+          "ms": 382
+        },
+        {
+          "hop": 8,
+          "hashHex": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+          "rowsAtKey": 3,
+          "ms": 192
+        },
+        {
+          "hop": 9,
+          "hashHex": "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4",
+          "rowsAtKey": 1,
+          "ms": 403
+        },
+        {
+          "hop": 10,
+          "empty": true,
+          "ms": 334
+        }
+      ]
+    }
+  },
+  "expA": {
+    "asc": {
+      "direction": "asc",
+      "limit": 100,
+      "returned": 100,
+      "ms": 502,
+      "perKey": {
+        "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c": 100,
+        "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d": 0,
+        "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168": 0,
+        "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288": 0,
+        "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89": 0,
+        "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f": 0,
+        "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca": 0,
+        "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c": 0,
+        "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3": 0,
+        "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4": 0
+      },
+      "starved": [
+        "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d",
+        "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168",
+        "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288",
+        "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89",
+        "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f",
+        "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca",
+        "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c",
+        "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4"
+      ],
+      "fallback": {
+        "recoveredCount": 9,
+        "requested": 9,
+        "totalMs": 3845
+      }
+    },
+    "desc": {
+      "direction": "desc",
+      "limit": 100,
+      "returned": 100,
+      "ms": 521,
+      "perKey": {
+        "1f5ece93f88615cf5dbb11f4a95159254387a56fbe10c7fd35435ad7e17b5e0c": 82,
+        "2f0724136f21045abad2b91a74d44942016e09c9373af80c046c5d77a6d7c63d": 2,
+        "4ae92c749854a62efba1dfeb6604a29008e834840f228b574616bd0866f09168": 3,
+        "72cecb997fb3e942afb509dd2876ab88dd82319537509e801e8c8deb063e9288": 1,
+        "8a8a4b2939a317b5e3a0953f09931503eab5089ad31619fc9a62f125eef0af89": 2,
+        "a5fe69eb84fda937f5774c12896b55503becd36dbd9062ecc1539b148c82263f": 3,
+        "bbd102bcdb925589bed0ccabddebd90f9bf825d06331352b07e4a982459612ca": 1,
+        "d736e1e6ceb0b8e3a81238e81bb5011c7c11db672e6f1d4a93ef10ff036dcb5c": 2,
+        "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3": 3,
+        "fd3dfe2cab8ed1e2796f40171ae41d65cc758d9dabc013b8dd150764225fbea4": 1
+      },
+      "starved": [],
+      "fallback": null
+    }
+  },
+  "deleteRefundCredits": 3436280076
+}

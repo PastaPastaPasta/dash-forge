@@ -1,0 +1,207 @@
+{
+  "connect": {
+    "testnet": {
+      "mode": "testnet",
+      "connectMedianMs": 45.11729100000001,
+      "connectP90Ms": 46.709333,
+      "rssMedianMB": 214.05696,
+      "heapUsedMedianMB": 17.663104,
+      "externalMedianMB": 58.710148,
+      "readOk": false,
+      "readErrSample": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext().",
+      "raw": [
+        {
+          "mode": "testnet",
+          "connectMs": 43.970917,
+          "mem": {
+            "rss": 214056960,
+            "heapTotal": 21069824,
+            "heapUsed": 17663104,
+            "external": 58710148,
+            "arrayBuffers": 20063589
+          },
+          "readOk": false,
+          "readErr": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext()."
+        },
+        {
+          "mode": "testnet",
+          "connectMs": 45.59,
+          "mem": {
+            "rss": 214056960,
+            "heapTotal": 21069824,
+            "heapUsed": 17663104,
+            "external": 58710148,
+            "arrayBuffers": 20063589
+          },
+          "readOk": false,
+          "readErr": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext()."
+        },
+        {
+          "mode": "testnet",
+          "connectMs": 45.11729100000001,
+          "mem": {
+            "rss": 214024192,
+            "heapTotal": 21069824,
+            "heapUsed": 18521152,
+            "external": 58710148,
+            "arrayBuffers": 47027142
+          },
+          "readOk": false,
+          "readErr": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext()."
+        },
+        {
+          "mode": "testnet",
+          "connectMs": 45.003208,
+          "mem": {
+            "rss": 214499328,
+            "heapTotal": 21069824,
+            "heapUsed": 18520656,
+            "external": 58710148,
+            "arrayBuffers": 27169690
+          },
+          "readOk": false,
+          "readErr": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext()."
+        },
+        {
+          "mode": "testnet",
+          "connectMs": 46.709333,
+          "mem": {
+            "rss": 214122496,
+            "heapTotal": 20807680,
+            "heapUsed": 17663104,
+            "external": 58710148,
+            "arrayBuffers": 20063589
+          },
+          "readOk": false,
+          "readErr": "context provider error: Context provider error: Non-trusted mode is not supported in WASM. Please construct a WasmTrustedContext via prefetchMainnet/prefetchTestnet/prefetchDevnet/prefetchLocal and attach it with WasmSdkBuilder.withTrustedContext()."
+        }
+      ]
+    },
+    "testnetTrusted": {
+      "mode": "testnetTrusted",
+      "connectMedianMs": 553.527625,
+      "connectP90Ms": 597.504458,
+      "rssMedianMB": 228.540416,
+      "heapUsedMedianMB": 22.201592,
+      "externalMedianMB": 33.792689,
+      "readOk": true,
+      "readErrSample": null,
+      "raw": [
+        {
+          "mode": "testnetTrusted",
+          "connectMs": 597.504458,
+          "mem": {
+            "rss": 228540416,
+            "heapTotal": 25706496,
+            "heapUsed": 22219984,
+            "external": 33792689,
+            "arrayBuffers": 20135873
+          },
+          "readOk": true,
+          "readErr": null
+        },
+        {
+          "mode": "testnetTrusted",
+          "connectMs": 552.3169170000001,
+          "mem": {
+            "rss": 228392960,
+            "heapTotal": 25444352,
+            "heapUsed": 22189528,
+            "external": 33792689,
+            "arrayBuffers": 20135873
+          },
+          "readOk": true,
+          "readErr": null
+        },
+        {
+          "mode": "testnetTrusted",
+          "connectMs": 515.581042,
+          "mem": {
+            "rss": 228163584,
+            "heapTotal": 25706496,
+            "heapUsed": 22196368,
+            "external": 33792689,
+            "arrayBuffers": 20135873
+          },
+          "readOk": true,
+          "readErr": null
+        },
+        {
+          "mode": "testnetTrusted",
+          "connectMs": 571.144042,
+          "mem": {
+            "rss": 230555648,
+            "heapTotal": 25706496,
+            "heapUsed": 22201592,
+            "external": 33792689,
+            "arrayBuffers": 20135873
+          },
+          "readOk": true,
+          "readErr": null
+        },
+        {
+          "mode": "testnetTrusted",
+          "connectMs": 553.527625,
+          "mem": {
+            "rss": 229851136,
+            "heapTotal": 25706496,
+            "heapUsed": 22214240,
+            "external": 33792689,
+            "arrayBuffers": 20135873
+          },
+          "readOk": true,
+          "readErr": null
+        }
+      ]
+    }
+  },
+  "opStats": {
+    "contract.fetch": {
+      "medianMs": 470.33129199999985,
+      "p90Ms": 592.8388330000007,
+      "n": 20
+    },
+    "contract.fetchWithProof": {
+      "medianMs": 438.80541600000015,
+      "p90Ms": 533.3390830000008,
+      "n": 20
+    },
+    "documents.query": {
+      "medianMs": 517.7668744999974,
+      "p90Ms": 690.4429999999993,
+      "n": 20
+    },
+    "documents.queryWithProof": {
+      "medianMs": 512.0204795000009,
+      "p90Ms": 575.9049579999992,
+      "n": 20
+    },
+    "identity.fetch": {
+      "medianMs": 284.7882915000009,
+      "p90Ms": 469.61212499999965,
+      "n": 20
+    },
+    "identity.fetchWithProof": {
+      "medianMs": 315.99160400000255,
+      "p90Ms": 398.41045799999847,
+      "n": 20
+    },
+    "identity.fetchUnproved": {
+      "medianMs": 325.0420410000006,
+      "p90Ms": 510.2779590000064,
+      "n": 20
+    }
+  },
+  "proofShape": {
+    "grovedbProofBytes": 4377,
+    "quorumType": 6,
+    "quorumHashHex": "00000000476aa2aaa7cb4062d6714d358c46f44d8ffff5d24467f1949998288c",
+    "signatureBytes": 96,
+    "metadataHeight": "443577"
+  },
+  "negativeControl": {
+    "connectOk": false,
+    "stage": "connect",
+    "error": "Failed to prefetch quorums: HTTP request error: error sending request"
+  }
+}

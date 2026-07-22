@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+/*
+ * git-remote-dash — MINIMAL remote helper for spike S0.9.
+ *
+ * Purpose: learn the exact git<->helper protocol dialog for a helper that
+ * advertises the connect-LESS capability set { fetch, push, option, list }
+ * (the set PRD 02 §A specifies, same family as git-remote-ipfs / git-remote-s3).
+ *
+ * The "Dash backend" is faked by a plain *bare git repo* on local disk, whose
+ * path comes from the URL: dash://<path-basename> resolved under $DASH_BACKEND_ROOT.
+ * No Dash Platform involved — this exists purely to observe protocol mechanics,
+ * especially how (or whether) git drives shallow / partial-clone bookkeeping
+ * through a non-connect helper.
+ *
+ * Every stdin line and every stdout line is mirrored to $DASH_TRACE (append),
+ * tagged IN/OUT, plus internal NOTEs, so we get a faithful transcript.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { execFileSync, execSync } = require('child_process');
+
+const TRACE = process.env.DASH_TRACE || '/dev/null';
+const BACKEND_ROOT = process.env.DASH_BACKEND_ROOT || '/tmp/dash-backends';
+const GIT_DIR = process.env.GIT_DIR; // set by git to the local repo's .git
+
+function trace(tag, line) {
+  try {
+    fs.appendFileSync(TRACE, `${tag} ${line}\n`);
+  } catch (e) { /* ignore */ }
+}
+
+// argv: [node, script, <remote-name-or-url>, <url?>]
+const arg1 = process.argv[2] || '';
+const arg2 = process.argv[3] || arg1;
+trace('ARGV', JSON.stringify(process.argv.slice(2)));
+trace('ENV', `GIT_DIR=${GIT_DIR} cwd=${process.cwd()}`);
+
+// Resolve dash://<name> -> bare repo path.
+function resolveBackend(url) {
+  const m = url.match(/^dash:\/\/(.+)$/);
+  const name = m ? m[1] : url;
+  return path.join(BACKEND_ROOT, name.replace(/\//g, '__'));
+}
+const BACKEND = resolveBackend(arg2);
+trace('NOTE', `backend repo = ${BACKEND}`);
+
+function out(line) {
+  trace('OUT', line);
+  process.stdout.write(line + '\n');
+}
+function outblank() {
+  trace('OUT', '<blank>');
+  process.stdout.write('\n');
+}
+
+// Run a git command against the BACKEND bare repo (never inherit GIT_DIR).
+function backendGit(args, opts = {}) {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  return execFileSync('git', ['-C', BACKEND, ...args], { env, encoding: 'utf8', ...opts });
+}
+
+function listRefs() {
+  let refs = [];
+  try {
+    const o = backendGit(['for-each-ref', '--format=%(objectname) %(refname)']);
+    refs = o.split('\n').filter(Boolean);
+  } catch (e) {
+    trace('NOTE', `for-each-ref failed: ${e.message}`);
+  }
+  return refs;
+}
+function headSymref() {
+  try {
+    const t = backendGit(['symbolic-ref', 'HEAD']).trim();
+    return t; // e.g. refs/heads/main
+  } catch (e) {
+    return null;
+  }
+}
+
+// --- fetch: build a pack in the BACKEND of objects reachable from wants, then
+//     index it into the LOCAL GIT_DIR. This is the whole-history transfer a
+//     connect-less fetch helper must perform itself (no server-side negotiation).
+function doFetch(wants) {
+  trace('NOTE', `doFetch wants=${JSON.stringify(wants)}`);
+  const shaList = wants.map((w) => w.sha).join('\n') + '\n';
+  const backendEnv = { ...process.env };
+  delete backendEnv.GIT_DIR;
+  delete backendEnv.GIT_WORK_TREE;
+
+  // NB: git sends option VALUES as "1" (not "true"), e.g. `option from-promisor 1`.
+  const truthy = (v) => v && v !== 'false' && v !== '0';
+  // git sets `option filter` + `option from-promisor` on BOTH the initial partial
+  // fetch (wants = commit/tag OIDs → walk history, omit blobs) AND each lazy
+  // single-object fetch (want = a bare blob/tree OID). One `pack-objects --revs`
+  // with the filter handles both: an explicitly-named blob tip survives the
+  // filter, and a commit tip walks full history. So there is NO separate "lazy"
+  // code path — the want-set alone determines the result.
+  const filterArg = opts.filter ? `--filter=${opts.filter}` : '';
+  trace('NOTE', `doFetch reachable filter=${opts.filter || '(none)'} from-promisor=${opts['from-promisor'] || ''}`);
+  const pack = execSync(
+    `git -C '${BACKEND}' pack-objects --revs --stdout --delta-base-offset ${filterArg}`,
+    { input: shaList, env: backendEnv, maxBuffer: 1 << 30 }
+  );
+  trace('NOTE', `built pack bytes=${pack.length}`);
+
+  // Index it into the LOCAL repo (GIT_DIR is already set by git in our env).
+  const idxOut = execSync(`git index-pack --stdin --fix-thin -v`, {
+    input: pack, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'],
+    maxBuffer: 1 << 30,
+  });
+  const packSha = idxOut.trim().split(/\s+/).pop();
+  trace('NOTE', `index-pack -> ${idxOut.trim()} sha=${packSha}`);
+
+  // Partial/promisor fetch: mark the pack as a promisor pack so git tolerates
+  // the objects the filter omitted and knows to lazily fetch them from us later.
+  if ((opts.filter || truthy(opts['from-promisor'])) && packSha && GIT_DIR) {
+    const promisorPath = path.join(GIT_DIR, 'objects', 'pack', `pack-${packSha}.promisor`);
+    try { fs.writeFileSync(promisorPath, ''); trace('NOTE', `wrote ${promisorPath}`); }
+    catch (e) { trace('NOTE', `promisor write failed: ${e.message}`); }
+  }
+}
+
+// --- push: transfer objects LOCAL -> BACKEND and update backend refs.
+function doPush(pushes) {
+  const results = [];
+  const backendEnv = { ...process.env };
+  delete backendEnv.GIT_DIR;
+  delete backendEnv.GIT_WORK_TREE;
+  for (const p of pushes) {
+    try {
+      // src..? just pack everything reachable from src, index into backend.
+      const pack = execSync(`git pack-objects --revs --stdout --delta-base-offset`, {
+        input: p.src + '\n', maxBuffer: 1 << 30,
+      });
+      execSync(`git -C '${BACKEND}' index-pack --stdin --fix-thin`, {
+        input: pack, env: backendEnv, stdio: ['pipe', 'ignore', 'ignore'], maxBuffer: 1 << 30,
+      });
+      // resolve src sha in local repo
+      const sha = execFileSync('git', ['rev-parse', p.src], { encoding: 'utf8' }).trim();
+      backendGit(['update-ref', p.dst, sha]);
+      results.push(`ok ${p.dst}`);
+    } catch (e) {
+      trace('NOTE', `push err: ${e.message}`);
+      results.push(`error ${p.dst} ${e.message.split('\n')[0]}`);
+    }
+  }
+  return results;
+}
+
+// ---- main line-driven loop ----
+const rl = require('readline').createInterface({ input: process.stdin });
+let mode = null;          // 'fetch' | 'push' collecting a batch
+let batch = [];
+const opts = {};          // accumulated `option <name> <value>`
+
+rl.on('line', (line) => {
+  trace('IN', line === '' ? '<blank>' : line);
+
+  if (mode === 'fetch') {
+    if (line === '') {
+      doFetch(batch);
+      outblank(); // end-of-batch
+      mode = null; batch = [];
+      return;
+    }
+    const m = line.match(/^fetch\s+(\S+)\s+(\S+)/);
+    if (m) { batch.push({ sha: m[1], name: m[2] }); return; }
+    // stray option lines inside batch? unlikely
+    return;
+  }
+
+  if (mode === 'push') {
+    if (line === '') {
+      const results = doPush(batch);
+      for (const r of results) out(r);
+      outblank();
+      mode = null; batch = [];
+      return;
+    }
+    const m = line.match(/^push\s+(\+?)([^:]+):(\S+)/);
+    if (m) { batch.push({ force: m[1] === '+', src: m[2], dst: m[3] }); return; }
+    // protocol options may appear after last push, before blank line
+    trace('NOTE', `push-batch trailing line: ${line}`);
+    return;
+  }
+
+  // top-level command dispatch
+  if (line === 'capabilities') {
+    out('fetch');
+    out('push');
+    out('option');
+    out('list');
+    outblank();
+    return;
+  }
+  if (line === 'list' || line === 'list for-push') {
+    for (const r of listRefs()) out(r);
+    const h = headSymref();
+    if (h) out(`@${h} HEAD`);
+    outblank();
+    return;
+  }
+  if (line.startsWith('option ')) {
+    const rest = line.slice('option '.length);
+    trace('OPTION', rest);
+    { const sp = rest.indexOf(' '); if (sp > 0) opts[rest.slice(0, sp)] = rest.slice(sp + 1); }
+    // Advertise support for the ones we could act on; the point of the spike is
+    // to SEE which options git actually sends, so reply ok to the shallow ones
+    // to check whether git then expects shallow bookkeeping from us.
+    const name = rest.split(/\s+/)[0];
+    // Spike toggle: force certain options to be reported unsupported,
+    // to observe git's behavior when a helper rejects shallow/filter.
+    const forceUnsup = new Set((process.env.DASH_UNSUPPORTED || '').split(',').filter(Boolean));
+    if (forceUnsup.has(name)) { out('unsupported'); return; }
+    const known = new Set([
+      'verbosity', 'progress', 'depth', 'deepen-since', 'deepen-not',
+      'deepen-relative', 'cloning', 'update-shallow', 'followtags',
+      'check-connectivity', 'from-promisor', 'no-dependents', 'object-format',
+      'atomic', 'force', 'dry-run', 'pushcert', 'push-option', 'filter',
+    ]);
+    out(known.has(name) ? 'ok' : 'unsupported');
+    return;
+  }
+  if (line.startsWith('fetch ')) {
+    mode = 'fetch';
+    const m = line.match(/^fetch\s+(\S+)\s+(\S+)/);
+    if (m) batch.push({ sha: m[1], name: m[2] });
+    return;
+  }
+  if (line.startsWith('push ')) {
+    mode = 'push';
+    const m = line.match(/^push\s+(\+?)([^:]+):(\S+)/);
+    if (m) batch.push({ force: m[1] === '+', src: m[2], dst: m[3] });
+    return;
+  }
+  if (line === '') {
+    trace('NOTE', 'top-level blank -> exit');
+    rl.close();
+    return;
+  }
+  trace('NOTE', `UNHANDLED command: ${line}`);
+});
+
+rl.on('close', () => {
+  trace('NOTE', 'stdin closed, exiting');
+  process.exit(0);
+});

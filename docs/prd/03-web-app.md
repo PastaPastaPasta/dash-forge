@@ -6,8 +6,8 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 | Concern | Choice |
 |---|---|
-| Platform I/O | wasm/evo-sdk (proof vs trusted mode per S0.3 benchmark) |
-| **Browsing (default path)** | **browse plane — no materialization**: `flatIndex` artifact for instant tree/filename views + `objectLocator` ranged reads for single blobs/commits (architecture §6.3); IndexedDB caches artifacts + fetched objects by hash |
+| Platform I/O | wasm/evo-sdk via **`testnetTrusted()` + `*WithProof` reads** — the only WASM-viable path (S0.3: `EvoSDK.testnet()` and `{proofs:false}` both crash WASM). Proofs are always on; ~0% per-query overhead |
+| **Browsing (default path)** | **browse plane — no materialization**: cold repo-home loads refs + config + the **root tree via `objectLocator`** (~101 KB, size-independent) — **flatIndex is deferred** to deep tree-browse / filename-search (it is O(files): ~471 KB @ 10k, ~4.5 MB @ 100k, so never on the home view); `objectLocator` ranged reads serve single blobs/commits (architecture §6.3); IndexedDB caches artifacts + fetched objects by hash |
 | Repo materialization (search/blame/merge/edit only) | isomorphic-git + lightning-fs in a web worker; IndexedDB pack store |
 | Highlighting | Shiki (lazy per-language) |
 | Diffs | diffs.com embedding if licensing allows, else diff2html/Monaco diff — decision after reading Pierre's "On Rendering Diffs" |
@@ -37,7 +37,7 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 ## Performance honesty (INIT.md)
 
-**Browsing is size-independent**: tree views, file views, README, and commit lists ride the browse plane (flatIndex + locator ranged reads) — O(view) bytes for a repo of any size, no materialization. The honesty now applies to the features that genuinely need the repo locally — **content search, blame, in-browser merge/edit** require materialization and will never match GitHub's server-side speed on 1 GB monorepos; those target excellent UX ≤ 100 MB with a size warning above. Repos lacking browse artifacts (never repacked, non-default refs, pre-flatIndex history) degrade gracefully to locator/object-walk, then to lazy pack fetch.
+**Browsing is size-independent**: tree views, file views, README, and commit lists ride the browse plane — O(view) bytes for a repo of any size, no materialization. **Cold repo-home loads refs + config + the root tree via locator (~101 KB, size-independent), NOT flatIndex** — flatIndex is O(files) and is fetched only when a deep tree-browse or filename-search actually needs the full listing, keeping the home view inside the <500 KB / <3 s budget at any repo size. The honesty now applies to the features that genuinely need the repo locally — **content search, blame, in-browser merge/edit** require materialization and will never match GitHub's server-side speed on 1 GB monorepos; those target excellent UX ≤ 100 MB with a size warning above. Repos lacking browse artifacts (never repacked, non-default refs, pre-flatIndex history) degrade gracefully to locator/object-walk, then to lazy pack fetch.
 
 Budgets: static bundle < 1.5 MiB gz pre-WASM; WASM lazy post-paint; **cold repo home (any repo size, warm gateway) < 3 s and < 500 KB transferred**; warm-cache repo home < 1.5 s; cold blob view < 2 s; COOP/COEP `credentialless` + CSP meta (yappr config).
 
@@ -45,6 +45,7 @@ Budgets: static bundle < 1.5 MiB gz pre-WASM; WASM lazy post-paint; **cold repo 
 
 - Every write shows DASH (primary) + USD (secondary) estimate pre-signing; running spend in settings.
 - Verification chip row on every repo view (refs ✓ proof · packs ✓ sha256 · source); trust panel explains the chain.
+- **Trust disclosure (S0.3): the web app is trust-minimized, not fully trustless.** The only WASM-viable connection is `testnetTrusted()`, which sources the platform **quorum public keys from a known endpoint** rather than deriving them independently — every read is then proof-verified against those keys. The trust panel must state this honestly: *"trust-minimized — quorum keys come from a known endpoint; everything else is proof-verified."* Do not label the web app "fully trustless" (that mode crashes WASM and is unavailable). The Rust CLI/helper, which can verify quorums independently, remains the fully-trustless path.
 - Insufficient credits → bridge.thepasta.org deep link.
 
 ## Acceptance (v1)

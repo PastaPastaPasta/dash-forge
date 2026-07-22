@@ -16,11 +16,14 @@ Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build 
 
 Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdHGb3gEeo3vGupZPV (~0.6 tDASH remaining for top-ups). Fan-out fee fixed to 2000 duffs (node maxtxfee wall).
 
-## Stage 1 — Spikes S0.1–S0.9 → Design Freeze #1
-- [ ] S0.6 contract JSONs draft + fullValidation + size/flags
-- [ ] S0.2 chunk geometry · [ ] S0.1 throughput go/no-go · [ ] S0.7 token ACL
-- [ ] S0.8 query cursors · [ ] S0.5 browse plane · [ ] S0.9 helper transport/jj · [ ] S0.3 proof-mode perf
-- [ ] `docs/research/spike-results.md` + Design Freeze #1 doc updates
+## Stage 1 — Spikes S0.1–S0.9 → Design Freeze #1 ✅ COMPLETE — GO
+- [x] S0.6 contracts validate, single template 11.7KB (no split); non-byteArray arrays unsupported → JSON/packed
+- [x] S0.2 geometry frozen 3×4900=14700→14983B ST · [x] S0.1 **GO** ~4 docs/sec pipelined w8 · [x] S0.7 token-ACL validated (freeze blocks create+delete)
+- [x] S0.8 in-batch starvation real→completeness fallback; skip-scan flat O(log n) · [x] S0.5 browse plane O(blob) confirmed, locator widths fixed · [x] S0.9 partial-clone works, shallow dropped, jj ✅ · [x] S0.3 trusted-connect only, proofs default
+- [x] `docs/research/spike-results.md` + Design Freeze #1 applied across all docs
+- Contracts: `forge-contracts/contracts/registry.json` + `templates/repo-v1.json` (validated). Throwaway spike contracts on testnet (permanent).
+- WriteEngine spec frozen: broadcast+poll contractNonce (no waitForResponse), DIP-30 mask, window 8, base64 byteArray operands, CRITICAL key for token admin.
+- Funding: DEPLOYER ~1.0 tDASH, OWNER ~0.07. Faucet+transfer+topup commands all work. Contract-create ~0.24 DASH (economics corrected).
 
 ## Stage 2 — Protocol + helper → M1
 - [ ] Contracts deployed testnet (`deployments/testnet.json`) · [ ] forge-core modules · [ ] git-remote-dash · [ ] M1 gate
@@ -38,4 +41,4 @@ Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdH
 - [ ] CLI suite (13) · [ ] token-ACL suite (10) · [ ] Playwright (12) · [ ] relay/import/chaos · [ ] Codex CU verification passes · [ ] 7-day green nightly
 
 ## Next action
-Stage 0: push repo, launch scaffold agents, build mint-identity.
+Stage 2: deploy registry.json + repo-v1.json to testnet (DEPLOYER); build forge-core modules (platform/WriteEngine per frozen spec, keystore, cost, rules, pack, backends) with rs-sdk; git-remote-dash helper; → M1 gate.

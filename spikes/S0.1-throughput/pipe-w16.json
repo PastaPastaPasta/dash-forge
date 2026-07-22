@@ -1,0 +1,41 @@
+{
+  "phase": "pipeline",
+  "window": 16,
+  "N": 16,
+  "broadcast": {
+    "accepted": 16,
+    "failed": 0,
+    "broadcastMs": 1165,
+    "broadcastsPerSec": 13.73
+  },
+  "landing": {
+    "landed": 16,
+    "allLandedMs": 3986,
+    "sustainedDocsPerSec": 4.014
+  },
+  "waves": [
+    {
+      "tMs": 2346,
+      "landedNow": 8
+    },
+    {
+      "tMs": 3986,
+      "landedNow": 8
+    }
+  ],
+  "curve": [
+    {
+      "t": 1363,
+      "cn": 133
+    },
+    {
+      "t": 2346,
+      "cn": 141
+    },
+    {
+      "t": 3986,
+      "cn": 149
+    }
+  ],
+  "costCredits": 7121939500
+}

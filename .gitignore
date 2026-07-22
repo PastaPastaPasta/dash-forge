@@ -25,3 +25,9 @@ coverage/
 
 # Logs
 *.log
+
+# Spike build artifacts (throwaway binaries)
+spikes/**/artifacts/
+spikes/**/*.bin
+spikes/**/node_modules/
+spikes/**/.smoke/

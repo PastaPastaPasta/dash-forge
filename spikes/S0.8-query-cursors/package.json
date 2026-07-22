@@ -1,0 +1,7 @@
+{
+  "name": "@dash-forge/spike-s0.8-query-cursors",
+  "version": "0.1.0",
+  "description": "S0.8 spike: validate in-batch starvation + skip-scan cursor seek cost for ref enumeration and event folds",
+  "type": "module",
+  "private": true
+}

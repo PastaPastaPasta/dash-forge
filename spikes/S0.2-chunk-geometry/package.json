@@ -1,0 +1,7 @@
+{
+  "name": "@dash-forge/spike-s0.2-chunk-geometry",
+  "version": "0.1.0",
+  "description": "S0.2 spike: empirically determine max chunk-document payload under the 20480-byte state-transition limit",
+  "type": "module",
+  "private": true
+}

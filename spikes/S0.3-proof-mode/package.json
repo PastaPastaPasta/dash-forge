@@ -1,0 +1,7 @@
+{
+  "name": "@dash-forge/spike-s0.3-proof-mode",
+  "version": "0.1.0",
+  "description": "S0.3 spike: measure the perf/memory cost of proof-verifying (EvoSDK.testnet()) vs trusted (EvoSDK.testnetTrusted()) SDK modes to pick forge-web's default",
+  "type": "module",
+  "private": true
+}

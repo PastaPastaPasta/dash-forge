@@ -1,0 +1,35 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/f1/.git cwd=/private/tmp/s0.9
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN list
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cloning true
+OPTION cloning true
+OUT ok
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+IN <blank>
+NOTE doFetch wants=[{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/tags/v1.0"}]
+NOTE doFetch reachable filter=(none) from-promisor=
+NOTE built pack bytes=1495
+NOTE index-pack -> pack	51994613fb3bb40d32d86759ab2e4c5539052ff9 sha=51994613fb3bb40d32d86759ab2e4c5539052ff9
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

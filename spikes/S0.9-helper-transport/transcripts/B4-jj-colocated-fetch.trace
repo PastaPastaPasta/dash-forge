@@ -1,0 +1,42 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/jjcolo/.git cwd=/private/tmp/s0.9/jjcolo
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN list
+OUT 1e2db989315c83674c8f8ef49e98d66733efc426 refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option followtags true
+OPTION followtags true
+OUT ok
+IN fetch 1e2db989315c83674c8f8ef49e98d66733efc426 refs/heads/main
+IN <blank>
+NOTE doFetch wants=[{"sha":"1e2db989315c83674c8f8ef49e98d66733efc426","name":"refs/heads/main"}]
+NOTE doFetch reachable filter=(none) from-promisor=
+NOTE built pack bytes=1758
+NOTE index-pack -> pack	258269a4db9d4ba472c8480f2996664aff51714b sha=258269a4db9d4ba472c8480f2996664aff51714b
+OUT <blank>
+IN option followtags false
+OPTION followtags false
+OUT ok
+IN option depth 0
+OPTION depth 0
+OUT ok
+IN option deepen-relative false
+OPTION deepen-relative false
+OUT ok
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

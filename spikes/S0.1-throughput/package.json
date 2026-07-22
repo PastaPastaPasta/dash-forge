@@ -1,0 +1,7 @@
+{
+  "name": "@dash-forge/spike-s0.1-throughput",
+  "version": "0.1.0",
+  "description": "S0.1 spike: pipelined sequential-nonce document-write throughput on Dash Platform (GO/NO-GO for the platform storage tier)",
+  "type": "module",
+  "private": true
+}

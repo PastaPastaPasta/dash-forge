@@ -1,0 +1,10 @@
+{
+  "contractId": "9hqcGGpuvN86bkbVUQNL99V1Qd5D9pgKjQd5xEXDv8EP",
+  "ownerId": "B72TJDCsaExkoET6enz6HZGvGcHiSRYupjgve9KARoGx",
+  "note": "Published by first (facade) publish at identity nonce 1; facade panicked in post-broadcast handling but the ST landed on-chain. Single doc type: chunk (packHash+seq+d0..d2). Verified EXISTS via check-contract.mjs.",
+  "registrationCostCredits": 13050173340,
+  "registrationCostDash": 0.1305,
+  "balBeforeCredits": 24865517320,
+  "balAfterCredits": 11815343980,
+  "signingKeyLevel": "CRITICAL"
+}

@@ -1,0 +1,136 @@
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/p1/.git cwd=/private/tmp/s0.9
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN option from-promisor 1
+OPTION from-promisor 1
+OUT ok
+IN list
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cloning true
+OPTION cloning true
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+IN <blank>
+NOTE doFetch wants=[{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/tags/v1.0"}]
+NOTE doFetch reachable filter=blob:none from-promisor=1
+NOTE built pack bytes=1266
+NOTE index-pack -> pack	87a1a73dcbe8e5866dffd666423fa9faa95352aa sha=87a1a73dcbe8e5866dffd666423fa9faa95352aa
+NOTE wrote /private/tmp/s0.9/p1/.git/objects/pack/pack-87a1a73dcbe8e5866dffd666423fa9faa95352aa.promisor
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/p1/.git cwd=/private/tmp/s0.9/p1
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN option from-promisor 1
+OPTION from-promisor 1
+OUT ok
+IN list
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN fetch a0054e492840f572e48a3cb791d2e083afaf08f6 a0054e492840f572e48a3cb791d2e083afaf08f6
+IN fetch 4d4bc1c77f63bd5429cb0ab4d74cb8729570d293 4d4bc1c77f63bd5429cb0ab4d74cb8729570d293
+IN fetch f1f36270ff97895ac0f75837c262cfcb3c21cc2f f1f36270ff97895ac0f75837c262cfcb3c21cc2f
+IN fetch 75db99094e57d9f02f7eca73dd08f93ce2e302ba 75db99094e57d9f02f7eca73dd08f93ce2e302ba
+IN fetch 035f9b742ebf552ed87f003d4944480bfea6ba99 035f9b742ebf552ed87f003d4944480bfea6ba99
+IN fetch 94c99a3280d27d2ebb75c61b3dcf7eb09a716ff7 94c99a3280d27d2ebb75c61b3dcf7eb09a716ff7
+IN fetch 1b290a1805c49608e58b69bffde73f081aea6d0c 1b290a1805c49608e58b69bffde73f081aea6d0c
+IN <blank>
+NOTE doFetch wants=[{"sha":"a0054e492840f572e48a3cb791d2e083afaf08f6","name":"a0054e492840f572e48a3cb791d2e083afaf08f6"},{"sha":"4d4bc1c77f63bd5429cb0ab4d74cb8729570d293","name":"4d4bc1c77f63bd5429cb0ab4d74cb8729570d293"},{"sha":"f1f36270ff97895ac0f75837c262cfcb3c21cc2f","name":"f1f36270ff97895ac0f75837c262cfcb3c21cc2f"},{"sha":"75db99094e57d9f02f7eca73dd08f93ce2e302ba","name":"75db99094e57d9f02f7eca73dd08f93ce2e302ba"},{"sha":"035f9b742ebf552ed87f003d4944480bfea6ba99","name":"035f9b742ebf552ed87f003d4944480bfea6ba99"},{"sha":"94c99a3280d27d2ebb75c61b3dcf7eb09a716ff7","name":"94c99a3280d27d2ebb75c61b3dcf7eb09a716ff7"},{"sha":"1b290a1805c49608e58b69bffde73f081aea6d0c","name":"1b290a1805c49608e58b69bffde73f081aea6d0c"}]
+NOTE doFetch reachable filter=blob:none from-promisor=1
+NOTE built pack bytes=174
+NOTE index-pack -> pack	bdd5249d433356e465fe106f2462066165ed653c sha=bdd5249d433356e465fe106f2462066165ed653c
+NOTE wrote /private/tmp/s0.9/p1/.git/objects/pack/pack-bdd5249d433356e465fe106f2462066165ed653c.promisor
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting
+ARGV ["origin","dash://alice/project"]
+ENV GIT_DIR=/private/tmp/s0.9/p2/.git cwd=/private/tmp/s0.9
+NOTE backend repo = /tmp/s0.9/backends/alice__project
+IN capabilities
+OUT fetch
+OUT push
+OUT option
+OUT list
+OUT <blank>
+IN option progress false
+OPTION progress false
+OUT ok
+IN option verbosity 1
+OPTION verbosity 1
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN option from-promisor 1
+OPTION from-promisor 1
+OUT ok
+IN list
+OUT 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+OUT 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+OUT @refs/heads/main HEAD
+OUT <blank>
+IN option cloning true
+OPTION cloning true
+OUT ok
+IN option filter blob:none
+OPTION filter blob:none
+OUT ok
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f refs/heads/main
+IN fetch 34dfa99ecdd1e08e334097784afdc397d7286386 refs/tags/v1.0
+IN <blank>
+NOTE doFetch wants=[{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"2b4f0fc66a1721b3cabdcb6f0bb202fa1c71261f","name":"refs/heads/main"},{"sha":"34dfa99ecdd1e08e334097784afdc397d7286386","name":"refs/tags/v1.0"}]
+NOTE doFetch reachable filter=blob:none from-promisor=1
+NOTE built pack bytes=1266
+NOTE index-pack -> pack	87a1a73dcbe8e5866dffd666423fa9faa95352aa sha=87a1a73dcbe8e5866dffd666423fa9faa95352aa
+NOTE wrote /private/tmp/s0.9/p2/.git/objects/pack/pack-87a1a73dcbe8e5866dffd666423fa9faa95352aa.promisor
+OUT <blank>
+IN <blank>
+NOTE top-level blank -> exit
+NOTE stdin closed, exiting

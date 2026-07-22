@@ -25,7 +25,7 @@ Git hosting that cannot be taken down, censored, or rug-pulled — because there
 
 1. **Platform is the sole source of truth**; all other storage is verifiable cache.
 2. **Zero workflow change**: standard git (and jj); `dg` mirrors `gh`'s surface deliberately.
-3. **Trustless by default**: proofs for Platform reads; SHA-256 + OIDs for content; relay/CI re-verify.
+3. **Trust-minimized by default**: proofs for Platform reads; SHA-256 + OIDs for content; relay/CI re-verify. The Rust CLI/helper is **fully trustless** (verifies quorums independently); the WASM web app is **trust-minimized** — the only browser-viable path (`testnetTrusted()`, S0.3) takes quorum keys from a known endpoint, then proof-verifies everything against them (PRD 03 trust panel discloses this).
 4. **Cost is first-class UX**: estimate before every write batch, DASH primary / USD secondary, running spend audit, refunds surfaced.
 5. **Documented honesty**: explicit non-goals (no on-chain FF/merge validation — reflog auditability instead; no Actions-equivalent; performance limits on giant repos).
 

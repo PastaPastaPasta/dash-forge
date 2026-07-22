@@ -5,7 +5,7 @@ One **Rust workspace** (shared `forge-core` crate on rs-sdk/rs-dpp), multiple bi
 ## A. git-remote-dash (remote helper)
 
 ### Goal
-`git remote add origin dash://alice/project`, then normal git — zero workflow change. jj (git backend) works unmodified.
+`git remote add origin dash://alice/project`, then normal git — zero workflow change. **jj works unmodified — confirmed in S0.9**: jj's gitoxide-based transport delegates `dash://` to `git-remote-dash` on PATH (jj ≥ 0.43, **no colocated git repo required**), a ⭐ criterion now verified rather than assumed.
 
 ### URL scheme & config
 ```
@@ -16,7 +16,7 @@ Config in git config: `dash.identity`, `dash.network`, `dash.costWarnThreshold`,
 ### Protocol
 - Capabilities: `fetch`, `push`, `option`, `list` (connect-less semantics, same pattern as git-remote-ipfs/s3).
 - `list` / `list for-push`: DPNS → registry → repo contract → refs (newest `refUpdate`/`protectedRefUpdate` per name, proof-verified) + HEAD symref.
-- `fetch`: want/have negotiation vs local odb → select non-superseded manifests covering want-set → download chunks via DAPI or CID/URL per manifest → SHA-256-verify reassembled packs → `git index-pack`. **Partial/shallow clone** via the merged `objectLocator` artifact (ranged chunk fetch by seq / HTTP Range; per-pack offset indexes cover packs since the last repack). Note: a non-`connect` helper gets none of git's native shallow negotiation for free — `option depth`, `.git/shallow` grafting, and `--unshallow` deepening must be implemented in the helper itself (S0.9 spike; Radicle's helper is the reference).
+- `fetch`: want/have negotiation vs local odb → select non-superseded manifests covering want-set → download chunks via DAPI or CID/URL per manifest → SHA-256-verify reassembled packs → `git index-pack`. **Partial clone** (`--filter=blob:none`) via the merged `objectLocator` artifact (ranged chunk fetch by seq / HTTP Range; per-pack offset indexes cover packs since the last repack): the helper must honor `option filter`, **write `.promisor` markers** so git knows objects are lazily fetchable, and serve the subsequent **lazy reads that arrive as bare-OID fetches** via single-object locator lookups. **Shallow clone is NOT supported** (S0.9): a fetch/push helper has no reply channel for git's depth negotiation — there is no way to serve `option depth`, `.git/shallow` grafting, or `--unshallow` deepening — so `--depth` **fails loudly** with a clear error rather than silently ignoring the flag.
 - `push`: thin pack vs remote refs, completed locally with `index-pack --fix-thin` (stored packs are always self-contained) → **cost estimate; display and prompt above `dash.costWarnThreshold`** → chunk upload as pipelined single-transition STs (sequential nonces; batch=1 platform constraint) → `packManifest` (+ mandatory per-pack offset index) → `refUpdate` docs (prevOid recorded; non-FF refused without `+`; delete = zero OID; protected patterns route to `protectedRefUpdate`) → **post-push ref re-read**: a lost same-prevOid race with a concurrent pusher is reported as a late non-fast-forward (never silent — data-contracts §2.3).
 - **Resumable pushes**: journal file (`.git/dash/journal/<packHash>.json`) records uploaded chunk IDs; interrupted push resumes **without re-paying for uploaded chunks** (INIT.md acceptance).
 - Idempotent ST engine: sign → persist bytes → broadcast → wait → rebroadcast same bytes on timeout; "already exists" = success.
@@ -27,7 +27,9 @@ Local Dash identity key via OS keychain/agent (SSH-key UX shape); `DASH_FORGE_KE
 ### Acceptance (v1)
 - Round-trip clone/push of **the Dash Platform monorepo itself** (mixed backend).
 - Interrupted 100 MB push (kill -9 mid-upload) resumes; total fees ≈ single-push fees.
-- `git fsck` clean after every e2e clone; jj works unmodified; frozen identity's push fails at consensus.
+- `git fsck` clean after every e2e clone; frozen identity's push fails at consensus.
+- **jj CI smoke test**: a `jj git clone dash://…` + `jj git push` round-trip (jj ≥ 0.43, no colocation) runs green in CI, guarding the unmodified-jj guarantee against gitoxide/transport regressions.
+- `git clone --depth=1 dash://…` **fails loudly** with a clear "shallow clone unsupported" error (never a silent full clone); `git clone --filter=blob:none dash://…` succeeds and lazily fetches blobs on demand.
 
 ## B. dg (gh replacement)
 
