@@ -105,7 +105,10 @@ export async function fanOutFunds({ sourceUtxo, sourceKeyPair, recipients, perRo
   const changeScript = addressToScript(changeAddress);
 
   log(`Fan-out: sending ${(perRoleDuffs / 1e8).toFixed(8)} tDASH to ${recipients.length} deposit addresses, change -> ${changeAddress}`);
-  const tx = createP2PKHTransaction(sourceUtxo, outputs, changeScript, 20000n);
+  // Keep the absolute fee low: public testnet nodes enforce -maxtxfee, which the
+  // faucet/asset-lock path clears at ~1000 duffs. A 1-in-N-out P2PKH is ~500 B, so
+  // 2000 duffs sits comfortably above min-relay yet under the node's max-tx-fee wall.
+  const tx = createP2PKHTransaction(sourceUtxo, outputs, changeScript, 2000n);
   const signed = await signTransaction(tx, [sourceUtxo], privateKey, publicKey);
   const txHex = bytesToHex(serializeTransaction(signed));
 

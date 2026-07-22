@@ -4,15 +4,17 @@ Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build 
 
 **Locked decisions**: testnet-complete (mainnet = runbook only) · GitHub `PastaPastaPasta/dash-forge` (private until Stage 4) · storage e2e docker-only (MinIO/kubo/static-http; Storacha+Pinata mock-tested) · import acceptance on medium repo (dashpay/dips-scale).
 
-## Stage 0 — Repo, toolchain, scaffold
+## Stage 0 — Repo, toolchain, scaffold ✅ COMPLETE
 - [x] .gitignore, tracker
-- [ ] GitHub repo created + pushed
-- [ ] Cargo workspace scaffold (`crates/*`, no rs-sdk dep yet — added Stage 2)
-- [ ] forge-web scaffold (Next.js 14 static export + evo-sdk 4.0.0 + style-guide tokens)
-- [ ] infra/ (docker-compose: kubo, MinIO, static-http) + CI workflows + Makefile
-- [ ] `tools/mint-identity` (S0.4) — validated by minting 1 live testnet identity
-- [ ] Fixture identity pool minted (9 roles, e2e plan §1.1)
+- [x] GitHub repo created + pushed (PastaPastaPasta/dash-forge, private)
+- [x] Cargo workspace scaffold (`crates/*`, 20 tests, clippy/fmt clean; no rs-sdk dep yet — Stage 2)
+- [x] forge-web scaffold (Next.js 14 static export + evo-sdk 4.0.0 + full style-guide tokens; builds to out/)
+- [x] infra/ (docker-compose: kubo, MinIO, static-http — all smoke-tested) + CI workflows + Makefile
+- [x] `tools/mint-identity` (S0.4) — LIVE smoke mint succeeded; CAP solved headlessly in Node
+- [x] Fixture identity pool minted (9 roles) → `~/.config/dash-forge/test-identities/` + 9 GitHub secrets
 - [ ] `brew install jj` (deferred to S0.9)
+
+Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdHGb3gEeo3vGupZPV (~0.6 tDASH remaining for top-ups). Fan-out fee fixed to 2000 duffs (node maxtxfee wall).
 
 ## Stage 1 — Spikes S0.1–S0.9 → Design Freeze #1
 - [ ] S0.6 contract JSONs draft + fullValidation + size/flags
