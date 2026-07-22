@@ -1,0 +1,21 @@
+[package]
+name = "git-remote-dash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "git remote helper for dash:// URLs (git remote-dash)."
+
+[[bin]]
+name = "git-remote-dash"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

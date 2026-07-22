@@ -1,0 +1,71 @@
+name: Testnet Nightly
+
+# Placeholder nightly/on-demand job for the Stage 6 e2e certification suites
+# (CLI suite, token-ACL suite, Playwright, relay/import/chaos — see
+# docs/testing/e2e-test-plan.md and EXECUTION.md Stage 6). Until those suites
+# land, this job only verifies that the fixture-identity secrets required to
+# run them are configured in the repo/environment, so secret provisioning can
+# happen ahead of Stage 6 without the workflow silently no-oping.
+#
+# Required secrets (9 fixture identities, e2e plan §1.1 role pool):
+#   FORGE_TEST_IDENTITY_OWNER       - repo owner identity
+#   FORGE_TEST_IDENTITY_MAINTAINER  - maintainer w/ write access
+#   FORGE_TEST_IDENTITY_COLLAB      - collaborator w/ scoped access
+#   FORGE_TEST_IDENTITY_CONTRIB     - external contributor (PR-only)
+#   FORGE_TEST_IDENTITY_FROZEN      - revoked/frozen ACL token identity
+#   FORGE_TEST_IDENTITY_CI_RUNNER   - CI/automation identity
+#   FORGE_TEST_IDENTITY_RELAY       - forge-relay service identity
+#   FORGE_TEST_IDENTITY_DEPLOYER    - Pages/deploy identity
+#   FORGE_TEST_IDENTITY_TREASURY    - treasury/payment identity
+#
+# Each secret is expected to hold whatever the eventual suite runner needs
+# (private key / seed / identity id — TBD in Stage 6 design).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  placeholder:
+    name: check-secrets
+    runs-on: ubuntu-latest
+    env:
+      FORGE_TEST_IDENTITY_OWNER: ${{ secrets.FORGE_TEST_IDENTITY_OWNER }}
+      FORGE_TEST_IDENTITY_MAINTAINER: ${{ secrets.FORGE_TEST_IDENTITY_MAINTAINER }}
+      FORGE_TEST_IDENTITY_COLLAB: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
+      FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
+      FORGE_TEST_IDENTITY_FROZEN: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
+      FORGE_TEST_IDENTITY_CI_RUNNER: ${{ secrets.FORGE_TEST_IDENTITY_CI_RUNNER }}
+      FORGE_TEST_IDENTITY_RELAY: ${{ secrets.FORGE_TEST_IDENTITY_RELAY }}
+      FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+      FORGE_TEST_IDENTITY_TREASURY: ${{ secrets.FORGE_TEST_IDENTITY_TREASURY }}
+    steps:
+      - name: Check required fixture-identity secrets
+        run: |
+          missing=()
+          for name in \
+            FORGE_TEST_IDENTITY_OWNER \
+            FORGE_TEST_IDENTITY_MAINTAINER \
+            FORGE_TEST_IDENTITY_COLLAB \
+            FORGE_TEST_IDENTITY_CONTRIB \
+            FORGE_TEST_IDENTITY_FROZEN \
+            FORGE_TEST_IDENTITY_CI_RUNNER \
+            FORGE_TEST_IDENTITY_RELAY \
+            FORGE_TEST_IDENTITY_DEPLOYER \
+            FORGE_TEST_IDENTITY_TREASURY \
+          ; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::warning::Missing fixture-identity secrets: ${missing[*]}"
+          else
+            echo "All fixture-identity secrets are configured."
+          fi
+
+          echo "Testnet nightly e2e suites (CLI, token-ACL, Playwright, relay/import/chaos) are not implemented yet."
+          echo "Suites land in Stage 6 — see EXECUTION.md and docs/testing/e2e-test-plan.md."
+          exit 0

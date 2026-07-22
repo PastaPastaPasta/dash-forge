@@ -1,0 +1,23 @@
+[package]
+name = "forge-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "forge-relay — interchangeable daemon bridging the Platform ST firehose to webhooks/notifications/CI."
+
+[[bin]]
+name = "forge-relay"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

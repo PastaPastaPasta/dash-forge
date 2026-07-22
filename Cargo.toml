@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/forge-core",
+    "crates/git-remote-dash",
+    "crates/dg",
+    "crates/forge-relay",
+    "crates/forge-import",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dash-forge/dash-forge"
+rust-version = "1.80"
+
+# Shared dependency versions. Individual crates opt in with `<dep>.workspace = true`.
+# NOTE: no Dash SDK (rs-sdk / rs-dpp) dependency yet — that integration lands in
+# Stage 2 inside forge-core::platform. Keeping it out keeps the scaffold fast to build.
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which
+# promotes every `warn` below to a hard error. Kept pragmatic: `all` + a selected
+# slice of `pedantic`, with the noisiest pedantic lints allowed back.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pragmatic allow-list: these fire on ordinary, correct scaffold code.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"

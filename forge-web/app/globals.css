@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Base typography and the "foundry" surface system.
+ * Dark = layered anvil-950/900/850; light = anvil-50/white.
+ */
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-anvil-50 font-sans text-dense text-anvil-800 antialiased;
+    @apply dark:bg-anvil-950 dark:text-anvil-200;
+  }
+
+  /* Monospace is a first-class citizen: OIDs, hashes, CIDs. */
+  code,
+  kbd,
+  samp,
+  pre {
+    @apply font-mono;
+  }
+
+  /* Headings: 1.25 ratio, semibold not bold. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-semibold text-anvil-900 dark:text-anvil-50;
+  }
+
+  /* Visible focus ring on every interactive element (forge-400). */
+  :focus-visible {
+    @apply outline-none ring-2 ring-forge-400 ring-offset-2;
+    @apply ring-offset-anvil-50 dark:ring-offset-anvil-950;
+  }
+
+  /* prefers-reduced-motion kills all animation. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
