@@ -76,7 +76,7 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 6. **Browser edit**: CodeMirror edit → commit → push → visible in CLI clone.
 7. **Collaborator token UI ↔ CLI parity**: web grant → immediate CLI push; web suspend → CLI push fails at consensus.
 8. **checkRun rendering**: CI-RUNNER writes check docs → PR shows status.
-9. **Large-repo UX**: 100 MB fixture → lazy-fetch tree view within budget; size warning; warm reload < 1.5 s.
+9. **Browse plane**: repo-of-any-size fixture (largest available, e.g. imported platform monorepo) → cold repo home renders < 500 KB transferred / < 3 s (request-interception byte accounting); blob + directory + commit-log views stay O(view); degraded path (repo with no flatIndex/locator) still renders via object walk; materialization-tier features (search/blame) show the 100 MB size warning; warm reload < 1.5 s.
 10. **Search**: per-repo client-side index finds seeded symbol; index persists in IndexedDB.
 11. **Failure UX**: DAPI blackhole → reconnect; insufficient credits → bridge deep link.
 12. **A11y/perf**: axe-core 0 serious; Lighthouse perf ≥ 80 / a11y ≥ 95. ⭐ IPFS-served deploy passes the same smoke.

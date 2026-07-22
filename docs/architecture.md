@@ -79,7 +79,7 @@ Discovery + social graph only: `repoListing` (name, repoContractId, description,
 | **mixed** | Recent packs on Platform, archival packs external | Best of both | — |
 
 - Pack = unit of storage (thin pack per push; preserves delta compression; O(bytes/14 KiB) STs, not O(objects)).
-- Partial/shallow clone: manifest's per-object offset index → ranged `chunk` fetch by seq (or HTTP range on external backends).
+- Partial/shallow clone & single-object reads: the merged `objectLocator` (§6.3) → ranged `chunk` fetch by seq (or HTTP Range on external backends); per-pack offset indexes only bridge packs pushed since the last repack.
 - **Repack/GC** (`dg repack`): rewrite history into one optimized pack, upload, delete superseded chunk/manifest docs → storage refund. Long-lived repo cost ≈ current size, not cumulative pushes.
 - Availability for external backends: multiple URIs per manifest + anyone-can-reseed (`packMirror`-style additional-URI docs, `dg reseed`); loss is availability-only, never integrity, and any clone can restore.
 
@@ -93,10 +93,15 @@ Discovery + social graph only: `repoListing` (name, repoContractId, description,
 5. All STs via idempotent write engine (sign → persist bytes → broadcast → wait → rebroadcast same bytes on timeout).
 
 ### Clone/fetch
-Resolve listing → refs → collect non-superseded manifests covering want-set → fetch chunks (DAPI) or CID/URL (external) → SHA-256-verify reassembled pack → `git index-pack`. Shallow/partial via offset index. Local git odb is the cache (helper never re-fetches objects git has).
+Resolve listing → refs → collect non-superseded manifests covering want-set → fetch chunks (DAPI) or CID/URL (external) → SHA-256-verify reassembled pack → `git index-pack`. Shallow/partial via the `objectLocator`. Local git odb is the cache (helper never re-fetches objects git has).
 
-### Web browse (no clone)
-forge-web materializes the repo **in the browser**: worker (isomorphic-git + lightning-fs) lazily fetches only tree/blobs needed for the current view via the offset index; IndexedDB caches packs/objects keyed by hash (immutable). Excellent-UX target ≤ 100 MB repos; size warning above.
+### Web browse (no clone) — the browse plane
+Browsing never materializes the repo. Two auxiliary **browse artifacts** (stored/transported exactly like packs — content-addressed, chunked or external, supersedable with refunds; `packManifest.kind` distinguishes them) make every view a handful of small ranged reads:
+
+- **`objectLocator`** — a merged multi-pack index (git MIDX analog): fanout header + oid-sorted entries of `(oid → pack, offset, length, deltaChainSpan)`. ~26 B/object; the fanout means a lookup fetches the header plus one ~1/256 slice by HTTP Range / chunk seq. `deltaChainSpan` covers the object's whole delta window so one contiguous ranged read yields the blob and its bases. Published at repack; between repacks, readers consult the newest locator plus the (few) per-pack offset indexes of packs pushed since.
+- **`flatIndex`** — the tip's complete recursive file listing (`path → blob oid, mode, size`, path-sorted, compressed), i.e. GitHub's tree API as one static artifact. Tens-to-hundreds of KB even for large repos. Gives instant tree navigation at any depth *and* client-side filename search with zero object fetches. Published per default-branch push (or batched for hyperactive repos); other refs fall back to object walking.
+
+Resulting cold-load path for a repo of *any* size: refs + config (KB) → flatIndex (tens of KB) → README blob via locator ranged read (KB) — **3–5 requests, O(view) bytes, independent of repo size**. Blob view = one locator lookup + one ranged read; directory = zero extra fetches (flatIndex); commit log = commit objects via locator (tiny), optional commit-graph artifact later; historical/other-ref trees = locator-driven object walk (commit → trees → blobs, ~KB per hop). Full materialization (isomorphic-git in a worker, IndexedDB pack store) remains, but only for the features that genuinely need it: content search, blame, in-browser merge/edit. Excellent-UX target ≤ 100 MB now applies to *those* features, not to browsing.
 
 ### Liveness
 No document subscriptions → web/CLI poll indexed queries with cursors; **relay** subscribes to the block/ST firehose and translates to push-style webhooks for CI/notifications (PRD 05).

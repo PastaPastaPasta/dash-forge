@@ -22,7 +22,7 @@ Hash verification lives in PackPipeline, outside backends — a malicious backen
 ## v1 backends
 
 ### 1. Platform (default)
-`chunk` docs (3 × 4.9 KiB fields), pipelined STs, ranged reads by chunk seq via offset index. ~$9/MiB @ $34/DASH, refundable; repack-with-refund keeps steady-state ≈ current size.
+`chunk` docs (3 × 4.9 KiB fields), pipelined STs, ranged reads by chunk seq via the `objectLocator`. ~$9/MiB @ $34/DASH, refundable; repack-with-refund keeps steady-state ≈ current size.
 
 ### 2. IPFS
 - Write: local Kubo or pinning-service API (Storacha/Pinata — yappr-proven clients); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).

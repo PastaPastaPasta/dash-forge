@@ -16,7 +16,8 @@ Additional levers on top:
 | Lever | Gain | When |
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
-| Skipping the per-object offset index | saves `manifestPart` bytes (~24 B/object) | `offsetIndexParts: 0` — default for platform-mode repos that don't need partial/shallow clone; opt-in otherwise |
+| Skipping the per-object offset index | saves `manifestPart` bytes (~24 B/object) | `offsetIndexParts: 0` default — the merged `objectLocator` is the primary random-access path; per-pack indexes only bridge pushes between repacks |
+| Browse artifacts (`objectLocator` ~26 B/object, `flatIndex` ~30 B/file compressed) | *cost*, not saving: ~0.5–3 MB deposit for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish. What they buy: size-independent browsing (see architecture §6.3) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)

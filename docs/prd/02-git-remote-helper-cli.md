@@ -16,7 +16,7 @@ Config in git config: `dash.identity`, `dash.network`, `dash.costWarnThreshold`,
 ### Protocol
 - Capabilities: `fetch`, `push`, `option`, `list` (connect-less semantics, same pattern as git-remote-ipfs/s3).
 - `list` / `list for-push`: DPNS → registry → repo contract → refs (newest `refUpdate`/`protectedRefUpdate` per name, proof-verified) + HEAD symref.
-- `fetch`: want/have negotiation vs local odb → select non-superseded manifests covering want-set → download chunks via DAPI or CID/URL per manifest → SHA-256-verify reassembled packs → `git index-pack`. **Partial/shallow clone** via manifest per-object offset index (ranged chunk fetch by seq / HTTP range).
+- `fetch`: want/have negotiation vs local odb → select non-superseded manifests covering want-set → download chunks via DAPI or CID/URL per manifest → SHA-256-verify reassembled packs → `git index-pack`. **Partial/shallow clone** via the merged `objectLocator` artifact (ranged chunk fetch by seq / HTTP Range; per-pack offset indexes as the between-repacks fallback).
 - `push`: thin pack vs remote refs → **cost estimate; display and prompt above `dash.costWarnThreshold`** → chunk upload as pipelined single-transition STs (sequential nonces; batch=1 platform constraint) → `packManifest` (+ `manifestPart`s) → `refUpdate` docs (prevOid recorded; non-FF refused without `+`; delete = zero OID; protected patterns route to `protectedRefUpdate`).
 - **Resumable pushes**: journal file (`.git/dash/journal/<packHash>.json`) records uploaded chunk IDs; interrupted push resumes **without re-paying for uploaded chunks** (INIT.md acceptance).
 - Idempotent ST engine: sign → persist bytes → broadcast → wait → rebroadcast same bytes on timeout; "already exists" = success.
@@ -63,7 +63,7 @@ A maintainer runs a real project — triage issues, review and land PRs, cut a r
 
 1. **PlatformClient**: rs-sdk wrapper — connect/retry, proof verification on, registry+template preload, nonce serializer with pipelining mode (window configurable; S0.1-tuned).
 2. **WriteEngine**: idempotent ST lifecycle + journal persistence + fee accounting.
-3. **PackPipeline**: pack build (system git), sha256, chunker (≤ 4,900 B/field, ST-size assertion), offset-index builder, assembler + verifier, supersedes planner.
+3. **PackPipeline**: pack build (system git), sha256, chunker (≤ 4,900 B/field, ST-size assertion), browse-artifact builders (`objectLocator`, `flatIndex`) + per-pack offset indexes, assembler + verifier, supersedes planner.
 4. **Backends**: `platform | ipfs | s3 | https` trait (put/get/probe), mixed-mode policy, failover + hash re-verify on every read.
 5. **RulesEngine**: `FORGE_RULES_V1` — ref resolution, event folds, protected-pattern matching; conformance vectors shared with forge-web.
 6. **CostEngine**: fee constants (27,000 credits/byte etc.), estimate/audit, DASH/USD formatting (price feed optional/offline-safe).
