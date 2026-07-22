@@ -13,9 +13,10 @@ Everything else is conventional engineering; this phase is not. Spikes in `spike
 5. **S0.5 Browse plane + materialization**: (a) build `objectLocator` + `flatIndex` for a real large repo (e.g. the platform monorepo); measure cold "repo home + blob view" over ranged reads — target < 500 KB / < 3 s at any repo size; validate delta-chain-span reads against IPFS-gateway and S3 Range support; (b) full materialization path (isomorphic-git + lightning-fs worker) for the search/blame tier at 100 MB. (INIT.md risk 3: "build it early not late.")
 6. **S0.6 Contract template validation**: registry + repo-template drafts construct with `fullValidation`; serialized size vs 16 KiB (D4); split decision. Also validates the flag combinations the design leans on: `countable` on unique indices, `documentsCountable`, `tokenCost.delete`, `documentsKeepHistory` + author replace, `canBeDeleted: false` per doc type.
 7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token, tokens declared with `baseSupply` credited to owner at creation; verify **freeze actually blocks the push at consensus**; verify **freeze blocks token-gated deletes** (availability protection after revocation); verify past-holdings reconstruction from the token-history contract (event-fold authorization); probe destroy-frozen semantics and group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
-8. **S0.8 `in`-batch limit semantics**: measure Drive's behavior when one `in`-clause key holds far more rows than the global query limit (does it starve sibling keys?); tune batch sizes for ref-tip lookups and event folds; the per-key completeness-check fallback (data-contracts §3) ships regardless.
+8. **S0.8 query-cursor semantics**: (a) measure Drive's behavior when one `in`-clause key holds far more rows than the global query limit (does it starve sibling keys?) — the per-key completeness fallback ships regardless; (b) verify `limit 1` skip-scan hops on `(refNameHash, $createdAt)` are true O(log n) seeks (ref enumeration correctness depends on it).
+9. **S0.9 remote-helper transport mechanics**: (a) shallow/partial protocol bookkeeping for a non-`connect` helper — `option depth`, `.git/shallow` grafting, `--unshallow` deepening (Radicle's helper as reference); (b) **jj compatibility** — confirm jj's gitoxide-based transport actually delegates `dash://` to `git-remote-dash` on PATH (a ⭐ acceptance criterion currently resting on an unverified assumption).
 
-**Exit**: all eight documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
+**Exit**: all nine documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
 
 ## Phase 1 — Protocol + remote helper
 
@@ -38,7 +39,7 @@ Ship the data contracts and `git-remote-dash`. **Success = `git clone dash://nam
 
 ## Phase 3 — Web app + importer
 
-- forge-web: full PRD 03 v1 — browse (worker materialization, lazy fetch, Shiki, diff view per rendering-research decision), issues, PR review flow (line comments, approve/request-changes, browser merge for FF/clean via isomorphic-git), releases, repo create/settings, collaborator token UI, stars/follows/profiles, per-repo client-side search, checkRun display; platform-auth; IPFS + static-host deploy.
+- forge-web: full PRD 03 v1 — browse plane (flatIndex/locator + staleness overlay), materialization tier (worker, Shiki, diff view per rendering-research decision), **blame algorithm** (isomorphic-git ships none — incremental line-history walk is its own task, rename-tracking best-effort), issues, PR review flow (line comments, approve/request-changes, browser merge for FF/clean via isomorphic-git), releases, repo create/settings, collaborator token UI, stars/follows/profiles, per-repo client-side search, checkRun display; platform-auth; IPFS + static-host deploy.
 - forge-import: PRD 06 — Forgejo-semantics mapping, cost gate, resume, gist claim flow.
 
 **M3**: full review flow (line comment → request changes → re-review → merge) completes against mainnet from a browser served off IPFS; dashpay/platform imported within 10% of estimate.

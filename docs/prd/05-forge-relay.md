@@ -18,7 +18,7 @@ Stateless Rust daemon (workspace member alongside dg/helper):
 - Horizontal scale: stateless; at-least-once delivery semantics documented (consumers dedupe on delivery ID).
 
 ## CI integration story
-- Runner receives webhook → fetches repo via `git clone dash://…` (helper) → runs → writes `checkRun` docs back through its own identity holding WRITE tokens. forge-web renders check status from those docs. No Actions-equivalent in v1 (explicit non-goal — CI is external by design).
+- Runner receives webhook → fetches repo via `git clone dash://…` (helper) → runs → writes `checkRun` docs back through its own identity holding WRITE tokens. forge-web renders check status from those docs. No Actions-equivalent in v1 (explicit non-goal — CI is external by design). Only GitHub's modern check-runs shape is modeled; the legacy commit-status API is an explicit non-goal (integrations emitting it need a translating consumer).
 
 ## Security
 - Relay never holds repo write authority (its identity holds no tokens unless it's also a CI runner).

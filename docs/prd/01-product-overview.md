@@ -39,6 +39,8 @@ Git hosting that cannot be taken down, censored, or rug-pulled — because there
 ### v1 exclusions (explicit)
 Global cross-repo search; notifications inbox (poll badge only); Actions-equivalent (CI external by design); wikis (`docs/` convention); private repos.
 
+Two of these are **structural consequences of per-repo contracts, not scoping choices** — stated honestly: (a) cross-repo aggregation (activity feed over watched repos, org-wide search, trending) has no platform-side path — Platform cannot query across contracts — so anything beyond client-side fan-out over a handful of repos needs an optional community-run indexer following forge-relay's trust-is-availability-only pattern (future component, not v1); (b) **repo transfer/ownership succession is unsupported** — no state transition changes a contract's owner and documents can't move between contracts, so "transfer" = fork-and-abandon. Orgs must mitigate at creation time by making the owner identity itself jointly held (multiple high-security keys across principals).
+
 ## Success metrics
 
 - Phase 1: round-trip clone/push of the Dash Platform monorepo; frozen identity's push fails at consensus; third-party verifies a full clone from Platform data alone.
@@ -53,3 +55,5 @@ Global cross-repo search; notifications inbox (poll badge only); Actions-equival
 3. Repo-template versioning/migration under DCG identity (Phase 1 design review).
 4. Web proof-verifying vs trusted SDK mode default (S0.3 benchmark).
 5. Diff renderer: diffs.com embed vs diff2html/Monaco (read Pierre's "On Rendering Diffs" first).
+6. Owner-identity key custody pattern for orgs (the only succession mechanism) — needs a documented setup guide before mainnet.
+7. Audit-log compaction for ancient reflog (unbounded locked deposit on hyperactive repos — economics §3): accepted for v1, revisit if dogfooding shows it matters.

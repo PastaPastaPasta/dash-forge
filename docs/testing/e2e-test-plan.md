@@ -57,6 +57,7 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 3. **Scale ladder** (from S0.1, kept as regression): 5 MB / 25 MB / 100 MB packfile pushes — wall-clock + credits vs estimates recorded; alert on >20% drift (fees-ledger regression).
 4. ⭐ **Interrupted 100 MB push resumes**: kill -9 mid-upload → re-push completes **without re-paying for uploaded chunks** (journal), fees ≈ single-push.
 5. **Multi-maintainer**: grant → COLLAB pushes → third machine sees COLLAB's tip; suspend → push fails (overlaps §3.1 at git-porcelain level).
+5b. **Concurrent-push race**: OWNER and COLLAB both push fast-forwards from the identical prevOid simultaneously → both STs land at consensus; the losing helper's post-push verification reports a late non-fast-forward (never a silent success); fresh clone shows the ref as diverged/provisional per FORGE_RULES until a superseding merge/force push; conformance vectors cover the divergence fold.
 6. **Force-push / delete / protected refs**: non-FF refused without `+`; force flag recorded; zero-OID delete; protected pattern routes to `protectedRefUpdate` and WRITE-only pusher fails.
 7. **Partial/shallow clone**: `--depth 1` and sparse path fetch via offset index — bytes transferred ≪ full pack (assert ranged fetch happened).
 8. ⭐ **jj compatibility**: jj (git backend) init/fetch/push against dash:// remote unmodified.

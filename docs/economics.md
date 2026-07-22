@@ -9,15 +9,15 @@ Forge stores **git packfiles**, not loose blobs, at every layer (push transport,
 1. **Delta compression** — similar objects (successive versions of a file, similar trees) stored as diffs against a base.
 2. **zlib deflate** — every object/delta individually compressed.
 
-Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs* (deltas against objects the remote already has), so an incremental push costs roughly the compressed size of the change, not the file.
+Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs on the wire* (deltas against objects the remote already has), completed via `index-pack --fix-thin` before storage so stored packs are self-contained. An incremental push therefore costs the compressed change **plus its direct delta-base objects** (duplicated until the next repack reclaims them) — a small premium that keeps every stored pack independently readable.
 
 Additional levers on top:
 
 | Lever | Gain | When |
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
-| Skipping the per-object offset index | saves `manifestPart` bytes (~24 B/object) | `offsetIndexParts: 0` default — the merged `objectLocator` is the primary random-access path; per-pack indexes only bridge pushes between repacks |
-| Browse artifacts (`objectLocator` ~26 B/object, `flatIndex` ~30 B/file compressed) | *cost*, not saving: ~0.5–3 MB deposit for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish. What they buy: size-independent browsing (see architecture §6.3) |
+| Per-pack offset index | *mandatory* for git packs (~30 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
+| Browse artifacts (`objectLocator` ~32 B/object, `flatIndex` ~30 B/file compressed) | *cost*, not saving: ~1–3.5 MB deposit for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)
@@ -49,7 +49,7 @@ Constraints that shape the GC design:
 
 - **Only the document's owner can delete it** — refunds are per-uploader. Each collaborator prunes (and recoups) their own docs.
 - **Frozen identities can't pay `tokenCost.delete`** — a revoked collaborator's chunks stay put (availability protected); their deposit stays locked with the docs. The repo can re-store those objects in a new pack and simply carry the orphan cost.
-- **Non-deletable audit types** (`refUpdate`, `protectedRefUpdate`, `event`, `config`) forgo refunds deliberately — at 200–400 bytes each (~0.00008 DASH) the deposit is negligible and the rewind-proof audit trail is worth more.
+- **Non-deletable audit types** (`refUpdate`, `protectedRefUpdate`, `event`, `config`) forgo refunds deliberately — the rewind-proof audit trail is worth more than the ~0.00008 DASH each. Honesty about aggregates: this line **grows unbounded with activity and is never reclaimed** — ~0.08 DASH per 1,000 pushes, so a monorepo with 50k historical pushes has ~4 DASH (~$135) permanently locked in reflog. The "steady-state ≈ current size" promise (§4) applies to the *pack store*; the audit log is a separate, slow-growing permanent line item. A checkpoint/compaction scheme for ancient reflog is a named open design question (not v1).
 
 ## 4. How old, no-longer-relevant data actually gets deleted
 

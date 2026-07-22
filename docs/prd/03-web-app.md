@@ -22,7 +22,7 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 ## User stories (v1)
 
-1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3).
+1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3). Submodules: gitlink entries (mode 160000) render as links — resolved to a Forge repo page when the `.gitmodules` URL is a `dash://` URL, otherwise shown as an external-repo badge with the pinned commit. Blame is its own implementation task (isomorphic-git provides no blame primitive — see implementation plan Phase 3).
 2. **Issues**: list/filter (state, labels)/create/comment/close/reopen; label management (MAINTAIN); event timeline fold.
 3. **PRs**: diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dg); patch checkout instructions.
 4. **Releases** with asset manifests (hash-verified downloads).
