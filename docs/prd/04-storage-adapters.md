@@ -4,7 +4,7 @@
 
 ## Backend descriptor
 
-Stored in `repoListing.backend`: `{ mode: platform | ipfs | s3 | https | mixed, uris }`. Per-remote override in git config. **Mixed mode** (the expected steady state for big repos): recent packs on Platform (fast, fully on-chain), archival packs external; `dg repack` migrates cold history outward and reclaims Platform storage refunds.
+Stored in the repo contract's `config` document (`backend: { mode: platform | ipfs | s3 | https | mixed, uris }`, MAINTAIN-gated, newest config wins). Per-remote override in git config. **Mixed mode** (the expected steady state for big repos): recent packs on Platform (fast, fully on-chain), archival packs external; `dg repack` migrates cold history outward and reclaims Platform storage refunds.
 
 ## Backend trait (forge-core, Rust; mirrored in forge-web TS for reads)
 

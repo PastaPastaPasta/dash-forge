@@ -33,6 +33,7 @@
 - Discovery via repo-contract `keywords` (≤ 50, auto-mirrored to the system keyword-search contract); listing `topics` display-only (array fields are never indexed/queried — platform constraint).
 - `imported {author, createdAt, url}` provenance fields on issue/patch/comment/review (consensus `$createdAt` can't carry original dates — needed by forge-import).
 - PR object bytes always live in the contributor's fork contract (`patch.sourceContractId` + `patchManifestHash` point there); base repo never needs contributor uploads.
+- Post-review corrections (verified against platform source): **contract updates are owner/control-group only** — Platform does not token-gate `DataContractUpdate`, so MAINTAIN can never grant template-migration rights; `label`/`release`/`webhook` use the append-only **newest-wins** pattern (creator-only mutation would orphan them when the creating maintainer leaves); tokens use **`baseSupply`** credited at contract creation (kills the self-mint bootstrap failure mode; repo creation is 3 STs); contracts are **permanent** (no delete transition exists — deleted repos park a tiny audit-doc contract forever); `in`-batch queries get a mandatory per-key completeness-check fallback (global limit can be starved by one hot key — S0.8).
 
 ## Open questions inherited from INIT.md (kept, unresolved)
 

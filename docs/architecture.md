@@ -47,7 +47,7 @@ Follows `../INIT.md` (design path & PRDs); deviations forced by verified platfor
 
 ## 3. Naming & resolution
 
-`dash://alice/project` → DPNS name → identity → registry `repoListing` by unique `(ownerId, normalizedName)` → repo contract ID + backend descriptor. Direct identity-ID form supported. Web routes use query params (static export).
+`dash://alice/project` → DPNS name → identity → registry `repoListing` by unique `(ownerId, normalizedName)` → repo contract ID → repo-contract `config` (defaultBranch, backend descriptor, protected patterns). Direct identity-ID form supported. Web routes use query params (static export).
 
 ## 4. On-chain model (summary — full schemas in [data-contracts.md](contracts/data-contracts.md))
 
@@ -61,14 +61,15 @@ Discovery + social graph only: `repoListing` (name, repoContractId, description,
 
 ### 4.3 Token ACL (the authorization system)
 - Tokens at position 0 (`WRITE`) and 1 (`MAINTAIN`), mintable/freezable by the contract owner, with **control-rule groups** so org admin powers can be held by multiple identities.
-- `tokenCost` on write-path types: `refUpdate`, `chunk`, `packManifest`/`manifestPart`, `checkRun` → 1 WRITE; `protectedRefUpdate`, `release`, `label`, `webhook`, contract updates → 1 MAINTAIN. Social types (`issue`, `comment`, `review`, `patch`) are un-gated — platform fees are the spam floor (patch gating: open question D3).
+- `tokenCost` on write-path types: `refUpdate`, `chunk`, `packManifest`/`manifestPart`, `checkRun` → 1 WRITE; `protectedRefUpdate`, `release`, `label`, `webhook`, `config` → 1 MAINTAIN. Social types (`issue`, `comment`, `review`, `patch`) are un-gated — platform fees are the spam floor (patch gating: open question D3). Contract updates (template migrations) are **owner/control-group only** — Platform does not token-gate `DataContractUpdate`.
+- Tokens carry `baseSupply: 10⁹` credited to the owner atomically at contract creation — no self-mint bootstrap step exists to forget.
 - Grant = mint 10⁹ units (spend is a meter, not the control); suspend = freeze; revoke = freeze + destroy frozen funds. Balances publicly queryable → **the collaborator list is on-chain for free**.
 - **Delete-gating**: `tokenCost` also applies to `delete` on chunks/manifests/releases — a frozen identity cannot yank the availability of what it previously uploaded. Ref/event/config docs are non-deletable outright (rewind-proof audit trail).
 - Because creation is consensus-gated, clients resolve refs by *newest refUpdate per name* — no client-side authorization judgment needed (a frozen identity's push fails at consensus; INIT.md acceptance test). Protected refs add one client rule: updates to a pattern-matched ref only count if they are MAINTAIN-gated `protectedRefUpdate` docs, evaluated as-of each update's consensus time against the append-only config history (normative algorithm in data-contracts §4).
 
 ## 5. Storage model
 
-**Platform is primary storage** and always holds refs + manifests. Backend descriptor (in `repoListing`) selects where **pack bytes** live:
+**Platform is primary storage** and always holds refs + manifests. The backend descriptor (in the repo contract's `config`) selects where **pack bytes** live:
 
 | Backend | Pack bytes | Cost profile | Trust |
 |---|---|---|---|

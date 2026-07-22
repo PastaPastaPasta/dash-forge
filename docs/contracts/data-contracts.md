@@ -49,16 +49,20 @@ Client validity rules (registry): a listing is believed only if the repo contrac
 
 ## 2. Repo contract template (v1)
 
-Owner = repo owner identity. Contract-level: `keywords` = topics (≤ 50 → keyword-search discovery), `description` mirror. Creation flow (one-time, by owner): publish contract → **self-mint 10⁹ WRITE + 10⁹ MAINTAIN** (owner must hold tokens like anyone else) → `config` #1 → `repoListing`.
+Owner = repo owner identity. Contract-level: `keywords` = topics (≤ 50 → keyword-search discovery), `description` mirror. Creation flow (one-time, by owner): publish contract (token `baseSupply` auto-credits the owner — no mint step) → `config` #1 → `repoListing`.
 
 ### 2.1 Tokens
 
 | Pos | Token | Grants | Suspend | Revoke |
 |---|---|---|---|---|
 | 0 `WRITE` | push, upload, CI | mint 10⁹ | freeze | freeze + destroy frozen |
-| 1 `MAINTAIN` | protected refs, releases, labels, webhooks, config, contract updates | mint 10⁹ | freeze | freeze + destroy frozen |
+| 1 `MAINTAIN` | protected refs, releases, labels, webhooks, config | mint 10⁹ | freeze | freeze + destroy frozen |
 
-Control-rule **groups** hold mint/freeze/destroy admin for org repos. Balances queryable ⇒ on-chain collaborator list. **Delete-gating** (new): destructive actions on availability-critical docs also cost tokens, so a *frozen* identity cannot delete what it previously uploaded — revocation now consensus-protects both future writes *and* past availability.
+Both tokens declare **`baseSupply: 10⁹` credited to the contract owner atomically at `DataContractCreate`** (`token_configuration/v0/mod.rs:46`, `insert_contract/v1/mod.rs:299`) — no separate self-mint step exists to forget, so a fresh repo's owner can never be locked out of their own gated types.
+
+Control-rule **groups** hold mint/freeze/destroy admin for org repos. Balances queryable ⇒ on-chain collaborator list. **Delete-gating**: destructive actions on availability-critical docs also cost tokens, so a *frozen* identity cannot delete what it previously uploaded — revocation consensus-protects both future writes *and* past availability.
+
+**Contract updates are NOT token-gated** — Platform authorizes `DataContractUpdate` solely against the contract's owner identity (verified: no token check in the `data_contract_update` validation path). Template migrations are therefore an *owner/control-group* power, never grantable via MAINTAIN; the collaborator story must not promise otherwise.
 
 ### 2.2 Document types — full matrix
 
@@ -77,10 +81,12 @@ Legend: create/replace/delete gates are `tokenCost` (consensus); "—" = platfor
 | `comment` | — | author | author | ✓ | index → per-target counts | |
 | `event` | — | ✗ | ✗ **non-deletable** | — | — | state/label/assign audit log |
 | `review` | — | ✗ | author | — | — | PR verdicts |
-| `label` | MAINTAIN | ✗ | MAINTAIN (creator) | — | — | label definitions |
-| `release` | MAINTAIN | creator | MAINTAIN (creator) | — | doc-type → release count | |
+| `label` | MAINTAIN | ✗ (newest-wins) | MAINTAIN (creator; optional) | — | — | label definitions |
+| `release` | MAINTAIN | ✗ (newest-wins) | MAINTAIN (creator; optional) | — | — | releases |
 | `checkRun` | WRITE | creator (status progression) | WRITE (creator) | — | — | CI results |
-| `webhook` | MAINTAIN | creator | MAINTAIN (creator) | — | — | relay subscriptions |
+| `webhook` | MAINTAIN | ✗ (newest-wins) | MAINTAIN (creator; optional) | — | — | relay subscriptions |
+
+**Newest-wins team types** (`label`, `release`, `webhook`): creator-only mutation would permanently orphan these when the creating maintainer leaves or is revoked (the same ownership trap D2 solved for refs), so they use the config pattern instead — append-only, **no unique indices**, current state = newest doc per logical key (`name` / `tagName` / `hookId`), superseding doc postable by *any* MAINTAIN holder. Retire/yank/disable via a boolean on the superseding doc, never via deletion. Creator deletion of their own superseded docs is a refund convenience only; resolution never depends on it (a deleted newest doc falls back to the next-newest — stakes are low here, unlike refs).
 
 Why the non-deletables: a deletable `refUpdate` lets whoever authored the current tip delete it and **silently rewind the branch** (no new signed doc, nothing to audit); same attack reopens closed issues via `event` deletion, and a deleted old `config` breaks as-of protection evaluation. These docs are ~200–400 bytes (~0.00008 DASH, ~50-year horizon) — audit permanence is worth more than the refund. Refunds stay where the money is: `chunk`/`packManifest` (repack/GC), gated so only *unfrozen* WRITE holders can reclaim.
 
@@ -107,7 +113,10 @@ Branch/tag enumeration (no distinct-values query on Platform): **skip-scan** —
 
 **`review`** — `patchId`, `verdict` 1/2/3, `commitOid`, `body` ≤ 5120, optional `imported`. Index `(patchId, $createdAt desc)`.
 
-**`label`** `name` ≤ 30 unique, `color` ≤ 7, `description` ≤ 200 · **`release`** `tagName` ≤ 63 unique, `name` ≤ 120, `notes` ≤ 5120, `assets` array ≤ 10 of `{name, sha256, sizeBytes, uris ≤ 4}` · **`checkRun`** `headOid`, `name` ≤ 100, `status`, `conclusion`, `detailsUrl` ≤ 300, `summary` ≤ 1000, index `(headOid, $createdAt desc)` · **`webhook`** `url` ≤ 300, `events` array ≤ 16 of ≤ 30, `relayIdentityId`, `encryptedSecret` byteArray ≤ 128.
+**`label`** — `name` ≤ 30, `color` ≤ 7, `description` ≤ 200, `retired` boolean. Index `(name, $createdAt desc)` — newest per name wins.
+**`release`** — `tagName` ≤ 63, `name` ≤ 120, `notes` ≤ 5120, `yanked` boolean, `assets` array ≤ 10 of `{name, sha256, sizeBytes, uris ≤ 4}`. Indices `(tagName, $createdAt desc)` — newest per tag wins (edit/yank = supersede); `($createdAt desc)` — releases page.
+**`checkRun`** — `headOid`, `name` ≤ 100, `status`, `conclusion`, `detailsUrl` ≤ 300, `summary` ≤ 1000. Index `(headOid, $createdAt desc)`.
+**`webhook`** — `hookId` hash32 (client-generated, stable across supersedes), `url` ≤ 300, `events` array ≤ 16 of ≤ 30, `relayIdentityId` identifier, `encryptedSecret` byteArray ≤ 128, `disabled` boolean. Indices `(hookId, $createdAt desc)` — newest per hook wins; `($createdAt desc)` — settings list / relay scan.
 
 ## 3. Count-tree assignments — user story ⇄ mechanism
 
@@ -121,12 +130,15 @@ Count trees cost per-index storage overhead; they are assigned **only** where a 
 | fork count | countable `repoListing(forkOf)` | O(1) |
 | "Issues (N)" / "PRs (N)" tab totals | `documentsCountable` on `issue` / `patch` | O(1) |
 | comment count per issue/PR row | countable `comment(targetId)` | O(1) |
-| pack/release totals (`dg storage status`, releases page) | `documentsCountable` on `packManifest` / `release` | O(1) |
+| pack totals (`dg storage status`) | `documentsCountable` on `packManifest` | O(1) |
+| release count | plain list query — newest-wins supersedes make raw doc counts wrong, and release pages are small | O(releases) |
 | chunk availability audit | countable `chunk(packHash, seq)` vs `manifest.chunkCount` | O(1) |
 | **open vs closed issue/PR counts** | **not natively countable — by design, not omission**: state is a fold of `event` docs (mutation ownership forbids an authoritative indexed `state` field on the author-owned doc). Strategy: list pages fold events per page (one `in` query on ≤ 100 targetIds); results cached in IndexedDB keyed by newest-event cursor; tabs render "Issues (N)" instantly and "open/closed" splits hydrate. Optional v1.1: MAINTAIN-posted `stateSummary` cache doc, explicitly non-authoritative, always corrected by fold. | fold |
 | branch/tag counts | skip-scan enumeration (cached); no count tree (distinct-count ≠ doc-count) | O(refs) |
 
-Not countable (no story pays for the overhead): `refUpdate`, `event`, `manifestPart`, `checkRun`, `label`, `webhook`, `profile`. Flag validity for the unique+countable combinations is a named S0.6 check.
+Not countable (no story pays for the overhead): `refUpdate`, `event`, `manifestPart`, `checkRun`, `label`, `release`, `webhook`, `profile`. Flag validity for the unique+countable combinations is a named S0.6 check.
+
+**`in`-batch caveat (affects ref tip lookups and event folds):** an `in` clause fans out to one subtree per key while the result `limit` is a single global budget — one hyperactive key (a ref pushed hundreds of times, an issue with hundreds of events) can exhaust the limit and starve every other key in the batch. `FORGE_RULES_V1` therefore mandates a **completeness check**: after any `in`-batch, keys that returned zero rows are re-queried individually (`limit 1`, equality on the key). Correct regardless of Drive's traversal order; S0.8 measures how often the fallback fires to tune batch sizes.
 
 ## 4. Enforcement matrix & FORGE_RULES_V1
 
@@ -139,7 +151,7 @@ Three enforcement tiers — every interaction below names its tier. **Consensus*
 | Branch rewind via doc deletion | **impossible** — refUpdate non-deletable | — | closes the tip-deletion hole |
 | Collaborator revoke | freeze blocks all gated creates **and gated deletes** (chunks/manifests/releases stay available) | pre-revocation docs remain valid (consensus timestamps) | |
 | Ref/issue/PR reads | proofs (Merkle) | — | |
-| Issue/PR state | — | event fold; valid actors: target author (close/reopen own), WRITE/MAINTAIN holders (all kinds), `merge` requires MAINTAIN-or-WRITE **and** `oid` reachable from base ref | spam events from strangers exist but are inert (they paid fees) |
+| Issue/PR state | — | event fold; valid actors: target author (close/reopen own), WRITE/MAINTAIN holders (all kinds), `merge` requires MAINTAIN-or-WRITE **and** `oid` reachable from base ref. Actor authorization is evaluated **as-of the event's `$createdAt`**, reconstructed deterministically from the system token-history contract (mint/freeze/destroy records) — current balances alone would retroactively invalidate a since-revoked maintainer's legitimate past actions | spam events from strangers exist but are inert (they paid fees) |
 | Merge integrity | — | Rules + git: merge event's `oid` must be an ancestor-reachable commit on base | no on-chain merge validation (INIT.md non-goal) |
 | Listing authenticity | — | listing.$ownerId == repo-contract owner | |
 | checkRun trust | WRITE spend | display runner identity; UI marks which identity attested | CI is as trustworthy as the identity you minted to |
@@ -151,7 +163,8 @@ Three enforcement tiers — every interaction below names its tier. **Consensus*
 state(R) = newest valid update u for refNameHash(R), ordered by ($createdAt, $id)
 valid(u):
   cfg = newest config with cfg.$createdAt <= u.$createdAt   # as-of update time
-        (tie at equal $createdAt: config applies — conservative)
+        (tie at equal $createdAt: config applies — conservative;
+         no such config exists → no patterns, u is valid)      # total function
   if R matches any cfg.protectedPatterns → u must be protectedRefUpdate
   else → u may be either type (MAINTAIN holders may use protectedRefUpdate anywhere)
 ```
@@ -159,14 +172,14 @@ Consequences: protecting a branch does not retroactively invalidate its history 
 
 ## 5. Interaction walkthroughs (ST sequences)
 
-1. **Create repo** — publish repo contract (identity nonce) → self-mint WRITE+MAINTAIN → `config` #1 (defaultBranch, backend) → registry `repoListing`. 4 transitions, < 0.02 DASH.
+1. **Create repo** — publish repo contract (tokens auto-credited to owner via `baseSupply`) → `config` #1 (defaultBranch, backend) → registry `repoListing`. **3 transitions** (one op per ST), < 0.02 DASH.
 2. **Push** — chunks (pipelined) → `packManifest` (+ parts) → `refUpdate`(s). Resume via journal; every doc's existence is consensus-proof of authorization.
-3. **Protect main** — MAINTAIN posts `config` #2 adding `refs/heads/main`; effective for all later updates.
+3. **Protect main** — MAINTAIN posts `config` #2 whose pattern list includes `refs/heads/main`; effective for all later updates. **Config posts are full snapshots** (append-only type, no partial update): `FORGE_RULES_V1` requires read-current-config → modify → write the *complete* field set, or unmentioned fields silently reset.
 4. **Grant / suspend / revoke** — mint / freeze / freeze+destroy; no doc changes needed anywhere else; balances are the ACL.
-5. **Fork + PR** — fork: new contract + own listing (`forkOf`), refs copied as own refUpdates, packs shared by CID where external else re-uploaded. PR: contributor pushes branch to fork, creates `patch` in **base** (un-gated) pointing at fork contract + headOid (+ patchManifestHash in fork). Reviewers fetch from fork; merge: maintainer merges locally, pushes merge commit to base (WRITE/MAINTAIN), posts `merge` event with merge-commit oid.
+5. **Fork + PR** — fork: new contract (owner auto-credited via `baseSupply`, same as §5.1) + own listing (`forkOf`), refs copied as own refUpdates, packs shared by CID where external else re-uploaded. PR: contributor pushes branch to fork, creates `patch` in **base** (un-gated) pointing at fork contract + headOid (+ patchManifestHash in fork). Reviewers fetch from fork; merge: maintainer merges locally, pushes merge commit to base (WRITE/MAINTAIN), posts `merge` event with merge-commit oid.
 6. **Repack** — build consolidated pack → upload → new manifest w/ `supersedes` → delete own superseded chunks/manifests (WRITE-gated deletes; storage refund). Frozen ex-collaborators' stale packs: any WRITE holder re-uploads missing bytes if an ex-collaborator's docs were pruned pre-freeze; chunk-count audit detects gaps.
 7. **Rename repo** — replace listing (same `$id`); stars/fork links intact; name-URLs break (no redirects — documented limitation).
-8. **Delete repo** — delete owned chunks/manifests/listing (refunds); non-deletable audit docs remain in the abandoned contract (tiny, harmless); contract itself deletable if platform permits empty-contract deletion — else parked.
+8. **Delete repo** — delete owned chunks/manifests/listing (refunds). **The contract itself is permanent**: Platform has no contract-delete transition (all 20 ST types enumerated in `state_transition_types.rs` — none deletes a contract). Every deleted repo permanently parks a contract holding its tiny non-deletable audit docs; a small, real residual cost stated as fact.
 9. **Import** — bulk creates with `imported` provenance fields; numbering assigned sequentially by importer; cost gate + resume per PRD 06.
 
 ## 6. Size budget & validation (D4)

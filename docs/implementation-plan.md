@@ -12,9 +12,10 @@ Everything else is conventional engineering; this phase is not. Spikes in `spike
 4. **S0.4 Headless identity minting**: faucet POST → asset-lock → InstantSend lock → `identities.create` in a script (reference: `../mainnet-bridge` pure modules). Becomes the e2e fixture generator.
 5. **S0.5 In-browser materialization**: isomorphic-git + lightning-fs in a worker; lazy fetch via offset index; 100 MB-repo tree view time/memory. (INIT.md risk 3: "build it early not late.")
 6. **S0.6 Contract template validation**: registry + repo-template drafts construct with `fullValidation`; serialized size vs 16 KiB (D4); split decision. Also validates the flag combinations the design leans on: `countable` on unique indices, `documentsCountable`, `tokenCost.delete`, `documentsKeepHistory` + author replace, `canBeDeleted: false` per doc type.
-7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token; verify **freeze actually blocks the push at consensus**; verify **freeze blocks token-gated deletes** (availability protection after revocation); probe destroy-frozen semantics and group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
+7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token, tokens declared with `baseSupply` credited to owner at creation; verify **freeze actually blocks the push at consensus**; verify **freeze blocks token-gated deletes** (availability protection after revocation); verify past-holdings reconstruction from the token-history contract (event-fold authorization); probe destroy-frozen semantics and group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
+8. **S0.8 `in`-batch limit semantics**: measure Drive's behavior when one `in`-clause key holds far more rows than the global query limit (does it starve sibling keys?); tune batch sizes for ref-tip lookups and event folds; the per-key completeness-check fallback (data-contracts §3) ships regardless.
 
-**Exit**: all seven documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
+**Exit**: all eight documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
 
 ## Phase 1 — Protocol + remote helper
 
