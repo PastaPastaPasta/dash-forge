@@ -1,58 +1,55 @@
-# PRD 03 — forge-web
+# PRD 03 — Forge Web (zero backend)
 
-The GitHub-class browser surface. **Pure static export** (Next.js 14 App Router, `output: 'export'`), hosted on GitHub Pages + IPFS snapshot; talks only to DAPI (WASM SDK) and external bundle URIs. yappr's architecture rules apply verbatim: no API routes, no SSR, no dynamic route segments — query-param routing.
+Static SPA deployable to IPFS or any static host, fully replacing github.com browsing and collaboration. Stack: Next.js static export (query-param routing, yappr rules), **wasm/evo-sdk for all Platform reads/writes**, and the zero-backend trick: **in-browser repo materialization** — isomorphic-git + lightning-fs in a web worker, cloning from chunk/CID fetches, never from a git server.
 
-## Routes (all static)
+## Stack (reuse-first, per INIT.md)
 
-| Route | Purpose |
+| Concern | Choice |
 |---|---|
-| `/` | Landing + global activity/discovery (recent repos via `byName` index, topics) |
-| `/repo?owner=&name=` | Repo home: README render, tree, clone box (`dash://` + tier badge), stars |
-| `/repo/tree?…&ref=&path=` | Directory listing |
-| `/repo/blob?…&ref=&path=` | File view: syntax highlight, markdown render, images, raw download |
-| `/repo/commits?…&ref=` | Commit log (paginated walk) |
-| `/repo/commit?…&oid=` | Commit detail + diff |
-| `/repo/branches`, `/repo/tags` | Ref lists w/ authorized-writer badges |
-| `/repo/issues`, `/repo/issue?…&number=` | Issue list/detail/compose |
-| `/repo/pulls`, `/repo/pull?…&number=` | PR list/detail (v1.1: diff/review/merge UI) |
-| `/repo/settings` | Description/topics, storage tier, collaborators, danger zone (delete+refund) |
-| `/new` | Create repository (cost preview per tier) |
-| `/u?name=` | User/org profile: repos, stars, DPNS names |
-| `/login`, `/settings` | Auth + app settings |
+| Platform I/O | wasm/evo-sdk (proof vs trusted mode per S0.3 benchmark) |
+| Repo materialization | isomorphic-git + lightning-fs in a web worker; manifest offset-index-driven **lazy fetch** (only tree/blobs for current view); IndexedDB caching keyed by content hash |
+| Highlighting | Shiki (lazy per-language) |
+| Diffs | diffs.com embedding if licensing allows, else diff2html/Monaco diff — decision after reading Pierre's "On Rendering Diffs" |
+| In-browser edits | CodeMirror 6: edit → commit → push via wasm identity signing |
+| Markdown | unified/remark GitHub-flavored pipeline (sanitized) |
+| Code search | Per-repo client-side index (MiniSearch or tantivy-wasm) built from materialized clone, cached in IndexedDB |
+| Auth | platform-auth engine (key login, password vault, passkey PRF, wallet QR) |
 
-## Core capabilities
+## Routes (all static, query-param addressed)
 
-### Repo browsing pipeline (the hard part)
-1. RefService (forge-core) resolves refs with proofs.
-2. PackLoader fetches minimal pack set: newest consolidated pack first; verify sha256; store **immutable pack + built index in IndexedDB keyed by packHash** (cache forever; eviction LRU by repo).
-3. isomorphic-git reads trees/blobs/commits from the IndexedDB pack store (custom backend implementing its fs/odb interface).
-4. Progressive UX: refs and README (from newest pack) render first; deeper history hydrates on demand. Repos > 50 MiB show a "large repo" interstitial with size/cost of full browse.
-- Diffs computed client-side (isomorphic-git walk + `diff` lib); syntax highlighting via Shiki (WASM, lazy-loaded per language).
+`/` landing+discovery · `/repo` home (README, clone box, backend badge) · `/repo/tree` · `/repo/blob` (+ blame) · `/repo/commits` · `/repo/commit` (diff) · `/repo/branches` · `/repo/tags` · `/repo/issues` + `/repo/issue` · `/repo/pulls` + `/repo/pull` (diff, review) · `/repo/releases` · `/repo/settings` (backend, collaborator token UI, danger zone) · `/repo/search` · `/new` · `/u` (profile, repos, stars, follows) · `/login`, `/settings`.
 
-### Collaboration
-- Issues: list (state filter, ≤100-page cursors), detail with folded event timeline (EventFold), compose/edit/close/reopen/label — each action shows credit cost before signing.
-- PRs v1: view metadata + cross-repo compare; v1.1: review threads anchored `(commitOid, path, line)`, approve/request-changes, maintainer merge flow (delegates actual merge to CLI in v1.1 web-only merge for FF cases).
-- Stars, watch-poll refresh (30 s cursors), relative-time UI.
+## User stories (v1)
 
-### Identity & auth
-- platform-auth engine (vendored like yappr): private-key login, password vault, passkey PRF, wallet-QR. Session keys in platform-auth secure storage; signing prompts show operation + fee.
-- Balance widget (credits + ≈DASH); "get credits" → bridge.thepasta.org deep link.
-- Read-only mode with zero auth — everything browsable logged out.
+1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3).
+2. **Issues**: list/filter (state, labels)/create/comment/close/reopen; label management (MAINTAIN); event timeline fold.
+3. **PRs**: diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dgit); patch checkout instructions.
+4. **Releases** with asset manifests (hash-verified downloads).
+5. **Repo lifecycle**: create (contract instantiation + cost preview), settings, backend switch, delete (refund estimate).
+6. **Collaborators**: token UI — grant (mint), suspend (freeze), revoke (freeze+destroy), balances-as-collaborator-list.
+7. **Social**: stars, follows, profiles (DPNS + dicebear avatars).
+8. **Edits in browser**: single-file edit → commit → push (WRITE-gated at consensus).
+9. **CI status**: render `checkRun` docs per commit/PR (written by runner identities via relay-triggered CI).
+10. **Search**: per-repo code search, client-side.
 
-### Trust UX
-- Per-page verification indicator: refs proof-verified ✓, packs hash-verified ✓, availability source (platform / ipfs / https / s3 / mirror).
-- Collaborator-list provenance visible ("granted by owner alice on <date>").
+**v1 exclusions**: global cross-repo search, notifications inbox (poll-based new-activity badge only), Actions-equivalent, wikis, private repos.
 
-## Non-functional requirements
-- Static bundle < 1.5 MiB gz before WASM; SDK WASM lazy-loaded post-paint; COOP/COEP `credentialless` + CSP meta (yappr `next.config.js`).
-- Cold repo-home render (10 MiB repo, warm IPFS gateway) < 8 s; warm (IndexedDB hit) < 1.5 s.
-- Works fully in Chromium/Firefox/Safari current−1; mobile-responsive.
-- Accessibility: WCAG 2.1 AA on core flows; full keyboard nav (see style guide).
-- Graceful DAPI degradation: retry/rotate nodes (evo-sdk built-in) + yappr reconnect pattern; offline shows cached repos read-only.
+## Performance honesty (INIT.md)
 
-## Acceptance criteria (v1)
-- Logged-out user browses a Tier X repo (tree, file, commit log, diff, README) with all verification badges green.
-- Logged-in user creates a repo, uploads nothing (empty repo state renders), receives a push from CLI, sees new commits within one poll interval.
-- Issue lifecycle end-to-end from web only (create→comment→label→close→reopen) between two identities.
-- Collaborator granted in web settings can immediately push via CLI (shared authz vectors prove parity).
-- Lighthouse: perf ≥ 80, a11y ≥ 95 on repo home.
+Cold-viewing a large repo requires materializing it in the browser. Mitigations: manifest-driven lazy fetch via per-object offset index; aggressive IndexedDB caching (immutable content, cache forever); size warning interstitial. **This will never match GitHub's server-rendered speed on 1 GB monorepos; target excellent UX ≤ 100 MB.**
+
+Budgets: static bundle < 1.5 MiB gz pre-WASM; WASM lazy post-paint; warm-cache repo home < 1.5 s; cold 10 MiB repo < 8 s; COOP/COEP `credentialless` + CSP meta (yappr config).
+
+## Cost & trust UX
+
+- Every write shows DASH (primary) + USD (secondary) estimate pre-signing; running spend in settings.
+- Verification chip row on every repo view (refs ✓ proof · packs ✓ sha256 · source); trust panel explains the chain.
+- Insufficient credits → bridge.thepasta.org deep link.
+
+## Acceptance (v1)
+
+- **Lighthouse-decent SPA served from IPFS with no origin server**; request-interception test proves zero non-DAPI/non-backend origins.
+- **Full review flow — comment on a line, request changes, re-review, merge — completes against mainnet.**
+- Logged-out browse of a 100 MB repo acceptable (lazy fetch working); warm reload < 1.5 s.
+- Collaborator granted via web token UI immediately pushes via CLI (cross-client conformance).
+- axe-core: 0 serious violations; a11y ≥ 95.

@@ -41,44 +41,49 @@ colors: {
 - Motion: 150ms ease-out enter/fade only (yappr keyframes); no scroll-jacking, no skeleton shimmer > 1 s (show cached data + refresh instead).
 
 ### Signature elements
-1. **Verification chip** — every repo view carries a compact chip row: `refs ✓ proof · packs ✓ sha256 · src: ipfs`. Colors per semantic palette. Clicking opens the trust panel explaining the verification chain.
-2. **Cost preview** — any write button shows `~0.0003 DASH` inline before signing; destructive deletes show refund estimate in green.
-3. **Identity pill** — DPNS name + dicebear avatar (yappr generator) + abbreviated identity id; consistent everywhere an owner/author appears.
-4. **Tier badge** — `⛓ platform` / `🌐 external` / `⛓+🌐 hybrid` on repo headers and clone box.
+1. **Verification chip** — every repo view carries a compact chip row: `refs ✓ proof · packs ✓ sha256 · src: platform/ipfs/s3`. Colors per semantic palette. Clicking opens the trust panel explaining the verification chain.
+2. **Cost preview** — any write button shows cost inline before signing, **DASH primary, USD secondary** (`~0.0003 DASH ≈ $0.01`); destructive deletes show refund estimate in green. Running spend surfaced in settings.
+3. **Identity pill** — DPNS name + dicebear avatar (yappr generator) + abbreviated identity id; consistent everywhere an owner/author appears. Collaborators shown with token-role badge (WRITE/MAINTAIN).
+4. **Backend badge** — `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed` on repo headers and clone box.
 
 ### Accessibility
 - WCAG 2.1 AA contrast (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (`forge-400`); diff colors pass for color-blind users (blue/orange diff option); `prefers-reduced-motion` kills all animation.
 
 ## B. Engineering conventions
 
-Inherited from yappr `CLAUDE.md`, tightened:
+### Rust (forge-core, git-remote-dash, dgit, forge-relay, forge-import)
+- One cargo workspace; edition 2021+; `clippy -D warnings`, `rustfmt` CI-enforced; `#![forbid(unsafe_code)]` outside vetted FFI.
+- Depend on rs-sdk/rs-dpp workspace-pinned to a Platform release tag; SDK touched only inside `forge-core::platform` (PlatformClient) — binaries consume forge-core services.
+- Errors: `thiserror` taxonomy mirroring the product error classes (insufficient credits → bridge link, frozen token, timeout-retryable…); every user-facing failure maps to an actionable message.
+- All Platform writes via WriteEngine (idempotent ST lifecycle + journal); no ad-hoc document creation.
+- Secrets: OS keychain/agent only; no WIF/mnemonic in logs, journals, or `Debug` impls (newtype with redacted Debug).
 
-### TypeScript
-- `strict: true`; **no `any`, no `@ts-ignore`, no `eslint-disable`** (CI-enforced). Prefer discriminated unions + exhaustive switches for document kinds/events.
-- ESM only, Node ≥ 18.18. Zod (or valibot) schemas at every trust boundary: document reads from Platform are *parsed, not cast*.
+### TypeScript (forge-web)
+- Inherited from yappr `CLAUDE.md`: `strict: true`; **no `any`, no `@ts-ignore`, no `eslint-disable`** (CI-enforced); ESM only.
+- **Zero backend**: no `/api` routes, no SSR, no dynamic route segments; query-param routing.
+- Zod schemas at every trust boundary: documents read from Platform are *parsed, not cast*.
+- Heavy work (materialization, search indexing, pack assembly) in web workers; main thread renders.
 
-### Architecture rules
-- **Zero backend**: no `/api` routes, no SSR, no dynamic route segments in forge-web; anything needing a secret at runtime is CLI-only.
-- forge-core is the only package that touches evo-sdk; apps consume services, never the SDK directly.
-- All Platform writes go through WriteEngine (idempotent ST pattern) — no ad-hoc `documents.create` calls.
+### Cross-language parity
+- Ref-resolution / event-fold / cost rules exist twice (Rust + TS) by necessity → both implement `FORGE_RULES_V1` against **shared JSON conformance vectors** (`forge-contracts/vectors/`); CI runs both suites on every vector change.
 - Every list read: index-backed orderBy + cursor pagination; never assume < 100 results.
-- Authorization decisions only via `authz` module (`AUTHZ_RULES_V1`); UI and CLI must not reimplement.
-- Constants (contract IDs, limits, fees) live in `forge-core/src/constants.ts` — single source, generated partly from `forge-contracts/deployments/*.json`.
+- Constants (contract IDs, template versions, fee schedule) generated from `forge-contracts/deployments/*.json` into both languages.
 
 ### Repo layout (monorepo)
 ```
-packages/
-  forge-contracts/   # contract JSON, deploy scripts, deployments/*.json
-  forge-core/        # lib: platform/, git/, storage/, authz/, keystore/, constants.ts
+crates/
+  forge-core/        # platform/, pack/, backends/, rules/, cost/, keystore/
   git-remote-dash/   # helper bin
-  forge-cli/         # dforge bin (commander)
-  forge-web/         # Next.js app
+  dgit/              # CLI bin (clap; gh-style aliases)
+  forge-relay/       # webhook daemon
+  forge-import/      # importer (Forgejo-semantics mapping)
+forge-contracts/     # registry + repo template JSON, deploy scripts, deployments/, vectors/
+forge-web/           # Next.js static app (pnpm)
+spikes/              # Phase 0 throwaway prototypes
 ```
-- pnpm workspaces; changesets for versioning; `forge-core` published as the public SDK for third-party tools.
 
 ### Quality gates
-- CI: typecheck + lint + unit (vitest) + build (all packages) on every PR; testnet integration suite nightly + pre-release (see e2e plan).
+- CI: cargo test/clippy/fmt + TS typecheck/lint/vitest + builds on every PR; testnet integration suite nightly + pre-release (see e2e plan).
 - Conventional commits; PRs small and single-purpose.
-- Error handling: forge-core error taxonomy (ported from yappr `error-utils.ts`) — every user-facing failure maps to an actionable message (insufficient credits → bridge link; unauthorized → show collaborator rules; timeout → auto-retry state).
-- Logging: `debug`-style namespaced (`forge:write`, `forge:pack`, `forge:authz`); helper honors git's `GIT_TRACE` conventions.
-- Never log or serialize private keys/WIFs/mnemonics; keystore APIs return opaque signer handles.
+- Logging: `tracing` (Rust) / `debug` namespaces (TS); helper honors git's `GIT_TRACE` conventions.
+- Cost discipline: any code path that broadcasts a state transition must route through CostEngine so estimates/audits never drift from reality.

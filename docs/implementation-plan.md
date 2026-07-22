@@ -1,84 +1,62 @@
 # Dash Forge — Implementation Plan
 
-Phased plan; each phase ends with runnable, tested software. Solo-or-small-team pacing assumed; phases are sequential with internal parallelism. Testnet throughout; mainnet only at Phase 7.
+Phasing per INIT.md's design path, with constraint-forced adjustments (reconciliation D1) folded in. Each phase ends with runnable, tested software.
 
-## Phase 0 — Spikes & de-risking (the "is this viable" gate)
+## Phase 0 — De-risk (2–4 wks) — the go/no-go gate
 
-Everything else depends on numbers only experiments can give. Spikes live in `spikes/`, throwaway code, results recorded in `docs/research/spike-results.md`.
+Everything else is conventional engineering; this phase is not. Spikes in `spikes/`, results in `docs/research/spike-results.md`.
 
-1. **S0.1 Write throughput**: from Node+evo-sdk on testnet, create N `packChunk`-shaped docs (~15 KiB payload). Measure: serial ST latency; pipelined sequential-nonce broadcasting (window 2/4/8) success rate; nonce-desync recovery. *Go/no-go input for Tier P UX claims.*
-2. **S0.2 ST size ceiling**: binary-search actual max data payload per document create (validate 3×5120 fields fit under 20,480 signed).
-3. **S0.3 Proof-mode perf in browser**: `EvoSDK.testnet()` vs `testnetTrusted()` — connect time, query latency, WASM memory. Decides web default.
-4. **S0.4 Identity mint in Node**: replicate bridge flow headlessly (faucet POST → asset-lock tx → InstantSend lock → `identities.create`) using `../mainnet-bridge/src/{transaction,proof,crypto,platform}` as reference. Deliverable: `spikes/mint-identity.mjs` — becomes the e2e fixture generator.
-5. **S0.5 isomorphic-git pack reading** from an IndexedDB-backed store; index-pack in browser for a 10 MiB pack; time + memory.
-6. **S0.6 Contract validation**: draft both contract JSONs, `fullValidation: true` construction locally, measure serialized size vs 16 KiB.
+1. **S0.1 Chunker vs testnet at scale**: push **5 MB, 25 MB, and 100 MB packfiles** as chunk documents. Measure real credits consumed vs estimates, wall-clock time, and identity **nonce sequencing under thousands of sequential STs**. Because `max_transitions_in_documents_batch = 1` (D1 — INIT.md's "batch ST packing" isn't available), the throughput lever is **pipelined sequential-nonce broadcasting** (windows 2/4/8/16): success rate, desync recovery, sustained docs/s.
+2. **S0.2 ST size ceiling**: empirically validate 3 × 4,900 B fields per chunk doc under the 20,480 B signed-ST cap; fix final chunk geometry.
+3. **S0.3 Browser proof-mode perf**: `EvoSDK.testnet()` vs `testnetTrusted()` — decides forge-web default.
+4. **S0.4 Headless identity minting**: faucet POST → asset-lock → InstantSend lock → `identities.create` in a script (reference: `../mainnet-bridge` pure modules). Becomes the e2e fixture generator.
+5. **S0.5 In-browser materialization**: isomorphic-git + lightning-fs in a worker; lazy fetch via offset index; 100 MB-repo tree view time/memory. (INIT.md risk 3: "build it early not late.")
+6. **S0.6 Contract template validation**: registry + repo-template drafts construct with `fullValidation`; serialized size vs 16 KiB (D4); split decision.
+7. **S0.7 Token-cost ACL prototype**: contract where document creation costs a WRITE token; verify **freeze actually blocks the push at consensus**; probe edge cases — frozen identity delete-for-refund, destroy-frozen semantics, group-held admin. Findings → Platform-core review (INIT.md risk 2: pattern is clever but unaudited).
 
-Exit criteria: all six spikes documented with numbers; contract drafts validate; identity minting scriptable.
+**Exit**: all seven documented with numbers; go/no-go call on Tier-platform UX claims; chunk geometry + contract split frozen.
 
-## Phase 1 — Contracts + forge-core foundation
+## Phase 1 — Protocol + remote helper
 
-- `forge-contracts`: final v1 schemas (per data-contracts.md), schema lint, validation tests, `deploy.mjs`, testnet deployment → `deployments/testnet.json`.
-- `forge-core`: PlatformClient (init/reconnect/preload), WriteEngine (idempotent ST + nonce serializer + pipelining behind a flag), document services (Repo/Ref/Collab), authz module (`AUTHZ_RULES_V1` + versioned test vectors), keystore (bridge-JSON import, encrypted at rest), constants.
-- Unit tests: authz vectors, chunker bounds, error taxonomy. Integration tests (testnet): repo CRUD, collaborator grant/revoke, refUpdate resolution incl. unauthorized-writer filtering.
+Ship the data contracts and `git-remote-dash`. **Success = `git clone dash://name/repo` and `git push` work against mainnet with on-Platform storage.** No UI — this alone is a usable product for sovereignty-minded devs.
 
-**Milestone M1**: `node demo.mjs` creates repo, grants collaborator, writes/reads refs — proof-verified — on testnet.
+- forge-contracts: final registry + repo template v1 (token config, tokenCosts), deploy scripts, devnet→testnet→**mainnet** registry deployment.
+- forge-core (Rust): PlatformClient, WriteEngine (+ journal resume), PackPipeline (+ offset index), RulesEngine (`FORGE_RULES_V1` + conformance vectors), CostEngine, Keystore.
+- git-remote-dash: full helper protocol; platform backend; cost prompt; resumable push.
+- **Phase 1 design review** (INIT.md "decide early"): repo-contract template under DCG identity — versioning + migration of existing repos across template versions.
 
-## Phase 2 — Pack pipeline + storage adapters
+**M1**: monorepo-scale round-trip on testnet; small-repo round-trip on **mainnet**; frozen-identity push rejected at consensus.
 
-- PackPipeline: pack build (system git), sha256, chunk/assemble, `pack` manifest planning, supersedes graph, verifier.
-- Adapters: https (read), IPFS Storacha+Pinata+gateway-race, S3. Registry + credential storage. Failover policy + corruption fail-over tests (tampered-fixture).
-- Tier P chunk write/read path with pipelined writes.
+## Phase 2 — CLI + relay
 
-**Milestone M2**: script pushes a real repo's pack to IPFS + manifests on testnet; second machine reassembles & `git fsck` passes. Same for Tier P with a small repo.
+- dgit: full gh-mirroring surface (PRD 02B) — repo/issue/pr/release/collab (token mint/freeze)/cost/repack/backend.
+- forge-relay: ST-stream ingest, GitHub-shape webhooks, HMAC delivery, on-Platform `webhook` subscriptions; Docker deploy; CI reference consumer (fetch-and-verify + `checkRun` writeback).
+- **Dogfood: host the forge's own repos on the forge** (with GitHub read-only mirror during transition).
 
-## Phase 3 — git-remote-dash + forge-cli
+**M2**: maintainer runs a real project entirely from terminal; push → Blacksmith build < 30 s; relay instance swap requires no repo-side changes.
 
-- Helper: list/fetch/push protocol, want/have negotiation vs manifests, force/delete refs, pending-ST crash recovery, progress meters.
-- dforge: full command tree (PRD 02), `--json` everywhere, cost estimates, `storage status`, `reseed`, `repack`, `doctor`.
-- Cross-platform: macOS + Linux (Windows best-effort v1.1); npm distribution (`npm i -g @dash-forge/cli` installs both bins).
+## Phase 3 — Web app + importer
 
-**Milestone M3**: `git clone dash://…`, edit, `git push`, clone elsewhere — byte-identical; two-maintainer flow works; kill-mid-push recovers. This is the protocol-complete moment.
+- forge-web: full PRD 03 v1 — browse (worker materialization, lazy fetch, Shiki, diff view per rendering-research decision), issues, PR review flow (line comments, approve/request-changes, browser merge for FF/clean via isomorphic-git), releases, repo create/settings, collaborator token UI, stars/follows/profiles, per-repo client-side search, checkRun display; platform-auth; IPFS + static-host deploy.
+- forge-import: PRD 06 — Forgejo-semantics mapping, cost gate, resume, gist claim flow.
 
-## Phase 4 — forge-web MVP
+**M3**: full review flow (line comment → request changes → re-review → merge) completes against mainnet from a browser served off IPFS; dashpay/platform imported within 10% of estimate.
 
-- Scaffold (static export + WASM config from yappr), design system implementation (style guide), platform-auth integration.
-- Read surfaces: repo home/tree/blob/commits/commit-diff/branches/tags with verification chips; IndexedDB pack store.
-- Write surfaces: repo create (cost preview), settings (storage tier, collaborators, delete+refund), issues (full lifecycle), stars.
-- Discovery: landing, user profiles, DPNS.
+## Phase 4 — Hardening
 
-**Milestone M4**: full PRD-03 v1 acceptance criteria green on testnet; deployed to GitHub Pages.
+- Alternative backends GA: IPFS/S3/HTTPS/mixed write paths, `reseed`, `storage status`, gitmirror; **repack/GC with refunds** end-to-end.
+- Full e2e + chaos suites green (e2e plan); perf/a11y/security passes; **private-repo encryption design doc** (v2 feature, design only); mirror mode (import v1.1).
+- Production smoke on mainnet weekly; public launch.
 
-## Phase 5 — Hardening + e2e automation
+## Risk register (ordered, per INIT.md + research)
 
-- Full e2e suite per [e2e-test-plan.md](testing/e2e-test-plan.md): fixture-identity pool, CLI suite, Playwright web suite, cross-client (CLI↔web) suite, chaos tests (URI corruption, DAPI flap, faucet-funded fresh-identity onboarding).
-- Perf against PRD budgets; a11y audit; security pass (key handling, XSS in rendered markdown/filenames — sanitize like yappr, CSP).
-- Docs: user guide ("host your repo in 10 minutes"), forge-core API docs.
-
-**Milestone M5**: nightly CI green on testnet 7 days straight.
-
-## Phase 6 — v1.1 collaboration completion
-
-- PR/review UI end-to-end, merge flows (FF web-native; merge-commit via CLI assist), fork chains + fork button, releases with assets, repack/gc UX, gitmirror adapter.
-
-**Milestone M6**: PR opened from a fork in web, reviewed, merged by maintainer; release published with IPFS asset.
-
-## Phase 7 — Mainnet launch
-
-- Contracts deployed to mainnet (same deployer flow; IDs → `deployments/mainnet.json`); web network switcher; production smoke suite (real small-value identities — see e2e plan §7); docs + announcement; forge repo self-hosts on Forge (dogfood: `dash://forge/dash-forge` becomes a mirror of record).
-
-## Dependency-driven ordering notes
-- Phases 1→2→3 are strictly sequential (each consumes the previous layer).
-- Phase 4 can start UI shell + auth in parallel with Phase 3 (depends only on forge-core services from M1/M2).
-- e2e infra (S0.4 identity minting) is built in Phase 0 deliberately — every later phase's tests use it.
-
-## Risk register
-
-| Risk | Likelihood | Mitigation |
+| # | Risk | Mitigation |
 |---|---|---|
-| Nonce pipelining unreliable → Tier P pushes very slow | Med | S0.1 measures early; fallback = serial writes + "platform tier is for small repos" positioning; batch-size>1 may land upstream (issue #2867) |
-| evo-sdk 4.x RC churn / breaking changes | Med | Pin exact versions; forge-core isolates SDK; track `../platform` releases |
-| Testnet instability breaks CI | High | Retry taxonomy; nightly (not per-PR) testnet suite; cached fixture identities; local devnet (dashmate) as contingency |
-| IPFS gateway flakiness in browser | High | Gateway race + multi-URI manifests + packMirror reseeding |
-| 100-doc query cap makes huge repos slow to enumerate packs | Low | Repack consolidation keeps live manifest count small by design |
-| Contract size > 16 KiB | Low | S0.6 validates; split further if needed (packChunk into its own contract) |
-| Faucet rate-limit/CAP blocks CI identity minting | Med | Pre-provisioned identity pool topped up out-of-band; mint only for onboarding tests |
+| 1 | Bulk ST throughput makes big pushes painful (batch=1 today) | S0.1 measures pipelining first; **mixed-backend mode is the escape hatch**; upstream batch>1 (issue #2867) inherited if it lands |
+| 2 | Token-cost-as-ACL unaudited as a pattern | S0.7 prototype + Platform-core review of freeze semantics/edge cases before Phase 1 ships |
+| 3 | In-browser materialization UX on large repos | Lazy fetch via offset index built in Phase 0 (S0.5), not bolted on; ≤ 100 MB excellent-UX target, size warnings above |
+| 4 | DASH price volatility swings $/MB | Cost UX: DASH primary, USD secondary; fee-multiplier governance lever flagged internally |
+| 5 | Testnet instability vs CI | Idempotent engine + nightly cadence + fixture identity pool + dashmate devnet contingency |
+| 6 | evo/rs-sdk 4.x RC churn | Pin versions; SDK isolated in forge-core/PlatformClient |
+| 7 | Template >16 KiB or migration pain | S0.6 size check; Phase 1 design review owns migration story |
+| 8 | Faucet rate limits block CI minting | Pre-provisioned identity pool; mint only for onboarding tests |

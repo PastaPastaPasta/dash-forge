@@ -2,64 +2,54 @@
 
 ## Vision
 
-Git hosting that cannot be taken down, censored, or rug-pulled — because there is no host. Repositories, refs, issues, and pull requests live on Dash Platform under users' own cryptographic identities; bulk content lives wherever is cheap, verified by hash. GitHub's *workflow*, Bitcoin's *trust model*.
+Git hosting that cannot be taken down, censored, or rug-pulled — because there is no host. Repositories, refs, issues, and pull requests live on Dash Platform under users' own cryptographic identities, with **consensus-enforced access control** (token ACLs); bulk content lives on Platform or on cheaper hash-verified backends. GitHub's *workflow*, Bitcoin's *trust model*.
 
 ## Problem
 
-- Centralized forges are single points of failure, censorship, and policy risk; "decentralized" alternatives (Radicle, etc.) require running seed nodes or peers — still infrastructure someone must operate.
-- Dash Platform uniquely offers a consensus-backed, proof-verifiable *document database reachable from a browser* — the missing piece for a genuinely serverless forge.
-- Cost is the obstacle (≈0.28 DASH/MiB on-platform); Forge solves it with hash-verified external bulk storage, keeping only signed manifests/refs on-chain.
+- Centralized forges are single points of failure, censorship, and policy risk; "decentralized" alternatives (Radicle, etc.) still require someone to operate seed nodes/peers, and embed social objects in git rather than queryable indexes.
+- Dash Platform uniquely offers a consensus-backed, proof-verifiable *document database with indexes, reachable from a browser* — those indexes are what make a zero-backend GitHub-class UI possible.
+- Cost is the obstacle (~$9/MiB on-Platform at $34/DASH); Forge answers with repack-with-refund (steady-state cost ≈ current repo size, not cumulative pushes) and mixed/external backends for bulk.
 
 ## Users & personas
 
 | Persona | Needs | Primary surface |
 |---|---|---|
-| **OSS maintainer ("Alice")** | Censorship-resistant home for her project; low fees; collaborators can push | forge-cli + git-remote-dash + web |
-| **Contributor ("Bob")** | Clone, fork, open PRs without accounts or servers — just an identity | git-remote-dash + web |
-| **Casual visitor** | Browse code, read README, file an issue from a browser | forge-web only |
-| **Dash-ecosystem dev** | Store contracts/app code where the app itself lives; deploy keys for CI | forge-cli |
-| **Archivist / seeder** | Mirror & re-seed repo bundles; strengthen availability | forge-cli (`reseed`) |
+| **Sovereignty-minded OSS maintainer ("Alice")** | Censorship-resistant home; collaborators push; runs project without a browser | dgit + git-remote-dash (+ web) |
+| **Contributor ("Bob")** | Clone, fork, patch, review — just an identity, no account | git-remote-dash + web |
+| **Casual visitor** | Browse code, read README, file an issue from a browser | forge web |
+| **Migrating org** | Move a real GitHub project with issues/PRs intact; keep CI working | forge import + relay |
+| **CI operator** | Webhook triggers; write check results back | forge relay + runner identity with WRITE tokens |
+| **Archivist / seeder** | Mirror & reseed pack data | dgit reseed |
 
 ## Product principles
 
-1. **Zero backend, forever.** If a feature needs a Forge-operated server, redesign it or cut it.
-2. **Standard git.** `git clone dash://alice/repo` — no custom VCS commands for core flows.
-3. **Trustless by default.** Every displayed byte is proof-verified or content-hash-verified.
-4. **Cost transparency.** Every write shows its credit cost up front; storage tier is a user choice.
-5. **Own your identity.** Dash identities + DPNS names; keys never leave the client (platform-auth vault patterns).
+1. **Platform is the sole source of truth**; all other storage is verifiable cache.
+2. **Zero workflow change**: standard git (and jj); `dgit` mirrors `gh`'s surface deliberately.
+3. **Trustless by default**: proofs for Platform reads; SHA-256 + OIDs for content; relay/CI re-verify.
+4. **Cost is first-class UX**: estimate before every write batch, DASH primary / USD secondary, running spend audit, refunds surfaced.
+5. **Documented honesty**: explicit non-goals (no on-chain FF/merge validation — reflog auditability instead; no Actions-equivalent; performance limits on giant repos).
 
-## Scope
+## Scope by phase (see implementation plan)
 
-### v1 (MVP)
-- Create/browse repos; push/clone/fetch via remote helper (both storage tiers).
-- Collaborators (grant/revoke, WRITE/MAINTAIN); multi-maintainer ref resolution.
-- Issues + comments + state events; stars.
-- Web: repo browsing (tree/blob/README/commits/branches/diffs), issue UI, repo creation, auth (key/password-vault/passkey), DPNS display.
-- Storage adapters: IPFS (Storacha + Pinata + self-host gateway read), HTTPS (read), S3-compatible (write/read).
-- forge-cli: repo CRUD, collaborator mgmt, storage config, cost estimates, reseed, identity import.
-- Contracts deployed to testnet + mainnet; full e2e suite on testnet; production smoke on mainnet.
+- **Phase 1 ships a usable product**: contracts + remote helper on mainnet, on-Platform storage. No UI.
+- **Phase 2**: dgit (full terminal workflow: triage, review, land, release) + relay (CI works). Dogfood: forge hosts its own repos.
+- **Phase 3**: forge web (full GitHub-replacement UX) + importer (launch adoption).
+- **Phase 4**: backends GA (IPFS/S3/HTTPS/mixed), repack/GC, private-repo encryption *design* (v2).
 
-### v1.1
-- Pull requests + reviews end-to-end (schema ships in v1; UI/merge tooling in 1.1).
-- Releases with asset hosting; fork inheritance chains; repack/gc tooling.
+### v1 exclusions (explicit)
+Global cross-repo search; notifications inbox (poll badge only); Actions-equivalent (CI external by design); wikis (`docs/` convention); private repos.
 
-### v2+ (explicitly deferred)
-- Private repos (encryption via identity ENCRYPTION keys); org identities (multi-sig/groups); token-gated anti-spam; CI/webhook watcher daemons (user-run); LFS-style per-file pointers; git SHA-256 repos; mobile.
+## Success metrics
 
-## Success metrics (testnet launch)
-- Clone→push→clone round-trip fidelity: 100% (byte-identical objects) across both tiers.
-- Push of a 1 MiB delta in < 60 s (Tier X), < 10 min (Tier P, pipelined).
-- Web cold-load of a 10 MiB repo tree view < 8 s on broadband.
-- Full e2e suite green in CI against testnet using faucet-funded identities.
+- Phase 1: round-trip clone/push of the Dash Platform monorepo; frozen identity's push fails at consensus; third-party verifies a full clone from Platform data alone.
+- Phase 2: maintainer runs a real project entirely from terminal; push → CI build < 30 s via relay.
+- Phase 3: full review flow (line comment → request changes → re-review → merge) against mainnet from an IPFS-served SPA; dashpay/platform imports within 10% of cost estimate.
+- Phase 4: interrupted 100 MB push resumes without re-paying; repack refund reduces steady-state cost to ≈ current repo size.
 
-## Competitive landscape (context)
-- **Radicle**: peer-to-peer, needs seed nodes, own social layer, no browser-only reads.
-- **git on IPFS/ENS/Arweave**: storage-only, no refs authority, no collaboration.
-- **Forgejo/Gitea**: federated but server-full.
-- Forge's differentiator: *consensus-authoritative refs + browser-native trustless reads + no infrastructure*.
+## Open product questions
 
-## Open product questions (tracked; decided by testnet dogfooding)
-1. Default storage tier for new repos: external-IPFS vs hybrid (refs+latest pack on platform). Leaning: external-IPFS with one-click "pin to platform".
-2. Whether issue/PR numbering collisions warrant a per-repo counter doc (owner-serialized) instead of optimistic retry.
-3. Trusted vs proof-verifying SDK mode default in web (perf benchmark decides).
-4. Spam posture for open issues on popular repos (mute lists vs token cost).
+1. **Patch token-gating** (reconciliation D3): INIT.md gates PR creation on WRITE tokens (blocks drive-by contributions); docs currently spec un-gated patches + MAINTAIN-gated merges. Decide after dogfooding spam levels.
+2. Frozen-identity delete-for-refund semantics (S0.7 + Platform-core review).
+3. Repo-template versioning/migration under DCG identity (Phase 1 design review).
+4. Web proof-verifying vs trusted SDK mode default (S0.3 benchmark).
+5. Diff renderer: diffs.com embed vs diff2html/Monaco (read Pierre's "On Rendering Diffs" first).

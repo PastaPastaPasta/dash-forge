@@ -1,99 +1,103 @@
 # Dash Forge — E2E & Production Test Plan
 
-Covers the full pyramid with emphasis on **real end-to-end testing against live networks**, using bridge.thepasta.org / faucet.thepasta.org for identities and funds.
+Full pyramid with emphasis on **real end-to-end testing against live networks**, using bridge.thepasta.org / faucet.thepasta.org for identities and funds. Acceptance criteria from `../INIT.md` are the north-star scenarios (marked ⭐).
 
 ## 1. Test infrastructure: identities & funding
 
-### 1.1 How identities are obtained (testnet)
+### 1.1 Obtaining identities (testnet)
 
-Two mechanisms, both derived from `../mainnet-bridge` + `../platform-identity-faucet` research:
+**A. Pre-provisioned fixture pool (primary).** 8+ funded testnet identities minted via bridge.thepasta.org (`?network=testnet`), exported bridge-format JSON (mnemonic + 5 keys incl. High/Critical AUTH WIFs). Roles: OWNER, MAINTAINER, COLLAB, CONTRIB (no tokens), FROZEN (suspended collaborator), CI-RUNNER, RELAY, DEPLOYER, TREASURY. CI secrets; locally `~/.config/dash-forge/test-identities/` (gitignored — yappr's checked-in identity JSONs are explicitly not repeated). `pretest` balance guard auto-tops-up or fails with instructions.
 
-**A. Pre-provisioned fixture pool (primary, fast path).**
-- 6+ funded testnet identities minted once via bridge.thepasta.org (`?network=testnet`), exported as `dash-identity-<id>.json` (mnemonic + 5 keys incl. High/Critical AUTH WIFs).
-- Stored as CI secrets (`FORGE_TEST_IDENTITY_{OWNER,COLLAB,CONTRIB,VISITOR,SEEDER,DEPLOYER}`); local dev keeps them in `~/.config/dash-forge/test-identities/` (gitignored — yappr's checked-in `testing-identity-*.json` precedent is explicitly NOT followed).
-- A `pretest` guard checks each balance via `sdk.identities.fetch`; below threshold → auto top-up (B) or fail with instructions.
-
-**B. Programmatic minting (`tools/mint-identity.mjs`, built in Phase 0 S0.4).**
-Headless Node reimplementation of the bridge flow:
-1. Derive keys from fresh mnemonic (`generateDefaultIdentityKeysHD` port).
-2. `POST https://faucet.thepasta.org/api/core-faucet {address}` (~1 tDASH; **3/hour/IP limit**, may require CAP PoW token — solver step included; on 429, fall back to spending from a funded "treasury" fixture identity via L1 send).
-3. Poll Insight for UTXO → build type-8 asset-lock tx → wait InstantSend lock → `sdk.identities.create` with proof.
-4. Emit bridge-format identity JSON.
-Used by: onboarding e2e (fresh-user journey), identity-pool replenishment, and top-ups (`identities.topUp` with same asset-lock flow).
+**B. Programmatic minting (`spikes/mint-identity` → `tools/mint-identity`, built in Phase 0 S0.4).** Headless flow reimplementing the bridge: derive HD keys → `POST https://faucet.thepasta.org/api/core-faucet {address}` (~1 tDASH; **3/hour/IP**, optional CAP PoW solver; on 429 fall back to L1 spend from TREASURY) → poll Insight for UTXO → type-8 asset-lock tx → InstantSend lock → `identities.create` → bridge-format JSON out. Used for onboarding tests, pool replenishment, top-ups.
 
 ### 1.2 Environments
 
-| Env | Purpose | Notes |
-|---|---|---|
-| Local devnet (dashmate, `../platform`) | Contingency + destructive tests (contract-update rehearsals) | Heavy; not in default CI |
-| **Testnet** | All integration + e2e suites | Default for everything |
-| Mainnet | Production smoke only (§7) | Real (small) DASH |
+| Env | Purpose |
+|---|---|
+| Local devnet (dashmate, `../platform`) | Contract/template update rehearsals, destructive token-ACL probing |
+| **Testnet** | All integration + e2e suites (default) |
+| Mainnet | Phase 1 M1 protocol validation (small repos) + production smoke (§8) |
 
-Contract IDs per env from `forge-contracts/deployments/<network>.json`; suites never hardcode IDs. Test repos namespaced `e2e-<runId>-<name>` and **deleted in teardown** (storage refunds keep the pool solvent — deletion is part of the test).
+Contract/template IDs from `forge-contracts/deployments/<network>.json`; never hardcoded. Test repos namespaced `e2e-<runId>-*`, deleted in teardown (refunds keep the pool solvent — deletion is itself under test).
 
-## 2. Test pyramid
+## 2. Pyramid
 
 | Layer | Tooling | Network | When |
 |---|---|---|---|
-| Unit (codec, chunker bounds, authz vectors, event folds, adapters w/ mocks) | vitest | none | every PR |
-| Contract validation (schemas construct with `fullValidation`, size < 16 KiB, index bounds) | vitest + wasm-sdk | none | every PR |
-| Integration (each forge-core service against live contracts) | vitest, serial per identity | testnet | nightly + pre-merge label |
-| E2E CLI (real `git` + helper) | bash+node harness | testnet | nightly + release |
+| Unit: chunker bounds, offset index, pack assembly, rules folds, cost math, backends (mocked) | cargo test / vitest | none | every PR |
+| **Conformance vectors** (`FORGE_RULES_V1`): Rust and TS suites against shared JSON fixtures — ref resolution, protected patterns, event folds, claim mapping | both | none | every PR |
+| Contract validation: registry+template construct `fullValidation`, serialized < 16 KiB, index bounds, tokenCost config | wasm-sdk harness | none | every PR |
+| Integration: forge-core services against live contracts | cargo test (serial per identity) | testnet | nightly + pre-merge label |
+| E2E CLI (real `git` + helper + dgit) | bash/rust harness | testnet | nightly + release |
 | E2E Web | Playwright | testnet | nightly + release |
-| Cross-client + chaos | mixed | testnet | release |
+| Relay + import + chaos | mixed | testnet | release |
 | Production smoke | scripted | mainnet | post-deploy + weekly |
 
-Flake policy: every testnet test wraps writes in the idempotent WriteEngine (retries are the product's own machinery — a test that flakes on timeout indicates a product bug, not a test bug); suites retry once at job level; persistent failure pages the risk-register "testnet instability" playbook.
+Flake policy: writes always via the idempotent WriteEngine (a timeout-flake is a product bug, not a test bug); one job-level retry; persistent failures invoke the testnet-instability playbook (devnet contingency).
 
-## 3. E2E CLI suite (`e2e/cli/`)
+## 3. Token-ACL consensus suite (the novel risk — S0.7 grown into permanent tests)
 
-Each scenario runs with `git` proper against testnet, asserting with `git fsck` + byte-compare (`git rev-parse`, object counts, `diff -r` of worktrees).
+1. ⭐ **Frozen identity's push fails at consensus**: OWNER grants COLLAB (mint 10⁹ WRITE) → COLLAB pushes OK → OWNER freezes → COLLAB's next chunk/refUpdate ST **rejected by the network** (assert consensus error, not client refusal).
+2. Revoke = freeze + destroy frozen funds → balance query shows removal (on-chain collaborator list correct).
+3. CONTRIB (no tokens) refUpdate ST rejected; un-gated `issue`/`comment`/`patch` creation succeeds.
+4. MAINTAIN gating: COLLAB (WRITE only) cannot create `protectedRefUpdate`/`release`/`label`/`webhook`; MAINTAINER can.
+5. Group-held admin: two-identity group mints/freezes (org scenario).
+6. Edge probes (documented, not asserted until semantics reviewed): frozen identity delete-for-refund; re-grant after destroy; token behavior across contract update.
 
-1. **Round-trip (Tier X/IPFS)**: OWNER `dforge repo create` → push seeded repo (100 commits, binaries, tags, symlink) → fresh clone elsewhere → byte-identical; verification chain assertions (proof-verified refs, sha256 packs).
-2. **Round-trip (Tier P)**: small repo (~200 KiB) chunked on-platform; clone with **zero external dependencies** (offline from IPFS); measure pipelined push throughput vs S0.1 baseline.
-3. **Incremental push/fetch**: 3 successive pushes → thin-pack manifests accumulate; clone applies in order; `fetch` no-op < 3 s.
-4. **Multi-maintainer**: OWNER grants COLLAB write → COLLAB pushes → CONTRIB (unauthorized) writes a forged refUpdate directly via SDK → fresh clone sees COLLAB's tip, **ignores forged update** (authz e2e), then revoke COLLAB → their new push invisible.
-5. **Force-push & ref delete**: non-FF rejected without force; `+push` works with `force` flag set; branch delete; tag push/delete.
-6. **Crash recovery**: kill helper mid-push (after N chunk STs); re-push completes; no duplicate manifests; total fees ≈ single-push fees.
-7. **Repack/GC**: 10 pushes → `dforge repack` → old packs superseded+deleted → clone still exact; storage refund observed in balance.
-8. **Storage failover**: manifest with 2 URIs, first tampered (corrupt fixture server) → clone succeeds via second, corruption logged. `dforge reseed` after primary "loss" restores availability; `storage status` matrix correct.
-9. **S3 + https adapters**: same round-trip via MinIO container + static file server.
-10. **Fees ledger**: assert per-operation credit deltas within ±20% of documented estimates (economics regression).
-11. **Fresh-user onboarding**: mint brand-new identity via §1.2-B, import, create repo, push — the full new-user journey with zero prior state.
+## 4. E2E CLI suite
 
-## 4. E2E Web suite (Playwright, `e2e/web/`)
+Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree `diff -r`.
 
-Runs against the static build (`npx serve out/`) pointed at testnet.
+1. **Round-trip, platform backend**: seeded repo (100 commits, binaries, tags, symlinks) push → fresh clone byte-identical; proof-verified refs.
+2. ⭐ **Monorepo round-trip**: clone/push of the **Dash Platform monorepo** itself (mixed backend).
+3. **Scale ladder** (from S0.1, kept as regression): 5 MB / 25 MB / 100 MB packfile pushes — wall-clock + credits vs estimates recorded; alert on >20% drift (fees-ledger regression).
+4. ⭐ **Interrupted 100 MB push resumes**: kill -9 mid-upload → re-push completes **without re-paying for uploaded chunks** (journal), fees ≈ single-push.
+5. **Multi-maintainer**: grant → COLLAB pushes → third machine sees COLLAB's tip; suspend → push fails (overlaps §3.1 at git-porcelain level).
+6. **Force-push / delete / protected refs**: non-FF refused without `+`; force flag recorded; zero-OID delete; protected pattern routes to `protectedRefUpdate` and WRITE-only pusher fails.
+7. **Partial/shallow clone**: `--depth 1` and sparse path fetch via offset index — bytes transferred ≪ full pack (assert ranged fetch happened).
+8. ⭐ **jj compatibility**: jj (git backend) init/fetch/push against dash:// remote unmodified.
+9. **Repack/GC**: 10 pushes → `dgit repack` → superseded docs deleted → clone exact; **storage refund observed** in balance; steady-state cost ≈ current size.
+10. **Backends**: same pack via IPFS and S3 (MinIO) clones identically; tampered URI detected + failed over; `dgit reseed` after host loss restores availability; mixed-mode cold/hot split works.
+11. **dgit workflow** ⭐: maintainer triages issues, reviews and lands a PR (`pr checkout`→`review`→`merge`), cuts a release — terminal only.
+12. **Fresh-user onboarding**: mint identity via §1.1-B → `dgit auth login` → repo create → push (zero prior state).
+13. ⭐ **Third-party verification**: standalone script (no forge-core) reconstructs a clone from raw DAPI queries + manifests and verifies every hash — "no trust in any server" acceptance.
 
-1. **Logged-out browse**: seeded repo (from CLI suite fixtures) — tree nav, blob render, README markdown, commit log pagination, diff view; all verification chips green; no network calls except DAPI + bundle URIs (request interception assertion — zero-backend proof).
-2. **Auth flows**: private-key login; password-vault create/unlock; passkey PRF (Playwright virtual authenticator); logout clears secure storage.
-3. **Repo lifecycle**: create (cost preview shown), settings edit, collaborator add/remove, delete with refund estimate.
-4. **Issues**: create/comment/label/close/reopen across two browser contexts (two identities); event timeline order; state visible to logged-out visitor after poll.
-5. **CLI↔web cross-client**: CLI pushes during web session → new commits appear within poll interval; web-granted collaborator immediately pushes via CLI (shared authz parity — the critical consistency test).
-6. **Large repo UX**: 50 MiB fixture → interstitial, progressive load, IndexedDB warm-cache reload < 1.5 s.
-7. **Failure UX**: DAPI node blackhole (route interception) → reconnect banner + recovery; insufficient credits → bridge deep-link flow.
-8. **A11y/perf**: axe-core scan on core pages (0 serious violations); Lighthouse budgets (perf ≥ 80 / a11y ≥ 95).
+## 5. E2E Web suite (Playwright vs static build on testnet)
 
-## 5. Protocol conformance vectors
+1. **Logged-out browse**: tree/blob/blame/history/README/diff on CLI-seeded repo; verification chips; request-interception proves zero non-DAPI/non-backend origins.
+2. **Auth**: key login, password vault, passkey PRF (virtual authenticator), logout clears storage.
+3. **Repo lifecycle**: create (contract instantiate + cost preview), settings, backend switch, delete + refund estimate.
+4. **Issues**: full lifecycle across two browser identities; labels (MAINTAIN); event timeline order; visitor sees updates within poll interval.
+5. ⭐ **Full review flow**: line comment → request changes → re-review → **merge from browser** (FF/clean via isomorphic-git); merged state visible to CLI clone.
+6. **Browser edit**: CodeMirror edit → commit → push → visible in CLI clone.
+7. **Collaborator token UI ↔ CLI parity**: web grant → immediate CLI push; web suspend → CLI push fails at consensus.
+8. **checkRun rendering**: CI-RUNNER writes check docs → PR shows status.
+9. **Large-repo UX**: 100 MB fixture → lazy-fetch tree view within budget; size warning; warm reload < 1.5 s.
+10. **Search**: per-repo client-side index finds seeded symbol; index persists in IndexedDB.
+11. **Failure UX**: DAPI blackhole → reconnect; insufficient credits → bridge deep link.
+12. **A11y/perf**: axe-core 0 serious; Lighthouse perf ≥ 80 / a11y ≥ 95. ⭐ IPFS-served deploy passes the same smoke.
 
-`forge-core/src/authz/vectors/*.json`: canonical scenarios (grants, revocations, forged docs, timestamp edges, force-push chains) with expected resolved state. Consumed by: unit tests, CLI suite (replayed against real testnet docs), and any future third-party client. Versioned with `AUTHZ_RULES_V1`.
+## 6. Relay & import suites
 
-## 6. Contract deployment testing
+**Relay**: ⭐ push → GitHub-shape webhook delivered < 30 s (HMAC verified; payload schema-validated against GitHub fixtures); ⭐ instance swap = one webhook-doc update, no other repo-side change; at-least-once + consumer dedupe documented test; reference CI consumer re-fetches from Platform and writes `checkRun` back; SSRF guard tests.
 
-- Rehearse every contract deploy/update on local devnet, then testnet, before mainnet; post-deploy assertion script fetches contract, diffs against source JSON, runs a canary doc create+delete per type.
-- Backward-compat gate: `rs-json-schema-compatibility-validator` semantics mirrored — CI fails if a contract change is non-additive.
+**Import**: ⭐ dashpay/platform import — fidelity spot-check script (GitHub API vs Platform docs: counts, titles, states, threads, labels) and ⭐ **cost within 10% of pre-estimate**; `--dry-run` writes nothing; interrupt + `--resume` no duplicates/double fees; gist-claim flow renders claimed identity in web + dgit.
 
-## 7. Production (mainnet) smoke suite
+## 7. Contract & template lifecycle testing
 
-Post-mainnet-deploy and weekly cron; budget ≤ 0.05 DASH/run (mostly refunded):
-1. Mainnet PROD identity (manually funded via bridge, small balance) creates `forge-smoke-<date>` repo, Tier X push of tiny repo, fresh clone verify, issue create/close, **repo delete** (refund reclaimed — keeps cost near zero).
-2. Web smoke: Playwright against production Pages deploy on mainnet — browse the canonical dogfood repo, verification chips green.
-3. Alerting: failures push notification (repo issue + configured channel); balance watchdog warns when PROD identity < 2× run cost.
+Devnet → testnet rehearsal for every registry/template change; post-deploy assertion (fetch, diff vs source, canary doc per type incl. token-gated ones); template-migration drill: repo on template v1 while v2 exists — listing `templateVersion` honored by all clients; backward-compat CI gate (additive-only schema changes).
 
-## 8. CI wiring
+## 8. Production (mainnet) smoke — post-deploy + weekly, budget ≤ 0.05 DASH/run (mostly refunded)
 
-- **PR**: unit + contract validation + build + lint (< 5 min, no network).
-- **Nightly**: testnet integration + CLI e2e + web e2e; identity-pool balance check/top-up first; teardown deletes all `e2e-*` repos even on failure (`finally` + orphan-sweeper that also runs weekly).
-- **Release**: nightly suite + chaos/failover + fees-ledger + fresh-onboarding.
+1. PROD identity creates `forge-smoke-<date>` (platform backend) → tiny push → fresh clone verify → issue create/close → **repo delete** (refund reclaimed).
+2. Playwright against production web deploy (Pages + IPFS mirror) on mainnet: browse dogfood repo (`dash://forge/dash-forge`), chips green.
+3. Relay heartbeat: smoke webhook delivered from mainnet push.
+4. Alerting: failure → repo issue + notification channel; balance watchdog at < 2× run cost.
+
+## 9. CI wiring
+
+- **PR**: unit + vectors + contract validation + builds (< 10 min, no network).
+- **Nightly**: testnet integration + token-ACL + CLI e2e + web e2e; pool balance check first; teardown deletes `e2e-*` repos (`finally` + weekly orphan sweeper).
+- **Release**: nightly + scale ladder + backends/chaos + relay + import + fees ledger + onboarding.
 - **Post-deploy/weekly**: mainnet smoke.
-- Serialization: one testnet job per fixture identity at a time (nonce discipline); parallelism achieved across identities, not within.
+- Serialization: one testnet job per fixture identity (nonce discipline); parallelism across identities, not within.

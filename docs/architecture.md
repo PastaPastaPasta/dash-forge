@@ -1,162 +1,129 @@
 # Dash Forge — System Architecture
 
+Follows `../INIT.md` (design path & PRDs); deviations forced by verified platform constraints are listed in [init-reconciliation.md](init-reconciliation.md).
+
 ## 1. Goals and non-goals
 
 **Goals**
-- Zero backend: every component is either a static asset, a local tool, or the Dash Platform network itself. Nothing Forge-specific runs on a server we operate.
-- Trustless reads: any client can verify everything it displays — refs and metadata via Platform proofs, git content via content addressing (object hashes verify against signed refs/manifests).
-- Real git: standard `git` works via a remote helper; no bespoke VCS.
-- Cost-tiered storage: full on-platform storage for maximum decentralization; external bundle hosting (IPFS/S3/HTTPS/mirror git remotes) for reduced fees, verified by hash.
-- GitHub-class collaboration: issues, pull requests, reviews, releases — all as Platform documents.
+- Zero backend: Platform is the sole source of truth; every other component is a static asset, a local tool, or an *interchangeable, integrity-irrelevant* daemon anyone can run (relay).
+- Trustless reads: refs/manifests proof-verified from Platform; content verified by SHA-256 + git OIDs. A third party can verify a full clone from Platform data alone.
+- Real git: standard `git` (and jj's git backend) via a remote helper; `gh`-shaped CLI.
+- Cost as first-class UX: estimates before every write batch, DASH primary / USD secondary, repack-with-refund keeps steady-state cost ≈ current repo size.
+- Migration path: one-command GitHub import.
 
-**Non-goals (v1)**
-- Private repositories (requires an encryption layer; design leaves room, ships later).
-- Server-side CI/webhooks (nothing to run them on; later: watcher daemons run by users).
-- Git wire-protocol compatibility for third-party clients (we own the remote helper).
-- SHA-256 git repos (schema supports 32-byte OIDs; tooling targets SHA-1 first).
+**Non-goals (v1)**: private repos (v2 encryption design in Phase 4), on-chain fast-forward/merge validation (reflog auditability instead — explicit INIT.md limit), Actions-equivalent (CI is external by design, bridged via relay), global cross-repo search, notifications inbox (poll badge only), wikis (`docs/` convention).
 
-## 2. Component map
+## 2. Components
 
 ```
-                        ┌────────────────────────────────────────────┐
-                        │              Dash Platform                 │
-                        │  forge-core-contract   forge-collab-contract│
-                        │  (repos, refs, packs,  (issues, PRs, comments,
-                        │   bundles, collaborators)  events, stars, releases)
-                        └──────▲──────────────▲──────────────────────┘
-                               │ DAPI (gRPC-web / WASM SDK, proofs)
-        ┌──────────────────────┴──────┐   ┌───┴────────────────────────┐
-        │        forge-core (TS lib)  │   │   External bundle storage  │
-        │  contract services · codec  │◄──┤  IPFS │ S3 │ HTTPS │ git   │
-        │  chunker · storage adapters │   │  (content-hash verified)   │
-        │  authz resolver · signing   │   └────────────────────────────┘
-        └───▲──────────▲──────────▲───┘
-            │          │          │
-   ┌────────┴───┐ ┌────┴─────┐ ┌──┴─────────┐
-   │ forge-web  │ │ forge-cli│ │ git-remote-│
-   │ (static    │ │ (dforge) │ │ dash       │
-   │  Next.js)  │ │          │ │ (helper)   │
-   └────────────┘ └──────────┘ └────────────┘
+                 ┌───────────────────────────────────────────────────────┐
+                 │                    Dash Platform                      │
+                 │  registry contract     repo contract (per repo,       │
+                 │  (repoListing, profile, │ from versioned template):   │
+                 │   star, follow)         │ refUpdate, protectedRefUpdate,
+                 │                         │ packManifest, manifestPart, │
+                 │                         │ chunk, issue, comment, patch,
+                 │                         │ review, release, label,     │
+                 │                         │ checkRun, webhook, event    │
+                 │                         │ + WRITE / MAINTAIN tokens   │
+                 └────────▲───────────────▲───────────────▲──────────────┘
+                          │ DAPI (proofs) │               │ block/ST stream
+      ┌───────────────────┴───┐   ┌───────┴────────┐  ┌───┴───────────────┐
+      │  forge-core (Rust lib)│   │  forge-web (TS)│  │ forge-relay (Rust │
+      │  rs-sdk · chunker ·   │   │  wasm/evo-sdk  │  │ daemon, anyone    │
+      │  manifests · backends │   │  isomorphic-git│  │ runs) → webhooks, │
+      │  cost engine · authz  │   │  in worker     │  │ notifications, CI │
+      └───▲────────▲──────▲───┘   └────────────────┘  └───────────────────┘
+          │        │      │                                    ▲
+   ┌──────┴───┐ ┌──┴───┐ ┌┴────────────┐                       │
+   │git-remote│ │ dgit │ │forge-import │            external backends
+   │  -dash   │ │ (gh  │ │(GitHub      │        IPFS │ S3 │ HTTPS (fee
+   │ (helper) │ │ repl)│ │ migrator)   │        reduction / archival;
+   └──────────┘ └──────┘ └─────────────┘        hash-verified caches)
 ```
 
-- **forge-core** is the single shared implementation. Browser and Node both consume it; `git-remote-dash` and `dforge` are thin shells over it. This mirrors yappr's `lib/services/` layer but packaged as a standalone library.
-- **Two data contracts** (split to stay under the 16 KiB contract-size estimate and to let collaboration evolve independently of the storage-critical core): see [data-contracts.md](contracts/data-contracts.md).
+- **One Rust workspace** (`forge-core` lib + `git-remote-dash`, `dgit`, `forge-relay`, `forge-import` binaries), sharing rs-sdk/rs-dpp with Platform itself. Radicle's remote helper is the reference implementation for the helper protocol.
+- **forge-web** is TypeScript (wasm/evo-sdk) — the one place logic is duplicated; parity held by shared conformance vectors (§7).
 
-## 3. Naming & identity
+## 3. Naming & resolution
 
-- Users/orgs are **Dash Platform identities**; human names via **DPNS** (`alice.dash`).
-- Repo URL scheme: `dash://<name-or-identity-id>/<repo-name>` (e.g. `dash://alice/myrepo`, `dash://H7…base58…/myrepo`). Resolution: DPNS name → identity ID → `repository` document by unique index `(ownerId, normalizedName)`.
-- `normalizedName`: lowercased, `[a-z0-9._-]{1,63}` (indexable-string bound), unique per owner.
-- Web routes use query params (static export, no dynamic segments — yappr rule): `/repo?owner=alice&name=myrepo&path=src/main.rs`.
+`dash://alice/project` → DPNS name → identity → registry `repoListing` by unique `(ownerId, normalizedName)` → repo contract ID + backend descriptor. Direct identity-ID form supported. Web routes use query params (static export).
 
-## 4. Storage model
+## 4. On-chain model (summary — full schemas in [data-contracts.md](contracts/data-contracts.md))
 
-### 4.1 The two tiers
+### 4.1 Registry contract (deployed once; DCG/DAO-owned identity)
+`repoListing` (owner, repoContractId, name, description, defaultBranch, backend descriptor, protected-ref patterns, visibility, topics; indexed owner+name and name), `profile`, `star`, `follow`.
 
-Git object data is transported and stored as **packfiles** in both tiers. A push produces a thin pack; the pack is the unit of storage. Tier choice is per-repository (`repository.storageMode`), changeable over time, and mixable (platform for refs/metadata always; packs wherever configured).
+### 4.2 Repo contract (per repository, from canonical template)
+- **Git data**: append-only `refUpdate` (ref name-hash, old/new OID, force flag — serves as both ref state and reflog; see reconciliation D2), `protectedRefUpdate` (same shape, MAINTAIN-gated), `packManifest` (pack SHA-256, size, chunk count, ordered chunk range *or* external CID/URL, supersedes list, per-object offset index with `manifestPart` continuation docs), `chunk` (seq + 3 × ~4.8 KiB byte fields).
+- **Collaboration**: `issue`, `comment`, `patch` (PR), `review`, `release`, `label`, `event` (close/reopen/merge/label/assign state log), `checkRun` (CI results written by runner identities), `webhook` (relay subscription, secret encrypted to relay identity).
 
-**Tier P — Platform-native ("full decentralization", premium price)**
-- Each pack is split into `packChunk` documents: 3 × 5,120-byte data fields ≈ 15 KiB payload per document, one document per state transition.
-- A `pack` manifest document records: packHash (sha256), chunk count, byte size, object count, the pack's `.idx` bytes (chunked alongside if > inline capacity), and prerequisite commit OIDs (thin-pack bases).
-- Cost: ~0.283 DASH/MiB (refundable). A 5 MiB repo ≈ 1.4 DASH prepaid, ~350 documents.
-- Reads: query chunks by `(repoId, packHash, chunkIdx)`, reassemble, verify sha256, index locally.
+### 4.3 Token ACL (the authorization system)
+- Tokens at position 0 (`WRITE`) and 1 (`MAINTAIN`), mintable/freezable by the contract owner, with **control-rule groups** so org admin powers can be held by multiple identities.
+- `tokenCost` on write-path types: `refUpdate`, `chunk`, `packManifest`/`manifestPart`, `checkRun` → 1 WRITE; `protectedRefUpdate`, `release`, `label`, `webhook`, contract updates → 1 MAINTAIN. Social types (`issue`, `comment`, `review`, `patch`) are un-gated — platform fees are the spam floor (patch gating: open question D3).
+- Grant = mint 10⁹ units (spend is a meter, not the control); suspend = freeze; revoke = freeze + destroy frozen funds. Balances publicly queryable → **the collaborator list is on-chain for free**.
+- Because creation is consensus-gated, clients resolve refs by *newest refUpdate per name* — no client-side authorization judgment needed (a frozen identity's push fails at consensus; INIT.md acceptance test).
 
-**Tier X — External bundles ("reduced fees", default)**
-- The same packs (or full `git bundle`s) are uploaded to one or more external providers; the on-platform `pack` document stores the sha256 plus a list of URIs (`ipfs://CID`, `https://…`, `s3://…`, `gitmirror://<remote-url>` for packs fetchable from a mirror git host).
-- Platform stores only manifests (~hundreds of bytes per pack). Cost per push: ~0.0001–0.001 DASH.
-- Reads: download from any listed URI (or any gateway/mirror), verify sha256 against the signed manifest → trustless even from untrusted hosts. Multiple URIs give redundancy; anyone can re-seed and (if a collaborator) append additional URIs via a new manifest revision or `packMirror` doc.
+## 5. Storage model
 
-**Why packs, not loose objects, on-platform:** one document write per state transition makes per-object storage O(objects) transitions (a 1,000-object push = 1,000+ sequential fee-bearing round-trips). Packs make it O(bytes/15 KiB), preserve git's delta compression (typically 3–10× smaller), and match git's native transport. The trade-off — no random single-object reads — is absorbed by client-side pack indexing and IndexedDB/disk caching (§6).
+**Platform is primary storage** and always holds refs + manifests. Backend descriptor (in `repoListing`) selects where **pack bytes** live:
 
-### 4.2 Repacking & garbage collection
+| Backend | Pack bytes | Cost profile | Trust |
+|---|---|---|---|
+| `platform` (default) | `chunk` docs, ~14.4 KiB payload each (3 × 4.8 KiB fields), one ST per chunk | ~0.283 DASH/MiB (~$9/MiB @ $34), **refundable**; repack+delete reclaims superseded storage | Fully on-chain |
+| `ipfs` | CID in manifest; pin via Storacha/Pinata/self-host Kubo | Pinning costs only | Hash-verified cache |
+| `s3` / `https` | URL in manifest | Hosting costs only | Hash-verified cache |
+| **mixed** | Recent packs on Platform, archival packs external | Best of both | — |
 
-- Packs accumulate per push (like git's own `.pack` files). Any collaborator may periodically **repack**: build one consolidated pack of all reachable objects, store it (either tier), then delete their own superseded `pack`/`packChunk` docs (owner-delete only → each maintainer prunes what they wrote; storage refunds make this profitable).
-- A `pack` manifest carries `supersedes: [packHash…]` so readers prefer consolidated packs and can ignore (not require) superseded ones.
-- Force-push/branch deletion never deletes objects immediately; unreachable objects disappear at the next repack. (Matches git semantics.)
+- Pack = unit of storage (thin pack per push; preserves delta compression; O(bytes/14 KiB) STs, not O(objects)).
+- Partial/shallow clone: manifest's per-object offset index → ranged `chunk` fetch by seq (or HTTP range on external backends).
+- **Repack/GC** (`dgit repack`): rewrite history into one optimized pack, upload, delete superseded chunk/manifest docs → storage refund. Long-lived repo cost ≈ current size, not cumulative pushes.
+- Availability for external backends: multiple URIs per manifest + anyone-can-reseed (`packMirror`-style additional-URI docs, `dgit reseed`); loss is availability-only, never integrity, and any clone can restore.
 
-### 4.3 Large files
+## 6. Data flow
 
-No LFS special-casing in v1: Tier X bundles already externalize bulk. A later `forge-lfs` extension can store per-file external pointers using the same manifest+hash pattern.
+### Push (`git push dash://alice/project main`)
+1. Helper resolves listing → repo contract; reads refs (proof-verified); computes thin pack.
+2. **Cost estimate displayed; prompt above configurable threshold** (`dash.costWarnThreshold`).
+3. Upload pack per backend (chunk STs pipelined with sequential nonces — batch=1 constraint, see D1); journal file records uploaded chunk IDs → **interrupted push resumes without re-paying**.
+4. Write `packManifest` (+ `manifestPart`s), then `refUpdate` per ref (prevOid for force detection; non-FF refused without `+`).
+5. All STs via idempotent write engine (sign → persist bytes → broadcast → wait → rebroadcast same bytes on timeout).
 
-## 5. Authorization model (the crux)
+### Clone/fetch
+Resolve listing → refs → collect non-superseded manifests covering want-set → fetch chunks (DAPI) or CID/URL (external) → SHA-256-verify reassembled pack → `git index-pack`. Shallow/partial via offset index. Local git odb is the cache (helper never re-fetches objects git has).
 
-Platform enforces only *document ownership* — no per-document ACLs. Forge therefore uses **owner-anchored, client-resolved authorization**:
+### Web browse (no clone)
+forge-web materializes the repo **in the browser**: worker (isomorphic-git + lightning-fs) lazily fetches only tree/blobs needed for the current view via the offset index; IndexedDB caches packs/objects keyed by hash (immutable). Excellent-UX target ≤ 100 MB repos; size warning above.
 
-1. The `repository` document's owner is the **repo owner** (root of trust for that repo).
-2. The owner maintains `collaborator` documents (owned by the repo owner, hence only the owner can grant/revoke): `(repoId, memberId, role, active)`. Roles: `WRITE` (push, manage PRs/issues), `MAINTAIN` (+ manage collaborators is owner-only in v1), future `TRIAGE`.
-3. **All multi-writer state is append-only**:
-   - Refs: `refUpdate` documents (create-only). The current value of a ref = the newest `refUpdate` for `(repoId, refNameHash)` **whose author was authorized at that time** (owner or active collaborator). Clients evaluate this rule identically → deterministic view. Unauthorized writes are simply ignored (and cost the spammer money).
-   - PR/issue state: `event` documents (close/reopen/merge/label) filtered the same way.
-4. Verification chain for a clone: Platform proof → `repository` doc (owner-signed) → `collaborator` docs (owner-signed) → newest authorized `refUpdate` (collaborator-signed) → commit OID → pack manifests (hash) → objects (git hashes). Every link is either a Platform proof or a content hash.
+### Liveness
+No document subscriptions → web/CLI poll indexed queries with cursors; **relay** subscribes to the block/ST firehose and translates to push-style webhooks for CI/notifications (PRD 05).
 
-Notes:
-- Revocation: a collaborator's `refUpdate`s made *before* revocation remain valid (timestamps are consensus `$createdAt`). After revocation their new updates are ignored.
-- Spam in open-creation contracts (anyone can write an `issue` doc against any repo): platform fees are the base deterrent; clients additionally filter by simple policies (hide non-collaborator events that mutate state; issues/comments from arbitrary identities are the *point* of open collaboration and are shown, with block/mute lists as a later feature).
-- v2 option: per-repo derived contracts with `creationRestrictionMode` for stricter control, or embedded-token write-gating (yappr's `tokenCost` pattern) for spam pricing.
+## 7. Cross-client parity
 
-## 6. Client data flow
+Ref-resolution, event-folding, and cost-estimation rules are versioned (`FORGE_RULES_V1`) with **shared conformance vectors** (JSON fixtures) consumed by the Rust workspace tests and forge-web tests alike — the only defense against Rust/TS divergence.
 
-### 6.1 Push (`git push dash://alice/myrepo main`)
+## 8. Economics
 
-1. Remote helper resolves repo, fetches current refs (proof-verified), runs `git pack-objects --thin` for the delta between remote refs and local.
-2. Upload pack per repo's tier: Tier X → storage adapter upload (returns URIs) → write `pack` manifest doc. Tier P → write `packChunk` docs then `pack` manifest.
-3. Write one `refUpdate` doc per updated ref (new OID, old OID for CAS-style conflict detection by readers).
-4. All writes: yappr idempotent pattern (sign → persist ST bytes → broadcast → wait → retry same bytes). Sequential nonces; **pipelining** (broadcast n, n+1… before awaiting) is the throughput lever for Tier P — validated in Phase 0 spikes.
-5. Non-fast-forward detection: helper compares fetched ref OID with `refUpdate.prevOid`; refuses without `--force` (client-enforced, like git itself over dumb transports).
+- 27,000 credits/byte permanent storage (refundable, 50-era amortization); 1 DASH = 10¹¹ credits.
+- On-Platform data ≈ **$9/MiB @ $34/DASH** (DASH-primary display; USD secondary; fee-multiplier governance lever flagged).
+- Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.00008 DASH. Contract instantiation per repo < 0.01 DASH.
+- Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dgit cost`, web settings).
 
-### 6.2 Clone/fetch
+## 9. Security & trust
 
-1. Resolve repo → refs (newest authorized `refUpdate` per ref).
-2. Collect `pack` manifests (newest-first, skipping superseded); determine which packs are needed to cover want-set (manifests list `tips`/object counts; naive v1: fetch all non-superseded packs — correct, then optimize with commit-frontier metadata).
-3. Fetch pack bytes (adapter per URI, failover across URIs), verify sha256, hand to git (`git index-pack`/`unpack-objects`) or isomorphic-git in browser.
-4. Cache: CLI relies on the local git object store; web caches packs + indices in IndexedDB keyed by packHash (immutable → cache forever).
-
-### 6.3 Browsing (web, no clone)
-
-forge-web reads refs, loads the minimal set of packs, and serves tree/blob/commit views from its IndexedDB pack store via isomorphic-git. For big repos, "shallow browse" fetches only the newest consolidated pack; deeper history loads packs on demand.
-
-### 6.4 Liveness
-
-No push subscriptions on Platform → polling with `$updatedAt`/`$createdAt` cursors (15–60 s in web UI, on-demand in CLI). All polls are cheap indexed queries with ≤100-doc pages.
-
-## 7. Collaboration model
-
-- **Issues**: `issue` docs (anyone), `comment` docs, append-only `event` docs for state/labels. Issue numbers: optimistic sequential `number` with unique index `(repoId, number)` — on conflict, retry with next number; display falls back to short doc-id if ever needed.
-- **Pull requests**: cross-repo by construction (fork = separate repo sharing history). A `pullRequest` doc names base repo/ref and source repo/ref + head OID. The PR's objects come from the *source* repo's packs (fork inherits base objects via `forkOf` chain — clients read parent packs for shared history, fork packs for new commits). Merge: a maintainer merges locally (helper fetches source), pushes the merge commit to base, emits a `merged` event. Review comments anchor to `(commitOid, path, line)`.
-- **Forks**: `repository.forkOf` → parent repoId. Fork stores only packs for objects not in the parent chain. (Client walks the chain for reads; depth-capped.)
-- **Releases**: `release` doc (tag, notes, asset manifests with URIs + sha256 — same external-storage pattern).
-- **Stars/watches**: one doc per (user, repo), unique index; counts via count-tree queries.
-
-## 8. Economics summary
-
-| Action | Tier X (default) | Tier P |
-|---|---|---|
-| Create repo (repo doc + first refs) | < 0.001 DASH | < 0.001 DASH |
-| Push (manifest + 1–2 refUpdates) | ~0.0002 DASH + external hosting | + 0.283 DASH/MiB of pack (refundable) |
-| Issue / comment / event | ~0.0001–0.0005 DASH each | same |
-| Delete repo | refunds storage of all owned docs | refunds ~all pack storage |
-
-Contract registration (one-time, deployer): < 0.01 DASH each. Users pay their own writes from identity credits (topped up via bridge). Reads are free.
-
-## 9. Security & trust considerations
-
-- **Key model**: writes require AUTHENTICATION keys at HIGH (routine) — CRITICAL reserved for identity ops; ContractBounds-scoped keys recommended for CI/automation ("deploy keys").
-- **Proof verification**: web/CLI default to proof-verifying SDK mode (`EvoSDK.testnet()`/`mainnet()`); trusted mode only as an explicit perf opt-in (yappr uses trusted; Forge's integrity claims argue for proofs — benchmark in Phase 0, config flag either way).
-- **External storage is untrusted by design** — availability risk only, never integrity risk. Mitigation: multi-URI manifests, anyone-can-reseed, Tier P fallback for the paranoid.
-- **Deletion/censorship**: manifests and refs are on Platform (censorship-resistant). A Tier X host dropping data = availability loss until re-seeded from any clone (`dforge reseed` re-uploads local packs and posts new URIs).
-- **Name squatting**: repo names are per-identity, so no global squat surface; DPNS handles identity naming with its own auction rules.
-- **Client-side auth resolution risks**: all clients must implement the same resolution rules → the rules live in forge-core with a versioned spec + shared test vectors (see e2e plan).
+- Writes need AUTHENTICATION keys at HIGH; identity keys via keychain/agent (SSH-key UX shape). CI runners get their own identity holding WRITE tokens (optionally ContractBounds-scoped).
+- Proof verification default-on in helper/CLI; web benchmarks trusted vs proof mode (S0.3).
+- Relay is availability-only: payload consumers (CI) re-fetch and verify from Platform; webhook secrets encrypted to relay identity; instances interchangeable.
+- Markdown/filename rendering sanitized (XSS), CSP per yappr static-export pattern.
+- Top risks + open questions: see implementation plan risk register and init-reconciliation open questions (frozen-identity refunds, template migration, ST throughput).
 
 ## 10. Technology choices
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Platform SDK | `@dashevo/evo-sdk` (^4.x) | Modern, proof-capable, browser+Node, proven in yappr |
-| Language | TypeScript everywhere (strict, no `any`) | One shared core; yappr conventions |
-| Git internals (browser) | isomorphic-git + custom thin layer for pack assembly | Pure-JS pack read/index in browser |
-| Git internals (CLI) | Real `git` via remote-helper protocol; helper in Node ≥18 | Zero reimplementation of porcelain |
-| Web | Next.js 14 App Router, static export, Tailwind, Zustand, Radix | yappr-proven zero-backend stack |
-| Auth | `platform-auth` (vendored/published engine from yappr) | Key login, password vault, passkey PRF, wallet QR — for free |
-| External storage | Adapter interface; v1 providers: IPFS (Storacha, Pinata, self-host), S3-compatible, plain HTTPS (read-only), git mirror | Matches yappr `lib/upload/` provider registry pattern |
-| Packaging | pnpm/yarn monorepo: `packages/{forge-core,forge-contracts,git-remote-dash,forge-cli,forge-web}` | Shared types, atomic changes |
-| Hosting (web) | GitHub Pages + IPFS snapshot | Static, decentralizable |
+| Helper/CLI/relay/import | **Rust** workspace on rs-sdk/rs-dpp | Shares code with Platform; Radicle helper reference; single-binary distribution |
+| Web | Next.js static export + wasm/evo-sdk + isomorphic-git/lightning-fs in worker | yappr-proven zero-backend stack; in-browser materialization is the zero-backend trick |
+| Highlighting/diff/edit | Shiki · diff2html-or-Monaco (pending research, D-open) · CodeMirror 6 | INIT.md stack |
+| Search | MiniSearch (or tantivy-wasm) per-repo index in IndexedDB | Client-side, no server |
+| Auth (web) | platform-auth engine (yappr vendored) | Key/password-vault/passkey/QR for free |
+| Import | Forgejo migration-layer semantics over GitHub REST/GraphQL | Most battle-hardened importer |

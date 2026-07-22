@@ -110,9 +110,9 @@ Rule-of-thumb costs (storage component, refundable):
 
 ## 10. Design consequences (summary)
 
-1. **Chunk everything; ~15 KiB usable per document; one write per transition.** Push throughput is bounded by sequential state transitions — pipelined nonces are the key optimization to validate early.
-2. **External bundles are the default storage tier**; on-platform full-object storage is the premium, fully-decentralized tier. Git's content addressing makes both trustless.
-3. **Append-only event models** for anything multi-writer (refs, PR/issue state), resolved client-side against owner-signed collaborator lists.
-4. **Design indices first**; 100-doc query pages; poll for liveness.
-5. **evo-sdk everywhere** (browser + Node + CLI) with yappr's write-retry and caching patterns.
-6. **Deletion refunds** make even the premium tier economically sane (delete repo → recover ~most storage credits).
+1. **Chunk everything; ~14–15 KiB usable per document; one write per transition.** Push throughput is bounded by sequential state transitions — pipelined nonces are the key optimization to validate early (INIT.md's "batch ST packing" is unavailable while `max_transitions_in_documents_batch = 1`).
+2. **Platform is primary storage and source of truth** (per INIT.md); IPFS/S3/HTTPS are hash-verified fee-reduction/archival backends; refs + manifests always on Platform.
+3. **Append-only models for multi-writer state** (refUpdate = ref + reflog): documents are replaceable only by their creator, so maintainer B can never mutate maintainer A's ref doc. Authorization itself is consensus-enforced via token-cost ACLs (`tokenCost` per doc type, freeze = suspend) — yappr proves the pattern.
+4. **Design indices first**; 100-doc query pages; poll for liveness (relay bridges to webhooks).
+5. **rs-sdk (Rust) for helper/CLI/relay; wasm/evo-sdk for web** — with yappr's write-retry and caching patterns; parity via shared conformance vectors.
+6. **Deletion refunds** make on-platform storage economically sane (repack + delete superseded docs → steady-state cost ≈ current repo size; delete repo → recover ~most storage credits).

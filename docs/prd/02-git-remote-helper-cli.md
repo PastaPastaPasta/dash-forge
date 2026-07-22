@@ -1,74 +1,70 @@
-# PRD 02 — git-remote-dash & forge-cli (`dforge`)
+# PRD 02 — git-remote-dash & dgit
 
-Two Node ≥ 18 executables from one codebase, both thin shells over **forge-core**.
+One **Rust workspace** (shared `forge-core` crate on rs-sdk/rs-dpp), multiple binaries. Radicle's remote helper is the reference implementation for helper-protocol mechanics.
 
 ## A. git-remote-dash (remote helper)
 
-### What it is
-A [git remote helper](https://git-scm.com/docs/gitremote-helpers) named `git-remote-dash`, on `$PATH`. Git invokes it for any remote whose URL starts with `dash://`. Users get native `git clone / fetch / push / pull` with zero new commands.
+### Goal
+`git remote add origin dash://alice/project`, then normal git — zero workflow change. jj (git backend) works unmodified.
 
-### URL scheme
+### URL scheme & config
 ```
-dash://<owner>/<repo>            # owner = DPNS label ("alice") or base58 identity id
-dash://<owner>/<repo>#<network>  # optional network override (testnet default until mainnet GA)
+dash://<owner>/<repo>        # owner = DPNS label or base58 identity id
 ```
+Config in git config: `dash.identity`, `dash.network`, `dash.costWarnThreshold`, per-remote backend override (`remote.<name>.dashBackend`).
 
-### Helper protocol implementation
-- Capabilities advertised: `fetch`, `push`, `option`, `list` (stateless-connect not needed; we implement the dumb-ish `fetch`/`push` capability pair which lets the helper manage objects directly).
-- `list` / `list for-push`: resolve repo → authorized ref heads (forge-core authz resolution) → print `<oid> <refname>` lines + `@refs/heads/<default>` HEAD symref.
-- `fetch <oid> <ref>`: compute needed packs from manifests (want/have negotiation against local odb), download (adapter failover), sha256-verify, `git index-pack --stdin` into the local repo.
-- `push <src>:<dst>`: `git pack-objects --thin --revs` for `dst`-tip..`src`; upload per storage tier; write `pack` manifest + `refUpdate` (with `prevOid` = last known remote tip; refuse non-FF without `+`/`--force`). Delete ref: `refUpdate` with zero OID.
-- Options honored: `option verbosity`, `option progress`, `option dry-run`.
+### Protocol
+- Capabilities: `fetch`, `push`, `option`, `list` (connect-less semantics, same pattern as git-remote-ipfs/s3).
+- `list` / `list for-push`: DPNS → registry → repo contract → refs (newest `refUpdate`/`protectedRefUpdate` per name, proof-verified) + HEAD symref.
+- `fetch`: want/have negotiation vs local odb → select non-superseded manifests covering want-set → download chunks via DAPI or CID/URL per manifest → SHA-256-verify reassembled packs → `git index-pack`. **Partial/shallow clone** via manifest per-object offset index (ranged chunk fetch by seq / HTTP range).
+- `push`: thin pack vs remote refs → **cost estimate; display and prompt above `dash.costWarnThreshold`** → chunk upload as pipelined single-transition STs (sequential nonces; batch=1 platform constraint) → `packManifest` (+ `manifestPart`s) → `refUpdate` docs (prevOid recorded; non-FF refused without `+`; delete = zero OID; protected patterns route to `protectedRefUpdate`).
+- **Resumable pushes**: journal file (`.git/dash/journal/<packHash>.json`) records uploaded chunk IDs; interrupted push resumes **without re-paying for uploaded chunks** (INIT.md acceptance).
+- Idempotent ST engine: sign → persist bytes → broadcast → wait → rebroadcast same bytes on timeout; "already exists" = success.
 
-### Auth & signing
-- Identity/key discovery order: `DASH_FORGE_KEY` env (WIF) → `~/.config/dash-forge/identities/<network>/<identity>.json` (bridge-export format, optionally encrypted with OS keychain) → interactive prompt.
-- Signs with AUTHENTICATION/HIGH key. Writes use yappr's idempotent ST pattern (persist signed bytes in `.git/dash-forge/pending/` for crash-safe rebroadcast).
-- Push to a repo without authorization fails fast with a clear message (client-side check before spending fees).
+### Auth
+Local Dash identity key via OS keychain/agent (SSH-key UX shape); `DASH_FORGE_KEY` env for CI; unauthorized push fails client-side pre-fee *and* at consensus (token gate).
 
-### Performance requirements
-- Clone 10 MiB repo (Tier X, IPFS gateway): < 90 s. Fetch no-op: < 3 s (refs query only).
-- Tier P push: pipeline chunk STs with sequential nonces (target ≥ 3 docs/s sustained; Phase 0 spike validates; fallback: serial with progress meter).
-- All pack downloads cached/reused via local git odb — the helper never re-downloads objects git already has.
+### Acceptance (v1)
+- Round-trip clone/push of **the Dash Platform monorepo itself** (mixed backend).
+- Interrupted 100 MB push (kill -9 mid-upload) resumes; total fees ≈ single-push fees.
+- `git fsck` clean after every e2e clone; jj works unmodified; frozen identity's push fails at consensus.
 
-## B. forge-cli (`dforge`)
+## B. dgit (gh replacement)
 
-Repo/identity management that doesn't belong in git's porcelain. Command tree:
+Command surface mirrors `gh` deliberately; honors gh-style aliases; `--json` on everything.
 
 ```
-dforge identity import <file.json>        # bridge-export JSON → local keystore
-dforge identity list|balance|topup-info   # balance in credits + DASH; points to bridge for topup
-dforge repo create <name> [--storage external|platform|hybrid] [--description …]
-dforge repo list [--owner <name>] | info | delete        # delete = docs cleanup + refunds
-dforge repo set-storage <name> <mode>
-dforge collab add <repo> <identity|dpns> --role write|maintain
-dforge collab remove|list <repo>
-dforge storage login ipfs-storacha|ipfs-pinata|s3        # provider credentials (local keychain)
-dforge storage status <repo>              # pack availability audit: probe every URI, report health
-dforge reseed <repo> [--to ipfs|s3]       # re-upload local packs, publish packMirror docs
-dforge repack <repo>                      # consolidate packs, publish supersedes, prune own old docs
-dforge cost estimate <path|--pack size>   # credits/DASH quote per tier before pushing
-dforge issue list|view|create <repo>      # minimal CLI issue access (web is primary surface)
-dforge doctor                             # connectivity, contract IDs, key sanity, WASM health
+dgit auth login|status                    # identity import (bridge JSON), keychain storage
+dgit repo create|clone|fork|view|delete   # create = contract instantiate + listing + token setup
+dgit repo backend set <mode>              # platform|ipfs|s3|https|mixed
+dgit issue list|view|create|comment|close|reopen|label
+dgit pr create|list|view|checkout|review|merge|diff
+dgit release create|list|download
+dgit collab add|suspend|remove|list       # mint / freeze / freeze+destroy / balances query
+dgit cost estimate|audit                  # pre-write quotes; running spend report
+dgit repack                               # optimized pack, upload, delete superseded → refund
+dgit reseed [--to ipfs|s3]                # re-upload packs, append mirror URIs
+dgit storage status                       # per-URI availability matrix
+dgit import <github-url>                  # thin wrapper over forge-import (PRD 06)
+dgit doctor
 ```
 
-### Requirements
-- `--json` output flag on every command (scripting/e2e).
-- `--network testnet|mainnet` global flag; config file `~/.config/dash-forge/config.toml`.
-- Cost estimates use the fee constants from research doc §4 and print both prepaid and refundable amounts.
-- `repo delete` prompts with total refund estimate; `--yes` for automation.
-- Never prints private keys; `identity export` requires explicit `--reveal-secrets`.
+### Behaviors
+- `pr merge`: merge happens client-side (it's just git) → push merge commit → `merged` event closes patch doc. `pr checkout` fetches the patch manifest's pack.
+- `repo fork`: new repo contract + copied refs pointing at same content where backend allows (shared CIDs), else re-upload; listing gets `forkOf`.
+- `collab`: grants are 10⁹-unit mints; `suspend` freezes; `remove` freezes + destroys frozen funds; `list` = token-balance query (on-chain collaborator list).
+- Cost engine: every mutating command prints DASH (primary) + USD (secondary) estimate; `--yes` for automation; `cost audit` reconciles actual credits consumed vs estimates.
+- Never prints secrets; `--reveal-secrets` required for key export.
 
-## Shared: forge-core library requirements (the substance behind both)
+### Acceptance (v1)
+A maintainer runs a real project — triage issues, review and land PRs, cut a release — **without ever opening a browser**. All commands non-interactive with env keys (CI). Two-maintainer flow: A grants B via `collab add`; B pushes; C's fresh clone sees B's tip; A `collab suspend` B; B's next push fails at consensus.
 
-1. **PlatformClient**: evo-sdk singleton (init/reconnect per yappr `evo-sdk-service.ts`), contract preload, network switch.
-2. **WriteEngine**: build→sign→persist→broadcast→wait→retry; nonce serialization + pipelining mode; error taxonomy port from yappr `error-utils.ts`.
-3. **Services**: RepoService, RefService (authz resolution `AUTHZ_RULES_V1` + test vectors), PackService (manifest planning, supersedes graph), CollabService, IssueService, EventFold (issue/PR state reducer).
-4. **PackPipeline**: pack build (spawn system `git` in CLI; isomorphic-git in browser), sha256, chunker (≤ 15,360 B/doc, ST-size assertion), assembler + verifier.
-5. **StorageAdapters**: see PRD 04; registry pattern from yappr `lib/upload/`.
-6. **Keystore**: bridge-JSON import, encrypted-at-rest (OS keychain in CLI, platform-auth secure storage in web).
+## C. forge-core crate requirements (shared substance)
 
-## Acceptance criteria (v1)
-- `git clone dash://<owner>/<repo>` and `git push` round-trip byte-identical objects on testnet, both tiers, including force-push, ref deletion, tags, and a 2-maintainer repo (B pushes after A grants; B's push visible to C).
-- Helper passes `git fsck` after every e2e clone.
-- All commands run non-interactively with env-provided keys (CI requirement).
-- Crash mid-push (kill -9) → re-run push completes without duplicate fees (idempotent ST replay) and without corrupt state.
+1. **PlatformClient**: rs-sdk wrapper — connect/retry, proof verification on, registry+template preload, nonce serializer with pipelining mode (window configurable; S0.1-tuned).
+2. **WriteEngine**: idempotent ST lifecycle + journal persistence + fee accounting.
+3. **PackPipeline**: pack build (system git), sha256, chunker (≤ 4,900 B/field, ST-size assertion), offset-index builder, assembler + verifier, supersedes planner.
+4. **Backends**: `platform | ipfs | s3 | https` trait (put/get/probe), mixed-mode policy, failover + hash re-verify on every read.
+5. **RulesEngine**: `FORGE_RULES_V1` — ref resolution, event folds, protected-pattern matching; conformance vectors shared with forge-web.
+6. **CostEngine**: fee constants (27,000 credits/byte etc.), estimate/audit, DASH/USD formatting (price feed optional/offline-safe).
+7. **Keystore**: bridge-JSON import, OS keychain, agent protocol (later).
