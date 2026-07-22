@@ -51,7 +51,7 @@ colors: {
 
 ## B. Engineering conventions
 
-### Rust (forge-core, git-remote-dash, dgit, forge-relay, forge-import)
+### Rust (forge-core, git-remote-dash, dg, forge-relay, forge-import)
 - One cargo workspace; edition 2021+; `clippy -D warnings`, `rustfmt` CI-enforced; `#![forbid(unsafe_code)]` outside vetted FFI.
 - Depend on rs-sdk/rs-dpp workspace-pinned to a Platform release tag; SDK touched only inside `forge-core::platform` (PlatformClient) — binaries consume forge-core services.
 - Errors: `thiserror` taxonomy mirroring the product error classes (insufficient credits → bridge link, frozen token, timeout-retryable…); every user-facing failure maps to an actionable message.
@@ -74,7 +74,7 @@ colors: {
 crates/
   forge-core/        # platform/, pack/, backends/, rules/, cost/, keystore/
   git-remote-dash/   # helper bin
-  dgit/              # CLI bin (clap; gh-style aliases)
+  dg/              # CLI bin (clap; gh-style aliases)
   forge-relay/       # webhook daemon
   forge-import/      # importer (Forgejo-semantics mapping)
 forge-contracts/     # registry + repo template JSON, deploy scripts, deployments/, vectors/

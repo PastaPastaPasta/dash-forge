@@ -36,13 +36,13 @@ Follows `../INIT.md` (design path & PRDs); deviations forced by verified platfor
       └───▲────────▲──────▲───┘   └────────────────┘  └───────────────────┘
           │        │      │                                    ▲
    ┌──────┴───┐ ┌──┴───┐ ┌┴────────────┐                       │
-   │git-remote│ │ dgit │ │forge-import │            external backends
+   │git-remote│ │ dg │ │forge-import │            external backends
    │  -dash   │ │ (gh  │ │(GitHub      │        IPFS │ S3 │ HTTPS (fee
    │ (helper) │ │ repl)│ │ migrator)   │        reduction / archival;
    └──────────┘ └──────┘ └─────────────┘        hash-verified caches)
 ```
 
-- **One Rust workspace** (`forge-core` lib + `git-remote-dash`, `dgit`, `forge-relay`, `forge-import` binaries), sharing rs-sdk/rs-dpp with Platform itself. Radicle's remote helper is the reference implementation for the helper protocol.
+- **One Rust workspace** (`forge-core` lib + `git-remote-dash`, `dg`, `forge-relay`, `forge-import` binaries), sharing rs-sdk/rs-dpp with Platform itself. Radicle's remote helper is the reference implementation for the helper protocol.
 - **forge-web** is TypeScript (wasm/evo-sdk) — the one place logic is duplicated; parity held by shared conformance vectors (§7).
 
 ## 3. Naming & resolution
@@ -77,8 +77,8 @@ Follows `../INIT.md` (design path & PRDs); deviations forced by verified platfor
 
 - Pack = unit of storage (thin pack per push; preserves delta compression; O(bytes/14 KiB) STs, not O(objects)).
 - Partial/shallow clone: manifest's per-object offset index → ranged `chunk` fetch by seq (or HTTP range on external backends).
-- **Repack/GC** (`dgit repack`): rewrite history into one optimized pack, upload, delete superseded chunk/manifest docs → storage refund. Long-lived repo cost ≈ current size, not cumulative pushes.
-- Availability for external backends: multiple URIs per manifest + anyone-can-reseed (`packMirror`-style additional-URI docs, `dgit reseed`); loss is availability-only, never integrity, and any clone can restore.
+- **Repack/GC** (`dg repack`): rewrite history into one optimized pack, upload, delete superseded chunk/manifest docs → storage refund. Long-lived repo cost ≈ current size, not cumulative pushes.
+- Availability for external backends: multiple URIs per manifest + anyone-can-reseed (`packMirror`-style additional-URI docs, `dg reseed`); loss is availability-only, never integrity, and any clone can restore.
 
 ## 6. Data flow
 
@@ -107,7 +107,7 @@ Ref-resolution, event-folding, and cost-estimation rules are versioned (`FORGE_R
 - 27,000 credits/byte permanent storage (refundable, 50-era amortization); 1 DASH = 10¹¹ credits.
 - On-Platform data ≈ **$9/MiB @ $34/DASH** (DASH-primary display; USD secondary; fee-multiplier governance lever flagged).
 - Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.00008 DASH. Contract instantiation per repo < 0.01 DASH.
-- Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dgit cost`, web settings).
+- Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dg cost`, web settings).
 
 ## 9. Security & trust
 

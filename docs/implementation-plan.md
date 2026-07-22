@@ -29,7 +29,7 @@ Ship the data contracts and `git-remote-dash`. **Success = `git clone dash://nam
 
 ## Phase 2 — CLI + relay
 
-- dgit: full gh-mirroring surface (PRD 02B) — repo/issue/pr/release/collab (token mint/freeze)/cost/repack/backend.
+- dg: full gh-mirroring surface (PRD 02B) — repo/issue/pr/release/collab (token mint/freeze)/cost/repack/backend.
 - forge-relay: ST-stream ingest, GitHub-shape webhooks, HMAC delivery, on-Platform `webhook` subscriptions; Docker deploy; CI reference consumer (fetch-and-verify + `checkRun` writeback).
 - **Dogfood: host the forge's own repos on the forge** (with GitHub read-only mirror during transition).
 

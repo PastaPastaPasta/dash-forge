@@ -10,7 +10,7 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience â
 |---|---|
 | **forge protocol** | Data contracts: one global registry + a per-repo contract template with WRITE/MAINTAIN token ACLs enforced at consensus. |
 | **git-remote-dash** | Git remote helper (Rust). `git clone dash://alice/project` and `git push` just work. jj-compatible. |
-| **dgit** | `gh`-replacement CLI (Rust, same workspace): repos, issues, PRs, releases, collaborator token management, cost audit, repack. |
+| **dg** | `gh`-replacement CLI (Rust, same workspace): repos, issues, PRs, releases, collaborator token management, cost audit, repack. |
 | **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS â€” full GitHub-replacement browsing and review UX. |
 | **forge relay** | Stateless, interchangeable Rust daemon bridging Platform events to GitHub-shaped webhooks (CI/notifications). Trust = availability only. |
 | **forge import** | One-command GitHub migration (code, issues, PRs, releases) with cost gating and author claim flow. |
@@ -23,7 +23,7 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience â
 4. [Data contracts design](docs/contracts/data-contracts.md) â€” registry + repo-template schemas, token costs, indices.
 5. PRDs:
    - [01 Product overview & personas](docs/prd/01-product-overview.md)
-   - [02 git-remote-dash & dgit](docs/prd/02-git-remote-helper-cli.md)
+   - [02 git-remote-dash & dg](docs/prd/02-git-remote-helper-cli.md)
    - [03 forge web](docs/prd/03-web-app.md)
    - [04 Storage backends](docs/prd/04-storage-adapters.md)
    - [05 forge relay](docs/prd/05-forge-relay.md)

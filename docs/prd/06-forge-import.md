@@ -1,7 +1,7 @@
 # PRD 06 — Forge Import
 
 ## Goal
-`dgit import github.com/org/repo` migrates code + issues + PRs + releases + labels + milestones in one command. Launch adoption depends on this.
+`dg import github.com/org/repo` migrates code + issues + PRs + releases + labels + milestones in one command. Launch adoption depends on this.
 
 ## Design
 
@@ -14,7 +14,7 @@
 
 ## UX
 ```
-dgit import github.com/org/repo [--repo-name X] [--backend mixed] [--skip issues|prs|releases]
+dg import github.com/org/repo [--repo-name X] [--backend mixed] [--skip issues|prs|releases]
                                 [--max-spend 2.5dash] [--resume <state-file>] [--dry-run]
 ```
 `--dry-run` = full enumeration + cost estimate, zero writes.
@@ -23,4 +23,4 @@ dgit import github.com/org/repo [--repo-name X] [--backend mixed] [--skip issues
 - Import **dashpay/platform** (large, real repo) with issue/PR fidelity spot-checked (sampled cross-check script comparing GitHub API vs Platform docs: counts, titles, states, comment threads, label sets).
 - Total cost matches pre-estimate **within 10%**.
 - Interrupt + `--resume` completes without duplicate documents or double fees.
-- Gist-claim flow: a claimed placeholder renders as the claiming identity in forge-web and dgit.
+- Gist-claim flow: a claimed placeholder renders as the claiming identity in forge-web and dg.

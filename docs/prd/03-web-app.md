@@ -23,7 +23,7 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3).
 2. **Issues**: list/filter (state, labels)/create/comment/close/reopen; label management (MAINTAIN); event timeline fold.
-3. **PRs**: diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dgit); patch checkout instructions.
+3. **PRs**: diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dg); patch checkout instructions.
 4. **Releases** with asset manifests (hash-verified downloads).
 5. **Repo lifecycle**: create (contract instantiation + cost preview), settings, backend switch, delete (refund estimate).
 6. **Collaborators**: token UI — grant (mint), suspend (freeze), revoke (freeze+destroy), balances-as-collaborator-list.

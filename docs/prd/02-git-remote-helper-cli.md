@@ -1,4 +1,4 @@
-# PRD 02 — git-remote-dash & dgit
+# PRD 02 — git-remote-dash & dg
 
 One **Rust workspace** (shared `forge-core` crate on rs-sdk/rs-dpp), multiple binaries. Radicle's remote helper is the reference implementation for helper-protocol mechanics.
 
@@ -29,24 +29,24 @@ Local Dash identity key via OS keychain/agent (SSH-key UX shape); `DASH_FORGE_KE
 - Interrupted 100 MB push (kill -9 mid-upload) resumes; total fees ≈ single-push fees.
 - `git fsck` clean after every e2e clone; jj works unmodified; frozen identity's push fails at consensus.
 
-## B. dgit (gh replacement)
+## B. dg (gh replacement)
 
 Command surface mirrors `gh` deliberately; honors gh-style aliases; `--json` on everything.
 
 ```
-dgit auth login|status                    # identity import (bridge JSON), keychain storage
-dgit repo create|clone|fork|view|delete   # create = contract instantiate + listing + token setup
-dgit repo backend set <mode>              # platform|ipfs|s3|https|mixed
-dgit issue list|view|create|comment|close|reopen|label
-dgit pr create|list|view|checkout|review|merge|diff
-dgit release create|list|download
-dgit collab add|suspend|remove|list       # mint / freeze / freeze+destroy / balances query
-dgit cost estimate|audit                  # pre-write quotes; running spend report
-dgit repack                               # optimized pack, upload, delete superseded → refund
-dgit reseed [--to ipfs|s3]                # re-upload packs, append mirror URIs
-dgit storage status                       # per-URI availability matrix
-dgit import <github-url>                  # thin wrapper over forge-import (PRD 06)
-dgit doctor
+dg auth login|status                    # identity import (bridge JSON), keychain storage
+dg repo create|clone|fork|view|delete   # create = contract instantiate + listing + token setup
+dg repo backend set <mode>              # platform|ipfs|s3|https|mixed
+dg issue list|view|create|comment|close|reopen|label
+dg pr create|list|view|checkout|review|merge|diff
+dg release create|list|download
+dg collab add|suspend|remove|list       # mint / freeze / freeze+destroy / balances query
+dg cost estimate|audit                  # pre-write quotes; running spend report
+dg repack                               # optimized pack, upload, delete superseded → refund
+dg reseed [--to ipfs|s3]                # re-upload packs, append mirror URIs
+dg storage status                       # per-URI availability matrix
+dg import <github-url>                  # thin wrapper over forge-import (PRD 06)
+dg doctor
 ```
 
 ### Behaviors

@@ -28,7 +28,7 @@ Contract/template IDs from `forge-contracts/deployments/<network>.json`; never h
 | **Conformance vectors** (`FORGE_RULES_V1`): Rust and TS suites against shared JSON fixtures — ref resolution, protected patterns, event folds, claim mapping | both | none | every PR |
 | Contract validation: registry+template construct `fullValidation`, serialized < 16 KiB, index bounds, tokenCost config | wasm-sdk harness | none | every PR |
 | Integration: forge-core services against live contracts | cargo test (serial per identity) | testnet | nightly + pre-merge label |
-| E2E CLI (real `git` + helper + dgit) | bash/rust harness | testnet | nightly + release |
+| E2E CLI (real `git` + helper + dg) | bash/rust harness | testnet | nightly + release |
 | E2E Web | Playwright | testnet | nightly + release |
 | Relay + import + chaos | mixed | testnet | release |
 | Production smoke | scripted | mainnet | post-deploy + weekly |
@@ -56,10 +56,10 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 6. **Force-push / delete / protected refs**: non-FF refused without `+`; force flag recorded; zero-OID delete; protected pattern routes to `protectedRefUpdate` and WRITE-only pusher fails.
 7. **Partial/shallow clone**: `--depth 1` and sparse path fetch via offset index — bytes transferred ≪ full pack (assert ranged fetch happened).
 8. ⭐ **jj compatibility**: jj (git backend) init/fetch/push against dash:// remote unmodified.
-9. **Repack/GC**: 10 pushes → `dgit repack` → superseded docs deleted → clone exact; **storage refund observed** in balance; steady-state cost ≈ current size.
-10. **Backends**: same pack via IPFS and S3 (MinIO) clones identically; tampered URI detected + failed over; `dgit reseed` after host loss restores availability; mixed-mode cold/hot split works.
-11. **dgit workflow** ⭐: maintainer triages issues, reviews and lands a PR (`pr checkout`→`review`→`merge`), cuts a release — terminal only.
-12. **Fresh-user onboarding**: mint identity via §1.1-B → `dgit auth login` → repo create → push (zero prior state).
+9. **Repack/GC**: 10 pushes → `dg repack` → superseded docs deleted → clone exact; **storage refund observed** in balance; steady-state cost ≈ current size.
+10. **Backends**: same pack via IPFS and S3 (MinIO) clones identically; tampered URI detected + failed over; `dg reseed` after host loss restores availability; mixed-mode cold/hot split works.
+11. **dg workflow** ⭐: maintainer triages issues, reviews and lands a PR (`pr checkout`→`review`→`merge`), cuts a release — terminal only.
+12. **Fresh-user onboarding**: mint identity via §1.1-B → `dg auth login` → repo create → push (zero prior state).
 13. ⭐ **Third-party verification**: standalone script (no forge-core) reconstructs a clone from raw DAPI queries + manifests and verifies every hash — "no trust in any server" acceptance.
 
 ## 5. E2E Web suite (Playwright vs static build on testnet)
@@ -81,7 +81,7 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 
 **Relay**: ⭐ push → GitHub-shape webhook delivered < 30 s (HMAC verified; payload schema-validated against GitHub fixtures); ⭐ instance swap = one webhook-doc update, no other repo-side change; at-least-once + consumer dedupe documented test; reference CI consumer re-fetches from Platform and writes `checkRun` back; SSRF guard tests.
 
-**Import**: ⭐ dashpay/platform import — fidelity spot-check script (GitHub API vs Platform docs: counts, titles, states, threads, labels) and ⭐ **cost within 10% of pre-estimate**; `--dry-run` writes nothing; interrupt + `--resume` no duplicates/double fees; gist-claim flow renders claimed identity in web + dgit.
+**Import**: ⭐ dashpay/platform import — fidelity spot-check script (GitHub API vs Platform docs: counts, titles, states, threads, labels) and ⭐ **cost within 10% of pre-estimate**; `--dry-run` writes nothing; interrupt + `--resume` no duplicates/double fees; gist-claim flow renders claimed identity in web + dg.
 
 ## 7. Contract & template lifecycle testing
 

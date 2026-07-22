@@ -5,7 +5,7 @@ Bridge Platform's pull-only world to webhook-driven CI and notifications **witho
 
 ## Design
 
-Stateless Rust daemon (workspace member alongside dgit/helper):
+Stateless Rust daemon (workspace member alongside dg/helper):
 
 1. **Ingest**: subscribes to blocks/state transitions via DAPI (Core gRPC streams + platform polling where needed — Platform has no document push subscriptions, reconciliation D6), filters for registered repo contracts.
 2. **Translate**: emits **GitHub-compatible webhook payloads** — `push`, `pull_request`, `issue_comment`, `check_run` schemas — so Blacksmith/Depot/Jenkins/existing tooling integrates with near-zero work. Payload fields that GitHub derives server-side (compare URLs etc.) map to forge-web URLs.

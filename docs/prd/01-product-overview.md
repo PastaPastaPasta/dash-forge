@@ -14,17 +14,17 @@ Git hosting that cannot be taken down, censored, or rug-pulled — because there
 
 | Persona | Needs | Primary surface |
 |---|---|---|
-| **Sovereignty-minded OSS maintainer ("Alice")** | Censorship-resistant home; collaborators push; runs project without a browser | dgit + git-remote-dash (+ web) |
+| **Sovereignty-minded OSS maintainer ("Alice")** | Censorship-resistant home; collaborators push; runs project without a browser | dg + git-remote-dash (+ web) |
 | **Contributor ("Bob")** | Clone, fork, patch, review — just an identity, no account | git-remote-dash + web |
 | **Casual visitor** | Browse code, read README, file an issue from a browser | forge web |
 | **Migrating org** | Move a real GitHub project with issues/PRs intact; keep CI working | forge import + relay |
 | **CI operator** | Webhook triggers; write check results back | forge relay + runner identity with WRITE tokens |
-| **Archivist / seeder** | Mirror & reseed pack data | dgit reseed |
+| **Archivist / seeder** | Mirror & reseed pack data | dg reseed |
 
 ## Product principles
 
 1. **Platform is the sole source of truth**; all other storage is verifiable cache.
-2. **Zero workflow change**: standard git (and jj); `dgit` mirrors `gh`'s surface deliberately.
+2. **Zero workflow change**: standard git (and jj); `dg` mirrors `gh`'s surface deliberately.
 3. **Trustless by default**: proofs for Platform reads; SHA-256 + OIDs for content; relay/CI re-verify.
 4. **Cost is first-class UX**: estimate before every write batch, DASH primary / USD secondary, running spend audit, refunds surfaced.
 5. **Documented honesty**: explicit non-goals (no on-chain FF/merge validation — reflog auditability instead; no Actions-equivalent; performance limits on giant repos).
@@ -32,7 +32,7 @@ Git hosting that cannot be taken down, censored, or rug-pulled — because there
 ## Scope by phase (see implementation plan)
 
 - **Phase 1 ships a usable product**: contracts + remote helper on mainnet, on-Platform storage. No UI.
-- **Phase 2**: dgit (full terminal workflow: triage, review, land, release) + relay (CI works). Dogfood: forge hosts its own repos.
+- **Phase 2**: dg (full terminal workflow: triage, review, land, release) + relay (CI works). Dogfood: forge hosts its own repos.
 - **Phase 3**: forge web (full GitHub-replacement UX) + importer (launch adoption).
 - **Phase 4**: backends GA (IPFS/S3/HTTPS/mixed), repack/GC, private-repo encryption *design* (v2).
 

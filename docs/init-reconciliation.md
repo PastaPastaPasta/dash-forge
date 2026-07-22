@@ -4,7 +4,7 @@
 
 ## Adopted from INIT.md (now reflected throughout)
 
-1. **Component set & names**: forge protocol (contracts), `git-remote-dash`, **`dgit`** CLI (gh-mirroring surface), forge web, **forge relay**, **forge import**. (Previously: no relay/import, CLI named `dforge`.) New PRDs 05/06 added.
+1. **Component set & names**: forge protocol (contracts), `git-remote-dash`, **`dg`** CLI (gh-mirroring surface), forge web, **forge relay**, **forge import**. (Previously: no relay/import, CLI named `dforge`.) New PRDs 05/06 added. Note: INIT.md's CLI name `dgit` was dropped — it collides with Debian's existing `dgit` tool — in favor of `dg` (two keystrokes, mirrors `gh`; distributed as package `dash-forge`, binary `dg`).
 2. **Contract topology**: one global **registry contract** (`repoListing`, `profile`, `star`, `follow`) + **one repo contract per repository**, instantiated client-side from a canonical, versioned template. (Previously: two shared global contracts.)
 3. **Token-cost ACL**: per-repo `WRITE`/`MAINTAIN` tokens; large mints as grants, freeze = suspend, freeze+destroy = revoke; write-path document types carry `tokenCost`. Authorization is **enforced at consensus**, not client-side — a major improvement over the first pass's client-resolved collaborator model, and proven viable by yappr's `tokenCost` usage.
 4. **Storage default**: **Platform is primary storage and always source of truth**; IPFS/S3/HTTPS are fee-reduction/archival backends ("mixed mode": recent packs on Platform, archival external). (Previously: external-default.) Manifests/refs always on Platform in every mode.

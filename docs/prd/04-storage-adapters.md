@@ -4,7 +4,7 @@
 
 ## Backend descriptor
 
-Stored in `repoListing.backend`: `{ mode: platform | ipfs | s3 | https | mixed, uris }`. Per-remote override in git config. **Mixed mode** (the expected steady state for big repos): recent packs on Platform (fast, fully on-chain), archival packs external; `dgit repack` migrates cold history outward and reclaims Platform storage refunds.
+Stored in `repoListing.backend`: `{ mode: platform | ipfs | s3 | https | mixed, uris }`. Per-remote override in git config. **Mixed mode** (the expected steady state for big repos): recent packs on Platform (fast, fully on-chain), archival packs external; `dg repack` migrates cold history outward and reclaims Platform storage refunds.
 
 ## Backend trait (forge-core, Rust; mirrored in forge-web TS for reads)
 
@@ -27,20 +27,20 @@ Hash verification lives in PackPipeline, outside backends — a malicious backen
 ### 2. IPFS
 - Write: local Kubo or pinning-service API (Storacha/Pinata — yappr-proven clients); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).
 - Read: CLI via local Kubo else gateways; browser via gateway race (configurable list + self-host option from yappr `ipfs/` docker).
-- Availability = pinning; `dgit reseed` re-pins + appends mirror URIs; any clone can restore a dead repo's availability.
+- Availability = pinning; `dg reseed` re-pins + appends mirror URIs; any clone can restore a dead repo's availability.
 
 ### 3. S3-compatible (AWS/R2/MinIO/B2)
 Write with credentials (CLI; browser when CORS allows); manifest stores `s3://` **plus** public `https://` URL when available so browsers read credential-free. Ranged GET supported → partial clone friendly.
 
 ### 4. HTTPS (read-only)
-Any static host/mirror. CORS required for browser reads (CLI unaffected); `dgit storage status` reports per-URI CORS/health.
+Any static host/mirror. CORS required for browser reads (CLI unaffected); `dg storage status` reports per-URI CORS/health.
 
 ### 5. Git mirror (`gitmirror://<remote-url>`) — Phase 4
 Wraps an existing git hoster (GitHub/GitLab/Codeberg) as a byte source: CLI fetches from the mirror and rebuilds needed packs locally (integrity via OIDs chaining to Platform-signed refs; manifests carry `tips` for coverage rather than byte-equality). Write = `git push --mirror` (CLI, credentialed). Browser: unsupported (badge "CLI-only source"). Also the mechanism for import's transition mirror mode.
 
 ## Operational UX
 
-- `dgit repo backend set <mode>`; `dgit storage status` (availability matrix, at-risk packs, suggested reseed); `dgit reseed [--to …]`; cost comparison in `dgit cost estimate --backend …`.
+- `dg repo backend set <mode>`; `dg storage status` (availability matrix, at-risk packs, suggested reseed); `dg reseed [--to …]`; cost comparison in `dg cost estimate --backend …`.
 - forge-web settings: backend switch with cost/tradeoff explainer; verification chips always show actual byte source.
 
 ## Acceptance
@@ -48,4 +48,4 @@ Wraps an existing git hoster (GitHub/GitLab/Codeberg) as a byte source: CLI fetc
 - Same pack via IPFS and S3 clones identically; tampered primary URI detected + failed over + logged.
 - Mixed-mode repo: recent history clones from Platform offline from IPFS; full history pulls archival packs from IPFS.
 - Backend switch + repack migrates a live repo Platform→mixed with observed storage refund and no clone breakage.
-- Kill external host entirely → `dgit reseed` from any clone restores availability with no history loss.
+- Kill external host entirely → `dg reseed` from any clone restores availability with no history loss.

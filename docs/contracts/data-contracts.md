@@ -36,7 +36,7 @@ Client rule: a listing is only believed if the referenced repo contract's owner 
 
 ## 2. Repo contract template (v1)
 
-Instantiated per repo by the client at `dgit repo create`; owner = repo owner identity (or group-controlled for orgs). `canBeDeleted: true` (repo deletion reclaims refunds). Template JSON lives in `forge-contracts/templates/repo-v1.json`, versioned under the DCG template identity; migration across template versions is a Phase 1 design-review item (INIT.md).
+Instantiated per repo by the client at `dg repo create`; owner = repo owner identity (or group-controlled for orgs). `canBeDeleted: true` (repo deletion reclaims refunds). Template JSON lives in `forge-contracts/templates/repo-v1.json`, versioned under the DCG template identity; migration across template versions is a Phase 1 design-review item (INIT.md).
 
 ### 2.1 Tokens
 
@@ -114,6 +114,6 @@ Issue/patch numbering: optimistic `max+1` with unique-index retry. Issue/PR stat
 ## 3. Deployment & template lifecycle
 
 - **Registry**: deployed once per network by the DCG/DAO identity; ID in `forge-contracts/deployments/<network>.json`, baked into forge-core constants.
-- **Repo contracts**: client instantiates from `templates/repo-v1.json` at `dgit repo create` (contract publish + token config + initial mints + `repoListing` write). Cost < 0.01 DASH.
+- **Repo contracts**: client instantiates from `templates/repo-v1.json` at `dg repo create` (contract publish + token config + initial mints + `repoListing` write). Cost < 0.01 DASH.
 - **Template versioning**: template registered under DCG identity with version history; `repoListing.templateVersion` tracks each repo; migration strategy (new-version contract updates vs side-by-side) is a Phase 1 design-review deliverable (INIT.md "decide early").
 - **Validation gates**: JSON lint + wasm-sdk `fullValidation` construction + serialized-size check in CI before any deploy; devnet → testnet → mainnet rehearsal (e2e plan §6).
