@@ -105,7 +105,7 @@ No document subscriptions → web/CLI poll indexed queries with cursors; **relay
 
 Ref-resolution, event-folding, and cost-estimation rules are versioned (`FORGE_RULES_V1`) with **shared conformance vectors** (JSON fixtures) consumed by the Rust workspace tests and forge-web tests alike — the only defense against Rust/TS divergence.
 
-## 8. Economics
+## 8. Economics (full model: [economics.md](economics.md))
 
 - 27,000 credits/byte permanent storage (refundable, 50-era amortization); 1 DASH = 10¹¹ credits.
 - On-Platform data ≈ **$9/MiB @ $34/DASH** (DASH-primary display; USD secondary; fee-multiplier governance lever flagged).

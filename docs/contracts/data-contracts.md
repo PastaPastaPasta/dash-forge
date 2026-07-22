@@ -97,7 +97,7 @@ Why the non-deletables: a deletable `refUpdate` lets whoever authored the curren
 **`refUpdate` / `protectedRefUpdate`** — `refNameHash` hash32 = sha256(`refName`); `refName` string ≤ 255; `newOid` oid (all-zero = ref deletion); `prevOid` oid optional; `force` boolean. Indices: `(refNameHash, $createdAt desc)` ref state; `($createdAt desc)` reflog/activity; `($ownerId, $createdAt desc)` pusher audit.
 Branch/tag enumeration (no distinct-values query on Platform): **skip-scan** — query `refNameHash > <last>` orderBy `refNameHash` limit 100 to discover names, then batch tip lookups (`in` on ≤ 100 hashes, first-row-per-hash, individual fallback for hyperactive refs). Spec'd in `FORGE_RULES_V1`; fine for real-world ref counts.
 
-**`packManifest`** — `packHash` hash32; `sizeBytes`, `objectCount`, `chunkCount` integers; `storage` 0 platform / 1 external; `uris` array ≤ 8 of ≤ 300; `prereqs` ≤ 16 oid; `tips` ≤ 16 oid; `supersedes` ≤ 32 hash32; `offsetIndexParts` integer. Indices: unique `(packHash)`; `($createdAt desc)`.
+**`packManifest`** — `packHash` hash32; `sizeBytes`, `objectCount`, `chunkCount` integers; `storage` 0 platform / 1 external; `uris` array ≤ 8 of ≤ 300; `prereqs` ≤ 16 oid; `tips` ≤ 16 oid; `supersedes` ≤ 32 hash32; `offsetIndexParts` integer (**0 = no offset index** — skips partial/shallow-clone support and its `manifestPart` fees; the default unless the repo opts in). Indices: unique `(packHash)`; `($createdAt desc)`.
 
 **`manifestPart`** — `packHash`, `partSeq`, `entries` byteArray ≤ 4900 ×3 (packed `oid|offset|length` rows). Unique `(packHash, partSeq)`.
 

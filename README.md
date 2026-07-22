@@ -28,9 +28,10 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience �
    - [04 Storage backends](docs/prd/04-storage-adapters.md)
    - [05 forge relay](docs/prd/05-forge-relay.md)
    - [06 forge import](docs/prd/06-forge-import.md)
-6. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
-7. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
-8. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
+6. [Economics & fee minimization](docs/economics.md) — compression pipeline, deposit-vs-burn cost model, repack/refund GC.
+7. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
+8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
+9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
 
 ## Status
 
