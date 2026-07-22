@@ -212,6 +212,26 @@ async function cmdBalance(args) {
   console.log(JSON.stringify({ identityId, balance }, null, 2));
 }
 
+// --- transfer platform credits between identities (testnet consolidation) ---
+async function cmdTransfer(args) {
+  const fromFile = args.from && args.from !== true ? String(args.from) : undefined;
+  const toFile = args.to && args.to !== true ? String(args.to) : undefined;
+  if (!fromFile || !toFile) throw new Error('--from <file> and --to <file> are required');
+  const sender = JSON.parse(readFileSync(resolve(fromFile), 'utf8'));
+  const recipient = JSON.parse(readFileSync(resolve(toFile), 'utf8'));
+  const amountDash = args.amount && args.amount !== true ? Number(args.amount) : 0.2;
+  const amountCredits = Math.round(amountDash * 1e11); // 1 DASH = 1e11 credits
+  const balance = await platform.transferCredits({
+    senderId: sender.identityId,
+    senderIdentityKeys: sender.identityKeys,
+    recipientId: recipient.identityId,
+    amountCredits,
+    log,
+  });
+  await platform.disconnectSdk();
+  console.log(JSON.stringify({ from: sender.identityId, to: recipient.identityId, amountCredits, senderBalance: balance }, null, 2));
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const args = parseArgs(argv);
@@ -221,6 +241,7 @@ async function main() {
     if (sub === 'pool') await cmdPool(args);
     else if (sub === 'topup') await cmdTopup(args);
     else if (sub === 'balance') await cmdBalance(args);
+    else if (sub === 'transfer') await cmdTransfer(args);
     else await cmdMint(args); // default: mint one
   } catch (err) {
     log(`ERROR: ${err.message}`);

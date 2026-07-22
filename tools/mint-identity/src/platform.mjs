@@ -106,6 +106,37 @@ export async function topUpIdentity({ identityId, transactionBytes, instantLockB
   return balance;
 }
 
+/**
+ * Transfer platform credits between two identities (IdentityCreditTransfer).
+ * Signs with the sender's TRANSFER-purpose key. Testnet consolidation helper.
+ * `senderIdentityKeys` is the sender's full bridge-format key set.
+ * Returns the sender's new balance.
+ */
+export async function transferCredits({ senderId, senderIdentityKeys, recipientId, amountCredits, log = () => {} }) {
+  const sdk = await getSdk(log);
+  const { IdentitySigner } = evoSdk;
+
+  const identity = await sdk.identities.fetch(senderId);
+  if (!identity) throw new Error(`Sender identity not found: ${senderId}`);
+
+  const signer = new IdentitySigner();
+  for (const key of senderIdentityKeys) {
+    signer.addKeyFromWif(key.privateKeyWif);
+  }
+
+  log(`Transferring ${amountCredits} credits ${senderId} -> ${recipientId}...`);
+  await sdk.identities.creditTransfer({
+    identity,
+    recipientId,
+    amount: BigInt(amountCredits),
+    signer,
+    settings: PUT_SETTINGS,
+  });
+  const balance = await getBalance(senderId, log);
+  log(`Transfer complete. Sender balance: ${balance} credits`);
+  return balance;
+}
+
 export async function getBalance(identityId, log = () => {}) {
   const sdk = await getSdk(log);
   const bal = await sdk.identities.balance(identityId);
