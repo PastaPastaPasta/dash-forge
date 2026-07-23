@@ -7,7 +7,7 @@
 //   node mint.mjs balance --identity <file>
 //
 // See README.md for the full flag reference, rate-limit strategy, and security notes.
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { TESTNET, dashToDuffs } from './src/config.mjs';
 import { InsightClient } from './src/insight.mjs';
@@ -20,7 +20,8 @@ import {
   MIN_ASSET_LOCK_DUFFS,
 } from './src/flow.mjs';
 import { buildIdentityBackup, writeIdentityFile } from './src/backup.mjs';
-import { generateKeyPair, publicKeyToAddress } from './src/keys.mjs';
+import { generateKeyPair, getPublicKey, publicKeyToAddress } from './src/keys.mjs';
+import { privateKeyToWif, wifToPrivateKey } from './src/bytes.mjs';
 import * as platform from './src/platform.mjs';
 
 const POOL_ROLES = ['OWNER', 'MAINTAINER', 'COLLAB', 'CONTRIB', 'FROZEN', 'CI-RUNNER', 'RELAY', 'DEPLOYER', 'TREASURY'];
@@ -176,13 +177,41 @@ async function cmdTopup(args) {
   const idFile = args.identity && args.identity !== true ? String(args.identity) : undefined;
   if (!idFile) throw new Error('--identity <file> is required');
   const amountDash = Number(args.amount || 0.1);
+  const waitSeconds = Number(args.wait || 300);
   const record = JSON.parse(readFileSync(resolve(idFile), 'utf8'));
   const identityId = record.identityId;
   if (!identityId) throw new Error(`No identityId in ${idFile}`);
 
-  // One-time asset-lock key for the top-up (matches bridge top-up behavior).
-  const assetLockKeyPair = generateKeyPair();
+  // One-time asset-lock key for the top-up (matches bridge top-up behavior). The key is
+  // PERSISTED next to the identity file before any address is shown: funds sent after a
+  // timeout or crash stay recoverable, and a rerun reuses the same deposit address.
+  const pendingPath = `${resolve(idFile)}.topup-pending.json`;
+  let assetLockKeyPair;
+  if (existsSync(pendingPath)) {
+    const pending = JSON.parse(readFileSync(pendingPath, 'utf8'));
+    const privateKey = wifToPrivateKey(pending.wif).privateKey;
+    assetLockKeyPair = { privateKey, publicKey: getPublicKey(privateKey) };
+    log(`[topup ${identityId}] reusing pending deposit key from ${pendingPath}`);
+  } else {
+    assetLockKeyPair = generateKeyPair();
+  }
   const depositAddress = publicKeyToAddress(assetLockKeyPair.publicKey, NETWORK);
+  if (!existsSync(pendingPath)) {
+    writeFileSync(
+      pendingPath,
+      JSON.stringify(
+        {
+          identityId,
+          depositAddress,
+          wif: privateKeyToWif(assetLockKeyPair.privateKey, NETWORK),
+          created: new Date().toISOString(),
+        },
+        null,
+        2
+      ),
+      { mode: 0o600 }
+    );
+  }
   log(`[topup ${identityId}] one-time deposit address: ${depositAddress}`);
 
   const insight = new InsightClient(NETWORK);
@@ -193,9 +222,10 @@ async function cmdTopup(args) {
     log(`[topup] Faucet sent ${faucetRes.amount} tDASH (txid ${faucetRes.txid}).`);
   }
   const minDuffs = Math.max(MIN_ASSET_LOCK_DUFFS + 1000, Math.floor(dashToDuffs(amountDash) * 0.9));
-  const utxo = await insight.waitForUtxo(depositAddress, minDuffs, { timeoutMs: 300000, log });
+  const utxo = await insight.waitForUtxo(depositAddress, minDuffs, { timeoutMs: waitSeconds * 1000, log });
 
   const { txid, balance } = await assetLockAndTopUp({ identityId, assetLockKeyPair }, utxo, NETWORK, log);
+  unlinkSync(pendingPath);
   await platform.disconnectSdk();
   console.log(JSON.stringify({ identityId, topUpTxid: txid, balance }, null, 2));
 }
