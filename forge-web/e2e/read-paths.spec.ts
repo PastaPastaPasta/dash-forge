@@ -36,8 +36,21 @@ test.describe('logged-out read paths', () => {
     // The signature verification chip is present on the landing hero.
     await expect(page.getByRole('group', { name: /verification status/i })).toBeVisible()
 
-    // Give the SDK a moment to attempt connecting (discovery feed), then snapshot.
-    await page.waitForTimeout(6000)
+    // The discovery feed must actually LAND, not just fail quietly. A broken registry
+    // query renders <ErrorState> inside the section and throws no uncaught exception, so
+    // the error-only assertion below stays green while the landing page is visibly
+    // broken — that is exactly how a registry contract missing its `$createdAt` index
+    // shipped unnoticed. Assert the rendered outcome: repo rows, or the honest empty
+    // state, but never the error state.
+    // Order matters: wait for the feed to SETTLE on a success outcome first. A bare
+    // "no error state" check would resolve instantly, long before the SDK has connected
+    // and the query could have failed, and would pass on a broken registry.
+    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
+    await expect(
+      feed.locator('a[href*="/repo/"]').or(feed.getByText(/the registry is quiet/i)).first(),
+    ).toBeVisible({ timeout: 45_000 })
+    await expect(feed.getByText(/that read did not land|could not reach platform/i)).toHaveCount(0)
+
     await shot(page, '01-landing')
 
     // No fatal page errors (uncaught exceptions that break rendering).
