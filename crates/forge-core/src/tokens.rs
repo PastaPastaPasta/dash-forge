@@ -150,11 +150,24 @@ impl<'a> TokenService<'a> {
         let token = self.client.token_id(&contract, role.position());
 
         if self.balance_of(&token, member_id).await? > 0 {
-            tracing::warn!(
-                member = member_id,
-                role = ?role,
-                "member already holds the token; skipping mint (idempotent)"
-            );
+            // Already a holder → skip the mint (no double-mint on retry). If the member is
+            // *frozen*, grant is the wrong tool — the balance is present but suspended, and
+            // minting more would not restore access; direct the caller to `unsuspend`.
+            let frozen = self.frozen_of(&token, member_id).await?;
+            if frozen {
+                tracing::warn!(
+                    member = member_id,
+                    role = ?role,
+                    "member already holds the token but is FROZEN; skipping mint — use \
+                     `unsuspend` to restore a frozen member, not `grant`"
+                );
+            } else {
+                tracing::warn!(
+                    member = member_id,
+                    role = ?role,
+                    "member already holds the token; skipping mint (idempotent)"
+                );
+            }
             return Ok(());
         }
 
@@ -350,20 +363,25 @@ impl<'a> TokenService<'a> {
             let token_bytes = platform::decode_identifier(&token_b58)?;
             let kind = role.kind();
 
-            // Mints (byDate index: tokenId, $createdAt).
+            // Mints (byDate index: tokenId, $createdAt). Paginated to exhaustion — a repo
+            // with >100 grants would otherwise drop late collaborators from BOTH the
+            // collaborator list AND the AuthzResolver (their legitimate events would then
+            // fold as unauthorized).
             let mints = self
                 .client
-                .query_documents(
+                .query_all_documents(
                     &history_contract,
                     TH_MINT,
                     &[QueryFilter::eq("tokenId", FieldValue::bytes32(token_bytes))],
                     &[QueryOrder::asc("$createdAt")],
-                    0,
-                    None,
                 )
                 .await?;
 
+            // Always include the repo owner: they hold `baseSupply` (no mint doc) but CAN
+            // be frozen/destroyed under the org joint-ownership pattern, and that freeze
+            // history must be reconstructed or the owner reads as perpetually unfrozen.
             let mut affected: BTreeSet<String> = BTreeSet::new();
+            affected.insert(owner.clone());
             for m in &mints {
                 let Some(recipient) = m
                     .field_bytes("recipientId")
@@ -392,7 +410,7 @@ impl<'a> TokenService<'a> {
                 ] {
                     let docs = self
                         .client
-                        .query_documents(
+                        .query_all_documents(
                             &history_contract,
                             doc_type,
                             &[
@@ -403,8 +421,6 @@ impl<'a> TokenService<'a> {
                                 ),
                             ],
                             &[QueryOrder::asc("$createdAt")],
-                            0,
-                            None,
                         )
                         .await?;
                     for d in &docs {

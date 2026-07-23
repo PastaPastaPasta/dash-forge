@@ -391,6 +391,47 @@ impl PlatformClient {
             .collect())
     }
 
+    /// Query **every** matching document, paginating past Platform's ≤100-row page cap.
+    ///
+    /// [`PlatformClient::query_documents`] returns a single page (≤100 rows); an
+    /// authorization-bearing fold (events, token history) MUST see all rows or a stranger
+    /// can bury real state-changing docs past row 100 with un-gated spam and freeze the
+    /// displayed state. This loops on the `$id` cursor (`start_after` = the last row's id)
+    /// until a short page is returned. `order` must be a stable traversal so the cursor
+    /// advances deterministically.
+    pub async fn query_all_documents(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+    ) -> Result<Vec<FetchedDocument>> {
+        const PAGE: u32 = 100;
+        let mut out: Vec<FetchedDocument> = Vec::new();
+        let mut start_after: Option<String> = None;
+        loop {
+            let page = self
+                .query_documents(
+                    contract,
+                    document_type,
+                    filters,
+                    order,
+                    PAGE,
+                    start_after.as_deref(),
+                )
+                .await?;
+            let n = page.len();
+            if let Some(last) = page.last() {
+                start_after = Some(last.id.clone());
+            }
+            out.extend(page);
+            if n < PAGE as usize {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Create a data contract (WITH tokens) from a JSON template, signing with `key`
     /// (must be a **CRITICAL** AUTHENTICATION key — token-bearing contracts are rejected
     /// for HIGH, spike S0.7).

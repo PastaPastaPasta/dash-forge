@@ -37,6 +37,8 @@ const DOC_EVENT: &str = "event";
 const DOC_REVIEW: &str = "review";
 const DOC_LABEL: &str = "label";
 const DOC_RELEASE: &str = "release";
+const DOC_REF_UPDATE: &str = "refUpdate";
+const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
 // Registry-contract document types.
 const DOC_STAR: &str = "star";
 const DOC_FOLLOW: &str = "follow";
@@ -54,6 +56,19 @@ fn doc_engine<'a>(
     bridge: &'a BridgeIdentity,
 ) -> Result<WriteEngine<'a>> {
     WriteEngine::new(client, identity, bridge.doc_op_key()?)
+}
+
+/// Fail fast on a text field that exceeds its contract `maxLength`, before spending a
+/// broadcast on a create consensus will reject. Counts Unicode scalar values (the
+/// client-side approximation; consensus is authoritative).
+fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
+    let len = value.chars().count();
+    if len > max {
+        return Err(Error::Config(format!(
+            "{field} too long: {len} chars (max {max})"
+        )));
+    }
+    Ok(())
 }
 
 /// Map a [`crate::rules::EventKind`] to its stored numeric `kind` (data-contracts §2.3).
@@ -199,11 +214,13 @@ impl<'a> IssueService<'a> {
         title: &str,
         body: &str,
     ) -> Result<Issue> {
+        check_len("issue title", title, 256)?;
+        check_len("issue body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
 
         let mut number = next_number(self.client, &contract, DOC_ISSUE).await?;
-        for attempt in 0..MAX_NUMBER_ATTEMPTS {
+        for _ in 0..MAX_NUMBER_ATTEMPTS {
             let mut props = BTreeMap::new();
             props.insert("number".to_string(), FieldValue::integer(number));
             props.insert("title".to_string(), FieldValue::text(title));
@@ -221,7 +238,10 @@ impl<'a> IssueService<'a> {
                         created_at: 0,
                     });
                 }
-                Err(Error::DuplicateUniqueIndex(_)) if attempt + 1 < MAX_NUMBER_ATTEMPTS => {
+                // Every collision retries with the next number; only after exhausting all
+                // attempts do we surface the friendly "exhausted" error (the final-attempt
+                // duplicate must not leak the raw DuplicateUniqueIndex).
+                Err(Error::DuplicateUniqueIndex(_)) => {
                     number += 1;
                     tracing::warn!(number, "issue number collision; retrying with next number");
                 }
@@ -302,6 +322,7 @@ impl<'a> IssueService<'a> {
         body: &str,
         anchor: Option<&CommentAnchor>,
     ) -> Result<String> {
+        check_len("comment body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
 
@@ -346,6 +367,21 @@ impl<'a> IssueService<'a> {
         value: Option<&str>,
         oid: Option<&[u8]>,
     ) -> Result<String> {
+        // Injection defense (write-side, mirrors repo.rs's refUpdate guard): a `Retarget`
+        // event's `value` is a base ref name written into un-gated event data, so a
+        // token-less identity could plant a newline/NUL/leading-dash name that spoofs a
+        // ref-advertisement line once a client renders it. Reject illegal names up front.
+        if matches!(kind, EventKind::Retarget) {
+            match value {
+                Some(v) if rules::is_legal_ref_name(v) => {}
+                _ => {
+                    return Err(Error::Config(format!(
+                        "illegal retarget base ref name {value:?}: must be non-empty, no \
+                         leading '-', no whitespace/control characters"
+                    )))
+                }
+            }
+        }
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         post_event(&engine, &contract, target_id, kind, value, oid).await
@@ -420,8 +456,11 @@ async fn fetch_events(
     target_id: &str,
 ) -> Result<Vec<Event>> {
     let target_bytes = platform::decode_identifier(target_id)?;
+    // Paginate to exhaustion: event create is UN-GATED, so a stranger can post >100
+    // throwaway events to bury real close/merge/label events past the ≤100-row page cap
+    // and freeze the folded state forever. Every event must reach the fold.
     let docs = client
-        .query_documents(
+        .query_all_documents(
             contract,
             DOC_EVENT,
             &[QueryFilter::eq(
@@ -429,8 +468,6 @@ async fn fetch_events(
                 FieldValue::identifier(target_bytes),
             )],
             &[QueryOrder::asc("$createdAt")],
-            0,
-            None,
         )
         .await?;
     let mut events = Vec::new();
@@ -561,6 +598,26 @@ impl<'a> PullRequestService<'a> {
         repo_contract_id: &str,
         input: &PullRequestInput,
     ) -> Result<PullRequest> {
+        check_len("PR title", &input.title, 256)?;
+        check_len("PR body", &input.body, 5120)?;
+        // Injection defense (write-side, mirrors repo.rs's refUpdate guard): base/source
+        // ref names are written into un-gated patch data, so an illegal name (newline/NUL/
+        // leading-dash) could spoof a ref-advertisement line when rendered. Reject up front.
+        if !rules::is_legal_ref_name(&input.base_ref_name) {
+            return Err(Error::Config(format!(
+                "illegal PR base ref name {:?}: must be non-empty, no leading '-', no \
+                 whitespace/control characters",
+                input.base_ref_name
+            )));
+        }
+        if let Some(source_ref) = &input.source_ref_name {
+            if !rules::is_legal_ref_name(source_ref) {
+                return Err(Error::Config(format!(
+                    "illegal PR source ref name {source_ref:?}: must be non-empty, no leading \
+                     '-', no whitespace/control characters"
+                )));
+            }
+        }
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
 
@@ -568,7 +625,7 @@ impl<'a> PullRequestService<'a> {
         let source_contract = platform::decode_identifier(&input.source_contract_id)?;
 
         let mut number = next_number(self.client, &contract, DOC_PATCH).await?;
-        for attempt in 0..MAX_NUMBER_ATTEMPTS {
+        for _ in 0..MAX_NUMBER_ATTEMPTS {
             let mut props = BTreeMap::new();
             props.insert("number".to_string(), FieldValue::integer(number));
             props.insert("title".to_string(), FieldValue::text(&input.title));
@@ -624,7 +681,7 @@ impl<'a> PullRequestService<'a> {
                         created_at: 0,
                     });
                 }
-                Err(Error::DuplicateUniqueIndex(_)) if attempt + 1 < MAX_NUMBER_ATTEMPTS => {
+                Err(Error::DuplicateUniqueIndex(_)) => {
                     number += 1;
                     tracing::warn!(number, "PR number collision; retrying with next number");
                 }
@@ -675,10 +732,23 @@ impl<'a> PullRequestService<'a> {
         Ok(docs.iter().map(pr_from_doc).collect())
     }
 
-    /// Resolve one PR's [`crate::rules::PrState`] by folding its `event` log. `base_tip`
-    /// (the current tip of the PR's base ref, hex) is used for merge reachability; when
-    /// `None`, a `merge` event cannot prove reachability and is inert (§4). Ancestry is
-    /// reflexive-only here (M1 has no read-side commit graph, same as `read_refs`).
+    /// Resolve one PR's [`crate::rules::PrState`] by folding its `event` log.
+    ///
+    /// ## Merge reachability (monotonic)
+    ///
+    /// `fold_pr_state` validates a `merge` event by `is_ancestor(merge_oid, base_tip)`.
+    /// forge-core has no commit graph, so a naive reflexive `|a,b| a==b` stand-in is
+    /// **wrong and non-monotonic**: it only accepts the merge while `base_tip == merge_oid`,
+    /// so the instant any later commit advances the base ref the merge event is rejected and
+    /// `merged` flips permanently back to `open`. Instead we approximate reachability with
+    /// the **set of every oid that was ever a tip of the base ref** (walked from the base
+    /// `refUpdate`/`protectedRefUpdate` history). That set only grows, so a merge whose oid
+    /// was ever a valid base tip stays merged forever — the correct on-platform monotonic
+    /// approximation. (A full git-backed ancestry predicate is strictly better but needs an
+    /// object store; the historical-tips set is sound for the merged/open decision.)
+    ///
+    /// `base_tip` (hex) may be supplied by a caller that has resolved the current tip; when
+    /// `None` the newest historical tip is used so the merge arm can fire.
     pub async fn pr_state(
         &self,
         repo_contract_id: &str,
@@ -694,8 +764,64 @@ impl<'a> PullRequestService<'a> {
             .token_history(repo_contract_id)
             .await?;
         let authz = AuthzResolver::new(records);
-        let state = rules::fold_pr_state(&events, &pr.author, &authz, base_tip, |a, b| a == b);
+
+        let (historical_tips, newest_tip) =
+            self.base_ref_tips(&contract, &pr.base_ref_name).await?;
+        let effective_base_tip = base_tip.map(str::to_string).or(newest_tip);
+        let state = rules::fold_pr_state(
+            &events,
+            &pr.author,
+            &authz,
+            effective_base_tip.as_deref(),
+            |oid, _tip| historical_tips.contains(oid),
+        );
         Ok(Some(PullRequestWithState { pr, state }))
+    }
+
+    /// Collect every oid that was ever a tip of `base_ref_name` (the monotonic merge-
+    /// reachability set) plus the newest such tip. Walks the full `refUpdate` +
+    /// `protectedRefUpdate` history for the ref (paginated), taking every non-null `newOid`.
+    async fn base_ref_tips(
+        &self,
+        contract: &LoadedContract,
+        base_ref_name: &str,
+    ) -> Result<(std::collections::BTreeSet<String>, Option<String>)> {
+        let ref_name_hash = sha256(base_ref_name.as_bytes());
+        let mut tips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut newest: Option<(u64, String, String)> = None; // (created_at, id, oid)
+        for doc_type in [DOC_REF_UPDATE, DOC_PROTECTED_REF_UPDATE] {
+            let docs = self
+                .client
+                .query_all_documents(
+                    contract,
+                    doc_type,
+                    &[QueryFilter::eq(
+                        "refNameHash",
+                        FieldValue::bytes32(ref_name_hash),
+                    )],
+                    &[QueryOrder::asc("$createdAt")],
+                )
+                .await?;
+            for d in &docs {
+                let Some(oid) = d.field_hex("newOid") else {
+                    continue;
+                };
+                if oid.is_empty() || oid.bytes().all(|b| b == b'0') {
+                    continue; // null oid = ref deletion, never a reachable tip
+                }
+                tips.insert(oid.clone());
+                let created_at = d.created_at.unwrap_or(0);
+                let candidate = (created_at, d.id.clone(), oid);
+                let better = match &newest {
+                    None => true,
+                    Some(n) => (n.0, &n.1) < (candidate.0, &candidate.1),
+                };
+                if better {
+                    newest = Some(candidate);
+                }
+            }
+        }
+        Ok((tips, newest.map(|(_, _, oid)| oid)))
     }
 
     /// Post a `review` verdict on a PR (`1` approve, `2` request-changes, `3` comment).
@@ -707,6 +833,7 @@ impl<'a> PullRequestService<'a> {
         commit_oid: &[u8],
         body: &str,
     ) -> Result<String> {
+        check_len("review body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
@@ -847,6 +974,9 @@ impl<'a> ReleaseService<'a> {
         repo_contract_id: &str,
         input: &ReleaseInput,
     ) -> Result<String> {
+        check_len("release tagName", &input.tag_name, 63)?;
+        check_len("release name", &input.name, 120)?;
+        check_len("release notes", &input.notes, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
@@ -976,6 +1106,9 @@ impl<'a> LabelService<'a> {
         description: &str,
         retired: bool,
     ) -> Result<String> {
+        check_len("label name", name, 30)?;
+        check_len("label color", color, 7)?;
+        check_len("label description", description, 200)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
@@ -1079,8 +1212,11 @@ impl<'a> SocialService<'a> {
     }
 
     /// Star a repo listing (`listing_id` = the `repoListing` `$id`, base58). Returns the
-    /// star document id. Idempotent — a re-star collides on the unique `($ownerId,
-    /// listingId)` index and is reported as already present.
+    /// star document id.
+    ///
+    /// Idempotent: a re-star collides on the unique `($ownerId, listingId)` index; that
+    /// [`Error::DuplicateUniqueIndex`] is caught and the caller's existing star id is
+    /// returned instead of an error (mirroring [`crate::tokens::TokenService::grant`]).
     pub async fn star(&self, listing_id: &str) -> Result<String> {
         let registry = self
             .client
@@ -1092,7 +1228,18 @@ impl<'a> SocialService<'a> {
             "listingId".to_string(),
             FieldValue::identifier(platform::decode_identifier(listing_id)?),
         );
-        engine.create_document(&registry, DOC_STAR, props).await
+        match engine.create_document(&registry, DOC_STAR, props).await {
+            Ok(id) => Ok(id),
+            Err(Error::DuplicateUniqueIndex(_)) => {
+                // Already starred — resolve and return the existing star id.
+                self.find_own(&registry, DOC_STAR, "listingId", listing_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Platform("star collided but no existing star found".into())
+                    })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Unstar (delete the caller's own `star` for `listing_id`). No-op if not starred.

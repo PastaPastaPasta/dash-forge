@@ -875,7 +875,16 @@ pub fn fold_pr_state(
                     state.assignees.remove(v);
                 }
             }
-            EventKind::Retarget => state.base_ref.clone_from(&e.value),
+            EventKind::Retarget => {
+                // Defense-in-depth (mirrors `resolve_ref`'s `is_legal_ref_name` gate): a
+                // retarget's `value` is a base ref name; an illegal one (newline/NUL/leading
+                // dash) could spoof a ref-advertisement line when rendered, so it is inert.
+                if let Some(v) = &e.value {
+                    if is_legal_ref_name(v) {
+                        state.base_ref = Some(v.clone());
+                    }
+                }
+            }
             EventKind::Draft => state.draft = true,
             EventKind::Ready => state.draft = false,
         }
@@ -1023,11 +1032,128 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 mod tests {
     use super::{
         fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name, matches_protected,
-        overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event, FlatIndex, Holdings,
-        IssueState, PrState, RefState, RefUpdate, TokenRecord, TreeDiff,
+        overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event, EventKind, FlatIndex,
+        Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind, TokenOp, TokenRecord,
+        TreeDiff,
     };
     use serde::Deserialize;
     use std::path::PathBuf;
+
+    /// A minted-at-genesis WRITE holder record (the common authz fixture).
+    fn write_mint(identity: &str) -> TokenRecord {
+        TokenRecord {
+            id: format!("mint-{identity}"),
+            identity: identity.into(),
+            token: TokenKind::Write,
+            op: TokenOp::Mint,
+            created_at: 0,
+        }
+    }
+
+    /// A merge event by `actor` on `target` with merge commit `oid`.
+    fn merge_event(actor: &str, target: &str, oid: &str, created_at: u64) -> Event {
+        Event {
+            id: format!("merge-{oid}"),
+            target_id: target.into(),
+            kind: EventKind::Merge,
+            actor: actor.into(),
+            value: None,
+            oid: Some(oid.into()),
+            created_at,
+        }
+    }
+
+    /// BLOCKER-1 regression: a merge whose oid was ever a base tip must stay `merged` once
+    /// the base ref advances past it. The service supplies a monotonic historical-tips
+    /// membership predicate; the old reflexive `|a,b| a==b` stand-in wrongly flipped it back
+    /// to open the instant `base_tip != merge_oid`.
+    #[test]
+    fn pr_merge_stays_merged_after_base_advances() {
+        let holder = "maint1";
+        let authz = AuthzResolver::new(vec![write_mint(holder)]);
+        let events = vec![merge_event(holder, "pr1", "M", 10)];
+
+        // The merge oid `M` and a later base commit `T` are both historical base tips.
+        let historical: std::collections::BTreeSet<String> =
+            ["M".to_string(), "T".to_string()].into_iter().collect();
+
+        // Base has advanced to `T` (T != M). Monotonic predicate keeps the PR merged.
+        let good = fold_pr_state(&events, "author1", &authz, Some("T"), |oid, _tip| {
+            historical.contains(oid)
+        });
+        assert!(good.merged, "merge stays merged after base advances");
+        assert!(!good.open, "a merged PR is closed");
+
+        // The buggy reflexive stand-in rejects the merge once base_tip != merge_oid.
+        let bad = fold_pr_state(&events, "author1", &authz, Some("T"), |a, b| a == b);
+        assert!(
+            !bad.merged,
+            "reflexive a==b wrongly un-merges once the base advances (the fixed bug)"
+        );
+    }
+
+    /// MAJOR-4 defense-in-depth: an illegal `Retarget` base ref name (injection shape) is
+    /// inert in the fold and never overwrites the live base ref.
+    #[test]
+    fn fold_pr_illegal_retarget_is_inert() {
+        let holder = "m1";
+        let authz = AuthzResolver::new(vec![write_mint(holder)]);
+        let legal = Event {
+            id: "e1".into(),
+            target_id: "pr".into(),
+            kind: EventKind::Retarget,
+            actor: holder.into(),
+            value: Some("refs/heads/dev".into()),
+            oid: None,
+            created_at: 5,
+        };
+        let illegal = Event {
+            id: "e2".into(),
+            target_id: "pr".into(),
+            kind: EventKind::Retarget,
+            actor: holder.into(),
+            value: Some("refs/heads/x\n0000 refs/heads/main".into()),
+            oid: None,
+            created_at: 10,
+        };
+        let s1 = fold_pr_state(std::slice::from_ref(&legal), "a", &authz, None, |_, _| {
+            false
+        });
+        assert_eq!(s1.base_ref.as_deref(), Some("refs/heads/dev"));
+        // The newer illegal retarget must NOT overwrite with the injection payload.
+        let s2 = fold_pr_state(&[legal, illegal], "a", &authz, None, |_, _| false);
+        assert_eq!(
+            s2.base_ref.as_deref(),
+            Some("refs/heads/dev"),
+            "illegal retarget value is inert"
+        );
+    }
+
+    /// MAJOR-3 support: `holdings_as_of` must observe a freeze applied to the repo OWNER —
+    /// the service now fetches the owner's freeze history unconditionally, so a frozen owner
+    /// reads as un-spendable as-of the freeze (not perpetually unfrozen).
+    #[test]
+    fn holdings_observes_owner_freeze() {
+        let owner = "owner1";
+        let records = vec![
+            write_mint(owner),
+            TokenRecord {
+                id: "freeze".into(),
+                identity: owner.into(),
+                token: TokenKind::Write,
+                op: TokenOp::Freeze,
+                created_at: 100,
+            },
+        ];
+        assert!(
+            holdings_as_of(&records, owner, 50).write,
+            "owner is spendable before the freeze"
+        );
+        assert!(
+            !holdings_as_of(&records, owner, 150).write,
+            "owner is NOT spendable after the freeze (must be observed)"
+        );
+    }
 
     /// The parity contract: one file per scenario, dispatched by `case`.
     #[derive(Debug, Deserialize)]
