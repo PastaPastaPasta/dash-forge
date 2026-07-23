@@ -42,7 +42,7 @@ function gitPack(packHashHex: string, createdAt: number, documentId: string): Pa
 function mockSdk(bytesFor: (packHashHex: string) => Uint8Array): EvoSDK {
   return {
     documents: {
-      queryWithProof: (q: {
+      query: (q: {
         where?: readonly (readonly unknown[])[]
       }): Promise<Map<string, unknown>> => {
         const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')

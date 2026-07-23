@@ -11,7 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
 import { queryDocumentsWithProof } from '../sdk'
-import { REGISTRY_DOC, type RepoListing } from '../repo'
+import { REGISTRY_DOC, asIdentifierString, type RepoListing } from '../repo'
 
 function asString(v: unknown): string {
   return typeof v === 'string' ? v : ''
@@ -48,7 +48,7 @@ export async function listRecentRepos(
     ownerId: asString(d['$ownerId']),
     name: asString(d['name']),
     normalizedName: asString(d['normalizedName']),
-    repoContractId: asString(d['repoContractId']),
+    repoContractId: asIdentifierString(d['repoContractId']),
     description: asString(d['description']),
     createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
   }))
@@ -76,7 +76,7 @@ export async function listReposByOwner(
     ownerId: asString(d['$ownerId']),
     name: asString(d['name']),
     normalizedName: asString(d['normalizedName']),
-    repoContractId: asString(d['repoContractId']),
+    repoContractId: asIdentifierString(d['repoContractId']),
     description: asString(d['description']),
     createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
   }))

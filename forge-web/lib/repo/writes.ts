@@ -19,6 +19,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { NETWORKS } from '../constants'
 import { isLegalRefName } from '../rules'
 import { decodeIdentifier } from '../auth/base58'
+import { errorMessage } from '../utils'
 import {
   createDocumentIdempotent,
   createRepoContract,
@@ -78,9 +79,6 @@ const EVENT_KIND_INT: Readonly<Record<EventKindName, number>> = {
 // helpers
 // ---------------------------------------------------------------------------
 
-function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
 
 /** A unique-index collision — for star/follow/issue-number this means "already there". */
 function isDuplicateUniqueError(e: unknown): boolean {

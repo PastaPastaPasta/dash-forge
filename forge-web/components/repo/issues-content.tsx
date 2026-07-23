@@ -26,7 +26,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 type Filter = 'open' | 'closed' | 'all'
 
@@ -175,7 +175,7 @@ function ComposeIssueDialog({
       onCreated()
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorMessage(e))
     } finally {
       setPending(false)
     }

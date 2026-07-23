@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { errorMessage } from '@/lib/utils'
 
 export function IssueContent({
   home,
@@ -69,7 +70,7 @@ export function IssueContent({
       setComment('')
       reload()
     } catch (e) {
-      setCommentError(e instanceof Error ? e.message : String(e))
+      setCommentError(errorMessage(e))
     } finally {
       setPosting(false)
     }
@@ -90,7 +91,7 @@ export function IssueContent({
           {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-400">#{issue.number}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify' : 'bg-forge-600'}`}>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify' : 'bg-forge-700'}`}>
             {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
             {open ? 'Open' : 'Closed'}
           </span>

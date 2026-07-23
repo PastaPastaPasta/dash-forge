@@ -261,11 +261,28 @@ function clearPendingST(documentId: string): void {
 function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message
   if (typeof e === 'string') return e
+  // wasm-bindgen rejections are plain objects (not Error); probe their string `message` /
+  // `toString()` (each may throw on a freed pointer) so classification sees the real gRPC text.
+  if (e && typeof e === 'object') {
+    try {
+      const m = (e as { message?: unknown }).message
+      if (typeof m === 'string' && m.length > 0) return m
+    } catch {
+      /* freed-pointer getter — ignore */
+    }
+  }
   try {
     return JSON.stringify(e)
   } catch {
-    return String(e)
+    /* circular / wasm object — fall through */
   }
+  try {
+    const s = (e as { toString?: () => unknown }).toString?.()
+    if (typeof s === 'string' && s !== '[object Object]') return s
+  } catch {
+    /* ignore */
+  }
+  return 'unknown error'
 }
 
 /** An already-processed ST (mempool/chain/nonce-used) — the broadcast effectively succeeded. */

@@ -14,6 +14,7 @@ export {
   DOC,
   REGISTRY_DOC,
   TOKEN_POSITION,
+  asIdentifierString,
   parseJsonList,
   toEvent,
   toRefUpdate,

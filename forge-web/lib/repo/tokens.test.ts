@@ -60,7 +60,7 @@ function mockSdk(history: {
         Promise.resolve(position === 0 ? WRITE_TOKEN : MAINTAIN_TOKEN),
     },
     documents: {
-      queryWithProof: (q: {
+      query: (q: {
         documentTypeName: string
         where?: readonly (readonly unknown[])[]
       }): Promise<Map<string, Doc>> => {

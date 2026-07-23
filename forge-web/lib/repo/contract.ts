@@ -7,7 +7,8 @@
  */
 
 import type { Event, EventKind, RefUpdate, TokenKind } from '../rules'
-import { base64ToHex, type PlainDocument } from '../sdk'
+import { base58Decode, base58Encode } from '../auth/base58'
+import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
 /** Repo-contract document type names (data-contracts §2.2). */
 export const DOC = {
@@ -123,6 +124,32 @@ export function toEvent(doc: PlainDocument): Event | null {
     oid: oidHex.length > 0 ? oidHex : null,
     createdAt: num(doc, '$createdAt'),
   }
+}
+
+/**
+ * Normalize a document field that holds a 32-byte identifier (e.g. a repo listing's
+ * `repoContractId`) to its **base58** string — the form Platform contract/document APIs
+ * require. A CONTENT identifier stored as a `byteArray` comes back from the SDK's `toJSON`
+ * as **base64**, and feeding that straight to `contracts.fetch()` / a query's
+ * `dataContractId` throws "Invalid data contract ID: … invalid character … at byte 9" (a
+ * browser-only failure the Playwright suite caught — `resolveRepo` fetched the repo contract
+ * with a base64 id and every downstream read died). Accepts an already-base58 id unchanged;
+ * re-encodes a base64 32-byte value to base58; otherwise returns the raw string.
+ */
+export function asIdentifierString(v: unknown): string {
+  if (typeof v !== 'string' || v.length === 0) return ''
+  try {
+    if (base58Decode(v).length === 32) return v
+  } catch {
+    /* not base58 — try base64 below */
+  }
+  try {
+    const bytes = base64ToBytes(v)
+    if (bytes.length === 32) return base58Encode(bytes)
+  } catch {
+    /* not base64 either */
+  }
+  return v
 }
 
 /** Parse a JSON-in-string list field (data-contracts §0: no native arrays on v12). */

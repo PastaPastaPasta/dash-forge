@@ -14,6 +14,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { errorMessage } from '@/lib/utils'
+
 export interface AsyncState<T> {
   readonly data: T | null
   readonly loading: boolean
@@ -58,7 +60,7 @@ export function useAsync<T>(
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setError(e instanceof Error ? e.message : String(e))
+        setError(errorMessage(e))
         setLoading(false)
       })
     return () => {

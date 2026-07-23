@@ -16,6 +16,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { errorMessage } from '@/lib/utils'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -65,7 +66,7 @@ export function ConfirmDialog({
         onClose()
       }, 900)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorMessage(e))
     } finally {
       setPending(false)
     }

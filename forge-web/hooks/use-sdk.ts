@@ -14,6 +14,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '@/lib/constants'
 import { evoSdkService } from '@/lib/sdk'
+import { errorMessage } from '@/lib/utils'
 
 interface SdkState {
   readonly sdk: EvoSDK | null
@@ -53,8 +54,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        const message = e instanceof Error ? e.message : String(e)
-        setState({ sdk: null, ready: false, error: message, network })
+        setState({ sdk: null, ready: false, error: errorMessage(e, 'could not reach Platform'), network })
       })
     return () => {
       cancelled = true

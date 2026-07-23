@@ -15,6 +15,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK } from '../constants'
+import { errorMessage } from '../utils'
 import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
 import { normalizeToWif } from './wif'
 import { parseIdentityFileText, type ParsedIdentityFile } from './identity-file'
@@ -157,7 +158,7 @@ export class AuthController {
       this.setState({ session, isLoading: false, error: null })
       return session
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
+      const message = errorMessage(e)
       this.setState({ isLoading: false, error: message })
       throw e
     }
@@ -169,7 +170,7 @@ export class AuthController {
     try {
       parsed = parseIdentityFileText(text)
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
+      const message = errorMessage(e)
       this.setState({ error: message })
       throw e
     }

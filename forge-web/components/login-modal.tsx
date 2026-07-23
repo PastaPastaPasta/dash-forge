@@ -14,6 +14,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { DEFAULT_NETWORK } from '@/lib/constants'
+import { errorMessage } from '@/lib/utils'
 
 type Tab = 'file' | 'key'
 
@@ -37,7 +38,7 @@ export function LoginModal(): JSX.Element {
       await loginWithIdentityFile(text)
       close()
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : String(e))
+      setLocalError(errorMessage(e))
     }
   }
 
@@ -47,7 +48,7 @@ export function LoginModal(): JSX.Element {
       await login(identityId.trim(), privateKey.trim())
       close()
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : String(e))
+      setLocalError(errorMessage(e))
     }
   }
 

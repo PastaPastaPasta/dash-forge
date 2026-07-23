@@ -132,7 +132,6 @@ function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument
 // narrow through these local shapes rather than leaking `any` into call sites.
 interface DocumentsFacadeLike {
   query: (q: DocumentQuery) => Promise<Map<string, unknown>>
-  queryWithProof: (q: DocumentQuery) => Promise<unknown>
   count: (q: DocumentQuery) => Promise<Map<string, bigint>>
 }
 interface SdkLike {
@@ -156,19 +155,23 @@ export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
 }
 
 /**
- * Proof-verified query — the default forge-web read path (S0.3: `testnetTrusted()` +
- * `*WithProof` is the only WASM-viable mode; proofs are always on, ~0% overhead).
+ * Proof-verified query — the default forge-web read path.
+ *
+ * BROWSER-BUG FIX (found by the Playwright suite, invisible to node/jsdom): the explicit
+ * `documents.queryWithProof(...)` facade in evo-sdk 4.0.0 **rejects in a real browser with a
+ * wasm-bindgen object** (carries `__wbg_ptr`, not a JS `Error`), breaking every live read.
+ * Per S0.3 the connection is `testnetTrusted()`/`mainnetTrusted()`, and a **trusted** connect
+ * prefetches the quorum keys and **proof-verifies every plain `.query()` internally** — so the
+ * explicit `*WithProof` variant is both redundant and buggy in-browser. This delegates to the
+ * plain `.query()` (still trust-minimized, proofs on), which returns cleanly in the browser.
+ * The `proofMetadata` field is retained for API compatibility (it was never consumed).
  */
 export async function queryDocumentsWithProof(
   sdk: EvoSDK,
   query: DocumentQuery,
 ): Promise<ProofedDocuments> {
-  const resp = await documentsOf(sdk).queryWithProof(query)
-  // The proof response wraps the document Map alongside metadata; shapes vary across SDK
-  // builds, so pick the Map defensively and carry the rest through as opaque metadata.
-  const r = resp as { data?: unknown; result?: unknown; documents?: unknown; metadata?: unknown }
-  const payload = r.data ?? r.result ?? r.documents ?? resp
-  return { documents: mapToDocuments(payload), proofMetadata: r.metadata ?? null }
+  const response = await documentsOf(sdk).query(query)
+  return { documents: mapToDocuments(response), proofMetadata: null }
 }
 
 /**

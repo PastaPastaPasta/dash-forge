@@ -27,6 +27,7 @@ import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
+import { errorMessage } from '@/lib/utils'
 
 type Pending = 'merge' | 'close' | 'reopen' | null
 
@@ -74,7 +75,7 @@ export function PullContent({ home, number }: { home: RepoHome; addr: RepoAddres
       setComment('')
       reload()
     } catch (e) {
-      setCommentError(e instanceof Error ? e.message : String(e))
+      setCommentError(errorMessage(e))
     } finally {
       setPosting(false)
     }

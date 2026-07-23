@@ -11,7 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { REGISTRY_DOC, type RepoRef } from './contract'
+import { REGISTRY_DOC, asIdentifierString, type RepoRef } from './contract'
 
 interface DataContractLike {
   ownerId?: () => unknown
@@ -50,7 +50,7 @@ function toListing(doc: PlainDocument): RepoListing {
     ownerId: asString(doc['$ownerId']),
     name: asString(doc['name']),
     normalizedName: asString(doc['normalizedName']),
-    repoContractId: asString(doc['repoContractId']),
+    repoContractId: asIdentifierString(doc['repoContractId']),
     description: asString(doc['description']),
   }
 }
