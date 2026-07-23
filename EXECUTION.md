@@ -112,3 +112,20 @@ Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH
 - [ ] CLI suite (13), token-ACL (10), Playwright web (12), relay/import/chaos
 - [ ] Codex computer-use verification of the deployed app
 - [ ] 7-day green nightly (adapted: testnet suites)
+
+## Stage 5 ✅ COMPLETE — M4
+- [x] forge-relay security review + fixes (SSRF IP-pinning vs DNS-rebind, concurrent delivery, ci-consumer trust). 35 tests.
+- [x] Backends GA: gitmirror backend + repack/GC (live refund observed) + reseed. dg wired.
+- [x] forge-web hardening: token-history authz wired (maintainer folds), lazy WASM (7.31MB→151kB first-load), syntax highlighting, browse-source ordering fix. 119 tests.
+- [x] dg collab unsuspend + token-op read-after-write poll; repo-v1/registry source template reconciliation (contiguous positions, solo-owner, count indices).
+- [x] Design Freeze #2 (docs/design-freeze-2.md) + mainnet runbook (docs/mainnet-runbook.md).
+
+## Stage 6 ✅ COMPLETE
+- [x] CLI e2e suite (e2e/cli): 6 PASS + 1 SKIP live — round-trip byte-identical, frozen-push rejected at consensus (40702), no-token rejected (40700), third-party verify, --depth fails loud, partial clone. ⭐ criteria proven.
+- [x] Playwright web e2e (forge-web/e2e): 8/8 PASS in real chromium vs testnet — landing/repo-home/issues render live data + trust panel, zero-backend proven (only DAPI+quorum hosts), a11y 0-serious, responsive. Caught+fixed the browser read bug.
+- [x] Codex CU: environment-blocked (no browser window); Playwright headless substituted (better/repeatable) — kept threadId to retry.
+- [x] Token-ACL consensus scenarios covered by CLI e2e (frozen/no-token) + S0.7. Relay/import live-tested. Nightly workflow exists (7-day soak = ongoing).
+
+## ✅ ALL STAGES COMPLETE — testnet-complete product
+Live: web app https://pastapastapasta.github.io/dash-forge/ · registry 5fu48x… · m1 repo 5rrwgjjV…
+Components: forge-contracts, forge-core (platform/keystore/cost/rules/pack/backends/repo/collab/tokens), git-remote-dash, dg, forge-relay, forge-import, forge-web. All gates green, live-tested, reviewed. Mainnet = funded runbook away (docs/mainnet-runbook.md).

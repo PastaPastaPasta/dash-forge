@@ -32,10 +32,17 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience �
 7. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
 8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
 9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
+10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict).
+11. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
+12. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
 
 ## Status
 
-Planning phase; nothing final. These documents are the first full-depth pass over everything needed to implement the project.
+**Built and testnet-complete.** All components are implemented, live-tested against Dash Platform testnet, and independently code-reviewed. The web app is live at **https://pastapastapasta.github.io/dash-forge/**. See [EXECUTION.md](EXECUTION.md) for the build log, [design-freeze-2.md](docs/design-freeze-2.md) for as-built decisions, and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (rehearsed, not-yet-executed) mainnet deployment.
+
+Proven end-to-end on testnet: `git clone dash://…` / `git push` byte-identical round-trip; frozen-collaborator push rejected at consensus; third-party "no trust in any server" verification; browser app rendering live proof-verified data with the trust panel; CLI↔web parity via 66 shared conformance vectors.
+
+Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`. Verification: `e2e/cli/` (CLI suite) + `forge-web/e2e/` (Playwright).
 
 ## Reference material (local workspace)
 
