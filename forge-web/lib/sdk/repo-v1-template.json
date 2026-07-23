@@ -336,6 +336,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "packHash",
         "kind",
         "sizeBytes",
@@ -542,6 +543,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "number",
         "title"
       ],
@@ -673,6 +675,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "number",
         "title",
         "baseRefNameHash",
@@ -768,6 +771,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "targetId",
         "body"
       ],
@@ -900,6 +904,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "patchId",
         "verdict",
         "commitOid"
@@ -954,6 +959,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "name"
       ],
       "additionalProperties": false
@@ -1020,6 +1026,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "tagName"
       ],
       "additionalProperties": false
@@ -1085,6 +1092,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "headOid",
         "name",
         "status"
@@ -1164,6 +1172,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "hookId",
         "url",
         "relayIdentityId"
