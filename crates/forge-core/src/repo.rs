@@ -432,6 +432,28 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
+    /// Read the repo's current default branch from the newest `config` document (e.g.
+    /// `main`) — the branch `git-remote-dash` reports as the `HEAD` symref in `list`.
+    /// `None` when no `config` exists yet (a contract without an initial config).
+    pub async fn read_default_branch(&self, repo: &RepoHandle) -> Result<Option<String>> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let docs = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_CONFIG,
+                &[],
+                &[QueryOrder::desc("$createdAt")],
+                1,
+                None,
+            )
+            .await?;
+        Ok(docs
+            .into_iter()
+            .next()
+            .and_then(|d| d.field_str("defaultBranch")))
+    }
+
     /// Write a `packManifest` document (WRITE-gated). Returns the manifest document id.
     pub async fn write_pack_manifest(
         &self,
