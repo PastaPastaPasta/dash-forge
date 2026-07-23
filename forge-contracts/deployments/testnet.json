@@ -1,8 +1,18 @@
 {
   "registry": {
-    "contractId": "5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd",
+    "contractId": "DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh",
     "ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
-    "deployedAt": "2026-07-22T23:17:37.820Z",
+    "deployedAt": "2026-07-23T15:51:42.807Z",
     "version": 1
-  }
+  },
+  "registrySuperseded": [
+    {
+      "contractId": "5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd",
+      "ownerId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+      "deployedAt": "2026-07-22T23:17:37.820Z",
+      "version": 1,
+      "supersededAt": "2026-07-23T15:51:42.807Z",
+      "reason": "repoListing/star/follow indexed $createdAt without declaring it required, so Platform never stored the timestamp, and the $createdAt `recent` index was missing entirely. Indices are immutable after creation (rs-dpp index_level::validate_update), so a contract update could not fix either — redeploy was the only path."
+    }
+  ]
 }

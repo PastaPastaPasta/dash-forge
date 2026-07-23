@@ -68,18 +68,24 @@ export async function listReposByOwner(
     dataContractId: registryId,
     documentTypeName: REGISTRY_DOC.repoListing,
     where: [['$ownerId', '==', ownerId]],
-    orderBy: [['$ownerId', 'asc'], ['$createdAt', 'desc']],
+    // The only index carrying `$ownerId` is `ownerName` ($ownerId, normalizedName) — there is
+    // no ($ownerId, $createdAt) index to order on, and an equality-constrained field must not
+    // appear in orderBy (the live-proven pattern in repo/refs.ts). Traverse by normalizedName
+    // and sort newest-first client-side; the owner's listing count is small by construction.
+    orderBy: [['normalizedName', 'asc']],
     limit: opts.limit ?? 50,
   })
-  return documents.map((d) => ({
-    listingId: asString(d['$id']),
-    ownerId: asString(d['$ownerId']),
-    name: asString(d['name']),
-    normalizedName: asString(d['normalizedName']),
-    repoContractId: asIdentifierString(d['repoContractId']),
-    description: asString(d['description']),
-    createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
-  }))
+  return documents
+    .map((d) => ({
+      listingId: asString(d['$id']),
+      ownerId: asString(d['$ownerId']),
+      name: asString(d['name']),
+      normalizedName: asString(d['normalizedName']),
+      repoContractId: asIdentifierString(d['repoContractId']),
+      description: asString(d['description']),
+      createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
+    }))
+    .sort((a, b) => b.createdAt - a.createdAt)
 }
 
 /** Re-export the listing type for callers that only import from view glue. */

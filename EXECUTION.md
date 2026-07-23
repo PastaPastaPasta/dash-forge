@@ -126,6 +126,12 @@ Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH
 - [x] Codex CU: environment-blocked (no browser window); Playwright headless substituted (better/repeatable) — kept threadId to retry.
 - [x] Token-ACL consensus scenarios covered by CLI e2e (frozen/no-token) + S0.7. Relay/import live-tested. Nightly workflow exists (7-day soak = ongoing).
 
+## Post-freeze fix — registry redeploy (2026-07-23)
+- [x] Landing "Recent repos" read failed: `orderBy $createdAt` hit a non-indexed property. Two root causes — the deployed `5fu48x…` predated the `recent` index (added after deploy), **and** `repoListing`/`star`/`follow` indexed `$createdAt` without listing it in `required`, so Platform never stored the timestamp (every live listing had `$createdAt: null`). Indices are immutable post-creation (`rs-dpp` `index_level::validate_update` — "we do not allow any index modifications"), so a contract update could fix neither.
+- [x] registry.json: `$createdAt` added to `required` on repoListing/star/follow. Redeployed testnet registry → `DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh` (0.713 DASH; funded by a TREASURY→DEPLOYER credit transfer). Both M1 listings re-published; superseded id recorded in `deployments/testnet.json`.
+- [x] `listReposByOwner` had the same class of bug (ordered by `$ownerId,$createdAt`; the only `$ownerId` index is `ownerName` = `$ownerId,normalizedName`, and an equality-constrained field must not appear in orderBy) — now traverses `normalizedName` and sorts newest-first client-side.
+- [x] mint-identity islock poll: backs off on consecutive failures (3s→30s). The flat 3s poll got the whole IP TLS-reset by `trpc.digitalcash.dev`, which reads as a permanent outage.
+
 ## ✅ ALL STAGES COMPLETE — testnet-complete product
-Live: web app https://pastapastapasta.github.io/dash-forge/ · registry 5fu48x… · m1 repo 5rrwgjjV…
+Live: web app https://pastapastapasta.github.io/dash-forge/ · registry DXocbV5… (supersedes 5fu48x…) · m1 repo 5rrwgjjV…
 Components: forge-contracts, forge-core (platform/keystore/cost/rules/pack/backends/repo/collab/tokens), git-remote-dash, dg, forge-relay, forge-import, forge-web. All gates green, live-tested, reviewed. Mainnet = funded runbook away (docs/mainnet-runbook.md).

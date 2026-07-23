@@ -94,6 +94,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "name",
         "normalizedName",
         "repoContractId",
@@ -200,6 +201,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "listingId"
       ],
       "additionalProperties": false
@@ -265,6 +267,7 @@
         }
       ],
       "required": [
+        "$createdAt",
         "identityId"
       ],
       "additionalProperties": false

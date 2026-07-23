@@ -34,7 +34,7 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
   testnet: {
     network: 'testnet',
     // Source: forge-contracts/deployments/testnet.json (registry.contractId).
-    registryContractId: '5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd',
+    registryContractId: 'DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh',
     // DPNS system contract (testnet).
     dpnsContractId: 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec',
   },

@@ -48,7 +48,7 @@ const REPO_V1_TEMPLATE: &str = include_str!(concat!(
 /// The deployed testnet registry contract id
 /// (`forge-contracts/deployments/testnet.json`). The `repoListing` discovery docs live
 /// here; resolution and publish target it.
-pub const TESTNET_REGISTRY_CONTRACT_ID: &str = "5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd";
+pub const TESTNET_REGISTRY_CONTRACT_ID: &str = "DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh";
 
 // Document type names (repo contract).
 const DOC_CONFIG: &str = "config";
