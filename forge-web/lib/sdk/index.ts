@@ -8,6 +8,42 @@
 
 export { evoSdkService, type EvoSdkConfig } from './service'
 export {
+  COST_ESTIMATE_CREDITS,
+  CREDITS_PER_DASH,
+  REPO_CREATE_GATES,
+  SECURITY_LEVEL,
+  WriteAuthError,
+  createDocumentIdempotent,
+  createGateFor,
+  creditsToDash,
+  deleteDocumentIdempotent,
+  findSigningKey,
+  isAlreadyExistsError,
+  previewCredits,
+  previewDocumentCreate,
+  readIdentityBalance,
+  type CostPreview,
+  type TokenGate,
+  type WriteAuth,
+  type WriteResult,
+} from './write'
+export {
+  GRANT_AMOUNT,
+  ROLE_POSITION,
+  grantRole,
+  revokeRole,
+  suspendRole,
+  type Role,
+} from './token-admin'
+export {
+  applySoloOwnerTokenRules,
+  buildRepoV1Contract,
+  createRepoContract,
+  normalizeDocumentPositions,
+  type CreateRepoContractResult,
+  type JsonValue,
+} from './contract-create'
+export {
   base64ToBytes,
   base64ToHex,
   bytesToBase64,
@@ -16,6 +52,7 @@ export {
   inBatchAllPerKey,
   inBatchNewestPerKey,
   normalizeDocument,
+  setPlatformVersion,
   queryDocuments,
   queryDocumentsWithProof,
   skipScanDistinct,

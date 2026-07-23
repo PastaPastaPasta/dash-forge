@@ -13,6 +13,7 @@
 import { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
+import { setPlatformVersion } from './query'
 
 export interface EvoSdkConfig {
   readonly network: Network
@@ -77,6 +78,13 @@ class EvoSdkService {
         ? EvoSDK.mainnetTrusted(options)
         : EvoSDK.testnetTrusted(options)
     await this.sdk.connect()
+    // Pin the DPP version so read normalization (`toJSON`) matches the connected network.
+    try {
+      const version = (this.sdk as unknown as { version(): number }).version()
+      setPlatformVersion(version)
+    } catch {
+      // Keep the default version if the SDK cannot report one.
+    }
     // Preload BEFORE marking ready so getSdk() callers never see an unwarmed SDK.
     await this.preload(config.contractIds)
     this.ready = true

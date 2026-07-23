@@ -62,7 +62,11 @@ export interface PullView {
 }
 
 function num(doc: PlainDocument, field: string): number {
-  return typeof doc[field] === 'number' ? (doc[field] as number) : 0
+  const v = doc[field]
+  // Content integer fields (e.g. issue/PR `number`) come back as bigint from the SDK; only
+  // system numeric fields are pre-normalized to `number`.
+  if (typeof v === 'bigint') return Number(v)
+  return typeof v === 'number' ? v : 0
 }
 function str(doc: PlainDocument, field: string): string {
   return typeof doc[field] === 'string' ? (doc[field] as string) : ''

@@ -66,6 +66,8 @@ function str(doc: PlainDocument, field: string): string {
 
 function num(doc: PlainDocument, field: string): number {
   const v = doc[field]
+  // Content integer fields (e.g. event `kind`) return as bigint; system fields are normalized.
+  if (typeof v === 'bigint') return Number(v)
   return typeof v === 'number' ? v : 0
 }
 

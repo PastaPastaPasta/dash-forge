@@ -6,7 +6,8 @@
  * read config / default branch, locate browse-plane pack manifests, fold issue/PR state,
  * and derive the collaborator list from token balances.
  *
- * WRITE paths are stubbed (see `./writes`) — M3 is read/rules/browse.
+ * WRITE paths (issues, comments, events, stars, follows, releases, collaborator token admin,
+ * repo creation, minimal ref push) sign + broadcast via the `./writes` WriteEngine.
  */
 
 export {
@@ -70,10 +71,27 @@ export {
 } from './collab'
 export {
   WriteNotImplementedError,
+  addEvent,
+  closeTarget,
   createComment,
   createIssue,
+  createLabel,
+  createRelease,
+  createRepo,
+  followIdentity,
   grantCollaborator,
+  labelTarget,
+  normalizeRepoName,
   pushRefUpdate,
+  reopenTarget,
+  revokeCollaborator,
   starRepo,
   suspendCollaborator,
+  unfollowIdentity,
+  unstarRepo,
+  type CreateIssueResult,
+  type CreateRepoOptions,
+  type CreateRepoResult,
+  type EventKindName,
+  type ReleaseAsset,
 } from './writes'

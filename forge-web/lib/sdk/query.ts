@@ -87,41 +87,35 @@ export interface DocumentQuery {
 /** A normalized document: system fields ($id/$ownerId base58, $createdAt number) + content. */
 export type PlainDocument = Record<string, unknown>
 
-// System identifier fields ($id / $ownerId / $dataContractId) come back from the SDK's
-// `toObject()` already as base58 strings, so normalization only rewrites the bigint
-// numeric fields below to JS numbers (or a decimal string when out of safe-integer range).
-const SYSTEM_NUMERIC_FIELDS = new Set([
-  '$revision',
-  '$createdAt',
-  '$updatedAt',
-  '$transferredAt',
-  '$createdAtBlockHeight',
-  '$updatedAtBlockHeight',
-])
+// The SDK exposes two document serializers with DIFFERENT field encodings:
+//   - `toObject()` → identifiers as raw `Uint8Array`, integers as `bigint`, byteArrays as
+//     `Uint8Array`.
+//   - `toJSON(platformVersion)` → identifiers as base58 strings, integers as JS numbers,
+//     byteArrays as base64 strings.
+// The whole forge-web read layer is written against the `toJSON` shape (`str()` expects base58,
+// `num()` expects number, `byteFieldToHex`/skip-scan expect base64) — so normalization uses
+// `toJSON`. A `platformVersion` is required; the service pins it from `sdk.version()` on connect
+// (the value only selects DPP's serialization rules, which are stable for our field types).
+let platformVersion = 1
+
+/** Pin the DPP platform version used by {@link normalizeDocument}'s `toJSON`. */
+export function setPlatformVersion(version: number): void {
+  if (Number.isInteger(version) && version > 0) platformVersion = version
+}
 
 interface DocumentLike {
+  toJSON?: (platformVersion: number) => unknown
   toObject?: () => unknown
-  toJSON?: () => unknown
 }
 
 /** Normalize a wasm Document (or already-plain object) to a JSON-friendly record. */
 export function normalizeDocument(doc: unknown): PlainDocument {
   const d = doc as DocumentLike
   let raw: unknown = doc
-  if (typeof d.toObject === 'function') raw = d.toObject()
-  else if (typeof d.toJSON === 'function') raw = d.toJSON()
+  if (typeof d.toJSON === 'function') raw = d.toJSON(platformVersion)
+  else if (typeof d.toObject === 'function') raw = d.toObject()
   if (raw === null || typeof raw !== 'object') return {}
-  const src = raw as Record<string, unknown>
-  const out: PlainDocument = {}
-  for (const [k, v] of Object.entries(src)) {
-    if (SYSTEM_NUMERIC_FIELDS.has(k) && typeof v === 'bigint') {
-      const n = Number(v)
-      out[k] = Number.isSafeInteger(n) ? n : v.toString()
-    } else {
-      out[k] = v
-    }
-  }
-  return out
+  return raw as PlainDocument
 }
 
 function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument[] {
