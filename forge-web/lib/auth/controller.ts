@@ -141,7 +141,7 @@ export class AuthController {
         throw new WriteAuthError(`identity ${identityId} not found on ${this.network}`)
       }
       // Require the WIF to control at least one usable (CRITICAL/HIGH) AUTHENTICATION key.
-      const match = findSigningKey(identity, wif, this.network, 3)
+      const match = await findSigningKey(identity, wif, this.network, 3)
       if (!match) {
         throw new WriteAuthError(
           'the provided key does not match any usable AUTHENTICATION key on this identity',

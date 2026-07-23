@@ -31,6 +31,10 @@ export interface PackManifest {
   readonly tips: readonly string[]
   /** Pack hashes this manifest supersedes. */
   readonly supersedes: readonly string[]
+  /** Consensus `$createdAt` (ms) — the primary key for the packRef total order. */
+  readonly createdAt: number
+  /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak (data-contracts §2.3). */
+  readonly documentId: string
 }
 
 function toManifest(doc: PlainDocument): PackManifest {
@@ -54,6 +58,8 @@ function toManifest(doc: PlainDocument): PackManifest {
     uris: parseJsonList(doc, 'uris'),
     tips: parseJsonList(doc, 'tips'),
     supersedes: parseJsonList(doc, 'supersedes'),
+    createdAt: num('$createdAt'),
+    documentId: typeof doc['$id'] === 'string' ? (doc['$id'] as string) : '',
   }
 }
 

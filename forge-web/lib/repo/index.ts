@@ -49,6 +49,10 @@ export {
   type PackManifest,
 } from './packs'
 export {
+  readTokenHistory,
+  resolveAuthz,
+} from './tokens'
+export {
   emptyAuthz,
   historicalTipsPredicate,
   listIssues,

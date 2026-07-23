@@ -3,11 +3,12 @@
 /**
  * BlobContent — a single file view via the browse plane: resolve the path to its blob oid
  * (ranged locator lookup), reconstruct + hash-verify the bytes, and render text with line
- * numbers (mono, no highlighter in-bundle) or a raw download for binary. The blob oid is
- * surfaced as a struck-metal serial in the assay.
+ * numbers and lazy syntax highlighting (highlight.js loaded in its own async chunk, so it
+ * never blocks first paint), or a raw download for binary. The blob oid is surfaced as a
+ * struck-metal serial in the assay.
  */
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Download, FileText } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -16,11 +17,13 @@ import {
   decodeTextBlob,
   findBranch,
   findEntry,
+  highlightBlob,
   readBlob,
   readTree,
   tipOidOf,
   treeAtPath,
   formatBytes,
+  type HighlightedBlob,
 } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
@@ -82,6 +85,22 @@ function BlobBody({
   const { data, loading, error, reload } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
   const name = path.split('/').pop() ?? path
 
+  // Lazy syntax highlighting: highlight.js loads in its own async chunk after the text is on
+  // screen, then swaps in per-line highlighted HTML. Plain text renders in the meantime.
+  const [highlighted, setHighlighted] = useState<HighlightedBlob | null>(null)
+  const text = data?.text ?? null
+  useEffect(() => {
+    setHighlighted(null)
+    if (text === null) return
+    let active = true
+    void highlightBlob(text, name).then((h) => {
+      if (active) setHighlighted(h)
+    })
+    return () => {
+      active = false
+    }
+  }, [text, name])
+
   const downloadHref = useMemo(() => {
     if (!data) return null
     const src = data.bytes
@@ -95,7 +114,9 @@ function BlobBody({
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />
 
-  const lines = data.text !== null ? data.text.split('\n') : []
+  const plainLines = data.text !== null ? data.text.split('\n') : []
+  // Use highlighted per-line HTML when it matches the current text line count; otherwise plain.
+  const hlLines = highlighted && highlighted.lines.length === plainLines.length ? highlighted.lines : null
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -121,16 +142,24 @@ function BlobBody({
 
       {data.text !== null ? (
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse font-mono text-[13px]">
+          <table className="hljs w-full border-collapse bg-transparent font-mono text-[13px]">
             <tbody>
-              {lines.map((line, i) => (
+              {plainLines.map((line, i) => (
                 <tr key={i} className="hover:bg-anvil-50 dark:hover:bg-anvil-900/60">
                   <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 text-right align-top text-anvil-400 dark:border-anvil-850">
                     {i + 1}
                   </td>
-                  <td className="whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200">
-                    {line || ' '}
-                  </td>
+                  {hlLines ? (
+                    <td
+                      className="whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200"
+                      // highlight.js escapes all text and emits only class-bearing spans.
+                      dangerouslySetInnerHTML={{ __html: hlLines[i] || ' ' }}
+                    />
+                  ) : (
+                    <td className="whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200">
+                      {line || ' '}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

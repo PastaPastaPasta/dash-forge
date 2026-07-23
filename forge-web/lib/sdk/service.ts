@@ -10,7 +10,7 @@
  * dedupe, contract preload before marking ready, and reconnect. One process-wide instance.
  */
 
-import { EvoSDK } from '@dashevo/evo-sdk'
+import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
 import { setPlatformVersion } from './query'
@@ -73,6 +73,9 @@ class EvoSdkService {
 
   private async perform(config: EvoSdkConfig): Promise<void> {
     const options = { settings: { timeoutMs: config.timeoutMs ?? 8000 } }
+    // Dynamic import so the ~9.4 MB evo-sdk WASM chunk loads on first data need (post-paint),
+    // never in the initial bundle — the whole app is a static-export SPA (yappr lazy-init pattern).
+    const { EvoSDK } = await import('@dashevo/evo-sdk')
     this.sdk =
       config.network === 'mainnet'
         ? EvoSDK.mainnetTrusted(options)

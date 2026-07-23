@@ -53,3 +53,106 @@
     }
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Syntax highlighting theme (highlight.js `hljs-*` classes) — foundry palette,
+ * theme-aware via the `.dark` class. Loaded lazily with highlight.js; these rules
+ * are tiny and inline so they survive static export (no external CDN stylesheet).
+ * ------------------------------------------------------------------------- */
+.hljs-comment,
+.hljs-quote {
+  color: #a8a29e; /* anvil-400 */
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-name {
+  color: #c2410c; /* forge-700 */
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #15803d; /* green-700 */
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #0369a1; /* sky-700 */
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: #b45309; /* amber-700 */
+}
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-built_in,
+.hljs-builtin-name {
+  color: #a16207; /* yellow-700 */
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: #57534e; /* anvil-600 */
+}
+.hljs-meta,
+.hljs-comment.hljs-doctag {
+  color: #78716c; /* anvil-500 */
+}
+.hljs-deletion {
+  color: #b91c1c; /* red-700 */
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #78716c; /* anvil-500 */
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-literal,
+.dark .hljs-doctag,
+.dark .hljs-name {
+  color: #fb923c; /* forge-400 */
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-addition {
+  color: #86efac; /* green-300 */
+}
+.dark .hljs-number,
+.dark .hljs-symbol,
+.dark .hljs-bullet {
+  color: #7dd3fc; /* sky-300 */
+}
+.dark .hljs-title,
+.dark .hljs-title.function_,
+.dark .hljs-section {
+  color: #fcd34d; /* amber-300 */
+}
+.dark .hljs-type,
+.dark .hljs-class .hljs-title,
+.dark .hljs-built_in,
+.dark .hljs-builtin-name {
+  color: #fde68a; /* amber-200 */
+}
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-variable,
+.dark .hljs-template-variable {
+  color: #d6d3d1; /* anvil-300 */
+}
+.dark .hljs-meta {
+  color: #a8a29e; /* anvil-400 */
+}
+.dark .hljs-deletion {
+  color: #fca5a5; /* red-300 */
+}

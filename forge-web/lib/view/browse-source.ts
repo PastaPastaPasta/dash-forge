@@ -49,7 +49,17 @@ function chunkPayload(doc: Record<string, unknown>): Uint8Array {
   return out
 }
 
-/** Fetch a contiguous `[start, end)` range of a platform-stored artifact by `packHash` (hex). */
+/**
+ * Fetch a contiguous `[start, end)` range of a platform-stored artifact by `packHash` (hex).
+ *
+ * OFFSET→SEQ MAPPING (VERIFIED against forge-core `pack.rs::split`): the chunker fills every
+ * field to `FIELD_MAX` and every chunk to `FIELDS_PER_DOC` full fields before starting the
+ * next, so **every chunk except the last carries exactly `CHUNK_PAYLOAD_MAX` (= FIELD_MAX ×
+ * FIELDS = 4900 × 3 = 14700) bytes**. Byte offset `n` therefore lives in `seq = ⌊n /
+ * CHUNK_PAYLOAD_MAX⌋` at intra-chunk offset `n mod CHUNK_PAYLOAD_MAX`. The last chunk is
+ * shorter, but a range never reads past the artifact's `sizeBytes`, so the last `seq` is
+ * always resolved from the row actually returned (its real length), never assumed full.
+ */
 async function fetchPlatformRange(
   sdk: EvoSDK,
   contractId: string,
@@ -141,12 +151,46 @@ export async function loadArtifactBytes(
 }
 
 /**
- * A {@link PackSource} over a repo's git-pack manifests (kind 0), indexed by `packRef`
- * position in `$createdAt asc` order — the same order the writer assigns pack refs.
+ * Order git-pack manifests into the canonical `packRef` space.
+ *
+ * PACKREF ORDERING (VERIFIED / corrected): the objectLocator's `packRef` is "an index into
+ * the manifest's pack list" (forge-core `pack/locator.rs`), but no explicit pack list is
+ * stored on-chain — so reader and writer must share a *deterministic* ordering of the kind-0
+ * pack manifests. The platform total order is `($createdAt, $id)` (data-contracts §2.3, §4),
+ * so packs are sorted **oldest-first by `($createdAt, documentId)`** — NOT by reversing the
+ * `$createdAt desc` query result, which drops the `$id` tiebreak on equal timestamps and is
+ * wrong past one page. When the owning locator's publish time is known, the list is bounded to
+ * packs that existed at/before it (`createdAt <= asOf`): a locator only indexes packs present
+ * when it was built, and later incremental packs are outside its `packRef` space.
  */
-export function buildPackSource(sdk: EvoSDK, repo: RepoRef, gitPacks: readonly PackManifest[]): PackSource {
-  // Oldest-first so packRef 0 is the first-published pack.
-  const ordered = [...gitPacks].reverse()
+function orderGitPacks(
+  gitPacks: readonly PackManifest[],
+  asOf?: number,
+): PackManifest[] {
+  const bounded = asOf === undefined ? [...gitPacks] : gitPacks.filter((m) => m.createdAt <= asOf)
+  return bounded.sort((a, b) =>
+    a.createdAt !== b.createdAt
+      ? a.createdAt - b.createdAt
+      : a.documentId < b.documentId
+        ? -1
+        : a.documentId > b.documentId
+          ? 1
+          : 0,
+  )
+}
+
+/**
+ * A {@link PackSource} over a repo's git-pack manifests (kind 0), indexed by `packRef` = the
+ * pack's position in oldest-first `($createdAt, $id)` order (see {@link orderGitPacks}).
+ * `asOf` bounds the pack list to those published at/before the owning locator's `$createdAt`.
+ */
+export function buildPackSource(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  gitPacks: readonly PackManifest[],
+  asOf?: number,
+): PackSource {
+  const ordered = orderGitPacks(gitPacks, asOf)
   return {
     async fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array> {
       const manifest = ordered[packRef]
@@ -186,7 +230,8 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   const gitPacks = manifests.filter((m) => m.kind === PACK_KIND.GIT_PACK)
   const locatorBytes = await loadArtifactBytes(sdk, repo, locatorManifest)
   const locator = ObjectLocator.parse(locatorBytes)
-  const packs = buildPackSource(sdk, repo, gitPacks)
+  // Bound the packRef space to packs that existed when this locator was published.
+  const packs = buildPackSource(sdk, repo, gitPacks, locatorManifest.createdAt)
   const reader = new BrowseReader(locator, packs)
   return { locator, packs, reader }
 }

@@ -17,8 +17,7 @@
  * SDK-interop risk here (see the createRepo note in the task report).
  */
 
-import { DataContract, IdentitySigner } from '@dashevo/evo-sdk'
-import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { DataContract, EvoSDK } from '@dashevo/evo-sdk'
 
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, type WriteAuth } from './write'
 import repoV1Template from './repo-v1-template.json'
@@ -160,6 +159,8 @@ export async function createRepoContract(
   auth: WriteAuth,
   opts: { readonly version?: number } = {},
 ): Promise<CreateRepoContractResult> {
+  // Dynamic import keeps the evo-sdk WASM out of the initial bundle (loaded on first write).
+  const { DataContract, IdentitySigner } = await import('@dashevo/evo-sdk')
   const template = buildRepoV1Contract()
   const ownerId = auth.identityId
   template['ownerId'] = ownerId
@@ -167,7 +168,7 @@ export async function createRepoContract(
   const wif = auth.getSigningKeyWif()
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found`)
-  const signing = findSigningKey(identity, wif, auth.network, SECURITY_LEVEL.CRITICAL)
+  const signing = await findSigningKey(identity, wif, auth.network, SECURITY_LEVEL.CRITICAL)
   if (!signing) {
     throw new WriteAuthError('repo creation requires a CRITICAL AUTHENTICATION key')
   }

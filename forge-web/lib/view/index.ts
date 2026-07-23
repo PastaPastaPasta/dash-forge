@@ -28,6 +28,7 @@ export {
   type TreeEntry,
 } from './git-objects'
 export { parseMarkdown, type Block, type Inline } from './markdown'
+export { highlightBlob, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,
   listReposByOwner,

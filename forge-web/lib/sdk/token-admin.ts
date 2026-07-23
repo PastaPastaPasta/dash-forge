@@ -13,8 +13,7 @@
  * or a freeze of an already-frozen balance, is a no-op success.
  */
 
-import { Identifier, IdentityPublicKey, IdentitySigner } from '@dashevo/evo-sdk'
-import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { EvoSDK, IdentityPublicKey, IdentitySigner } from '@dashevo/evo-sdk'
 
 import { findSigningKey, SECURITY_LEVEL, WriteAuthError, type WriteAuth } from './write'
 
@@ -65,12 +64,13 @@ async function criticalSigner(
   const wif = auth.getSigningKeyWif()
   const identity = await facades(sdk).identities.fetch(auth.identityId)
   if (!identity) throw new WriteAuthError(`identity ${auth.identityId} not found`)
-  const signing = findSigningKey(identity, wif, auth.network, SECURITY_LEVEL.CRITICAL)
+  const signing = await findSigningKey(identity, wif, auth.network, SECURITY_LEVEL.CRITICAL)
   if (!signing) {
     throw new WriteAuthError(
       'token-admin operations require a CRITICAL AUTHENTICATION key that matches the stored key',
     )
   }
+  const { IdentitySigner } = await import('@dashevo/evo-sdk')
   const signer = new IdentitySigner()
   signer.addKeyFromWif(wif)
   return { signer, identityKey: signing.publicKey as IdentityPublicKey }
@@ -110,6 +110,7 @@ export async function grantRole(
   if ((await balanceOf(sdk, tokenId, memberId)) > 0n) {
     return { minted: false }
   }
+  const { Identifier } = await import('@dashevo/evo-sdk')
   const { signer, identityKey } = await criticalSigner(sdk, auth)
   await facades(sdk).tokens.mint({
     dataContractId: new Identifier(contractId),
@@ -137,6 +138,7 @@ export async function suspendRole(
   const position = ROLE_POSITION[role]
   const tokenId = await facades(sdk).tokens.calculateId(contractId, position)
   if (await frozenOf(sdk, tokenId, memberId)) return { frozen: true }
+  const { Identifier } = await import('@dashevo/evo-sdk')
   const { signer, identityKey } = await criticalSigner(sdk, auth)
   await facades(sdk).tokens.freeze({
     dataContractId: new Identifier(contractId),
@@ -162,6 +164,7 @@ export async function revokeRole(
 ): Promise<{ revoked: boolean }> {
   const position = ROLE_POSITION[role]
   const tokenId = await facades(sdk).tokens.calculateId(contractId, position)
+  const { Identifier } = await import('@dashevo/evo-sdk')
   const { signer, identityKey } = await criticalSigner(sdk, auth)
   if (!(await frozenOf(sdk, tokenId, memberId))) {
     await facades(sdk).tokens.freeze({

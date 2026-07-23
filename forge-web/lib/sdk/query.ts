@@ -185,6 +185,40 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+/**
+ * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
+ * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
+ * past the last `$id` of each page, until a short page signals the end. Used by reads that
+ * MUST be complete — e.g. the token-history reconstruction, where dropping a late `mint`
+ * would make a legitimate collaborator's events fold as unauthorized.
+ *
+ * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
+ */
+export async function queryAllDocuments(
+  sdk: EvoSDK,
+  query: DocumentQuery,
+  opts: { readonly pageLimit?: number; readonly maxPages?: number } = {},
+): Promise<PlainDocument[]> {
+  const pageLimit = opts.pageLimit ?? 100
+  const maxPages = opts.maxPages ?? 1000
+  const out: PlainDocument[] = []
+  let startAfter: string | undefined
+  for (let page = 0; page < maxPages; page++) {
+    const { documents } = await queryDocumentsWithProof(sdk, {
+      ...query,
+      limit: pageLimit,
+      startAfter,
+    })
+    out.push(...documents)
+    if (documents.length < pageLimit) break
+    const last = documents[documents.length - 1]
+    const lastId = last?.['$id']
+    if (typeof lastId !== 'string') break
+    startAfter = lastId
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // Skip-scan distinct-key enumeration (branch/tag listing)
 // ---------------------------------------------------------------------------

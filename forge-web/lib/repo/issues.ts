@@ -7,13 +7,12 @@
  * are inert. Actor authorization is evaluated **as-of** each event's `$createdAt` from the
  * token-history — supplied here as an {@link AuthzResolver}.
  *
- * TOKEN-HISTORY WIRING (M3 status): the as-of WRITE/MAINTAIN holdings come from the system
- * token-history contract (mint/freeze/destroy). That system-contract read is not wired in
- * this module yet — callers pass an {@link AuthzResolver} (build one with the repo's
- * token-history records once that read lands). With an empty resolver the fold still honors
- * the target author's own close/reopen; holder-gated actions (maintainer close, merge,
- * labels) require the records. This is the one repo read that is authz-record-pending; the
- * fold logic itself is vector-proven.
+ * TOKEN-HISTORY WIRING: the as-of WRITE/MAINTAIN holdings come from the system token-history
+ * contract (mint/freeze/unfreeze/destroy), reconstructed by {@link resolveAuthz} /
+ * {@link readTokenHistory}. Each read below resolves that history once (when the caller does
+ * not supply an {@link AuthzResolver}) so holder-gated actions — a non-author maintainer's
+ * close / label / merge — fold correctly. If the history read fails the resolver is empty and
+ * the fold still honors the target author's own close/reopen (graceful degradation).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -30,9 +29,10 @@ import {
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { DOC, toEvent, type RepoRef } from './contract'
 import { readRefUpdates } from './refs'
+import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
 
-/** An empty authorization resolver (target-author actions only; see module note). */
+/** An empty authorization resolver (target-author actions only; token history unavailable). */
 export function emptyAuthz(): AuthzResolver {
   return new AuthzResolver([])
 }
@@ -84,13 +84,14 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
   return documents.map(toEvent).filter((e): e is Event => e !== null)
 }
 
-/** Read one issue and fold its state. */
+/** Read one issue and fold its state. Resolves the token-history authz when not supplied. */
 export async function readIssue(
   sdk: EvoSDK,
   repo: RepoRef,
   issueDoc: PlainDocument,
-  authz: AuthzResolver = emptyAuthz(),
+  authz?: AuthzResolver,
 ): Promise<IssueView> {
+  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(issueDoc, '$id')
   const author = str(issueDoc, '$ownerId')
   const events = await readEvents(sdk, repo, id)
@@ -101,24 +102,25 @@ export async function readIssue(
     body: str(issueDoc, 'body'),
     author,
     createdAt: num(issueDoc, '$createdAt'),
-    state: foldIssueState(events, author, authz),
+    state: foldIssueState(events, author, resolver),
   }
 }
 
-/** List issues (newest first) with folded state. */
+/** List issues (newest first) with folded state. Resolves the authz once for the whole page. */
 export async function listIssues(
   sdk: EvoSDK,
   repo: RepoRef,
-  authz: AuthzResolver = emptyAuthz(),
+  authz?: AuthzResolver,
   limit = 50,
 ): Promise<IssueView[]> {
+  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.issue,
     orderBy: [['$createdAt', 'desc']],
     limit,
   })
-  return Promise.all(documents.map((doc) => readIssue(sdk, repo, doc, authz)))
+  return Promise.all(documents.map((doc) => readIssue(sdk, repo, doc, resolver)))
 }
 
 /**
@@ -137,8 +139,9 @@ export async function readPull(
   sdk: EvoSDK,
   repo: RepoRef,
   patchDoc: PlainDocument,
-  authz: AuthzResolver = emptyAuthz(),
+  authz?: AuthzResolver,
 ): Promise<PullView> {
+  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
   const baseRefNameHashRaw = patchDoc['baseRefNameHash']
@@ -173,22 +176,23 @@ export async function readPull(
     createdAt: num(patchDoc, '$createdAt'),
     baseRefName: str(patchDoc, 'baseRefName'),
     headOid,
-    state: foldPrState(events, author, authz, baseTip, isAncestor),
+    state: foldPrState(events, author, resolver, baseTip, isAncestor),
   }
 }
 
-/** List PRs (patches, newest first) with folded state. */
+/** List PRs (patches, newest first) with folded state. Resolves the authz once for the page. */
 export async function listPulls(
   sdk: EvoSDK,
   repo: RepoRef,
-  authz: AuthzResolver = emptyAuthz(),
+  authz?: AuthzResolver,
   limit = 50,
 ): Promise<PullView[]> {
+  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.patch,
     orderBy: [['$createdAt', 'desc']],
     limit,
   })
-  return Promise.all(documents.map((doc) => readPull(sdk, repo, doc, authz)))
+  return Promise.all(documents.map((doc) => readPull(sdk, repo, doc, resolver)))
 }

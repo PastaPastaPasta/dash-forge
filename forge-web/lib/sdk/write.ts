@@ -24,17 +24,9 @@
  * here, wrapped in a `PrivateKey`, used to sign, and dropped.
  */
 
-import {
-  Document,
-  DocumentCreateTransition,
-  DocumentDeleteTransition,
-  BatchedTransition,
-  BatchTransition,
-  StateTransition,
-  PrivateKey,
-  TokenPaymentInfo,
-} from '@dashevo/evo-sdk'
-import type { EvoSDK } from '@dashevo/evo-sdk'
+// Type-only: every evo-sdk class is loaded via dynamic `import()` at call time so the ~9.4 MB
+// WASM chunk never enters the initial bundle (it is pulled on the first write / login).
+import type { EvoSDK, StateTransition, TokenPaymentInfo } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
@@ -92,12 +84,13 @@ function facades(sdk: EvoSDK): SdkFacades {
  * level that satisfies `requiredLevel` (a key of equal-or-higher privilege — i.e. equal or
  * lower level number — is accepted). Returns the matching WASM `IdentityPublicKey`, or null.
  */
-export function findSigningKey(
+export async function findSigningKey(
   identity: WasmIdentity,
   wif: string,
   network: Network,
   requiredLevel: number,
-): { publicKey: unknown; keyId: number; securityLevel: number } | null {
+): Promise<{ publicKey: unknown; keyId: number; securityLevel: number } | null> {
+  const { PrivateKey } = await import('@dashevo/evo-sdk')
   const pkBytes = PrivateKey.fromWIF(wif).toBytes()
   for (const key of identity.publicKeys) {
     if (key.purposeNumber !== PURPOSE_AUTHENTICATION) continue
@@ -394,12 +387,21 @@ export async function createDocumentIdempotent(
 
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
-  const signing = findSigningKey(identity, wif, auth.network, requiredLevel)
+  const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) {
     throw new WriteAuthError(
       'no matching AUTHENTICATION key for the stored signing key at the required security level',
     )
   }
+
+  const {
+    Document,
+    DocumentCreateTransition,
+    BatchedTransition,
+    BatchTransition,
+    PrivateKey,
+    TokenPaymentInfo,
+  } = await import('@dashevo/evo-sdk')
 
   // Deterministic document id from generated entropy — the idempotency anchor.
   const entropy = crypto.getRandomValues(new Uint8Array(32))
@@ -493,9 +495,11 @@ export async function deleteDocumentIdempotent(
   const ownerId = auth.identityId
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
-  const signing = findSigningKey(identity, wif, auth.network, requiredLevel)
+  const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) throw new WriteAuthError('no matching signing key for delete')
 
+  const { DocumentDeleteTransition, BatchedTransition, BatchTransition, PrivateKey } =
+    await import('@dashevo/evo-sdk')
   const nonce = await nextContractNonce(sdk, ownerId, contractId)
   const deleteTransition = new DocumentDeleteTransition({
     document: live as ConstructorParameters<typeof DocumentDeleteTransition>[0]['document'],

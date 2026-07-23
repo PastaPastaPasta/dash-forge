@@ -48,6 +48,17 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
 /** The deployed registry contract owner (DCG/DAO identity) — for listing-authenticity checks. */
 export const TESTNET_REGISTRY_OWNER = '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB'
 
+/**
+ * The system **TokenHistory** contract (testnet) holding the `mint` / `freeze` / `unfreeze` /
+ * `destroyFrozenFunds` audit documents with consensus `$createdAt` (parity with forge-core
+ * `tokens.rs::TOKEN_HISTORY_CONTRACT_ID`, S0.7). Its records reconstruct as-of-time WRITE /
+ * MAINTAIN holdings for the issue/PR event fold. Mainnet id is FILLED BY DEPLOYMENT.
+ */
+export const TOKEN_HISTORY_CONTRACT_ID: Readonly<Record<Network, string | null>> = {
+  testnet: '43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF',
+  mainnet: null,
+}
+
 // ---------------------------------------------------------------------------
 // Chunk / browse constants — MIRROR forge-core (parity via forge-contracts/vectors).
 // See docs/contracts/data-contracts.md for the normative `chunk` / `manifestPart` /

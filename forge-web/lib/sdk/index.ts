@@ -53,6 +53,7 @@ export {
   inBatchNewestPerKey,
   normalizeDocument,
   setPlatformVersion,
+  queryAllDocuments,
   queryDocuments,
   queryDocumentsWithProof,
   skipScanDistinct,
