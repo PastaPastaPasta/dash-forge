@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::dapi_client::CanRetry;
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
@@ -54,14 +55,26 @@ use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::D
 use dash_sdk::dpp::state_transition::data_contract_create_transition::DataContractCreateTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::state_transition::StateTransition;
+use dash_sdk::dpp::tokens::calculate_token_id;
+use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
+use dash_sdk::dpp::tokens::info::IdentityTokenInfo;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::document_query::DocumentQuery;
+use dash_sdk::platform::tokens::builders::destroy::TokenDestroyFrozenFundsTransitionBuilder;
+use dash_sdk::platform::tokens::builders::freeze::TokenFreezeTransitionBuilder;
+use dash_sdk::platform::tokens::builders::mint::TokenMintTransitionBuilder;
+use dash_sdk::platform::tokens::builders::unfreeze::TokenUnfreezeTransitionBuilder;
+use dash_sdk::platform::tokens::identity_token_balances::IdentitiesTokenBalancesQuery;
+use dash_sdk::platform::tokens::token_info::IdentitiesTokenInfosQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{Sdk, SdkBuilder};
+use drive_proof_verifier::types::identity_token_balance::IdentitiesTokenBalances;
+use drive_proof_verifier::types::token_info::IdentitiesTokenInfos;
+use drive_proof_verifier::DocumentCount;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
 
@@ -113,6 +126,13 @@ impl LoadedContract {
     /// The contract's base58 id.
     pub fn id(&self) -> String {
         self.0.id().to_string(Encoding::Base58)
+    }
+
+    /// The contract owner's base58 identity id. The owner is auto-credited both tokens'
+    /// `baseSupply` at creation, so it is always a WRITE+MAINTAIN holder even though no
+    /// `mint` history document records that crediting (data-contracts §2.1).
+    pub fn owner_id(&self) -> String {
+        self.0.owner_id().to_string(Encoding::Base58)
     }
 }
 
@@ -498,6 +518,238 @@ impl PlatformClient {
         let cost = balance_before.saturating_sub(balance_after);
 
         Ok((contract_id.to_string(Encoding::Base58), cost))
+    }
+
+    // === Token administration (collaborator ACL) =========================
+    //
+    // Token mint/freeze/unfreeze/destroy are the on-chain ACL: minting the WRITE
+    // (position 0) or MAINTAIN (position 1) token to an identity grants it, freezing
+    // suspends it (a frozen identity cannot spend the token → every gated create/delete
+    // fails at consensus, S0.7), and destroying the frozen balance revokes it.
+    //
+    // All four require a **CRITICAL** AUTHENTICATION key (S0.7: HIGH is rejected for
+    // token admin). They are signed by the token authority — for a solo-owner repo the
+    // `ContractOwner`, i.e. the repo owner identity, which holds the mint/freeze/destroy
+    // authority via the solo-owner token rules.
+    //
+    // The **keepsHistory mint() return-value bug** (S0.7): on a history-keeping token the
+    // wasm SDK's result parser throws `'platformVersion' string value ''` *after* the
+    // transition already landed at consensus. The native rs-sdk `token_*` helpers here
+    // parse the `VerifiedTokenActionWithDocument` proof correctly, so the bug does not
+    // fire — but [`finish_token_op`] still treats that exact string as "landed; verify via
+    // query" defensively, and the [`crate::tokens`] service always re-reads the balance /
+    // frozen status after every op rather than trusting the return value.
+
+    /// The base58 token id for `position` (0 = WRITE, 1 = MAINTAIN) of `contract`,
+    /// derived as `hash("dash_token" || contractId || position)` (rs-dpp `calculate_token_id`).
+    pub fn token_id(&self, contract: &LoadedContract, position: u16) -> String {
+        let raw = calculate_token_id(&contract.0.id().to_buffer(), position);
+        Identifier::from(raw).to_string(Encoding::Base58)
+    }
+
+    /// Mint `amount` of the token at `position` to `recipient` (base58) — a **grant**.
+    /// Signs with the owner's CRITICAL key. Verify success via a balance query (the mint
+    /// return value is not trusted — see the module note).
+    pub async fn token_mint(
+        &self,
+        contract: &LoadedContract,
+        owner: &LoadedIdentity,
+        key: &IdentityKey,
+        position: u16,
+        amount: u64,
+        recipient: &str,
+    ) -> Result<()> {
+        let signer = signer_from_key(key)?;
+        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
+        let recipient_id = parse_id(recipient, "recipient id")?;
+        let builder = TokenMintTransitionBuilder::new(
+            Arc::clone(&contract.0),
+            position,
+            owner.0.id(),
+            amount,
+        )
+        .issued_to_identity_id(recipient_id)
+        .with_public_note("dash-forge grant".to_string());
+        let outcome = self
+            .sdk
+            .token_mint(builder, &signing_key, &signer)
+            .await
+            .map(|_| ());
+        finish_token_op("mint", outcome)
+    }
+
+    /// Freeze the token at `position` for `target` (base58) — a **suspend**. A frozen
+    /// identity keeps its balance but cannot spend it, so every gated action fails.
+    pub async fn token_freeze(
+        &self,
+        contract: &LoadedContract,
+        owner: &LoadedIdentity,
+        key: &IdentityKey,
+        position: u16,
+        target: &str,
+    ) -> Result<()> {
+        let signer = signer_from_key(key)?;
+        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
+        let target_id = parse_id(target, "target id")?;
+        let builder = TokenFreezeTransitionBuilder::new(
+            Arc::clone(&contract.0),
+            position,
+            owner.0.id(),
+            target_id,
+        )
+        .with_public_note("dash-forge suspend".to_string());
+        let outcome = self
+            .sdk
+            .token_freeze(builder, &signing_key, &signer)
+            .await
+            .map(|_| ());
+        finish_token_op("freeze", outcome)
+    }
+
+    /// Unfreeze the token at `position` for `target` (base58) — lift a suspension.
+    pub async fn token_unfreeze(
+        &self,
+        contract: &LoadedContract,
+        owner: &LoadedIdentity,
+        key: &IdentityKey,
+        position: u16,
+        target: &str,
+    ) -> Result<()> {
+        let signer = signer_from_key(key)?;
+        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
+        let target_id = parse_id(target, "target id")?;
+        let builder = TokenUnfreezeTransitionBuilder::new(
+            Arc::clone(&contract.0),
+            position,
+            owner.0.id(),
+            target_id,
+        )
+        .with_public_note("dash-forge unsuspend".to_string());
+        let outcome = self
+            .sdk
+            .token_unfreeze_identity(builder, &signing_key, &signer)
+            .await
+            .map(|_| ());
+        finish_token_op("unfreeze", outcome)
+    }
+
+    /// Destroy the **frozen** balance of the token at `position` held by `target` (base58)
+    /// — a **revoke**. The identity must already be frozen; its balance is zeroed and
+    /// removed from supply, so it is no longer an on-chain collaborator.
+    pub async fn token_destroy_frozen(
+        &self,
+        contract: &LoadedContract,
+        owner: &LoadedIdentity,
+        key: &IdentityKey,
+        position: u16,
+        target: &str,
+    ) -> Result<()> {
+        let signer = signer_from_key(key)?;
+        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
+        let target_id = parse_id(target, "target id")?;
+        let builder = TokenDestroyFrozenFundsTransitionBuilder::new(
+            Arc::clone(&contract.0),
+            position,
+            owner.0.id(),
+            target_id,
+        )
+        .with_public_note("dash-forge revoke".to_string());
+        let outcome = self
+            .sdk
+            .token_destroy_frozen_funds(builder, &signing_key, &signer)
+            .await
+            .map(|_| ());
+        finish_token_op("destroy_frozen", outcome)
+    }
+
+    /// The token balances (`identity → amount`, absent = 0) of `token_id_b58` across
+    /// `identities` (base58). This is the authoritative on-chain collaborator holding
+    /// check — a positive balance means the token is held.
+    pub async fn token_balances(
+        &self,
+        token_id_b58: &str,
+        identities: &[String],
+    ) -> Result<BTreeMap<String, u64>> {
+        if identities.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let token_id = parse_id(token_id_b58, "token id")?;
+        let identity_ids = identities
+            .iter()
+            .map(|s| parse_id(s, "identity id"))
+            .collect::<Result<Vec<_>>>()?;
+        let query = IdentitiesTokenBalancesQuery {
+            identity_ids,
+            token_id,
+        };
+        let balances: IdentitiesTokenBalances = TokenAmount::fetch_many(&self.sdk, query)
+            .await
+            .map_err(|e| Error::Platform(format!("querying token balances: {e}")))?;
+        Ok(balances
+            .iter()
+            .map(|(id, amt)| (id.to_string(Encoding::Base58), amt.unwrap_or(0)))
+            .collect())
+    }
+
+    /// The frozen status (`identity → frozen`, absent = false) of `token_id_b58` across
+    /// `identities` (base58) — the suspend state included in a collaborator listing.
+    pub async fn token_frozen(
+        &self,
+        token_id_b58: &str,
+        identities: &[String],
+    ) -> Result<BTreeMap<String, bool>> {
+        if identities.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let token_id = parse_id(token_id_b58, "token id")?;
+        let identity_ids = identities
+            .iter()
+            .map(|s| parse_id(s, "identity id"))
+            .collect::<Result<Vec<_>>>()?;
+        let query = IdentitiesTokenInfosQuery {
+            identity_ids,
+            token_id,
+        };
+        let infos: IdentitiesTokenInfos = IdentityTokenInfo::fetch_many(&self.sdk, query)
+            .await
+            .map_err(|e| Error::Platform(format!("querying token infos: {e}")))?;
+        Ok(infos
+            .iter()
+            .map(|(id, info)| {
+                (
+                    id.to_string(Encoding::Base58),
+                    info.as_ref()
+                        .is_some_and(IdentityTokenInfoV0Accessors::frozen),
+                )
+            })
+            .collect())
+    }
+
+    /// An O(1) provable count of `document_type` documents in `contract` matching
+    /// `filters`, via the count-tree `getDocuments`+`select count(*)` aggregate (the
+    /// mechanism behind star / issue / PR totals, data-contracts §3). The `filters`
+    /// fields must exactly match a `countable` index prefix (or the type must be
+    /// `documentsCountable`), else consensus rejects the count.
+    pub async fn count_documents(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+    ) -> Result<u64> {
+        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+            .map_err(|e| Error::Platform(format!("building count query: {e}")))?;
+        for f in filters {
+            query = query.with_where(WhereClause {
+                field: f.field.clone(),
+                operator: f.op.to_operator(),
+                value: f.value.clone().into_query_value(),
+            });
+        }
+        query = query.with_select(SelectProjection::count_star());
+        let count = DocumentCount::fetch(&self.sdk, query)
+            .await
+            .map_err(|e| Error::Platform(format!("counting {document_type} documents: {e}")))?;
+        Ok(count.map_or(0, |c| c.0))
     }
 }
 
@@ -1275,6 +1527,43 @@ enum WriteFailure {
     Fatal(Error),
 }
 
+/// The exact wasm-SDK keepsHistory result-parse error (S0.7). Native rs-sdk parses the
+/// token-action proof correctly, so this should never fire on this path; matched as a
+/// defensive net so that, if it ever did, a transition that already landed at consensus
+/// is treated as success (the [`crate::tokens`] service re-verifies via query regardless).
+const TOKEN_HISTORY_PARSE_BUG: &str = "'platformVersion' string value ''";
+
+/// Finish a token admin op: map `Ok` to success, translate a frozen / unauthorized
+/// consensus rejection into the typed crate error, swallow the keepsHistory parse bug as
+/// "landed", and surface anything else as a platform error. Token ops are NOT blindly
+/// re-broadcast (a second mint would double-mint) — ambiguity is resolved by the caller's
+/// post-op query, not a retry.
+fn finish_token_op(label: &str, outcome: std::result::Result<(), dash_sdk::Error>) -> Result<()> {
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if e.to_string().contains(TOKEN_HISTORY_PARSE_BUG) {
+                tracing::warn!(
+                    op = label,
+                    error = %e,
+                    "token op landed at consensus; SDK result-parse hit the keepsHistory bug (verify via query)"
+                );
+                return Ok(());
+            }
+            if let Some(ConsensusError::StateError(state_error)) = consensus_error_of(&e) {
+                match state_error {
+                    StateError::IdentityTokenAccountFrozenError(_) => {
+                        return Err(Error::TokenFrozen)
+                    }
+                    StateError::UnauthorizedTokenActionError(_) => return Err(Error::Unauthorized),
+                    _ => {}
+                }
+            }
+            Err(Error::Platform(format!("token {label} failed: {e}")))
+        }
+    }
+}
+
 /// Pull the consensus error out of whichever SDK error variant carries it (a broadcast
 /// error's `cause`, or a protocol error). Structured — never string-matched.
 fn consensus_error_of(e: &dash_sdk::Error) -> Option<&ConsensusError> {
@@ -1318,6 +1607,14 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                 if CONTENT_ADDRESSED_UNIQUE_DOC_TYPES.contains(&document_type) =>
             {
                 return WriteFailure::AlreadyLanded
+            }
+            // A unique-index collision on any OTHER type is a genuine clash (an `issue`
+            // /`patch` `number` already taken, a `repoListing` name collision). Surface it
+            // as a distinct, non-retryable error so the optimistic-numbering allocator can
+            // catch it and retry with the next number (a name collision stays fatal at the
+            // caller). NOT idempotent success — the content differs from what landed.
+            StateError::DuplicateUniqueIndexError(err) => {
+                return WriteFailure::Fatal(Error::DuplicateUniqueIndex(format!("{err:?}")))
             }
             // 40702: the identity's token account is frozen → write access revoked.
             StateError::IdentityTokenAccountFrozenError(_) => {

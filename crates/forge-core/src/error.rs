@@ -44,6 +44,12 @@ pub enum Error {
     #[error("not found")]
     NotFound,
 
+    /// A document create collided with a unique index (e.g. an `issue`/`patch`
+    /// `number` already taken). The optimistic-numbering allocator catches this and
+    /// retries with the next number; other callers surface it as a genuine collision.
+    #[error("duplicate unique index: {0}")]
+    DuplicateUniqueIndex(String),
+
     /// A SHA-256 / git-OID verification of reassembled bytes failed.
     #[error("integrity check failed: reassembled bytes did not match the manifest hash")]
     Integrity,

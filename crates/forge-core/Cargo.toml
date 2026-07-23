@@ -31,6 +31,7 @@ futures = "0.3"
 # Dash Platform SDK — confined to `forge-core::platform` per style-guide §B.
 dash-sdk.workspace = true
 dapi-grpc.workspace = true
+drive-proof-verifier.workspace = true
 rs-sdk-trusted-context-provider.workspace = true
 simple-signer.workspace = true
 
