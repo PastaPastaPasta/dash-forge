@@ -81,6 +81,18 @@ export async function readRefUpdates(
   ]
 }
 
+/** Fold a ref's full (`$createdAt asc`) update history into its resolved list-view state. */
+function toResolvedRef(
+  updates: readonly RefUpdate[],
+  configHistory: readonly ConfigDoc[],
+  refNameHashHex: string,
+  isAncestor: IsAncestor,
+): ResolvedRef {
+  const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
+  const refName = updates[updates.length - 1]?.refName ?? ''
+  return { refName, refNameHash: refNameHashHex, state }
+}
+
 /** Resolve a single ref by its (base64) `refNameHash`. */
 export async function resolveRefByHash(
   sdk: EvoSDK,
@@ -91,10 +103,7 @@ export async function resolveRefByHash(
 ): Promise<ResolvedRef | null> {
   const updates = await readRefUpdates(sdk, repo, refNameHashB64)
   if (updates.length === 0) return null
-  const refNameHashHex = base64ToHex(refNameHashB64)
-  const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
-  const refName = updates[updates.length - 1]?.refName ?? ''
-  return { refName, refNameHash: refNameHashHex, state }
+  return toResolvedRef(updates, configHistory, base64ToHex(refNameHashB64), isAncestor)
 }
 
 /**
@@ -152,13 +161,9 @@ export async function readRefs(
     readConfigHistory(sdk, repo),
   ])
   if (complete !== null) {
-    const out: ResolvedRef[] = []
-    for (const [refNameHashHex, updates] of complete) {
-      const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
-      const refName = updates[updates.length - 1]?.refName ?? ''
-      out.push({ refName, refNameHash: refNameHashHex, state })
-    }
-    return out
+    return [...complete].map(([refNameHashHex, updates]) =>
+      toResolvedRef(updates, configHistory, refNameHashHex, isAncestor),
+    )
   }
 
   const hashes = await enumerateRefHashes(sdk, repo)

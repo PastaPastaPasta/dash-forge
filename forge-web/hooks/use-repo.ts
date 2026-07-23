@@ -32,11 +32,15 @@ export interface UseRepoResult extends AsyncState<RepoHome | null> {
 const HOME_CACHE_TTL_MS = 30_000
 const homeCache = new Map<string, { at: number; promise: Promise<RepoHome | null> }>()
 
+function homeCacheKey(network: Network, owner: string, name: string): string {
+  return `${network}/${owner}/${name}`
+}
+
 function loadRepoHomeCached(
   sdk: EvoSDK,
   params: { network: Network; ownerId: string; name: string },
 ): Promise<RepoHome | null> {
-  const key = `${params.network}/${params.ownerId}/${params.name}`
+  const key = homeCacheKey(params.network, params.ownerId, params.name)
   const hit = homeCache.get(key)
   if (hit && Date.now() - hit.at < HOME_CACHE_TTL_MS) return hit.promise
   const promise = loadRepoHome(sdk, params)
@@ -56,7 +60,7 @@ export function useRepoHome(owner: string, name: string): UseRepoResult {
   )
   const { reload: rerun } = state
   const reload = useCallback(() => {
-    homeCache.delete(`${network}/${owner}/${name}`)
+    homeCache.delete(homeCacheKey(network, owner, name))
     rerun()
   }, [network, owner, name, rerun])
   return { ...state, reload, ready, sdkError, network }
