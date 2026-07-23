@@ -13,19 +13,20 @@ import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
-import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
 const TABS = [
-  { label: 'Code', path: '/repo', icon: Code2, match: ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers'] },
-  { label: 'Commits', path: '/repo/commits', icon: GitCommit, match: ['/repo/commits', '/repo/commit'] },
-  { label: 'Issues', path: '/repo/issues', icon: MessageSquare, match: ['/repo/issues', '/repo/issue'] },
-  { label: 'Pulls', path: '/repo/pulls', icon: GitPullRequest, match: ['/repo/pulls', '/repo/pull'] },
-  { label: 'Settings', path: '/repo/settings', icon: Settings, match: ['/repo/settings'] },
+  { label: 'Code', path: '/repo', icon: Code2, refAware: true, match: ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers'] },
+  { label: 'Commits', path: '/repo/commits', icon: GitCommit, refAware: true, match: ['/repo/commits', '/repo/commit'] },
+  { label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, match: ['/repo/issues', '/repo/issue'] },
+  { label: 'Pulls', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull'] },
+  { label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, match: ['/repo/settings'] },
 ]
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const pathname = usePathname()
+  const refParam = useParam('ref')
 
   return (
     <div className="mb-5">
@@ -57,7 +58,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           return (
             <Link
               key={tab.path}
-              href={repoHref(tab.path, addr)}
+              href={repoHref(tab.path, addr, tab.refAware && refParam ? { ref: refParam } : {})}
               className={cn(
                 'inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors',
                 active

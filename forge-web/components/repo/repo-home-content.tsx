@@ -6,27 +6,27 @@
  * empty-repo invitation; a repo without browse artifacts degrades via {@link BrowseBoundary}.
  */
 
-import Link from 'next/link'
-import { FileText, GitBranch, Rocket } from 'lucide-react'
+import { FileText, Rocket } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
-import type { RepoHome } from '@/lib/view'
+import type { RepoHome, SelectedRef } from '@/lib/view'
 import {
   commitRootTree,
   decodeTextBlob,
-  findBranch,
   pickReadme,
   readBlob,
   readTree,
+  selectRef,
   tipOidOf,
   type TreeEntry,
 } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { FileList } from '@/components/repo/file-list'
+import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView } from '@/components/markdown-view'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Oid } from '@/components/ui/oid'
-import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import type { RepoAddress } from '@/hooks/use-query-param'
 
 interface RootView {
   readonly entries: TreeEntry[]
@@ -52,23 +52,36 @@ async function loadRoot(reader: BrowseReader, tipOid: string): Promise<RootView>
   return { entries, readme, readmeName }
 }
 
-export function RepoHomeContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const branch = findBranch(home.branches, home.defaultBranch)
-  const tipOid = tipOidOf(branch)
+export function RepoHomeContent({
+  home,
+  addr,
+  refParam = '',
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  refParam?: string
+}): JSX.Element {
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+  if (refParam && !selected.ref) {
+    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
+  }
+  const tipOid = tipOidOf(selected.ref)
 
   if (!tipOid) {
     return (
       <EmptyState
         icon={Rocket}
         title="This repo has no commits yet"
-        body={`Nothing on ${home.defaultBranch}. Push your first commit with the git-remote-dash helper to bring it to life.`}
+        body={`Nothing on ${selected.name}. Push your first commit with the git-remote-dash helper to bring it to life.`}
       />
     )
   }
 
   return (
     <BrowseBoundary repo={home.repo}>
-      {(reader) => <RootBody reader={reader} tipOid={tipOid} addr={addr} branch={home.defaultBranch} />}
+      {(reader) => (
+        <RootBody reader={reader} tipOid={tipOid} home={home} addr={addr} selected={selected} refParam={refParam} />
+      )}
     </BrowseBoundary>
   )
 }
@@ -76,13 +89,17 @@ export function RepoHomeContent({ home, addr }: { home: RepoHome; addr: RepoAddr
 function RootBody({
   reader,
   tipOid,
+  home,
   addr,
-  branch,
+  selected,
+  refParam,
 }: {
   reader: BrowseReader
   tipOid: string
+  home: RepoHome
   addr: RepoAddress
-  branch: string
+  selected: SelectedRef
+  refParam: string
 }): JSX.Element {
   const { data, loading, error, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
 
@@ -93,18 +110,12 @@ function RootBody({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
-        <GitBranch className="h-3.5 w-3.5" aria-hidden />
-        <Link
-          href={repoHref('/repo/branches', addr)}
-          className="font-mono hover:text-forge-600 dark:hover:text-forge-400"
-        >
-          {branch}
-        </Link>
+        <RefSwitcher home={home} addr={addr} current={selected} />
         <span aria-hidden>·</span>
         <Oid value={tipOid} />
       </div>
 
-      <FileList entries={data.entries} addr={addr} basePath="" />
+      <FileList entries={data.entries} addr={addr} basePath="" refParam={refParam} />
 
       {data.readme ? (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">

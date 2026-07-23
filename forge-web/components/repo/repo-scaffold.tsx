@@ -16,7 +16,7 @@ import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
 import type { TrustChain } from '@/components/ui/trust-panel'
 import { useRepoHome } from '@/hooks/use-repo'
-import type { RepoHome } from '@/lib/view'
+import { selectRef, tipOidOf, type RepoHome } from '@/lib/view'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 export function RepoScaffold({
@@ -24,11 +24,14 @@ export function RepoScaffold({
   children,
   rail = true,
   chainOverride,
+  refParam = '',
 }: {
   addr: RepoAddress
   children: (home: RepoHome) => ReactNode
   rail?: boolean
   chainOverride?: Partial<TrustChain>
+  /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
+  refParam?: string
 }): JSX.Element {
   const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr.owner, addr.name)
 
@@ -87,13 +90,22 @@ export function RepoScaffold({
   }
 
   const home = data
+
+  // A non-default ref selection retargets the rail's assay at that ref's tip (an explicit
+  // page-level chainOverride — blob/commit serials — still wins).
+  let railOverride = chainOverride
+  if (refParam) {
+    const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+    if (selected.ref) railOverride = { tipOid: tipOidOf(selected.ref) ?? undefined, ...chainOverride }
+  }
+
   return (
     <AppShell wide>
       <RepoHeader home={home} addr={addr} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
           <div className="min-w-0">{children(home)}</div>
-          <RepoRail home={home} addr={addr} chainOverride={chainOverride} />
+          <RepoRail home={home} addr={addr} chainOverride={railOverride} />
         </div>
       ) : (
         <div className="min-w-0">{children(home)}</div>

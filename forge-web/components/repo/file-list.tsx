@@ -31,11 +31,14 @@ export function FileList({
   entries,
   addr,
   basePath,
+  refParam = '',
 }: {
   entries: readonly TreeEntry[]
   addr: RepoAddress
   /** The directory these entries live in (`''` = root). */
   basePath: string
+  /** The `?ref=` selection to carry into child links ('' = default branch, omitted). */
+  refParam?: string
 }): JSX.Element {
   const sorted = [...entries].sort((a, b) => {
     const ak = a.mode === 0o40000 ? 0 : 1
@@ -50,12 +53,13 @@ export function FileList({
         const kind = modeKind(e.mode)
         const childPath = basePath ? `${basePath}/${e.name}` : e.name
         const isDir = kind === 'dir'
+        const extra: Record<string, string> = refParam
+          ? { path: childPath, ref: refParam }
+          : { path: childPath }
         const href =
           kind === 'submodule'
             ? undefined
-            : isDir
-              ? repoHref('/repo/tree', addr, { path: childPath })
-              : repoHref('/repo/blob', addr, { path: childPath })
+            : repoHref(isDir ? '/repo/tree' : '/repo/blob', addr, extra)
         const inner = (
           <>
             <span className="shrink-0">{iconFor(kind)}</span>

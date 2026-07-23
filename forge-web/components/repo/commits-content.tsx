@@ -6,20 +6,36 @@ import Link from 'next/link'
 import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { findBranch, tipOidOf, timeAgo, walkLog, type LogEntry } from '@/lib/view'
+import { selectRef, tipOidOf, timeAgo, walkLog, type LogEntry } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
-export function CommitsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const tipOid = tipOidOf(findBranch(home.branches, home.defaultBranch))
-  if (!tipOid) return <EmptyState icon={GitCommit} title="No commits yet" body="History appears once the first commit is pushed." />
+export function CommitsContent({
+  home,
+  addr,
+  refParam = '',
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  refParam?: string
+}): JSX.Element {
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+  if (refParam && !selected.ref) {
+    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
+  }
+  const tipOid = tipOidOf(selected.ref)
+  if (!tipOid) return <EmptyState icon={GitCommit} title="No commits yet" body={`History appears once the first commit is pushed to ${selected.name}.`} />
   return (
-    <BrowseBoundary repo={home.repo}>
-      {(reader) => <LogBody reader={reader} tipOid={tipOid} addr={addr} />}
-    </BrowseBoundary>
+    <div className="space-y-4">
+      <RefSwitcher home={home} addr={addr} current={selected} />
+      <BrowseBoundary repo={home.repo}>
+        {(reader) => <LogBody reader={reader} tipOid={tipOid} addr={addr} />}
+      </BrowseBoundary>
+    </div>
   )
 }
 

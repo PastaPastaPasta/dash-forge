@@ -8,14 +8,18 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 export function PathBreadcrumb({
   addr,
   path,
+  refParam = '',
 }: {
   addr: RepoAddress
   path: string
+  /** The `?ref=` selection to carry up the crumb links ('' = default branch, omitted). */
+  refParam?: string
 }): JSX.Element {
   const segments = path.split('/').filter((s) => s.length > 0)
+  const refExtra: Record<string, string> = refParam ? { ref: refParam } : {}
   return (
     <nav className="flex flex-wrap items-center gap-1 text-prose" aria-label="Path">
-      <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-forge-600 hover:underline dark:text-forge-400">
+      <Link href={repoHref('/repo', addr, refExtra)} className="font-mono font-semibold text-forge-600 hover:underline dark:text-forge-400">
         {addr.name}
       </Link>
       {segments.map((seg, i) => {
@@ -27,7 +31,7 @@ export function PathBreadcrumb({
             {isLast ? (
               <span className="font-mono text-anvil-800 dark:text-anvil-100">{seg}</span>
             ) : (
-              <Link href={repoHref('/repo/tree', addr, { path: sub })} className="font-mono text-forge-600 hover:underline dark:text-forge-400">
+              <Link href={repoHref('/repo/tree', addr, { path: sub, ...refExtra })} className="font-mono text-forge-600 hover:underline dark:text-forge-400">
                 {seg}
               </Link>
             )}

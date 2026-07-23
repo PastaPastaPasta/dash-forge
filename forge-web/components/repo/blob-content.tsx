@@ -15,11 +15,11 @@ import type { RepoHome } from '@/lib/view'
 import {
   commitRootTree,
   decodeTextBlob,
-  findBranch,
   findEntry,
   highlightBlob,
   readBlob,
   readTree,
+  selectRef,
   tipOidOf,
   treeAtPath,
   formatBytes,
@@ -28,6 +28,7 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
+import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -54,18 +55,27 @@ export function BlobContent({
   home,
   addr,
   path,
+  refParam = '',
 }: {
   home: RepoHome
   addr: RepoAddress
   path: string
+  refParam?: string
 }): JSX.Element {
-  const tipOid = tipOidOf(findBranch(home.branches, home.defaultBranch))
-  if (!tipOid) return <EmptyState icon={FileText} title="Empty repo" body="No commits, so no files to read." />
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+  if (refParam && !selected.ref) {
+    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
+  }
+  const tipOid = tipOidOf(selected.ref)
+  if (!tipOid) return <EmptyState icon={FileText} title="Empty repo" body={`No commits on ${selected.name}, so no files to read.`} />
   if (!path) return <EmptyState icon={FileText} title="No file addressed" body="Add &path= to the URL." />
 
   return (
     <div className="space-y-4">
-      <PathBreadcrumb addr={addr} path={path} />
+      <div className="flex flex-wrap items-center gap-3">
+        <RefSwitcher home={home} addr={addr} current={selected} path={path} />
+        <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
+      </div>
       <BrowseBoundary repo={home.repo}>
         {(reader) => <BlobBody reader={reader} tipOid={tipOid} path={path} />}
       </BrowseBoundary>
@@ -111,6 +121,10 @@ function BlobBody({
   }, [data])
 
   if (loading) return <LoadingBlock label="Reconstructing blob" />
+  // A missing path is deterministic (common right after a ref switch) — no point retrying.
+  if (error?.includes('file not found')) {
+    return <EmptyState icon={FileText} title="File not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse the tree.`} />
+  }
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />
 
