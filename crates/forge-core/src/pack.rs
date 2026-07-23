@@ -32,7 +32,7 @@ pub mod parse;
 #[cfg(test)]
 mod gittests;
 
-pub use build::{build_pack, repack_all, BuildReport, Pack};
+pub use build::{build_pack, ensure_safe_rev, repack_all, BuildReport, Pack};
 pub use flatindex::{FlatEntry, FlatIndex, MODE_GITLINK};
 pub use locator::{
     LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SENTINEL,

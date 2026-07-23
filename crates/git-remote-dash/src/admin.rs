@@ -9,10 +9,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use tokio::runtime::Runtime;
 
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::PlatformClient;
+use forge_core::platform::{PlatformClient, QueryOrder};
 use forge_core::repo::{credits_to_dash, CreateRepoOpts, RepoService};
 
 use crate::helper::network_from_env;
+
+/// Default nonce-scan window for `--resume-repo` (how many nonces back to look for the
+/// orphan contract). Widened from the original 3 so intervening writes cannot hide it.
+const DEFAULT_RESUME_WINDOW: u64 = 20;
 
 /// The `CreateRepoOpts` the M1 provisioning path uses (default branch `main`, platform
 /// backend). Shared by the create and resume flows so they stay in lockstep.
@@ -36,10 +40,35 @@ pub fn run(rt: &Runtime, args: &[String]) -> Result<()> {
         }
         Some("--balance") => rt.block_on(balance()),
         Some("--resume-repo") => {
-            let name = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: git-remote-dash --resume-repo <name>"))?;
-            rt.block_on(resume_repo(name))
+            let name = args.get(1).ok_or_else(|| {
+                anyhow!("usage: git-remote-dash --resume-repo <name> [nonce-window]")
+            })?;
+            // Optional widened scan window (default DEFAULT_RESUME_WINDOW nonces back).
+            let window = args
+                .get(2)
+                .map(|s| s.parse::<u64>())
+                .transpose()
+                .map_err(|e| anyhow!("nonce-window must be an integer: {e}"))?
+                .unwrap_or(DEFAULT_RESUME_WINDOW);
+            rt.block_on(resume_repo(name, window))
+        }
+        Some("--write-ref") => {
+            let owner = args.get(1);
+            let repo = args.get(2);
+            let ref_name = args.get(3);
+            let oid = args.get(4);
+            match (owner, repo, ref_name, oid) {
+                (Some(o), Some(r), Some(n), Some(x)) => rt.block_on(write_ref(o, r, n, x)),
+                _ => bail!("usage: git-remote-dash --write-ref <owner> <repo> <refName> <oidHex>"),
+            }
+        }
+        Some("--dump-refs") => {
+            let owner = args.get(1);
+            let repo = args.get(2);
+            match (owner, repo) {
+                (Some(o), Some(r)) => rt.block_on(dump_refs(o, r)),
+                _ => bail!("usage: git-remote-dash --dump-refs <owner> <repo>"),
+            }
         }
         Some("--teardown") => {
             let owner = args
@@ -105,20 +134,22 @@ async fn create_repo(name: &str) -> Result<()> {
 /// a cached `AlreadyExists`. Scans recent identity nonces, derives the deterministic
 /// contract id `hash(ownerId || nonce)`, and finalizes the first one that exists on-chain
 /// without paying for a second create.
-async fn resume_repo(name: &str) -> Result<()> {
+async fn resume_repo(name: &str, window: u64) -> Result<()> {
     let (client, bridge) = connect().await?;
     let identity = client.fetch_identity(&bridge.identity_id).await?;
     let owner = &bridge.identity_id;
     let current = client.identity_nonce(owner).await?;
     tracing::info!(
         nonce = current,
+        window,
         "current identity nonce; scanning for orphan contract"
     );
 
     // The create bumped-and-used the nonce; if it landed, the on-chain nonce is that value.
-    // Scan a small window back for robustness.
+    // Scan `window` nonces back for robustness (configurable — intervening writes can bump
+    // the nonce past the create before a resume is attempted).
     let mut found: Option<String> = None;
-    for nonce in (current.saturating_sub(3)..=current).rev() {
+    for nonce in (current.saturating_sub(window)..=current).rev() {
         let candidate = client.derive_contract_id(owner, nonce)?;
         if client.fetch_contract(&candidate).await.is_ok() {
             println!("found_orphan_contract id={candidate} nonce={nonce}");
@@ -146,6 +177,60 @@ async fn resume_repo(name: &str) -> Result<()> {
         "remote_url=dash://{}/{}",
         result.handle.owner_id, result.handle.normalized_name
     );
+    Ok(())
+}
+
+/// Directly write a `refUpdate` (test tool): proves the write-side injection guard rejects
+/// an illegal `refName` (e.g. one containing a newline that would inject a spoofed
+/// ref-advertisement line) before any document is written.
+async fn write_ref(owner: &str, repo: &str, ref_name: &str, oid_hex: &str) -> Result<()> {
+    let (client, bridge) = connect().await?;
+    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let svc = RepoService::new(&client, &identity, &bridge);
+    let handle = svc
+        .resolve_repo(owner, repo)
+        .await
+        .context("resolve_repo")?;
+    let new_oid = hex::decode(oid_hex).context("oid must be hex")?;
+    let doc_id = svc
+        .write_ref_update(&handle, ref_name, &new_oid, None, false)
+        .await
+        .context("write_ref_update")?;
+    println!("wrote_ref_update id={doc_id} ref={ref_name:?}");
+    Ok(())
+}
+
+/// Dump raw `refUpdate` / `protectedRefUpdate` documents (diagnostic).
+async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
+    let (client, bridge) = connect().await?;
+    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let svc = RepoService::new(&client, &identity, &bridge);
+    let handle = svc.resolve_repo(owner, repo).await?;
+    let contract = client.fetch_contract(&handle.repo_contract_id).await?;
+    for doc_type in ["refUpdate", "protectedRefUpdate"] {
+        let docs = client
+            .query_documents(
+                &contract,
+                doc_type,
+                &[],
+                &[QueryOrder::asc("$createdAt")],
+                0,
+                None,
+            )
+            .await?;
+        println!("--- {doc_type}: {} docs ---", docs.len());
+        for d in &docs {
+            println!(
+                "  ref={:?} new={} prev={} force={} createdAt={} id={}",
+                d.field_str("refName").unwrap_or_default(),
+                d.field_hex("newOid").unwrap_or_default(),
+                d.field_hex("prevOid").unwrap_or_default(),
+                d.field_bool("force"),
+                d.created_at.unwrap_or_default(),
+                d.id,
+            );
+        }
+    }
     Ok(())
 }
 

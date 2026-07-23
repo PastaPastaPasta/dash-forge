@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Result};
+use forge_core::pack::ensure_safe_rev;
 use std::io::Write as _;
 
 /// Run `git <args>`, optionally in `cwd`, optionally with the ambient `GIT_DIR`/
@@ -87,6 +88,9 @@ impl LocalRepo {
     /// resolve. Does **not** peel — a ref pointing at an annotated tag resolves to the tag
     /// object (so the tag itself is packed on push).
     pub fn rev_parse(rev: &str) -> Option<String> {
+        // Defense-in-depth: never let a rev that git's CLI could misparse (leading `-`,
+        // embedded control char) reach `git` as an argument.
+        ensure_safe_rev(rev).ok()?;
         let out = run_git(&["rev-parse", "--verify", "-q", rev], None, false, None).ok()?;
         let s = String::from_utf8_lossy(&out).trim().to_string();
         if s.is_empty() {
@@ -98,12 +102,18 @@ impl LocalRepo {
 
     /// Whether object `oid` is present in the local odb.
     pub fn object_exists(oid: &str) -> bool {
+        if ensure_safe_rev(oid).is_err() {
+            return false;
+        }
         run_git_status(&["cat-file", "-e", oid])
     }
 
     /// Whether commit `ancestor` is an ancestor of (or equal to) commit `descendant`.
     /// `false` if either object is missing locally (cannot prove a fast-forward).
     pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
+        if ensure_safe_rev(ancestor).is_err() || ensure_safe_rev(descendant).is_err() {
+            return false;
+        }
         if !Self::object_exists(ancestor) || !Self::object_exists(descendant) {
             return false;
         }

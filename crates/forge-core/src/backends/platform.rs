@@ -181,6 +181,20 @@ impl<'a> PlatformBackend<'a> {
         // The (packHash, seq) index already returns seq-ordered, but sort defensively so
         // reassembly never depends on traversal order.
         chunks.sort_by_key(|c| c.seq);
+
+        // Diagnosable-integrity pre-check: chunk seqs must be the contiguous run 0..N. A
+        // missing chunk would otherwise surface only as an opaque whole-pack SHA-256
+        // mismatch downstream; report exactly which seq is absent instead.
+        for (i, chunk) in chunks.iter().enumerate() {
+            if usize::try_from(chunk.seq) != Ok(i) {
+                return Err(Error::Config(format!(
+                    "pack storage incomplete: expected chunk seq {i} but found {}; \
+                     {} chunk(s) present (a chunk failed to store or was deleted)",
+                    chunk.seq,
+                    chunks.len()
+                )));
+            }
+        }
         Ok(chunks)
     }
 }

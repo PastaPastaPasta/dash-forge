@@ -149,6 +149,13 @@ impl Helper {
         let mut lines = Vec::new();
         let mut names: Vec<String> = Vec::new();
         for (name, state) in &refs {
+            // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
+            // a ref name carrying control chars/whitespace — it could inject a spoofed
+            // advertisement line into git's parse of this output (S0.9 wire protocol).
+            if !forge_core::rules::is_legal_ref_name(name) {
+                tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
+                continue;
+            }
             if let Some(oid) = tip_oid(state) {
                 lines.push(format!("{oid} {name}"));
                 names.push(name.clone());
@@ -172,6 +179,21 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
+        // The local git odb is the cache — never re-download objects git already has
+        // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
+        // already present locally there is nothing to transfer. (A promisor fetch still
+        // runs, since a present commit may need its filtered blobs materialized.)
+        if options.filter.is_none()
+            && !wants.is_empty()
+            && wants.iter().all(|w| LocalRepo::object_exists(&w.oid))
+        {
+            tracing::info!(
+                wants = wants.len(),
+                "all wanted objects already local; skipping fetch"
+            );
+            return Ok(());
+        }
+
         let conn = self.ensure_conn().await?;
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
@@ -285,12 +307,48 @@ impl Helper {
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
         // as a divergence → report a late non-fast-forward rather than a silent orphan.
+        // Platform reads are eventually consistent, so a re-read *immediately* after the
+        // write can lag (not yet reflect our update). Poll until every accepted ref shows
+        // its pushed tip (convergence) or the retries are exhausted — the write itself has
+        // already landed idempotently; this only decides what status we report to git.
         let final_refs = if dry_run {
             remote_refs
         } else {
-            svc.read_refs(&conn.repo).await?
+            self.read_refs_until_converged(&planned).await?
         };
         Ok(finalize_outcomes(planned, &final_refs, dry_run))
+    }
+
+    /// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its
+    /// pushed tip (tolerating read-after-write lag), or the retry budget is spent.
+    async fn read_refs_until_converged(
+        &self,
+        planned: &[Planned],
+    ) -> Result<Vec<(String, RefState)>> {
+        const MAX_ATTEMPTS: usize = 6;
+        let conn = self.conn.as_ref().expect("connected before finalize");
+        let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
+        let expected: Vec<(&str, &str)> = planned
+            .iter()
+            .filter(|p| p.reject.is_none())
+            .filter_map(|p| p.new_oid.as_deref().map(|oid| (p.spec.dst.as_str(), oid)))
+            .collect();
+
+        let mut last = svc.read_refs(&conn.repo).await?;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let converged = expected.iter().all(|(dst, oid)| {
+                matches!(last.iter().find(|(n, _)| n == dst),
+                    Some((_, RefState::Resolved { oid: got, .. })) if got == oid)
+            });
+            if converged || expected.is_empty() {
+                break;
+            }
+            if attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                last = svc.read_refs(&conn.repo).await?;
+            }
+        }
+        Ok(last)
     }
 }
 
@@ -393,7 +451,10 @@ async fn upload_push_pack(
     let meta = PackMeta::for_bytes(bytes);
     let pack_hash = meta.pack_hash_bytes()?;
     let object_count = report.pack.parsed.object_count() as u64;
-    let chunk_count = split(bytes).len() as u64;
+    let chunk_vec_len = split(bytes).len();
+    let chunk_count = chunk_vec_len as u64;
+    let chunk_count_u32 = u32::try_from(chunk_vec_len)
+        .map_err(|_| anyhow!("pack has too many chunks ({chunk_vec_len}) for a u32 journal"))?;
     tracing::info!(
         pack_hash = %meta.pack_hash,
         bytes = bytes.len(),
@@ -403,8 +464,23 @@ async fn upload_push_pack(
         "uploading push pack"
     );
 
+    // Resumable upload: a journal under .git/dash/journal/<packHash>.json records confirmed
+    // chunks so an interrupted push resumes without re-paying (PRD 02 §A). Re-broadcasts of
+    // an already-stored chunk/manifest also idempotently no-op via the unique-index →
+    // AlreadyExists classification, so a re-run is safe even if the journal is lost.
+    let jpath = crate::journal::journal_path(git_dir, &meta.pack_hash);
+    let mut journal = crate::journal::load_or_new(&jpath, &meta.pack_hash, chunk_count_u32);
+    let already = journal.uploaded.len();
+    if already > 0 {
+        tracing::info!(
+            resumed_chunks = already,
+            total = chunk_count,
+            "resuming interrupted push from journal"
+        );
+    }
+    let store = crate::journal::FileJournalStore::new(jpath.clone());
     let uris = svc
-        .put_pack(repo, bytes, &meta)
+        .put_pack_resumable(repo, bytes, &meta, &mut journal, &store)
         .await
         .context("uploading pack chunks")?;
     svc.write_pack_manifest(
@@ -422,6 +498,9 @@ async fn upload_push_pack(
     )
     .await
     .context("writing pack manifest")?;
+
+    // Push fully landed (chunks + manifest): retire the journal.
+    let _ = std::fs::remove_file(&jpath);
     Ok(())
 }
 

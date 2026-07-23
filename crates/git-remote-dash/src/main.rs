@@ -19,6 +19,7 @@
 mod admin;
 mod git;
 mod helper;
+mod journal;
 mod options;
 mod url;
 
@@ -79,8 +80,13 @@ fn main() -> Result<()> {
 /// Rewrite a relative `GIT_DIR` to an absolute path (no-op when unset or already absolute).
 fn normalize_git_dir_env() {
     if let Some(raw) = std::env::var_os("GIT_DIR") {
-        if let Ok(abs) = std::fs::canonicalize(&raw) {
-            std::env::set_var("GIT_DIR", abs);
+        match std::fs::canonicalize(&raw) {
+            Ok(abs) => std::env::set_var("GIT_DIR", abs),
+            Err(e) => tracing::warn!(
+                git_dir = %std::path::Path::new(&raw).display(),
+                error = %e,
+                "could not canonicalize GIT_DIR to an absolute path; leaving it as-is (git subprocesses run with -C may misresolve it)"
+            ),
         }
     }
 }

@@ -256,15 +256,40 @@ pub fn resolve_ref(
 
     // (4) live heads.
     let newer_supersedes = |u: &RefUpdate, v: &RefUpdate| -> bool {
-        // v must be strictly newer than u.
+        // A direct prevOid chain — `v` recorded `u`'s tip as its `prevOid` — is an
+        // *unambiguous causal* "v came after u": whoever authored v had u's tip in hand.
+        // This ordering is independent of the `($createdAt, $id)` clock, which matters
+        // because Platform only records `$createdAt` when the document type requires the
+        // timestamp; where it is absent (0), the clock degrades to arbitrary document-id
+        // order and could otherwise let a superseded tip out-rank the update that
+        // fast-forwarded off it. The chain is acyclic (v.prevOid==u.newOid and
+        // u.prevOid==v.newOid would require each tip to be the other's parent), so hoisting
+        // it out of the `v_newer` gate cannot create a supersession cycle. When `$createdAt`
+        // *is* present, a chain child always sorts at-or-after its parent, so this changes
+        // nothing — it only repairs the degenerate all-equal-timestamp case.
+        if !is_null_oid(&v.prev_oid) && v.prev_oid == u.new_oid && v.new_oid != u.new_oid {
+            return true;
+        }
+        // Conversely, if `u` chained off `v` (`u.prevOid == v.newOid`), then `u` is a causal
+        // *descendant* of `v` — so `v` must NEVER supersede `u`, not even a force/delete `v`.
+        // Without this, the unreliable `($createdAt, $id)` clock can mis-rank an older force
+        // push as "newer" than the fast-forward that later built on it, letting a superseded
+        // tip clobber its own descendant. Combined with the chain rule above, this makes the
+        // prevOid DAG authoritative for causal order (the clock only breaks ties between
+        // genuinely unrelated — diverged — updates). The two chain guards can't both fire for
+        // one `(u, v)` (that needs a 2-cycle of tips), so there is no contradiction.
+        if !is_null_oid(&u.prev_oid) && u.prev_oid == v.new_oid && u.new_oid != v.new_oid {
+            return false;
+        }
+
+        // The remaining conditions (delete/force/ancestry) do not carry their own causal
+        // proof, so they stay gated on `v` being strictly newer by `($createdAt, $id)` —
+        // this asymmetry is what stops two competing force pushes from cancelling to Unborn.
         let v_newer = (v.created_at, &v.id) > (u.created_at, &u.id);
         if !v_newer {
             return false;
         }
         if is_null_oid(&v.new_oid) || v.force {
-            return true;
-        }
-        if !is_null_oid(&v.prev_oid) && v.prev_oid == u.new_oid {
             return true;
         }
         is_ancestor(&u.new_oid, &v.new_oid)
@@ -321,8 +346,51 @@ pub fn resolve_ref(
     }
 }
 
+/// Whether a ref name is legal to advertise on the git wire protocol.
+///
+/// `refName` is stored as an arbitrary Platform string (≤255 chars) and never passed
+/// `git check-ref-format`, so a hostile WRITE holder could store a name containing a
+/// newline (`refs/heads/x\n<oid> refs/heads/main`) to **inject a spoofed
+/// ref-advertisement line** into every clone/fetch, or a NUL/space to corrupt parsing.
+/// The security-critical rule (shared by the write guard, the fold side, and the helper
+/// emission): non-empty, no leading `-` (would read as a git option), and no ASCII
+/// whitespace or control byte (`b <= 0x20`, covering space/tab/newline/NUL, plus DEL).
+#[must_use]
+pub fn is_legal_ref_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('-') && !name.bytes().any(|b| b <= 0x20 || b == 0x7f)
+}
+
+/// Whether `h` is a real 32-byte content hash rendered as 64 lowercase-or-upper hex chars
+/// (as every live `refNameHash` is — a `bytes32` field). Symbolic test keys (short
+/// non-hex strings) are not, so the fold-side preimage check below only binds real data.
+fn is_content_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether `refNameHash` is exactly `sha256(refName)` — the normative invariant binding
+/// the indexed key to the name it claims to hash.
+fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    h.update(ref_name.as_bytes());
+    hex::encode(h.finalize()).eq_ignore_ascii_case(ref_name_hash)
+}
+
 /// The as-of-time protection check from §4: is update `u` a valid mover of its ref?
 fn is_update_valid(u: &RefUpdate, config_history: &[ConfigDoc]) -> bool {
+    // (0) Injection / key-decoupling defense (fold-side enforcement of the normative
+    // invariant, defense-in-depth with the write guard): an illegal `refName` is inert,
+    // and — when a real 32-byte `refNameHash` is present — it MUST be `sha256(refName)`.
+    // A hostile alt-client that bypasses the write-side check by decoupling the indexed
+    // key from the advertised name is thereby made inert on read/fold too. (Symbolic
+    // conformance-vector keys are not content hashes, so they skip the preimage bind.)
+    if !is_legal_ref_name(&u.ref_name) {
+        return false;
+    }
+    if is_content_hash(&u.ref_name_hash) && !ref_name_hash_matches(&u.ref_name, &u.ref_name_hash) {
+        return false;
+    }
+
     let cfg = config_as_of(config_history, u.created_at);
     let Some(cfg) = cfg else {
         return true; // no config in force → nothing protected → valid.
@@ -954,9 +1022,9 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_issue_state, fold_pr_state, holdings_as_of, matches_protected, overlay_tree,
-        resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event, FlatIndex, Holdings, IssueState,
-        PrState, RefState, RefUpdate, TokenRecord, TreeDiff,
+        fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name, matches_protected,
+        overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event, FlatIndex, Holdings,
+        IssueState, PrState, RefState, RefUpdate, TokenRecord, TreeDiff,
     };
     use serde::Deserialize;
     use std::path::PathBuf;
@@ -1195,6 +1263,123 @@ mod tests {
         assert_eq!(
             resolve_ref(&[], &[], "deadbeef", |_, _| false),
             RefState::Unborn
+        );
+    }
+
+    // --- injection / key-decoupling defense (MAJOR 2 conformance) ----------
+
+    fn sha256_hex(s: &str) -> String {
+        use sha2::{Digest as _, Sha256};
+        let mut h = Sha256::new();
+        h.update(s.as_bytes());
+        hex::encode(h.finalize())
+    }
+
+    fn ref_update(ref_name: &str, ref_name_hash: &str, new_oid: &str) -> RefUpdate {
+        RefUpdate {
+            id: "d1".into(),
+            ref_name_hash: ref_name_hash.into(),
+            ref_name: ref_name.into(),
+            prev_oid: String::new(),
+            new_oid: new_oid.into(),
+            force: false,
+            protected: false,
+            author: "author1".into(),
+            created_at: 100,
+        }
+    }
+
+    #[test]
+    fn is_legal_ref_name_rejects_injection_shapes() {
+        assert!(is_legal_ref_name("refs/heads/main"));
+        assert!(is_legal_ref_name("refs/tags/v1.0"));
+        // Newline injection (spoof a ref-advertisement / HEAD line): inert.
+        assert!(!is_legal_ref_name("refs/heads/x\n0000 refs/heads/main"));
+        assert!(!is_legal_ref_name("refs/heads/x\t")); // tab
+        assert!(!is_legal_ref_name("refs/heads/ x")); // space
+        assert!(!is_legal_ref_name("refs/heads/x\0y")); // NUL
+        assert!(!is_legal_ref_name("-oops")); // leading dash → git option
+        assert!(!is_legal_ref_name("")); // empty
+    }
+
+    #[test]
+    fn illegal_ref_name_is_inert_in_resolve() {
+        let name = "refs/heads/x\n1111111111111111111111111111111111111111 refs/heads/main";
+        let hash = sha256_hex(name);
+        let u = ref_update(name, &hash, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        // Even with a *correct* preimage hash, an illegal name never becomes a live head.
+        assert_eq!(
+            resolve_ref(&[u], &[], &hash, |_, _| false),
+            RefState::Unborn
+        );
+    }
+
+    #[test]
+    fn ref_name_hash_preimage_mismatch_is_inert() {
+        // A 64-hex (real) refNameHash that is NOT sha256(refName): a decoupled key/name
+        // forged by an alt-client bypassing the write guard. Inert on the fold side.
+        let wrong_hash = sha256_hex("refs/heads/victim"); // hash of a DIFFERENT name
+        let u = ref_update(
+            "refs/heads/attacker",
+            &wrong_hash,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        assert_eq!(
+            resolve_ref(&[u], &[], &wrong_hash, |_, _| false),
+            RefState::Unborn
+        );
+    }
+
+    #[test]
+    fn chained_force_in_middle_resolves_to_chain_tip_with_zero_timestamps() {
+        // Regression: all `$createdAt` == 0 (the deployed refUpdate type doesn't record the
+        // timestamp), history is A -> B(force) -> C via prevOid chains, and B's document id
+        // happens to sort *after* C's. The prevOid DAG must win: the head is C, never Unborn.
+        let hash = sha256_hex("refs/heads/main");
+        let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let c = "cccccccccccccccccccccccccccccccccccccccc";
+        let mk = |id: &str, new: &str, prev: &str, force: bool| RefUpdate {
+            id: id.into(),
+            ref_name_hash: hash.clone(),
+            ref_name: "refs/heads/main".into(),
+            prev_oid: prev.into(),
+            new_oid: new.into(),
+            force,
+            protected: false,
+            author: "auth".into(),
+            created_at: 0, // the degenerate case
+        };
+        // Document ids deliberately ordered so the middle force (B) sorts newest by id.
+        let ua = mk("id_A", a, "", false);
+        let ub = mk("id_Z_force", b, a, true); // force, id sorts last
+        let uc = mk("id_M", c, b, false);
+        let got = resolve_ref(&[ua, ub, uc], &[], &hash, |x, y| x == y);
+        assert_eq!(
+            got,
+            RefState::Resolved {
+                oid: c.into(),
+                author: "auth".into(),
+                created_at: 0,
+            },
+            "chain tip C must win despite the middle force sorting newest by id"
+        );
+    }
+
+    #[test]
+    fn ref_name_hash_matching_preimage_resolves() {
+        // The honest case: refNameHash == sha256(refName) → the update is valid.
+        let name = "refs/heads/main";
+        let hash = sha256_hex(name);
+        let oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let u = ref_update(name, &hash, oid);
+        assert_eq!(
+            resolve_ref(&[u], &[], &hash, |_, _| false),
+            RefState::Resolved {
+                oid: oid.into(),
+                author: "author1".into(),
+                created_at: 100,
+            }
         );
     }
 }
