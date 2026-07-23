@@ -1,0 +1,3 @@
+# Playwright run artifacts (transient) — screenshots/ is the kept visual-verification deliverable.
+report/
+test-results/
