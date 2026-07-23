@@ -1,0 +1,777 @@
+{
+  "$formatVersion": "1",
+  "id": "11111111111111111111111111111111",
+  "ownerId": "11111111111111111111111111111111",
+  "version": 1,
+  "documentSchemas": {
+    "config": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 1,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "defaultBranch": {
+          "type": "string",
+          "maxLength": 255,
+          "position": 0
+        },
+        "protectedPatterns": {
+          "type": "string",
+          "maxLength": 900,
+          "position": 1,
+          "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
+        },
+        "backend": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "integer",
+              "position": 2,
+              "minimum": 0,
+              "maximum": 4
+            },
+            "uris": {
+              "type": "string",
+              "maxLength": 1300,
+              "position": 3,
+              "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false,
+          "position": 4
+        },
+        "archived": {
+          "type": "boolean",
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "created",
+          "properties": [
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "defaultBranch"
+      ],
+      "additionalProperties": false
+    },
+    "refUpdate": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 0,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "refNameHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "refName": {
+          "type": "string",
+          "maxLength": 255,
+          "position": 1
+        },
+        "newOid": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 20,
+          "maxItems": 32,
+          "position": 2
+        },
+        "prevOid": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 20,
+          "maxItems": 32,
+          "position": 3
+        },
+        "force": {
+          "type": "boolean",
+          "position": 4
+        }
+      },
+      "indices": [
+        {
+          "name": "refState",
+          "properties": [
+            {
+              "refNameHash": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "reflog",
+          "properties": [
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "pusher",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "refNameHash",
+        "refName",
+        "newOid"
+      ],
+      "additionalProperties": false
+    },
+    "protectedRefUpdate": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 1,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "refNameHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "refName": {
+          "type": "string",
+          "maxLength": 255,
+          "position": 1
+        },
+        "newOid": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 20,
+          "maxItems": 32,
+          "position": 2
+        },
+        "prevOid": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 20,
+          "maxItems": 32,
+          "position": 3
+        },
+        "force": {
+          "type": "boolean",
+          "position": 4
+        }
+      },
+      "indices": [
+        {
+          "name": "refState",
+          "properties": [
+            {
+              "refNameHash": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "reflog",
+          "properties": [
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "pusher",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "refNameHash",
+        "refName",
+        "newOid"
+      ],
+      "additionalProperties": false
+    },
+    "packManifest": {
+      "type": "object",
+      "documentsMutable": false,
+      "documentsCountable": true,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 0,
+          "amount": 1
+        },
+        "delete": {
+          "tokenPosition": 0,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "packHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "kind": {
+          "type": "integer",
+          "position": 1,
+          "minimum": 0
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "position": 2,
+          "minimum": 0
+        },
+        "objectCount": {
+          "type": "integer",
+          "position": 3,
+          "minimum": 0
+        },
+        "chunkCount": {
+          "type": "integer",
+          "position": 4,
+          "minimum": 0
+        },
+        "storage": {
+          "type": "integer",
+          "position": 5,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uris": {
+          "type": "string",
+          "maxLength": 2600,
+          "position": 6,
+          "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
+        },
+        "tips": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 512,
+          "position": 7
+        },
+        "supersedes": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 1024,
+          "position": 8
+        },
+        "offsetIndexParts": {
+          "type": "integer",
+          "position": 9,
+          "minimum": 0
+        }
+      },
+      "indices": [
+        {
+          "name": "packHash",
+          "properties": [
+            {
+              "packHash": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "created",
+          "properties": [
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "kind",
+          "properties": [
+            {
+              "kind": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "packHash",
+        "kind",
+        "sizeBytes",
+        "objectCount",
+        "chunkCount",
+        "storage",
+        "offsetIndexParts"
+      ],
+      "additionalProperties": false
+    },
+    "manifestPart": {
+      "type": "object",
+      "documentsMutable": false,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 0,
+          "amount": 1
+        },
+        "delete": {
+          "tokenPosition": 0,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "packHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "partSeq": {
+          "type": "integer",
+          "position": 1,
+          "minimum": 0
+        },
+        "entries": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 4900,
+          "position": 2
+        }
+      },
+      "indices": [
+        {
+          "name": "part",
+          "properties": [
+            {
+              "packHash": "asc"
+            },
+            {
+              "partSeq": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "packHash",
+        "partSeq",
+        "entries"
+      ],
+      "additionalProperties": false
+    },
+    "chunk": {
+      "type": "object",
+      "documentsMutable": false,
+      "tokenCost": {
+        "create": {
+          "tokenPosition": 0,
+          "amount": 1
+        },
+        "delete": {
+          "tokenPosition": 0,
+          "amount": 1
+        }
+      },
+      "properties": {
+        "packHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "seq": {
+          "type": "integer",
+          "position": 1,
+          "minimum": 0
+        },
+        "d0": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 4900,
+          "position": 2
+        },
+        "d1": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 4900,
+          "position": 3
+        },
+        "d2": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 4900,
+          "position": 4
+        }
+      },
+      "indices": [
+        {
+          "name": "chunk",
+          "properties": [
+            {
+              "packHash": "asc"
+            },
+            {
+              "seq": "asc"
+            }
+          ],
+          "unique": true,
+          "countable": "countable"
+        }
+      ],
+      "required": [
+        "packHash",
+        "seq",
+        "d0"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "groups": {
+    "0": {
+      "$formatVersion": "0",
+      "members": {
+        "11111111111111111111111111111111": 1
+      },
+      "requiredPower": 1
+    }
+  },
+  "tokens": {
+    "0": {
+      "$formatVersion": "0",
+      "conventions": {
+        "$formatVersion": "0",
+        "localizations": {
+          "en": {
+            "$formatVersion": "0",
+            "shouldCapitalize": true,
+            "singularForm": "write",
+            "pluralForm": "writes"
+          }
+        },
+        "decimals": 0
+      },
+      "conventionsChangeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "baseSupply": 1000000000,
+      "maxSupply": null,
+      "keepsHistory": {
+        "$formatVersion": "0",
+        "keepsTransferHistory": true,
+        "keepsFreezingHistory": true,
+        "keepsMintingHistory": true,
+        "keepsBurningHistory": true,
+        "keepsDirectPricingHistory": true,
+        "keepsDirectPurchaseHistory": true
+      },
+      "startAsPaused": false,
+      "allowTransferToFrozenBalance": true,
+      "maxSupplyChangeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "distributionRules": {
+        "$formatVersion": "0",
+        "perpetualDistribution": null,
+        "perpetualDistributionRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "preProgrammedDistribution": null,
+        "newTokensDestinationIdentity": null,
+        "newTokensDestinationIdentityRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "mintingAllowChoosingDestination": true,
+        "mintingAllowChoosingDestinationRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "changeDirectPurchasePricingRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        }
+      },
+      "marketplaceRules": {
+        "$formatVersion": "0",
+        "tradeMode": "NotTradeable",
+        "tradeModeChangeRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        }
+      },
+      "manualMintingRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "manualBurningRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "freezeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "unfreezeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "destroyFrozenFundsRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "emergencyActionRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "mainControlGroup": 0,
+      "mainControlGroupCanBeModified": "ContractOwner",
+      "description": null
+    },
+    "1": {
+      "$formatVersion": "0",
+      "conventions": {
+        "$formatVersion": "0",
+        "localizations": {
+          "en": {
+            "$formatVersion": "0",
+            "shouldCapitalize": true,
+            "singularForm": "maintain",
+            "pluralForm": "maintains"
+          }
+        },
+        "decimals": 0
+      },
+      "conventionsChangeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "baseSupply": 1000000000,
+      "maxSupply": null,
+      "keepsHistory": {
+        "$formatVersion": "0",
+        "keepsTransferHistory": true,
+        "keepsFreezingHistory": true,
+        "keepsMintingHistory": true,
+        "keepsBurningHistory": true,
+        "keepsDirectPricingHistory": true,
+        "keepsDirectPurchaseHistory": true
+      },
+      "startAsPaused": false,
+      "allowTransferToFrozenBalance": true,
+      "maxSupplyChangeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "distributionRules": {
+        "$formatVersion": "0",
+        "perpetualDistribution": null,
+        "perpetualDistributionRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "preProgrammedDistribution": null,
+        "newTokensDestinationIdentity": null,
+        "newTokensDestinationIdentityRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "mintingAllowChoosingDestination": true,
+        "mintingAllowChoosingDestinationRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        },
+        "changeDirectPurchasePricingRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        }
+      },
+      "marketplaceRules": {
+        "$formatVersion": "0",
+        "tradeMode": "NotTradeable",
+        "tradeModeChangeRules": {
+          "$formatVersion": "0",
+          "authorizedToMakeChange": "ContractOwner",
+          "adminActionTakers": "ContractOwner",
+          "changingAuthorizedActionTakersToNoOneAllowed": false,
+          "changingAdminActionTakersToNoOneAllowed": false,
+          "selfChangingAdminActionTakersAllowed": false
+        }
+      },
+      "manualMintingRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "manualBurningRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "freezeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "unfreezeRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "destroyFrozenFundsRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "emergencyActionRules": {
+        "$formatVersion": "0",
+        "authorizedToMakeChange": "MainGroup",
+        "adminActionTakers": "MainGroup",
+        "changingAuthorizedActionTakersToNoOneAllowed": false,
+        "changingAdminActionTakersToNoOneAllowed": false,
+        "selfChangingAdminActionTakersAllowed": false
+      },
+      "mainControlGroup": 0,
+      "mainControlGroupCanBeModified": "ContractOwner",
+      "description": null
+    }
+  },
+  "keywords": [
+    "git",
+    "forge",
+    "repository"
+  ],
+  "description": "Dash Forge per-repository contract (template v1)."
+}

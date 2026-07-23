@@ -37,6 +37,8 @@ simple-signer.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
+hex = "0.4"
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

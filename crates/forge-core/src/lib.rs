@@ -4,6 +4,8 @@
 //!
 //! - [`platform`] — `PlatformClient` (rs-sdk wrapper, live testnet/mainnet) and the
 //!   `WriteEngine` document create/delete lifecycle + idempotent-retry journal types.
+//! - [`repo`] — `RepoService`: the repo-lifecycle API (`create_repo` / `resolve_repo` /
+//!   ref + pack-manifest + chunk read/write) `git-remote-dash` calls.
 //! - [`pack`] — chunk geometry and the pure split/join chunker.
 //! - [`backends`] — the `PackBackend` trait (`platform | ipfs | s3 | https`).
 //! - [`rules`] — `FORGE_RULES_V1`: ref resolution, event folds, protected-pattern matching.
@@ -20,6 +22,7 @@ pub mod error;
 pub mod keystore;
 pub mod pack;
 pub mod platform;
+pub mod repo;
 pub mod rules;
 
 pub use error::{Error, Result};

@@ -25,8 +25,8 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
-use crate::pack::{split, Chunk, FIELDS_PER_DOC};
-use crate::platform::{FieldValue, LoadedContract, WriteEngine};
+use crate::pack::{join, split, Chunk, FIELDS_PER_DOC};
+use crate::platform::{FieldValue, LoadedContract, QueryFilter, QueryOrder, WriteEngine};
 
 /// The platform scheme label used in manifest URIs.
 pub const PLATFORM_SCHEME: &str = "platform";
@@ -37,6 +37,10 @@ pub const CHUNK_DOC_TYPE: &str = "chunk";
 /// In-flight write window for the chunk pipeline (frozen S0.1 sweet spot: window 8,
 /// ~4 docs/sec landing; look-ahead caps ~24).
 pub const PIPELINE_WINDOW: usize = 8;
+
+/// Page size for the chunk read-back scan. Platform caps a document query at ~100 rows,
+/// so a pack with more chunks is paged via a `seq`-ordered `start_after` cursor.
+const CHUNK_PAGE_LIMIT: u32 = 100;
 
 /// The document field carrying a chunk's packHash (32-byte `byteArray`).
 pub const FIELD_PACK_HASH: &str = "packHash";
@@ -132,6 +136,53 @@ impl<'a> PlatformBackend<'a> {
             pack_hash
         ))
     }
+
+    /// The 32-byte packHash from a `platform://<contractId>/<packHashHex>` locator.
+    fn pack_hash_from_uri(uri: &Uri) -> Result<[u8; 32]> {
+        let rest = uri
+            .rest()
+            .ok_or_else(|| Error::Config(format!("not a platform locator: {uri}")))?;
+        let hex_hash = rest.rsplit_once('/').map_or(rest, |(_, h)| h);
+        let raw = hex::decode(hex_hash)
+            .map_err(|e| Error::Config(format!("platform locator packHash not hex: {e}")))?;
+        raw.try_into()
+            .map_err(|_| Error::Config("platform locator packHash is not 32 bytes".into()))
+    }
+
+    /// Read every `chunk` document for `pack_hash`, ordered by `seq`, paging through the
+    /// ~100-row query cap with a `start_after` cursor. Decodes each to a [`Chunk`].
+    async fn read_chunks(&self, pack_hash: [u8; 32]) -> Result<Vec<Chunk>> {
+        let client = self.engine.client();
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut start_after: Option<String> = None;
+        loop {
+            let page = client
+                .query_documents(
+                    self.contract,
+                    CHUNK_DOC_TYPE,
+                    &[QueryFilter::eq(
+                        FIELD_PACK_HASH,
+                        FieldValue::bytes32(pack_hash),
+                    )],
+                    &[QueryOrder::asc(FIELD_SEQ)],
+                    CHUNK_PAGE_LIMIT,
+                    start_after.as_deref(),
+                )
+                .await?;
+            let page_len = page.len();
+            for doc in &page {
+                chunks.push(decode_chunk_doc(&doc.fields)?);
+            }
+            start_after = page.last().map(|d| d.id.clone());
+            if page_len < CHUNK_PAGE_LIMIT as usize {
+                break;
+            }
+        }
+        // The (packHash, seq) index already returns seq-ordered, but sort defensively so
+        // reassembly never depends on traversal order.
+        chunks.sort_by_key(|c| c.seq);
+        Ok(chunks)
+    }
 }
 
 #[async_trait::async_trait]
@@ -169,21 +220,59 @@ impl PackBackend for PlatformBackend<'_> {
         Ok(vec![self.locator_uri(&meta.pack_hash)])
     }
 
-    async fn get(&self, _uri: &Uri, _range: Option<ByteRange>) -> Result<Vec<u8>> {
-        // Read-back needs a property-returning `chunk` query by (packHash, seq); that
-        // helper lives in `crate::platform` (SDK-confined) and lands in M1. The pure
-        // reassembly is `decode_chunk_doc` + `crate::pack::join`, unit-tested offline.
-        Err(Error::Config(
-            "platform chunk read-back requires the M1 `crate::platform` chunk query helper; \
-             the chunk encode/decode + join path is implemented and unit-tested offline"
-                .into(),
-        ))
+    async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
+        // Read every chunk for the pack (paged, seq-ordered), decode, and reassemble via
+        // the pure `crate::pack::join`. A ranged read slices the reassembled bytes — the
+        // platform tier serves whole chunks, so partial fetch is a post-join slice (the
+        // browse plane's per-object ranged reads run over the locator, not raw chunks).
+        let pack_hash = Self::pack_hash_from_uri(uri)?;
+        let chunks = self.read_chunks(pack_hash).await?;
+        if chunks.is_empty() {
+            return Err(Error::NotFound);
+        }
+        let bytes = join(&chunks);
+        match range {
+            None => Ok(bytes),
+            Some(r) => {
+                let start = usize::try_from(r.start)
+                    .map_err(|_| Error::Config("range start overflows usize".into()))?;
+                let end = usize::try_from(r.end)
+                    .map_err(|_| Error::Config("range end overflows usize".into()))?
+                    .min(bytes.len());
+                if start >= bytes.len() {
+                    return Ok(Vec::new());
+                }
+                Ok(bytes[start..end].to_vec())
+            }
+        }
     }
 
-    async fn probe(&self, _uri: &Uri) -> Result<Health> {
-        Err(Error::Config(
-            "platform chunk probe requires the M1 `crate::platform` chunk query helper".into(),
-        ))
+    async fn probe(&self, uri: &Uri) -> Result<Health> {
+        // A cheap presence check: seek the first chunk (`limit 1`) for the pack. `ok` is
+        // whether any chunk is stored; size is left unknown (a whole-pack size would
+        // require reading every chunk — that's `get`'s job, not a probe's).
+        let pack_hash = Self::pack_hash_from_uri(uri)?;
+        let started = std::time::Instant::now();
+        let page = self
+            .engine
+            .client()
+            .query_documents(
+                self.contract,
+                CHUNK_DOC_TYPE,
+                &[QueryFilter::eq(
+                    FIELD_PACK_HASH,
+                    FieldValue::bytes32(pack_hash),
+                )],
+                &[QueryOrder::asc(FIELD_SEQ)],
+                1,
+                None,
+            )
+            .await?;
+        Ok(Health {
+            ok: !page.is_empty(),
+            size: None,
+            latency: started.elapsed(),
+        })
     }
 }
 

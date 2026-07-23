@@ -31,27 +31,36 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::dapi_client::CanRetry;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document, DocumentV0, INITIAL_REVISION};
+use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
+use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{KeyType, PartialIdentity, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
 use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBatchTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
+use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::DataContractCreateTransitionMethodsV0;
+use dash_sdk::dpp::state_transition::data_contract_create_transition::DataContractCreateTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::state_transition::StateTransition;
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
+use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
+use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
+use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::{DataContract, Fetch, Identifier, Identity, IdentityPublicKey};
+use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{Sdk, SdkBuilder};
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
@@ -247,6 +256,25 @@ impl PlatformClient {
         Ok(self.fetch_identity(identity_id).await?.balance())
     }
 
+    /// The identity's current nonce (the value contract-create id derivation uses),
+    /// fetched without bumping — for diagnostics / orphan-contract recovery.
+    pub async fn identity_nonce(&self, identity_id: &str) -> Result<u64> {
+        let id = parse_id(identity_id, "identity id")?;
+        self.sdk
+            .get_identity_nonce(id, false, None)
+            .await
+            .map_err(|e| Error::Platform(format!("fetching identity nonce: {e}")))
+    }
+
+    /// Derive the deterministic contract id `hash(ownerId || nonce)` for a given owner +
+    /// identity nonce — the same id [`PlatformClient::contract_create`] produces, exposed
+    /// so a create whose follow-on writes failed can locate its (already paid-for) orphan
+    /// contract without re-creating it.
+    pub fn derive_contract_id(&self, owner_id: &str, nonce: u64) -> Result<String> {
+        let owner = parse_id(owner_id, "owner id")?;
+        Ok(DataContract::generate_data_contract_id_v0(owner, nonce).to_string(Encoding::Base58))
+    }
+
     /// The identity-contract nonce, DIP-30 masked to the low 40 bits.
     ///
     /// This reads the *current* nonce (no bump) for reporting/diagnostics; the write
@@ -283,6 +311,334 @@ impl PlatformClient {
             .await
             .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
         Ok(found.is_some())
+    }
+
+    /// Query documents of `document_type` in `contract`, applying `filters` (AND-ed
+    /// where-clauses), `order` (traversal order), an optional `limit` (0 = server
+    /// default, ~100) and an optional `start_after` cursor (a base58 document id).
+    ///
+    /// Returns SDK-free [`FetchedDocument`]s (no `Document` / `Value` leaks across the
+    /// module boundary, style guide §B).
+    ///
+    /// ## byteArray operands are passed *natively*, not base64
+    ///
+    /// The wasm/JS SDK requires `byteArray` where-operands as base64 strings (spike
+    /// S0.8). The native rs-sdk path is different: a [`WhereClause`]'s value is a
+    /// `platform_value::Value`, so a `refNameHash` / `packHash` operand is supplied as
+    /// `Value::Bytes(..)` / `Value::Bytes32(..)` / `Value::Identifier(..)` directly —
+    /// **no base64 encoding**. [`QueryValue`] carries the SDK-free operand and this
+    /// method converts it to the right `Value` variant. (base64 is the wasm quirk only.)
+    pub async fn query_documents(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+        limit: u32,
+        start_after: Option<&str>,
+    ) -> Result<Vec<FetchedDocument>> {
+        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+            .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
+
+        for f in filters {
+            query = query.with_where(WhereClause {
+                field: f.field.clone(),
+                operator: f.op.to_operator(),
+                value: f.value.clone().into_query_value(),
+            });
+        }
+        for o in order {
+            query = query.with_order_by(OrderClause {
+                field: o.field.clone(),
+                ascending: o.ascending,
+            });
+        }
+        if limit > 0 {
+            query = query.with_limit(limit);
+        }
+        if let Some(after) = start_after {
+            let id = parse_id(after, "start_after document id")?;
+            query.start = Some(Start::StartAfter(id.to_vec()));
+        }
+
+        let documents = Document::fetch_many(&self.sdk, query)
+            .await
+            .map_err(|e| Error::Platform(format!("querying {document_type} documents: {e}")))?;
+
+        Ok(documents
+            .into_iter()
+            .filter_map(|(_id, maybe_doc)| maybe_doc.as_ref().map(FetchedDocument::from_document))
+            .collect())
+    }
+
+    /// Create a data contract (WITH tokens) from a JSON template, signing with `key`
+    /// (must be a **CRITICAL** AUTHENTICATION key — token-bearing contracts are rejected
+    /// for HIGH, spike S0.7).
+    ///
+    /// The contract id is derived from `owner` + a freshly bumped identity nonce
+    /// (`hash(ownerId || nonce)`); the same nonce is baked into the create transition, so
+    /// the id is deterministic and known before broadcast. `template` must contain
+    /// `documentSchemas` and (optionally) `tokens` / `keywords` / `description`; any `id`,
+    /// `ownerId` or `version` in it are ignored and re-synthesized here.
+    ///
+    /// ## Native rs-dpp accepts tokens from JSON
+    ///
+    /// Unlike the wasm `DataContract` constructor (which needs `TokenConfiguration`
+    /// instances and drove the S0.7 `DataContract.fromJSON` workaround), native
+    /// [`DataContract::from_json`] deserializes a plain-JSON `tokens` map directly — the
+    /// full repo-v1 template (2 tokens + 15 doc types) round-trips with no per-token
+    /// object construction.
+    ///
+    /// Returns `(contractId, cost_credits)` where `cost_credits` is the identity balance
+    /// delta across the broadcast (the measured DataContractCreate cost).
+    pub async fn contract_create(
+        &self,
+        template: &serde_json::Value,
+        owner: &LoadedIdentity,
+        key: &IdentityKey,
+    ) -> Result<(String, u64)> {
+        let signer = signer_from_key(key)?;
+        // Token-bearing contract create requires a CRITICAL auth key (S0.7).
+        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
+        let owner_id = owner.0.id();
+
+        // One nonce fetch, bumped, reused for both id-derivation and the transition —
+        // `new_from_data_contract` re-derives the id from (owner, nonce) internally, so
+        // any double-bump would desync the id from the signed nonce.
+        let nonce = self
+            .sdk
+            .get_identity_nonce(owner_id, true, None)
+            .await
+            .map_err(|e| Error::Platform(format!("fetching identity nonce: {e}")))?;
+        let contract_id = DataContract::generate_data_contract_id_v0(owner_id, nonce);
+
+        let schemas = template
+            .get("documentSchemas")
+            .ok_or_else(|| Error::Config("contract template missing 'documentSchemas'".into()))?;
+        let mut full = serde_json::json!({
+            "$formatVersion": "1",
+            "id": contract_id.to_string(Encoding::Base58),
+            "ownerId": owner_id.to_string(Encoding::Base58),
+            "version": 1,
+            "documentSchemas": schemas,
+        });
+        let obj = full.as_object_mut().expect("json object");
+        for k in ["tokens", "keywords", "description", "groups"] {
+            if let Some(v) = template.get(k) {
+                obj.insert(k.to_string(), v.clone());
+            }
+        }
+
+        let contract = DataContract::from_json(full, true, self.sdk.version())
+            .map_err(|e| Error::Platform(format!("deserializing data contract JSON: {e}")))?;
+
+        let key_id = signing_key.id();
+        let partial_identity = PartialIdentity {
+            id: owner_id,
+            loaded_public_keys: BTreeMap::from([(key_id, signing_key)]),
+            balance: None,
+            revision: None,
+            not_found_public_keys: std::collections::BTreeSet::new(),
+        };
+
+        let state_transition = DataContractCreateTransition::new_from_data_contract(
+            contract,
+            nonce,
+            &partial_identity,
+            key_id,
+            &signer,
+            self.sdk.version(),
+            None,
+        )
+        .await
+        .map_err(|e| Error::Platform(format!("signing contract-create transition: {e}")))?;
+
+        let balance_before = owner.balance();
+        let result = state_transition
+            .broadcast_and_wait::<StateTransitionProofResult>(&self.sdk, None)
+            .await
+            .map_err(|e| Error::Platform(format!("broadcasting contract create: {e}")))?;
+
+        // Register the freshly created contract with the context provider so subsequent
+        // proof-verified writes/reads against it resolve (see field docs on
+        // `context_provider`).
+        if let StateTransitionProofResult::VerifiedDataContract(created) = &result {
+            self.context_provider.add_known_contract(created.clone());
+        }
+
+        let balance_after = self
+            .fetch_identity(&owner_id.to_string(Encoding::Base58))
+            .await?
+            .balance();
+        let cost = balance_before.saturating_sub(balance_after);
+
+        Ok((contract_id.to_string(Encoding::Base58), cost))
+    }
+}
+
+/// A read-only where-operator, mapped to the SDK's [`WhereOperator`] inside this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryOp {
+    /// `field == value`.
+    Eq,
+    /// `field > value` (the skip-scan seek operator, S0.8).
+    Gt,
+    /// `field >= value`.
+    Gte,
+    /// `field < value`.
+    Lt,
+    /// `field <= value`.
+    Lte,
+    /// `field startsWith value` (string prefix search).
+    StartsWith,
+}
+
+impl QueryOp {
+    fn to_operator(self) -> WhereOperator {
+        match self {
+            QueryOp::Eq => WhereOperator::Equal,
+            QueryOp::Gt => WhereOperator::GreaterThan,
+            QueryOp::Gte => WhereOperator::GreaterThanOrEquals,
+            QueryOp::Lt => WhereOperator::LessThan,
+            QueryOp::Lte => WhereOperator::LessThanOrEquals,
+            QueryOp::StartsWith => WhereOperator::StartsWith,
+        }
+    }
+}
+
+/// An SDK-free query operand. Reuses [`FieldValue`] so a `byteArray` operand is carried
+/// as native bytes and converted to `Value::Bytes*` (never base64 — see
+/// [`PlatformClient::query_documents`]).
+pub type QueryValue = FieldValue;
+
+trait IntoQueryValue {
+    fn into_query_value(self) -> Value;
+}
+impl IntoQueryValue for QueryValue {
+    fn into_query_value(self) -> Value {
+        self.into_value()
+    }
+}
+
+/// A single AND-ed where-clause for [`PlatformClient::query_documents`].
+#[derive(Debug, Clone)]
+pub struct QueryFilter {
+    /// The indexed field name (e.g. `refNameHash`, `packHash`, `normalizedName`,
+    /// `$ownerId`, `seq`).
+    pub field: String,
+    /// The comparison operator.
+    pub op: QueryOp,
+    /// The operand (native bytes / integer / text / identifier).
+    pub value: QueryValue,
+}
+
+impl QueryFilter {
+    /// A `field == value` filter.
+    pub fn eq(field: impl Into<String>, value: QueryValue) -> Self {
+        Self {
+            field: field.into(),
+            op: QueryOp::Eq,
+            value,
+        }
+    }
+
+    /// A `field > value` filter (skip-scan seek).
+    pub fn gt(field: impl Into<String>, value: QueryValue) -> Self {
+        Self {
+            field: field.into(),
+            op: QueryOp::Gt,
+            value,
+        }
+    }
+}
+
+/// A traversal-order clause. `ascending: false` is the query-time reverse traversal the
+/// data-contracts `$createdAt desc` markers denote (stored indices are asc-only, S0.6).
+#[derive(Debug, Clone)]
+pub struct QueryOrder {
+    /// The field to order by (e.g. `$createdAt`, `refNameHash`, `seq`).
+    pub field: String,
+    /// Ascending (`true`) or reverse (`false`).
+    pub ascending: bool,
+}
+
+impl QueryOrder {
+    /// Ascending order by `field`.
+    pub fn asc(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            ascending: true,
+        }
+    }
+
+    /// Descending (reverse-traversal) order by `field`.
+    pub fn desc(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            ascending: false,
+        }
+    }
+}
+
+/// An SDK-free view of a fetched document: its base58 ids, consensus `$createdAt` and
+/// its properties as [`FieldValue`]s. Built by [`PlatformClient::query_documents`]; the
+/// SDK `Document` / `Value` types never cross this boundary (style guide §B).
+#[derive(Debug, Clone)]
+pub struct FetchedDocument {
+    /// Base58 document `$id`.
+    pub id: String,
+    /// Base58 `$ownerId` (the creator).
+    pub owner_id: String,
+    /// Consensus `$createdAt` in ms, when the document type records it.
+    pub created_at: Option<u64>,
+    /// Property name → value, in the SDK-free field representation.
+    pub fields: BTreeMap<String, FieldValue>,
+}
+
+impl FetchedDocument {
+    fn from_document(doc: &Document) -> Self {
+        let id = doc.id().to_string(Encoding::Base58);
+        let owner_id = doc.owner_id().to_string(Encoding::Base58);
+        let created_at = doc.created_at();
+        let fields = doc
+            .properties()
+            .iter()
+            .filter_map(|(k, v)| FieldValue::from_value(v).map(|fv| (k.clone(), fv)))
+            .collect();
+        Self {
+            id,
+            owner_id,
+            created_at,
+            fields,
+        }
+    }
+
+    /// The raw bytes of a `byteArray` / identifier field, if present and byte-shaped.
+    pub fn field_bytes(&self, name: &str) -> Option<Vec<u8>> {
+        self.fields.get(name).and_then(FieldValue::as_bytes)
+    }
+
+    /// A `byteArray` field as lowercase hex (the form `crate::rules` oids/hashes use).
+    pub fn field_hex(&self, name: &str) -> Option<String> {
+        self.field_bytes(name).map(hex::encode)
+    }
+
+    /// An integer field, if present.
+    pub fn field_u64(&self, name: &str) -> Option<u64> {
+        self.fields.get(name).and_then(FieldValue::as_u64)
+    }
+
+    /// A string field, if present.
+    pub fn field_str(&self, name: &str) -> Option<String> {
+        self.fields
+            .get(name)
+            .and_then(FieldValue::as_str)
+            .map(str::to_string)
+    }
+
+    /// A boolean field (absent → `false`).
+    pub fn field_bool(&self, name: &str) -> bool {
+        matches!(self.fields.get(name), Some(FieldValue::Bool(true)))
     }
 }
 
@@ -394,6 +750,13 @@ impl<'a> WriteEngine<'a> {
         self.signing_key.id()
     }
 
+    /// The [`PlatformClient`] this engine drives — lets a backend built over the engine
+    /// (e.g. [`crate::backends::PlatformBackend`]) run read queries without re-plumbing a
+    /// separate client handle.
+    pub(crate) fn client(&self) -> &PlatformClient {
+        self.client
+    }
+
     /// Build and sign — **exactly once** — a document-create transition against a fixed,
     /// freshly bumped identity-contract nonce and fresh entropy.
     ///
@@ -457,6 +820,11 @@ impl<'a> WriteEngine<'a> {
             .await
             .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
 
+        // For a token-gated create the transition must carry payment info matching the
+        // doc type's declared `tokenCost.create` (else consensus rejects with "Required
+        // token payment info not set"). Ungated types → `None` (platform fee only).
+        let token_payment = token_payment_for(doc_type_ref.document_creation_token_cost());
+
         let state_transition = BatchTransition::new_document_creation_transition_from_document(
             document,
             doc_type_ref,
@@ -464,7 +832,7 @@ impl<'a> WriteEngine<'a> {
             &self.signing_key,
             nonce,
             0,
-            None,
+            token_payment,
             &self.signer,
             self.client.sdk().version(),
             None,
@@ -520,13 +888,17 @@ impl<'a> WriteEngine<'a> {
             .await
             .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
 
+        // A token-gated delete (chunk/packManifest refund) carries payment info matching
+        // the doc type's `tokenCost.delete`; non-deletable/ungated types → `None`.
+        let token_payment = token_payment_for(doc_type_ref.document_deletion_token_cost());
+
         let state_transition = BatchTransition::new_document_deletion_transition_from_document(
             document,
             doc_type_ref,
             &self.signing_key,
             nonce,
             0,
-            None,
+            token_payment,
             &self.signer,
             self.client.sdk().version(),
             None,
@@ -616,16 +988,28 @@ impl<'a> WriteEngine<'a> {
 }
 
 /// An SDK-free document field value, converted to the Platform value type inside this
-/// module. Lets callers build document properties (byteArray / integer fields) without
-/// importing any rs-dpp type (style guide §B).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// module. Lets callers build document properties (byteArray / integer / string /
+/// identifier / nested-object fields) without importing any rs-dpp type (style guide §B).
+///
+/// It is also the SDK-free carrier a [`FetchedDocument`] hands back — [`FieldValue::from_value`]
+/// maps a fetched `platform_value::Value` into this closed set so no SDK type leaks out.
+#[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     /// A variable-length `byteArray` field.
     Bytes(Vec<u8>),
-    /// A fixed 32-byte `byteArray` field (e.g. a packHash).
+    /// A fixed 32-byte `byteArray` field (e.g. a packHash / refNameHash).
     Bytes32([u8; 32]),
+    /// A 32-byte identifier field (a byteArray with the identifier content-media-type,
+    /// e.g. `repoContractId`, `forkOf`, `targetId`). Encoded as `Value::Identifier`.
+    Identifier([u8; 32]),
     /// An unsigned integer field.
     Integer(u64),
+    /// A UTF-8 string field (e.g. `defaultBranch`, `normalizedName`).
+    Text(String),
+    /// A boolean field (e.g. `force`, `archived`).
+    Bool(bool),
+    /// A nested object field (e.g. `config.backend`), keyed by property name.
+    Object(BTreeMap<String, FieldValue>),
 }
 
 impl FieldValue {
@@ -639,17 +1023,116 @@ impl FieldValue {
         FieldValue::Bytes32(bytes)
     }
 
+    /// A 32-byte identifier field (byteArray with identifier content-media-type).
+    pub fn identifier(bytes: [u8; 32]) -> Self {
+        FieldValue::Identifier(bytes)
+    }
+
     /// An unsigned-integer field.
     pub fn integer(n: u64) -> Self {
         FieldValue::Integer(n)
+    }
+
+    /// A UTF-8 string field.
+    pub fn text(s: impl Into<String>) -> Self {
+        FieldValue::Text(s.into())
+    }
+
+    /// A boolean field.
+    pub fn boolean(b: bool) -> Self {
+        FieldValue::Bool(b)
+    }
+
+    /// The raw bytes of a `Bytes`/`Bytes32`/`Identifier` field, if this is one.
+    pub fn as_bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            FieldValue::Bytes(b) => Some(b.clone()),
+            FieldValue::Bytes32(b) | FieldValue::Identifier(b) => Some(b.to_vec()),
+            _ => None,
+        }
+    }
+
+    /// The unsigned value of an `Integer` field, if this is one.
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            FieldValue::Integer(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// The string of a `Text` field, if this is one.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            FieldValue::Text(s) => Some(s),
+            _ => None,
+        }
     }
 
     fn into_value(self) -> Value {
         match self {
             FieldValue::Bytes(b) => Value::Bytes(b),
             FieldValue::Bytes32(b) => Value::Bytes32(b),
-            FieldValue::Integer(n) => Value::U64(n),
+            FieldValue::Identifier(b) => Value::Identifier(b),
+            // Every contract integer field is `"type":"integer"` → `DocumentPropertyType::I64`,
+            // and the I64 serializer coerces any integer Value via `to_integer()`, so a
+            // *top-level* field round-trips regardless of width. A *nested*-object integer
+            // (e.g. `config.backend.mode`) bypasses typed serialization and is stored as
+            // generic CBOR, which canonicalizes to the smallest uint on read-back — so the
+            // post-broadcast proof compares the returned (minimal-width) value against the
+            // one we signed. Emitting the minimal-width uint matches that canonical form in
+            // both cases and keeps the proof check happy.
+            FieldValue::Integer(n) => minimal_uint(n),
+            FieldValue::Text(s) => Value::Text(s),
+            FieldValue::Bool(b) => Value::Bool(b),
+            FieldValue::Object(map) => Value::Map(
+                map.into_iter()
+                    .map(|(k, v)| (Value::Text(k), v.into_value()))
+                    .collect(),
+            ),
         }
+    }
+
+    /// Map a fetched `platform_value::Value` into the SDK-free field set. Integer
+    /// variants collapse to [`FieldValue::Integer`]; a `byteArray` returned as an
+    /// `Array` of `U8` is re-packed to [`FieldValue::Bytes`]. Unrepresentable values
+    /// (floats, null, nested arrays) yield `None` — M1 documents never use them.
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(match value {
+            Value::Bytes(b) => FieldValue::Bytes(b.clone()),
+            Value::Bytes20(b) => FieldValue::Bytes(b.to_vec()),
+            Value::Bytes32(b) => FieldValue::Bytes32(*b),
+            Value::Identifier(b) => FieldValue::Identifier(*b),
+            Value::Text(s) => FieldValue::Text(s.clone()),
+            Value::Bool(b) => FieldValue::Bool(*b),
+            Value::U128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::I128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::U64(n) => FieldValue::Integer(*n),
+            Value::I64(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::U32(n) => FieldValue::Integer(u64::from(*n)),
+            Value::I32(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::U16(n) => FieldValue::Integer(u64::from(*n)),
+            Value::U8(n) => FieldValue::Integer(u64::from(*n)),
+            Value::Array(items) => {
+                // A byteArray that came back as an array of U8 → repack to bytes.
+                let mut bytes = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::U8(b) => bytes.push(*b),
+                        _ => return None,
+                    }
+                }
+                FieldValue::Bytes(bytes)
+            }
+            Value::Map(entries) => {
+                let mut map = BTreeMap::new();
+                for (k, v) in entries {
+                    let key = k.as_text()?.to_string();
+                    map.insert(key, FieldValue::from_value(v)?);
+                }
+                FieldValue::Object(map)
+            }
+            _ => return None,
+        })
     }
 }
 
@@ -657,6 +1140,78 @@ impl FieldValue {
 fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     Identifier::from_string(s, Encoding::Base58)
         .map_err(|e| Error::Config(format!("invalid {what} (expected base58): {e}")))
+}
+
+/// Decode a base58 Platform id (identity / contract) to its raw 32 bytes — the form an
+/// identifier document field (`repoContractId`, `forkOf`, a `$ownerId` filter operand)
+/// carries. Keeps base58 decoding inside the SDK-confined module (style guide §B).
+pub fn decode_identifier(base58: &str) -> Result<[u8; 32]> {
+    Ok(parse_id(base58, "identifier")?.to_buffer())
+}
+
+/// Encode raw 32 identifier bytes back to base58 (the form ids are named by everywhere
+/// else in the workspace).
+pub fn encode_identifier(bytes: [u8; 32]) -> String {
+    Identifier::from(bytes).to_string(Encoding::Base58)
+}
+
+/// The smallest-width unsigned `Value` holding `n` — the canonical CBOR integer form
+/// (integer `0` decodes back as `U8(0)`, not `U64(0)`). Matching it keeps a nested-object
+/// integer's signed value equal to what the network stores and the proof returns; a
+/// top-level integer field (typed `I64`) coerces from any width, so this is safe there too.
+fn minimal_uint(n: u64) -> Value {
+    if let Ok(v) = u8::try_from(n) {
+        Value::U8(v)
+    } else if let Ok(v) = u16::try_from(n) {
+        Value::U16(v)
+    } else if let Ok(v) = u32::try_from(n) {
+        Value::U32(v)
+    } else {
+        Value::U64(n)
+    }
+}
+
+/// Build the [`TokenPaymentInfo`] a gated document create/delete must carry from the
+/// doc type's declared [`DocumentActionTokenCost`], or `None` for an ungated action.
+///
+/// `maximum_token_cost` is pinned to the contract-declared amount so a later
+/// owner-side price change cannot silently overcharge the actor (the SDK's stated
+/// rationale for the field); `payment_token_contract_id` / `token_contract_position` /
+/// `gas_fees_paid_by` mirror the declaration exactly, which is what consensus checks.
+fn token_payment_for(cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
+    cost.map(|c| {
+        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+            payment_token_contract_id: c.contract_id,
+            token_contract_position: c.token_contract_position,
+            minimum_token_cost: None,
+            maximum_token_cost: Some(c.token_amount),
+            gas_fees_paid_by: c.gas_fees_paid_by,
+        })
+    })
+}
+
+/// Select the identity's on-chain ECDSA_SECP256K1 AUTHENTICATION key at exactly
+/// `level` that the signer can sign with — used for token-bearing contract create,
+/// which requires CRITICAL (spike S0.7).
+fn select_key_at_level(
+    identity: &Identity,
+    signer: &SingleKeySigner,
+    level: SecurityLevel,
+) -> Result<IdentityPublicKey> {
+    for public_key in identity.public_keys().values() {
+        if public_key.is_disabled() || !signer.can_sign_with(public_key) {
+            continue;
+        }
+        if public_key.purpose() == Purpose::AUTHENTICATION
+            && public_key.key_type() == KeyType::ECDSA_SECP256K1
+            && public_key.security_level() == level
+        {
+            return Ok(public_key.clone());
+        }
+    }
+    Err(Error::Config(format!(
+        "no usable {level:?} AUTHENTICATION key on the identity matches the keystore key"
+    )))
 }
 
 /// Select the identity's on-chain AUTHENTICATION key that (a) the signer can sign with

@@ -35,8 +35,17 @@ Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdH
 - [x] **forge-core FEATURE-COMPLETE** (platform, keystore, cost, rules, pack, backends) — workspace builds, 76 tests, clippy/fmt clean.
 - [ ] repo-v1 template instantiation path (per-repo contract create from forge-core) + cost measurement (expect ≥1 DASH — pull faucet; DEPLOYER ~0.32)
 - [ ] git-remote-dash helper (list/fetch/push; partial-clone via .promisor; shallow fails loud; post-push ref re-verify) — wires forge-core WriteEngine+pack+backends+rules
-- [ ] platform-backend live read helper (chunk query by packHash+seq — needs a query method in platform.rs) — M1 dependency
+- [x] platform-backend live read helper (chunk query) — done in repo lifecycle build
+- [x] **repo lifecycle (RepoService) + platform query helpers — LIVE-TESTED full lifecycle on testnet**: create_repo → resolve → write ref → read_refs (skip-scan + rules::resolve_ref resolved) → chunk round-trip bit-for-bit → teardown. **repo-v1 instantiation = ~1.18 DASH** (measured). Native rs-sdk: tokens-from-JSON ✓, raw byte operands (no base64) ✓. TokenPaymentInfo now attached to gated creates. resume_repo recovery path. 81 tests.
+- [ ] git-remote-dash helper (list/fetch/push) wiring forge-core RepoService+pack+backends+rules → **the M1 payoff**
 - [ ] M1 gate: byte-identical clone/push round-trip, frozen push rejected, fsck clean, 3rd-party verify
+
+**repo-v1.json TEMPLATE RECONCILIATION (fixed at runtime in repo.rs; fix source template in a cleanup pass — needed for Stage 6 contract-validation CI):**
+1. Group needs ≥2 members — template models org (MainGroup, 1 placeholder); solo owner can't form a group → runtime rewrites admin to ContractOwner + drops group. Org-repo group path is a follow-up.
+2. Non-contiguous top-level `position`s — template numbers positions globally (nested imported/backend consume parent sequence); rs-dpp requires top-level 0..N contiguous → runtime renumbers per level.
+3. Nested-object integers CBOR-canonicalize to smallest uint on proof read-back → runtime emits minimal-width uint. Cleaner fix: flatten config.backend to top-level fields.
+Note: S0.6 fullValidation PASSED the broken template — these are caught at contract-create STATE validation, not schema validation. Add state-level checks to CI.
+Economics: repo-v1 ~1.18 DASH, registry 0.68 DASH — update economics.md create-repo line. DEPLOYER ~0.91 tDASH (top up before next fresh repo create).
 
 Next-session start: (1) add a chunk-query read helper to platform.rs + finish PlatformBackend.get live-tested; (2) build repo-v1 instantiation in forge-core (contract create from template + initial config/listing) — pull faucet grant for DEPLOYER first (repo-v1 with 2 tokens+15 types+count-trees likely ≥1 DASH); (3) wire git-remote-dash helper end-to-end; (4) M1 round-trip on testnet. All forge-core primitives are built, reviewed, and (write path) live-proven — M1 is integration.
 
