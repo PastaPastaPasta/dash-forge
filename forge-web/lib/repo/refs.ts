@@ -1,10 +1,12 @@
 /**
  * Ref reads — branch/tag enumeration + tip resolution (data-contracts §2.3, §4).
  *
- * Enumeration uses **skip-scan** (`refNameHash > last limit 1` hops) across both the
- * `refUpdate` and `protectedRefUpdate` types — O(distinct refs), not O(total pushes). Tip
- * resolution folds a ref's full update history (both types, with the `protected` flag set
- * per source) through {@link resolveRef}, honoring as-of protected-pattern config.
+ * Small repos (update set ≤ one query page per type) load everything in two parallel
+ * queries and resolve locally. Larger repos enumerate via **skip-scan**
+ * (`refNameHash > last limit 1` hops) across both the `refUpdate` and `protectedRefUpdate`
+ * types — O(distinct refs), not O(total pushes). Tip resolution folds a ref's full update
+ * history (both types, with the `protected` flag set per source) through
+ * {@link resolveRef}, honoring as-of protected-pattern config.
  *
  * Divergence resolution that turns on real commit ancestry (a merge superseding both racing
  * heads) needs a commit-graph predicate from the browse plane; callers may pass one via
@@ -20,6 +22,9 @@ import { DOC, toRefUpdate, type RepoRef } from './contract'
 import { readConfigHistory } from './config'
 
 const NO_ANCESTRY: IsAncestor = () => false
+
+/** One query page — also the Platform per-query document cap. */
+const PAGE = 100
 
 /** A resolved ref for list views. */
 export interface ResolvedRef {
@@ -93,18 +98,70 @@ export async function resolveRefByHash(
 }
 
 /**
- * Read every ref of a repo (skip-scan enumeration + per-ref resolution, parallelized).
- * Fetches the config history once and reuses it across refs.
+ * Fast path: fetch ONE page of each ref-update type ordered by the `refState` index
+ * (`refNameHash asc, $createdAt asc`). A short page (< {@link PAGE}) proves the type's
+ * update set is complete, so the per-ref histories can be grouped locally with zero further
+ * queries. Returns null when either type overflows the page — callers fall back to skip-scan.
+ *
+ * This matters because skip-scan costs one sequential round-trip per distinct ref (~450ms
+ * each on testnet — measured 8s for 18 refs), while a small repo's ENTIRE update set fits
+ * in two parallel queries (~0.5s).
+ */
+async function readAllRefUpdatesOnePage(
+  sdk: EvoSDK,
+  repo: RepoRef,
+): Promise<Map<string, RefUpdate[]> | null> {
+  const pageOf = (documentTypeName: string): ReturnType<typeof queryDocumentsWithProof> =>
+    queryDocumentsWithProof(sdk, {
+      dataContractId: repo.contractId,
+      documentTypeName,
+      orderBy: [
+        ['refNameHash', 'asc'],
+        ['$createdAt', 'asc'],
+      ],
+      limit: PAGE,
+    })
+  const [plain, prot] = await Promise.all([pageOf(DOC.refUpdate), pageOf(DOC.protectedRefUpdate)])
+  if (plain.documents.length >= PAGE || prot.documents.length >= PAGE) return null
+
+  // Group per ref, plain updates before protected — the same per-ref order
+  // readRefUpdates produces (each source is already `$createdAt asc`).
+  const byHash = new Map<string, RefUpdate[]>()
+  const add = (update: RefUpdate): void => {
+    const group = byHash.get(update.refNameHash)
+    if (group === undefined) byHash.set(update.refNameHash, [update])
+    else group.push(update)
+  }
+  for (const doc of plain.documents) add(toRefUpdate(doc, false))
+  for (const doc of prot.documents) add(toRefUpdate(doc, true))
+  return byHash
+}
+
+/**
+ * Read every ref of a repo. Small repos (whole update set ≤ one query page per type) resolve
+ * from two parallel queries; larger repos fall back to skip-scan enumeration + per-ref
+ * resolution (parallelized). Fetches the config history once and reuses it across refs.
  */
 export async function readRefs(
   sdk: EvoSDK,
   repo: RepoRef,
   isAncestor: IsAncestor = NO_ANCESTRY,
 ): Promise<ResolvedRef[]> {
-  const [hashes, configHistory] = await Promise.all([
-    enumerateRefHashes(sdk, repo),
+  const [complete, configHistory] = await Promise.all([
+    readAllRefUpdatesOnePage(sdk, repo),
     readConfigHistory(sdk, repo),
   ])
+  if (complete !== null) {
+    const out: ResolvedRef[] = []
+    for (const [refNameHashHex, updates] of complete) {
+      const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
+      const refName = updates[updates.length - 1]?.refName ?? ''
+      out.push({ refName, refNameHash: refNameHashHex, state })
+    }
+    return out
+  }
+
+  const hashes = await enumerateRefHashes(sdk, repo)
   const resolved = await Promise.all(
     hashes.map((h) => resolveRefByHash(sdk, repo, h, configHistory, isAncestor)),
   )

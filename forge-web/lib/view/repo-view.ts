@@ -15,8 +15,7 @@ import {
   readConfig,
   readRefs,
   readStarCount,
-  resolveRepo,
-  resolveRepoListing,
+  resolveRepoWithListing,
   tagsOf,
   type RepoConfig,
   type RepoRef,
@@ -68,27 +67,24 @@ export async function loadRepoHome(
   sdk: EvoSDK,
   params: { network: Network; ownerId: string; name: string },
 ): Promise<RepoHome | null> {
-  const repo = await resolveRepo(sdk, {
-    network: params.network,
-    ownerId: params.ownerId,
-    name: params.name,
-  })
-  if (repo === null) return null
+  // One registry lookup serves both §4-verified resolution and the stars listing id.
+  const resolved = await resolveRepoWithListing(
+    sdk,
+    requireRegistry(params.network),
+    params.ownerId,
+    params.name,
+  )
+  if (resolved === null) return null
+  const { repo, listing } = resolved
+  const listingId = listing.listingId || null
 
-  // The listing id (for stars) is resolved in parallel with operational reads.
-  const [listing, config, refs] = await Promise.all([
-    resolveRepoListing(
-      sdk,
-      requireRegistry(params.network),
-      params.ownerId,
-      params.name,
-    ).catch(() => null),
+  const [config, refs, starCount] = await Promise.all([
     readConfig(sdk, repo),
     readRefs(sdk, repo),
+    listingId
+      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => 0)
+      : Promise.resolve(0),
   ])
-
-  const listingId = listing?.listingId ?? null
-  const starCount = listingId ? await readStarCount(sdk, listingId, { network: params.network }).catch(() => 0) : 0
 
   return {
     repo,

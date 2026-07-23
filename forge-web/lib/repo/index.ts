@@ -25,6 +25,7 @@ export {
   resolveRepo,
   resolveRepoByContractId,
   resolveRepoListing,
+  resolveRepoWithListing,
   type RepoListing,
 } from './resolveRepo'
 export {

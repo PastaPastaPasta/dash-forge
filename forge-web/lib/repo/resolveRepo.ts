@@ -100,6 +100,29 @@ export async function resolveRepoListing(
 }
 
 /**
+ * Resolve a repo listing AND verify listing authenticity (§4): the repo contract's owner
+ * must equal the listing's `$ownerId`, else the listing points at a contract it does not
+ * own and is rejected. Returns both the {@link RepoRef} and the listing (whose id feeds
+ * star reads) so callers need only one registry round-trip.
+ */
+export async function resolveRepoWithListing(
+  sdk: EvoSDK,
+  registryContractId: string,
+  ownerId: string,
+  name: string,
+): Promise<{ repo: RepoRef; listing: RepoListing } | null> {
+  const listing = await resolveRepoListing(sdk, registryContractId, ownerId, name)
+  if (listing === null) return null
+
+  const contractOwner = await fetchContractOwner(sdk, listing.repoContractId)
+  if (contractOwner === null || contractOwner !== listing.ownerId) {
+    // Listing points at a contract it does not own — inauthentic, reject (§4).
+    return null
+  }
+  return { repo: { contractId: listing.repoContractId, ownerId: listing.ownerId }, listing }
+}
+
+/**
  * Resolve a repo to its contract, verifying listing authenticity. Returns the {@link RepoRef}
  * only if the repo contract's owner matches the listing owner (§4).
  */
@@ -116,15 +139,8 @@ export async function resolveRepo(
     params.registryContractId ?? NETWORKS[params.network ?? 'testnet'].registryContractId
   if (registryId === null) throw new Error('no registry contract id configured for this network')
 
-  const listing = await resolveRepoListing(sdk, registryId, params.ownerId, params.name)
-  if (listing === null) return null
-
-  const contractOwner = await fetchContractOwner(sdk, listing.repoContractId)
-  if (contractOwner === null || contractOwner !== listing.ownerId) {
-    // Listing points at a contract it does not own — inauthentic, reject (§4).
-    return null
-  }
-  return { contractId: listing.repoContractId, ownerId: listing.ownerId }
+  const resolved = await resolveRepoWithListing(sdk, registryId, params.ownerId, params.name)
+  return resolved === null ? null : resolved.repo
 }
 
 /** Resolve straight from a known repo contract id (skips the registry name lookup). */
