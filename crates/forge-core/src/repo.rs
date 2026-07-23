@@ -479,6 +479,69 @@ impl<'a> RepoService<'a> {
             .and_then(|d| d.field_str("defaultBranch")))
     }
 
+    /// Append a new `config` document that carries `backend_mode` (`0` platform, `1` ipfs,
+    /// `2` s3, `3` https, `4` mixed), preserving the current `defaultBranch`,
+    /// `protectedPatterns`, backend `uris` and `archived` flag from the newest config (config
+    /// is append-only newest-wins, §2.2). MAINTAIN-gated (the owner holds MAINTAIN via
+    /// `baseSupply`). Returns the new config document id. This is the `dg repo backend set`
+    /// write path.
+    pub async fn set_backend_mode(&self, repo: &RepoHandle, backend_mode: u8) -> Result<String> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let newest = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_CONFIG,
+                &[],
+                &[QueryOrder::desc("$createdAt")],
+                1,
+                None,
+            )
+            .await?
+            .into_iter()
+            .next();
+
+        let default_branch = newest
+            .as_ref()
+            .and_then(|d| d.field_str("defaultBranch"))
+            .unwrap_or_else(|| "main".to_string());
+        let protected_patterns = newest
+            .as_ref()
+            .and_then(|d| d.field_str("protectedPatterns"))
+            .unwrap_or_else(|| "[]".to_string());
+        let archived = newest.as_ref().is_some_and(|d| d.field_bool("archived"));
+        let uris = match newest.as_ref().and_then(|d| d.fields.get("backend")) {
+            Some(FieldValue::Object(backend)) => backend
+                .get("uris")
+                .and_then(FieldValue::as_str)
+                .unwrap_or("[]")
+                .to_string(),
+            _ => "[]".to_string(),
+        };
+
+        let mut props = BTreeMap::new();
+        props.insert(
+            "defaultBranch".to_string(),
+            FieldValue::text(default_branch),
+        );
+        props.insert(
+            "protectedPatterns".to_string(),
+            FieldValue::text(protected_patterns),
+        );
+        let mut backend = BTreeMap::new();
+        backend.insert(
+            "mode".to_string(),
+            FieldValue::integer(u64::from(backend_mode)),
+        );
+        backend.insert("uris".to_string(), FieldValue::text(uris));
+        props.insert("backend".to_string(), FieldValue::Object(backend));
+        props.insert("archived".to_string(), FieldValue::boolean(archived));
+
+        self.doc_engine()?
+            .create_document(&repo_contract, DOC_CONFIG, props)
+            .await
+    }
+
     /// Write a `packManifest` document (WRITE-gated). Returns the manifest document id.
     pub async fn write_pack_manifest(
         &self,
