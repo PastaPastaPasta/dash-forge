@@ -33,6 +33,14 @@ services:
         ipfs config Routing.Type none
         ipfs config --json Swarm.DisableNatPortMap true
         ipfs config --json Addresses.Swarm '[]'
+        # Bind the RPC API + Gateway to 0.0.0.0 *inside the container* so the
+        # published host ports (127.0.0.1:5001 / :8081) actually reach them.
+        # The default 127.0.0.1 binding only accepts container-loopback traffic,
+        # which Docker's port-forward (arriving on the bridge interface) can't hit.
+        # Still safe: ports are published to host 127.0.0.1 only, and DHT/Swarm
+        # are disabled, so nothing is exposed to the network.
+        ipfs config Addresses.API /ip4/0.0.0.0/tcp/5001
+        ipfs config Addresses.Gateway /ip4/0.0.0.0/tcp/8080
         exec ipfs daemon --migrate=true --routing=none
     healthcheck:
       test: ["CMD", "ipfs", "id"]

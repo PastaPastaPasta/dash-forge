@@ -20,6 +20,14 @@ flate2 = "1"
 hex = "0.4"
 glob-match = "0.2"
 
+# storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);
+# multipart for the kubo `/api/v0/add` upload. async-trait keeps `PackBackend`
+# object-safe (heterogeneous backends behind `dyn` in the failover registry);
+# futures drives the ≤2-parallel reader race and the window-8 platform pipeline.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart"] }
+async-trait = "0.1"
+futures = "0.3"
+
 # Dash Platform SDK — confined to `forge-core::platform` per style-guide §B.
 dash-sdk.workspace = true
 dapi-grpc.workspace = true
