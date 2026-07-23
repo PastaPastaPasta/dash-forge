@@ -6,9 +6,11 @@
 
 import { sha1 } from '@noble/hashes/legacy.js'
 
-export const T_BLOB = 3
-export const T_OFS_DELTA = 6
-export const T_REF_DELTA = 7
+import { PACK_TYPE } from './pack'
+
+export const T_BLOB = PACK_TYPE.BLOB
+export const T_OFS_DELTA = PACK_TYPE.OFS_DELTA
+export const T_REF_DELTA = PACK_TYPE.REF_DELTA
 
 /** Encode a pack object header: 3-bit type + size varint (4 low bits, then 7-bit groups). */
 export function objHeader(type: number, size: number): Uint8Array {

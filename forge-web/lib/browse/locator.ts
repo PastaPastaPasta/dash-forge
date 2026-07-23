@@ -90,6 +90,11 @@ function decodeRow(buf: Uint8Array, rowStart: number): LocatorEntry {
   }
 }
 
+/** Key of {@link ObjectLocator.buildOffsetIndex}: an object's `(packRef, offset)` address. */
+export function offsetKey(packRef: number, offset: number): string {
+  return `${packRef}:${offset}`
+}
+
 /** A fully-fetched, parsed objectLocator held in memory for repeated lookups. */
 export class ObjectLocator {
   private constructor(
@@ -109,16 +114,19 @@ export class ObjectLocator {
   }
 
   /**
-   * Build an `offset → entry` index over every row — the reverse map the per-base delta
-   * walk needs to resolve an OFS base (referenced by pack offset, not OID). O(rows); used
-   * only on the deep-delta fallback, and only when the full locator is in memory.
+   * Build a `"packRef:offset" → entry` index over every row — the reverse map the
+   * per-base delta walk needs to resolve an OFS base (referenced by pack offset, not
+   * OID). Keyed by pack AND offset: different packs routinely store objects at the same
+   * offset (every pack's first object sits at 12), so a bare-offset key collides the
+   * moment a locator spans more than one pack. O(rows); used only on the deep-delta
+   * fallback, and only when the full locator is in memory.
    */
-  buildOffsetIndex(): Map<number, LocatorEntry> {
-    const map = new Map<number, LocatorEntry>()
+  buildOffsetIndex(): Map<string, LocatorEntry> {
+    const map = new Map<string, LocatorEntry>()
     for (let i = 0; i < this.count; i++) {
       const start = this.rowStart(i)
       const e = decodeRow(this.bytes, start)
-      map.set(e.offset, e)
+      map.set(offsetKey(e.packRef, e.offset), e)
     }
     return map
   }

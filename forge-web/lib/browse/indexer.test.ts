@@ -140,6 +140,31 @@ describe('index → serialize → BrowseReader round trip', () => {
     }
   })
 
+  it('resolves OFS bases per pack when offsets collide across packs', async () => {
+    // Both packs put their base blob at offset 12 and an OFS_DELTA right after — the
+    // collision that a bare-offset index mis-resolved (offsets repeat across packs).
+    const mk = (text: string, tail: string): { pack: Uint8Array; base: Uint8Array; target: Uint8Array } => {
+      const base = new TextEncoder().encode(text)
+      const target = new TextEncoder().encode(text.slice(0, 40) + tail)
+      const baseStored = concat(objHeader(T_BLOB, base.length), zlibSync(base))
+      const delta = copyInsertDelta(base.length, target.length, 40, new TextEncoder().encode(tail))
+      const deltaStored = concat(objHeader(T_OFS_DELTA, delta.length), ofsBase(baseStored.length), zlibSync(delta))
+      return { pack: packFrame(baseStored, deltaStored), base, target }
+    }
+    const a = mk('the quick brown fox jumps over the lazy dog\n', 'cat\n')
+    const b = mk('pack rat stacks packed racks in a black shack\n', 'nook\n')
+
+    const objects = await indexPacks([a.pack, b.pack])
+    const reader = new BrowseReader(
+      ObjectLocator.parse(serializeLocator(objects)),
+      memoryPackSource([a.pack, b.pack]),
+    )
+    for (const target of [a.target, b.target]) {
+      const obj = await reader.readObject(gitOidHex('blob', target))
+      expect(Array.from(obj.bytes)).toEqual(Array.from(target))
+    }
+  })
+
   it('errors when a REF base exists in no pack', async () => {
     const delta = copyInsertDelta(10, 4, 0, new TextEncoder().encode('nope'))
     const orphan = concat(objHeader(T_REF_DELTA, delta.length), new Uint8Array(20).fill(0x42), zlibSync(delta))

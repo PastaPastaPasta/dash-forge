@@ -17,7 +17,7 @@
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js'
 
 import { FlatIndex } from './flatindex'
-import { type LocatorEntry, ObjectLocator, singleReadAdvised } from './locator'
+import { type LocatorEntry, ObjectLocator, offsetKey, singleReadAdvised } from './locator'
 import {
   type GitObject,
   PACK_TYPE,
@@ -46,7 +46,7 @@ export interface BrowseReaderOptions {
 
 /** High-level browse reader over one repo's objectLocator + pack source. */
 export class BrowseReader {
-  private offsetIndex: Map<number, LocatorEntry> | null = null
+  private offsetIndex: Map<string, LocatorEntry> | null = null
 
   constructor(
     private readonly locator: ObjectLocator,
@@ -125,9 +125,10 @@ export class BrowseReader {
 
   private async decodeByOffset(packRef: number, off: number): Promise<GitObject> {
     if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
-    const e = this.offsetIndex.get(off)
-    if (e === undefined) throw new Error(`base object at offset ${off} not in locator`)
-    if (e.packRef !== packRef) throw new Error('cross-pack OFS base is malformed')
+    // Keyed by (packRef, offset): offsets repeat across packs, and an OFS base is always
+    // in the referencing object's own pack.
+    const e = this.offsetIndex.get(offsetKey(packRef, off))
+    if (e === undefined) throw new Error(`base object at pack ${packRef} offset ${off} not in locator`)
     return this.decodeEntry(e)
   }
 

@@ -62,6 +62,8 @@ export interface ScanRecord {
   readonly length: number
   /** Raw pack type code ({@link PACK_TYPE}). */
   readonly typeCode: number
+  /** Pack-absolute start of the object's zlib stream (after header + base pointer). */
+  readonly dataPos: number
   /** Inflated size from the object header. */
   readonly size: number
   /** OFS_DELTA only: pack-absolute offset of the base object. */
@@ -79,10 +81,10 @@ export function scanPack(pack: Uint8Array): ScanRecord[] {
   if (pack[0] !== 0x50 || pack[1] !== 0x41 || pack[2] !== 0x43 || pack[3] !== 0x4b) {
     throw new Error('bad pack magic')
   }
-  const version = ((pack[4] as number) << 24) | ((pack[5] as number) << 16) | ((pack[6] as number) << 8) | (pack[7] as number)
+  const view = new DataView(pack.buffer, pack.byteOffset, pack.length)
+  const version = view.getUint32(4, false)
   if (version !== 2) throw new Error(`unsupported pack version ${version}`)
-  const count =
-    (((pack[8] as number) << 24) | ((pack[9] as number) << 16) | ((pack[10] as number) << 8) | (pack[11] as number)) >>> 0
+  const count = view.getUint32(8, false)
 
   const records: ScanRecord[] = []
   let offset = PACK_HEADER_LEN
@@ -94,7 +96,10 @@ export function scanPack(pack: Uint8Array): ScanRecord[] {
     if (h.type === PACK_TYPE.OFS_DELTA) {
       const [rel, p] = parseOfsBase(pack, h.after)
       ofsBaseOffset = offset - rel
-      if (ofsBaseOffset < PACK_HEADER_LEN) throw new Error(`OFS base before pack start at ${offset}`)
+      // A base must sit strictly earlier — also rules out self-reference cycles.
+      if (ofsBaseOffset < PACK_HEADER_LEN || ofsBaseOffset >= offset) {
+        throw new Error(`OFS base out of bounds at ${offset}`)
+      }
       dataPos = p
     } else if (h.type === PACK_TYPE.REF_DELTA) {
       refBaseOid = bytesToHex(pack.subarray(h.after, h.after + OID_LEN))
@@ -103,7 +108,7 @@ export function scanPack(pack: Uint8Array): ScanRecord[] {
     const { data, consumed } = inflateWithConsumed(pack, dataPos)
     if (data.length !== h.size) throw new Error(`inflate size mismatch at offset ${offset}`)
     const end = dataPos + consumed
-    records.push({ offset, length: end - offset, typeCode: h.type, size: h.size, ofsBaseOffset, refBaseOid })
+    records.push({ offset, length: end - offset, typeCode: h.type, dataPos, size: h.size, ofsBaseOffset, refBaseOid })
     offset = end
   }
 
@@ -171,23 +176,20 @@ export async function indexPacks(
     if (hit !== undefined) return hit
     const pack = packs[packRef] as Uint8Array
     let res: Resolved
-    if (rec.typeCode === PACK_TYPE.OFS_DELTA) {
-      const baseRec = byOffset[packRef]?.get(rec.ofsBaseOffset as number)
-      if (baseRec === undefined) throw new Error(`OFS base at ${rec.ofsBaseOffset} is not an object boundary`)
-      const base = tryResolve(packRef, baseRec)
+    if (rec.typeCode === PACK_TYPE.OFS_DELTA || rec.typeCode === PACK_TYPE.REF_DELTA) {
+      let base: Resolved | null
+      if (rec.typeCode === PACK_TYPE.OFS_DELTA) {
+        const baseRec = byOffset[packRef]?.get(rec.ofsBaseOffset as number)
+        if (baseRec === undefined) throw new Error(`OFS base at ${rec.ofsBaseOffset} is not an object boundary`)
+        base = tryResolve(packRef, baseRec)
+      } else {
+        base = byOid.get(rec.refBaseOid as string) ?? null
+      }
       if (base === null) return null
-      const [, dpos] = parseOfsBase(pack, parseObjHeader(pack, rec.offset).after)
-      const delta = inflateZlib(pack, dpos, rec.size)
-      res = { obj: { type: base.obj.type, bytes: applyDelta(base.obj.bytes, delta) }, depth: base.depth + 1 }
-    } else if (rec.typeCode === PACK_TYPE.REF_DELTA) {
-      const base = byOid.get(rec.refBaseOid as string)
-      if (base === undefined) return null
-      const h = parseObjHeader(pack, rec.offset)
-      const delta = inflateZlib(pack, h.after + OID_LEN, rec.size)
+      const delta = inflateZlib(pack, rec.dataPos, rec.size)
       res = { obj: { type: base.obj.type, bytes: applyDelta(base.obj.bytes, delta) }, depth: base.depth + 1 }
     } else {
-      const h = parseObjHeader(pack, rec.offset)
-      res = { obj: { type: objTypeFromCode(rec.typeCode), bytes: inflateZlib(pack, h.after, rec.size) }, depth: 0 }
+      res = { obj: { type: objTypeFromCode(rec.typeCode), bytes: inflateZlib(pack, rec.dataPos, rec.size) }, depth: 0 }
     }
     memo.set(rec, res)
     const oidHex = gitOidHex(res.obj.type, res.obj.bytes)

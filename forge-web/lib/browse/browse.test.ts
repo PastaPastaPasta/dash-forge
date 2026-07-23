@@ -18,67 +18,16 @@ import {
   SPAN_SENTINEL,
   gitOidHex,
 } from './index'
-
-// --- tiny pack-format writers -------------------------------------------------
-
-const T_BLOB = 3
-const T_OFS_DELTA = 6
-
-/** Encode a pack object header: 3-bit type + size varint (4 low bits, then 7-bit groups). */
-function objHeader(type: number, size: number): Uint8Array {
-  const out: number[] = []
-  let c = (type << 4) | (size & 0x0f)
-  size = Math.floor(size / 16)
-  while (size > 0) {
-    out.push(c | 0x80)
-    c = size & 0x7f
-    size = Math.floor(size / 128)
-  }
-  out.push(c)
-  return new Uint8Array(out)
-}
-
-/** Encode an OFS_DELTA relative base back-pointer (git's offset varint). */
-function ofsBase(rel: number): Uint8Array {
-  const bytes = [rel & 0x7f]
-  let n = Math.floor(rel / 128)
-  while (n > 0) {
-    n -= 1
-    bytes.unshift(0x80 | (n & 0x7f))
-    n = Math.floor(n / 128)
-  }
-  return new Uint8Array(bytes)
-}
-
-/** Encode a git delta size varint (little-endian 7-bit groups). */
-function deltaSize(n: number): number[] {
-  const out: number[] = []
-  for (;;) {
-    let b = n & 0x7f
-    n = Math.floor(n / 128)
-    if (n > 0) b |= 0x80
-    out.push(b)
-    if (n === 0) break
-  }
-  return out
-}
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const len = parts.reduce((s, p) => s + p.length, 0)
-  const out = new Uint8Array(len)
-  let o = 0
-  for (const p of parts) {
-    out.set(p, o)
-    o += p.length
-  }
-  return out
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  return out
-}
+import {
+  T_BLOB,
+  T_OFS_DELTA,
+  concat,
+  copyInsertDelta,
+  hexToBytes,
+  objHeader,
+  ofsBase,
+  packFrame,
+} from './pack-fixtures'
 
 // --- objectLocator writer -----------------------------------------------------
 
@@ -131,7 +80,7 @@ function buildLocator(rows: Row[]): Uint8Array {
 
 // --- fixtures -----------------------------------------------------------------
 
-const PACK_HEADER = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 2]) // "PACK" v2 n=2
+const PACK_HEADER_LEN = 12
 
 function packSourceFor(pack: Uint8Array): PackSource {
   return {
@@ -144,9 +93,9 @@ describe('browse-plane reader', () => {
     const content = new TextEncoder().encode('hello dash forge\n'.repeat(4))
     const blobOid = gitOidHex('blob', content)
 
-    const offset = PACK_HEADER.length
+    const offset = PACK_HEADER_LEN
     const stored = concat(objHeader(T_BLOB, content.length), zlibSync(content))
-    const pack = concat(PACK_HEADER, stored, new Uint8Array(20)) // + zeroed trailer
+    const pack = packFrame(stored)
 
     const locator = ObjectLocator.parse(
       buildLocator([{ oidHex: blobOid, offset, length: stored.length, span: stored.length, depth: 0 }]),
@@ -165,20 +114,9 @@ describe('browse-plane reader', () => {
     const targetOid = gitOidHex('blob', target)
 
     // Delta: copy [0, 40) from base, then insert "cat\n".
-    const insert = new TextEncoder().encode('cat\n')
-    const copyLen = 40
-    const delta = new Uint8Array([
-      ...deltaSize(base.length),
-      ...deltaSize(target.length),
-      0x80 | 0x01 | 0x10 | 0x20, // copy: offset byte + 2 size bytes
-      0x00, // copy offset = 0
-      copyLen & 0xff,
-      (copyLen >> 8) & 0xff,
-      insert.length, // insert op
-      ...insert,
-    ])
+    const delta = copyInsertDelta(base.length, target.length, 40, new TextEncoder().encode('cat\n'))
 
-    const baseOffset = PACK_HEADER.length
+    const baseOffset = PACK_HEADER_LEN
     const baseStored = concat(objHeader(T_BLOB, base.length), zlibSync(base))
     const deltaOffset = baseOffset + baseStored.length
     const deltaStored = concat(
@@ -186,7 +124,7 @@ describe('browse-plane reader', () => {
       ofsBase(deltaOffset - baseOffset),
       zlibSync(delta),
     )
-    const pack = concat(PACK_HEADER, baseStored, deltaStored, new Uint8Array(20))
+    const pack = packFrame(baseStored, deltaStored)
 
     const baseRow: Row = {
       oidHex: baseOid,
