@@ -107,7 +107,13 @@ function RootBody({
             {data.readmeName}
           </div>
           <div className="px-5 py-4">
-            <MarkdownView source={data.readme} />
+            {/\.(md|markdown)$/i.test(data.readmeName ?? '') ? (
+              <MarkdownView source={data.readme} />
+            ) : (
+              <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-anvil-700 dark:text-anvil-200">
+                {data.readme}
+              </pre>
+            )}
           </div>
         </div>
       ) : null}
