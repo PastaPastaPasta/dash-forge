@@ -64,7 +64,8 @@
         }
       ],
       "required": [
-        "defaultBranch"
+        "defaultBranch",
+        "$createdAt"
       ],
       "additionalProperties": false
     },
@@ -145,7 +146,8 @@
       "required": [
         "refNameHash",
         "refName",
-        "newOid"
+        "newOid",
+        "$createdAt"
       ],
       "additionalProperties": false
     },
@@ -226,7 +228,8 @@
       "required": [
         "refNameHash",
         "refName",
-        "newOid"
+        "newOid",
+        "$createdAt"
       ],
       "additionalProperties": false
     },
@@ -824,7 +827,8 @@
       ],
       "required": [
         "targetId",
-        "kind"
+        "kind",
+        "$createdAt"
       ],
       "additionalProperties": false
     },

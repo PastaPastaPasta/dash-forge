@@ -1,0 +1,253 @@
+{
+  "$formatVersion": "1",
+  "id": "11111111111111111111111111111111",
+  "ownerId": "11111111111111111111111111111111",
+  "version": 1,
+  "documentSchemas": {
+    "repoListing": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "position": 0
+        },
+        "normalizedName": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+          "maxLength": 63,
+          "position": 1
+        },
+        "repoContractId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 2
+        },
+        "templateVersion": {
+          "type": "integer",
+          "position": 3,
+          "minimum": 0
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "position": 4
+        },
+        "topics": {
+          "type": "string",
+          "maxLength": 400,
+          "position": 5,
+          "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
+        },
+        "forkOf": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 6
+        }
+      },
+      "indices": [
+        {
+          "name": "ownerName",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "normalizedName": "asc"
+            }
+          ],
+          "unique": true,
+          "countable": "countable"
+        },
+        {
+          "name": "name",
+          "properties": [
+            {
+              "normalizedName": "asc"
+            }
+          ]
+        },
+        {
+          "name": "forkOf",
+          "properties": [
+            {
+              "forkOf": "asc"
+            }
+          ],
+          "nullSearchable": false,
+          "countable": "countable"
+        }
+      ],
+      "required": [
+        "name",
+        "normalizedName",
+        "repoContractId",
+        "templateVersion"
+      ],
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "maxLength": 60,
+          "position": 0
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 500,
+          "position": 1
+        },
+        "avatarConfig": {
+          "type": "string",
+          "maxLength": 200,
+          "position": 2
+        },
+        "links": {
+          "type": "string",
+          "maxLength": 900,
+          "position": 3,
+          "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
+        }
+      },
+      "indices": [
+        {
+          "name": "owner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [],
+      "additionalProperties": false
+    },
+    "star": {
+      "type": "object",
+      "documentsMutable": false,
+      "properties": {
+        "listingId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 0
+        }
+      },
+      "indices": [
+        {
+          "name": "ownerListing",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "listingId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "listing",
+          "properties": [
+            {
+              "listingId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "countable": "countable"
+        },
+        {
+          "name": "owner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "listingId"
+      ],
+      "additionalProperties": false
+    },
+    "follow": {
+      "type": "object",
+      "documentsMutable": false,
+      "properties": {
+        "identityId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 0
+        }
+      },
+      "indices": [
+        {
+          "name": "ownerIdentity",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "identityId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "identity",
+          "properties": [
+            {
+              "identityId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "countable": "countable"
+        },
+        {
+          "name": "owner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "countable": "countable"
+        }
+      ],
+      "required": [
+        "identityId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "keywords": [
+    "git",
+    "forge",
+    "repository",
+    "vcs"
+  ],
+  "description": "Dash Forge registry: repository discovery and social graph."
+}

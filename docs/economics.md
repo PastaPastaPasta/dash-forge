@@ -70,7 +70,7 @@ Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes
 
 | Scenario | Platform backend | External backend |
 |---|---|---|
-| Create repo (contract + config + listing) | **~0.24 DASH** one-time (S0.7-measured token contract; repo-v1 re-measured Stage 2) | same |
+| Create repo (contract + config + listing) | **~1.18 DASH** one-time (Stage-2 measured: repo-v1 = 2 tokens + 15 doc types + count-trees; registry alone was 0.68). Refundable? No — contract create is not refundable. This is the dominant one-time cost and the main barrier to casual repo creation. | same |
 | Push 100 KiB source delta (~30 KiB packed) | ~$0.28 deposit + ~$0.005 burn | ~$0.01 (manifest + refUpdate only) |
 | 1,000 issues + 5,000 comments over a year | ~$25–60 deposit (refundable on delete) | same (always on Platform) |
 | Force-push away 10 MiB of history, then repack | recover ~$90 deposit; ~$1.50–3 burned | n/a (bytes were external) |

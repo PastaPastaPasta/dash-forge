@@ -31,3 +31,6 @@ spikes/**/artifacts/
 spikes/**/*.bin
 spikes/**/node_modules/
 spikes/**/.smoke/
+
+# forge-contracts local install
+forge-contracts/node_modules/
