@@ -8,16 +8,18 @@
  */
 
 import { useState } from 'react'
-import { AlertTriangle, ShieldPlus, Snowflake, Trash2, UserCog } from 'lucide-react'
+import { AlertTriangle, Fingerprint, ShieldPlus, Snowflake, Trash2, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator } from '@/lib/repo'
 import { readCollaborators, grantCollaborator, revokeCollaborator, suspendCollaborator } from '@/lib/repo'
+import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
 import { BackendBadge } from '@/components/ui/backend-badge'
+import { Oid } from '@/components/ui/oid'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -51,6 +53,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   }
 
   const cost = previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin)
+  const registryContractId = NETWORKS[DEFAULT_NETWORK].registryContractId
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
@@ -151,6 +154,30 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
         )}
       </Section>
 
+      {/* Platform details */}
+      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+          <DetailRow label="Repo contract">
+            <Oid value={home.repo.contractId} chars={12} label="repo contract id" />
+          </DetailRow>
+          <DetailRow label="Owner identity">
+            <Oid value={home.repo.ownerId} chars={12} label="owner identity id" />
+          </DetailRow>
+          <DetailRow label="Registry listing">
+            {home.listingId !== null ? <Oid value={home.listingId} chars={12} label="registry listing id" /> : <NotSet />}
+          </DetailRow>
+          <DetailRow label="Registry contract">
+            {registryContractId !== null ? <Oid value={registryContractId} chars={12} label="registry contract id" /> : <NotSet />}
+          </DetailRow>
+          <DetailRow label="Network">
+            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash">{DEFAULT_NETWORK}</span>
+          </DetailRow>
+        </dl>
+        <p className="mt-2 text-[12px] text-anvil-400">
+          Raw Platform identifiers for CLI / SDK use (query the repo contract directly, or the listing on the registry). Click an id to copy the full value.
+        </p>
+      </Section>
+
       {/* Danger zone */}
       <Section title="Danger zone" icon={<AlertTriangle className="h-4 w-4 text-danger" aria-hidden />} danger>
         <div className="flex items-center justify-between gap-3">
@@ -211,6 +238,19 @@ function Section({
       <div className={danger ? 'rounded-lg border border-danger/30 bg-danger/5 p-4' : ''}>{children}</div>
     </section>
   )
+}
+
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 py-2.5">
+      <dt className="shrink-0 text-dense text-anvil-500 dark:text-anvil-400">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </div>
+  )
+}
+
+function NotSet(): JSX.Element {
+  return <span className="text-dense text-anvil-400">—</span>
 }
 
 function RoleTag({ role }: { role: 'WRITE' | 'MAINTAIN' }): JSX.Element {

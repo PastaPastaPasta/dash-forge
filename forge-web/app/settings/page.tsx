@@ -8,6 +8,7 @@ import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
 import { IdentityPill } from '@/components/ui/identity-pill'
+import { Oid } from '@/components/ui/oid'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { DEFAULT_NETWORK } from '@/lib/constants'
@@ -43,6 +44,10 @@ export default function SettingsPage(): JSX.Element {
           <div className="flex items-center justify-between">
             <IdentityPill identityId={identity} />
             <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash">{DEFAULT_NETWORK}</span>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+            <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>
+            <Oid value={identity} chars={12} label="identity id" />
           </div>
         </section>
 

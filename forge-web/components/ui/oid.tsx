@@ -16,10 +16,12 @@ export interface OidProps {
   chars?: number
   /** Show the copy affordance (default true). */
   copyable?: boolean
+  /** What the identifier is, for the accessible copy-button name (e.g. "repo contract id"). */
+  label?: string
   className?: string
 }
 
-export function Oid({ value, chars = 7, copyable = true, className }: OidProps): JSX.Element {
+export function Oid({ value, chars = 7, copyable = true, label, className }: OidProps): JSX.Element {
   const [copied, setCopied] = useState(false)
   const shown = value.length > chars ? value.slice(0, chars) : value
 
@@ -65,7 +67,7 @@ export function Oid({ value, chars = 7, copyable = true, className }: OidProps):
       ) : (
         <Copy className="h-3 w-3 text-anvil-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
       )}
-      <span className="sr-only">{copied ? 'Copied' : 'Copy full identifier'}</span>
+      <span className="sr-only">{copied ? 'Copied' : `Copy ${label ?? 'full identifier'}`}</span>
     </button>
   )
 }
