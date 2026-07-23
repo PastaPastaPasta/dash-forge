@@ -10,10 +10,16 @@
 // Deviations from yappr: no build-time git-info injection (kept the config pure and
 // dependency-free so the scaffold builds without a git checkout), and no basePath yet.
 
+// For project-site GitHub Pages the app is served under /<repo>. Set
+// NEXT_PUBLIC_BASE_PATH=/dash-forge in that deploy; unset for root/IPFS/custom-domain.
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 const nextConfig = {
   trailingSlash: true,
   reactStrictMode: true,
   output: 'export',
+  basePath,
+  assetPrefix: basePath || undefined,
   images: {
     // Static export cannot use the Next.js image optimizer.
     unoptimized: true,
