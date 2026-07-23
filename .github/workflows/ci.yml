@@ -9,49 +9,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Per-push gate: the web app + the TS FORGE_RULES_V1 conformance suite (the
+# cross-client parity contract). The Rust workspace depends on the Dash Platform
+# monorepo (path deps on ../platform) — building that 3 GB dependency tree does
+# not fit a fast per-push job, so Rust is validated in `rust.yml` (nightly +
+# manual, clones platform) and, authoritatively, locally + against testnet.
 jobs:
-  rust:
-    name: rust
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check crates/ exists
-        id: probe
-        run: |
-          if [ -d crates ] && [ -f Cargo.toml ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::crates/ or root Cargo.toml not present yet — skipping rust job"
-          fi
-
-      - name: Install stable toolchain
-        if: steps.probe.outputs.present == 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        if: steps.probe.outputs.present == 'true'
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt --check
-        if: steps.probe.outputs.present == 'true'
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        if: steps.probe.outputs.present == 'true'
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: cargo test
-        if: steps.probe.outputs.present == 'true'
-        run: cargo test --all
-
-      - name: cargo build
-        if: steps.probe.outputs.present == 'true'
-        run: cargo build --all
-
   web:
     name: web
     runs-on: ubuntu-latest
@@ -60,46 +23,16 @@ jobs:
         working-directory: forge-web
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check forge-web/ exists
-        id: probe
-        working-directory: .
-        run: |
-          if [ -f forge-web/package.json ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::forge-web/package.json not present yet — skipping web job"
-          fi
-
-      - name: Setup pnpm
-        if: steps.probe.outputs.present == 'true'
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        if: steps.probe.outputs.present == 'true'
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: forge-web/pnpm-lock.yaml
-
-      - name: Install dependencies
-        if: steps.probe.outputs.present == 'true'
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        if: steps.probe.outputs.present == 'true'
-        run: pnpm typecheck
-
-      - name: Lint
-        if: steps.probe.outputs.present == 'true'
-        run: pnpm lint
-
-      - name: Test
-        if: steps.probe.outputs.present == 'true'
-        run: pnpm test
-
-      - name: Build
-        if: steps.probe.outputs.present == 'true'
-        run: pnpm build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build

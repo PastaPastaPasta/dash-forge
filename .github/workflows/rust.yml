@@ -1,0 +1,58 @@
+name: Rust (nightly / manual)
+
+# The Rust workspace (forge-core, git-remote-dash, dg, forge-relay, forge-import)
+# depends on the Dash Platform monorepo via path deps (dash-sdk, dapi-grpc, …).
+# CI clones it as a sibling ../platform on the pinned branch and builds. This is
+# heavy (grovedb/tenderdash/rocksdb dep tree) so it runs nightly + on demand, not
+# per-push. Local `cargo test --all` against a checked-out ../platform, plus the
+# live testnet tests, remain the authoritative Rust gate.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * *'
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PLATFORM_REPO: PastaPastaPasta/platform
+      PLATFORM_BRANCH: v3.1-dev
+    steps:
+      - name: Checkout dash-forge
+        uses: actions/checkout@v4
+        with:
+          path: dash-forge
+
+      - name: Checkout Dash Platform (sibling ../platform)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PLATFORM_REPO }}
+          ref: ${{ env.PLATFORM_BRANCH }}
+          path: platform
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dash-forge
+
+      - name: fmt
+        working-directory: dash-forge
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        working-directory: dash-forge
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        working-directory: dash-forge
+        run: cargo test --all
