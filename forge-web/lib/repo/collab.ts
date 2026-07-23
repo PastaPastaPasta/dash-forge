@@ -10,7 +10,13 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
-import { countDocuments, skipScanDistinct, base64ToBytes } from '../sdk'
+import {
+  countDocuments,
+  queryDocuments,
+  skipScanDistinct,
+  base64ToBytes,
+  type PlainDocument,
+} from '../sdk'
 import { REGISTRY_DOC, TOKEN_POSITION, DOC, type RepoRef } from './contract'
 
 interface TokensFacadeLike {
@@ -125,6 +131,40 @@ export async function readStarCount(
     documentTypeName: REGISTRY_DOC.star,
     where: [['listingId', '==', listingId]],
   })
+}
+
+/** One stargazer row: the starring identity and when the star was created. */
+export interface Stargazer {
+  readonly identity: string
+  readonly starredAt: number
+}
+
+/**
+ * The stargazer list for a repo listing — the `star(listingId)` documents, newest first.
+ * Traverses the `(listingId, $createdAt)` index descending so the limit keeps the newest
+ * rows, not the oldest.
+ */
+export async function readStargazers(
+  sdk: EvoSDK,
+  listingId: string,
+  opts: { network?: Network; registryContractId?: string; limit?: number } = {},
+): Promise<Stargazer[]> {
+  const docs = await queryDocuments(sdk, {
+    dataContractId: registryId(opts.network, opts.registryContractId),
+    documentTypeName: REGISTRY_DOC.star,
+    where: [['listingId', '==', listingId]],
+    orderBy: [
+      ['listingId', 'asc'],
+      ['$createdAt', 'desc'],
+    ],
+    limit: opts.limit ?? 100,
+  })
+  return docs
+    .map((doc: PlainDocument) => ({
+      identity: typeof doc['$ownerId'] === 'string' ? doc['$ownerId'] : '',
+      starredAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
+    }))
+    .filter((s) => s.identity !== '')
 }
 
 /** Follower count for an identity (countable `follow(identityId)`). */

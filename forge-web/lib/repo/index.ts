@@ -76,8 +76,10 @@ export {
   readFollowerCount,
   readFollowingCount,
   readStarCount,
+  readStargazers,
   repoTokenIds,
   type Collaborator,
+  type Stargazer,
 } from './collab'
 export {
   WriteNotImplementedError,

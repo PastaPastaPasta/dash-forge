@@ -6,6 +6,7 @@
  * empty-repo invitation; a repo without browse artifacts degrades via {@link BrowseBoundary}.
  */
 
+import Link from 'next/link'
 import { FileText, GitBranch, Rocket } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -25,7 +26,7 @@ import { FileList } from '@/components/repo/file-list'
 import { MarkdownView } from '@/components/markdown-view'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Oid } from '@/components/ui/oid'
-import type { RepoAddress } from '@/hooks/use-query-param'
+import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
 interface RootView {
   readonly entries: TreeEntry[]
@@ -93,7 +94,12 @@ function RootBody({
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
         <GitBranch className="h-3.5 w-3.5" aria-hidden />
-        <span className="font-mono">{branch}</span>
+        <Link
+          href={repoHref('/repo/branches', addr)}
+          className="font-mono hover:text-forge-600 dark:hover:text-forge-400"
+        >
+          {branch}
+        </Link>
         <span aria-hidden>·</span>
         <Oid value={tipOid} />
       </div>

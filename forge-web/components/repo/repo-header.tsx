@@ -17,7 +17,7 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
 const TABS = [
-  { label: 'Code', path: '/repo', icon: Code2, match: ['/repo', '/repo/tree', '/repo/blob'] },
+  { label: 'Code', path: '/repo', icon: Code2, match: ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers'] },
   { label: 'Commits', path: '/repo/commits', icon: GitCommit, match: ['/repo/commits', '/repo/commit'] },
   { label: 'Issues', path: '/repo/issues', icon: MessageSquare, match: ['/repo/issues', '/repo/issue'] },
   { label: 'Pulls', path: '/repo/pulls', icon: GitPullRequest, match: ['/repo/pulls', '/repo/pull'] },
