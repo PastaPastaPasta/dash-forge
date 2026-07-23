@@ -57,6 +57,14 @@ function levelRank(level: string): number {
 }
 
 /**
+ * Key types whose private key is a plain secp256k1 scalar (WIF-encodable) and whose state
+ * transitions the SDK signs with ordinary ECDSA — the write path (`findSigningKey`) matches the
+ * WIF against the on-chain key via `validatePrivateKey`, which handles both. BLS12_381 /
+ * EDDSA_25519_HASH160 keys use different curves and cannot be signed with a WIF here.
+ */
+const WIF_SIGNABLE_KEY_TYPES = new Set(['ECDSA_SECP256K1', 'ECDSA_HASH160'])
+
+/**
  * Parse a bridge-format identity JSON. Throws a descriptive error if it lacks an identity id
  * or any usable AUTHENTICATION signing key.
  */
@@ -80,7 +88,7 @@ export function parseIdentityFile(json: unknown): ParsedIdentityFile {
   for (const raw of rawKeys as RawKey[]) {
     if (asString(raw.purpose)?.toUpperCase() !== 'AUTHENTICATION') continue
     const keyType = asString(raw.keyType)
-    if (keyType !== null && keyType.toUpperCase() !== 'ECDSA_SECP256K1') continue
+    if (keyType !== null && !WIF_SIGNABLE_KEY_TYPES.has(keyType.toUpperCase())) continue
     const level = asString(raw.securityLevel)
     if (level === null) continue
     const rank = levelRank(level)
@@ -94,7 +102,7 @@ export function parseIdentityFile(json: unknown): ParsedIdentityFile {
 
   if (best === null) {
     throw new Error(
-      'identity file has no usable AUTHENTICATION key (need an ECDSA_SECP256K1 CRITICAL or HIGH key with a WIF)',
+      'identity file has no usable AUTHENTICATION key (need a CRITICAL or HIGH ECDSA key with a private key WIF)',
     )
   }
 

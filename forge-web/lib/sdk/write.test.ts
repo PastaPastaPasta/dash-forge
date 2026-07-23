@@ -195,6 +195,28 @@ describe('identity-file parsing', () => {
   it('throws when no usable auth key exists', () => {
     expect(() => parseIdentityFile({ identityId: 'x', identityKeys: [] })).toThrow()
   })
+
+  it('accepts an ECDSA_HASH160 auth key (same secp256k1 WIF, common in Evo Tool exports)', () => {
+    const hash160Only = {
+      ...file,
+      identityKeys: [
+        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'ECDSA_HASH160', privateKeyWif: DEPLOYER_HIGH_WIF },
+      ],
+    }
+    const parsed = parseIdentityFile(hash160Only)
+    expect(parsed.securityLevel).toBe('HIGH')
+    expect(parsed.signingKeyWif).toBe(DEPLOYER_HIGH_WIF)
+  })
+
+  it('rejects non-secp256k1 key types (BLS / EdDSA cannot sign with a WIF)', () => {
+    const blsOnly = {
+      ...file,
+      identityKeys: [
+        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'BLS12_381', privateKeyWif: DEPLOYER_HIGH_WIF },
+      ],
+    }
+    expect(() => parseIdentityFile(blsOnly)).toThrow(/no usable AUTHENTICATION key/)
+  })
 })
 
 // ---------------------------------------------------------------------------
