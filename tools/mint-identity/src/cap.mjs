@@ -12,6 +12,7 @@
 //   4. POST {capBase}redeem { token, solutions } -> { success, token: verified }
 //   The verified token is what the faucet accepts as `capToken`.
 import { createHash } from 'node:crypto';
+import { solve_pow } from '@cap.js/wasm';
 
 // cap.js seed hash: FNV-1a 32-bit expressed via shift-adds (== *16777619).
 function prngSeed(str) {
@@ -37,11 +38,20 @@ function prng(seed, length) {
   return s.substring(0, length);
 }
 
+// PoW: find nonce where sha256(salt+nonce) hex starts with `target`. Uses cap.js's
+// official WASM solver (same engine the browser widget wraps) — far faster than a
+// JS hash loop at the hard-CAP's higher difficulty. Falls back to native crypto if
+// the WASM module is unavailable. Returns the nonce as a Number.
 function solveOne(salt, target) {
+  const n = solve_pow(salt, target); // bigint
+  return typeof n === 'bigint' ? Number(n) : n;
+}
+
+// Retained as a verifier/fallback.
+function solveOneJs(salt, target) {
   let nonce = 0;
   for (;;) {
-    const h = createHash('sha256').update(salt + nonce).digest('hex');
-    if (h.startsWith(target)) return nonce;
+    if (createHash('sha256').update(salt + nonce).digest('hex').startsWith(target)) return nonce;
     nonce++;
   }
 }

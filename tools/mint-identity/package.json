@@ -4,9 +4,14 @@
   "description": "Headless testnet Dash Platform identity-minting CLI (spike S0.4)",
   "type": "module",
   "private": true,
-  "bin": { "mint-identity": "./mint.mjs" },
-  "engines": { "node": ">=20" },
+  "bin": {
+    "mint-identity": "./mint.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@cap.js/wasm": "^0.0.7",
     "@dashevo/evo-sdk": "4.0.0",
     "@noble/hashes": "^1.4.0",
     "@noble/secp256k1": "^2.1.0",

@@ -35,35 +35,53 @@ function extractError(data, status) {
  * Request testnet funds. Checks status first; if CAP is required, solves it
  * headlessly and attaches the token. Returns { txid, amount, address }.
  */
-export async function requestTestnetFunds(baseUrl, address, { amount, log = () => {} } = {}) {
-  const status = await getFaucetStatus(baseUrl);
-  const requestAmount = amount ?? status.coreFaucetAmount ?? status.creditAmount ?? 1.0;
-
-  let capToken;
-  if (status.capEndpoint) {
-    log('Faucet requires CAP proof-of-work; solving headlessly...');
-    capToken = await solveCap(status.capEndpoint, log);
-    log('CAP token obtained.');
-  }
-
-  const body = { address, amount: requestAmount };
-  if (capToken) body.capToken = capToken;
-
-  const res = await fetchWithTimeout(`${baseUrl}/api/core-faucet`, {
+async function postFaucet(baseUrl, body) {
+  return fetchWithTimeout(`${baseUrl}/api/core-faucet`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Request testnet funds. Checks status first; if CAP is required, solves it
+ * headlessly and attaches the token. On a 429 rate-limit (or when `hardCap` is
+ * forced), solves the HARDER hard-cap challenge — whose token bypasses the
+ * per-IP rate limit entirely (same PoW protocol, higher difficulty), matching
+ * the website flow. Returns { txid, amount, address }.
+ */
+export async function requestTestnetFunds(baseUrl, address, { amount, log = () => {}, hardCap = false } = {}) {
+  const status = await getFaucetStatus(baseUrl);
+  const requestAmount = amount ?? status.coreFaucetAmount ?? status.creditAmount ?? 1.0;
+
+  async function attempt(useHardCap) {
+    const body = { address, amount: requestAmount };
+    if (useHardCap && status.hardCapEndpoint) {
+      log('Solving HARD CAP (bypasses rate limit; higher difficulty)...');
+      body.hardCapToken = await solveCap(status.hardCapEndpoint, log);
+      log('Hard-CAP token obtained.');
+    } else if (status.capEndpoint) {
+      log('Faucet requires CAP proof-of-work; solving headlessly...');
+      body.capToken = await solveCap(status.capEndpoint, log);
+      log('CAP token obtained.');
+    }
+    return postFaucet(baseUrl, body);
+  }
+
+  let res = await attempt(hardCap);
+
+  // Auto-escalate to the rate-limit-bypassing hard cap on 429.
+  if (!res.ok && res.status === 429 && !hardCap && status.hardCapEndpoint) {
+    log('Rate-limited; escalating to hard-CAP to bypass the limit...');
+    res = await attempt(true);
+  }
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (res.status === 429) {
-      const retryAfter = typeof data.retryAfter === 'number' ? data.retryAfter : undefined;
-      const mins = retryAfter ? Math.ceil(retryAfter / 60) : undefined;
       throw new Error(
-        `Faucet rate limit exceeded (max ${status.rateLimitPerHour ?? 3}/hour/IP)` +
-          (mins ? `. Try again in ${mins} minute(s).` : '. Try again later.') +
-          ' Use --skip-faucet --utxo-from <funded-address> to bypass.'
+        `Faucet rate limit exceeded and hard-CAP bypass failed. Try again later, ` +
+          'or --skip-faucet --utxo-from <funded-address>.'
       );
     }
     throw new Error(extractError(data, res.status));
