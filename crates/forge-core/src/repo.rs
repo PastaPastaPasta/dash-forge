@@ -25,8 +25,8 @@ use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
-    self, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryFilter, QueryOrder,
-    WriteEngine,
+    self, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient, PushJournal,
+    QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::{self, ConfigDoc, RefState, RefUpdate};
 
@@ -189,6 +189,21 @@ impl<'a> RepoService<'a> {
     pub async fn create_repo(&self, name: &str, opts: &CreateRepoOpts) -> Result<CreateRepoResult> {
         let normalized = normalize_name(name)?;
         let owner_b58 = self.identity.id();
+
+        // Idempotency guard (financial safety): if a prior create already published this
+        // repo's listing, re-running must NOT pay for a second ~1 DASH contract. Resolve
+        // first and short-circuit to the existing handle (cost 0) when it already exists.
+        if let Ok(existing) = self.resolve_repo(&owner_b58, name).await {
+            tracing::warn!(
+                repo_contract = %existing.repo_contract_id,
+                "repo already exists; skipping create (idempotent, no double-pay)"
+            );
+            return Ok(CreateRepoResult {
+                handle: existing,
+                repo_v1_instantiation_cost_credits: 0,
+                listing_document_id: String::new(),
+            });
+        }
 
         let mut template: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE)
             .map_err(|e| Error::Config(format!("parsing repo-v1 template: {e}")))?;
@@ -364,6 +379,16 @@ impl<'a> RepoService<'a> {
         prev_oid: Option<&[u8]>,
         force: bool,
     ) -> Result<String> {
+        // Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
+        // `refName` is an arbitrary Platform string that never passed `git check-ref-format`,
+        // so a control char / newline could inject a spoofed ref-advertisement line into every
+        // clone. Reject illegal names before writing.
+        if !rules::is_legal_ref_name(ref_name) {
+            return Err(Error::Config(format!(
+                "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
+            )));
+        }
+
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
         let ref_name_hash = crate::backends::sha256(ref_name.as_bytes());
 
@@ -430,6 +455,28 @@ impl<'a> RepoService<'a> {
             out.push((ref_name, state));
         }
         Ok(out)
+    }
+
+    /// Read the repo's current default branch from the newest `config` document (e.g.
+    /// `main`) — the branch `git-remote-dash` reports as the `HEAD` symref in `list`.
+    /// `None` when no `config` exists yet (a contract without an initial config).
+    pub async fn read_default_branch(&self, repo: &RepoHandle) -> Result<Option<String>> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let docs = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_CONFIG,
+                &[],
+                &[QueryOrder::desc("$createdAt")],
+                1,
+                None,
+            )
+            .await?;
+        Ok(docs
+            .into_iter()
+            .next()
+            .and_then(|d| d.field_str("defaultBranch")))
     }
 
     /// Write a `packManifest` document (WRITE-gated). Returns the manifest document id.
@@ -525,6 +572,65 @@ impl<'a> RepoService<'a> {
         let engine = self.doc_engine()?;
         let backend = PlatformBackend::new(&engine, &repo_contract);
         backend.put(bytes, meta).await
+    }
+
+    /// Store pack `bytes` as `chunk` documents **resumably**: a [`PushJournal`] records the
+    /// chunk seqs already confirmed and is checkpointed through `store` after each one, so an
+    /// interrupted push (kill -9 mid-upload) resumes by skipping the already-uploaded chunks
+    /// — total fees ≈ a single push (PRD 02 §A resumable-push acceptance). Idempotent even
+    /// without a journal: a re-broadcast chunk that already landed collides on the unique
+    /// `(packHash, seq)` index → [`crate::platform::BroadcastOutcome::AlreadyExists`], never a
+    /// second charge. Returns the `platform://…` locator the manifest records.
+    pub async fn put_pack_resumable(
+        &self,
+        repo: &RepoHandle,
+        bytes: &[u8],
+        meta: &PackMeta,
+        journal: &mut PushJournal,
+        store: &dyn JournalStore,
+    ) -> Result<Vec<Uri>> {
+        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PLATFORM_SCHEME};
+
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let engine = self.doc_engine()?;
+        let pack_hash = meta.pack_hash_bytes()?;
+
+        // Test affordance (no effect unless the env var is set): abort after uploading N
+        // fresh chunks to simulate a `kill -9` mid-push, so the resume path can be
+        // exercised deterministically end-to-end. The journal is already checkpointed for
+        // every chunk written before the abort.
+        let kill_after: Option<usize> = std::env::var("DASH_FORGE_KILL_AFTER_CHUNK")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let mut uploaded_now = 0usize;
+
+        for (seq, props) in chunk_documents(bytes, pack_hash) {
+            if journal.has(seq) {
+                // Confirmed by a prior (interrupted) attempt — skip, do not re-pay.
+                tracing::debug!(seq, "chunk already journaled; skipping");
+                continue;
+            }
+            let prepared = engine
+                .prepare_create(&repo_contract, CHUNK_DOC_TYPE, props)
+                .await?;
+            engine.execute(&prepared).await?;
+            journal.record(&WriteIntent::for_prepared(seq, &prepared));
+            store.checkpoint(journal)?;
+
+            uploaded_now += 1;
+            if kill_after == Some(uploaded_now) {
+                return Err(Error::Io(format!(
+                    "simulated mid-push interruption after {uploaded_now} chunk(s) \
+                     (DASH_FORGE_KILL_AFTER_CHUNK) — journal persisted for resume"
+                )));
+            }
+        }
+
+        Ok(vec![Uri(format!(
+            "{PLATFORM_SCHEME}://{}/{}",
+            repo_contract.id(),
+            meta.pack_hash
+        ))])
     }
 
     /// Read pack bytes back from `chunk` documents via [`PlatformBackend`] (optionally a

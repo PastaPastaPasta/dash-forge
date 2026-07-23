@@ -177,7 +177,7 @@ pub fn repack_all(repo: &Path) -> Result<Pack> {
 /// embedded newline injects extra rev-list args. Legitimate OIDs are hex and refs may
 /// not begin with `-`, so this rejects: empty, a leading `-`, or any ASCII control
 /// character (including newline). Callers guard before the string reaches `Command`.
-pub(super) fn ensure_safe_rev(rev: &str) -> Result<()> {
+pub fn ensure_safe_rev(rev: &str) -> Result<()> {
     if rev.is_empty() {
         return Err(Error::Config("empty revision".into()));
     }

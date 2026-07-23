@@ -454,16 +454,41 @@ impl PlatformClient {
         .map_err(|e| Error::Platform(format!("signing contract-create transition: {e}")))?;
 
         let balance_before = owner.balance();
-        let result = state_transition
+        // The contract id is deterministic (`hash(ownerId || nonce)`) and the nonce is
+        // baked into the signed transition, so a broadcast that errors *ambiguously* — a
+        // transient reset that makes the SDK re-broadcast and hit its own cached tx
+        // ("AlreadyExists"), a wait timeout after the tx landed — has NOT necessarily
+        // failed. Retrying with a fresh nonce would mint (and pay ~1 DASH for) a SECOND
+        // contract, orphaning the first. So on any broadcast error, verify by fetching the
+        // derived id before surfacing an error: if the contract landed, this is success.
+        match state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(&self.sdk, None)
             .await
-            .map_err(|e| Error::Platform(format!("broadcasting contract create: {e}")))?;
-
-        // Register the freshly created contract with the context provider so subsequent
-        // proof-verified writes/reads against it resolve (see field docs on
-        // `context_provider`).
-        if let StateTransitionProofResult::VerifiedDataContract(created) = &result {
-            self.context_provider.add_known_contract(created.clone());
+        {
+            Ok(result) => {
+                // Register the freshly created contract with the context provider so
+                // subsequent proof-verified writes/reads against it resolve (see field
+                // docs on `context_provider`).
+                if let StateTransitionProofResult::VerifiedDataContract(created) = &result {
+                    self.context_provider.add_known_contract(created.clone());
+                }
+            }
+            Err(e) => match DataContract::fetch(&self.sdk, contract_id).await {
+                Ok(Some(existing)) => {
+                    // The create actually landed — idempotent success, not a double-pay.
+                    self.context_provider.add_known_contract(existing);
+                    tracing::warn!(
+                        error = %e,
+                        contract_id = %contract_id.to_string(Encoding::Base58),
+                        "contract-create broadcast errored but the contract is on-chain; treating as success (idempotent — no second create)"
+                    );
+                }
+                _ => {
+                    return Err(Error::Platform(format!(
+                        "broadcasting contract create: {e}"
+                    )))
+                }
+            },
         }
 
         let balance_after = self
@@ -937,7 +962,7 @@ impl<'a> WriteEngine<'a> {
                 .await
             {
                 Ok(_proof) => return Ok(BroadcastOutcome::Applied),
-                Err(e) => match classify_write_error(&e) {
+                Err(e) => match classify_write_error(&e, &prepared.document_type) {
                     WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
                     WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
                         // Loop around to re-broadcast the identical signed bytes.
@@ -1262,11 +1287,19 @@ fn consensus_error_of(e: &dash_sdk::Error) -> Option<&ConsensusError> {
     }
 }
 
+/// Document types whose UNIQUE index makes a same-content re-upload an idempotent no-op:
+/// `chunk` (unique `(packHash, seq)`) and `packManifest` (unique `packHash`). A resumed
+/// push re-broadcasts these and a `DuplicateUniqueIndexError` means "already stored" =
+/// success — NOT for e.g. `repoListing` (unique `(ownerId, normalizedName)`), where a
+/// duplicate is a genuine name collision and must stay fatal.
+const CONTENT_ADDRESSED_UNIQUE_DOC_TYPES: [&str; 2] = ["chunk", "packManifest"];
+
 /// Classify a `dash_sdk::Error` from a document broadcast by matching structured enum
 /// variants (not lowercased Display substrings). Frozen-token (consensus 40702) and
 /// unauthorized (40701) map to distinct, non-retryable crate errors; retryability comes
-/// from the SDK's authoritative [`CanRetry::can_retry`].
-fn classify_write_error(e: &dash_sdk::Error) -> WriteFailure {
+/// from the SDK's authoritative [`CanRetry::can_retry`]. `document_type` scopes the
+/// unique-index idempotency (see [`CONTENT_ADDRESSED_UNIQUE_DOC_TYPES`]).
+fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailure {
     // gRPC-level "already exists" — the object is already on-chain.
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
         return WriteFailure::AlreadyLanded;
@@ -1278,6 +1311,14 @@ fn classify_write_error(e: &dash_sdk::Error) -> WriteFailure {
             // by an earlier (identical) broadcast → the intended write has landed.
             StateError::DocumentAlreadyPresentError(_)
             | StateError::InvalidIdentityNonceError(_) => return WriteFailure::AlreadyLanded,
+            // A resumed push re-uploading a content-addressed chunk / manifest collides on
+            // its UNIQUE index — the content is already stored, so this is idempotent
+            // success (never charged the storage twice), scoped to those doc types only.
+            StateError::DuplicateUniqueIndexError(_)
+                if CONTENT_ADDRESSED_UNIQUE_DOC_TYPES.contains(&document_type) =>
+            {
+                return WriteFailure::AlreadyLanded
+            }
             // 40702: the identity's token account is frozen → write access revoked.
             StateError::IdentityTokenAccountFrozenError(_) => {
                 return WriteFailure::Fatal(Error::TokenFrozen)
