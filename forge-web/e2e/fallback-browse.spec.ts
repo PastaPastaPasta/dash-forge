@@ -22,7 +22,7 @@ test.describe('in-browser fallback clone (no objectLocator)', () => {
     // done) the local-index notice. The app's read-error state is a meaningful failure.
     const loadButton = page.getByRole('button', { name: /load repo in browser/i })
     const engaged = page
-      .getByText(/preparing in-browser clone|downloading packs|indexing objects|locally built index/i)
+      .getByText(/preparing in-browser clone|downloading packs|indexing objects|copy loaded into your browser/i)
       .first()
     await expect(loadButton.or(engaged).or(readErrorBanner(page))).toBeVisible({ timeout: 45_000 })
     if (await readErrorBanner(page).isVisible()) {
@@ -37,7 +37,7 @@ test.describe('in-browser fallback clone (no objectLocator)', () => {
 
     // The fallback completes: quiet notice + a real root tree (file links) rendered from
     // the locally built index.
-    await expect(page.getByText(/locally built index/i)).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible({ timeout: 60_000 })
     const fileLink = page.locator('a[href*="/repo/blob"], a[href*="/repo/tree"]').first()
     await expect(fileLink).toBeVisible({ timeout: 30_000 })
     await shot(page, '08-fallback-home')
@@ -45,7 +45,7 @@ test.describe('in-browser fallback clone (no objectLocator)', () => {
     // In-app navigation (SPA route change) reuses the module-level session cache: content
     // renders again with no re-download prompt.
     await fileLink.click()
-    await expect(page.getByText(/locally built index/i)).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible({ timeout: 30_000 })
     await expect(loadButton).toHaveCount(0)
     await shot(page, '09-fallback-blob')
 

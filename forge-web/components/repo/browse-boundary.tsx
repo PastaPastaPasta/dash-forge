@@ -57,7 +57,7 @@ export function BrowseBoundary({
     return (
       <div>
         <p className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
-          Browsing from a locally built index — this repo has not published a browse plane.
+          Viewing a copy loaded into your browser — this repo hasn&apos;t published a browse index yet.
         </p>
         {children(fallback.context.reader)}
       </div>
