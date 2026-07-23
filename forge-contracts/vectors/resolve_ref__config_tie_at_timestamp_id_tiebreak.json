@@ -1,0 +1,39 @@
+{
+  "name": "config_tie_at_timestamp_id_tiebreak",
+  "description": "Two configs share $createdAt; the greatest-$id one wins (here it protects main).",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 250
+      }
+    ],
+    "configHistory": [
+      {
+        "id": "c1",
+        "createdAt": 200,
+        "protectedPatterns": []
+      },
+      {
+        "id": "c2",
+        "createdAt": 200,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      }
+    ],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "unborn"
+  }
+}

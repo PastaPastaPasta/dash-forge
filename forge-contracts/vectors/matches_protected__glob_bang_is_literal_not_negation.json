@@ -1,0 +1,12 @@
+{
+  "name": "glob_bang_is_literal_not_negation",
+  "description": "A leading '!' is literal (git wildmatch has no negation): must NOT invert the set.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/main",
+    "patterns": [
+      "!refs/heads/temp/*"
+    ]
+  },
+  "expected": false
+}

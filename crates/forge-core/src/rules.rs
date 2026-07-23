@@ -148,6 +148,12 @@ pub struct ConfigDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefHead {
+    /// Document `$id` of the update that set this tip — carried so that heads sharing a
+    /// `$createdAt` (two maintainers racing in the same consensus block) order
+    /// deterministically by the same `($createdAt, $id)` total order used everywhere
+    /// else in the module. Without it, `heads[0]` (the provisional tip shown to users)
+    /// could differ between clients — exactly the parity bug this module prevents.
+    pub id: String,
     /// The tip commit.
     pub oid: Oid,
     /// Pusher of the update that set this tip.
@@ -269,19 +275,25 @@ pub fn resolve_ref(
         if is_null_oid(&u.new_oid) {
             continue;
         }
-        let superseded = valid.iter().any(|v| newer_supersedes(u, v));
-        if superseded {
+        if valid.iter().any(|v| newer_supersedes(u, v)) {
             continue;
         }
-        // Deduplicate by tip: the same oid pushed twice is one head.
-        if heads.iter().any(|h| h.oid == u.new_oid) {
-            continue;
-        }
-        heads.push(RefHead {
+        let candidate = RefHead {
+            id: u.id.clone(),
             oid: u.new_oid.clone(),
             author: u.author.clone(),
             created_at: u.created_at,
-        });
+        };
+        // Deduplicate by tip: the same oid pushed more than once is one head, and we
+        // keep the newest occurrence by the `($createdAt, $id)` total order. `valid` is
+        // sorted ascending, so a later match is always the newer one.
+        if let Some(existing) = heads.iter_mut().find(|h| h.oid == candidate.oid) {
+            if (candidate.created_at, &candidate.id) > (existing.created_at, &existing.id) {
+                *existing = candidate;
+            }
+        } else {
+            heads.push(candidate);
+        }
     }
 
     // (5) resolve.
@@ -296,11 +308,13 @@ pub fn resolve_ref(
             }
         }
         _ => {
-            // Newest-first: heads[0] is the provisional read-only tip.
+            // Newest-first by the `($createdAt, $id)` total order: `heads[0]` is the
+            // provisional read-only tip (§2.3), and two heads racing in the same
+            // consensus block break ties on `$id` so every client agrees.
             heads.sort_by(|a, b| {
                 b.created_at
                     .cmp(&a.created_at)
-                    .then_with(|| b.oid.cmp(&a.oid))
+                    .then_with(|| b.id.cmp(&a.id))
             });
             RefState::Diverged { heads }
         }
@@ -346,26 +360,65 @@ fn config_as_of(config_history: &[ConfigDoc], at: u64) -> Option<&ConfigDoc> {
 ///
 /// ## Pinned glob semantics (`FORGE_RULES_V1`)
 ///
-/// Matching is git-fnmatch via the [`glob_match`](glob_match::glob_match) crate, which
-/// implements git's `wildmatch` with the `WM_PATHNAME` flag — the same behavior
+/// Matching is git **`wildmatch`** with the `WM_PATHNAME` flag — the same behavior
 /// `git for-each-ref <pattern>` uses. Precisely:
 ///
 /// * `*` matches any run of characters **except** `/` (stays within one ref segment).
 /// * `**` matches across `/` (any number of segments), e.g. `refs/heads/**` is "every
 ///   branch at any depth".
 /// * `?` matches a single non-`/` character.
-/// * `[abc]` / `[a-z]` character classes and `{a,b}` alternation are supported.
+/// * `[abc]` / `[a-z]` / `[!abc]` character classes are supported.
+/// * `\x` escapes `x` to a literal.
+/// * **Every other character, including `{`, `}`, `,`, and a leading `!`, is a
+///   literal.** git `wildmatch` has neither `{a,b}` brace alternation nor leading-`!`
+///   negation.
 ///
 /// So `refs/heads/*` protects `refs/heads/main` and `refs/heads/dev` but **not**
-/// `refs/heads/release/1.0`; use `refs/heads/release/*` for one level of release
-/// branches or `refs/heads/**` to protect every branch including nested ones. This is a
-/// deliberate, ported-verbatim contract — see the doc-reconciliation note in the module
-/// implementation report; the earlier skeleton used `*`-matches-`/` (POSIX `fnmatch`
-/// without `FNM_PATHNAME`) semantics, and this module standardizes on the crate's
-/// git-`WM_PATHNAME` behavior instead.
+/// `refs/heads/release/1.0`; use `refs/heads/release/*` for one release level or
+/// `refs/heads/**` for every branch including nested ones.
+///
+/// ### Implementation note — neutralizing the backing crate's extensions
+///
+/// The engine is the [`glob_match`](glob_match::glob_match) crate, whose `*`/`**`/`?`/
+/// `[]`/`\` handling matches git `wildmatch`, **but which additionally implements
+/// `{a,b}` alternation and leading-`!` negation that git `wildmatch` does not have**.
+/// Left unchecked those are parity-critical: a `protectedPatterns` entry like
+/// `!refs/heads/temp/*` would *invert* the protection set (match everything else), and
+/// `refs/heads/{main,dev}` would silently alternate. [`neutralize_wildmatch`] escapes a
+/// leading run of `!` and every `{`/`}` before matching, so both are treated as the
+/// literals git `wildmatch` would use. Ported clients must apply the identical
+/// neutralization (or a true `wildmatch`).
+///
+/// This standardizes away from the original skeleton's `*`-matches-`/` (POSIX `fnmatch`
+/// without `FNM_PATHNAME`) semantics — flagged for doc reconciliation.
 #[must_use]
 pub fn matches_protected(ref_name: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|p| glob_match::glob_match(p, ref_name))
+    patterns
+        .iter()
+        .any(|p| glob_match::glob_match(&neutralize_wildmatch(p), ref_name))
+}
+
+/// Escape the two constructs the backing glob crate supports but git `wildmatch` does
+/// not — a leading run of `!` (negation) and every `{`/`}` (brace alternation) — so
+/// they are matched as literals. Preserves UTF-8 (ref names are UTF-8, data-contracts
+/// §0) and leaves `*`/`**`/`?`/`[]`/existing `\` escapes untouched.
+fn neutralize_wildmatch(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + 4);
+    let mut chars = pattern.chars().peekable();
+    // A leading run of `!` toggles negation in the crate; git wildmatch treats each as
+    // a literal.
+    while chars.peek() == Some(&'!') {
+        chars.next();
+        out.push('\\');
+        out.push('!');
+    }
+    for c in chars {
+        if c == '{' || c == '}' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ===========================================================================
@@ -1116,6 +1169,25 @@ mod tests {
             &["refs/heads/main".into(), "refs/tags/v*".into()]
         ));
         assert!(!matches_protected("refs/heads/main", &[]));
+
+        // A leading `!` is a LITERAL, not negation: it must not invert the set.
+        assert!(!matches_protected(
+            "refs/heads/main",
+            &["!refs/heads/temp/*".into()]
+        ));
+        assert!(matches_protected(
+            "!refs/heads/temp/x",
+            &["!refs/heads/temp/*".into()]
+        ));
+        // Braces are LITERAL, not alternation.
+        assert!(!matches_protected(
+            "refs/heads/main",
+            &["refs/heads/{main,dev}".into()]
+        ));
+        assert!(matches_protected(
+            "refs/heads/{main,dev}",
+            &["refs/heads/{main,dev}".into()]
+        ));
     }
 
     #[test]

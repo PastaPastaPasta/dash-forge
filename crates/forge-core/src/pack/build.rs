@@ -82,10 +82,12 @@ pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Resul
     }
     let mut revs = String::new();
     for t in want_tips {
+        ensure_safe_rev(t)?;
         revs.push_str(t);
         revs.push('\n');
     }
     for b in have_bases {
+        ensure_safe_rev(b)?;
         revs.push('^');
         revs.push_str(b);
         revs.push('\n');
@@ -167,6 +169,31 @@ pub fn repack_all(repo: &Path) -> Result<Pack> {
     Pack::from_files(&pack_path, &idx_path)
 }
 
+/// Reject a revision/ref string that git's CLI (or `--revs` stdin) could misparse.
+///
+/// `refName` is an arbitrary ≤255-char Platform string that never passed
+/// `git check-ref-format`, so a `refUpdate` can legally carry e.g. `-x` or `--all`.
+/// As an argv token that is an option; as a `pack-objects --revs` stdin line an
+/// embedded newline injects extra rev-list args. Legitimate OIDs are hex and refs may
+/// not begin with `-`, so this rejects: empty, a leading `-`, or any ASCII control
+/// character (including newline). Callers guard before the string reaches `Command`.
+pub(super) fn ensure_safe_rev(rev: &str) -> Result<()> {
+    if rev.is_empty() {
+        return Err(Error::Config("empty revision".into()));
+    }
+    if rev.starts_with('-') {
+        return Err(Error::Config(format!(
+            "unsafe revision {rev:?}: begins with '-' (would be read as a git option)"
+        )));
+    }
+    if rev.bytes().any(|b| b < 0x20) {
+        return Err(Error::Config(format!(
+            "unsafe revision {rev:?}: contains a control character"
+        )));
+    }
+    Ok(())
+}
+
 /// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success.
 pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
@@ -216,6 +243,13 @@ impl Scratch {
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("forge-pack-{}-{}", std::process::id(), nanos));
         fs::create_dir_all(&dir).map_err(|e| Error::Io(e.to_string()))?;
+        // Transient packfile bytes should not be world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| Error::Io(e.to_string()))?;
+        }
         Ok(Self { dir })
     }
 }

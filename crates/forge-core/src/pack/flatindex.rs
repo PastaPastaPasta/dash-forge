@@ -66,7 +66,14 @@ pub fn build(repo: &Path, tip: &str) -> Result<Vec<u8>> {
 impl FlatIndex {
     /// Enumerate a tip's recursive listing via `git ls-tree` and parse it.
     pub fn from_repo(repo: &Path, tip: &str) -> Result<Self> {
-        let out = git_capture(repo, &["ls-tree", "-r", "-t", "-l", "-z", tip], None)?;
+        super::build::ensure_safe_rev(tip)?;
+        // `--end-of-options` stops git treating a `-`-leading tree-ish as an option;
+        // `ensure_safe_rev` already rejects such input, but this is defense-in-depth.
+        let out = git_capture(
+            repo,
+            &["ls-tree", "-r", "-t", "-l", "-z", "--end-of-options", tip],
+            None,
+        )?;
         let tip_oid = resolve_oid(repo, tip)?;
         let mut entries = Vec::new();
         for rec in out.split(|&b| b == 0) {
@@ -236,7 +243,12 @@ fn parse_ls_tree_record(rec: &[u8]) -> Result<FlatEntry> {
 }
 
 fn resolve_oid(repo: &Path, rev: &str) -> Result<[u8; OID_LEN]> {
-    let out = git_capture(repo, &["rev-parse", rev], None)?;
+    super::build::ensure_safe_rev(rev)?;
+    let out = git_capture(
+        repo,
+        &["rev-parse", "--verify", "--end-of-options", rev],
+        None,
+    )?;
     let hexs = std::str::from_utf8(&out)
         .map_err(|_| Error::Config("rev-parse non-utf8".into()))?
         .trim();

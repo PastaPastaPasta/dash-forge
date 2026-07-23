@@ -46,11 +46,13 @@
     "state": "diverged",
     "heads": [
       {
+        "id": "u2",
         "oid": "B",
         "author": "bob",
         "createdAt": 200
       },
       {
+        "id": "u1",
         "oid": "A",
         "author": "alice",
         "createdAt": 100

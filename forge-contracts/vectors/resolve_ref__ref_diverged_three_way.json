@@ -1,6 +1,6 @@
 {
-  "name": "ref_diverged_ff_one_side_stays_diverged",
-  "description": "Fast-forwarding only one racing head leaves the other live: still Diverged.",
+  "name": "ref_diverged_three_way",
+  "description": "Three concurrent same-prevOid heads all stay live, ordered newest-first.",
   "case": "resolve_ref",
   "input": {
     "updates": [
@@ -41,34 +41,17 @@
         "id": "u3",
         "refNameHash": "H",
         "refName": "refs/heads/main",
-        "prevOid": "B",
+        "prevOid": "P0",
         "newOid": "C",
         "force": false,
         "protected": false,
-        "author": "bob",
+        "author": "carol",
         "createdAt": 300
       }
     ],
     "configHistory": [],
     "refNameHash": "H",
-    "ancestry": [
-      [
-        "B",
-        "C"
-      ],
-      [
-        "P0",
-        "A"
-      ],
-      [
-        "P0",
-        "B"
-      ],
-      [
-        "P0",
-        "C"
-      ]
-    ]
+    "ancestry": []
   },
   "expected": {
     "state": "diverged",
@@ -76,8 +59,14 @@
       {
         "id": "u3",
         "oid": "C",
-        "author": "bob",
+        "author": "carol",
         "createdAt": 300
+      },
+      {
+        "id": "u2",
+        "oid": "B",
+        "author": "bob",
+        "createdAt": 200
       },
       {
         "id": "u1",

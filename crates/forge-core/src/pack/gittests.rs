@@ -336,6 +336,99 @@ fn manifest_for_pack_has_mandatory_offset_index() {
     assert_eq!(m.chunk_count, chunk_count);
 }
 
+#[test]
+fn locator_build_rejects_non_self_contained_pack() {
+    // A push pack carries fix-thin'd REF_DELTA bases appended AFTER the objects that
+    // reference them (non-contiguous). Building an objectLocator from it would emit
+    // rows with a small deltaChainSpan that a remote reader would single-read and miss
+    // the base. `build` must refuse it — the wire format can never be produced with a
+    // misleading small span from a non-self-contained pack.
+    let repo = make_repo();
+    let p = repo.path();
+    let head = git_str(p, &["rev-parse", "HEAD~1"]);
+    let base = git_str(p, &["rev-parse", "HEAD~2"]);
+    let report = build_pack(p, &[&head], &[&base]).unwrap();
+    assert!(
+        report.pack.parsed.ref_delta_count() > 0,
+        "expected the push pack to carry REF_DELTA bases"
+    );
+    let err = ObjectLocator::build(&report.pack.parsed, 0).unwrap_err();
+    assert!(
+        format!("{err}").contains("self-contained repacked pack"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn span_read_refuses_non_contiguous_object_but_full_read_works() {
+    let repo = make_repo();
+    let p = repo.path();
+    let head = git_str(p, &["rev-parse", "HEAD~1"]);
+    let base = git_str(p, &["rev-parse", "HEAD~2"]);
+    let report = build_pack(p, &[&head], &[&base]).unwrap();
+
+    let obj = report
+        .pack
+        .parsed
+        .objects
+        .iter()
+        .find(|o| !o.contiguous)
+        .expect("push pack has a non-contiguous object")
+        .clone();
+
+    // The single-span read must refuse a non-contiguous object outright.
+    let err = report
+        .pack
+        .parsed
+        .reconstruct_from_span(&obj, &report.pack.bytes)
+        .unwrap_err();
+    assert!(format!("{err}").contains("not contiguous"), "{err}");
+
+    // But the REF-aware full-pack reconstruction still recovers it correctly,
+    // exercising decode_at's allow_ref path.
+    let (ty, bytes) = report.pack.parsed.object_bytes(&obj.oid).unwrap();
+    assert_eq!(super::parse::git_oid(ty, &bytes), obj.oid);
+}
+
+#[test]
+fn sha256_index_is_rejected_with_clear_error() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git_bytes(p, &["init", "-q", "--object-format=sha256"], None);
+    std::fs::write(p.join("f.txt"), b"hello sha256 world\n").unwrap();
+    git_bytes(p, &["add", "f.txt"], None);
+    git_bytes(p, &["commit", "-q", "-m", "c1"], None);
+
+    let pack_bytes = git_bytes(
+        p,
+        &["pack-objects", "--all", "--stdout", "--delta-base-offset"],
+        None,
+    );
+    let packp = p.join("s.pack");
+    std::fs::write(&packp, &pack_bytes).unwrap();
+    git_bytes(p, &["index-pack", &packp.to_string_lossy()], None);
+    let idx_bytes = std::fs::read(p.join("s.idx")).unwrap();
+
+    let err = super::parse::ParsedPack::parse(&pack_bytes, &idx_bytes).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("SHA-256") || msg.contains("SHA-1 v2 layout"),
+        "expected a SHA-256/layout rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn ref_arguments_starting_with_dash_are_rejected() {
+    let repo = make_repo();
+    let p = repo.path();
+    // An option-like want/have never reaches git's argv / rev-list stdin.
+    assert!(build_pack(p, &["--all"], &[]).is_err());
+    assert!(build_pack(p, &["HEAD"], &["-x"]).is_err());
+    // Same guard on the flatIndex tip.
+    assert!(super::flatindex::build(p, "-x").is_err());
+    assert!(super::flatindex::build(p, "--output=/etc/passwd").is_err());
+}
+
 /// The blob OID at a path in HEAD.
 fn repo_blob_oid(repo: &Path, path: &str) -> [u8; 20] {
     let hexs = git_str(repo, &["rev-parse", &format!("HEAD:{path}")]);

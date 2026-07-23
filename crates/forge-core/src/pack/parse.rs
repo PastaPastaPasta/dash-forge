@@ -113,6 +113,7 @@ impl PackObject {
 
 /// A fully parsed packfile: object geometry, the raw bytes (for reconstruction), and
 /// the SHA-256 `packHash` the manifest stores.
+#[derive(Debug)]
 pub struct ParsedPack {
     pack_bytes: Vec<u8>,
     /// SHA-256 of the entire packfile — the `packManifest.packHash`.
@@ -365,12 +366,38 @@ fn parse_idx_v2(idx: &[u8]) -> Result<(Vec<[u8; OID_LEN]>, Vec<u64>)> {
     let n = read_u32(idx, fanout_at + 255 * 4)? as usize;
 
     let oids_at = fanout_at + 256 * 4;
-    let need = oids_at + n * OID_LEN + n * 4 + n * 4;
-    if idx.len() < need + PACK_TRAILER + PACK_TRAILER {
-        // n rows of (crc + off32) plus the two 20-byte trailers must fit; a 32-byte
-        // id table would overrun here first, which is how a SHA-256 idx is caught.
+    let off32_at = oids_at + n * OID_LEN + n * 4; // after the oid + CRC tables
+    let big_at = off32_at + n * 4;
+
+    // The off32 table and both 20-byte trailers must fit under a SHA-1 layout before
+    // we can safely scan for large offsets.
+    if big_at + 2 * PACK_TRAILER > idx.len() {
         return Err(Error::Config(
-            "pack index too short (or SHA-256 index — unsupported in v1)".into(),
+            "pack index too short for its object count".into(),
+        ));
+    }
+
+    // Count large-offset entries, then require the SHA-1 layout to reconcile to the
+    // file length EXACTLY. A genuine SHA-256 index shares the magic + version 2 but
+    // has 32-byte object ids and trailers, so it is always longer than this and never
+    // reconciles — reject it with a clear message instead of misparsing downstream
+    // (the old length check could not distinguish it from a valid larger index).
+    let mut num_big = 0usize;
+    for i in 0..n {
+        if read_u32(idx, off32_at + i * 4)? & 0x8000_0000 != 0 {
+            num_big += 1;
+        }
+    }
+    let expected = 8
+        + 1024
+        + n as u64 * (OID_LEN as u64 + 4 + 4)
+        + num_big as u64 * 8
+        + 2 * PACK_TRAILER as u64;
+    if expected != idx.len() as u64 {
+        return Err(Error::Config(
+            "pack index length does not match a SHA-1 v2 layout \
+             (SHA-256 packs are unsupported in v1, or the index is corrupt)"
+                .into(),
         ));
     }
 
@@ -382,8 +409,6 @@ fn parse_idx_v2(idx: &[u8]) -> Result<(Vec<[u8; OID_LEN]>, Vec<u64>)> {
         oids.push(oid);
     }
 
-    let off32_at = oids_at + n * OID_LEN + n * 4; // skip CRC table
-    let big_at = off32_at + n * 4;
     let mut offsets = Vec::with_capacity(n);
     for i in 0..n {
         let v = read_u32(idx, off32_at + i * 4)?;
@@ -573,4 +598,90 @@ fn read_u64(buf: &[u8], at: usize) -> Result<u64> {
         .get(at..at + 8)
         .ok_or_else(|| Error::Config("index truncated (u64)".into()))?;
     Ok(u64::from_be_bytes(s.try_into().unwrap()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_delta, parse_idx_v2};
+
+    /// A minimal, well-formed SHA-1 v2 idx header for `n` objects (fanout says `n`,
+    /// tables + trailers are zero-filled). `n` must be small enough that no off32
+    /// entry has its MSB set (they are all zero here → 0 large offsets).
+    fn sha1_idx(n: u32) -> Vec<u8> {
+        let n_us = n as usize;
+        let len = 8 + 1024 + n_us * (20 + 4 + 4) + 2 * 20;
+        let mut idx = vec![0u8; len];
+        idx[0..4].copy_from_slice(b"\xfftOc");
+        idx[4..8].copy_from_slice(&2u32.to_be_bytes());
+        // Cumulative fanout: the last bucket carries the total object count.
+        idx[8 + 255 * 4..8 + 256 * 4].copy_from_slice(&n.to_be_bytes());
+        idx
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        let mut idx = sha1_idx(0);
+        idx[0] = 0;
+        assert!(parse_idx_v2(&idx).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_version() {
+        let mut idx = sha1_idx(0);
+        idx[4..8].copy_from_slice(&3u32.to_be_bytes());
+        assert!(parse_idx_v2(&idx).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_before_fanout() {
+        assert!(parse_idx_v2(&[0xff, b't', b'O', b'c']).is_err());
+    }
+
+    #[test]
+    fn empty_index_parses_to_zero_objects() {
+        let (oids, offs) = parse_idx_v2(&sha1_idx(0)).unwrap();
+        assert!(oids.is_empty() && offs.is_empty());
+    }
+
+    #[test]
+    fn well_formed_single_object_reconciles() {
+        let (oids, offs) = parse_idx_v2(&sha1_idx(1)).unwrap();
+        assert_eq!(oids.len(), 1);
+        assert_eq!(offs, vec![0]);
+    }
+
+    #[test]
+    fn rejects_length_mismatch_like_sha256() {
+        // Correct magic/version/fanout but the file is longer than a SHA-1 layout for
+        // n=1 — exactly how a genuine SHA-256 index (32-byte ids/trailers) presents.
+        let mut idx = sha1_idx(1);
+        idx.resize(idx.len() + 24, 0); // longer than the SHA-1 layout for n=1
+        let err = parse_idx_v2(&idx).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("SHA-1 v2 layout") || msg.contains("SHA-256"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_short_for_object_count() {
+        // Fanout claims 1000 objects but the file is header-sized only.
+        let mut idx = sha1_idx(0);
+        idx[8 + 255 * 4..8 + 256 * 4].copy_from_slice(&1000u32.to_be_bytes());
+        assert!(parse_idx_v2(&idx).is_err());
+    }
+
+    #[test]
+    fn apply_delta_copy_and_insert() {
+        let base = b"hello world";
+        // delta: src_size=11, dst_size=7, copy 5 from off 0 ("hello"), insert "!!"
+        let mut delta = vec![11u8, 7u8];
+        delta.push(0x80 | 0x01 | 0x10); // copy: offset byte + size byte present
+        delta.push(0); // copy offset = 0
+        delta.push(5); // copy size = 5
+        delta.push(2); // insert 2 literal bytes
+        delta.extend_from_slice(b"!!");
+        assert_eq!(apply_delta(base, &delta).unwrap(), b"hello!!");
+    }
 }

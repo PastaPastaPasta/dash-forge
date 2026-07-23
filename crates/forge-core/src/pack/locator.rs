@@ -33,6 +33,13 @@ pub const FANOUT_LEN: usize = 256 * 4;
 /// Above it, readers fall back to the per-base delta-chain walk.
 pub const SPAN_SINGLE_READ_THRESHOLD: u64 = 64 * 1024;
 
+/// Sentinel `deltaChainSpan` meaning "this object's chain is **not** a single
+/// contiguous range — never single-read it, walk each base via `deltaHint`". Encoded
+/// for any non-contiguous object so the wire format itself signals the hazard even to
+/// a reader that never saw the source pack. `u32::MAX` is safe as a real span too
+/// (any object that large already exceeds the single-read threshold).
+pub const SPAN_SENTINEL: u32 = u32::MAX;
+
 const OFF_PACKREF: usize = OID_LEN;
 const OFF_OFFSET: usize = OFF_PACKREF + 2;
 const OFF_LENGTH: usize = OFF_OFFSET + 5;
@@ -55,15 +62,18 @@ pub struct LocatorEntry {
 }
 
 impl LocatorEntry {
-    /// Whether a single contiguous span read is advised (span within threshold).
-    /// Blobs almost always qualify; deep-delta trees do not and take the per-base
-    /// walk keyed off [`Self::delta_depth`].
+    /// Whether a single contiguous span read is advised (span within threshold and
+    /// not the non-contiguous [`SPAN_SENTINEL`]). Blobs almost always qualify;
+    /// deep-delta trees and non-contiguous objects do not and take the per-base walk
+    /// keyed off [`Self::delta_depth`].
     pub fn single_read_advised(&self) -> bool {
-        u64::from(self.delta_chain_span) <= SPAN_SINGLE_READ_THRESHOLD
+        self.delta_chain_span != SPAN_SENTINEL
+            && u64::from(self.delta_chain_span) <= SPAN_SINGLE_READ_THRESHOLD
     }
 }
 
 /// A serialized `objectLocator`: `fanout(1024 B) || rows`.
+#[derive(Debug)]
 pub struct ObjectLocator {
     bytes: Vec<u8>,
     count: usize,
@@ -72,7 +82,27 @@ pub struct ObjectLocator {
 impl ObjectLocator {
     /// Build a locator over one pack's objects. `pack_ref` is the pack's position in
     /// the owning manifest's pack list.
+    ///
+    /// The pack **must be self-contained and repack-quality**: the single contiguous
+    /// `deltaChainSpan` read is only sound when every delta base sits earlier in the
+    /// same pack (the `repack -adf` invariant). A pack straight off the push path
+    /// carries `REF_DELTA` objects whose fix-thin'd bases were appended *after* them —
+    /// a reader would see a small span, single-read it, and miss the base. This errors
+    /// on any such pack rather than emit a locator that lies about read safety. Feed it
+    /// [`repack_all`](super::repack_all) output. As defense-in-depth, if a
+    /// non-contiguous object ever reaches serialization its span is written as
+    /// [`SPAN_SENTINEL`] so the wire format still self-signals the hazard.
     pub fn build(pack: &ParsedPack, pack_ref: u16) -> Result<Self> {
+        let refs = pack.ref_delta_count();
+        let noncontig = pack.objects.iter().filter(|o| !o.contiguous).count();
+        if refs > 0 || noncontig > 0 {
+            return Err(Error::Config(format!(
+                "objectLocator requires a self-contained repacked pack \
+                 (found {refs} REF_DELTA + {noncontig} non-contiguous objects); \
+                 build it from repack_all output"
+            )));
+        }
+
         let mut rows: Vec<&super::parse::PackObject> = pack.objects.iter().collect();
         rows.sort_by(|a, b| a.oid.cmp(&b.oid));
 
@@ -91,11 +121,18 @@ impl ObjectLocator {
             bytes.extend_from_slice(&f.to_be_bytes());
         }
         for o in &rows {
+            // Non-contiguous objects (unreachable given the guard above, but the wire
+            // format is defined to be safe on its own) carry the sentinel span.
+            let span = if o.contiguous {
+                sat_u32(o.delta_chain_span)
+            } else {
+                SPAN_SENTINEL
+            };
             bytes.extend_from_slice(&o.oid);
             bytes.extend_from_slice(&pack_ref.to_be_bytes());
             bytes.extend_from_slice(&u40_be(o.offset)?);
             bytes.extend_from_slice(&sat_u32(o.length).to_be_bytes());
-            bytes.extend_from_slice(&sat_u32(o.delta_chain_span).to_be_bytes());
+            bytes.extend_from_slice(&span.to_be_bytes());
             bytes.push(u8::try_from(o.delta_depth).unwrap_or(u8::MAX));
         }
         Ok(Self {

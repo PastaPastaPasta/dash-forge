@@ -35,7 +35,8 @@ mod gittests;
 pub use build::{build_pack, repack_all, BuildReport, Pack};
 pub use flatindex::{FlatEntry, FlatIndex, MODE_GITLINK};
 pub use locator::{
-    LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SINGLE_READ_THRESHOLD,
+    LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SENTINEL,
+    SPAN_SINGLE_READ_THRESHOLD,
 };
 pub use manifest::{
     plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_OBJECT_LOCATOR,
@@ -54,6 +55,12 @@ pub const ST_SIZE_LIMIT: usize = 20_480;
 
 /// Maximum raw payload a single chunk document can carry.
 pub const DOC_PAYLOAD_MAX: usize = FIELD_MAX * FIELDS_PER_DOC;
+
+/// Compile-time guarantee that a maximally packed chunk document leaves ≥ 5 KiB for
+/// CBOR/document/signature overhead inside a single state transition (mirrors the
+/// runtime `max_doc_payload_fits_st_with_headroom` test — this one can never regress
+/// silently because the crate would fail to compile).
+const _: () = assert!(DOC_PAYLOAD_MAX + 5_000 <= ST_SIZE_LIMIT);
 
 /// One `chunk` document's worth of pack bytes: a sequence number and up to
 /// [`FIELDS_PER_DOC`] fields, each at most [`FIELD_MAX`] bytes.

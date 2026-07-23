@@ -1,0 +1,12 @@
+{
+  "name": "glob_brace_literal_matches_literal",
+  "description": "The literal brace pattern matches a ref containing the literal braces.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/{main,dev}",
+    "patterns": [
+      "refs/heads/{main,dev}"
+    ]
+  },
+  "expected": true
+}

@@ -1,6 +1,6 @@
 {
-  "name": "ref_diverged_ff_one_side_stays_diverged",
-  "description": "Fast-forwarding only one racing head leaves the other live: still Diverged.",
+  "name": "ref_diverged_same_createdat_id_tiebreak",
+  "description": "Two heads racing in the same block order by $id: greatest $id is provisional tip.",
   "case": "resolve_ref",
   "input": {
     "updates": [
@@ -35,49 +35,21 @@
         "force": false,
         "protected": false,
         "author": "bob",
-        "createdAt": 200
-      },
-      {
-        "id": "u3",
-        "refNameHash": "H",
-        "refName": "refs/heads/main",
-        "prevOid": "B",
-        "newOid": "C",
-        "force": false,
-        "protected": false,
-        "author": "bob",
-        "createdAt": 300
+        "createdAt": 100
       }
     ],
     "configHistory": [],
     "refNameHash": "H",
-    "ancestry": [
-      [
-        "B",
-        "C"
-      ],
-      [
-        "P0",
-        "A"
-      ],
-      [
-        "P0",
-        "B"
-      ],
-      [
-        "P0",
-        "C"
-      ]
-    ]
+    "ancestry": []
   },
   "expected": {
     "state": "diverged",
     "heads": [
       {
-        "id": "u3",
-        "oid": "C",
+        "id": "u2",
+        "oid": "B",
         "author": "bob",
-        "createdAt": 300
+        "createdAt": 100
       },
       {
         "id": "u1",

@@ -113,11 +113,26 @@ impl PackManifest {
 
 /// Plan which prior manifests a freshly published artifact makes redundant.
 ///
-/// A repack (`new` is a consolidated kind-0 pack) subsumes every prior kind-0 pack;
-/// a republished browse artifact (kind 1/2) supersedes the prior artifacts of the
-/// same kind. Returns the `packHash`es to delete for storage refund (data-contracts
-/// §5.6). The new artifact never supersedes itself.
-pub fn plan_supersedes(existing: &[PackManifest], new: &PackManifest) -> Vec<String> {
+/// A **full repack** (`new` is a consolidated kind-0 pack covering all objects)
+/// subsumes every prior kind-0 pack; a republished browse artifact (kind 1/2) always
+/// supersedes the prior artifacts of the same kind. Returns the `packHash`es to delete
+/// for storage refund (data-contracts §5.6). The new artifact never supersedes itself.
+///
+/// `is_full_repack` is the load-bearing intent flag: only a caller holding a pack
+/// produced by [`repack_all`](super::repack_all) (which covers the whole object graph)
+/// may truthfully pass `true`. For a kind-0 pack from the **incremental push** path it
+/// must be `false` — an ordinary push subsumes nothing, and superseding prior packs
+/// would delete objects still uniquely held there and break the object graph. When
+/// `new` is a kind-0 pack and `is_full_repack` is `false`, this returns an empty plan.
+pub fn plan_supersedes(
+    existing: &[PackManifest],
+    new: &PackManifest,
+    is_full_repack: bool,
+) -> Vec<String> {
+    // An incremental (non-repack) git pack makes nothing redundant.
+    if new.kind == KIND_GIT_PACK && !is_full_repack {
+        return Vec::new();
+    }
     existing
         .iter()
         .filter(|m| m.kind == new.kind && m.pack_hash != new.pack_hash)
@@ -160,23 +175,43 @@ mod tests {
     }
 
     #[test]
-    fn supersedes_prior_same_kind_only() {
+    fn full_repack_supersedes_prior_packs() {
         let existing = vec![
             manifest(KIND_GIT_PACK, "aa"),
             manifest(KIND_GIT_PACK, "bb"),
             manifest(KIND_OBJECT_LOCATOR, "cc"),
         ];
         let new = manifest(KIND_GIT_PACK, "zz");
-        let mut got = plan_supersedes(&existing, &new);
+        let mut got = plan_supersedes(&existing, &new, true);
         got.sort();
         assert_eq!(got, vec!["aa".to_string(), "bb".to_string()]);
+    }
+
+    #[test]
+    fn incremental_push_supersedes_nothing() {
+        // The dangerous case: a kind-0 pack that is NOT a full repack must never
+        // supersede prior packs (that would delete objects only they hold).
+        let existing = vec![manifest(KIND_GIT_PACK, "aa"), manifest(KIND_GIT_PACK, "bb")];
+        let new = manifest(KIND_GIT_PACK, "zz");
+        assert!(plan_supersedes(&existing, &new, false).is_empty());
+    }
+
+    #[test]
+    fn republished_browse_artifact_supersedes_regardless_of_repack_flag() {
+        let existing = vec![manifest(KIND_OBJECT_LOCATOR, "aa")];
+        let new = manifest(KIND_OBJECT_LOCATOR, "zz");
+        // Browse-artifact republish is superseding even without a repack.
+        assert_eq!(
+            plan_supersedes(&existing, &new, false),
+            vec!["aa".to_string()]
+        );
     }
 
     #[test]
     fn does_not_supersede_itself() {
         let existing = vec![manifest(KIND_FLAT_INDEX, "aa")];
         let new = manifest(KIND_FLAT_INDEX, "aa");
-        assert!(plan_supersedes(&existing, &new).is_empty());
+        assert!(plan_supersedes(&existing, &new, true).is_empty());
     }
 
     #[test]
