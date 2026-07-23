@@ -43,6 +43,7 @@ export {
   type ResolvedRef,
 } from './refs'
 export {
+  liveGitPackManifests,
   readNewestFlatIndexManifest,
   readNewestLocatorManifest,
   readNewestManifestOfKind,
