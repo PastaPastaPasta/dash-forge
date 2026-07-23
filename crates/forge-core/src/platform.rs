@@ -1320,8 +1320,16 @@ pub enum FieldValue {
     /// A 32-byte identifier field (a byteArray with the identifier content-media-type,
     /// e.g. `repoContractId`, `forkOf`, `targetId`). Encoded as `Value::Identifier`.
     Identifier([u8; 32]),
-    /// An unsigned integer field.
+    /// An unsigned integer field. Serialized at its **minimal** CBOR width (`0` → `U8`),
+    /// which matches how Drive canonicalizes a top-level typed `I64` field (coerced from any
+    /// width) and a *bounded* nested integer.
     Integer(u64),
+    /// A **full-width** `u64` integer field, always serialized as `Value::U64`. Required for
+    /// a nested-object integer whose schema property is *unbounded* (no `maximum`): rs-dpp
+    /// stores such a property as `I64`/`U64`, but a nested value bypasses typed coercion, so
+    /// a minimal-width encoding (e.g. `U32`) mismatches Drive's stored width and fails proof
+    /// verification. `imported.createdAt` is the case in point (data-contracts §2.4).
+    Uint64(u64),
     /// A UTF-8 string field (e.g. `defaultBranch`, `normalizedName`).
     Text(String),
     /// A boolean field (e.g. `force`, `archived`).
@@ -1346,9 +1354,15 @@ impl FieldValue {
         FieldValue::Identifier(bytes)
     }
 
-    /// An unsigned-integer field.
+    /// An unsigned-integer field (minimal CBOR width).
     pub fn integer(n: u64) -> Self {
         FieldValue::Integer(n)
+    }
+
+    /// A full-width `u64` field ([`FieldValue::Uint64`]) — use for an unbounded nested-object
+    /// integer that Drive stores as `U64`.
+    pub fn uint64(n: u64) -> Self {
+        FieldValue::Uint64(n)
     }
 
     /// A UTF-8 string field.
@@ -1370,10 +1384,10 @@ impl FieldValue {
         }
     }
 
-    /// The unsigned value of an `Integer` field, if this is one.
+    /// The unsigned value of an `Integer`/`Uint64` field, if this is one.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
-            FieldValue::Integer(n) => Some(*n),
+            FieldValue::Integer(n) | FieldValue::Uint64(n) => Some(*n),
             _ => None,
         }
     }
@@ -1400,6 +1414,8 @@ impl FieldValue {
             // one we signed. Emitting the minimal-width uint matches that canonical form in
             // both cases and keeps the proof check happy.
             FieldValue::Integer(n) => minimal_uint(n),
+            // Full-width u64 for an unbounded nested integer (matches Drive's stored width).
+            FieldValue::Uint64(n) => Value::U64(n),
             FieldValue::Text(s) => Value::Text(s),
             FieldValue::Bool(b) => Value::Bool(b),
             FieldValue::Object(map) => Value::Map(

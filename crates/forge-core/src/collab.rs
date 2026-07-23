@@ -71,6 +71,52 @@ fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
     Ok(())
 }
 
+/// Importer provenance (the `imported` object on `issue` / `patch` / `comment` / `review`
+/// documents, data-contracts §2.3): the original author login, the original creation time
+/// (unix seconds), and the source URL. Recorded because Platform `$createdAt` is consensus
+/// time, not the original artifact's time — clients render this provenance for migrated
+/// docs and (via the gist-claim flow, PRD 06) can later attribute a placeholder `author`
+/// login to a real Dash identity.
+#[derive(Debug, Clone, Default)]
+pub struct Imported {
+    /// Original author handle (e.g. a GitHub login), ≤ 120 chars.
+    pub author: String,
+    /// Original creation time, unix seconds.
+    pub created_at: u64,
+    /// Source URL of the original artifact, ≤ 300 chars.
+    pub url: String,
+}
+
+impl Imported {
+    /// Build the nested `imported` object field, validating the string lengths.
+    fn to_field(&self) -> Result<FieldValue> {
+        check_len("imported author", &self.author, 120)?;
+        check_len("imported url", &self.url, 300)?;
+        let mut map = BTreeMap::new();
+        if !self.author.is_empty() {
+            map.insert("author".to_string(), FieldValue::text(&self.author));
+        }
+        // Full-width u64: `createdAt` is an unbounded nested-object integer that Drive stores
+        // as U64; a minimal-width encoding fails proof verification (see FieldValue::Uint64).
+        map.insert("createdAt".to_string(), FieldValue::uint64(self.created_at));
+        if !self.url.is_empty() {
+            map.insert("url".to_string(), FieldValue::text(&self.url));
+        }
+        Ok(FieldValue::Object(map))
+    }
+}
+
+/// Insert the `imported` provenance object into `props` when present (no-op for `None`).
+fn insert_imported(
+    props: &mut BTreeMap<String, FieldValue>,
+    imported: Option<&Imported>,
+) -> Result<()> {
+    if let Some(i) = imported {
+        props.insert("imported".to_string(), i.to_field()?);
+    }
+    Ok(())
+}
+
 /// Map a [`crate::rules::EventKind`] to its stored numeric `kind` (data-contracts §2.3).
 fn event_kind_to_u64(kind: EventKind) -> u64 {
     match kind {
@@ -214,6 +260,20 @@ impl<'a> IssueService<'a> {
         title: &str,
         body: &str,
     ) -> Result<Issue> {
+        self.create_issue_imported(repo_contract_id, title, body, None)
+            .await
+    }
+
+    /// Create an issue carrying importer [`Imported`] provenance (PRD 06). Identical to
+    /// [`IssueService::create_issue`] but records the original author / creation time / URL
+    /// in the doc's `imported` object. `imported = None` is exactly [`create_issue`].
+    pub async fn create_issue_imported(
+        &self,
+        repo_contract_id: &str,
+        title: &str,
+        body: &str,
+        imported: Option<&Imported>,
+    ) -> Result<Issue> {
         check_len("issue title", title, 256)?;
         check_len("issue body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
@@ -227,6 +287,7 @@ impl<'a> IssueService<'a> {
             if !body.is_empty() {
                 props.insert("body".to_string(), FieldValue::text(body));
             }
+            insert_imported(&mut props, imported)?;
             match engine.create_document(&contract, DOC_ISSUE, props).await {
                 Ok(document_id) => {
                     return Ok(Issue {
@@ -322,11 +383,26 @@ impl<'a> IssueService<'a> {
         body: &str,
         anchor: Option<&CommentAnchor>,
     ) -> Result<String> {
+        self.comment_imported(repo_contract_id, target_id, body, anchor, None)
+            .await
+    }
+
+    /// Post a comment carrying importer [`Imported`] provenance (PRD 06). `imported = None`
+    /// is exactly [`IssueService::comment`].
+    pub async fn comment_imported(
+        &self,
+        repo_contract_id: &str,
+        target_id: &str,
+        body: &str,
+        anchor: Option<&CommentAnchor>,
+        imported: Option<&Imported>,
+    ) -> Result<String> {
         check_len("comment body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
 
         let mut props = BTreeMap::new();
+        insert_imported(&mut props, imported)?;
         props.insert(
             "targetId".to_string(),
             FieldValue::identifier(platform::decode_identifier(target_id)?),
@@ -598,6 +674,18 @@ impl<'a> PullRequestService<'a> {
         repo_contract_id: &str,
         input: &PullRequestInput,
     ) -> Result<PullRequest> {
+        self.create_pr_imported(repo_contract_id, input, None).await
+    }
+
+    /// Create a `patch` (PR) carrying importer [`Imported`] provenance (PRD 06). This is the
+    /// path forge-import uses for both open PRs and closed-PR archived metadata (title/diff/
+    /// state, not full packs — §06). `imported = None` is exactly [`create_pr`].
+    pub async fn create_pr_imported(
+        &self,
+        repo_contract_id: &str,
+        input: &PullRequestInput,
+        imported: Option<&Imported>,
+    ) -> Result<PullRequest> {
         check_len("PR title", &input.title, 256)?;
         check_len("PR body", &input.body, 5120)?;
         // Injection defense (write-side, mirrors repo.rs's refUpdate guard): base/source
@@ -667,6 +755,7 @@ impl<'a> PullRequestService<'a> {
                     FieldValue::bytes32(manifest),
                 );
             }
+            insert_imported(&mut props, imported)?;
 
             match engine.create_document(&contract, DOC_PATCH, props).await {
                 Ok(document_id) => {
@@ -833,10 +922,26 @@ impl<'a> PullRequestService<'a> {
         commit_oid: &[u8],
         body: &str,
     ) -> Result<String> {
+        self.review_imported(repo_contract_id, patch_id, verdict, commit_oid, body, None)
+            .await
+    }
+
+    /// Post a `review` verdict carrying importer [`Imported`] provenance (PRD 06).
+    /// `imported = None` is exactly [`PullRequestService::review`].
+    pub async fn review_imported(
+        &self,
+        repo_contract_id: &str,
+        patch_id: &str,
+        verdict: u64,
+        commit_oid: &[u8],
+        body: &str,
+        imported: Option<&Imported>,
+    ) -> Result<String> {
         check_len("review body", body, 5120)?;
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
+        insert_imported(&mut props, imported)?;
         props.insert(
             "patchId".to_string(),
             FieldValue::identifier(platform::decode_identifier(patch_id)?),
@@ -1491,5 +1596,50 @@ mod tests {
         }
         assert_eq!(u64_to_event_kind(0), None);
         assert_eq!(u64_to_event_kind(11), None);
+    }
+
+    #[test]
+    fn imported_builds_nested_object_field() {
+        use super::Imported;
+        use crate::platform::FieldValue;
+
+        let imp = Imported {
+            author: "octocat".to_string(),
+            created_at: 1_577_934_245,
+            url: "https://github.com/o/r/issues/1".to_string(),
+        };
+        let FieldValue::Object(map) = imp.to_field().unwrap() else {
+            panic!("imported must serialize to a nested object");
+        };
+        assert_eq!(
+            map.get("author").and_then(FieldValue::as_str),
+            Some("octocat")
+        );
+        assert_eq!(
+            map.get("createdAt").and_then(FieldValue::as_u64),
+            Some(1_577_934_245)
+        );
+        assert!(map.contains_key("url"));
+
+        // Empty author/url are omitted; createdAt always present.
+        let bare = Imported {
+            author: String::new(),
+            created_at: 42,
+            url: String::new(),
+        };
+        let FieldValue::Object(map) = bare.to_field().unwrap() else {
+            panic!("object");
+        };
+        assert!(!map.contains_key("author"));
+        assert!(!map.contains_key("url"));
+        assert_eq!(map.get("createdAt").and_then(FieldValue::as_u64), Some(42));
+
+        // Over-length author is rejected up front (before any broadcast).
+        let too_long = Imported {
+            author: "x".repeat(121),
+            created_at: 1,
+            url: String::new(),
+        };
+        assert!(too_long.to_field().is_err());
     }
 }
