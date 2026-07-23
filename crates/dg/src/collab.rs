@@ -14,6 +14,9 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
     match cmd {
         CollabCommand::Add { repo, member, role } => add(ctx, repo, member, *role).await,
         CollabCommand::Suspend { repo, member, role } => suspend(ctx, repo, member, *role).await,
+        CollabCommand::Unsuspend { repo, member, role } => {
+            unsuspend(ctx, repo, member, *role).await
+        }
         CollabCommand::Remove { repo, member, role } => remove(ctx, repo, member, *role).await,
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
@@ -57,6 +60,27 @@ async fn suspend(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<(
     ctx.emit(
         json!({ "status": "suspended", "member": member, "role": format!("{role:?}").to_lowercase() }),
         || println!("Suspended {role:?} for {member} (token frozen)."),
+    );
+    Ok(())
+}
+
+async fn unsuspend(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
+    let repo_ref = RepoRef::parse(repo)?;
+    if !ctx.confirm(&format!(
+        "Unsuspend {role:?} for {member}? (thaws the token)"
+    ))? {
+        bail!("aborted");
+    }
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let svc = TokenService::new(&client, &identity, &bridge);
+    svc.unsuspend(&handle.repo_contract_id, member, role.to_core())
+        .await
+        .context("unsuspend")?;
+
+    ctx.emit(
+        json!({ "status": "unsuspended", "member": member, "role": format!("{role:?}").to_lowercase() }),
+        || println!("Unsuspended {role:?} for {member} (token thawed)."),
     );
     Ok(())
 }

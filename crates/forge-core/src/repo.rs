@@ -280,17 +280,13 @@ impl<'a> RepoService<'a> {
 
         let mut template: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE)
             .map_err(|e| Error::Config(format!("parsing repo-v1 template: {e}")))?;
-        // The committed template models an *org* repo: token admin rules point at
-        // `MainGroup` (group 0) with a single placeholder member. Platform rejects a
-        // one-member group (`GroupHasTooFewMembersError`, ≥2 required), and a solo owner
-        // has no second principal — so instantiate the solo-owner shape: token admin →
-        // `ContractOwner`, group dropped (S0.7's validated single-owner token contract).
+        // The committed `repo-v1.json` source is already the solo-owner, contiguous-position
+        // shape these two patches produce, so both are idempotent no-ops on it. They are kept
+        // as backward-compat safety nets: an org-shaped or globally-numbered template (an
+        // older on-disk source, or a future org variant) is still coerced to the deployable
+        // solo-owner shape rather than failing the DataContractCreate. See
+        // `apply_solo_owner_token_rules` / `normalize_document_positions` for the rules.
         apply_solo_owner_token_rules(&mut template);
-        // The template numbers `position` globally (nested `imported`/`backend` children
-        // consume positions in the parent's sequence), leaving each doc type's *top-level*
-        // positions non-contiguous — which native rs-dpp rejects
-        // (`MissingPositionsInDocumentTypePropertiesError`: top-level positions must run
-        // 0..N with no gaps). Renumber every object level to local-contiguous positions.
         normalize_document_positions(&mut template);
 
         // 1. Publish the token-bearing contract (CRITICAL key). This is the headline cost.
@@ -1600,20 +1596,52 @@ mod tests {
     #[test]
     fn solo_owner_transform_drops_group_and_repoints_rules() {
         use super::apply_solo_owner_token_rules;
-        let mut t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
-        // The committed template targets an org group.
-        assert!(t.get("groups").is_some());
-        let raw = serde_json::to_string(&t).unwrap();
-        assert!(raw.contains("MainGroup"));
+        // A synthetic *org*-shaped contract (a control group holds mint/freeze). The
+        // committed source is already solo-owner, so the transform is exercised on the
+        // org shape it exists to coerce (an older on-disk source, or a future org variant).
+        let mut t = serde_json::json!({
+            "groups": { "0": { "members": { "aaa": 1 }, "requiredPower": 1 } },
+            "tokens": {
+                "0": {
+                    "manualMintingRules": {
+                        "authorizedToMakeChange": "MainGroup",
+                        "adminActionTakers": "MainGroup"
+                    },
+                    "mainControlGroup": 0
+                }
+            }
+        });
+        assert!(serde_json::to_string(&t).unwrap().contains("MainGroup"));
 
         apply_solo_owner_token_rules(&mut t);
 
         // Group dropped; no MainGroup rule survives; every mainControlGroup nulled.
         assert!(t.get("groups").is_none());
-        let out = serde_json::to_string(&t).unwrap();
         assert!(
-            !out.contains("MainGroup"),
+            !serde_json::to_string(&t).unwrap().contains("MainGroup"),
             "no MainGroup rule should remain"
+        );
+        for token in t.get("tokens").unwrap().as_object().unwrap().values() {
+            assert!(token.get("mainControlGroup").unwrap().is_null());
+        }
+    }
+
+    #[test]
+    fn committed_template_is_already_solo_owner_and_transform_is_noop() {
+        use super::apply_solo_owner_token_rules;
+        // The committed source has been reconciled to the deployable solo-owner shape, so
+        // the runtime patch is an idempotent no-op safety net (see `create_repo`).
+        let mut t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
+        assert!(t.get("groups").is_none(), "source must have no group");
+        assert!(
+            !serde_json::to_string(&t).unwrap().contains("MainGroup"),
+            "source must carry no MainGroup rule"
+        );
+        let before = t.clone();
+        apply_solo_owner_token_rules(&mut t);
+        assert_eq!(
+            t, before,
+            "transform must be a no-op on the already-solo source"
         );
         for token in t.get("tokens").unwrap().as_object().unwrap().values() {
             assert!(token.get("mainControlGroup").unwrap().is_null());

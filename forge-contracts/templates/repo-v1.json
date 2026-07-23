@@ -31,14 +31,14 @@
           "properties": {
             "mode": {
               "type": "integer",
-              "position": 2,
+              "position": 0,
               "minimum": 0,
               "maximum": 4
             },
             "uris": {
               "type": "string",
               "maxLength": 1300,
-              "position": 3,
+              "position": 1,
               "description": "JSON-encoded array (D1: v1 meta-schema forbids non-byteArray arrays)"
             }
           },
@@ -46,11 +46,11 @@
             "mode"
           ],
           "additionalProperties": false,
-          "position": 4
+          "position": 2
         },
         "archived": {
           "type": "boolean",
-          "position": 5
+          "position": 3
         }
       },
       "indices": [
@@ -493,22 +493,22 @@
             "author": {
               "type": "string",
               "maxLength": 120,
-              "position": 3
+              "position": 0
             },
             "createdAt": {
               "type": "integer",
-              "position": 4,
+              "position": 1,
               "minimum": 0
             },
             "url": {
               "type": "string",
               "maxLength": 300,
-              "position": 5
+              "position": 2
             }
           },
           "required": [],
           "additionalProperties": false,
-          "position": 6
+          "position": 3
         }
       },
       "indices": [
@@ -627,22 +627,22 @@
             "author": {
               "type": "string",
               "maxLength": 120,
-              "position": 11
+              "position": 0
             },
             "createdAt": {
               "type": "integer",
-              "position": 12,
+              "position": 1,
               "minimum": 0
             },
             "url": {
               "type": "string",
               "maxLength": 300,
-              "position": 13
+              "position": 2
             }
           },
           "required": [],
           "additionalProperties": false,
-          "position": 14
+          "position": 11
         }
       },
       "indices": [
@@ -735,22 +735,22 @@
             "author": {
               "type": "string",
               "maxLength": 120,
-              "position": 7
+              "position": 0
             },
             "createdAt": {
               "type": "integer",
-              "position": 8,
+              "position": 1,
               "minimum": 0
             },
             "url": {
               "type": "string",
               "maxLength": 300,
-              "position": 9
+              "position": 2
             }
           },
           "required": [],
           "additionalProperties": false,
-          "position": 10
+          "position": 7
         }
       },
       "indices": [
@@ -868,22 +868,22 @@
             "author": {
               "type": "string",
               "maxLength": 120,
-              "position": 4
+              "position": 0
             },
             "createdAt": {
               "type": "integer",
-              "position": 5,
+              "position": 1,
               "minimum": 0
             },
             "url": {
               "type": "string",
               "maxLength": 300,
-              "position": 6
+              "position": 2
             }
           },
           "required": [],
           "additionalProperties": false,
-          "position": 7
+          "position": 4
         }
       },
       "indices": [
@@ -1171,15 +1171,6 @@
       "additionalProperties": false
     }
   },
-  "groups": {
-    "0": {
-      "$formatVersion": "0",
-      "members": {
-        "11111111111111111111111111111111": 1
-      },
-      "requiredPower": 1
-    }
-  },
   "tokens": {
     "0": {
       "$formatVersion": "0",
@@ -1277,53 +1268,53 @@
       },
       "manualMintingRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "manualBurningRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "freezeRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "unfreezeRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "destroyFrozenFundsRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "emergencyActionRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
-      "mainControlGroup": 0,
+      "mainControlGroup": null,
       "mainControlGroupCanBeModified": "ContractOwner",
       "description": null
     },
@@ -1423,53 +1414,53 @@
       },
       "manualMintingRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "manualBurningRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "freezeRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "unfreezeRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "destroyFrozenFundsRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
       "emergencyActionRules": {
         "$formatVersion": "0",
-        "authorizedToMakeChange": "MainGroup",
-        "adminActionTakers": "MainGroup",
+        "authorizedToMakeChange": "ContractOwner",
+        "adminActionTakers": "ContractOwner",
         "changingAuthorizedActionTakersToNoOneAllowed": false,
         "changingAdminActionTakersToNoOneAllowed": false,
         "selfChangingAdminActionTakersAllowed": false
       },
-      "mainControlGroup": 0,
+      "mainControlGroup": null,
       "mainControlGroupCanBeModified": "ContractOwner",
       "description": null
     }

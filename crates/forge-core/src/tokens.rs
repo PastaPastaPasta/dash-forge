@@ -53,6 +53,15 @@ const TH_FREEZE: &str = "freeze";
 const TH_UNFREEZE: &str = "unfreeze";
 const TH_DESTROY: &str = "destroyFrozenFunds";
 
+/// Max post-broadcast verify re-reads before concluding a freeze/unfreeze/destroy did not
+/// take. Platform reads are eventually consistent, so the status query *immediately* after
+/// a broadcast can still reflect the pre-write state (S0.7 read-after-write lag); the write
+/// itself has already landed, so this only bounds how long we wait for the read to catch up
+/// before reporting the real state. Mirrors `git-remote-dash`'s post-push convergence poll.
+const VERIFY_MAX_ATTEMPTS: usize = 6;
+/// Delay between verify re-reads (`VERIFY_MAX_ATTEMPTS` × this ≈ a few seconds total).
+const VERIFY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(700);
+
 /// A collaborator role, mapped to its token position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -203,7 +212,10 @@ impl<'a> TokenService<'a> {
             .token_freeze(&contract, self.identity, key, role.position(), member_id)
             .await?;
 
-        if !self.frozen_of(&token, member_id).await? {
+        // Verify via a bounded poll — the freeze broadcast has landed, but the frozen-status
+        // read can lag (eventual consistency), so re-query a few times before concluding it
+        // did not take.
+        if !self.poll_frozen(&token, member_id, true).await? {
             return Err(Error::Platform(
                 "suspend broadcast but the member's token is not frozen".into(),
             ));
@@ -227,7 +239,10 @@ impl<'a> TokenService<'a> {
             .token_unfreeze(&contract, self.identity, key, role.position(), member_id)
             .await?;
 
-        if self.frozen_of(&token, member_id).await? {
+        // Verify via a bounded poll — the unfreeze has landed, but the frozen-status read can
+        // lag (eventual consistency), so re-query a few times before concluding it did not
+        // take.
+        if self.poll_frozen(&token, member_id, false).await? {
             return Err(Error::Platform(
                 "unsuspend broadcast but the member's token is still frozen".into(),
             ));
@@ -252,7 +267,9 @@ impl<'a> TokenService<'a> {
             .token_destroy_frozen(&contract, self.identity, key, role.position(), member_id)
             .await?;
 
-        if self.balance_of(&token, member_id).await? != 0 {
+        // Verify via a bounded poll — the destroy has landed, but the balance read can lag
+        // (eventual consistency), so re-query a few times before concluding it did not take.
+        if self.poll_balance_zero(&token, member_id).await? != 0 {
             return Err(Error::Platform(
                 "revoke broadcast but the member's balance is not zero".into(),
             ));
@@ -454,6 +471,40 @@ impl<'a> TokenService<'a> {
             .token_frozen(token_id_b58, &[identity.to_string()])
             .await?;
         Ok(frozen.get(identity).copied().unwrap_or(false))
+    }
+
+    /// Re-read frozen status until it reaches `expected` or the retry budget is spent,
+    /// tolerating read-after-write lag. Returns the last observed value (which the caller
+    /// compares against `expected` to decide success/failure).
+    async fn poll_frozen(
+        &self,
+        token_id_b58: &str,
+        identity: &str,
+        expected: bool,
+    ) -> Result<bool> {
+        let mut frozen = self.frozen_of(token_id_b58, identity).await?;
+        for attempt in 1..=VERIFY_MAX_ATTEMPTS {
+            if frozen == expected || attempt == VERIFY_MAX_ATTEMPTS {
+                break;
+            }
+            tokio::time::sleep(VERIFY_RETRY_DELAY).await;
+            frozen = self.frozen_of(token_id_b58, identity).await?;
+        }
+        Ok(frozen)
+    }
+
+    /// Re-read balance until it reaches zero or the retry budget is spent, tolerating
+    /// read-after-write lag. Returns the last observed balance.
+    async fn poll_balance_zero(&self, token_id_b58: &str, identity: &str) -> Result<u64> {
+        let mut bal = self.balance_of(token_id_b58, identity).await?;
+        for attempt in 1..=VERIFY_MAX_ATTEMPTS {
+            if bal == 0 || attempt == VERIFY_MAX_ATTEMPTS {
+                break;
+            }
+            tokio::time::sleep(VERIFY_RETRY_DELAY).await;
+            bal = self.balance_of(token_id_b58, identity).await?;
+        }
+        Ok(bal)
     }
 }
 

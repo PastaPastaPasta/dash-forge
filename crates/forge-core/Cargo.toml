@@ -27,6 +27,9 @@ glob-match = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "multipart"] }
 async-trait = "0.1"
 futures = "0.3"
+# `time` only — the bounded read-after-write verify polls (tokens.rs) sleep between
+# re-reads on the caller's tokio runtime (the SDK's broadcast_and_wait already needs one).
+tokio = { workspace = true, features = ["time"] }
 
 # Dash Platform SDK — confined to `forge-core::platform` per style-guide §B.
 dash-sdk.workspace = true

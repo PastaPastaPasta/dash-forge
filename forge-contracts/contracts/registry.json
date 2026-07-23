@@ -82,6 +82,15 @@
           ],
           "nullSearchable": false,
           "countable": "countable"
+        },
+        {
+          "name": "recent",
+          "properties": [
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "countable": "countable"
         }
       ],
       "required": [
@@ -179,6 +188,15 @@
               "$createdAt": "asc"
             }
           ]
+        },
+        {
+          "name": "listingCount",
+          "properties": [
+            {
+              "listingId": "asc"
+            }
+          ],
+          "countable": "countable"
         }
       ],
       "required": [
@@ -232,6 +250,15 @@
             },
             {
               "$createdAt": "asc"
+            }
+          ],
+          "countable": "countable"
+        },
+        {
+          "name": "identityCount",
+          "properties": [
+            {
+              "identityId": "asc"
             }
           ],
           "countable": "countable"

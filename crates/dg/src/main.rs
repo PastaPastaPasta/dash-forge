@@ -391,6 +391,16 @@ pub enum CollabCommand {
         #[arg(long, value_enum, default_value = "write")]
         role: RoleArg,
     },
+    /// Unsuspend a collaborator (thaw frozen tokens).
+    Unsuspend {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The collaborator identity id (base58).
+        member: String,
+        /// The role to unsuspend.
+        #[arg(long, value_enum, default_value = "write")]
+        role: RoleArg,
+    },
     /// Remove a collaborator (freeze + destroy).
     Remove {
         /// The repository (`owner/name`).
@@ -679,6 +689,19 @@ mod tests {
                 assert!(matches!(role, RoleArg::Maintain));
             }
             _ => panic!("expected collab add"),
+        }
+    }
+
+    #[test]
+    fn parses_collab_unsuspend() {
+        let cli = Cli::parse_from(["dg", "collab", "unsuspend", "o/r", "member123"]);
+        match cli.command {
+            Command::Collab(CollabCommand::Unsuspend { repo, member, role }) => {
+                assert_eq!(repo, "o/r");
+                assert_eq!(member, "member123");
+                assert!(matches!(role, RoleArg::Write)); // default role
+            }
+            _ => panic!("expected collab unsuspend"),
         }
     }
 
