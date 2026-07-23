@@ -69,6 +69,26 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
     CostEstimate { deposit, burn }
 }
 
+/// Estimate the split `{deposit, burn}` cost of writing a single `bytes`-byte
+/// document. Convenience alias for [`estimate_document_storage`] matching the
+/// `CostEngine::estimate` name used in the PRDs and `economics.md` §2.
+pub fn estimate(bytes: u64) -> CostEstimate {
+    estimate_document_storage(bytes)
+}
+
+/// Upper-bound refund recoverable by deleting a `bytes`-byte document *promptly*
+/// after writing it (economics.md §3).
+///
+/// The 27,000-credits/byte storage deposit is spread across 2,000 epochs; on delete,
+/// every not-yet-elapsed epoch share is refunded to the document owner. Deleting
+/// within the same epoch recovers essentially the whole deposit (bar rounding
+/// leftovers). Processing burn is never refunded. This returns the deposit as the
+/// prompt-delete upper bound — the observed on-chain refund is slightly lower by the
+/// elapsed-epoch share plus rounding, which is why the live test asserts a *range*.
+pub fn prompt_delete_refund(bytes: u64) -> u64 {
+    estimate_document_storage(bytes).deposit
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -115,5 +135,21 @@ mod tests {
     fn total_is_deposit_plus_burn() {
         let est = estimate_document_storage(4096);
         assert_eq!(est.total(), est.deposit + est.burn);
+    }
+
+    #[test]
+    fn estimate_alias_matches_full_name() {
+        assert_eq!(super::estimate(4096), estimate_document_storage(4096));
+    }
+
+    #[test]
+    fn prompt_delete_refund_is_the_deposit() {
+        // Prompt deletion recovers the refundable storage deposit (upper bound);
+        // the non-refundable burn is never returned.
+        let bytes = 15_000;
+        assert_eq!(
+            super::prompt_delete_refund(bytes),
+            estimate_document_storage(bytes).deposit
+        );
     }
 }

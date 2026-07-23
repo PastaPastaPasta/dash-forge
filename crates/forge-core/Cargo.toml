@@ -13,5 +13,14 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
+# Dash Platform SDK — confined to `forge-core::platform` per style-guide §B.
+dash-sdk.workspace = true
+dapi-grpc.workspace = true
+rs-sdk-trusted-context-provider.workspace = true
+simple-signer.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
 [lints]
 workspace = true

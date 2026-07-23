@@ -2,8 +2,8 @@
 //!
 //! Module map (mirrors `docs/design/style-guide.md` §B repo layout):
 //!
-//! - [`platform`] — `PlatformClient` (rs-sdk wrapper, Stage 2) and the `WriteEngine`
-//!   idempotent state-transition lifecycle + journal types.
+//! - [`platform`] — `PlatformClient` (rs-sdk wrapper, live testnet/mainnet) and the
+//!   `WriteEngine` document create/delete lifecycle + idempotent-retry journal types.
 //! - [`pack`] — chunk geometry and the pure split/join chunker.
 //! - [`backends`] — the `PackBackend` trait (`platform | ipfs | s3 | https`).
 //! - [`rules`] — `FORGE_RULES_V1`: ref resolution, event folds, protected-pattern matching.
@@ -11,8 +11,8 @@
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
 //!
-//! This crate is deliberately synchronous and SDK-free for now; the async rs-sdk
-//! integration is confined to [`platform`] and arrives in Stage 2.
+//! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
+//! is touched in exactly one module); every other module is synchronous and SDK-free.
 
 pub mod backends;
 pub mod cost;

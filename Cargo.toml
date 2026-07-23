@@ -16,8 +16,10 @@ repository = "https://github.com/dash-forge/dash-forge"
 rust-version = "1.80"
 
 # Shared dependency versions. Individual crates opt in with `<dep>.workspace = true`.
-# NOTE: no Dash SDK (rs-sdk / rs-dpp) dependency yet — that integration lands in
-# Stage 2 inside forge-core::platform. Keeping it out keeps the scaffold fast to build.
+#
+# The Dash Platform Rust SDK (rs-sdk / rs-dpp, via the sibling `../platform` checkout)
+# is wired in Stage 2 and is consumed ONLY by forge-core::platform. The binaries do not
+# depend on it — keep it that way so the CLI/helper stay fast to build.
 [workspace.dependencies]
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +29,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Dash Platform Rust SDK — local path checkout, mocks/offline-testing dropped
+# (default-features = false) so only the live network client is built. `dapi-grpc`
+# with the `client` feature is pulled in directly to keep the network transport +
+# TLS stubs compiled after dropping the SDK's default feature set.
+dash-sdk = { path = "../platform/packages/rs-sdk", default-features = false }
+dapi-grpc = { path = "../platform/packages/dapi-grpc", default-features = false, features = ["core", "platform", "client"] }
+rs-sdk-trusted-context-provider = { path = "../platform/packages/rs-sdk-trusted-context-provider" }
+simple-signer = { path = "../platform/packages/simple-signer" }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which
 # promotes every `warn` below to a hard error. Kept pragmatic: `all` + a selected

@@ -55,4 +55,21 @@ pub enum Error {
     /// A serialization / deserialization failure (e.g. parsing a keystore file).
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// An I/O failure (e.g. reading a keystore file from disk).
+    #[error("io error: {0}")]
+    Io(String),
+
+    /// A misconfiguration detected before any network call (bad id, missing key,
+    /// unsupported network).
+    #[error("configuration error: {0}")]
+    Config(String),
+
+    /// An error surfaced by the Dash Platform SDK (connect, fetch, sign, broadcast).
+    ///
+    /// The SDK's rich error type is flattened to a message here so the SDK stays
+    /// confined to `forge-core::platform` (style guide §B) and never leaks across the
+    /// crate's public boundary.
+    #[error("platform error: {0}")]
+    Platform(String),
 }
