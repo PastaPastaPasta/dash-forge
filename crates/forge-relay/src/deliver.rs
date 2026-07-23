@@ -68,6 +68,11 @@ pub struct DeliverConfig {
     pub base_backoff: Duration,
     /// Per-request timeout.
     pub timeout: Duration,
+    /// Overall wall-clock budget for one delivery (all retries + backoff + DNS). A hung or
+    /// tar-pitting target cannot stall the poll cycle past this, even with retries.
+    pub overall_timeout: Duration,
+    /// Timeout for the SSRF pre-flight DNS resolution.
+    pub dns_timeout: Duration,
     /// Whether private/loopback targets are permitted (local testing).
     pub allow_private: bool,
 }
@@ -78,6 +83,8 @@ impl Default for DeliverConfig {
             max_attempts: 5,
             base_backoff: Duration::from_millis(500),
             timeout: Duration::from_secs(10),
+            overall_timeout: Duration::from_secs(30),
+            dns_timeout: Duration::from_secs(5),
             allow_private: false,
         }
     }
@@ -94,30 +101,41 @@ pub struct DeliveryReceipt {
     pub attempts: u32,
 }
 
-/// A webhook deliverer over a shared reqwest client.
+/// A webhook deliverer.
 pub struct Deliverer {
-    http: reqwest::Client,
     config: DeliverConfig,
 }
 
 impl Deliverer {
-    /// Build a deliverer with the given config.
-    pub fn new(config: DeliverConfig) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(config.timeout)
-            // Never follow redirects — a 30x to an internal host would bypass the SSRF
-            // pre-check performed on the original URL.
-            .redirect(reqwest::redirect::Policy::none())
+    /// Build a deliverer with the given config. Clients are built per-delivery (pinned to
+    /// the SSRF-validated addresses), so construction itself is infallible.
+    pub fn new(config: DeliverConfig) -> Self {
+        Self { config }
+    }
+
+    /// Build an HTTP client for one validated target. For a hostname target the client is
+    /// **pinned** (`resolve_to_addrs`) to the exact addresses [`ssrf::resolve_and_validate`]
+    /// validated, so reqwest performs no second DNS resolution — closing the rebinding
+    /// TOCTOU. Redirects are disabled (a 30x to an internal host would bypass the check).
+    fn client_for(&self, target: &ssrf::ValidatedTarget) -> Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(self.config.timeout)
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(addrs) = &target.pinned_addrs {
+            builder = builder.resolve_to_addrs(&target.host, addrs);
+        }
+        builder
             .build()
-            .map_err(|e| RelayError::Config(format!("building HTTP client: {e}")))?;
-        Ok(Self { http, config })
+            .map_err(|e| RelayError::Config(format!("building HTTP client: {e}")))
     }
 
     /// Deliver `event` to `url`, signed with `secret`, identified by `hook_id`.
     ///
-    /// Enforces the SSRF policy, signs the body, and retries with exponential backoff up
-    /// to `max_attempts`; a run that never gets a 2xx returns [`RelayError::DeliveryExhausted`]
-    /// (the caller dead-letters it).
+    /// Resolves + validates the target once and pins the connection to the validated IPs
+    /// (SSRF + rebinding defense), signs the body, and retries with exponential backoff up
+    /// to `max_attempts` — the whole sequence bounded by `overall_timeout` so one hung
+    /// target cannot stall the caller. A run that never gets a 2xx returns
+    /// [`RelayError::DeliveryExhausted`] (the caller dead-letters it).
     pub async fn deliver(
         &self,
         url: &str,
@@ -125,7 +143,34 @@ impl Deliverer {
         hook_id: &str,
         event: &WebhookEvent,
     ) -> Result<DeliveryReceipt> {
-        ssrf::check_url(url, self.config.allow_private)?;
+        match tokio::time::timeout(
+            self.config.overall_timeout,
+            self.deliver_inner(url, secret, hook_id, event),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(RelayError::DeliveryExhausted {
+                attempts: self.config.max_attempts,
+                reason: format!(
+                    "overall delivery budget of {:?} exceeded (target hung/tar-pitting)",
+                    self.config.overall_timeout
+                ),
+            }),
+        }
+    }
+
+    async fn deliver_inner(
+        &self,
+        url: &str,
+        secret: &[u8],
+        hook_id: &str,
+        event: &WebhookEvent,
+    ) -> Result<DeliveryReceipt> {
+        let target =
+            ssrf::resolve_and_validate(url, self.config.allow_private, self.config.dns_timeout)
+                .await?;
+        let http = self.client_for(&target)?;
 
         let body = serde_json::to_vec(&event.payload)
             .map_err(|e| RelayError::Config(format!("serializing payload: {e}")))?;
@@ -138,8 +183,7 @@ impl Deliverer {
                 let backoff = self.config.base_backoff * 2u32.pow(attempt - 2);
                 tokio::time::sleep(backoff).await;
             }
-            match self
-                .http
+            match http
                 .post(url)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "dash-forge-relay")

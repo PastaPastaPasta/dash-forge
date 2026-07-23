@@ -34,7 +34,10 @@ use crate::error::{RelayError, Result};
 const DOC_WEBHOOK: &str = "webhook";
 
 /// A resolved, deliverable webhook subscription.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written to redact `secret` — the HMAC key must never reach logs, panic
+/// output or a serialized dump (mirroring `forge_core::keystore::Secret`).
+#[derive(Clone)]
 pub struct WebhookSub {
     /// Repo contract id (base58) this subscription belongs to.
     pub repo: String,
@@ -52,6 +55,18 @@ impl WebhookSub {
     /// Whether this subscription wants `event` (empty filter = all events).
     pub fn wants(&self, event: &str) -> bool {
         self.events.is_empty() || self.events.iter().any(|e| e == event)
+    }
+}
+
+impl std::fmt::Debug for WebhookSub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookSub")
+            .field("repo", &self.repo)
+            .field("hook_id", &self.hook_id)
+            .field("url", &self.url)
+            .field("events", &self.events)
+            .field("secret", &"[redacted]")
+            .finish()
     }
 }
 

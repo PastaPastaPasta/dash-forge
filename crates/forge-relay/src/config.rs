@@ -23,7 +23,9 @@ pub const DEFAULT_POLL_SECS: u64 = 15;
 /// A statically-configured webhook (bypasses Platform `webhook` docs). Useful for local
 /// testing and for operators who prefer file-based subscriptions; the Platform-doc path
 /// (interchangeable instances) is the production default.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Debug` is hand-written to redact `secret`.
+#[derive(Clone, Deserialize)]
 pub struct StaticWebhook {
     /// The repo contract id this webhook belongs to (base58).
     pub repo: String,
@@ -40,8 +42,20 @@ pub struct StaticWebhook {
     pub hook_id: Option<String>,
 }
 
+impl std::fmt::Debug for StaticWebhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaticWebhook")
+            .field("repo", &self.repo)
+            .field("url", &self.url)
+            .field("events", &self.events)
+            .field("secret", &"[redacted]")
+            .field("hook_id", &self.hook_id)
+            .finish()
+    }
+}
+
 /// The on-disk TOML shape (all optional; CLI flags override).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct FileConfig {
     network: Option<String>,
@@ -62,8 +76,32 @@ struct FileConfig {
     secrets: BTreeMap<String, String>,
 }
 
+impl std::fmt::Debug for FileConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileConfig")
+            .field("network", &self.network)
+            .field("identity", &self.identity)
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("repos", &self.repos)
+            .field("allow_private", &self.allow_private)
+            .field("lookback", &self.lookback)
+            .field("web_base_url", &self.web_base_url)
+            .field("use_platform_webhooks", &self.use_platform_webhooks)
+            .field("listen", &self.listen)
+            .field("webhook", &self.webhook)
+            .field(
+                "secrets",
+                &format_args!("[{} redacted]", self.secrets.len()),
+            )
+            .finish()
+    }
+}
+
 /// The fully-resolved relay configuration.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written to redact the `secrets` map (HMAC keys); `static_webhooks`
+/// relies on [`StaticWebhook`]'s own redacting `Debug`.
+#[derive(Clone)]
 pub struct RelayConfig {
     /// Target network.
     pub network: Network,
@@ -90,6 +128,27 @@ pub struct RelayConfig {
     pub static_webhooks: Vec<StaticWebhook>,
     /// Secret map for Platform webhooks (hookId hex / url → secret).
     pub secrets: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for RelayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayConfig")
+            .field("network", &self.network)
+            .field("identity_path", &self.identity_path)
+            .field("poll_interval", &self.poll_interval)
+            .field("repos", &self.repos)
+            .field("allow_private", &self.allow_private)
+            .field("lookback", &self.lookback)
+            .field("web_base_url", &self.web_base_url)
+            .field("use_platform_webhooks", &self.use_platform_webhooks)
+            .field("listen", &self.listen)
+            .field("static_webhooks", &self.static_webhooks)
+            .field(
+                "secrets",
+                &format_args!("[{} redacted]", self.secrets.len()),
+            )
+            .finish()
+    }
 }
 
 /// CLI overrides applied on top of the file config.

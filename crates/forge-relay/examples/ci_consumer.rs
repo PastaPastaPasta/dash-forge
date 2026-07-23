@@ -56,7 +56,17 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("set FORGE_RELAY_SECRET to the webhook HMAC secret"))?;
     let listen = env::var("CI_LISTEN").unwrap_or_else(|_| "127.0.0.1:9099".to_string());
     let ci_identity = env::var("CI_IDENTITY").ok();
-    let ci_repo = env::var("CI_REPO").ok();
+    // SECURITY: the verification contract is CONFIGURED, never taken from the payload. The
+    // relay is untrusted; if the consumer picked the contract from `repository`, a malicious
+    // relay would point verification at a contract it controls and defeat the whole
+    // re-fetch-and-verify defense this example exists to demonstrate. So CI_REPO is
+    // mandatory — the consumer only ever verifies against the repo it was told to trust.
+    let ci_repo = env::var("CI_REPO").map_err(|_| {
+        anyhow::anyhow!(
+            "set CI_REPO to the EXPECTED repo contract id (base58). The verification target \
+             must be configured, never derived from the (untrusted) webhook payload."
+        )
+    })?;
     let network = match env::var("CI_NETWORK").as_deref() {
         Ok("mainnet") => Network::Mainnet,
         Ok("devnet") => Network::Devnet,
@@ -64,22 +74,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let listener = TcpListener::bind(&listen).await?;
-    tracing::info!(%listen, "reference CI consumer listening");
+    tracing::info!(%listen, ci_repo = %ci_repo, "reference CI consumer listening");
 
     loop {
         let (stream, _peer) = listener.accept().await?;
         let secret = secret.clone();
         let ci_identity = ci_identity.clone();
         let ci_repo = ci_repo.clone();
-        if let Err(e) = handle(
-            stream,
-            &secret,
-            ci_identity.as_deref(),
-            ci_repo.as_deref(),
-            network,
-        )
-        .await
-        {
+        if let Err(e) = handle(stream, &secret, ci_identity.as_deref(), &ci_repo, network).await {
             tracing::warn!(error = %e, "request handling failed");
         }
     }
@@ -89,7 +91,7 @@ async fn handle(
     mut stream: TcpStream,
     secret: &str,
     ci_identity: Option<&str>,
-    ci_repo: Option<&str>,
+    ci_repo: &str,
     network: Network,
 ) -> anyhow::Result<()> {
     let req = read_request(&mut stream).await?;
@@ -132,23 +134,28 @@ async fn handle(
 }
 
 /// Re-fetch the pushed ref state from Platform and, if a CI identity is configured, write a
-/// `checkRun` doc back.
+/// `checkRun` doc back. `ci_repo` is the CONFIGURED expected contract id — never the
+/// payload's own `repository` (which the untrusted relay controls).
 async fn verify_and_check_run(
     payload: &serde_json::Value,
     ci_identity: Option<&str>,
-    ci_repo: Option<&str>,
+    ci_repo: &str,
     network: Network,
 ) -> anyhow::Result<()> {
     let after = payload["after"].as_str().unwrap_or_default().to_string();
     let ref_name = payload["ref"].as_str().unwrap_or_default();
-    let repo_id = ci_repo
-        .map(str::to_string)
-        .or_else(|| {
-            payload["repository"]["dash_contract_id"]
-                .as_str()
-                .map(str::to_string)
-        })
-        .ok_or_else(|| anyhow::anyhow!("no repo contract id (set CI_REPO)"))?;
+    // If the payload names a different contract than the one we trust, that is a red flag
+    // (a tampered/misrouted delivery) — log it, but verify against the CONFIGURED repo only.
+    if let Some(claimed) = payload["repository"]["dash_contract_id"].as_str() {
+        if claimed != ci_repo {
+            tracing::warn!(
+                claimed,
+                trusted = ci_repo,
+                "payload repository contract id does not match the configured CI_REPO; verifying against CI_REPO only"
+            );
+        }
+    }
+    let repo_id = ci_repo.to_string();
 
     let client = PlatformClient::connect(network).await?;
     let contract = client.fetch_contract(&repo_id).await?;

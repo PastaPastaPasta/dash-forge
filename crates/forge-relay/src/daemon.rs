@@ -49,7 +49,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     let deliverer = Deliverer::new(DeliverConfig {
         allow_private: cfg.allow_private,
         ..Default::default()
-    })?;
+    });
 
     // Resolve each watched repo's static context once.
     let mut repos: Vec<RepoContext> = Vec::new();
@@ -280,36 +280,44 @@ async fn fetch_new_keyed(
     }
 }
 
-/// Deliver one event to every subscription that wants it, logging (dead-lettering) any
-/// exhausted deliveries. At-least-once: consumers dedupe on the delivery id.
+/// Max webhook deliveries in flight at once across all subscribers of one event — bounds
+/// concurrency so a fan-out cannot open unbounded sockets, while a single slow/hung target
+/// (also capped by the per-delivery `overall_timeout`) cannot serialize the others.
+const MAX_CONCURRENT_DELIVERIES: usize = 8;
+
+/// Deliver one event to every subscription that wants it, **concurrently** (bounded), so a
+/// slow or dead target cannot head-of-line-block the other subscribers or the poll cycle.
+/// Logs (dead-letters) any exhausted deliveries. At-least-once: consumers dedupe on the
+/// delivery id.
 async fn dispatch(deliverer: &Deliverer, subs: &[WebhookSub], event: &WebhookEvent) {
-    for sub in subs {
-        if !sub.wants(event.event) {
-            continue;
-        }
-        match deliverer
-            .deliver(&sub.url, &sub.secret, &sub.hook_id, event)
-            .await
-        {
-            Ok(receipt) => tracing::info!(
-                repo = %sub.repo,
-                url = %sub.url,
-                event = event.event,
-                action = event.action.unwrap_or("-"),
-                delivery_id = %receipt.delivery_id,
-                status = receipt.status,
-                attempts = receipt.attempts,
-                source = %event.source_doc_id,
-                "delivered webhook"
-            ),
-            Err(e) => tracing::error!(
-                repo = %sub.repo,
-                url = %sub.url,
-                event = event.event,
-                source = %event.source_doc_id,
-                error = %e,
-                "DEAD-LETTER: webhook delivery failed permanently (at-least-once — will not auto-retry across cycles)"
-            ),
-        }
-    }
+    use futures::stream::StreamExt;
+
+    futures::stream::iter(subs.iter().filter(|s| s.wants(event.event)))
+        .for_each_concurrent(MAX_CONCURRENT_DELIVERIES, |sub| async move {
+            match deliverer
+                .deliver(&sub.url, &sub.secret, &sub.hook_id, event)
+                .await
+            {
+                Ok(receipt) => tracing::info!(
+                    repo = %sub.repo,
+                    url = %sub.url,
+                    event = event.event,
+                    action = event.action.unwrap_or("-"),
+                    delivery_id = %receipt.delivery_id,
+                    status = receipt.status,
+                    attempts = receipt.attempts,
+                    source = %event.source_doc_id,
+                    "delivered webhook"
+                ),
+                Err(e) => tracing::error!(
+                    repo = %sub.repo,
+                    url = %sub.url,
+                    event = event.event,
+                    source = %event.source_doc_id,
+                    error = %e,
+                    "DEAD-LETTER: webhook delivery failed permanently (at-least-once — will not auto-retry across cycles)"
+                ),
+            }
+        })
+        .await;
 }

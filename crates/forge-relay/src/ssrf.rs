@@ -6,11 +6,18 @@
 //! `http://169.254.169.254/…` or `http://10.0.0.1/…` turns the relay into a
 //! confused-deputy port-scanner / metadata-exfiltrator.
 //!
-//! The check resolves the host (defeating DNS-rebinding: if *any* resolved address is
-//! non-public the target is rejected) unless `allow_private` is set — which the M2 local
-//! test needs, since it delivers to `127.0.0.1`.
+//! ## Defeating DNS-rebinding (TOCTOU)
+//!
+//! Validating a hostname's resolved IPs and then handing the *hostname* to reqwest is
+//! unsafe: reqwest re-resolves at connect time, so a rebinding record (public at check,
+//! private at connect) bypasses the guard. [`resolve_and_validate`] therefore resolves the
+//! host **once** (async, with a timeout), validates **every** returned address, and returns
+//! them as `pinned_addrs` — the caller pins the HTTP client to exactly those addresses
+//! (`ClientBuilder::resolve_to_addrs`) so no second resolution happens and the IP that was
+//! validated is exactly the IP connected to. IP-literal URLs skip DNS entirely.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use crate::error::{RelayError, Result};
 
@@ -31,6 +38,16 @@ fn v4_is_non_public(ip: Ipv4Addr) -> bool {
         || (ip.octets()[0] == 192 && ip.octets()[1] == 0 && ip.octets()[2] == 0)
 }
 
+/// The IPv4 address embedded in two IPv6 segments (`hi`, `lo` → `a.b.c.d`).
+fn embedded_v4(hi: u16, lo: u16) -> Ipv4Addr {
+    Ipv4Addr::new(
+        (hi >> 8) as u8,
+        (hi & 0xff) as u8,
+        (lo >> 8) as u8,
+        (lo & 0xff) as u8,
+    )
+}
+
 /// Whether an IPv6 address is outside the public routable space.
 fn v6_is_non_public(ip: Ipv6Addr) -> bool {
     if ip.is_loopback() || ip.is_unspecified() {
@@ -49,6 +66,21 @@ fn v6_is_non_public(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return v4_is_non_public(v4);
     }
+    // ::/96 deprecated IPv4-compatible (`::a.b.c.d`, top 96 bits zero) — `::`/`::1` are
+    // already handled above, so a nonzero tail here is an embedded v4; re-check it.
+    if seg[..6].iter().all(|&s| s == 0) {
+        return v4_is_non_public(embedded_v4(seg[6], seg[7]));
+    }
+    // 2002::/16 6to4 — embedded v4 in segments 1-2; re-check it (a 6to4 wrapper around a
+    // private/loopback v4 must be refused).
+    if seg[0] == 0x2002 {
+        return v4_is_non_public(embedded_v4(seg[1], seg[2]));
+    }
+    // 2001:0000::/32 Teredo — the client v4 is obfuscated across the tail; reject outright
+    // rather than trust a partial decode.
+    if seg[0] == 0x2001 && seg[1] == 0x0000 {
+        return true;
+    }
     false
 }
 
@@ -60,52 +92,83 @@ pub fn ip_is_non_public(ip: IpAddr) -> bool {
     }
 }
 
-/// Validate a delivery URL's host against the SSRF policy.
+/// A delivery target whose address(es) have passed the SSRF policy.
+#[derive(Debug, Clone)]
+pub struct ValidatedTarget {
+    /// The lowercased host (hostname or IP literal) from the URL.
+    pub host: String,
+    /// The validated socket addresses the connection must be **pinned** to (hostname
+    /// case). `None` for an IP-literal URL, which reqwest connects to without any DNS —
+    /// so there is nothing to pin and no rebinding window.
+    pub pinned_addrs: Option<Vec<SocketAddr>>,
+}
+
+/// Resolve and validate a delivery URL against the SSRF policy, returning the addresses to
+/// pin the connection to.
 ///
-/// When `allow_private` is false, resolves the host and rejects if *any* resolved
-/// address is non-public (DNS-rebinding defense). When `allow_private` is true (local
-/// testing) the check is skipped. Also enforces `http`/`https` scheme only.
-pub fn check_url(url: &str, allow_private: bool) -> Result<()> {
+/// - Enforces `http`/`https` scheme only.
+/// - IP-literal host: validated in place (unless `allow_private`); no DNS, `pinned_addrs`
+///   is `None`.
+/// - Hostname: resolved **once** via async DNS (bounded by `dns_timeout`); if
+///   `allow_private` is false, **every** resolved address must be public, else the target
+///   is refused (rebinding defense). The validated addresses are returned so the caller
+///   pins the client to them (no second resolution at connect time).
+pub async fn resolve_and_validate(
+    url: &str,
+    allow_private: bool,
+    dns_timeout: Duration,
+) -> Result<ValidatedTarget> {
     let (scheme, host, port) = parse_http_url(url)?;
     if scheme != "http" && scheme != "https" {
         return Err(RelayError::Ssrf(format!(
             "refusing delivery URL with non-HTTP scheme {scheme:?}: {url}"
         )));
     }
-    if allow_private {
-        return Ok(());
-    }
 
-    // If the host is an IP literal, check it directly (no DNS).
+    // IP literal → no DNS, no rebinding window; validate directly.
     if let Ok(ip) = host.parse::<IpAddr>() {
-        if ip_is_non_public(ip) {
+        if !allow_private && ip_is_non_public(ip) {
             return Err(RelayError::Ssrf(format!(
                 "refusing delivery to non-public address {ip} (set allow_private for local testing): {url}"
             )));
         }
-        return Ok(());
+        return Ok(ValidatedTarget {
+            host,
+            pinned_addrs: None,
+        });
     }
 
-    // Otherwise resolve every address and reject if ANY is non-public.
+    // Hostname → resolve ONCE (async, timed) and validate every address.
     let resolve_port = port.unwrap_or(if scheme == "https" { 443 } else { 80 });
-    let addrs: Vec<_> = (host.as_str(), resolve_port)
-        .to_socket_addrs()
-        .map_err(|e| RelayError::Ssrf(format!("resolving delivery host {host:?}: {e}")))?
-        .collect();
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(
+        dns_timeout,
+        tokio::net::lookup_host((host.as_str(), resolve_port)),
+    )
+    .await
+    .map_err(|_| RelayError::Ssrf(format!("DNS lookup for {host:?} timed out: {url}")))?
+    .map_err(|e| RelayError::Ssrf(format!("resolving delivery host {host:?}: {e}")))?
+    .collect();
+
     if addrs.is_empty() {
         return Err(RelayError::Ssrf(format!(
             "delivery host {host:?} resolved to no addresses: {url}"
         )));
     }
-    for addr in addrs {
-        if ip_is_non_public(addr.ip()) {
-            return Err(RelayError::Ssrf(format!(
-                "refusing delivery: host {host:?} resolves to non-public address {} (DNS-rebinding guard): {url}",
-                addr.ip()
-            )));
+    if !allow_private {
+        for addr in &addrs {
+            if ip_is_non_public(addr.ip()) {
+                return Err(RelayError::Ssrf(format!(
+                    "refusing delivery: host {host:?} resolves to non-public address {} (DNS-rebinding guard): {url}",
+                    addr.ip()
+                )));
+            }
         }
     }
-    Ok(())
+    // Pin the connection to exactly the validated addresses.
+    Ok(ValidatedTarget {
+        host,
+        pinned_addrs: Some(addrs),
+    })
 }
 
 /// Minimally parse an HTTP(S) URL into `(scheme, host, port)`, lowercasing the scheme
@@ -162,15 +225,30 @@ fn parse_http_url(url: &str) -> Result<(String, String, Option<u16>)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn loopback_rejected_by_default() {
-        assert!(check_url("http://127.0.0.1:9000/hook", false).is_err());
-        assert!(check_url("http://[::1]:9000/hook", false).is_err());
-        assert!(check_url("http://localhost:9000/hook", false).is_err());
+    const T: Duration = Duration::from_secs(2);
+
+    #[tokio::test]
+    async fn ip_literal_loopback_rejected_by_default() {
+        assert!(resolve_and_validate("http://127.0.0.1:9000/hook", false, T)
+            .await
+            .is_err());
+        assert!(resolve_and_validate("http://[::1]:9000/hook", false, T)
+            .await
+            .is_err());
     }
 
-    #[test]
-    fn private_ranges_rejected() {
+    #[tokio::test]
+    async fn hostname_resolving_to_loopback_rejected() {
+        // `localhost` resolves to a loopback address — the resolve+validate path must
+        // refuse it (this is the rebinding-defense path: the resolved IP is checked, and
+        // it is exactly the IP that would be pinned).
+        assert!(resolve_and_validate("http://localhost:9000/hook", false, T)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn private_literals_rejected() {
         for host in [
             "10.0.0.1",
             "172.16.5.4",
@@ -180,41 +258,78 @@ mod tests {
             "0.0.0.0",
         ] {
             assert!(
-                check_url(&format!("http://{host}/x"), false).is_err(),
+                resolve_and_validate(&format!("http://{host}/x"), false, T)
+                    .await
+                    .is_err(),
                 "{host} should be rejected"
             );
         }
     }
 
-    #[test]
-    fn public_ip_allowed() {
-        assert!(check_url("https://1.1.1.1/hook", false).is_ok());
-        assert!(check_url("https://8.8.8.8:443/hook", false).is_ok());
+    #[tokio::test]
+    async fn public_ip_literal_allowed_and_not_pinned() {
+        let t = resolve_and_validate("https://1.1.1.1/hook", false, T)
+            .await
+            .unwrap();
+        // IP literal: no DNS, nothing to pin.
+        assert!(t.pinned_addrs.is_none());
+        assert_eq!(t.host, "1.1.1.1");
+    }
+
+    #[tokio::test]
+    async fn allow_private_pins_the_validated_addresses() {
+        // With allow_private the loopback host is permitted, and the returned pinned_addrs
+        // are exactly the resolved (loopback) addresses the client will be pinned to — the
+        // validated IP is the connected IP, closing the rebinding TOCTOU.
+        let t = resolve_and_validate("http://localhost:9000/hook", true, T)
+            .await
+            .unwrap();
+        let addrs = t
+            .pinned_addrs
+            .expect("hostname target must carry pinned addrs");
+        assert!(!addrs.is_empty());
+        assert!(
+            addrs.iter().all(|a| a.ip().is_loopback()),
+            "pinned addrs must be exactly the resolved loopback addresses"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_http_scheme_rejected_even_when_private_allowed() {
+        assert!(resolve_and_validate("file:///etc/passwd", true, T)
+            .await
+            .is_err());
+        assert!(resolve_and_validate("gopher://127.0.0.1/x", true, T)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn userinfo_stripped_before_host_check() {
+        assert!(
+            resolve_and_validate("http://user:pass@127.0.0.1/x", false, T)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
-    fn allow_private_overrides() {
-        assert!(check_url("http://127.0.0.1:9000/hook", true).is_ok());
-        assert!(check_url("http://10.0.0.1/hook", true).is_ok());
-    }
-
-    #[test]
-    fn non_http_scheme_rejected_even_when_private_allowed() {
-        assert!(check_url("file:///etc/passwd", true).is_err());
-        assert!(check_url("gopher://127.0.0.1/x", true).is_err());
-    }
-
-    #[test]
-    fn userinfo_stripped_before_host_check() {
-        // The real host is the loopback; userinfo must not confuse the parser.
-        assert!(check_url("http://user:pass@127.0.0.1/x", false).is_err());
-    }
-
-    #[test]
-    fn ipv4_mapped_ipv6_loopback_rejected() {
+    fn ipv6_embedded_v4_forms_rejected() {
+        // IPv4-mapped, ULA, link-local.
         assert!(ip_is_non_public("::ffff:127.0.0.1".parse().unwrap()));
         assert!(ip_is_non_public("fc00::1".parse().unwrap()));
         assert!(ip_is_non_public("fe80::1".parse().unwrap()));
+        // IPv4-mapped private.
+        assert!(ip_is_non_public("::ffff:10.0.0.1".parse().unwrap()));
+        // Deprecated IPv4-compatible ::a.b.c.d wrapping a private v4.
+        assert!(ip_is_non_public("::192.168.1.1".parse().unwrap()));
+        // 6to4 wrapping loopback / private v4.
+        assert!(ip_is_non_public("2002:7f00:0001::1".parse().unwrap())); // 127.0.0.1
+        assert!(ip_is_non_public("2002:0a00:0001::1".parse().unwrap())); // 10.0.0.1
+                                                                         // Teredo prefix rejected outright.
+        assert!(ip_is_non_public("2001:0:1234::1".parse().unwrap()));
+        // A genuinely public v6 is allowed.
+        assert!(!ip_is_non_public("2606:4700:4700::1111".parse().unwrap()));
     }
 
     #[test]
