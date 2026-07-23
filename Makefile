@@ -51,6 +51,9 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: placeholder — suites land in Stage 6 (see docs/testing/e2e-test-plan.md)
-e2e:
-	@echo "e2e suites not implemented yet — suites land in Stage 6 (see docs/testing/e2e-test-plan.md, EXECUTION.md)"
+## e2e: run the CLI end-to-end suite (LIVE testnet) against the reused m1 repo.
+## Builds the binaries if needed, then drives real git push/clone through the
+## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
+## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
+e2e: build-rust
+	@bash e2e/cli/run.sh
