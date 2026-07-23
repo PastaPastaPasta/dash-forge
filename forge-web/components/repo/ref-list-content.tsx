@@ -17,8 +17,8 @@ import { EmptyState } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
 const KIND = {
-  branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch' },
-  tags: { prefix: 'refs/tags/', icon: Tag, empty: 'No tags yet', noun: 'a tag' },
+  branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch', single: 'branch' },
+  tags: { prefix: 'refs/tags/', icon: Tag, empty: 'No tags yet', noun: 'a tag', single: 'tag' },
 } as const
 
 export function RefListContent({
@@ -30,7 +30,7 @@ export function RefListContent({
   addr: RepoAddress
   kind: keyof typeof KIND
 }): JSX.Element {
-  const { prefix, icon: Icon, empty, noun } = KIND[kind]
+  const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
   const refs = kind === 'branches' ? home.branches : home.tags
   const defaultRefName = `refs/heads/${home.defaultBranch}`
   const short = (ref: ResolvedRef): string =>
@@ -102,14 +102,14 @@ export function RefListContent({
         <EmptyState
           icon={Icon}
           title={`No active ${kind}`}
-          body={`Every pushed ${kind === 'branches' ? 'branch' : 'tag'} here has since been deleted. Push ${noun} with the git-remote-dash helper and it appears here.`}
+          body={`Every pushed ${single} here has since been deleted. Push ${noun} with the git-remote-dash helper and it appears here.`}
         />
       )}
 
       {deleted.length > 0 ? (
         <details className="rounded-lg border border-anvil-200 dark:border-anvil-800">
           <summary className="cursor-pointer select-none px-4 py-2.5 text-dense text-anvil-500 hover:text-anvil-700 dark:text-anvil-400 dark:hover:text-anvil-200">
-            {deleted.length} deleted {kind === 'branches' ? (deleted.length === 1 ? 'branch' : 'branches') : (deleted.length === 1 ? 'tag' : 'tags')}
+            {deleted.length} deleted {deleted.length === 1 ? single : kind}
           </summary>
           <div className="border-t border-anvil-100 dark:border-anvil-850">
             {deleted.map((ref) => (
