@@ -38,10 +38,18 @@ export {
   artifactRangeFetch,
   buildPackSource,
   loadArtifactBytes,
+  loadArtifactBytesProgress,
   loadBrowseContext,
   loadFlatIndex,
+  orderGitPacks,
   type BrowseContext,
+  type BrowseState,
 } from './browse-source'
+export {
+  cachedFallback,
+  startFallback,
+  type FallbackProgress,
+} from './browse-fallback'
 export {
   backendInfo,
   loadRepoHome,

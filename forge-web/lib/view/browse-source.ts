@@ -24,6 +24,7 @@ import {
   type RangeFetch,
 } from '../browse'
 import {
+  liveGitPackManifests,
   readPackManifests,
   type PackManifest,
   type RepoRef,
@@ -151,6 +152,42 @@ export async function loadArtifactBytes(
 }
 
 /**
+ * Max bytes per windowed whole-artifact fetch: `fetchPlatformRange` queries with
+ * `limit: 100`, so one call can cover at most 100 chunk documents.
+ */
+const DOWNLOAD_WINDOW = 100 * CHUNK_PAYLOAD_MAX
+
+/**
+ * Load a whole artifact with download progress — the fallback-clone path for full git
+ * packs, which can exceed the single-query chunk window. Platform storage downloads in
+ * `DOWNLOAD_WINDOW` strides; external storage fetches the body whole (progress reported
+ * only at completion).
+ */
+export async function loadArtifactBytesProgress(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+): Promise<Uint8Array> {
+  const total = manifest.sizeBytes
+  if (total <= 0) return new Uint8Array(0)
+  onProgress?.(0, total)
+  if (manifest.storage !== 0) {
+    const bytes = await fetchExternalRange(manifest.uris, 0, total)
+    if (bytes.length !== total) throw new Error('external artifact length mismatch')
+    onProgress?.(total, total)
+    return bytes
+  }
+  const out = new Uint8Array(total)
+  for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
+    const end = Math.min(at + DOWNLOAD_WINDOW, total)
+    out.set(await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, at, end), at)
+    onProgress?.(end, total)
+  }
+  return out
+}
+
+/**
  * Order git-pack manifests into the canonical `packRef` space.
  *
  * PACKREF ORDERING (VERIFIED / corrected): the objectLocator's `packRef` is "an index into
@@ -163,7 +200,7 @@ export async function loadArtifactBytes(
  * packs that existed at/before it (`createdAt <= asOf`): a locator only indexes packs present
  * when it was built, and later incremental packs are outside its `packRef` space.
  */
-function orderGitPacks(
+export function orderGitPacks(
   gitPacks: readonly PackManifest[],
   asOf?: number,
 ): PackManifest[] {
@@ -220,18 +257,39 @@ export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatInd
 }
 
 /**
- * Assemble a repo's browse context: newest objectLocator + a pack source over its git packs.
- * Returns `null` when the repo has not published a locator (degrade-gracefully signal).
+ * Discriminated browse availability:
+ *  - `ready` — a published locator exists; the normal browse plane serves reads.
+ *  - `unindexed` — no locator, but live kind-0 packs exist: the fallback clone can
+ *    download + index them in-browser (`livePacks` / `totalSizeBytes` feed that UI).
+ *  - `no-packs` — nothing stored to browse at all.
  */
-export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseContext | null> {
+export type BrowseState =
+  | { readonly kind: 'ready'; readonly context: BrowseContext }
+  | {
+      readonly kind: 'unindexed'
+      readonly livePacks: PackManifest[]
+      readonly totalSizeBytes: number
+    }
+  | { readonly kind: 'no-packs' }
+
+/**
+ * Assemble a repo's browse availability: newest objectLocator + a pack source over its git
+ * packs when indexed, or the live pack set the fallback clone would need when not.
+ */
+export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
   const manifests = await readPackManifests(sdk, repo, 100)
   const locatorManifest = manifests.find((m) => m.kind === PACK_KIND.OBJECT_LOCATOR)
-  if (!locatorManifest) return null
+  if (!locatorManifest) {
+    const livePacks = orderGitPacks(liveGitPackManifests(manifests))
+    if (livePacks.length === 0) return { kind: 'no-packs' }
+    const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
+    return { kind: 'unindexed', livePacks, totalSizeBytes }
+  }
   const gitPacks = manifests.filter((m) => m.kind === PACK_KIND.GIT_PACK)
   const locatorBytes = await loadArtifactBytes(sdk, repo, locatorManifest)
   const locator = ObjectLocator.parse(locatorBytes)
   // Bound the packRef space to packs that existed when this locator was published.
   const packs = buildPackSource(sdk, repo, gitPacks, locatorManifest.createdAt)
   const reader = new BrowseReader(locator, packs)
-  return { locator, packs, reader }
+  return { kind: 'ready', context: { locator, packs, reader } }
 }

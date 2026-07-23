@@ -1,20 +1,21 @@
 'use client'
 
 /**
- * useBrowse — load a repo's browse context (objectLocator + pack source) once, so tree/blob/
- * commit views can reconstruct any object by oid. Returns `null` data when the repo has not
- * published browse artifacts yet (the UI then shows a clear "not indexed" state).
+ * useBrowse — load a repo's browse availability (objectLocator + pack source) once, so
+ * tree/blob/commit views can reconstruct any object by oid. Data is a {@link BrowseState}:
+ * `ready` with a context, `unindexed` with the live pack set the fallback clone needs, or
+ * `no-packs` when nothing is stored.
  */
 
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
-import { loadBrowseContext, type BrowseContext } from '@/lib/view'
+import { loadBrowseContext, type BrowseState } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 
-export function useBrowse(repo: RepoRef | null): AsyncState<BrowseContext | null> {
+export function useBrowse(repo: RepoRef | null): AsyncState<BrowseState> {
   const { sdk, ready } = useSdk(repo ? [repo.contractId] : [])
   const enabled = ready && sdk !== null && repo !== null
-  return useAsync<BrowseContext | null>(
+  return useAsync<BrowseState>(
     () => loadBrowseContext(sdk!, repo!),
     [ready, repo?.contractId ?? ''],
     { enabled },
