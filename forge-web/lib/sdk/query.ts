@@ -1,0 +1,333 @@
+/**
+ * evo-sdk query helpers — the browser read path.
+ *
+ * Wraps `sdk.documents.query` / `queryWithProof` with the two Platform facts that make or
+ * break correctness on an active repo (verified in S0.8):
+ *
+ *  1. **byteArray where-operands must be base64 strings** (NOT Uint8Array, NOT base58 —
+ *     base58 is for identifiers only). Every `refNameHash` / `packHash` / oid tip query
+ *     encodes its operand with {@link bytesToBase64} / {@link hexToBase64}; results also
+ *     come back base64. This is load-bearing — a raw-bytes operand silently returns nothing.
+ *  2. **`in`-batches do NOT round-robin** — a single global `limit` is drawn in
+ *     orderBy-traversal order, so one hot key starves all siblings (measured 9/9 starved).
+ *     The **per-key completeness fallback is the NORMAL path**: after an `in` batch, every
+ *     key that returned zero rows is re-queried individually (`== key, limit 1`), all in
+ *     parallel. See {@link inBatchWithCompleteness}.
+ *
+ * Plus **skip-scan** ref enumeration ({@link skipScanDistinct}): `> lastKey` orderBy key
+ * `limit 1` hops to the next distinct key — O(log n) per distinct ref, not O(total pushes).
+ */
+
+import type { EvoSDK } from '@dashevo/evo-sdk'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+
+// ---------------------------------------------------------------------------
+// byteArray operand encoding (S0.8 — WASM needs base64)
+// ---------------------------------------------------------------------------
+
+/** Encode raw bytes as a standard base64 string — the required wasm byteArray operand form. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] as number)
+  return btoa(bin)
+}
+
+/** Decode a base64 string (a query result operand) back to raw bytes. */
+export function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+/** Encode a hex string (e.g. a refNameHash / oid) as the base64 operand a wasm query needs. */
+export function hexToBase64(hex: string): string {
+  return bytesToBase64(hexToBytes(hex))
+}
+
+/** Decode a base64 operand/result back to a lowercase hex string. */
+export function base64ToHex(b64: string): string {
+  return bytesToHex(base64ToBytes(b64))
+}
+
+// ---------------------------------------------------------------------------
+// Query shape (tuple form, matching the wasm-sdk / yappr convention)
+// ---------------------------------------------------------------------------
+
+/** A `where` comparison operator accepted by the document query engine. */
+export type WhereOperator =
+  | '=='
+  | '>'
+  | '>='
+  | '<'
+  | '<='
+  | 'in'
+  | 'startsWith'
+  | 'contains'
+
+/** A single `where` clause: `[field, operator, value]`. */
+export type WhereClause = readonly [field: string, operator: WhereOperator, value: unknown]
+
+/** A single `orderBy` clause: `[field, direction]`. Stored indexes are asc-only; */
+/** `desc` is query-time reverse traversal (data-contracts §0). */
+export type OrderByClause = readonly [field: string, direction: 'asc' | 'desc']
+
+/** A raw document query. `byteArray` operands in `where` must already be base64 (see above). */
+export interface DocumentQuery {
+  readonly dataContractId: string
+  readonly documentTypeName: string
+  readonly where?: readonly WhereClause[]
+  readonly orderBy?: readonly OrderByClause[]
+  readonly limit?: number
+  /** A document `$id` (base58) to page after. */
+  readonly startAfter?: string
+  readonly startAt?: string
+}
+
+/** A normalized document: system fields ($id/$ownerId base58, $createdAt number) + content. */
+export type PlainDocument = Record<string, unknown>
+
+// System identifier fields ($id / $ownerId / $dataContractId) come back from the SDK's
+// `toObject()` already as base58 strings, so normalization only rewrites the bigint
+// numeric fields below to JS numbers (or a decimal string when out of safe-integer range).
+const SYSTEM_NUMERIC_FIELDS = new Set([
+  '$revision',
+  '$createdAt',
+  '$updatedAt',
+  '$transferredAt',
+  '$createdAtBlockHeight',
+  '$updatedAtBlockHeight',
+])
+
+interface DocumentLike {
+  toObject?: () => unknown
+  toJSON?: () => unknown
+}
+
+/** Normalize a wasm Document (or already-plain object) to a JSON-friendly record. */
+export function normalizeDocument(doc: unknown): PlainDocument {
+  const d = doc as DocumentLike
+  let raw: unknown = doc
+  if (typeof d.toObject === 'function') raw = d.toObject()
+  else if (typeof d.toJSON === 'function') raw = d.toJSON()
+  if (raw === null || typeof raw !== 'object') return {}
+  const src = raw as Record<string, unknown>
+  const out: PlainDocument = {}
+  for (const [k, v] of Object.entries(src)) {
+    if (SYSTEM_NUMERIC_FIELDS.has(k) && typeof v === 'bigint') {
+      const n = Number(v)
+      out[k] = Number.isSafeInteger(n) ? n : v.toString()
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
+function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument[] {
+  const out: PlainDocument[] = []
+  if (response instanceof Map) {
+    for (const v of response.values()) {
+      if (v != null) out.push(normalizeDocument(v))
+    }
+  }
+  return out
+}
+
+// The evo-sdk document facade param/return types resolve loosely (wasm-bindgen d.ts); we
+// narrow through these local shapes rather than leaking `any` into call sites.
+interface DocumentsFacadeLike {
+  query: (q: DocumentQuery) => Promise<Map<string, unknown>>
+  queryWithProof: (q: DocumentQuery) => Promise<unknown>
+  count: (q: DocumentQuery) => Promise<Map<string, bigint>>
+}
+interface SdkLike {
+  documents: DocumentsFacadeLike
+}
+
+function documentsOf(sdk: EvoSDK): DocumentsFacadeLike {
+  return (sdk as unknown as SdkLike).documents
+}
+
+/** A proof-carrying read result: the documents plus whatever proof metadata the SDK returned. */
+export interface ProofedDocuments {
+  readonly documents: PlainDocument[]
+  readonly proofMetadata: unknown
+}
+
+/** Raw query (no proof). Prefer {@link queryDocumentsWithProof} for trust-minimized reads. */
+export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
+  const response = await documentsOf(sdk).query(query)
+  return mapToDocuments(response)
+}
+
+/**
+ * Proof-verified query — the default forge-web read path (S0.3: `testnetTrusted()` +
+ * `*WithProof` is the only WASM-viable mode; proofs are always on, ~0% overhead).
+ */
+export async function queryDocumentsWithProof(
+  sdk: EvoSDK,
+  query: DocumentQuery,
+): Promise<ProofedDocuments> {
+  const resp = await documentsOf(sdk).queryWithProof(query)
+  // The proof response wraps the document Map alongside metadata; shapes vary across SDK
+  // builds, so pick the Map defensively and carry the rest through as opaque metadata.
+  const r = resp as { data?: unknown; result?: unknown; documents?: unknown; metadata?: unknown }
+  const payload = r.data ?? r.result ?? r.documents ?? resp
+  return { documents: mapToDocuments(payload), proofMetadata: r.metadata ?? null }
+}
+
+/**
+ * Provable O(1) count over a countable index (data-contracts §3). Sums the grouped result
+ * the SDK returns for `documents.count`. Use for star / follower / issue-total surfaces.
+ */
+export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
+  const grouped = await documentsOf(sdk).count(query)
+  let total = 0n
+  if (grouped instanceof Map) {
+    for (const v of grouped.values()) total += v
+  }
+  const n = Number(total)
+  return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
+// ---------------------------------------------------------------------------
+// Skip-scan distinct-key enumeration (branch/tag listing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Enumerate the distinct values of an indexed key via `limit 1` skip hops (S0.8):
+ * seek the first row ordered by `keyField asc`, record its key, then seek
+ * `keyField > lastKey limit 1` repeatedly. Cost is one cheap seek per distinct key —
+ * bounded by real branch/tag counts, NOT by how many times any one ref was pushed.
+ *
+ * `keyIsBase64` values are compared/advanced as base64 strings (the wasm result form).
+ * Returns the distinct key values (base64) in ascending order, with a hard `maxKeys` cap.
+ */
+export async function skipScanDistinct(
+  sdk: EvoSDK,
+  params: {
+    readonly dataContractId: string
+    readonly documentTypeName: string
+    readonly keyField: string
+    readonly maxKeys?: number
+  },
+): Promise<string[]> {
+  const { dataContractId, documentTypeName, keyField } = params
+  const maxKeys = params.maxKeys ?? 10_000
+  const keys: string[] = []
+  let last: string | undefined
+
+  for (let i = 0; i < maxKeys; i++) {
+    const where: WhereClause[] = last === undefined ? [] : [[keyField, '>', last]]
+    const rows = await queryDocuments(sdk, {
+      dataContractId,
+      documentTypeName,
+      where,
+      orderBy: [[keyField, 'asc']],
+      limit: 1,
+    })
+    const row = rows[0]
+    if (row === undefined) break
+    const key = row[keyField]
+    if (typeof key !== 'string') break
+    keys.push(key)
+    last = key
+  }
+  return keys
+}
+
+// ---------------------------------------------------------------------------
+// in-batch with per-key completeness fallback (the NORMAL path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the newest row per key (e.g. the current tip per `refNameHash`, or the newest
+ * event per target) with the S0.8 completeness fallback baked in:
+ *   1. one `in` batch over all keys (`keyField in [...]`, orderBy `keyField, $createdAt desc`)
+ *   2. any key that returned zero rows — starved by a hot sibling — is re-queried
+ *      individually (`keyField == key`, `$createdAt desc`, limit 1), **all in parallel**.
+ *
+ * Returns a `Map<key, newestRow>` covering every key that has at least one row.
+ * `keys` are the base64 operand form; the fallback re-encodes each identically.
+ */
+export async function inBatchNewestPerKey(
+  sdk: EvoSDK,
+  params: {
+    readonly dataContractId: string
+    readonly documentTypeName: string
+    readonly keyField: string
+    readonly keys: readonly string[]
+    readonly batchLimit?: number
+  },
+): Promise<Map<string, PlainDocument>> {
+  const { dataContractId, documentTypeName, keyField, keys } = params
+  const result = new Map<string, PlainDocument>()
+  if (keys.length === 0) return result
+
+  const batch = await queryDocuments(sdk, {
+    dataContractId,
+    documentTypeName,
+    where: [[keyField, 'in', keys]],
+    orderBy: [
+      [keyField, 'asc'],
+      ['$createdAt', 'desc'],
+    ],
+    limit: params.batchLimit ?? 100,
+  })
+  for (const row of batch) {
+    const k = row[keyField]
+    if (typeof k === 'string' && !result.has(k)) result.set(k, row)
+  }
+
+  // Completeness fallback: re-query every starved key individually, in parallel.
+  const missing = keys.filter((k) => !result.has(k))
+  const fallbacks = await Promise.all(
+    missing.map((k) =>
+      queryDocuments(sdk, {
+        dataContractId,
+        documentTypeName,
+        where: [[keyField, '==', k]],
+        orderBy: [['$createdAt', 'desc']],
+        limit: 1,
+      }).then((rows) => [k, rows[0]] as const),
+    ),
+  )
+  for (const [k, row] of fallbacks) {
+    if (row !== undefined) result.set(k, row)
+  }
+  return result
+}
+
+/**
+ * Fetch ALL rows for a set of keys with the same completeness discipline — used by event
+ * folds (an issue/PR needs every event, not just the newest). Pages the `in` batch, then
+ * re-queries each key that looks truncated. Returns `Map<key, rows[]>` (ascending time).
+ */
+export async function inBatchAllPerKey(
+  sdk: EvoSDK,
+  params: {
+    readonly dataContractId: string
+    readonly documentTypeName: string
+    readonly keyField: string
+    readonly keys: readonly string[]
+    readonly perKeyLimit?: number
+  },
+): Promise<Map<string, PlainDocument[]>> {
+  const { dataContractId, documentTypeName, keyField, keys } = params
+  const perKeyLimit = params.perKeyLimit ?? 100
+  // On active repos the per-key path is correct regardless of Drive traversal order, so
+  // fetch each key's full timeline directly (parallelized) rather than trusting the batch.
+  const entries = await Promise.all(
+    keys.map((k) =>
+      queryDocuments(sdk, {
+        dataContractId,
+        documentTypeName,
+        where: [[keyField, '==', k]],
+        orderBy: [['$createdAt', 'asc']],
+        limit: perKeyLimit,
+      }).then((rows) => [k, rows] as const),
+    ),
+  )
+  return new Map(entries)
+}

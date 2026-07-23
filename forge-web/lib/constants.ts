@@ -33,8 +33,10 @@ export interface NetworkConfig {
 export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
   testnet: {
     network: 'testnet',
-    registryContractId: null, // FILLED BY DEPLOYMENT: forge-contracts/deployments/testnet.json
-    dpnsContractId: null, // FILLED BY DEPLOYMENT
+    // Source: forge-contracts/deployments/testnet.json (registry.contractId).
+    registryContractId: '5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd',
+    // DPNS system contract (testnet).
+    dpnsContractId: 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec',
   },
   mainnet: {
     network: 'mainnet',
@@ -42,6 +44,9 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
     dpnsContractId: null, // FILLED BY DEPLOYMENT
   },
 }
+
+/** The deployed registry contract owner (DCG/DAO identity) — for listing-authenticity checks. */
+export const TESTNET_REGISTRY_OWNER = '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB'
 
 // ---------------------------------------------------------------------------
 // Chunk / browse constants — MIRROR forge-core (parity via forge-contracts/vectors).
