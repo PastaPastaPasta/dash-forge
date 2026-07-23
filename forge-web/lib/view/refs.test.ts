@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { refParamFor, selectRef } from './refs'
+import { isLive, refParamFor, selectRef } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -57,6 +57,13 @@ describe('selectRef', () => {
     const s = selectRef(branches, tags, 'main', 'nope')
     expect(s.name).toBe('nope')
     expect(s.ref).toBeUndefined()
+  })
+})
+
+describe('isLive', () => {
+  it('is true for resolved refs, false for unborn (deleted) ones', () => {
+    expect(isLive(ref('refs/heads/main'))).toBe(true)
+    expect(isLive({ refName: 'refs/heads/dead', refNameHash: 'x', state: { state: 'unborn' } })).toBe(false)
   })
 })
 

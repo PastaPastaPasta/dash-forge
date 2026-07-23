@@ -28,7 +28,7 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
-import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -67,6 +67,10 @@ export function BlobContent({
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   const tipOid = tipOidOf(selected.ref)
+  // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
+  if (!tipOid && selected.ref) {
+    return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
+  }
   if (!tipOid) return <EmptyState icon={FileText} title="Empty repo" body={`No commits on ${selected.name}, so no files to read.`} />
   if (!path) return <EmptyState icon={FileText} title="No file addressed" body="Add &path= to the URL." />
 

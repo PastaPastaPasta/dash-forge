@@ -9,7 +9,7 @@ import type { RepoHome } from '@/lib/view'
 import { selectRef, tipOidOf, timeAgo, walkLog, type LogEntry } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
-import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -28,6 +28,10 @@ export function CommitsContent({
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   const tipOid = tipOidOf(selected.ref)
+  // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
+  if (!tipOid && selected.ref) {
+    return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
+  }
   if (!tipOid) return <EmptyState icon={GitCommit} title="No commits yet" body={`History appears once the first commit is pushed to ${selected.name}.`} />
   return (
     <div className="space-y-4">

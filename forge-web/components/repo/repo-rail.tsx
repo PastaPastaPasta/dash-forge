@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { GitBranch, Star, Tag } from 'lucide-react'
-import type { RepoHome } from '@/lib/view'
+import { isLive, type RepoHome } from '@/lib/view'
 import type { Source } from '@/components/ui/verification-chip'
 import { TrustPanel, type TrustChain } from '@/components/ui/trust-panel'
 import { CloneBox } from '@/components/repo/clone-box'
@@ -58,14 +58,14 @@ export function RepoRail({
           label="Branches"
           href={repoHref('/repo/branches', addr)}
         >
-          {home.branches.length}
+          {home.branches.filter(isLive).length}
         </Row>
         <Row
           icon={<Tag className="h-3.5 w-3.5" aria-hidden />}
           label="Tags"
           href={repoHref('/repo/tags', addr)}
         >
-          {home.tags.length}
+          {home.tags.filter(isLive).length}
         </Row>
         <Row
           icon={<Star className="h-3.5 w-3.5" aria-hidden />}

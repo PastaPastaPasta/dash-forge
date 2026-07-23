@@ -22,6 +22,15 @@ export function isDiverged(ref: ResolvedRef | undefined): boolean {
   return ref?.state.state === 'diverged'
 }
 
+/**
+ * Whether a ref currently points at a commit. Enumeration surfaces every ref name that ever
+ * had a push — an unborn result there means the ref was deleted (a null-oid update; Platform
+ * history is append-only, so the name persists). Live-only is what browse surfaces show.
+ */
+export function isLive(ref: ResolvedRef): boolean {
+  return tipOidOf(ref) !== null
+}
+
 /** Find a branch ref by short name (`main`) within a resolved ref list. */
 export function findBranch(
   branches: readonly ResolvedRef[],

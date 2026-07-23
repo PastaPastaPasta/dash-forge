@@ -22,7 +22,7 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { FileList } from '@/components/repo/file-list'
-import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView } from '@/components/markdown-view'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Oid } from '@/components/ui/oid'
@@ -66,6 +66,11 @@ export function RepoHomeContent({
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   const tipOid = tipOidOf(selected.ref)
+  // An enumerated ref with no tip was deleted (null-oid update) — even the default branch.
+  // Only a ref with no entry at all (fresh repo) gets the empty-repo invitation below.
+  if (!tipOid && selected.ref) {
+    return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
+  }
 
   if (!tipOid) {
     return (

@@ -69,7 +69,15 @@ export {
   readTree,
   treeAtPath,
 } from './tree-nav'
-export { findBranch, isDiverged, refParamFor, selectRef, tipOidOf, type SelectedRef } from './refs'
+export {
+  findBranch,
+  isDiverged,
+  isLive,
+  refParamFor,
+  selectRef,
+  tipOidOf,
+  type SelectedRef,
+} from './refs'
 export {
   diffTrees,
   walkLog,

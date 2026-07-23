@@ -11,7 +11,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Check, ChevronDown, GitBranch, Tag } from 'lucide-react'
 import type { RepoHome, SelectedRef } from '@/lib/view'
-import { refParamFor } from '@/lib/view'
+import { findBranch, isLive, refParamFor } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
@@ -42,6 +42,18 @@ export function RefSwitcher({
 
   const CurrentIcon = current.isTag ? Tag : GitBranch
 
+  // Deleted (unborn) refs are not offered — there is nothing to browse on them. The default
+  // branch is injected only when it has no enumerated entry at all (a fresh repo, before the
+  // first push); an entry that exists but is not live means the default branch was DELETED,
+  // and listing it as pickable would repaint the deletion as a fresh repo.
+  const branchNames = home.branches
+    .filter(isLive)
+    .map((b) => b.refName.replace(/^refs\/heads\//, ''))
+  if (!findBranch(home.branches, home.defaultBranch) && !branchNames.includes(home.defaultBranch)) {
+    branchNames.unshift(home.defaultBranch)
+  }
+  const tagNames = home.tags.filter(isLive).map((t) => t.refName.replace(/^refs\/tags\//, ''))
+
   return (
     <div className="relative">
       <button
@@ -66,15 +78,15 @@ export function RefSwitcher({
           >
             <RefGroup
               kind="branch"
-              names={home.branches.map((b) => b.refName.replace(/^refs\/heads\//, ''))}
+              names={branchNames}
               current={current}
               hrefFor={hrefFor}
               onPick={() => setOpen(false)}
             />
-            {home.tags.length > 0 ? (
+            {tagNames.length > 0 ? (
               <RefGroup
                 kind="tag"
-                names={home.tags.map((t) => t.refName.replace(/^refs\/tags\//, ''))}
+                names={tagNames}
                 current={current}
                 hrefFor={hrefFor}
                 onPick={() => setOpen(false)}
@@ -84,6 +96,32 @@ export function RefSwitcher({
         </>
       ) : null}
     </div>
+  )
+}
+
+/** The deleted-ref empty state: the selected ref's newest update is a delete. */
+export function RefDeletedState({
+  addr,
+  name,
+  defaultBranch,
+}: {
+  addr: RepoAddress
+  name: string
+  defaultBranch: string
+}): JSX.Element {
+  // "Back to <default>" would loop when the deleted ref IS the default branch.
+  const isDefault = name === defaultBranch
+  return (
+    <EmptyState
+      icon={GitBranch}
+      title={isDefault ? 'The default branch was deleted' : 'This ref was deleted'}
+      body={`${name} no longer points at a commit — it was deleted, though its push history remains on-chain.`}
+      action={
+        <Link href={repoHref(isDefault ? '/repo/branches' : '/repo', addr)}>
+          <Button variant="primary">{isDefault ? 'View branches' : `Back to ${defaultBranch}`}</Button>
+        </Link>
+      }
+    />
   )
 }
 

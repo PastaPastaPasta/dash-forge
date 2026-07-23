@@ -9,7 +9,7 @@ import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { FileList } from '@/components/repo/file-list'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
-import { RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { FolderOpen } from 'lucide-react'
@@ -35,6 +35,10 @@ export function TreeContent({
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   const tipOid = tipOidOf(selected.ref)
+  // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
+  if (!tipOid && selected.ref) {
+    return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
+  }
   if (!tipOid) {
     return <EmptyState icon={FolderOpen} title="Empty repo" body={`No commits on ${selected.name}, so no tree to browse.`} />
   }
