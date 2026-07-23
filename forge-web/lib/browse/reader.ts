@@ -44,9 +44,48 @@ export interface BrowseReaderOptions {
   readonly verify?: boolean
 }
 
+/** Per-reader object-memo budget — readers live for the session (cached browse context). */
+const OBJECT_CACHE_BUDGET_BYTES = 8 * 1024 * 1024
+/** Objects above this size are never memoized (one huge blob must not evict everything). */
+const OBJECT_CACHE_MAX_ENTRY_BYTES = 128 * 1024
+
+/**
+ * A byte-bounded LRU of reconstructed objects. Safe to share: every cached object was
+ * either hash-verified against its OID or decoded from hash-verified pack bytes, and
+ * consumers never mutate the returned buffers. Map insertion order is the recency order.
+ */
+class ObjectLru {
+  private readonly map = new Map<string, GitObject>()
+  private bytes = 0
+
+  get(key: string): GitObject | undefined {
+    const hit = this.map.get(key)
+    if (hit !== undefined) {
+      this.map.delete(key)
+      this.map.set(key, hit)
+    }
+    return hit
+  }
+
+  set(key: string, obj: GitObject): void {
+    if (obj.bytes.length > OBJECT_CACHE_MAX_ENTRY_BYTES || this.map.has(key)) return
+    this.map.set(key, obj)
+    this.bytes += obj.bytes.length
+    for (const [k, v] of this.map) {
+      if (this.bytes <= OBJECT_CACHE_BUDGET_BYTES) break
+      this.map.delete(k)
+      this.bytes -= v.bytes.length
+    }
+  }
+}
+
 /** High-level browse reader over one repo's objectLocator + pack source. */
 export class BrowseReader {
   private offsetIndex: Map<string, LocatorEntry> | null = null
+  /** Verified whole-object memo, keyed by lowercase OID hex. */
+  private readonly objectsByOid = new ObjectLru()
+  /** Decoded-entry memo keyed `(packRef, offset)` — where repeated delta-base work lands. */
+  private readonly objectsByAddr = new ObjectLru()
 
   constructor(
     private readonly locator: ObjectLocator,
@@ -65,6 +104,10 @@ export class BrowseReader {
    * `deltaChainSpan` hint advises.
    */
   async readObject(oidHex: string): Promise<GitObject> {
+    const oidKey = oidHex.toLowerCase()
+    const cached = this.objectsByOid.get(oidKey)
+    if (cached !== undefined) return cached
+
     const entry = this.locate(oidHex)
     if (entry === null) throw new Error(`object not in locator: ${oidHex}`)
 
@@ -74,10 +117,11 @@ export class BrowseReader {
 
     if (this.opts.verify !== false) {
       const got = gitOidHex(obj.type, obj.bytes)
-      if (got !== oidHex.toLowerCase()) {
+      if (got !== oidKey) {
         throw new Error(`oid mismatch: wanted ${oidHex}, reconstructed ${got}`)
       }
     }
+    this.objectsByOid.set(oidKey, obj)
     return obj
   }
 
@@ -95,6 +139,15 @@ export class BrowseReader {
    * index, REF by OID), and apply. Avoids the single-span over-fetch (root tree 212×).
    */
   private async decodeEntry(entry: LocatorEntry): Promise<GitObject> {
+    const addrKey = offsetKey(entry.packRef, entry.offset)
+    const cached = this.objectsByAddr.get(addrKey)
+    if (cached !== undefined) return cached
+    const obj = await this.decodeEntryUncached(entry)
+    this.objectsByAddr.set(addrKey, obj)
+    return obj
+  }
+
+  private async decodeEntryUncached(entry: LocatorEntry): Promise<GitObject> {
     const packRef = entry.packRef
     const self = await this.packs.fetchRange(packRef, entry.offset, entry.offset + entry.length)
     const h = parseObjHeader(self, 0)

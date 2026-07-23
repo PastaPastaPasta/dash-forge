@@ -29,18 +29,55 @@ function toConfigDoc(doc: PlainDocument): ConfigDoc {
   }
 }
 
-/**
- * Fetch the full `config` history (newest first on the wire, returned as-is). Feed this to
- * {@link resolveRef} as `configHistory`; the resolver is order-independent.
- */
-export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<ConfigDoc[]> {
+/** Surface a raw `config` document as the {@link RepoConfig} most views need. */
+function toRepoConfig(doc: PlainDocument): RepoConfig {
+  const backend = doc['backend']
+  let backendMode = 0
+  let backendUris: string[] = []
+  if (backend !== null && typeof backend === 'object') {
+    const b = backend as Record<string, unknown>
+    if (typeof b['mode'] === 'number') backendMode = b['mode']
+    if (Array.isArray(b['uris'])) {
+      backendUris = b['uris'].filter((x): x is string => typeof x === 'string')
+    }
+  }
+  return {
+    defaultBranch: typeof doc['defaultBranch'] === 'string' ? doc['defaultBranch'] : 'main',
+    protectedPatterns: parseJsonList(doc, 'protectedPatterns'),
+    archived: doc['archived'] === true,
+    backendUris,
+    backendMode,
+  }
+}
+
+/** The current config AND the full history, from ONE query — the timeline is ≤ one page
+ *  (config is append-rarely), so the newest doc serves both surfaces. */
+export interface ConfigBundle {
+  readonly config: RepoConfig | null
+  readonly history: ConfigDoc[]
+}
+
+/** Fetch the config timeline once and surface both the current config and the history. */
+export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<ConfigBundle> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.config,
     orderBy: [['$createdAt', 'desc']],
     limit: 100,
   })
-  return documents.map(toConfigDoc)
+  const newest = documents[0]
+  return {
+    config: newest === undefined ? null : toRepoConfig(newest),
+    history: documents.map(toConfigDoc),
+  }
+}
+
+/**
+ * Fetch the full `config` history (newest first on the wire, returned as-is). Feed this to
+ * {@link resolveRef} as `configHistory`; the resolver is order-independent.
+ */
+export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<ConfigDoc[]> {
+  return (await readConfigBundle(sdk, repo)).history
 }
 
 /** The current (newest) config, surfaced as a {@link RepoConfig}. */
@@ -52,26 +89,7 @@ export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig
     limit: 1,
   })
   const doc = documents[0]
-  if (doc === undefined) return null
-
-  const backend = doc['backend']
-  let backendMode = 0
-  let backendUris: string[] = []
-  if (backend !== null && typeof backend === 'object') {
-    const b = backend as Record<string, unknown>
-    if (typeof b['mode'] === 'number') backendMode = b['mode']
-    if (Array.isArray(b['uris'])) {
-      backendUris = b['uris'].filter((x): x is string => typeof x === 'string')
-    }
-  }
-
-  return {
-    defaultBranch: typeof doc['defaultBranch'] === 'string' ? doc['defaultBranch'] : 'main',
-    protectedPatterns: parseJsonList(doc, 'protectedPatterns'),
-    archived: doc['archived'] === true,
-    backendUris,
-    backendMode,
-  }
+  return doc === undefined ? null : toRepoConfig(doc)
 }
 
 /** Convenience: the default branch name (falls back to `main`). */

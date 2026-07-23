@@ -37,11 +37,15 @@ export {
 export {
   artifactRangeFetch,
   buildPackSource,
+  clearChunkCache,
+  invalidateBrowseContext,
   loadArtifactBytes,
   loadArtifactBytesProgress,
   loadBrowseContext,
+  loadBrowseContextCached,
   loadFlatIndex,
   orderGitPacks,
+  peekBrowseState,
   type BrowseContext,
   type BrowseState,
 } from './browse-source'

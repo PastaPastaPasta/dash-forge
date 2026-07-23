@@ -30,7 +30,7 @@ export function RepoScaffold({
   rail?: boolean
   chainOverride?: Partial<TrustChain>
 }): JSX.Element {
-  const { data, loading, error, sdkError, ready, reload } = useRepoHome(addr.owner, addr.name)
+  const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr.owner, addr.name)
 
   if (!addr.owner || !addr.name) {
     return (
@@ -53,9 +53,11 @@ export function RepoScaffold({
     )
   }
 
-  // While the SDK connects (or the resolve is in flight) show the shell — never flash
-  // "not found" before the query has had a chance to run.
-  if (!ready || loading) {
+  // While the SDK connects (or a cold resolve is in flight) show the shell — never flash
+  // "not found" before the query has had a chance to run. A warm navigation is seeded
+  // synchronously from the home cache (`settled`, including a cached not-found) and renders
+  // its real state immediately, even while a background revalidation is still loading.
+  if (!ready || (loading && !settled)) {
     return (
       <AppShell wide>
         <LoadingBlock label={ready ? `Resolving ${addr.name}` : 'Connecting to Platform'} />

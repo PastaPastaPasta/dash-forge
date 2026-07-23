@@ -37,6 +37,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, REGISTRY_DOC, type RepoRef } from './contract'
+import { invalidateAuthz } from './tokens'
 
 /** Raised only by paths that remain out of scope for M3 (browser push internals). */
 export class WriteNotImplementedError extends Error {
@@ -417,6 +418,7 @@ export async function grantCollaborator(
   maintain: boolean,
 ): Promise<{ minted: boolean; cost: CostPreview }> {
   const result = await grantRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
+  invalidateAuthz(repo.contractId)
   return { ...result, cost: previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin) }
 }
 
@@ -429,6 +431,7 @@ export async function suspendCollaborator(
   maintain: boolean,
 ): Promise<{ frozen: boolean; cost: CostPreview }> {
   const result = await suspendRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
+  invalidateAuthz(repo.contractId)
   return { ...result, cost: previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin) }
 }
 
@@ -441,6 +444,7 @@ export async function revokeCollaborator(
   maintain: boolean,
 ): Promise<{ revoked: boolean; cost: CostPreview }> {
   const result = await revokeRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
+  invalidateAuthz(repo.contractId)
   return { ...result, cost: previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin) }
 }
 

@@ -30,8 +30,10 @@ export {
 } from './resolveRepo'
 export {
   readConfig,
+  readConfigBundle,
   readConfigHistory,
   readDefaultBranch,
+  type ConfigBundle,
   type RepoConfig,
 } from './config'
 export {
@@ -52,6 +54,7 @@ export {
   type PackManifest,
 } from './packs'
 export {
+  invalidateAuthz,
   readTokenHistory,
   resolveAuthz,
 } from './tokens'

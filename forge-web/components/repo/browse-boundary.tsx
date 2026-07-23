@@ -33,11 +33,13 @@ export function BrowseBoundary({
   repo: RepoRef
   children: (reader: BrowseReader) => ReactNode
 }): JSX.Element {
-  const { data, loading, error, reload } = useBrowse(repo)
+  const { data, loading, error, settled, reload } = useBrowse(repo)
   const unindexed = data?.kind === 'unindexed' ? data : null
   const fallback = useFallbackBrowse(repo, unindexed?.livePacks ?? null)
 
-  if (loading) return <LoadingBlock label="Loading browse index" />
+  // A warm navigation has `data` seeded from the session browse cache — render it
+  // immediately; the loading shell is only for a cold (no-cache) resolve.
+  if (loading && !settled) return <LoadingBlock label="Loading browse index" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null || data.kind === 'no-packs') {
     return (

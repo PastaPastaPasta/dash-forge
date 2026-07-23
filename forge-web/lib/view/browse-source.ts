@@ -50,6 +50,94 @@ function chunkPayload(doc: Record<string, unknown>): Uint8Array {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// Chunk LRU — session cache of platform `chunk` payloads
+// ---------------------------------------------------------------------------
+
+/**
+ * Chunks are content-addressed (`packHash` is the artifact's sha256) and immutable, so a
+ * session-wide LRU is always safe. Entries hold the fetch PROMISE, so concurrent reads of
+ * the same chunk dedupe to one query. Only resolved entries carry a size and count toward
+ * the budget; rejected fetches are evicted so a retry re-queries. Map insertion order is
+ * the recency order (touched entries are re-inserted).
+ */
+const CHUNK_CACHE_BUDGET_BYTES = 32 * 1024 * 1024
+interface ChunkCacheEntry {
+  promise: Promise<Uint8Array>
+  /** Set once resolved; undefined while in flight. */
+  size?: number
+}
+const chunkCache = new Map<string, ChunkCacheEntry>()
+let chunkCacheBytes = 0
+
+function chunkCacheGet(key: string): Promise<Uint8Array> | undefined {
+  const entry = chunkCache.get(key)
+  if (entry === undefined) return undefined
+  // Touch: re-insert so Map order stays least-recently-used-first.
+  chunkCache.delete(key)
+  chunkCache.set(key, entry)
+  return entry.promise
+}
+
+function chunkCacheSet(key: string, promise: Promise<Uint8Array>): void {
+  const entry: ChunkCacheEntry = { promise }
+  chunkCache.set(key, entry)
+  promise
+    .then((bytes) => {
+      if (chunkCache.get(key) !== entry) return
+      entry.size = bytes.length
+      chunkCacheBytes += bytes.length
+      evictChunks()
+    })
+    .catch(() => {
+      if (chunkCache.get(key) === entry) chunkCache.delete(key)
+    })
+}
+
+function evictChunks(): void {
+  for (const [key, entry] of chunkCache) {
+    if (chunkCacheBytes <= CHUNK_CACHE_BUDGET_BYTES) break
+    if (entry.size === undefined) continue // in flight — a caller still awaits it
+    chunkCache.delete(key)
+    chunkCacheBytes -= entry.size
+  }
+}
+
+/** Test hook: drop all cached chunks (and reset the byte budget). */
+export function clearChunkCache(): void {
+  chunkCache.clear()
+  chunkCacheBytes = 0
+}
+
+/** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
+async function queryChunkBatch(
+  sdk: EvoSDK,
+  contractId: string,
+  packHashHex: string,
+  seqs: readonly number[],
+): Promise<Map<number, Uint8Array>> {
+  const { documents } = await queryDocumentsWithProof(sdk, {
+    dataContractId: contractId,
+    documentTypeName: DOC.chunk,
+    where: [
+      ['packHash', '==', hexToBase64(packHashHex)],
+      ['seq', 'in', [...seqs]],
+    ],
+    orderBy: [
+      ['packHash', 'asc'],
+      ['seq', 'asc'],
+    ],
+    limit: 100,
+  })
+  const bySeq = new Map<number, Uint8Array>()
+  for (const doc of documents) {
+    const raw = doc['seq']
+    const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
+    if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+  }
+  return bySeq
+}
+
 /**
  * Fetch a contiguous `[start, end)` range of a platform-stored artifact by `packHash` (hex).
  *
@@ -60,6 +148,10 @@ function chunkPayload(doc: Record<string, unknown>): Uint8Array {
  * CHUNK_PAYLOAD_MAX⌋` at intra-chunk offset `n mod CHUNK_PAYLOAD_MAX`. The last chunk is
  * shorter, but a range never reads past the artifact's `sizeBytes`, so the last `seq` is
  * always resolved from the row actually returned (its real length), never assumed full.
+ *
+ * Chunk payloads are served through the session LRU: only the seqs absent from the cache
+ * are queried (one batch — the `(packHash, seq)` index is unique per key, so no
+ * `in`-starvation fallback is needed), and every fetched chunk is cached for later ranges.
  */
 async function fetchPlatformRange(
   sdk: EvoSDK,
@@ -73,32 +165,31 @@ async function fetchPlatformRange(
   const seqs: number[] = []
   for (let s = firstSeq; s <= lastSeq; s++) seqs.push(s)
 
-  const packHashB64 = hexToBase64(packHashHex)
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: contractId,
-    documentTypeName: DOC.chunk,
-    where: [
-      ['packHash', '==', packHashB64],
-      ['seq', 'in', seqs],
-    ],
-    orderBy: [
-      ['packHash', 'asc'],
-      ['seq', 'asc'],
-    ],
-    limit: 100,
-  })
-
-  const bySeq = new Map<number, Uint8Array>()
-  for (const doc of documents) {
-    const raw = doc['seq']
-    const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
-    if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+  const held = new Map<number, Promise<Uint8Array>>()
+  const missing: number[] = []
+  for (const seq of seqs) {
+    const hit = chunkCacheGet(`${packHashHex}:${seq}`)
+    if (hit !== undefined) held.set(seq, hit)
+    else missing.push(seq)
+  }
+  if (missing.length > 0) {
+    const batch = queryChunkBatch(sdk, contractId, packHashHex, missing)
+    for (const seq of missing) {
+      const promise = batch.then((bySeq) => {
+        const payload = bySeq.get(seq)
+        if (payload === undefined) {
+          throw new Error(`missing chunk seq ${seq} for pack ${packHashHex.slice(0, 12)}`)
+        }
+        return payload
+      })
+      chunkCacheSet(`${packHashHex}:${seq}`, promise)
+      held.set(seq, promise)
+    }
   }
 
   const out = new Uint8Array(end - start)
   for (const seq of seqs) {
-    const payload = bySeq.get(seq)
-    if (!payload) throw new Error(`missing chunk seq ${seq} for pack ${packHashHex.slice(0, 12)}`)
+    const payload = await held.get(seq)!
     const chunkStart = seq * CHUNK_PAYLOAD_MAX
     const from = Math.max(start, chunkStart) - chunkStart
     const to = Math.min(end, chunkStart + payload.length) - chunkStart
@@ -292,4 +383,64 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   const packs = buildPackSource(sdk, repo, gitPacks, locatorManifest.createdAt)
   const reader = new BrowseReader(locator, packs)
   return { kind: 'ready', context: { locator, packs, reader } }
+}
+
+// ---------------------------------------------------------------------------
+// Browse-context session cache
+// ---------------------------------------------------------------------------
+
+/**
+ * One browse context per contract for the session (the locator-path analog of the
+ * fallback-clone cache in `browse-fallback.ts`) — navigating between a repo's pages must
+ * not re-fetch manifests, re-download the locator, or discard the reader's warm state.
+ *
+ * A `ready` state (locator published — content-addressed, effectively immutable) lives
+ * {@link BROWSE_READY_TTL_MS}; `unindexed` / `no-packs` live only {@link BROWSE_RETRY_TTL_MS}
+ * so a locator or first pack published out-of-band (CLI / relay — the web UI never
+ * publishes packs) is noticed quickly. Rejected loads are evicted so a retry starts clean.
+ */
+const BROWSE_READY_TTL_MS = 5 * 60_000
+const BROWSE_RETRY_TTL_MS = 60_000
+
+interface BrowseCacheEntry {
+  at: number
+  promise: Promise<BrowseState>
+  settled?: BrowseState
+}
+const browseCache = new Map<string, BrowseCacheEntry>()
+
+function browseEntryLive(entry: BrowseCacheEntry): boolean {
+  const ttl =
+    entry.settled === undefined || entry.settled.kind === 'ready'
+      ? BROWSE_READY_TTL_MS
+      : BROWSE_RETRY_TTL_MS
+  return Date.now() - entry.at < ttl
+}
+
+/** Drop a repo's cached browse context (e.g. on an explicit home reload). */
+export function invalidateBrowseContext(contractId: string): void {
+  browseCache.delete(contractId)
+}
+
+/** The cached settled browse state for a contract, if still live — for first-paint seeding. */
+export function peekBrowseState(contractId: string): BrowseState | undefined {
+  const entry = browseCache.get(contractId)
+  if (entry === undefined || !browseEntryLive(entry)) return undefined
+  return entry.settled
+}
+
+/** {@link loadBrowseContext} through the session cache (in-flight loads are joined). */
+export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
+  const hit = browseCache.get(repo.contractId)
+  if (hit !== undefined && browseEntryLive(hit)) return hit.promise
+  const entry: BrowseCacheEntry = { at: Date.now(), promise: loadBrowseContext(sdk, repo) }
+  browseCache.set(repo.contractId, entry)
+  entry.promise
+    .then((state) => {
+      entry.settled = state
+    })
+    .catch(() => {
+      if (browseCache.get(repo.contractId) === entry) browseCache.delete(repo.contractId)
+    })
+  return entry.promise
 }

@@ -12,7 +12,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS, type Network } from '../constants'
 import {
   branchesOf,
-  readConfig,
+  readConfigBundle,
   readRefs,
   readStarCount,
   resolveRepoWithListing,
@@ -78,9 +78,11 @@ export async function loadRepoHome(
   const { repo, listing } = resolved
   const listingId = listing.listingId || null
 
-  const [config, refs, starCount] = await Promise.all([
-    readConfig(sdk, repo),
-    readRefs(sdk, repo),
+  // One config query serves both the current config and the history readRefs folds with.
+  const bundlePromise = readConfigBundle(sdk, repo)
+  const [{ config }, refs, starCount] = await Promise.all([
+    bundlePromise,
+    readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
     listingId
       ? readStarCount(sdk, listingId, { network: params.network }).catch(() => 0)
       : Promise.resolve(0),

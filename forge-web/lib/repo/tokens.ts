@@ -110,60 +110,69 @@ export async function readTokenHistory(
       })
     }
 
-    for (const role of ROLES) {
-      // `tokenId` / `frozenIdentityId` on the TokenHistory contract are IDENTIFIER-typed, so
-      // the wasm query operand is the base58 id itself — NOT the base64 byteArray form used
-      // for hash/oid fields (verified live against the deployed testnet contract: a base64
-      // operand is rejected with "could not be decoded from base 58").
-      const tokenIdB58 = tokenIds[role.key]
+    // Two waves per role (the affected set depends on the mints), roles in parallel and
+    // every freeze/unfreeze/destroy read of a wave in parallel — the fold is
+    // order-independent (AuthzResolver sorts by createdAt), so only completeness matters.
+    const perRole = await Promise.all(
+      ROLES.map(async (role) => {
+        const roleRecords: TokenRecord[] = []
+        // `tokenId` / `frozenIdentityId` on the TokenHistory contract are IDENTIFIER-typed,
+        // so the wasm query operand is the base58 id itself — NOT the base64 byteArray form
+        // used for hash/oid fields (verified live against the deployed testnet contract: a
+        // base64 operand is rejected with "could not be decoded from base 58").
+        const tokenIdB58 = tokenIds[role.key]
 
-      // Mints (byDate index: tokenId, $createdAt), paginated to exhaustion.
-      const mints = await queryAllDocuments(sdk, {
-        dataContractId: historyContractId,
-        documentTypeName: TH.mint,
-        where: [['tokenId', '==', tokenIdB58]],
-        orderBy: [['$createdAt', 'asc']],
-      })
-
-      // (3) Always include the owner so its freeze history is reconstructed.
-      const affected = new Set<string>([owner])
-      for (const m of mints) {
-        const recipient = toIdentityB58(m['recipientId'])
-        if (recipient === null) continue
-        affected.add(recipient)
-        records.push({
-          id: typeof m['$id'] === 'string' ? (m['$id'] as string) : undefined,
-          identity: recipient,
-          token: role.kind,
-          op: 'mint',
-          createdAt: num(m, '$createdAt'),
+        // Mints (byDate index: tokenId, $createdAt), paginated to exhaustion.
+        const mints = await queryAllDocuments(sdk, {
+          dataContractId: historyContractId,
+          documentTypeName: TH.mint,
+          where: [['tokenId', '==', tokenIdB58]],
+          orderBy: [['$createdAt', 'asc']],
         })
-      }
 
-      // Freeze / unfreeze / destroy per affected identity (byFrozenIdentityId index).
-      for (const identity of affected) {
-        for (const { doc, op } of FREEZE_OPS) {
-          const docs = await queryAllDocuments(sdk, {
-            dataContractId: historyContractId,
-            documentTypeName: doc,
-            where: [
-              ['tokenId', '==', tokenIdB58],
-              ['frozenIdentityId', '==', identity],
-            ],
-            orderBy: [['$createdAt', 'asc']],
+        // (3) Always include the owner so its freeze history is reconstructed.
+        const affected = new Set<string>([owner])
+        for (const m of mints) {
+          const recipient = toIdentityB58(m['recipientId'])
+          if (recipient === null) continue
+          affected.add(recipient)
+          roleRecords.push({
+            id: typeof m['$id'] === 'string' ? (m['$id'] as string) : undefined,
+            identity: recipient,
+            token: role.kind,
+            op: 'mint',
+            createdAt: num(m, '$createdAt'),
           })
-          for (const d of docs) {
-            records.push({
-              id: typeof d['$id'] === 'string' ? (d['$id'] as string) : undefined,
-              identity,
-              token: role.kind,
-              op,
-              createdAt: num(d, '$createdAt'),
-            })
-          }
         }
-      }
-    }
+
+        // Freeze / unfreeze / destroy per affected identity (byFrozenIdentityId index).
+        const freezeWaves = await Promise.all(
+          [...affected].flatMap((identity) =>
+            FREEZE_OPS.map(async ({ doc, op }): Promise<TokenRecord[]> => {
+              const docs = await queryAllDocuments(sdk, {
+                dataContractId: historyContractId,
+                documentTypeName: doc,
+                where: [
+                  ['tokenId', '==', tokenIdB58],
+                  ['frozenIdentityId', '==', identity],
+                ],
+                orderBy: [['$createdAt', 'asc']],
+              })
+              return docs.map((d) => ({
+                id: typeof d['$id'] === 'string' ? (d['$id'] as string) : undefined,
+                identity,
+                token: role.kind,
+                op,
+                createdAt: num(d, '$createdAt'),
+              }))
+            }),
+          ),
+        )
+        for (const wave of freezeWaves) roleRecords.push(...wave)
+        return roleRecords
+      }),
+    )
+    for (const roleRecords of perRole) records.push(...roleRecords)
 
     return records
   } catch {
@@ -171,15 +180,51 @@ export async function readTokenHistory(
   }
 }
 
+// Grants change rarely, but every issues/pulls page needs the resolver — cache it per
+// contract. A failed reconstruction returns [] (degraded author-only folds); a SUCCESSFUL
+// run always contains at least the two synthetic genesis records, so a short history marks
+// a failure and is evicted immediately rather than pinning the degraded resolver for the TTL.
+const AUTHZ_TTL_MS = 5 * 60_000
+const authzCache = new Map<string, { at: number; promise: Promise<AuthzResolver> }>()
+
+function authzKey(network: Network, contractId: string): string {
+  return `${network}:${contractId}`
+}
+
+/** Drop a repo's cached authz resolver (call after a grant / suspend / revoke lands). */
+export function invalidateAuthz(contractId: string): void {
+  for (const key of authzCache.keys()) {
+    if (key.endsWith(`:${contractId}`)) authzCache.delete(key)
+  }
+}
+
 /**
  * Build an {@link AuthzResolver} from the repo's reconstructed token history — the as-of-time
  * WRITE/MAINTAIN source the issue/PR fold consumes. Degrades to an empty resolver (author-only
- * actions) if the history is unavailable.
+ * actions) if the history is unavailable. Cached per contract for {@link AUTHZ_TTL_MS};
+ * failures are not cached.
  */
 export async function resolveAuthz(
   sdk: EvoSDK,
   repo: RepoRef,
   network: Network = 'testnet',
 ): Promise<AuthzResolver> {
-  return new AuthzResolver(await readTokenHistory(sdk, repo, network))
+  const key = authzKey(network, repo.contractId)
+  const hit = authzCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < AUTHZ_TTL_MS) return hit.promise
+  const promise: Promise<AuthzResolver> = readTokenHistory(sdk, repo, network).then(
+    (records) => {
+      if (records.length < 2 && authzCache.get(key)?.promise === promise) {
+        authzCache.delete(key)
+      }
+      return new AuthzResolver(records)
+    },
+  )
+  // readTokenHistory never rejects today, but a rejected entry must not be pinned for the
+  // TTL — evict it like every other session cache does.
+  promise.catch(() => {
+    if (authzCache.get(key)?.promise === promise) authzCache.delete(key)
+  })
+  authzCache.set(key, { at: Date.now(), promise })
+  return promise
 }

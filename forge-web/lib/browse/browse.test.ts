@@ -88,6 +88,18 @@ function packSourceFor(pack: Uint8Array): PackSource {
   }
 }
 
+/** A pack source that counts its fetches — pins the reader's object-memo behavior. */
+function countingPackSource(pack: Uint8Array): PackSource & { readonly fetches: () => number } {
+  let n = 0
+  return {
+    fetchRange: (_packRef, start, end) => {
+      n += 1
+      return Promise.resolve(pack.slice(start, end))
+    },
+    fetches: () => n,
+  }
+}
+
 describe('browse-plane reader', () => {
   it('reconstructs a base blob from a locator lookup + single-span ranged read', async () => {
     const content = new TextEncoder().encode('hello dash forge\n'.repeat(4))
@@ -158,5 +170,52 @@ describe('browse-plane reader', () => {
     )
     const viaPerBase = await perBaseReader.readObject(targetOid)
     expect(Array.from(viaPerBase.bytes)).toEqual(Array.from(target))
+  })
+
+  it('memoizes reconstructed objects — a repeat read issues no further fetches', async () => {
+    const content = new TextEncoder().encode('memo me\n'.repeat(8))
+    const blobOid = gitOidHex('blob', content)
+    const stored = concat(objHeader(T_BLOB, content.length), zlibSync(content))
+    const pack = packFrame(stored)
+    const source = countingPackSource(pack)
+    const reader = new BrowseReader(
+      ObjectLocator.parse(
+        buildLocator([
+          { oidHex: blobOid, offset: PACK_HEADER_LEN, length: stored.length, span: stored.length, depth: 0 },
+        ]),
+      ),
+      source,
+    )
+
+    const first = await reader.readObject(blobOid)
+    const after = source.fetches()
+    expect(after).toBeGreaterThan(0)
+    const second = await reader.readObject(blobOid)
+    expect(source.fetches()).toBe(after)
+    expect(Array.from(second.bytes)).toEqual(Array.from(first.bytes))
+  })
+
+  it('does not memoize objects above the per-entry byte cap', async () => {
+    // > 128 KiB uncompressed — the memo must skip it so one huge blob cannot evict the
+    // hot small objects (trees / commits) the navigation paths live on.
+    const content = new Uint8Array(160 * 1024)
+    for (let i = 0; i < content.length; i++) content[i] = (i * 31 + 7) & 0xff
+    const blobOid = gitOidHex('blob', content)
+    const stored = concat(objHeader(T_BLOB, content.length), zlibSync(content))
+    const pack = packFrame(stored)
+    const source = countingPackSource(pack)
+    const reader = new BrowseReader(
+      ObjectLocator.parse(
+        buildLocator([
+          { oidHex: blobOid, offset: PACK_HEADER_LEN, length: stored.length, span: stored.length, depth: 0 },
+        ]),
+      ),
+      source,
+    )
+
+    await reader.readObject(blobOid)
+    const after = source.fetches()
+    await reader.readObject(blobOid)
+    expect(source.fetches()).toBeGreaterThan(after)
   })
 })

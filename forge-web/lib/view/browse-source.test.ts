@@ -9,12 +9,17 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
-import { artifactRangeFetch, buildPackSource } from './browse-source'
+import { artifactRangeFetch, buildPackSource, clearChunkCache } from './browse-source'
+
+// These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
+// impossible in production (packHash = sha256 of the bytes), so the session chunk cache
+// must be dropped between tests to keep the fixtures independent.
+beforeEach(() => clearChunkCache())
 
 const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
 
@@ -96,6 +101,71 @@ describe('offset → seq mapping (assumption b)', () => {
     const end = CHUNK_PAYLOAD_MAX + 50
     const got = await fetchRange()(start, end)
     expect(Array.from(got)).toEqual(Array.from(full.subarray(start, end)))
+  })
+})
+
+describe('chunk LRU', () => {
+  const total = CHUNK_PAYLOAD_MAX * 2 + 64
+  const full = new Uint8Array(total)
+  for (let i = 0; i < total; i++) full[i] = (i * 31 + 7) % 251
+
+  /** The mock sdk, plus a log of the seq lists each chunk query asked for. */
+  function spyingSdk(): { sdk: EvoSDK; calls: number[][] } {
+    const inner = mockSdk(() => full) as unknown as {
+      documents: { query: (q: unknown) => Promise<Map<string, unknown>> }
+    }
+    const calls: number[][] = []
+    const sdk = {
+      documents: {
+        query: (q: { where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          const seqClause = (q.where ?? []).find((w) => w[0] === 'seq')
+          calls.push([...((seqClause?.[2] as number[]) ?? [])])
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk, calls }
+  }
+
+  it('re-queries only the seqs missing from the cache and still composes exact bytes', async () => {
+    const { sdk, calls } = spyingSdk()
+    const fetchRange = artifactRangeFetch(sdk, REPO, gitPack('dd', 0, 'd9'))
+
+    const first = await fetchRange(0, CHUNK_PAYLOAD_MAX + 10) // seqs 0, 1
+    expect(Array.from(first)).toEqual(Array.from(full.subarray(0, CHUNK_PAYLOAD_MAX + 10)))
+    expect(calls).toEqual([[0, 1]])
+
+    // Overlaps the cached seqs 0–1 and needs seq 2 — only 2 goes to Platform.
+    const start = CHUNK_PAYLOAD_MAX - 5
+    const second = await fetchRange(start, total)
+    expect(Array.from(second)).toEqual(Array.from(full.subarray(start, total)))
+    expect(calls).toEqual([[0, 1], [2]])
+  })
+
+  it('dedupes concurrent fetches of the same chunk into one query', async () => {
+    const { sdk, calls } = spyingSdk()
+    const fetchRange = artifactRangeFetch(sdk, REPO, gitPack('ee', 0, 'da'))
+    const [a, b] = await Promise.all([fetchRange(0, 10), fetchRange(5, 20)])
+    expect(Array.from(a)).toEqual(Array.from(full.subarray(0, 10)))
+    expect(Array.from(b)).toEqual(Array.from(full.subarray(5, 20)))
+    expect(calls).toEqual([[0]])
+  })
+
+  it('does not poison the cache on a failed fetch — the retry re-queries', async () => {
+    let fail = true
+    const inner = mockSdk(() => full) as unknown as {
+      documents: { query: (q: unknown) => Promise<Map<string, unknown>> }
+    }
+    const sdk = {
+      documents: {
+        query: (q: unknown): Promise<Map<string, unknown>> =>
+          fail ? Promise.reject(new Error('transient')) : inner.documents.query(q),
+      },
+    } as unknown as EvoSDK
+    const fetchRange = artifactRangeFetch(sdk, REPO, gitPack('ff', 0, 'db'))
+    await expect(fetchRange(0, 10)).rejects.toThrow('transient')
+    fail = false
+    expect(Array.from(await fetchRange(0, 10))).toEqual(Array.from(full.subarray(0, 10)))
   })
 })
 

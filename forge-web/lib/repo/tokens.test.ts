@@ -14,7 +14,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Encode } from '../auth/base58'
 import { AuthzResolver, foldIssueState, type Event } from '../rules'
 import type { RepoRef } from './contract'
-import { readTokenHistory } from './tokens'
+import { invalidateAuthz, readTokenHistory, resolveAuthz } from './tokens'
 
 /** A deterministic base58 32-byte id from a seed byte. */
 function id(seed: number): string {
@@ -146,5 +146,65 @@ describe('issue fold with reconstructed authz', () => {
 
     // Owner acts after the freeze (t=200) → frozen on both tokens, close is inert.
     expect(foldIssueState([issueClosedBy(OWNER, 200)], AUTHOR, resolver).open).toBe(true)
+  })
+})
+
+describe('resolveAuthz caching', () => {
+  /** Wrap a mock sdk with a document-query counter. */
+  function counting(sdk: EvoSDK): { sdk: EvoSDK; queries: () => number } {
+    const inner = sdk as unknown as { documents: { query: (q: unknown) => Promise<unknown> } }
+    let n = 0
+    const wrapped = {
+      ...(sdk as unknown as Record<string, unknown>),
+      documents: {
+        query: (q: unknown): Promise<unknown> => {
+          n += 1
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk: wrapped, queries: () => n }
+  }
+
+  it('caches a successful resolver per contract; invalidateAuthz drops it', async () => {
+    const repo: RepoRef = { contractId: id(30), ownerId: OWNER }
+    const { sdk, queries } = counting(
+      mockSdk({ mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] } }),
+    )
+
+    await resolveAuthz(sdk, repo)
+    const afterFirst = queries()
+    expect(afterFirst).toBeGreaterThan(0)
+
+    await resolveAuthz(sdk, repo)
+    expect(queries()).toBe(afterFirst) // served from cache — no new reads
+
+    invalidateAuthz(repo.contractId)
+    await resolveAuthz(sdk, repo)
+    expect(queries()).toBeGreaterThan(afterFirst)
+    invalidateAuthz(repo.contractId)
+  })
+
+  it('does not cache a failed (degraded) reconstruction', async () => {
+    const repo: RepoRef = { contractId: id(31), ownerId: OWNER }
+    let calculateCalls = 0
+    const sdk = {
+      tokens: {
+        calculateId: (): Promise<string> => {
+          calculateCalls += 1
+          return Promise.reject(new Error('unreachable'))
+        },
+      },
+      documents: { query: (): Promise<Map<string, Doc>> => Promise.resolve(new Map()) },
+    } as unknown as EvoSDK
+
+    const degraded = await resolveAuthz(sdk, repo)
+    expect(degraded.holdingsAsOf(OWNER, 1).write).toBe(false) // empty resolver
+    expect(calculateCalls).toBeGreaterThan(0)
+
+    const before = calculateCalls
+    await resolveAuthz(sdk, repo) // failure was NOT pinned — the read retries
+    expect(calculateCalls).toBeGreaterThan(before)
+    invalidateAuthz(repo.contractId)
   })
 })

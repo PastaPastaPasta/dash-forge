@@ -149,16 +149,19 @@ async function readAllRefUpdatesOnePage(
 /**
  * Read every ref of a repo. Small repos (whole update set ≤ one query page per type) resolve
  * from two parallel queries; larger repos fall back to skip-scan enumeration + per-ref
- * resolution (parallelized). Fetches the config history once and reuses it across refs.
+ * resolution (parallelized). Fetches the config history once and reuses it across refs —
+ * or accepts the caller's in-flight fetch (`configHistoryPromise`) so a composed read like
+ * `loadRepoHome` issues only ONE config query total.
  */
 export async function readRefs(
   sdk: EvoSDK,
   repo: RepoRef,
   isAncestor: IsAncestor = NO_ANCESTRY,
+  configHistoryPromise?: Promise<readonly ConfigDoc[]>,
 ): Promise<ResolvedRef[]> {
   const [complete, configHistory] = await Promise.all([
     readAllRefUpdatesOnePage(sdk, repo),
-    readConfigHistory(sdk, repo),
+    configHistoryPromise ?? readConfigHistory(sdk, repo),
   ])
   if (complete !== null) {
     return [...complete].map(([refNameHashHex, updates]) =>
