@@ -21,7 +21,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
+use crate::backends::ipfs::IpfsConfig;
+use crate::backends::{
+    BackendRegistry, ByteRange, HttpsBackend, IpfsBackend, PackBackend, PackMeta, PlatformBackend,
+    Uri,
+};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
@@ -51,7 +55,11 @@ const DOC_CONFIG: &str = "config";
 const DOC_REF_UPDATE: &str = "refUpdate";
 const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
 const DOC_PACK_MANIFEST: &str = "packManifest";
+const DOC_MANIFEST_PART: &str = "manifestPart";
 const DOC_CHUNK: &str = "chunk";
+/// The template-v2 `packMirror` type (repoId, packHash, uris) — anyone announces extra
+/// availability URIs. Absent from the v1 template (feature-detected at runtime).
+const DOC_PACK_MIRROR: &str = "packMirror";
 // Document type name (registry contract).
 const DOC_REPO_LISTING: &str = "repoListing";
 
@@ -125,6 +133,12 @@ pub struct PackManifestInput {
     pub offset_index_parts: u64,
     /// External mirror URIs (serialized to the `uris` JSON-string field).
     pub uris: Vec<String>,
+    /// Prior artifact `packHash`es this manifest makes redundant (repack supersedes plan).
+    /// Serialized as one packed `byteArray` = concatenated 32-byte hashes.
+    pub supersedes: Vec<[u8; 32]>,
+    /// Tip OIDs this artifact covers (kind-2 flatIndex tip; a gitmirror pack's ref tips).
+    /// Serialized as one packed `byteArray` = concatenated raw OID bytes.
+    pub tips: Vec<Vec<u8>>,
 }
 
 /// A `packManifest` document read back from a repo contract.
@@ -132,6 +146,8 @@ pub struct PackManifestInput {
 pub struct PackManifestInfo {
     /// The manifest document id.
     pub document_id: String,
+    /// The base58 `$ownerId` of the manifest's creator (whose own docs are deletable).
+    pub owner_id: String,
     /// SHA-256 pack hash.
     pub pack_hash: [u8; 32],
     /// Artifact kind.
@@ -148,6 +164,63 @@ pub struct PackManifestInfo {
     pub offset_index_parts: u64,
     /// External mirror URIs (parsed from the `uris` JSON-string field).
     pub uris: Vec<String>,
+    /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
+    pub supersedes: Vec<[u8; 32]>,
+}
+
+/// Where a repack writes the consolidated pack.
+#[derive(Clone, Copy, Default)]
+pub enum RepackTarget<'a> {
+    /// On-chain `chunk` docs (the default; the tier repack refunds reclaim from).
+    #[default]
+    Platform,
+    /// An external backend (ipfs/s3/https) — migrates cold history outward. The pack is
+    /// hash-verifiable at its URIs; the on-chain refund still comes from deleting the
+    /// superseded platform chunks.
+    External(&'a dyn PackBackend),
+}
+
+/// The result of [`RepoService::repack`] (architecture §4.2 repack/GC).
+#[derive(Debug, Clone)]
+pub struct RepackReport {
+    /// SHA-256 of the new consolidated pack.
+    pub new_pack_hash: [u8; 32],
+    /// The new `packManifest` document id.
+    pub new_manifest_id: String,
+    /// Size of the consolidated pack in bytes.
+    pub new_pack_bytes: u64,
+    /// Object count of the consolidated pack.
+    pub object_count: u64,
+    /// The URIs the new pack is stored at (platform locator, or external mirrors).
+    pub new_uris: Vec<String>,
+    /// How many prior packs the new manifest supersedes.
+    pub superseded_count: usize,
+    /// Bytes of superseded pack storage the caller reclaimed (sum of deleted pack sizes).
+    pub bytes_reclaimed: u64,
+    /// Deleted `chunk` documents (caller-owned, WRITE-gated refund).
+    pub deleted_chunks: usize,
+    /// Deleted `packManifest` (+ `manifestPart`) documents (caller-owned).
+    pub deleted_manifests: usize,
+    /// Credits spent uploading the new consolidated pack + writing its manifest.
+    pub upload_cost_credits: u64,
+    /// Credits reclaimed by the superseded-doc deletions (the observed on-chain refund).
+    pub refund_credits: u64,
+    /// Net credit change over the whole repack (`refund − upload`; negative = net spend).
+    pub net_credits: i128,
+}
+
+/// The result of [`RepoService::reseed`] (availability restore, architecture §5).
+#[derive(Debug, Clone)]
+pub struct ReseedReport {
+    /// Per-pack `(packHash, new URIs)` the reseed added.
+    pub reseeded: Vec<([u8; 32], Vec<String>)>,
+    /// Whether the new URIs were persisted on-chain as `packMirror` docs (needs the
+    /// template-v2 `packMirror` type). `false` = the type is absent on this contract, so
+    /// the URIs are returned to the caller but not announced on Platform (see the method
+    /// docs for the fallback).
+    pub announced_on_chain: bool,
+    /// The number of `packMirror` documents written (0 when `announced_on_chain` is false).
+    pub mirror_docs_written: usize,
 }
 
 /// The repo-lifecycle service, bound to one owner identity and its keys.
@@ -577,6 +650,22 @@ impl<'a> RepoService<'a> {
                 .map_err(|e| Error::Config(format!("serializing manifest uris: {e}")))?;
             props.insert("uris".to_string(), FieldValue::text(json));
         }
+        // `tips` / `supersedes` are packed byteArrays (concatenated fixed-width entries),
+        // not JSON strings (data-contracts §2.3: byteArray fields, unlike `uris`).
+        if !manifest.tips.is_empty() {
+            let mut packed = Vec::new();
+            for oid in &manifest.tips {
+                packed.extend_from_slice(oid);
+            }
+            props.insert("tips".to_string(), FieldValue::bytes(packed));
+        }
+        if !manifest.supersedes.is_empty() {
+            let mut packed = Vec::with_capacity(manifest.supersedes.len() * 32);
+            for hash in &manifest.supersedes {
+                packed.extend_from_slice(hash);
+            }
+            props.insert("supersedes".to_string(), FieldValue::bytes(packed));
+        }
 
         self.doc_engine()?
             .create_document(&repo_contract, DOC_PACK_MANIFEST, props)
@@ -608,8 +697,22 @@ impl<'a> RepoService<'a> {
                     .field_str("uris")
                     .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
                     .unwrap_or_default();
+                // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
+                let supersedes = d
+                    .field_bytes("supersedes")
+                    .map(|raw| {
+                        raw.chunks_exact(32)
+                            .map(|c| {
+                                let mut h = [0u8; 32];
+                                h.copy_from_slice(c);
+                                h
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 Ok(PackManifestInfo {
                     document_id: d.id.clone(),
+                    owner_id: d.owner_id.clone(),
                     pack_hash,
                     kind: d.field_u64("kind").unwrap_or_default(),
                     size_bytes: d.field_u64("sizeBytes").unwrap_or_default(),
@@ -618,6 +721,7 @@ impl<'a> RepoService<'a> {
                     storage: d.field_u64("storage").unwrap_or_default(),
                     offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
                     uris,
+                    supersedes,
                 })
             })
             .collect()
@@ -749,6 +853,348 @@ impl<'a> RepoService<'a> {
             for doc in &page {
                 engine
                     .delete_document(&repo_contract, DOC_CHUNK, &doc.id)
+                    .await?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Consolidate a repo's live packs into **one** optimized pack, publish it, and delete
+    /// the caller's own now-superseded storage for a refund (architecture §4.2 repack/GC).
+    ///
+    /// Flow (availability never dips — the new pack lands *before* anything is deleted):
+    /// 1. Resolve all refs → the reachable tip set; collect the live (non-superseded)
+    ///    kind-0 `packManifest`s.
+    /// 2. Fetch each live pack's bytes (Platform chunks or external mirror) and rebuild one
+    ///    consolidated, self-contained pack over the reachable graph
+    ///    ([`crate::pack::repack_from_packs`]) — unreachable objects are GC'd.
+    /// 3. Upload it to `target` and write a new `packManifest` with `supersedes` = every
+    ///    prior kind-0 packHash and the resolved ref tips.
+    /// 4. Delete the caller's own superseded `chunk` + `packManifest` (+ `manifestPart`)
+    ///    docs — WRITE-gated, creator-only; a frozen identity's delete fails at consensus.
+    ///    Balance is sampled around the deletes so the [`RepackReport`] carries the real
+    ///    observed refund.
+    ///
+    /// Only docs the caller **owns** are deleted (Platform enforces creator-only deletes;
+    /// this also filters client-side so a co-maintainer's packs are superseded-but-kept).
+    pub async fn repack(
+        &self,
+        repo: &RepoHandle,
+        target: RepackTarget<'_>,
+    ) -> Result<RepackReport> {
+        let caller = self.identity.id();
+
+        // 1. Reachable tips + live kind-0 packs.
+        let refs = self.read_refs(repo).await?;
+        let tips = resolved_tip_oids(&refs);
+        if tips.is_empty() {
+            return Err(Error::Config(
+                "repack: repo has no resolved refs — nothing to consolidate".into(),
+            ));
+        }
+        let manifests = self.read_pack_manifests(repo).await?;
+        let live = live_kind0_manifests(&manifests);
+        if live.is_empty() {
+            return Err(Error::Config(
+                "repack: no live git packs to consolidate".into(),
+            ));
+        }
+
+        // 2. Fetch every live pack and rebuild one consolidated pack over the tips.
+        let mut pack_blobs = Vec::with_capacity(live.len());
+        for m in &live {
+            pack_blobs.push(self.fetch_pack_bytes(repo, m).await?);
+        }
+        let tip_refs: Vec<&str> = tips.iter().map(String::as_str).collect();
+        let consolidated = crate::pack::repack_from_packs(&pack_blobs, &tip_refs)?;
+        let new_bytes = consolidated.bytes;
+        let new_meta = PackMeta::for_bytes(&new_bytes);
+        let new_pack_hash = new_meta.pack_hash_bytes()?;
+        let object_count = consolidated.parsed.object_count() as u64;
+        let chunk_count = crate::pack::split(&new_bytes).len() as u64;
+
+        // Guard: if the consolidated pack collides with a still-live pack's hash (already a
+        // single optimal pack), there is nothing to gain and the unique-index write would
+        // fail — report it cleanly instead.
+        if live.iter().any(|m| m.pack_hash == new_pack_hash) {
+            return Err(Error::Config(
+                "repack: the repo is already a single consolidated pack (nothing to do)".into(),
+            ));
+        }
+
+        let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);
+
+        // 3. Upload the consolidated pack + write its manifest.
+        let (storage, new_uris) = match target {
+            RepackTarget::Platform => (0u64, self.put_pack(repo, &new_bytes, &new_meta).await?),
+            RepackTarget::External(backend) => (1u64, backend.put(&new_bytes, &new_meta).await?),
+        };
+        let supersedes: Vec<[u8; 32]> = live.iter().map(|m| m.pack_hash).collect();
+        let tip_oids: Vec<Vec<u8>> = tips
+            .iter()
+            .filter_map(|t| hex::decode(t).ok())
+            .take(16)
+            .collect();
+        let new_manifest_id = self
+            .write_pack_manifest(
+                repo,
+                &PackManifestInput {
+                    pack_hash: new_pack_hash,
+                    kind: u64::from(crate::pack::KIND_GIT_PACK),
+                    size_bytes: new_bytes.len() as u64,
+                    object_count,
+                    chunk_count,
+                    storage,
+                    // 0 = no separate manifestPart offset-index doc written (the browse-plane
+                    // offset index is generated by the locator pipeline, not here — matches
+                    // the incremental-push path). Never claim a part that was not stored.
+                    offset_index_parts: 0,
+                    uris: new_uris.iter().map(|u| u.0.clone()).collect(),
+                    supersedes: supersedes.clone(),
+                    tips: tip_oids,
+                },
+            )
+            .await?;
+
+        // 4. Delete the caller's own superseded storage (refund). Sample balance around the
+        // deletes so the report is the *observed* on-chain refund, not an estimate.
+        let balance_before_delete = self
+            .client
+            .get_balance(&caller)
+            .await
+            .unwrap_or(balance_start);
+        let (deleted_chunks, deleted_manifests, bytes_reclaimed) = self
+            .delete_superseded(repo, &manifests, &supersedes, new_pack_hash, &caller)
+            .await;
+        let balance_after_delete = self
+            .client
+            .get_balance(&caller)
+            .await
+            .unwrap_or(balance_before_delete);
+
+        let upload_cost_credits = balance_start.saturating_sub(balance_before_delete);
+        let refund_credits = balance_after_delete.saturating_sub(balance_before_delete);
+        let net_credits = i128::from(balance_after_delete) - i128::from(balance_start);
+
+        Ok(RepackReport {
+            new_pack_hash,
+            new_manifest_id,
+            new_pack_bytes: new_bytes.len() as u64,
+            object_count,
+            new_uris: new_uris.iter().map(|u| u.0.clone()).collect(),
+            superseded_count: supersedes.len(),
+            bytes_reclaimed,
+            deleted_chunks,
+            deleted_manifests,
+            upload_cost_credits,
+            refund_credits,
+            net_credits,
+        })
+    }
+
+    /// Delete the caller's own now-superseded storage for a repack: for each manifest the
+    /// caller owns that the new consolidated pack subsumes (every prior kind-0 pack, plus
+    /// anything explicitly in `supersedes`), remove its `chunk` + `manifestPart` +
+    /// `packManifest` docs (WRITE-gated, creator-only). Never touches the new pack or a
+    /// co-maintainer's docs. Returns `(deleted_chunks, deleted_manifests, bytes_reclaimed)`.
+    async fn delete_superseded(
+        &self,
+        repo: &RepoHandle,
+        manifests: &[PackManifestInfo],
+        supersedes: &[[u8; 32]],
+        new_pack_hash: [u8; 32],
+        caller: &str,
+    ) -> (usize, usize, u64) {
+        let mut deleted_chunks = 0usize;
+        let mut deleted_manifests = 0usize;
+        let mut bytes_reclaimed = 0u64;
+        for m in manifests {
+            if m.pack_hash == new_pack_hash || m.owner_id != caller {
+                continue; // never delete the new pack, or a co-maintainer's docs.
+            }
+            let is_superseded = m.kind == u64::from(crate::pack::KIND_GIT_PACK)
+                || supersedes.contains(&m.pack_hash);
+            if !is_superseded {
+                continue;
+            }
+            if let Ok(n) = self.delete_chunks(repo, m.pack_hash).await {
+                deleted_chunks += n;
+            }
+            deleted_chunks += self
+                .delete_manifest_parts(repo, m.pack_hash)
+                .await
+                .unwrap_or(0);
+            if self
+                .delete_document(&repo.repo_contract_id, DOC_PACK_MANIFEST, &m.document_id)
+                .await
+                .is_ok()
+            {
+                deleted_manifests += 1;
+                bytes_reclaimed += m.size_bytes;
+            }
+        }
+        (deleted_chunks, deleted_manifests, bytes_reclaimed)
+    }
+
+    /// Re-upload each pack's bytes to another backend and announce the new availability
+    /// URIs (architecture §5 reseed). **Availability-only, un-gated: anyone with a clone
+    /// can reseed** — it never deletes and never changes integrity.
+    ///
+    /// For every live kind-0 pack: fetch the bytes (verifying the manifest hash), `put`
+    /// them to `target`, and record the returned URIs. Persistence of the new URIs on
+    /// Platform depends on the contract template:
+    /// - **`packMirror` present (template v2+):** writes a `packMirror` doc per pack
+    ///   (`repoId`, `packHash`, `uris`) — the intended on-chain announcement.
+    /// - **absent (v1 template, e.g. the deployed testnet contract):** the `packManifest`
+    ///   is immutable with a unique `packHash`, so a second manifest revision cannot carry
+    ///   the URI — the reseed returns the URIs to the caller (for out-of-band pinning /
+    ///   `--json` capture) and flags `announced_on_chain = false`. `packMirror` is the
+    ///   template-v2 addition that closes this gap.
+    pub async fn reseed(
+        &self,
+        repo: &RepoHandle,
+        target: &dyn PackBackend,
+    ) -> Result<ReseedReport> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let live = live_kind0_manifests(&manifests);
+
+        let mut reseeded = Vec::new();
+        for m in &live {
+            let bytes = self.fetch_pack_bytes(repo, m).await?;
+            let meta = PackMeta {
+                pack_hash: hex::encode(m.pack_hash),
+                size: bytes.len() as u64,
+            };
+            // Verify the fetched bytes before re-announcing them (never propagate corruption).
+            if hex::encode(crate::backends::sha256(&bytes)) != meta.pack_hash {
+                return Err(Error::Integrity);
+            }
+            let uris = target.put(&bytes, &meta).await?;
+            reseeded.push((m.pack_hash, uris.iter().map(|u| u.0.clone()).collect()));
+        }
+
+        // Announce on-chain iff the contract carries the packMirror type.
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let mut mirror_docs_written = 0usize;
+        let announced_on_chain = repo_contract.has_document_type(DOC_PACK_MIRROR);
+        if announced_on_chain {
+            let repo_id_bytes = platform::decode_identifier(&repo.repo_contract_id)?;
+            let engine = self.doc_engine()?;
+            for (pack_hash, uris) in &reseeded {
+                let mut props = BTreeMap::new();
+                props.insert("repoId".to_string(), FieldValue::identifier(repo_id_bytes));
+                props.insert("packHash".to_string(), FieldValue::bytes32(*pack_hash));
+                let json = serde_json::to_string(uris)
+                    .map_err(|e| Error::Config(format!("serializing packMirror uris: {e}")))?;
+                props.insert("uris".to_string(), FieldValue::text(json));
+                engine
+                    .create_document(&repo_contract, DOC_PACK_MIRROR, props)
+                    .await?;
+                mirror_docs_written += 1;
+            }
+        }
+
+        Ok(ReseedReport {
+            reseeded,
+            announced_on_chain,
+            mirror_docs_written,
+        })
+    }
+
+    /// Read the extra availability URIs announced via `packMirror` docs, grouped by
+    /// packHash. Empty when the contract has no `packMirror` type (v1 template) — so
+    /// `dg storage status` can fold mirror URIs into its probe set without erroring on an
+    /// older contract.
+    pub async fn read_pack_mirrors(
+        &self,
+        repo: &RepoHandle,
+    ) -> Result<Vec<([u8; 32], Vec<String>)>> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        if !repo_contract.has_document_type(DOC_PACK_MIRROR) {
+            return Ok(Vec::new());
+        }
+        let docs = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_PACK_MIRROR,
+                &[],
+                &[QueryOrder::desc("$createdAt")],
+                0,
+                None,
+            )
+            .await?;
+        let mut out = Vec::new();
+        for d in &docs {
+            let Some(pack_hash) = d
+                .field_bytes("packHash")
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            else {
+                continue;
+            };
+            let uris = d
+                .field_str("uris")
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default();
+            out.push((pack_hash, uris));
+        }
+        Ok(out)
+    }
+
+    /// Fetch a stored pack's bytes: Platform `chunk` docs for a platform-tier manifest, or
+    /// the reader-side backend registry over the manifest's external mirror URIs.
+    async fn fetch_pack_bytes(
+        &self,
+        repo: &RepoHandle,
+        manifest: &PackManifestInfo,
+    ) -> Result<Vec<u8>> {
+        if manifest.storage == 0 {
+            let locator = Uri(format!(
+                "{}://{}/{}",
+                crate::backends::PLATFORM_SCHEME,
+                repo.repo_contract_id,
+                hex::encode(manifest.pack_hash),
+            ));
+            return self.get_pack(repo, &locator, None).await;
+        }
+        // External tier: race the mirror URIs, hash-verified.
+        let mut registry = BackendRegistry::new();
+        registry.register(Box::new(HttpsBackend::new()));
+        registry.register(Box::new(IpfsBackend::new(IpfsConfig {
+            api: None,
+            gateway: "https://ipfs.io".to_string(),
+        })));
+        let uris: Vec<Uri> = manifest.uris.iter().map(|u| Uri(u.clone())).collect();
+        registry
+            .get_verified(&uris, &hex::encode(manifest.pack_hash))
+            .await
+    }
+
+    /// Delete every `manifestPart` document for a pack (WRITE-gated refund), returning the
+    /// count removed. A no-op for packs whose offset index fit in the manifest.
+    async fn delete_manifest_parts(&self, repo: &RepoHandle, pack_hash: [u8; 32]) -> Result<usize> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let engine = self.doc_engine()?;
+        let mut removed = 0;
+        loop {
+            let page = self
+                .client
+                .query_documents(
+                    &repo_contract,
+                    DOC_MANIFEST_PART,
+                    &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
+                    &[QueryOrder::asc("partSeq")],
+                    100,
+                    None,
+                )
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            for doc in &page {
+                engine
+                    .delete_document(&repo_contract, DOC_MANIFEST_PART, &doc.id)
                     .await?;
                 removed += 1;
             }
@@ -987,6 +1433,48 @@ fn renumber_object_positions(schema: &mut serde_json::Value) {
             renumber_object_positions(prop);
         }
     }
+}
+
+/// Collect the distinct hex OIDs a repo's resolved refs point at — the reachable tip set
+/// repack plants as refs so GC keeps exactly the reachable graph. Includes every head of a
+/// diverged ref (none of the racing commits may be dropped).
+fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (_, state) in refs {
+        match state {
+            RefState::Resolved { oid, .. } => {
+                if seen.insert(oid.clone()) {
+                    out.push(oid.clone());
+                }
+            }
+            RefState::Diverged { heads } => {
+                for h in heads {
+                    if seen.insert(h.oid.clone()) {
+                        out.push(h.oid.clone());
+                    }
+                }
+            }
+            RefState::Unborn => {}
+        }
+    }
+    out
+}
+
+/// The live (non-superseded) kind-0 git packs among `manifests`: kind-0 manifests whose
+/// `packHash` no *other* manifest lists in its `supersedes`. This is what repack
+/// consolidates and reseed re-uploads.
+fn live_kind0_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
+    let superseded: BTreeSet<[u8; 32]> = manifests
+        .iter()
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
+    manifests
+        .iter()
+        .filter(|m| m.kind == u64::from(crate::pack::KIND_GIT_PACK))
+        .filter(|m| !superseded.contains(&m.pack_hash))
+        .cloned()
+        .collect()
 }
 
 /// Convert a credit amount to DASH for display/logging (1 DASH = 1e11 credits).

@@ -89,6 +89,9 @@ pub enum Command {
     Repack {
         /// The repository (`owner/name`).
         repo: Option<String>,
+        /// Destination backend for the consolidated pack (default: platform).
+        #[arg(long)]
+        backend: Option<Backend>,
     },
     /// Re-upload packs and append mirror URIs.
     Reseed {
@@ -584,8 +587,8 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
-        Command::Repack { repo } => maint::repack(ctx, repo.as_deref()),
-        Command::Reseed { repo, to } => maint::reseed(ctx, repo.as_deref(), *to),
+        Command::Repack { repo, backend } => maint::repack(ctx, repo.as_deref(), *backend).await,
+        Command::Reseed { repo, to } => maint::reseed(ctx, repo.as_deref(), *to).await,
         Command::Import { url } => maint::import(ctx, url),
         Command::Doctor => doctor::run(ctx).await,
     }

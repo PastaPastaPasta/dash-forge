@@ -141,6 +141,8 @@ async fn full_repo_lifecycle_on_testnet() {
         storage: 0,
         offset_index_parts: 1,
         uris: vec![locator.0.clone()],
+        supersedes: Vec::new(),
+        tips: Vec::new(),
     };
     let manifest_id = service
         .write_pack_manifest(&handle, &manifest)

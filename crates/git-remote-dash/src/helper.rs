@@ -494,6 +494,9 @@ async fn upload_push_pack(
             storage: 0,
             offset_index_parts: 0,
             uris: uris.iter().map(|u| u.0.clone()).collect(),
+            // An incremental push supersedes nothing and carries no flatIndex tips.
+            supersedes: Vec::new(),
+            tips: Vec::new(),
         },
     )
     .await

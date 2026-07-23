@@ -26,6 +26,9 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
+    // Fold in any extra availability URIs announced via `packMirror` docs (anyone can
+    // reseed → announce). Empty on a v1-template contract that lacks the packMirror type.
+    let mirrors = svc.read_pack_mirrors(&handle).await.unwrap_or_default();
 
     let mut registry = BackendRegistry::new();
     registry.register(Box::new(HttpsBackend::new()));
@@ -37,7 +40,16 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let mut packs = Vec::new();
     for m in &manifests {
         let pack_hex = hex::encode(m.pack_hash);
-        let external: Vec<Uri> = m.uris.iter().map(|u| Uri(u.clone())).collect();
+        // The manifest's own URIs plus any packMirror-announced URIs for this pack.
+        let mut uri_strings: Vec<String> = m.uris.clone();
+        for (mirror_hash, mirror_uris) in &mirrors {
+            if *mirror_hash == m.pack_hash {
+                uri_strings.extend(mirror_uris.iter().cloned());
+            }
+        }
+        uri_strings.sort();
+        uri_strings.dedup();
+        let external: Vec<Uri> = uri_strings.iter().map(|u| Uri(u.clone())).collect();
         let probed = registry.probe_all(&external).await;
 
         let mut mirrors = Vec::new();

@@ -134,6 +134,13 @@ impl LoadedContract {
     pub fn owner_id(&self) -> String {
         self.0.owner_id().to_string(Encoding::Base58)
     }
+
+    /// Whether the contract declares a document type named `name`. Used to feature-detect
+    /// template additions (e.g. the template-v2 `packMirror` type) so a client can fall
+    /// back gracefully on a contract instantiated from an older template.
+    pub fn has_document_type(&self, name: &str) -> bool {
+        self.0.has_document_type_for_name(name)
+    }
 }
 
 impl std::fmt::Debug for LoadedContract {

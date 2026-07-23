@@ -17,6 +17,9 @@
 //!   `…/ipfs/<CID>` + Range; the CID double-verifies alongside the manifest SHA-256.
 //! - [`platform`] — [`platform::PlatformBackend`], pack bytes as pipelined `chunk` docs
 //!   through the Platform [`WriteEngine`](crate::platform::WriteEngine).
+//! - [`gitmirror`] — [`gitmirror::GitMirrorBackend`], an existing git hoster as a byte
+//!   *source* (fetch + rebuild by tips; `git push --mirror` to write). CLI-only —
+//!   coverage-by-tips, not whole-pack-hash — so it is resolved outside [`verify_and_get`].
 //! - [`verify_and_get`] — the hash-check helper layered *on top of* `get`.
 //! - [`BackendRegistry`] — reader-side failover across a manifest's URIs.
 
@@ -24,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+pub mod gitmirror;
 pub mod https;
 pub mod ipfs;
 pub mod platform;
@@ -32,6 +36,7 @@ pub mod s3;
 #[cfg(test)]
 mod live_tests;
 
+pub use gitmirror::{GitMirrorBackend, GITMIRROR_SCHEME};
 pub use https::HttpsBackend;
 pub use ipfs::IpfsBackend;
 pub use platform::{decode_chunk_doc, encode_chunk_doc, PlatformBackend, PLATFORM_SCHEME};

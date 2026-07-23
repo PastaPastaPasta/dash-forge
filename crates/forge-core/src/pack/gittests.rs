@@ -5,7 +5,7 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use super::build::{build_pack, repack_all};
+use super::build::{build_pack, repack_all, repack_from_packs};
 use super::flatindex::FlatIndex;
 use super::locator::ObjectLocator;
 use super::manifest::{PackManifest, KIND_GIT_PACK};
@@ -175,6 +175,43 @@ fn thin_pack_is_unresolvable_but_fixed_pack_is_self_contained() {
         "expected a positive fix-thin premium, got {premium}"
     );
     assert!(report.pack.parsed.object_count() > 0);
+}
+
+#[test]
+fn repack_from_packs_consolidates_offdisk_packs_over_tips() {
+    // The repack/GC path when objects live off-disk (Platform chunks / external backend):
+    // split history into two incremental packs, then rebuild ONE consolidated pack from
+    // just those pack bytes + the resolved tip — exactly what RepoService::repack does
+    // after fetching each stored pack. The result must equal an on-disk `repack_all`.
+    let repo = make_repo();
+    let p = repo.path();
+    let tip = git_str(p, &["rev-parse", "HEAD"]);
+    let mid = git_str(p, &["rev-parse", "HEAD~3"]);
+
+    // Two packs whose union covers the whole graph: [root..mid] and (mid..tip].
+    let pack_a = build_pack(p, &[&mid], &[]).unwrap().pack.bytes;
+    let pack_b = build_pack(p, &[&tip], &[&mid]).unwrap().pack.bytes;
+
+    let consolidated = repack_from_packs(&[pack_a, pack_b], &[&tip]).unwrap();
+    // 0 REF_DELTA, self-contained, every OID verifies.
+    assert_eq!(consolidated.parsed.ref_delta_count(), 0);
+    assert!(is_self_contained(&consolidated.bytes));
+    assert_eq!(
+        consolidated.parsed.verify_all_oids().unwrap(),
+        consolidated.parsed.object_count()
+    );
+    // The tip commit is present, and the object set matches a direct on-disk repack.
+    let tip_bytes = hex::decode(&tip).unwrap();
+    assert!(consolidated.parsed.object(&tip_bytes).is_some());
+    let direct = repack_all(p).unwrap();
+    assert_eq!(
+        consolidated.parsed.object_count(),
+        direct.parsed.object_count(),
+        "off-disk repack must cover the same reachable objects as an on-disk repack"
+    );
+
+    // No inputs → a clear error, not a panic.
+    assert!(repack_from_packs(&[], &[&tip]).is_err());
 }
 
 #[test]

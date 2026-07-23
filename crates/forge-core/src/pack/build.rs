@@ -169,6 +169,49 @@ pub fn repack_all(repo: &Path) -> Result<Pack> {
     Pack::from_files(&pack_path, &idx_path)
 }
 
+/// Materialize a set of self-contained packs into a fresh scratch repo, point refs at
+/// `tips`, and consolidate everything reachable into one optimized pack (repack/GC).
+///
+/// This is the repack path when the objects live *off the local disk* — on Platform
+/// `chunk` docs or an external backend. Each blob in `packs` is a complete packfile
+/// (`index-pack`'d into the scratch odb); `tips` are the hex OIDs the repo's refs resolve
+/// to, planted under `refs/repack/N` so `pack-objects --all` walks exactly the reachable
+/// graph (unreachable objects are dropped — true GC). The scratch repo is
+/// removed on return; the caller's repositories are never touched.
+pub fn repack_from_packs(packs: &[Vec<u8>], tips: &[&str]) -> Result<Pack> {
+    if packs.is_empty() {
+        return Err(Error::Config("repack_from_packs: no input packs".into()));
+    }
+    let scratch = Scratch::new()?;
+    let repo = scratch.dir.join("repo.git");
+    fs::create_dir_all(&repo).map_err(|e| Error::Io(e.to_string()))?;
+    git_capture(&repo, &["init", "--bare", "-q"], None)?;
+
+    // Absorb every source pack into the scratch odb. `index-pack --stdin` (no `-o`, no
+    // explicit pack path) writes pack-<hash>.pack + its .idx straight into objects/pack, so
+    // `update-ref` and `pack-objects --all` can resolve the objects. Inputs are
+    // self-contained, so no `--fix-thin` is needed.
+    for bytes in packs {
+        git_capture(&repo, &["index-pack", "--stdin"], Some(bytes))?;
+    }
+
+    // Plant a ref per resolved tip so `pack-objects --all` sees the reachable graph. The
+    // generic `refs/repack/*` namespace (not `refs/heads/*`) holds tips of *any* object
+    // type — a `refUpdate` tip can be an annotated-tag object, which a branch ref rejects
+    // ("non-commit object to branch"); `pack-objects --all` still walks every ref under
+    // `refs/`, peeling tags to their commits.
+    for (i, tip) in tips.iter().enumerate() {
+        ensure_safe_rev(tip)?;
+        git_capture(
+            &repo,
+            &["update-ref", &format!("refs/repack/{i}"), tip],
+            None,
+        )?;
+    }
+
+    repack_all(&repo)
+}
+
 /// Reject a revision/ref string that git's CLI (or `--revs` stdin) could misparse.
 ///
 /// `refName` is an arbitrary ≤255-char Platform string that never passed
