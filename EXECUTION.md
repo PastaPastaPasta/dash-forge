@@ -75,3 +75,14 @@ Template cleanup (before Stage 6 CI): fix repo-v1.json source for the 3 runtime-
 Runtime-patched in repo.rs (from repo-lifecycle build): (1) group needs ≥2 members → solo-owner rewrite; (2) non-contiguous positions → renumber; (3) nested-object integers → minimal-width uint.
 $createdAt: fixed in template (refUpdate/protectedRefUpdate/event/config now required) — but DEPLOYED M1 contract predates it, so M1 issue/event folds are non-deterministic on M1 only; fresh repos fold deterministically.
 From collab/tokens build: (4) registry countable indices are compound (field,$createdAt) → single-field star/follower/following counts rejected by count-proof; add single-property countable index (listingId)/(identityId)/(ownerId). Fallback (count-tree→row-count) implemented meanwhile. (5) two-clause (ownerId,listingId) star query fails proof → using single-field + client filter. (6) issue/comment have documentsKeepHistory:true → NON-deletable at consensus, contradicting data-contracts §2.2 "author-deletable w/ refund" — DECISION NEEDED: drop KeepHist (deletable) OR keep audit history (update §2.2 to non-deletable). Leaning keep-KeepHist (issues cheap, audit valued) → update §2.2.
+
+## Stage 3 ✅ COMPLETE — M2 achieved
+- [x] forge-core collab + token services (issues/PRs/releases/social + ACL) — live-tested, reviewed+hardened (PR-merge-persists, pagination, owner-freeze, ref-injection). 92 tests.
+- [x] dg CLI — full gh-replacement surface, --json, live-tested (doctor 5/5, repo view, cost). repack/reseed/import/fork stubbed w/ TODO.
+- [x] forge-relay — Platform→webhook daemon, live M2 CI loop (push→webhook ~5s, CI consumer re-verify + checkRun writeback), SSRF/HMAC, interchangeable. 34 tests.
+- dg + relay reviews deferred to Stage 5 consolidated security pass (relay is availability-only; consumers re-verify).
+- M2 gate: terminal workflow ✓, webhook <30s ✓, CI loop ✓. Multi-instance swap = webhook-doc update (deterministic delivery id).
+
+## Stage 4 — Web + import → M3 (IN PROGRESS)
+Web needs: TS port of FORGE_RULES_V1 validated vs forge-contracts/vectors (66 vectors — parity contract); TS browse-plane reader (objectLocator/flatIndex/ranged); evo-sdk services; full Next.js UI. forge-import: Rust, reuses helper push + collab.
+Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH (faucet hard-cap bypass works).
