@@ -1,0 +1,53 @@
+{
+  "name": "issue_label_churn_by_maintainer",
+  "description": "Label add/add/remove by a MAINTAIN holder folds to the net set.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "ISSUE",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "urgent",
+        "oid": null,
+        "createdAt": 200
+      },
+      {
+        "id": "e3",
+        "targetId": "ISSUE",
+        "kind": "labelRemove",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 300
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ]
+  },
+  "expected": {
+    "open": true,
+    "labels": [
+      "urgent"
+    ],
+    "assignees": []
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "glob_any_of_patterns",
+  "description": "Match against any pattern in the list.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/tags/v1.2.3",
+    "patterns": [
+      "refs/heads/main",
+      "refs/tags/v*"
+    ]
+  },
+  "expected": true
+}

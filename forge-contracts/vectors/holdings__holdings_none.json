@@ -1,0 +1,14 @@
+{
+  "name": "holdings_none",
+  "description": "An identity with no records holds nothing.",
+  "case": "holdings",
+  "input": {
+    "records": [],
+    "identity": "bob",
+    "at": 100
+  },
+  "expected": {
+    "write": false,
+    "maintain": false
+  }
+}

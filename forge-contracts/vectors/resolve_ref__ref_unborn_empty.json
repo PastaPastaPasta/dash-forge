@@ -1,0 +1,14 @@
+{
+  "name": "ref_unborn_empty",
+  "description": "No updates at all is Unborn.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "unborn"
+  }
+}

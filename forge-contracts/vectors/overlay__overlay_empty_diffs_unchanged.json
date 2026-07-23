@@ -1,0 +1,30 @@
+{
+  "name": "overlay_empty_diffs_unchanged",
+  "description": "No diffs means the base was already current.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "a.txt",
+          "oid": "A",
+          "mode": 100644,
+          "size": 1
+        }
+      ]
+    },
+    "diffs": []
+  },
+  "expected": {
+    "tip": "T0",
+    "entries": [
+      {
+        "path": "a.txt",
+        "oid": "A",
+        "mode": 100644,
+        "size": 1
+      }
+    ]
+  }
+}

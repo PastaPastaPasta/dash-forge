@@ -1,0 +1,12 @@
+{
+  "name": "glob_release_one_level",
+  "description": "release/* matches one release level.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/release/1.0",
+    "patterns": [
+      "refs/heads/release/*"
+    ]
+  },
+  "expected": true
+}

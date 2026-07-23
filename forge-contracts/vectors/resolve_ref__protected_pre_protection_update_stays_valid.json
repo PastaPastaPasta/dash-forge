@@ -1,0 +1,42 @@
+{
+  "name": "protected_pre_protection_update_stays_valid",
+  "description": "A plain update before protection remains valid (as-of its own time).",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configHistory": [
+      {
+        "id": "c1",
+        "createdAt": 10,
+        "protectedPatterns": []
+      },
+      {
+        "id": "c2",
+        "createdAt": 200,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      }
+    ],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "A",
+    "author": "alice",
+    "createdAt": 100
+  }
+}

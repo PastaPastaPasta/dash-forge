@@ -1,0 +1,12 @@
+{
+  "name": "glob_star_single_segment",
+  "description": "* matches one segment.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/dev",
+    "patterns": [
+      "refs/heads/*"
+    ]
+  },
+  "expected": true
+}

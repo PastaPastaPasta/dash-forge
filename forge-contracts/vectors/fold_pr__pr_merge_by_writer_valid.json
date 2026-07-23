@@ -1,0 +1,43 @@
+{
+  "name": "pr_merge_by_writer_valid",
+  "description": "A WRITE holder may also merge (MAINTAIN-or-WRITE).",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "merge",
+        "actor": "dev",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "dev",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ],
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "overlay_modify_path",
+  "description": "Modifying a path replaces its oid/size and advances the tip.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "a.txt",
+          "oid": "A",
+          "mode": 100644,
+          "size": 1
+        }
+      ]
+    },
+    "diffs": [
+      {
+        "commit": "T1",
+        "changes": [
+          {
+            "op": "upsert",
+            "path": "a.txt",
+            "oid": "A2",
+            "mode": 100644,
+            "size": 9
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "tip": "T1",
+    "entries": [
+      {
+        "path": "a.txt",
+        "oid": "A2",
+        "mode": 100644,
+        "size": 9
+      }
+    ]
+  }
+}

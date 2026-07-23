@@ -1,0 +1,35 @@
+{
+  "name": "pr_merge_by_nonholder_inert",
+  "description": "A non-holder's merge is inert.",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "merge",
+        "actor": "eve",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [],
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

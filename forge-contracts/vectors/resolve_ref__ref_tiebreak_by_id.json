@@ -1,0 +1,45 @@
+{
+  "name": "ref_tiebreak_by_id",
+  "description": "Equal $createdAt is broken by $id so the true successor wins.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "a",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 100
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "B"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "B",
+    "author": "bob",
+    "createdAt": 100
+  }
+}

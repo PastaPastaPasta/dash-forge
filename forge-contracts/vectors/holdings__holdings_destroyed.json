@@ -1,0 +1,36 @@
+{
+  "name": "holdings_destroyed",
+  "description": "A destroyed (revoked) balance is gone.",
+  "case": "holdings",
+  "input": {
+    "records": [
+      {
+        "id": "r1",
+        "identity": "bob",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "identity": "bob",
+        "token": "write",
+        "op": "freeze",
+        "createdAt": 200
+      },
+      {
+        "id": "r3",
+        "identity": "bob",
+        "token": "write",
+        "op": "destroy",
+        "createdAt": 300
+      }
+    ],
+    "identity": "bob",
+    "at": 350
+  },
+  "expected": {
+    "write": false,
+    "maintain": false
+  }
+}

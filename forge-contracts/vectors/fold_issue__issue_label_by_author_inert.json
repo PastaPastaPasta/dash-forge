@@ -1,0 +1,25 @@
+{
+  "name": "issue_label_by_author_inert",
+  "description": "The author cannot label (needs a token); the label event is inert.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "labelAdd",
+        "actor": "alice",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": []
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

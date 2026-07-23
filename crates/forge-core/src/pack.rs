@@ -1,12 +1,46 @@
-//! Pack chunk geometry and the pure split/join chunker.
+//! The `PackPipeline`: git-object / pack plumbing for Dash Forge.
 //!
-//! Platform caps a single field at ~5 KiB and a whole state transition at 20 KiB
-//! (see `docs/research/platform-constraints.md` §1). A `chunk` document therefore
-//! carries up to [`FIELDS_PER_DOC`] byte fields of at most [`FIELD_MAX`] bytes each,
-//! and the whole document must fit inside [`ST_SIZE_LIMIT`].
+//! This module is pure logic plus subprocess `git` — no Platform SDK, no network. It
+//! turns a repository into the content-addressed artifacts the storage and browse
+//! planes transport (architecture §5–6.3, data-contracts §2.3):
 //!
-//! The chunker is pure, so it is fully implemented here (unlike the SDK-bound parts
-//! of the pipeline) and covered by round-trip and bounds unit tests.
+//! - [the chunker](split) — split a pack (or any artifact) into `chunk`-document
+//!   payloads and rejoin them. Platform caps a single field at ~5 KiB and a whole
+//!   state transition at 20 KiB, so a `chunk` carries up to [`FIELDS_PER_DOC`] fields
+//!   of at most [`FIELD_MAX`] bytes, all within [`ST_SIZE_LIMIT`].
+//! - [`build`] — pack creation via system git: [`build_pack`] (thin push pack +
+//!   `index-pack --fix-thin` → self-contained) and [`repack_all`] (consolidated pack,
+//!   0 `REF_DELTA`).
+//! - [`parse`] — packfile + `.idx` v2 parsing, object reconstruction (inflate + OFS/REF
+//!   delta), and SHA-256 `packHash`. Hand-parsed rather than scraping
+//!   `git verify-pack -v`; see that module for why (verify-pack can't distinguish
+//!   OFS from REF deltas, and the browse-plane span read needs the decoder anyway).
+//! - [`locator`] — the `objectLocator` artifact (fanout + OID-sorted rows) with an
+//!   `O(1/256)` [`lookup`](locator::ObjectLocator::lookup).
+//! - [`flatindex`] — the `flatIndex` recursive tree listing (incl. gitlinks).
+//! - [`manifest`] — `packManifest` (kind 0/1/2) types + the repack supersedes planner.
+//!
+//! The chunker is pure, so it is fully implemented here and covered by round-trip and
+//! bounds unit tests.
+
+pub mod build;
+pub mod flatindex;
+pub mod locator;
+pub mod manifest;
+pub mod parse;
+
+#[cfg(test)]
+mod gittests;
+
+pub use build::{build_pack, repack_all, BuildReport, Pack};
+pub use flatindex::{FlatEntry, FlatIndex, MODE_GITLINK};
+pub use locator::{
+    LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SINGLE_READ_THRESHOLD,
+};
+pub use manifest::{
+    plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_OBJECT_LOCATOR,
+};
+pub use parse::{git_oid, GitObjType, PackObject, ParsedPack, OID_LEN};
 
 /// Maximum bytes per byte-array field. Held below Platform's 5,120 B hard cap to
 /// leave room for per-field CBOR/document overhead.
@@ -156,6 +190,24 @@ mod tests {
         // Second chunk holds one full field plus a 10-byte tail.
         assert_eq!(chunks[1].fields.len(), 2);
         assert_eq!(chunks[1].payload_len(), FIELD_MAX + 10);
+    }
+
+    #[test]
+    fn max_doc_payload_fits_st_with_headroom() {
+        // The frozen 3×4900 = 14700 B payload (S0.2) must sit comfortably below the
+        // 20 KiB ST cap, leaving room for CBOR/document/signature overhead.
+        assert_eq!(DOC_PAYLOAD_MAX, 14_700);
+        let headroom = ST_SIZE_LIMIT - DOC_PAYLOAD_MAX;
+        assert!(headroom >= 5_000, "headroom {headroom} too small");
+    }
+
+    #[test]
+    fn reconstructed_size_matches_input() {
+        let data = ramp(DOC_PAYLOAD_MAX * 2 + 777);
+        let chunks = split(&data);
+        let rebuilt = join(&chunks);
+        assert_eq!(rebuilt.len(), data.len());
+        assert_eq!(rebuilt, data);
     }
 
     #[test]

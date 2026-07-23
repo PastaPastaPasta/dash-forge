@@ -1,0 +1,30 @@
+{
+  "name": "pr_close_by_author",
+  "description": "The author may close their own PR (not merged).",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "close",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [],
+    "baseTip": null,
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

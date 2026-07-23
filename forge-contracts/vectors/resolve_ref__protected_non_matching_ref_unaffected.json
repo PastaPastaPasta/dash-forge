@@ -1,0 +1,37 @@
+{
+  "name": "protected_non_matching_ref_unaffected",
+  "description": "Protection of main does not gate a plain update on an unmatched ref.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/dev",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [
+      {
+        "id": "c2",
+        "createdAt": 200,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      }
+    ],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "A",
+    "author": "alice",
+    "createdAt": 300
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "glob_star_does_not_cross_slash",
+  "description": "* does not cross '/'.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/release/1.0",
+    "patterns": [
+      "refs/heads/*"
+    ]
+  },
+  "expected": false
+}

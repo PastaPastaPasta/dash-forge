@@ -1,0 +1,34 @@
+{
+  "name": "issue_close_reopen_by_author",
+  "description": "Author close then reopen leaves it open.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "close",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "ISSUE",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": []
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

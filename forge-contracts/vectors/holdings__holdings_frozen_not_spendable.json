@@ -1,0 +1,29 @@
+{
+  "name": "holdings_frozen_not_spendable",
+  "description": "A frozen identity cannot spend.",
+  "case": "holdings",
+  "input": {
+    "records": [
+      {
+        "id": "r1",
+        "identity": "bob",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "identity": "bob",
+        "token": "write",
+        "op": "freeze",
+        "createdAt": 200
+      }
+    ],
+    "identity": "bob",
+    "at": 250
+  },
+  "expected": {
+    "write": false,
+    "maintain": false
+  }
+}

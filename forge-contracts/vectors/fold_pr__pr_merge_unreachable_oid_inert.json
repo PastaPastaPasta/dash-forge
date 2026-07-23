@@ -1,0 +1,38 @@
+{
+  "name": "pr_merge_unreachable_oid_inert",
+  "description": "A merge whose oid is not reachable from base is inert.",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "X",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ],
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

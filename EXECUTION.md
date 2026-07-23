@@ -28,10 +28,15 @@ Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdH
 ## Stage 2 — Protocol + helper → M1  (IN PROGRESS)
 - [x] Registry deployed testnet: `5fu48xTUVDj2QtBTY6pPH9w2t73YHb1fxf1WMg6Rt9pd` (cost 0.68 DASH — count-trees pricey; DEPLOYER ~0.32 left). `forge-contracts/scripts/deploy.mjs`, `deployments/testnet.json`.
 - [x] rs-sdk de-risked: builds as path dep on `../platform/packages/rs-sdk` in ~48s with `default-features=false` (drop mocks/offline-testing). Rust forge-core viable.
-- [ ] forge-core modules (platform/WriteEngine, keystore, cost, rules, pack, backends) — rs-sdk wired
-- [ ] git-remote-dash helper (list/fetch/push; partial-clone via .promisor; shallow fails loud)
-- [ ] repo-v1 template instantiation path (per-repo contract create from forge-core) + cost measurement
+- [x] forge-core **platform/WriteEngine + keystore + cost** — rs-sdk wired, LIVE-TESTED, reviewed (55c1567). Native put/wait works; sign-once + idempotent re-broadcast verified (AlreadyExists, no double-spend); structured errors (TokenFrozen 40702, CanRetry); redacted secrets; SDK isolated behind LoadedContract/LoadedIdentity. 26 tests.
+- [ ] forge-core **rules** (FORGE_RULES_V1: ref resolution + divergence + protected as-of + event folds + staleness overlay + conformance vectors JSON) — pure logic, no SDK, most testable
+- [ ] forge-core **pack** (fix-thin via system git, chunker w/ ST-size assert, offset index, locator/flatIndex builders per S0.5 corrected widths, supersedes planner)
+- [ ] forge-core **backends** (platform + trait; ipfs/s3/https wired to docker in Stage 5)
+- [ ] repo-v1 template instantiation path (per-repo contract create from forge-core) + cost measurement (expect ≥1 DASH — pull faucet)
+- [ ] git-remote-dash helper (list/fetch/push; partial-clone via .promisor; shallow fails loud; post-push ref re-verify)
 - [ ] M1 gate: byte-identical clone/push round-trip, frozen push rejected, fsck clean, 3rd-party verify
+
+Next-session start: build forge-core `rules` (pure, no funds needed) + `pack` (system-git, no funds) in parallel — both are large but fundable-free; then `backends` platform impl reuses the WriteEngine; then wire git-remote-dash; then repo-v1 instantiation (needs faucet top-up of DEPLOYER); then M1. rs-sdk write path is PROVEN — remaining Stage 2 is mostly pure-logic + git-plumbing on top of the working foundation.
 
 Economics note: registry 0.68 DASH, S0.7 token contract ~0.24 — repo-v1 (2 tokens + 15 types + count-trees) likely ≥1 DASH to instantiate. Pull faucet grants as needed; delete-to-refund test repos.
 Reusable JS platform patterns (for reference / evo-sdk web): spikes/S0.1/lib.mjs (nonce/broadcast), S0.7/lib.mjs (key+signer, fromJSON contract), tools/mint-identity/src/platform.mjs.

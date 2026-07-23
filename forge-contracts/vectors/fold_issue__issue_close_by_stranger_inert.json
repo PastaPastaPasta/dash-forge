@@ -1,0 +1,25 @@
+{
+  "name": "issue_close_by_stranger_inert",
+  "description": "A stranger's close is inert.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "close",
+        "actor": "eve",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": []
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

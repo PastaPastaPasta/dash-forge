@@ -1,0 +1,25 @@
+{
+  "name": "issue_close_by_author",
+  "description": "The author may close their own issue.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "close",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": []
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

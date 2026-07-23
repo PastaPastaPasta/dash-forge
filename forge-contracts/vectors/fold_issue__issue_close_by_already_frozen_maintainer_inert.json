@@ -1,0 +1,40 @@
+{
+  "name": "issue_close_by_already_frozen_maintainer_inert",
+  "description": "A maintainer frozen BEFORE acting is inert as-of the action time.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 50
+      },
+      {
+        "id": "t2",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "freeze",
+        "createdAt": 80
+      }
+    ]
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "ref_recreated_after_delete",
+  "description": "Create -> delete -> create resolves to the recreated tip.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "carol",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "C",
+    "author": "carol",
+    "createdAt": 300
+  }
+}

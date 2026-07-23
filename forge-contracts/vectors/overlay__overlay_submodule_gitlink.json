@@ -1,0 +1,43 @@
+{
+  "name": "overlay_submodule_gitlink",
+  "description": "A gitlink (mode 160000) entry overlays like any other path.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "lib",
+          "oid": "SUB1",
+          "mode": 160000,
+          "size": 0
+        }
+      ]
+    },
+    "diffs": [
+      {
+        "commit": "T1",
+        "changes": [
+          {
+            "op": "upsert",
+            "path": "lib",
+            "oid": "SUB2",
+            "mode": 160000,
+            "size": 0
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "tip": "T1",
+    "entries": [
+      {
+        "path": "lib",
+        "oid": "SUB2",
+        "mode": 160000,
+        "size": 0
+      }
+    ]
+  }
+}

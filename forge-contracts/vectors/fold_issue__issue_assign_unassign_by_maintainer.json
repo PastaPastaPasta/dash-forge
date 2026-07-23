@@ -1,0 +1,53 @@
+{
+  "name": "issue_assign_unassign_by_maintainer",
+  "description": "Assign/assign/unassign folds to the net assignee set.",
+  "case": "fold_issue",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "ISSUE",
+        "kind": "assign",
+        "actor": "maint",
+        "value": "dev1",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "ISSUE",
+        "kind": "assign",
+        "actor": "maint",
+        "value": "dev2",
+        "oid": null,
+        "createdAt": 200
+      },
+      {
+        "id": "e3",
+        "targetId": "ISSUE",
+        "kind": "unassign",
+        "actor": "maint",
+        "value": "dev1",
+        "oid": null,
+        "createdAt": 300
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ]
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": [
+      "dev2"
+    ]
+  }
+}

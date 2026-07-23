@@ -1,0 +1,15 @@
+{
+  "name": "issue_default_open",
+  "description": "An issue with no events is open with no labels.",
+  "case": "fold_issue",
+  "input": {
+    "events": [],
+    "targetAuthor": "alice",
+    "tokenRecords": []
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

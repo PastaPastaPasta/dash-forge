@@ -1,0 +1,22 @@
+{
+  "name": "holdings_minted_write",
+  "description": "A minted WRITE token is spendable.",
+  "case": "holdings",
+  "input": {
+    "records": [
+      {
+        "id": "r1",
+        "identity": "bob",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 100
+      }
+    ],
+    "identity": "bob",
+    "at": 150
+  },
+  "expected": {
+    "write": true,
+    "maintain": false
+  }
+}

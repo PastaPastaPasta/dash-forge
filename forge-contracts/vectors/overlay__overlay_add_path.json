@@ -1,0 +1,49 @@
+{
+  "name": "overlay_add_path",
+  "description": "Adding a path via a later commit's diff extends the tree.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "a.txt",
+          "oid": "A",
+          "mode": 100644,
+          "size": 1
+        }
+      ]
+    },
+    "diffs": [
+      {
+        "commit": "T1",
+        "changes": [
+          {
+            "op": "upsert",
+            "path": "b.txt",
+            "oid": "B",
+            "mode": 100644,
+            "size": 2
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "tip": "T1",
+    "entries": [
+      {
+        "path": "a.txt",
+        "oid": "A",
+        "mode": 100644,
+        "size": 1
+      },
+      {
+        "path": "b.txt",
+        "oid": "B",
+        "mode": 100644,
+        "size": 2
+      }
+    ]
+  }
+}

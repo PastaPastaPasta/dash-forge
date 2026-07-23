@@ -1,0 +1,38 @@
+{
+  "name": "pr_retarget_by_maintainer",
+  "description": "Retarget updates the PR base ref.",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/release",
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "maint",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ],
+    "baseTip": null,
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": "refs/heads/release",
+    "labels": [],
+    "assignees": []
+  }
+}

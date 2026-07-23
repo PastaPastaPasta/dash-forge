@@ -1,0 +1,60 @@
+{
+  "name": "ref_diverged_same_prev",
+  "description": "Two newest valid updates share prevOid and neither descends: Diverged.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u0",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "P0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "diverged",
+    "heads": [
+      {
+        "oid": "B",
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "oid": "A",
+        "author": "alice",
+        "createdAt": 100
+      }
+    ]
+  }
+}

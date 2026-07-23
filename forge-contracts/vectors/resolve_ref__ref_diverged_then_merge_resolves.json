@@ -1,0 +1,83 @@
+{
+  "name": "ref_diverged_then_merge_resolves",
+  "description": "A merge descending from both heads supersedes the race.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u0",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "P0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "M",
+        "force": false,
+        "protected": false,
+        "author": "carol",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "M"
+      ],
+      [
+        "B",
+        "M"
+      ],
+      [
+        "P0",
+        "A"
+      ],
+      [
+        "P0",
+        "B"
+      ],
+      [
+        "P0",
+        "M"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "M",
+    "author": "carol",
+    "createdAt": 300
+  }
+}

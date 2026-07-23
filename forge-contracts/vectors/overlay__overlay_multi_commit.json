@@ -1,0 +1,65 @@
+{
+  "name": "overlay_multi_commit",
+  "description": "Multiple commits apply in order and the tip becomes the last commit.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "a.txt",
+          "oid": "A",
+          "mode": 100644,
+          "size": 1
+        }
+      ]
+    },
+    "diffs": [
+      {
+        "commit": "T1",
+        "changes": [
+          {
+            "op": "upsert",
+            "path": "b.txt",
+            "oid": "B",
+            "mode": 100644,
+            "size": 2
+          }
+        ]
+      },
+      {
+        "commit": "T2",
+        "changes": [
+          {
+            "op": "delete",
+            "path": "a.txt"
+          },
+          {
+            "op": "upsert",
+            "path": "c.txt",
+            "oid": "C",
+            "mode": 100644,
+            "size": 3
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "tip": "T2",
+    "entries": [
+      {
+        "path": "b.txt",
+        "oid": "B",
+        "mode": 100644,
+        "size": 2
+      },
+      {
+        "path": "c.txt",
+        "oid": "C",
+        "mode": 100644,
+        "size": 3
+      }
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "pr_draft_then_ready",
+  "description": "Draft then ready clears the draft flag.",
+  "case": "fold_pr",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "PR",
+        "kind": "draft",
+        "actor": "dev",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "PR",
+        "kind": "ready",
+        "actor": "dev",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice",
+    "tokenRecords": [
+      {
+        "id": "t1",
+        "identity": "dev",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 50
+      }
+    ],
+    "baseTip": null,
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

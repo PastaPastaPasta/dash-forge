@@ -1,0 +1,46 @@
+{
+  "name": "overlay_delete_path",
+  "description": "Deleting a path removes it from the overlaid tree.",
+  "case": "overlay",
+  "input": {
+    "base": {
+      "tip": "T0",
+      "entries": [
+        {
+          "path": "a.txt",
+          "oid": "A",
+          "mode": 100644,
+          "size": 1
+        },
+        {
+          "path": "b.txt",
+          "oid": "B",
+          "mode": 100644,
+          "size": 2
+        }
+      ]
+    },
+    "diffs": [
+      {
+        "commit": "T1",
+        "changes": [
+          {
+            "op": "delete",
+            "path": "a.txt"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "tip": "T1",
+    "entries": [
+      {
+        "path": "b.txt",
+        "oid": "B",
+        "mode": 100644,
+        "size": 2
+      }
+    ]
+  }
+}

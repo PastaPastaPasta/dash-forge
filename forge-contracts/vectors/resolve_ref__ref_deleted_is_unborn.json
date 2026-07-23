@@ -1,0 +1,37 @@
+{
+  "name": "ref_deleted_is_unborn",
+  "description": "A newest deletion update leaves the ref Unborn.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "unborn"
+  }
+}

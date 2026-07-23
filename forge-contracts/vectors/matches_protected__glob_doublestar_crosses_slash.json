@@ -1,0 +1,12 @@
+{
+  "name": "glob_doublestar_crosses_slash",
+  "description": "** crosses '/'.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/release/1.0",
+    "patterns": [
+      "refs/heads/**"
+    ]
+  },
+  "expected": true
+}

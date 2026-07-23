@@ -1,0 +1,29 @@
+{
+  "name": "holdings_tie_at_timestamp",
+  "description": "At equal $createdAt, records apply in $id order (mint then freeze -> frozen).",
+  "case": "holdings",
+  "input": {
+    "records": [
+      {
+        "id": "r1",
+        "identity": "bob",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "identity": "bob",
+        "token": "write",
+        "op": "freeze",
+        "createdAt": 100
+      }
+    ],
+    "identity": "bob",
+    "at": 100
+  },
+  "expected": {
+    "write": false,
+    "maintain": false
+  }
+}

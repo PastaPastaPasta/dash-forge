@@ -1,0 +1,88 @@
+{
+  "name": "ref_diverged_ff_one_side_stays_diverged",
+  "description": "Fast-forwarding only one racing head leaves the other live: still Diverged.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u0",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "P0",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "P0",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "B",
+        "C"
+      ],
+      [
+        "P0",
+        "A"
+      ],
+      [
+        "P0",
+        "B"
+      ],
+      [
+        "P0",
+        "C"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "diverged",
+    "heads": [
+      {
+        "oid": "C",
+        "author": "bob",
+        "createdAt": 300
+      },
+      {
+        "oid": "A",
+        "author": "alice",
+        "createdAt": 100
+      }
+    ]
+  }
+}

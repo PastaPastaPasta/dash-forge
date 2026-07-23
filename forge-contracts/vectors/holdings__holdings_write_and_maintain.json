@@ -1,0 +1,29 @@
+{
+  "name": "holdings_write_and_maintain",
+  "description": "Independent WRITE and MAINTAIN holdings.",
+  "case": "holdings",
+  "input": {
+    "records": [
+      {
+        "id": "r1",
+        "identity": "bob",
+        "token": "write",
+        "op": "mint",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "identity": "bob",
+        "token": "maintain",
+        "op": "mint",
+        "createdAt": 100
+      }
+    ],
+    "identity": "bob",
+    "at": 150
+  },
+  "expected": {
+    "write": true,
+    "maintain": true
+  }
+}

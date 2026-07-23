@@ -1,0 +1,12 @@
+{
+  "name": "glob_exact",
+  "description": "Exact match.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/heads/main",
+    "patterns": [
+      "refs/heads/main"
+    ]
+  },
+  "expected": true
+}

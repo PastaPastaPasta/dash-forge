@@ -1,0 +1,45 @@
+{
+  "name": "ref_linear_fast_forward",
+  "description": "Fast-forward chain resolves to the newest tip.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "B"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "B",
+    "author": "bob",
+    "createdAt": 200
+  }
+}
