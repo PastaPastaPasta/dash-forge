@@ -65,21 +65,17 @@ export function RefSwitcher({
             className="absolute left-0 z-20 mt-1 max-h-80 w-72 overflow-y-auto rounded-lg border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900"
           >
             <RefGroup
-              label="Branches"
+              kind="branch"
               names={home.branches.map((b) => b.refName.replace(/^refs\/heads\//, ''))}
-              icon={GitBranch}
               current={current}
-              isTagGroup={false}
               hrefFor={hrefFor}
               onPick={() => setOpen(false)}
             />
             {home.tags.length > 0 ? (
               <RefGroup
-                label="Tags"
+                kind="tag"
                 names={home.tags.map((t) => t.refName.replace(/^refs\/tags\//, ''))}
-                icon={Tag}
                 current={current}
-                isTagGroup
                 hrefFor={hrefFor}
                 onPick={() => setOpen(false)}
               />
@@ -116,22 +112,21 @@ export function RefNotFoundState({
 }
 
 function RefGroup({
-  label,
+  kind,
   names,
-  icon: Icon,
   current,
-  isTagGroup,
   hrefFor,
   onPick,
 }: {
-  label: string
+  kind: 'branch' | 'tag'
   names: readonly string[]
-  icon: typeof GitBranch
   current: SelectedRef
-  isTagGroup: boolean
   hrefFor: (shortName: string, isTag: boolean) => string
   onPick: () => void
 }): JSX.Element {
+  const isTagGroup = kind === 'tag'
+  const label = isTagGroup ? 'Tags' : 'Branches'
+  const Icon = isTagGroup ? Tag : GitBranch
   return (
     <div>
       <div className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-400">{label}</div>

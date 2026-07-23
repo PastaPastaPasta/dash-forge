@@ -53,9 +53,7 @@ export function FileList({
         const kind = modeKind(e.mode)
         const childPath = basePath ? `${basePath}/${e.name}` : e.name
         const isDir = kind === 'dir'
-        const extra: Record<string, string> = refParam
-          ? { path: childPath, ref: refParam }
-          : { path: childPath }
+        const extra = { path: childPath, ...(refParam ? { ref: refParam } : {}) }
         const href =
           kind === 'submodule'
             ? undefined
