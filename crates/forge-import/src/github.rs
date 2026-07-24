@@ -352,34 +352,52 @@ fn gh_token() -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
+/// Run a `gh` invocation, retrying transient network failures (connection resets, timeouts —
+/// routine over the thousands of paginated calls a large enumeration makes). Non-transient
+/// failures (4xx, auth) fail immediately.
+fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Output> {
+    const ATTEMPTS: u32 = 4;
+    let mut last_err = String::new();
+    for attempt in 1..=ATTEMPTS {
+        let out = Command::new("gh")
+            .args(args)
+            .output()
+            .with_context(|| format!("running `gh {}`", args.join(" ")))?;
+        if out.status.success() {
+            return Ok(out);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let transient = stderr.contains("connection reset")
+            || stderr.contains("timeout")
+            || stderr.contains("TLS handshake")
+            || stderr.contains("temporary failure")
+            || stderr.contains("EOF")
+            || stderr.contains("502")
+            || stderr.contains("503");
+        if !transient || attempt == ATTEMPTS {
+            bail!("{what} failed: {stderr}");
+        }
+        let wait = std::time::Duration::from_secs(5 * u64::from(attempt));
+        tracing::warn!(attempt, wait_secs = wait.as_secs(), %stderr, "transient gh failure — retrying");
+        std::thread::sleep(wait);
+        last_err = stderr;
+    }
+    bail!("{what} failed: {last_err}")
+}
+
 /// Run `gh api <path>` and return raw stdout bytes (single object).
 fn api_json(path: &str) -> Result<Vec<u8>> {
-    let out = Command::new("gh")
-        .args(["api", path])
-        .output()
-        .with_context(|| format!("running `gh api {path}`"))?;
-    if !out.status.success() {
-        bail!(
-            "`gh api {path}` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    let out = gh_output_with_retry(&["api", path], &format!("`gh api {path}`"))?;
     Ok(out.stdout)
 }
 
 /// Run `gh api <path> --paginate --jq '.[]'` and deserialize the JSONL stream. Each output
 /// line is one array element as a JSON object; blank lines are skipped.
 fn api_list<T: for<'de> Deserialize<'de>>(path: &str) -> Result<Vec<T>> {
-    let out = Command::new("gh")
-        .args(["api", path, "--paginate", "--jq", ".[]"])
-        .output()
-        .with_context(|| format!("running `gh api {path} --paginate`"))?;
-    if !out.status.success() {
-        bail!(
-            "`gh api {path}` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    let out = gh_output_with_retry(
+        &["api", path, "--paginate", "--jq", ".[]"],
+        &format!("`gh api {path} --paginate`"),
+    )?;
     let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
     let mut items = Vec::new();
     for line in text.lines() {
