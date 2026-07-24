@@ -361,25 +361,41 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
     let new_path = format!("{}:{path}", helper_dir.display());
     let url = format!("dash://{owner}/{name}");
 
-    tracing::info!(%url, "pushing git data via git-remote-dash");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(clone_dir)
-        .args([
-            "push",
-            &url,
-            "refs/heads/*:refs/heads/*",
-            "refs/tags/*:refs/tags/*",
-        ])
-        .env("PATH", new_path)
-        .env("DASH_FORGE_KEY", &cfg.identity_path)
-        .env("DASH_FORGE_NETWORK", network_label(cfg.network))
-        .status()
-        .context("running git push dash://")?;
-    if !status.success() {
-        bail!("git push to {url} failed");
+    // Testnet transport drops (connection resets) are routine over a multi-hour push, so the
+    // push is retried: the helper's chunk journal (in this clone's .git, alive across
+    // attempts) resumes where the last attempt stopped, and chunk/packManifest re-broadcasts
+    // are idempotent (unique-index duplicate == already stored), so a retry never double-pays.
+    const PUSH_ATTEMPTS: u32 = 5;
+    for attempt in 1..=PUSH_ATTEMPTS {
+        tracing::info!(%url, attempt, "pushing git data via git-remote-dash");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(clone_dir)
+            .args([
+                "push",
+                &url,
+                "refs/heads/*:refs/heads/*",
+                "refs/tags/*:refs/tags/*",
+            ])
+            .env("PATH", &new_path)
+            .env("DASH_FORGE_KEY", &cfg.identity_path)
+            .env("DASH_FORGE_NETWORK", network_label(cfg.network))
+            .status()
+            .context("running git push dash://")?;
+        if status.success() {
+            return Ok(());
+        }
+        if attempt < PUSH_ATTEMPTS {
+            let wait = std::time::Duration::from_secs(15 * u64::from(attempt));
+            tracing::warn!(
+                attempt,
+                wait_secs = wait.as_secs(),
+                "git push failed — retrying (journal resumes already-confirmed chunks)"
+            );
+            std::thread::sleep(wait);
+        }
     }
-    Ok(())
+    bail!("git push to {url} failed after {PUSH_ATTEMPTS} attempts")
 }
 
 /// The lowercase network label the helper reads from `DASH_FORGE_NETWORK`.
