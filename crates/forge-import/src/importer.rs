@@ -344,6 +344,18 @@ async fn resolve_or_create(
 /// path. The `git-remote-dash` helper is discovered next to this binary and prepended to
 /// `PATH`, and the identity + network are handed to it via the same env vars it reads.
 fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> Result<()> {
+    // Testnet transport drops (connection resets) are routine over a multi-hour push, so the
+    // push is retried: the helper's chunk journal (in this clone's .git, alive across
+    // attempts) resumes where the last attempt stopped, and chunk/packManifest re-broadcasts
+    // are idempotent (unique-index duplicate == already stored), so a retry never double-pays.
+    const PUSH_ATTEMPTS: u32 = 5;
+    // A push that hangs (e.g. an SDK retry loop against a dead broadcast path) never returns
+    // a status, so waiting on the child is not enough: progress is watched via the helper's
+    // journal checkpoint file, touched after every confirmed chunk. No touch for
+    // STALL_TIMEOUT → the child is killed and the attempt counts as failed. The next attempt
+    // resumes from the same journal.
+    const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
     let owner = state
         .owner_id
         .clone()
@@ -361,14 +373,9 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
     let new_path = format!("{}:{path}", helper_dir.display());
     let url = format!("dash://{owner}/{name}");
 
-    // Testnet transport drops (connection resets) are routine over a multi-hour push, so the
-    // push is retried: the helper's chunk journal (in this clone's .git, alive across
-    // attempts) resumes where the last attempt stopped, and chunk/packManifest re-broadcasts
-    // are idempotent (unique-index duplicate == already stored), so a retry never double-pays.
-    const PUSH_ATTEMPTS: u32 = 5;
     for attempt in 1..=PUSH_ATTEMPTS {
         tracing::info!(%url, attempt, "pushing git data via git-remote-dash");
-        let status = Command::new("git")
+        let mut child = Command::new("git")
             .arg("-C")
             .arg(clone_dir)
             .args([
@@ -380,10 +387,32 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
             .env("PATH", &new_path)
             .env("DASH_FORGE_KEY", &cfg.identity_path)
             .env("DASH_FORGE_NETWORK", network_label(cfg.network))
-            .status()
+            .spawn()
             .context("running git push dash://")?;
-        if status.success() {
-            return Ok(());
+
+        let started = std::time::Instant::now();
+        let outcome = loop {
+            if let Some(status) = child.try_wait().context("waiting on git push")? {
+                break Some(status);
+            }
+            let idle = journal_idle_time(clone_dir).unwrap_or_else(|| started.elapsed());
+            if idle > STALL_TIMEOUT {
+                tracing::warn!(
+                    attempt,
+                    idle_secs = idle.as_secs(),
+                    "push stalled (no chunk confirmed for the stall window) — killing it"
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(20));
+        };
+
+        if let Some(status) = outcome {
+            if status.success() {
+                return Ok(());
+            }
         }
         if attempt < PUSH_ATTEMPTS {
             let wait = std::time::Duration::from_secs(15 * u64::from(attempt));
@@ -396,6 +425,19 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
         }
     }
     bail!("git push to {url} failed after {PUSH_ATTEMPTS} attempts")
+}
+
+/// How long since the push journal (any `dash/journal/*.json` under the bare clone) was last
+/// checkpointed — i.e. since the last confirmed chunk. `None` when no journal exists yet
+/// (the push is still packing / hasn't confirmed its first chunk).
+fn journal_idle_time(clone_dir: &Path) -> Option<std::time::Duration> {
+    let dir = clone_dir.join("dash").join("journal");
+    let newest = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max()?;
+    newest.elapsed().ok()
 }
 
 /// The lowercase network label the helper reads from `DASH_FORGE_NETWORK`.
