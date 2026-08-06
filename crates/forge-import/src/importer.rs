@@ -352,9 +352,12 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
     // A push that hangs (e.g. an SDK retry loop against a dead broadcast path) never returns
     // a status, so waiting on the child is not enough: progress is watched via the helper's
     // journal checkpoint file, touched after every confirmed chunk. No touch for
-    // STALL_TIMEOUT → the child is killed and the attempt counts as failed. The next attempt
-    // resumes from the same journal.
+    // STALL_TIMEOUT → the whole push process group is killed and the attempt counts as
+    // failed. The next attempt resumes from the same journal. Before the first checkpoint
+    // exists the helper is still connecting/packing/splitting (journal-silent by design), so
+    // that phase gets the longer PREPACK_TIMEOUT instead.
     const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+    const PREPACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90 * 60);
 
     let owner = state
         .owner_id
@@ -375,7 +378,8 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
 
     for attempt in 1..=PUSH_ATTEMPTS {
         tracing::info!(%url, attempt, "pushing git data via git-remote-dash");
-        let mut child = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(clone_dir)
             .args([
@@ -386,24 +390,32 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
             ])
             .env("PATH", &new_path)
             .env("DASH_FORGE_KEY", &cfg.identity_path)
-            .env("DASH_FORGE_NETWORK", network_label(cfg.network))
-            .spawn()
-            .context("running git push dash://")?;
+            .env("DASH_FORGE_NETWORK", network_label(cfg.network));
+        // Own process group, so a stall-kill reaches the git-remote-dash helper child too —
+        // killing only `git` orphans a wedged helper that would keep writing the journal
+        // concurrently with the next attempt.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().context("running git push dash://")?;
 
         let started = std::time::Instant::now();
         let outcome = loop {
             if let Some(status) = child.try_wait().context("waiting on git push")? {
                 break Some(status);
             }
-            let idle = journal_idle_time(clone_dir).unwrap_or_else(|| started.elapsed());
-            if idle > STALL_TIMEOUT {
+            // No journal yet → pre-pack phase (its own, longer budget, measured from spawn).
+            // A clock jump making mtime unreadable reports ZERO (assume fresh), never a kill.
+            let (idle, limit) = match journal_idle_time(clone_dir) {
+                Some(idle) => (idle, STALL_TIMEOUT),
+                None => (started.elapsed(), PREPACK_TIMEOUT),
+            };
+            if idle > limit {
                 tracing::warn!(
                     attempt,
                     idle_secs = idle.as_secs(),
                     "push stalled (no chunk confirmed for the stall window) — killing it"
                 );
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_process_group(&mut child);
                 break None;
             }
             std::thread::sleep(std::time::Duration::from_secs(20));
@@ -427,9 +439,25 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
     bail!("git push to {url} failed after {PUSH_ATTEMPTS} attempts")
 }
 
+/// Kill the child's whole process group (it was spawned as a group leader), then reap it.
+/// Reaches the git-remote-dash helper under `git`, not just `git` itself.
+fn kill_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // SIGKILL the group via kill(1) — negative pid addresses the group.
+        let _ = Command::new("kill")
+            .args(["-9", &format!("-{}", child.id())])
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// How long since the push journal (any `dash/journal/*.json` under the bare clone) was last
 /// checkpointed — i.e. since the last confirmed chunk. `None` when no journal exists yet
-/// (the push is still packing / hasn't confirmed its first chunk).
+/// (the push is still connecting/packing — journal-silent by design). An unreadable elapsed
+/// (wall clock stepped backward past the checkpoint) reports ZERO: the journal exists, so
+/// treat it as fresh rather than risking a spurious kill of a progressing push.
 fn journal_idle_time(clone_dir: &Path) -> Option<std::time::Duration> {
     let dir = clone_dir.join("dash").join("journal");
     let newest = std::fs::read_dir(dir)
@@ -437,7 +465,7 @@ fn journal_idle_time(clone_dir: &Path) -> Option<std::time::Duration> {
         .flatten()
         .filter_map(|e| e.metadata().ok()?.modified().ok())
         .max()?;
-    newest.elapsed().ok()
+    Some(newest.elapsed().unwrap_or(std::time::Duration::ZERO))
 }
 
 /// The lowercase network label the helper reads from `DASH_FORGE_NETWORK`.
