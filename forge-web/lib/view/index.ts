@@ -51,6 +51,7 @@ export {
 } from './browse-source'
 export {
   cachedFallback,
+  restoreFallback,
   startFallback,
   type FallbackProgress,
 } from './browse-fallback'

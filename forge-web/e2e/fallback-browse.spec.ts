@@ -7,11 +7,12 @@ import { collectPageErrors, readErrorBanner, repoUrl, shot, waitForRepoResolved 
  * from platform `chunk` documents, index them client-side, and serve the root tree/README
  * from the locally built index. Small repos (≤ 2 MB of live packs) auto-load; larger ones
  * surface an explicit "Load repo in browser (~X MB)" action — the spec handles both.
- * In-app navigation afterwards must reuse the session-cached context (no second prompt).
+ * In-app navigation and a hard reload afterwards must reuse the browser-cached context
+ * (no second prompt or pack download).
  */
 
 test.describe('in-browser fallback clone (no objectLocator)', () => {
-  test('repo home clones + indexes in-browser, then navigation reuses the cache', async ({
+  test('repo home clones + indexes in-browser, then navigation and reload reuse the cache', async ({
     page,
   }) => {
     const { errors } = collectPageErrors(page)
@@ -48,6 +49,13 @@ test.describe('in-browser fallback clone (no objectLocator)', () => {
     await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible({ timeout: 30_000 })
     await expect(loadButton).toHaveCount(0)
     await shot(page, '09-fallback-blob')
+
+    // A full document reload clears module state. The persisted verified packs + locator must
+    // restore the reader without returning to the download opt-in state.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible({ timeout: 30_000 })
+    await expect(loadButton).toHaveCount(0)
 
     expect(errors, `uncaught page errors:\n${errors.join('\n')}`).toEqual([])
   })

@@ -3,9 +3,9 @@
 /**
  * useFallbackBrowse — drive the in-browser fallback clone for a repo with no published
  * objectLocator. Small repos (≤ {@link AUTO_LOAD_MAX_BYTES}) start automatically; larger
- * ones wait for `start()` (the "Load repo in browser (~X MB)" button). A session already
- * holding the repo's fallback context (module cache in `lib/view/browse-fallback`) resumes
- * silently on mount, so navigation between repo pages never re-downloads or re-asks.
+ * ones wait for `start()` (the "Load repo in browser (~X MB)" button). A session or browser
+ * profile already holding the repo's exact fallback context resumes silently on mount, so
+ * navigation and hard reloads never re-download or re-ask.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -15,6 +15,7 @@ import type { PackManifest, RepoRef } from '@/lib/repo'
 import { errorMessage } from '@/lib/utils'
 import {
   cachedFallback,
+  restoreFallback,
   startFallback,
   type BrowseContext,
   type FallbackProgress,
@@ -71,19 +72,42 @@ export function useFallbackBrowse(
     }))
   }, [sdk, repo, livePacks, settle])
 
-  // Resume a cached run silently; auto-start small repos once the SDK is up.
+  // Resume a memory/IndexedDB-cached run silently; auto-start small repos once the SDK is up.
   const totalSizeBytes = (livePacks ?? []).reduce((s, m) => s + m.sizeBytes, 0)
   const startRef = useRef(start)
   startRef.current = start
   useEffect(() => {
     if (repo === null) return
-    const cached = cachedFallback(repo.contractId)
+    if (livePacks === null || livePacks.length === 0) return
+    const cached = cachedFallback(repo.contractId, livePacks)
     if (cached !== null) {
       settle(cached)
       return
     }
-    if (sdk !== null && livePacks !== null && livePacks.length > 0 && totalSizeBytes <= AUTO_LOAD_MAX_BYTES) {
-      startRef.current()
+
+    let cancelled = false
+    setStatus('working')
+    setError(null)
+    restoreFallback(repo, livePacks)
+      .then((ctx) => {
+        if (cancelled || !mounted.current) return
+        if (ctx !== null) {
+          setContext(ctx)
+          setStatus('ready')
+        } else if (sdk !== null && totalSizeBytes <= AUTO_LOAD_MAX_BYTES) {
+          startRef.current()
+        } else {
+          setProgress(null)
+          setStatus('idle')
+        }
+      })
+      .catch((e: unknown) => {
+        if (cancelled || !mounted.current) return
+        setError(errorMessage(e))
+        setStatus('error')
+      })
+    return () => {
+      cancelled = true
     }
     // livePacks identity tracks its load; contractId scopes the cache probe.
   }, [repo?.contractId ?? '', sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
