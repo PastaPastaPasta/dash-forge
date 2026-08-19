@@ -28,6 +28,20 @@ export {
   type TreeEntry,
 } from './git-objects'
 export { parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
+export {
+  compactDiffLines,
+  diffTextLines,
+  type CompactDiffLine,
+  type TextDiffLine,
+} from './text-diff'
+export {
+  findMergeBase,
+  loadPullComparison,
+  PULL_DIFF_INLINE_FILE_CAP,
+  type FilePatch,
+  type ObjectReader,
+  type PullComparison,
+} from './pull-diff'
 export { highlightBlob, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,

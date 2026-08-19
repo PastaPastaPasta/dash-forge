@@ -8,6 +8,8 @@
 import type { BrowseReader } from '../browse'
 import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntry } from './git-objects'
 
+type ObjectReader = Pick<BrowseReader, 'readObject'>
+
 /** One entry in a rendered commit log. */
 export interface LogEntry {
   readonly oid: string
@@ -35,24 +37,23 @@ export async function walkLog(reader: BrowseReader, tipOid: string, limit = 30):
 export interface FileChange {
   readonly path: string
   readonly status: 'added' | 'modified' | 'deleted'
+  readonly baseOid: string | null
+  readonly headOid: string | null
+  /** The object most useful for a compact summary (head, or base for a deletion). */
   readonly oid: string
 }
 
 const DIFF_NODE_CAP = 2000
 
 async function readTreeMap(
-  reader: BrowseReader,
+  reader: ObjectReader,
   treeOid: string | null,
 ): Promise<Map<string, TreeEntry>> {
   const map = new Map<string, TreeEntry>()
   if (!treeOid) return map
-  try {
-    const obj = await reader.readObject(treeOid)
-    if (obj.type !== 'tree') return map
-    for (const e of parseTree(obj.bytes)) map.set(e.name, e)
-  } catch {
-    // A tree not in the locator (e.g. a deleted subtree) yields no entries.
-  }
+  const obj = await reader.readObject(treeOid)
+  if (obj.type !== 'tree') throw new Error(`${treeOid.slice(0, 9)} is not a tree`)
+  for (const e of parseTree(obj.bytes)) map.set(e.name, e)
   return map
 }
 
@@ -64,7 +65,7 @@ const isDir = (e: TreeEntry | undefined): boolean => e?.mode === 0o40000
  * subtree). Bounded by {@link DIFF_NODE_CAP}.
  */
 export async function diffTrees(
-  reader: BrowseReader,
+  reader: ObjectReader,
   baseTreeOid: string | null,
   headTreeOid: string | null,
   prefix = '',
@@ -98,9 +99,13 @@ export async function diffTrees(
       continue
     }
     budget.n -= 1
-    if (b && !h) changes.push({ path, status: 'deleted', oid: b.oid })
-    else if (!b && h) changes.push({ path, status: 'added', oid: h.oid })
-    else if (b && h) changes.push({ path, status: 'modified', oid: h.oid })
+    if (b && !h) {
+      changes.push({ path, status: 'deleted', baseOid: b.oid, headOid: null, oid: b.oid })
+    } else if (!b && h) {
+      changes.push({ path, status: 'added', baseOid: null, headOid: h.oid, oid: h.oid })
+    } else if (b && h) {
+      changes.push({ path, status: 'modified', baseOid: b.oid, headOid: h.oid, oid: h.oid })
+    }
   }
   changes.sort((a, b2) => a.path.localeCompare(b2.path))
   return changes

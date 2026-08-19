@@ -21,13 +21,14 @@ import {
   AuthzResolver,
   foldIssueState,
   foldPrState,
+  isNullOid,
   type Event,
   type IsAncestor,
   type IssueState,
   type PrState,
 } from '../rules'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, toEvent, type RepoRef } from './contract'
+import { asIdentifierString, DOC, toEvent, type RepoRef } from './contract'
 import { readRefUpdates } from './refs'
 import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
@@ -57,7 +58,13 @@ export interface PullView {
   readonly author: string
   readonly createdAt: number
   readonly baseRefName: string
+  /** Target tip at PR creation when retained, otherwise its current tip. */
+  readonly baseOid: string
+  /** Repo contract that stores the proposed head's pack data. */
+  readonly sourceContractId: string
   readonly headOid: string
+  readonly imported: boolean
+  readonly importedUrl: string
   readonly state: PrState
 }
 
@@ -144,20 +151,33 @@ export async function readPull(
   const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
+  const createdAt = num(patchDoc, '$createdAt')
   const baseRefNameHashRaw = patchDoc['baseRefNameHash']
   const baseHeadOidRaw = patchDoc['headOid']
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.
   let isAncestor: IsAncestor = () => false
   let baseTip: string | undefined
+  let baseOidAtOpen: string | undefined
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
-    const baseUpdates = await readRefUpdates(sdk, repo, baseRefNameHashRaw)
-    const newOids = baseUpdates.map((u) => u.newOid).filter((o) => o.length > 0)
+    const baseUpdates = (await readRefUpdates(sdk, repo, baseRefNameHashRaw)).sort(
+      (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+    )
+    const newOids = baseUpdates.map((u) => u.newOid).filter((o) => !isNullOid(o))
     isAncestor = historicalTipsPredicate(newOids)
-    baseTip = newOids[newOids.length - 1]
+    const latest = baseUpdates[baseUpdates.length - 1]?.newOid
+    baseTip = isNullOid(latest) ? undefined : latest
+    const atOpen = baseUpdates.filter((u) => u.createdAt <= createdAt).at(-1)?.newOid
+    if (atOpen !== undefined) baseOidAtOpen = isNullOid(atOpen) ? '' : atOpen
   }
 
   const events = await readEvents(sdk, repo, id)
+  const importedValue = patchDoc['imported']
+  const imported = typeof importedValue === 'object' && importedValue !== null
+  const importedUrl =
+    imported && typeof (importedValue as PlainDocument)['url'] === 'string'
+      ? String((importedValue as PlainDocument)['url'])
+      : ''
   let headOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
     try {
@@ -173,9 +193,13 @@ export async function readPull(
     title: str(patchDoc, 'title'),
     body: str(patchDoc, 'body'),
     author,
-    createdAt: num(patchDoc, '$createdAt'),
+    createdAt,
     baseRefName: str(patchDoc, 'baseRefName'),
+    baseOid: baseOidAtOpen ?? baseTip ?? '',
+    sourceContractId: asIdentifierString(patchDoc['sourceContractId']),
     headOid,
+    imported,
+    importedUrl,
     state: foldPrState(events, author, resolver, baseTip, isAncestor),
   }
 }

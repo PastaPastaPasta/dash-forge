@@ -19,6 +19,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
+import { PullDiff } from '@/components/repo/pull-diff'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -116,6 +117,8 @@ export function PullContent({ home, number }: { home: RepoHome; addr: RepoAddres
           {pull.body ? <MarkdownView source={pull.body} /> : <p className="italic text-anvil-400">No description.</p>}
         </div>
       </div>
+
+      <PullDiff pull={pull} baseRepo={home.repo} />
 
       {timeline.length > 0 ? <Timeline items={timeline} /> : null}
 
