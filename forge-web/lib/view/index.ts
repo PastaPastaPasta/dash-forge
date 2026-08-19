@@ -27,7 +27,7 @@ export {
   type GitIdent,
   type TreeEntry,
 } from './git-objects'
-export { parseMarkdown, type Block, type Inline } from './markdown'
+export { parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
 export { highlightBlob, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,

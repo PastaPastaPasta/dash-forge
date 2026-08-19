@@ -7,8 +7,14 @@
  */
 
 import { Fragment, type ReactNode } from 'react'
-import { parseMarkdown, type Block, type Inline } from '@/lib/view'
+import { parseMarkdown, type Block, type Inline, type TableAlignment } from '@/lib/view'
 import { cn } from '@/lib/utils'
+
+function tableAlignClass(align: TableAlignment): string {
+  if (align === 'center') return 'text-center'
+  if (align === 'right') return 'text-right'
+  return 'text-left'
+}
 
 function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
   return nodes.map((n, i) => {
@@ -93,6 +99,46 @@ function renderBlock(b: Block, key: string): ReactNode {
         <blockquote key={key} className="my-3 border-l-2 border-forge-500/40 pl-4 text-anvil-500 dark:text-anvil-400">
           {b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`))}
         </blockquote>
+      )
+    case 'table':
+      return (
+        <div key={key} className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
+          <table className="min-w-full border-collapse text-dense leading-5">
+            <thead className="bg-anvil-50 text-anvil-900 dark:bg-anvil-900 dark:text-anvil-50">
+              <tr>
+                {b.header.map((cell, i) => (
+                  <th
+                    key={i}
+                    scope="col"
+                    className={cn(
+                      'border-b border-r border-anvil-200 px-3 py-2 font-semibold last:border-r-0 dark:border-anvil-800',
+                      tableAlignClass(b.align[i] ?? null),
+                    )}
+                  >
+                    {renderInline(cell, `${key}-header-${i}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-anvil-200 dark:divide-anvil-800">
+              {b.rows.map((row, rowIndex) => (
+                <tr key={rowIndex} className="align-top even:bg-anvil-50/50 dark:even:bg-anvil-900/40">
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={cellIndex}
+                      className={cn(
+                        'border-r border-anvil-200 px-3 py-2 last:border-r-0 dark:border-anvil-800',
+                        tableAlignClass(b.align[cellIndex] ?? null),
+                      )}
+                    >
+                      {renderInline(cell, `${key}-${rowIndex}-${cellIndex}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )
     case 'hr':
       return <hr key={key} className="my-5 border-anvil-200 dark:border-anvil-800" />
