@@ -11,8 +11,9 @@ name: Testnet Nightly
 #   * READ-ONLY specs need only a network path to testnet DAPI and the seeded fixture repo,
 #     so they run unconditionally and their failure fails this workflow.
 #   * The CLI suite and the write specs need FUNDED fixture identities, which cannot live in
-#     a fork's PR context. They run only when the fixture secrets are present. When those
-#     secrets are absent the job is reported as SKIPPED WITH A NOTICE — never as a pass.
+#     a fork's PR context. A separate `fixtures` probe job decides whether they run, so when
+#     the secrets are absent the suite job's conclusion is literally `skipped` rather than a
+#     green job with everything gated out — a distinction any badge or alert rule can see.
 #
 # Fixture identity secrets (e2e/cli/config.sh names the roles):
 #   FORGE_TEST_IDENTITY_DEPLOYER  - owns the reused m1 repo, grants tokens
@@ -62,8 +63,51 @@ jobs:
           path: forge-web/e2e/report
           retention-days: 7
 
+  # A separate probe job so the suite job's CONCLUSION is literally `skipped` when the
+  # fixtures are absent. Gating the steps inside one job leaves that job green, which is
+  # indistinguishable from a real pass to a badge, the checks API, or a "notify on failed
+  # nightly" rule — the exact confusion this workflow is meant to remove.
+  fixtures:
+    name: fixture identities configured?
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - name: Probe
+        id: probe
+        env:
+          FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+          FORGE_TEST_IDENTITY_COLLAB: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
+          FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
+          FORGE_TEST_IDENTITY_FROZEN: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
+        run: |
+          missing=()
+          # Report the SECRET names an operator has to create, not internal aliases.
+          for name in FORGE_TEST_IDENTITY_DEPLOYER FORGE_TEST_IDENTITY_COLLAB \
+                      FORGE_TEST_IDENTITY_CONTRIB FORGE_TEST_IDENTITY_FROZEN; do
+            [ -z "${!name}" ] && missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### CLI e2e suite skipped"
+              echo
+              echo "Missing repository secrets: \`${missing[*]}\`."
+              echo
+              echo "These identities must exist and be funded on testnet for the CLI suite"
+              echo "to run. The suite job below reports SKIPPED — it is **not** a passing"
+              echo "run. See \`e2e/cli/config.sh\` for the role pool and"
+              echo "\`docs/testing/e2e-test-plan.md\` for provisioning."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=CLI e2e skipped::missing secrets: ${missing[*]}"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
   cli-suite:
-    name: cli e2e (live testnet, needs funded fixtures)
+    name: cli e2e (live testnet)
+    needs: fixtures
+    if: needs.fixtures.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -74,42 +118,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Are the fixture identities configured?
-        id: fixtures
-        run: |
-          missing=()
-          for name in ID_DEPLOYER_JSON ID_COLLAB_JSON ID_CONTRIB_JSON ID_FROZEN_JSON; do
-            [ -z "${!name}" ] && missing+=("$name")
-          done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "### CLI e2e suite skipped"
-              echo
-              echo "Missing fixture-identity secrets: \`${missing[*]}\`."
-              echo
-              echo "These identities must exist and be funded on testnet for the CLI suite to"
-              echo "run. Until they are configured this job reports SKIPPED — it is **not** a"
-              echo "passing run of the suite. See \`e2e/cli/config.sh\` for the role pool and"
-              echo "\`docs/testing/e2e-test-plan.md\` for provisioning."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=CLI e2e skipped::fixture identities not configured (${missing[*]})"
-          else
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install protoc
-        if: steps.fixtures.outputs.present == 'true'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.fixtures.outputs.present == 'true'
 
       - uses: Swatinem/rust-cache@v2
-        if: steps.fixtures.outputs.present == 'true'
 
       - name: Materialize fixture identities
-        if: steps.fixtures.outputs.present == 'true'
         run: |
           dir="${HOME}/.config/dash-forge/test-identities"
           mkdir -p "$dir" && chmod 700 "$dir"
@@ -119,8 +135,29 @@ jobs:
           printf '%s' "$ID_FROZEN_JSON"   > "$dir/FROZEN.identity.json"
           chmod 600 "$dir"/*.identity.json
 
-      # run.sh exits non-zero if ANY scenario FAILs; SKIPs (testnet funds / InstantSend
-      # flakiness) are reported but non-fatal, and land in the step summary either way.
+      # run.sh exits non-zero if any scenario FAILs. SKIPs (testnet funds / InstantSend
+      # flakiness) do not fail it — which means an all-SKIP run would otherwise exit 0 and
+      # look identical to a full pass. The matrix goes to stderr, so capture it, put it in
+      # the step summary, and warn loudly when nothing actually ran.
       - name: CLI e2e suite
-        if: steps.fixtures.outputs.present == 'true'
-        run: make e2e
+        run: |
+          # GH Actions runs this under `bash -e`, so the pipeline's failure must be caught
+          # with `|| rc=$?` — otherwise the step exits before writing the summary, which is
+          # precisely the run whose output matters most.
+          set -o pipefail
+          rc=0
+          make e2e 2>&1 | tee /tmp/e2e.log || rc=$?
+          {
+            echo "### CLI e2e result"
+            echo
+            echo '```'
+            tail -n 25 /tmp/e2e.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          counts=$(grep -oE 'passed=[0-9]+ +skipped=[0-9]+ +failed=[0-9]+' /tmp/e2e.log | tail -1 || true)
+          passed=$(sed -nE 's/.*passed=([0-9]+).*/\1/p' <<<"$counts")
+          skipped=$(sed -nE 's/.*skipped=([0-9]+).*/\1/p' <<<"$counts")
+          if [ "${passed:-0}" -eq 0 ] && [ "${skipped:-0}" -gt 0 ]; then
+            echo "::warning title=CLI e2e ran nothing::every scenario SKIPPED (${skipped}); this is not a pass"
+          fi
+          exit $rc

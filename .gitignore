@@ -3,6 +3,9 @@
 
 # Rust
 target/
+# Local-only cargo overrides (see docs/BUILDING.md) — committing one would redirect
+# everyone's build to a path that only exists on your machine.
+/.cargo/config.toml
 
 # Node
 node_modules/

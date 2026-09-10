@@ -12,7 +12,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | ≥ 1.80 (`rust-version` in `Cargo.toml`) | the workspace |
+| Rust | ≥ 1.92 (`rust-version` in `Cargo.toml`) | the pinned Platform packages declare 1.92; anything older hard-errors |
 | **protoc** | ≥ 3.20 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
@@ -57,24 +57,37 @@ cache it across builds.
 3. `cargo test --workspace`
 4. Commit the resulting `Cargo.lock`.
 
-CI verifies with `cargo metadata --locked` that the lockfile matches the manifests, so a
-dependency change that forgets step 4 fails the build rather than silently un-pinning.
+CI passes `--locked` to every cargo invocation, so a dependency change that forgets step 4
+fails the build rather than silently re-resolving and un-pinning.
 
 ### Developing against a local Platform checkout
 
-To build against a Platform working tree without editing `Cargo.toml`:
+To build against a Platform working tree without editing `Cargo.toml`, patch the git
+source in `.cargo/config.toml` (git-ignored):
 
 ```sh
 mkdir -p .cargo
 cat >> .cargo/config.toml <<'EOF'
-paths = ["../platform/packages/rs-sdk", "../platform/packages/dapi-grpc"]
+[patch."https://github.com/dashpay/platform.git"]
+dash-sdk = { path = "../platform/packages/rs-sdk" }
+dapi-grpc = { path = "../platform/packages/dapi-grpc" }
+drive-proof-verifier = { path = "../platform/packages/rs-drive-proof-verifier" }
+rs-sdk-trusted-context-provider = { path = "../platform/packages/rs-sdk-trusted-context-provider" }
+simple-signer = { path = "../platform/packages/simple-signer" }
 EOF
 ```
 
-`paths` overrides apply only when the local package's version matches the locked one, so
-this is safe to leave in place: if your checkout drifts to a different version, cargo
-ignores the override rather than silently building something else. `.cargo/config.toml` is
-local-only — do not commit it.
+Two things matter here:
+
+* **`[patch]`, not `paths`.** Cargo's `paths` override only works for crates published to
+  crates.io; these are git dependencies, so `paths` would be silently ignored.
+* **All five packages, together.** Patching only some of them leaves `forge-core` holding
+  git copies of the rest, and the graph ends up with two incompatible copies of `dpp` /
+  `drive-proof-verifier` — which fails to compile with a type mismatch that does not
+  mention the override at all.
+
+The patch stays active until you remove it. Confirm which source is in use with
+`cargo tree -p dash-sdk`, which prints the resolved source for the package.
 
 ## Checks
 

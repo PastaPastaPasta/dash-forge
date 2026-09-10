@@ -13,7 +13,11 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'forge-contracts/vectors/**'
+      - 'rustfmt.toml'
+      # Compiled into the binaries, not just test data: forge-core include_str!s
+      # templates/repo-v1.json and dg include_str!s deployments/testnet.json, and the
+      # conformance test loads vectors/.
+      - 'forge-contracts/**'
       - '.github/workflows/rust.yml'
   push:
     branches: [master]
@@ -21,15 +25,19 @@ on:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'forge-contracts/vectors/**'
+      - 'rustfmt.toml'
+      - 'forge-contracts/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
   schedule:
     - cron: '30 5 * * *'
 
 concurrency:
-  group: rust-${{ github.ref }}
-  cancel-in-progress: true
+  # schedule, workflow_dispatch and push-to-master all resolve github.ref to
+  # refs/heads/master, so keying on ref alone would let the nightly cancel a master build
+  # (and vice versa). Only superseded PR runs are worth cancelling.
+  group: rust-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   rust:
@@ -54,18 +62,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # `--locked` on EVERY cargo invocation, not as a trailing check: cargo re-resolves and
+      # rewrites Cargo.lock in place, so a check placed after clippy/test would compare the
+      # lockfile against a copy cargo had already fixed up and could never fail. With
+      # --locked, a dependency change whose lockfile was not committed fails at the first
+      # cargo command, with cargo's own precise message.
       - name: fmt
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: test
-        run: cargo test --workspace
-
-      # Cargo.lock is committed precisely so a build is reproducible; a PR that changes a
-      # dependency without committing the resulting lockfile would silently un-pin it.
-      - name: Cargo.lock is up to date
-        run: |
-          cargo metadata --format-version 1 --locked >/dev/null \
-            || { echo "::error::Cargo.lock is out of date — run 'cargo check' and commit Cargo.lock"; exit 1; }
+        run: cargo test --locked --workspace

@@ -13,13 +13,13 @@ version = "0.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dash-forge/dash-forge"
-rust-version = "1.80"
+rust-version = "1.92"
 
 # Shared dependency versions. Individual crates opt in with `<dep>.workspace = true`.
 #
-# The Dash Platform Rust SDK (rs-sdk / rs-dpp, via the sibling `../platform` checkout)
-# is wired in Stage 2 and is consumed ONLY by forge-core::platform. The binaries do not
-# depend on it — keep it that way so the CLI/helper stay fast to build.
+# The Dash Platform Rust SDK (rs-sdk / rs-dpp, from the pinned git tag below) is consumed
+# ONLY by forge-core::platform. The binaries do not depend on it directly — keep it that
+# way so the CLI/helper stay fast to build.
 [workspace.dependencies]
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -38,11 +38,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # repo's own history (and of Cargo.lock), so `git clone && cargo build` is reproducible
 # with no out-of-tree setup.
 #
-# To develop against a local Platform checkout, override without editing this file:
-#   mkdir -p .cargo && cat >> .cargo/config.toml <<'EOF'
-#   paths = ["../platform/packages/rs-sdk", "../platform/packages/dapi-grpc"]
-#   EOF
-# (`paths` overrides apply only to same-version sources; see docs/BUILDING.md.)
+# To develop against a local Platform checkout, override without editing this file, using
+# `[patch]` on the git URL — cargo's `paths` override does NOT apply to git sources. All
+# five packages must be patched together or the graph ends up with two copies of dpp /
+# drive-proof-verifier and forge-core stops compiling. See docs/BUILDING.md.
 #
 # Bumping the tag: change PLATFORM_TAG below in ALL FIVE entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
