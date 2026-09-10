@@ -1,12 +1,28 @@
-name: Rust (nightly / manual)
+name: Rust
 
-# The Rust workspace (forge-core, git-remote-dash, dg, forge-relay, forge-import)
-# depends on the Dash Platform monorepo via path deps (dash-sdk, dapi-grpc, …).
-# CI clones it as a sibling ../platform on the pinned branch and builds. This is
-# heavy (grovedb/tenderdash/rocksdb dep tree) so it runs nightly + on demand, not
-# per-push. Local `cargo test --all` against a checked-out ../platform, plus the
-# live testnet tests, remain the authoritative Rust gate.
+# The Rust workspace (forge-core, git-remote-dash, dg, forge-relay, forge-import) builds
+# against a PINNED, IMMUTABLE Dash Platform tag declared in the root Cargo.toml — cargo
+# fetches it, so there is no sibling `../platform` checkout to arrange and no branch that
+# can move underneath a green build. Cargo.lock pins the exact revision.
+#
+# The dependency tree (grovedb / tenderdash / rocksdb) is large, so the full build runs on
+# PRs that actually touch Rust plus nightly — not on every push to unrelated paths.
 on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'forge-contracts/vectors/**'
+      - '.github/workflows/rust.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'forge-contracts/vectors/**'
+      - '.github/workflows/rust.yml'
   workflow_dispatch:
   schedule:
     - cron: '30 5 * * *'
@@ -20,39 +36,36 @@ jobs:
     name: rust build + test
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      PLATFORM_REPO: PastaPastaPasta/platform
-      PLATFORM_BRANCH: v3.1-dev
     steps:
-      - name: Checkout dash-forge
-        uses: actions/checkout@v4
-        with:
-          path: dash-forge
+      - uses: actions/checkout@v4
 
-      - name: Checkout Dash Platform (sibling ../platform)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.PLATFORM_REPO }}
-          ref: ${{ env.PLATFORM_BRANCH }}
-          path: platform
-          fetch-depth: 1
+      # `tenderdash-proto` (a transitive dep of the Platform SDK) compiles .proto files in
+      # its build script and needs protoc on PATH; without it the whole workspace fails to
+      # build with a message that does not mention cargo at all.
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: dash-forge
 
       - name: fmt
-        working-directory: dash-forge
         run: cargo fmt --all -- --check
 
       - name: clippy
-        working-directory: dash-forge
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: test
-        working-directory: dash-forge
-        run: cargo test --all
+        run: cargo test --workspace
+
+      # Cargo.lock is committed precisely so a build is reproducible; a PR that changes a
+      # dependency without committing the resulting lockfile would silently un-pin it.
+      - name: Cargo.lock is up to date
+        run: |
+          cargo metadata --format-version 1 --locked >/dev/null \
+            || { echo "::error::Cargo.lock is out of date — run 'cargo check' and commit Cargo.lock"; exit 1; }

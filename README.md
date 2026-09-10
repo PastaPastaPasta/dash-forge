@@ -15,6 +15,15 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience �
 | **forge relay** | Stateless, interchangeable Rust daemon bridging Platform events to GitHub-shaped webhooks (CI/notifications). Trust = availability only. |
 | **forge import** | One-command GitHub migration (code, issues, PRs, releases) with cost gating and author claim flow. |
 
+## Building
+
+A fresh clone builds with no out-of-tree setup — `cargo build --workspace` for the Rust
+binaries, `pnpm install && pnpm build` in `forge-web/` for the web app. The Dash Platform
+SDK is a git dependency pinned to an immutable tag, so there is no sibling checkout to
+arrange. **`protoc` must be on PATH** (a transitive dependency compiles `.proto` files in
+its build script). See [docs/BUILDING.md](docs/BUILDING.md) for prerequisites, how to bump
+the pinned Platform tag, and how to develop against a local Platform checkout.
+
 ## Document index
 
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.
@@ -33,8 +42,9 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience �
 8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
 9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
 10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict).
-11. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
-12. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
+11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides.
+12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
+13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
 
 ## Status
 
