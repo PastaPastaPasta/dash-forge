@@ -183,7 +183,7 @@ impl ObjectLocator {
         let mut lo = if b == 0 { 0 } else { self.fanout(b - 1) };
         let mut hi = self.fanout(b);
         while lo < hi {
-            let mid = (lo + hi) / 2;
+            let mid = usize::midpoint(lo, hi);
             let row = self.row(mid);
             match row[..OID_LEN].cmp(oid) {
                 std::cmp::Ordering::Less => lo = mid + 1,
