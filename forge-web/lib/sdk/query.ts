@@ -188,12 +188,34 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+/** Thrown when a read that must be complete could not be proven complete. */
+export class IncompleteReadError extends Error {
+  constructor(
+    readonly documentTypeName: string,
+    readonly fetched: number,
+    reason: string,
+  ) {
+    super(`incomplete read of ${documentTypeName} after ${fetched} documents: ${reason}`)
+    this.name = 'IncompleteReadError'
+  }
+}
+
 /**
  * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
  * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
- * past the last `$id` of each page, until a short page signals the end. Used by reads that
- * MUST be complete — e.g. the token-history reconstruction, where dropping a late `mint`
- * would make a legitimate collaborator's events fold as unauthorized.
+ * past the last `$id` of each page, until a **short page** proves the end was reached. Used by
+ * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueState`,
+ * `foldPrState`) are folds over a whole history, so a silently truncated input does not
+ * degrade the answer — it produces a confidently wrong one (a closed issue that reads open,
+ * a branch pinned at its 100th push).
+ *
+ * **A short page is the only accepted proof of completeness.** If the cursor cannot advance
+ * (a row without a string `$id`) or the `maxPages` safety cap is hit, this THROWS
+ * {@link IncompleteReadError} rather than returning what it has: a caller folding a partial
+ * history cannot tell the difference between "no more events" and "I stopped early", and the
+ * whole point of the rules layer is that every client resolves identically. Callers that
+ * genuinely want a bounded window should use {@link queryDocumentsWithProof} with a `limit`
+ * and present it as a window.
  *
  * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
  */
@@ -213,13 +235,23 @@ export async function queryAllDocuments(
       startAfter,
     })
     out.push(...documents)
-    if (documents.length < pageLimit) break
+    if (documents.length < pageLimit) return out
     const last = documents[documents.length - 1]
     const lastId = last?.['$id']
-    if (typeof lastId !== 'string') break
+    if (typeof lastId !== 'string') {
+      throw new IncompleteReadError(
+        query.documentTypeName,
+        out.length,
+        'a full page ended on a document with no $id, so the cursor cannot advance',
+      )
+    }
     startAfter = lastId
   }
-  return out
+  throw new IncompleteReadError(
+    query.documentTypeName,
+    out.length,
+    `the ${maxPages}-page safety cap was reached before a short page proved the end`,
+  )
 }
 
 // ---------------------------------------------------------------------------

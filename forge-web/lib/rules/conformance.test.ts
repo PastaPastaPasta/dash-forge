@@ -1,11 +1,19 @@
 /**
- * THE PARITY PROOF.
+ * THE PARITY PROOF — for the pure rules.
  *
  * Loads every `forge-contracts/vectors/*.json` and asserts this TypeScript port of
  * FORGE_RULES_V1 produces the vector's `expected` — the exact same suite the Rust
  * reference runs at the bottom of `crates/forge-core/src/rules.rs`. If this is green,
  * the two clients agree on ref resolution, protected-pattern matching, issue/PR folds,
- * token holdings, and flatIndex staleness overlay.
+ * token holdings, ref naming, and flatIndex staleness overlay.
+ *
+ * SCOPE, stated precisely because it has been over-read: every vector hands the pure
+ * functions a ready-made input array, so this suite proves the two ports FOLD identically
+ * given identical input. It says nothing about whether each client FETCHES identical input.
+ * A divergence in the read layer — one client paging a history to exhaustion while the other
+ * stops at Platform's 100-row page — produces two different answers from two green
+ * conformance runs. That class of bug is covered by the read-path tests next to each reader
+ * (`lib/repo/pagination.test.ts` here), not by these vectors.
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -15,6 +23,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AuthzResolver,
   ancestryFromPairs,
+  displayRefName,
   foldIssueState,
   foldPrState,
   holdingsAsOf,
@@ -78,6 +87,11 @@ interface OverlayInput {
   readonly diffs?: readonly TreeDiff[]
 }
 
+interface DisplayRefNameInput {
+  readonly updates: readonly RefUpdate[]
+  readonly refNameHash: string
+}
+
 const VECTORS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'vectors')
 
 function loadVectors(): Vector[] {
@@ -101,6 +115,11 @@ function runCase(v: Vector): void {
         ancestryFromPairs(inp.ancestry ?? []),
       )
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'display_ref_name': {
+      const inp = v.input as DisplayRefNameInput
+      expect(displayRefName(inp.updates, inp.refNameHash) ?? null).toEqual(v.expected)
       break
     }
     case 'matches_protected': {

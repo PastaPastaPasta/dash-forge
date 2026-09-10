@@ -381,9 +381,21 @@ impl PlatformClient {
                 ascending: o.ascending,
             });
         }
-        if limit > 0 {
-            query = query.with_limit(limit);
+        // `limit` is REQUIRED to be a real bound. It used to be optional, with 0 meaning
+        // "leave it unset" — but unset does not mean unlimited: Drive fills an absent limit
+        // from `DriveConfig::default_query_limit`, which is 100, the same value as its
+        // maximum. So `limit = 0` read as "give me everything" and silently delivered the
+        // first 100 rows with no short-page signal, which is how several
+        // state-reconstructing reads in this crate came to fold truncated histories. Callers
+        // that genuinely want everything must use `query_all_documents`.
+        if limit == 0 {
+            return Err(Error::Config(
+                "query limit must be greater than 0; use query_all_documents() for a \
+                 complete read (limit 0 does not mean unlimited — Drive caps it at 100)"
+                    .into(),
+            ));
         }
+        query = query.with_limit(limit);
         if let Some(after) = start_after {
             let id = parse_id(after, "start_after document id")?;
             query.start = Some(Start::StartAfter(id.to_vec()));

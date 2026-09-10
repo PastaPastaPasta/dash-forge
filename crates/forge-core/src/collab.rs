@@ -342,6 +342,8 @@ impl<'a> IssueService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<IssueWithState>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // A caller-supplied 0 is a page size, not a request for everything.
+        let limit = limit.max(1);
         let docs = self
             .client
             .query_documents(
@@ -807,6 +809,8 @@ impl<'a> PullRequestService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<PullRequest>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // A caller-supplied 0 is a page size, not a request for everything.
+        let limit = limit.max(1);
         let docs = self
             .client
             .query_documents(
@@ -1103,17 +1107,21 @@ impl<'a> ReleaseService<'a> {
 
     /// List releases, newest doc per `tagName` (newest-wins supersede resolution, §2.2),
     /// ordered newest first.
+    ///
+    /// Read to exhaustion: this is a newest-wins fold over an append-only type, so a capped
+    /// read does not surface a stale value — it drops the row entirely. A tag whose only
+    /// revision is older than the newest page simply disappears from the listing, and
+    /// because every surviving entry still looks current there is no signal that anything
+    /// was lost.
     pub async fn list_releases(&self, repo_contract_id: &str) -> Result<Vec<Release>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 &contract,
                 DOC_RELEASE,
                 &[],
                 &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
             )
             .await?;
 
@@ -1232,16 +1240,11 @@ impl<'a> LabelService<'a> {
     /// is carried so callers can hide retired labels.
     pub async fn list_labels(&self, repo_contract_id: &str) -> Result<Vec<Label>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // Complete for the same reason as `list_releases`: a newest-wins fold over a capped
+        // read silently omits labels rather than showing them stale.
         let docs = self
             .client
-            .query_documents(
-                &contract,
-                DOC_LABEL,
-                &[],
-                &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
-            )
+            .query_all_documents(&contract, DOC_LABEL, &[], &[QueryOrder::desc("$createdAt")])
             .await?;
         let mut newest: BTreeMap<String, Label> = BTreeMap::new();
         for d in &docs {
@@ -1394,6 +1397,8 @@ impl<'a> SocialService<'a> {
         limit: u32,
         start_after: Option<&str>,
     ) -> Result<Vec<String>> {
+        // A caller-supplied 0 is a page size, not a request for everything.
+        let limit = limit.max(1);
         let registry = self
             .client
             .fetch_contract(&self.registry_contract_id)

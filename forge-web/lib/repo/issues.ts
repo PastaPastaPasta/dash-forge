@@ -26,7 +26,7 @@ import {
   type IssueState,
   type PrState,
 } from '../rules'
-import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { DOC, toEvent, type RepoRef } from './contract'
 import { readRefUpdates } from './refs'
 import { resolveAuthz } from './tokens'
@@ -72,14 +72,24 @@ function str(doc: PlainDocument, field: string): string {
   return typeof doc[field] === 'string' ? (doc[field] as string) : ''
 }
 
-/** Fetch a target's full event log (ascending), converted to rules {@link Event}s. */
+/**
+ * Fetch a target's **complete** event log (ascending), converted to rules {@link Event}s.
+ *
+ * COMPLETENESS IS LOAD-BEARING, not a nicety. `foldIssueState` / `foldPrState` are folds
+ * over the whole log: a close at row 101 that never arrives leaves the issue open forever.
+ * `event` carries no `tokenCost` in the repo contract template, so anyone can append —
+ * a stranger padding a fresh issue with 100 inert events would permanently freeze its
+ * displayed state if this read stopped at one page. It pages to exhaustion, and
+ * {@link queryAllDocuments} throws rather than returning a short answer if it cannot
+ * prove it reached the end. Parity: forge-core `CollabEngine::fetch_events` uses
+ * `query_all_documents` for exactly this reason.
+ */
 export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Event[]> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
+  const documents = await queryAllDocuments(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.event,
     where: [['targetId', '==', targetId]],
     orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
-    limit: 100,
   })
   return documents.map(toEvent).filter((e): e is Event => e !== null)
 }

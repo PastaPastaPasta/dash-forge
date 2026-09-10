@@ -9,7 +9,7 @@ The thesis is proven, not asserted:
 - **Frozen collaborator's push rejected at consensus** (error 40702) through real git — the headline INIT criterion, proven end-to-end in the CLI e2e suite.
 - No-token push rejected (40700); third-party hash-chain verification ("no trust in any server").
 - Browser app renders live testnet data with the trust panel; zero-backend proven (only Platform DAPI + quorum endpoint contacted); resumable push (interrupted, resumed, no double-pay).
-- CLI↔web interop: an issue created in the browser is read and folded identically by the CLI (shared `FORGE_RULES_V1`, 66 conformance vectors passing in **both** Rust and TS).
+- CLI↔web interop: an issue created in the browser is read and folded identically by the CLI (shared `FORGE_RULES_V1`, 70 conformance vectors passing in **both** Rust and TS).
 
 ## As-built decisions & deviations
 

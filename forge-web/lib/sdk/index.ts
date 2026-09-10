@@ -54,6 +54,7 @@ export {
   normalizeDocument,
   setPlatformVersion,
   queryAllDocuments,
+  IncompleteReadError,
   queryDocuments,
   queryDocumentsWithProof,
   skipScanDistinct,

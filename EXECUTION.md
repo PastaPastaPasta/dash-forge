@@ -90,11 +90,11 @@ Fixed the on-disk SOURCE so future repos + Stage 6 contract-validation CI are co
 - M2 gate: terminal workflow ✓, webhook <30s ✓, CI loop ✓. Multi-instance swap = webhook-doc update (deterministic delivery id).
 
 ## Stage 4 — Web + import → M3 (IN PROGRESS)
-Web needs: TS port of FORGE_RULES_V1 validated vs forge-contracts/vectors (66 vectors — parity contract); TS browse-plane reader (objectLocator/flatIndex/ranged); evo-sdk services; full Next.js UI. forge-import: Rust, reuses helper push + collab.
+Web needs: TS port of FORGE_RULES_V1 validated vs forge-contracts/vectors (70 vectors — parity contract); TS browse-plane reader (objectLocator/flatIndex/ranged); evo-sdk services; full Next.js UI. forge-import: Rust, reuses helper push + collab.
 Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH (faucet hard-cap bypass works).
 
 ## Stage 4 ✅ COMPLETE — M3
-- [x] forge-web TS core: FORGE_RULES_V1 port — ALL 66 conformance vectors pass (cross-client parity proof); browse reader; evo-sdk services.
+- [x] forge-web TS core: FORGE_RULES_V1 port — ALL 70 conformance vectors pass (cross-client parity proof); browse reader; evo-sdk services.
 - [x] forge-web auth + write path — key login, browser WriteEngine, live CLI-web interop (issue created via browser, folded correctly).
 - [x] forge-web UI — 17 routes, foundry aesthetic + Assay trust panel, static export. **LIVE at https://pastapastapasta.github.io/dash-forge/**.
 - [x] forge-import — GitHub migrator, live import within 1.1% of estimate, gist-claim.

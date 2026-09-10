@@ -11,7 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { PACK_KIND, type PackKind } from '../constants'
-import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { DOC, parseJsonList, type RepoRef } from './contract'
 import { base64ToBytes, base64ToHex } from '../sdk'
 
@@ -88,17 +88,26 @@ function toManifest(doc: PlainDocument): PackManifest {
   }
 }
 
-/** List pack manifests (newest first). */
-export async function readPackManifests(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  limit = 100,
-): Promise<PackManifest[]> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
+/**
+ * List **every** pack manifest, newest first.
+ *
+ * Completeness is load-bearing for a nastier reason than staleness. A locator addresses
+ * pack bytes by `packRef` = the pack's index in oldest-first `($createdAt, $id)` order (see
+ * {@link orderGitPacks}). Drop the oldest manifests — which is exactly what a capped
+ * newest-first page does once a repo passes one page — and every `packRef` shifts: lookups
+ * then read a valid offset in the WRONG pack and return corrupt objects, with nothing in the
+ * reader able to detect the misalignment. The fallback-clone path degrades the same way,
+ * cloning an incomplete object set because a still-live base pack fell out of the window.
+ *
+ * Callers needing the current locator / flatIndex should use
+ * {@link readNewestManifestOfKind}, whose `(kind, $createdAt desc) limit 1` index lookup does
+ * not depend on manifest volume at all. Parity: forge-core `read_pack_manifests`.
+ */
+export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
+  const documents = await queryAllDocuments(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.packManifest,
     orderBy: [['$createdAt', 'desc']],
-    limit,
   })
   return documents.map(toManifest)
 }
