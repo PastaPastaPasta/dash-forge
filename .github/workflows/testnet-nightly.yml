@@ -54,7 +54,11 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm build
       # auth-write needs a funded identity; everything else is a read against live testnet.
+      # E2E_SKIP_BUILD reuses the `out/` just built — the Playwright webServer would
+      # otherwise run `pnpm build` a second time before serving it.
       - name: Playwright read-path + a11y specs
+        env:
+          E2E_SKIP_BUILD: '1'
         run: pnpm exec playwright test read-paths.spec.ts fallback-browse.spec.ts zero-backend.spec.ts a11y.spec.ts
       - uses: actions/upload-artifact@v4
         if: always()
