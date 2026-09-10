@@ -118,8 +118,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Ubuntu's `protobuf-compiler` package is protoc 3.21.x, whose `libprotoc 3.21.12`
+      # version string the tenderdash proto-compiler cannot parse ("invalid float literal") —
+      # protobuf renumbered to `libprotoc <major>.<minor>` at v22. Install a pinned modern
+      # release directly so the version is explicit and reproducible.
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+          protoc --version
 
       - uses: dtolnay/rust-toolchain@stable
 

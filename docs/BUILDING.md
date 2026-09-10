@@ -13,7 +13,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 | Tool | Version | Why |
 |---|---|---|
 | Rust | ≥ 1.92 (`rust-version` in `Cargo.toml`) | the pinned Platform packages declare 1.92; anything older hard-errors |
-| **protoc** | ≥ 3.20 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
+| **protoc** | ≥ 22 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
 
@@ -26,8 +26,27 @@ error: failed to run custom build command for `tenderdash-proto`
 ```
 
 ```sh
-sudo apt-get install -y protobuf-compiler     # Debian/Ubuntu
 brew install protobuf                          # macOS
+```
+
+**The version matters, and distro packages are often too old.** Ubuntu's
+`protobuf-compiler` is protoc 3.21.x, and protobuf renumbered its releases to
+`<major>.<minor>` at v22 — so 3.21 reports `libprotoc 3.21.12`, three components, which
+the tenderdash proto-compiler cannot parse:
+
+```
+[error] => proto compile failed: failed to parse protoc version libprotoc 3.21.12
+: invalid float literal
+```
+
+Install a modern release directly (this is what CI does, pinned):
+
+```sh
+PROTOC_VERSION=28.3
+curl -sSLo /tmp/protoc.zip \
+  "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+protoc --version   # libprotoc 28.3
 ```
 
 ## The Dash Platform SDK dependency
