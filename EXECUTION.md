@@ -90,16 +90,16 @@ Fixed the on-disk SOURCE so future repos + Stage 6 contract-validation CI are co
 - M2 gate: terminal workflow ✓, webhook <30s ✓, CI loop ✓. Multi-instance swap = webhook-doc update (deterministic delivery id).
 
 ## Stage 4 — Web + import → M3 (IN PROGRESS)
-Web needs: TS port of FORGE_RULES_V1 validated vs forge-contracts/vectors (66 vectors — parity contract); TS browse-plane reader (objectLocator/flatIndex/ranged); evo-sdk services; full Next.js UI. forge-import: Rust, reuses helper push + collab.
+Web needs: TS port of FORGE_RULES_V1 validated vs forge-contracts/vectors (70 vectors — parity contract); TS browse-plane reader (objectLocator/flatIndex/ranged); evo-sdk services; full Next.js UI. forge-import: Rust, reuses helper push + collab.
 Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH (faucet hard-cap bypass works).
 
 ## Stage 4 ✅ COMPLETE — M3
-- [x] forge-web TS core: FORGE_RULES_V1 port — ALL 66 conformance vectors pass (cross-client parity proof); browse reader; evo-sdk services.
+- [x] forge-web TS core: FORGE_RULES_V1 port — ALL 70 conformance vectors pass (cross-client parity proof); browse reader; evo-sdk services.
 - [x] forge-web auth + write path — key login, browser WriteEngine, live CLI-web interop (issue created via browser, folded correctly).
 - [x] forge-web UI — 17 routes, foundry aesthetic + Assay trust panel, static export. **LIVE at https://pastapastapasta.github.io/dash-forge/**.
 - [x] forge-import — GitHub migrator, live import within 1.1% of estimate, gist-claim.
 - [x] Pages deploy (repo public, CI web job green). Fixed: remote was SSH (agent refused) → HTTPS; many commits were local-only, now all pushed.
-- CI split: ci.yml = web+parity (per-push, green); rust.yml = nightly (clones platform, heavy dep tree); local+testnet authoritative for Rust.
+- CI split: ci.yml = web+parity (per-push, green); rust.yml = nightly (clones platform, heavy dep tree); local+testnet authoritative for Rust. **Superseded:** the Platform SDK is now a git dependency pinned to an immutable tag (no sibling clone), and rust.yml gates pull requests and pushes that touch Rust paths as well as running nightly — it is the Rust gate, not a backstop. See docs/BUILDING.md.
 - Web hardening gaps for Stage 5: token-history authz unwired in TS core (maintainer folds); evo-sdk WASM 9.4MB not lazy; browse-source ordering/fill assumptions; no syntax highlighting; dg+relay+web-UI reviews pending.
 
 ## Stage 5 — Backends GA + hardening → M4 (NEXT)

@@ -13,7 +13,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 | Tool | Version | Why |
 |---|---|---|
 | Rust | ≥ 1.92 (`rust-version` in `Cargo.toml`) | the pinned Platform packages declare 1.92; anything older hard-errors |
-| **protoc** | ≥ 22 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
+| **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
 
@@ -29,17 +29,21 @@ error: failed to run custom build command for `tenderdash-proto`
 brew install protobuf                          # macOS
 ```
 
-**The version matters, and distro packages are often too old.** Ubuntu's
-`protobuf-compiler` is protoc 3.21.x, and protobuf renumbered its releases to
-`<major>.<minor>` at v22 — so 3.21 reports `libprotoc 3.21.12`, three components, which
-the tenderdash proto-compiler cannot parse:
+**The version matters, and distro packages are often too old.** The floor is 25 —
+`DEP_PROTOC_VERSION` in rs-tenderdash-abci's proto-compiler — and it is enforced two
+different ways, so an older protoc fails in one of two unhelpful ways. Ubuntu's
+`protobuf-compiler` is protoc 3.21.x; protobuf renumbered its releases to
+`<major>.<minor>` at v22, so 3.21 reports the three-component `libprotoc 3.21.12`, which
+the version parser reads as a float and rejects outright:
 
 ```
 [error] => proto compile failed: failed to parse protoc version libprotoc 3.21.12
 : invalid float literal
 ```
 
-Install a modern release directly (this is what CI does, pinned):
+protoc 22, 23 and 24 parse fine and then fail the explicit version check
+(`protoc version must be 25 or higher`). Install a modern release directly — this is what
+CI does, pinned:
 
 ```sh
 PROTOC_VERSION=28.3
@@ -116,8 +120,11 @@ make check-rust    # cargo fmt --check, clippy -D warnings, cargo test --workspa
 make check-web     # pnpm typecheck, lint, test
 ```
 
-`make check-rust` and CI's `rust` workflow run the same three commands, so a green local
-run means a green CI run.
+`make check-rust` runs the same three commands as CI's `rust` workflow, with one
+difference: CI passes `--locked`, so it also fails when a dependency change landed without
+its `Cargo.lock`. A green `make check-rust` therefore does not by itself prove a green CI
+run after a dependency bump — run `cargo test --locked --workspace` once before pushing
+one.
 
 ## End-to-end suites
 
@@ -127,9 +134,18 @@ per-push gate:
 * `make e2e` — the CLI suite (`e2e/cli/run.sh`, 7 scenarios). Needs the funded fixture
   identities described in `e2e/cli/config.sh` under
   `~/.config/dash-forge/test-identities/`.
-* `cd forge-web && pnpm test:e2e` — the Playwright suite. The read-path, fallback-browse,
-  zero-backend and a11y specs need only network access to testnet; `auth-write.spec.ts`
-  needs a funded identity.
+* `cd forge-web && pnpm test:e2e` — the Playwright suite. `pnpm install` does not
+  download browsers, so a fresh clone needs one extra step first:
+
+  ```sh
+  cd forge-web
+  pnpm install --frozen-lockfile
+  pnpm exec playwright install --with-deps chromium
+  pnpm test:e2e
+  ```
+
+  The read-path, fallback-browse, zero-backend and a11y specs need only network access to
+  testnet; `auth-write.spec.ts` needs a funded identity.
 
 The `Testnet Nightly` workflow runs the read-only half unconditionally and the funded half
 only when the fixture secrets are configured, reporting a clear SKIP when they are not.
