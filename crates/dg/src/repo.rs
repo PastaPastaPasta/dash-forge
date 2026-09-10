@@ -140,8 +140,7 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     let collaborators = TokenService::new(&client, &identity, &bridge)
         .list_collaborators(&handle.repo_contract_id)
         .await
-        .map(|c| c.len())
-        .unwrap_or(0);
+        .map_or(0, |c| c.len());
 
     let refs_json: Vec<_> = refs
         .iter()

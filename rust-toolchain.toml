@@ -1,0 +1,13 @@
+# Pin the toolchain, for the same reason Cargo.lock pins dependencies.
+#
+# CI used `dtolnay/rust-toolchain@stable`, which floats: `cargo clippy -- -D warnings`
+# then fails the moment a new stable ships a lint, with no change to this repository.
+# That happened — a green local run on 1.94 failed CI on 1.98 over lints that did not
+# exist when the code was written. Pinning makes the lint set a property of the commit.
+#
+# Bumping: raise `channel`, run `cargo clippy --workspace --all-targets -- -D warnings`,
+# fix what the new stable found, and commit both together. Must stay >= the workspace
+# `rust-version` in Cargo.toml (1.92, which the pinned Platform SDK requires).
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

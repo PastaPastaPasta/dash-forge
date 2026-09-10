@@ -12,7 +12,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | ≥ 1.92 (`rust-version` in `Cargo.toml`) | the pinned Platform packages declare 1.92; anything older hard-errors |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.92, which the pinned Platform packages require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
@@ -52,6 +52,19 @@ curl -sSLo /tmp/protoc.zip \
 sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
 protoc --version   # libprotoc 28.3
 ```
+
+## The pinned toolchain
+
+`rust-toolchain.toml` pins rustc/clippy/rustfmt, for the same reason `Cargo.lock` pins
+dependencies: `cargo clippy -- -D warnings` fails the moment a new stable ships a lint, with
+no change to this repository. Pinning makes the lint set a property of the commit. rustup
+reads the file automatically, so no setup is needed — the first cargo command in this
+directory installs the pinned toolchain.
+
+Bumping it is a deliberate change: raise `channel`, run
+`cargo clippy --workspace --all-targets -- -D warnings`, fix what the new stable found, and
+commit the toolchain file and the fixes together. It must stay at or above the workspace
+`rust-version` in `Cargo.toml`.
 
 ## The Dash Platform SDK dependency
 

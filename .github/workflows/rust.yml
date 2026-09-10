@@ -64,9 +64,15 @@ jobs:
           sudo chmod +x /usr/local/bin/protoc
           protoc --version
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The toolchain comes from rust-toolchain.toml, not from a floating `@stable`:
+      # `clippy -- -D warnings` fails whenever a new stable ships a lint, with no change to
+      # this repository, and the version that lints a commit should be a property of that
+      # commit. rustup reads the file, so every cargo command below uses the pinned version.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show active-toolchain
+          cargo --version && cargo clippy --version && cargo fmt --version
 
       - uses: Swatinem/rust-cache@v2
 

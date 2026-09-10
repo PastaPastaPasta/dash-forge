@@ -697,7 +697,9 @@ impl<'a> RepoService<'a> {
                 let supersedes = d
                     .field_bytes("supersedes")
                     .map(|raw| {
-                        raw.chunks_exact(32)
+                        raw.as_chunks::<32>()
+                            .0
+                            .iter()
                             .map(|c| {
                                 let mut h = [0u8; 32];
                                 h.copy_from_slice(c);
@@ -1551,7 +1553,10 @@ mod tests {
     #[test]
     fn embedded_template_has_tokens_and_doc_types() {
         let t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
-        assert!(t.get("tokens").and_then(|v| v.as_object()).unwrap().len() == 2);
+        assert_eq!(
+            t.get("tokens").and_then(|v| v.as_object()).unwrap().len(),
+            2
+        );
         assert!(
             t.get("documentSchemas")
                 .and_then(|v| v.as_object())

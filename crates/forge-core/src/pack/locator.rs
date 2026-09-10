@@ -104,7 +104,7 @@ impl ObjectLocator {
         }
 
         let mut rows: Vec<&super::parse::PackObject> = pack.objects.iter().collect();
-        rows.sort_by(|a, b| a.oid.cmp(&b.oid));
+        rows.sort_by_key(|a| a.oid);
 
         let mut fanout = [0u32; 256];
         for o in &rows {

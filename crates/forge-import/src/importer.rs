@@ -356,8 +356,8 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
     // failed. The next attempt resumes from the same journal. Before the first checkpoint
     // exists the helper is still connecting/packing/splitting (journal-silent by design), so
     // that phase gets the longer PREPACK_TIMEOUT instead.
-    const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
-    const PREPACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90 * 60);
+    const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(20);
+    const PREPACK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(90);
 
     let owner = state
         .owner_id
