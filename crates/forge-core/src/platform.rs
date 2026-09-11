@@ -341,9 +341,13 @@ impl PlatformClient {
         Ok(found.is_some())
     }
 
-    /// Query documents of `document_type` in `contract`, applying `filters` (AND-ed
-    /// where-clauses), `order` (traversal order), an optional `limit` (0 = server
-    /// default, ~100) and an optional `start_after` cursor (a base58 document id).
+    /// Query **one page** of `document_type` in `contract`, applying `filters` (AND-ed
+    /// where-clauses), `order` (traversal order), a `limit` (which must be >= 1; see below)
+    /// and an optional `start_after` cursor (a base58 document id).
+    ///
+    /// For a read that must be COMPLETE, use [`PlatformClient::query_all_documents`]
+    /// instead — this returns at most one page and gives the caller no signal about whether
+    /// more rows exist.
     ///
     /// Returns SDK-free [`FetchedDocument`]s (no `Document` / `Value` leaks across the
     /// module boundary, style guide §B).

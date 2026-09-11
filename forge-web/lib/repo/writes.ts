@@ -27,6 +27,7 @@ import {
   grantRole,
   previewCredits,
   previewDocumentCreate,
+  queryAllDocuments,
   queryDocumentsWithProof,
   suspendRole,
   revokeRole,
@@ -387,12 +388,14 @@ async function findOwnRegistryDoc(
   targetId: string,
 ): Promise<string | null> {
   const contractId = registryId(auth)
-  const { documents } = await queryDocumentsWithProof(sdk, {
+  // Complete, matching forge-core `find_own`: this backs un-star / un-follow, and a user
+  // past 100 stars could otherwise not remove an older one — while the call still reported
+  // success, since "not found" and "not looked at" are indistinguishable here.
+  const documents = await queryAllDocuments(sdk, {
     dataContractId: contractId,
     documentTypeName: documentType,
     where: [['$ownerId', '==', auth.identityId]],
     orderBy: [['$ownerId', 'asc'], ['$createdAt', 'desc']],
-    limit: 100,
   })
   for (const doc of documents) {
     const v = doc[field]

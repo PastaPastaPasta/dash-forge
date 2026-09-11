@@ -47,6 +47,10 @@ const DOC_FOLLOW: &str = "follow";
 /// number past the collision the previous attempt hit).
 const MAX_NUMBER_ATTEMPTS: u32 = 8;
 
+/// The page size a caller-supplied `limit` of 0 means: "one page of the server default".
+/// Drive's own default and maximum are both 100 rows.
+const DEFAULT_PAGE: u32 = 100;
+
 /// Build a HIGH-key document write/delete engine over `client` for `identity`.
 ///
 /// Document create/delete accept a HIGH auth key (S0.7); only token admin needs CRITICAL.
@@ -342,8 +346,11 @@ impl<'a> IssueService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<IssueWithState>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
-        // A caller-supplied 0 is a page size, not a request for everything.
-        let limit = limit.max(1);
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let docs = self
             .client
             .query_documents(
@@ -809,8 +816,11 @@ impl<'a> PullRequestService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<PullRequest>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
-        // A caller-supplied 0 is a page size, not a request for everything.
-        let limit = limit.max(1);
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let docs = self
             .client
             .query_documents(
@@ -1397,8 +1407,11 @@ impl<'a> SocialService<'a> {
         limit: u32,
         start_after: Option<&str>,
     ) -> Result<Vec<String>> {
-        // A caller-supplied 0 is a page size, not a request for everything.
-        let limit = limit.max(1);
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let registry = self
             .client
             .fetch_contract(&self.registry_contract_id)

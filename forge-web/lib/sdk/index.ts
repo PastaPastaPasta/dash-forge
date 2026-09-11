@@ -49,8 +49,6 @@ export {
   bytesToBase64,
   countDocuments,
   hexToBase64,
-  inBatchAllPerKey,
-  inBatchNewestPerKey,
   normalizeDocument,
   setPlatformVersion,
   queryAllDocuments,
