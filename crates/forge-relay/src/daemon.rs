@@ -135,7 +135,7 @@ async fn poll_cycle(
     cfg: &RelayConfig,
 ) -> Result<()> {
     // Refresh cached subscriptions periodically (not every cycle — see SUBS_REFRESH_CYCLES).
-    if ctx.cycle % SUBS_REFRESH_CYCLES == 0 || ctx.subs.is_empty() {
+    if ctx.cycle.is_multiple_of(SUBS_REFRESH_CYCLES) || ctx.subs.is_empty() {
         match subscriptions::resolve_for_repo(client, &ctx.contract, relay_identity_id, cfg).await {
             Ok(s) => ctx.subs = s,
             Err(e) => {

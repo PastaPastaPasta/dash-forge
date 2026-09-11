@@ -99,7 +99,7 @@ Deployed contracts: registry 5fu48x…, m1 repo 5rrwgjj…. DEPLOYER ~0.68 tDASH
 - [x] forge-web UI — 17 routes, foundry aesthetic + Assay trust panel, static export. **LIVE at https://pastapastapasta.github.io/dash-forge/**.
 - [x] forge-import — GitHub migrator, live import within 1.1% of estimate, gist-claim.
 - [x] Pages deploy (repo public, CI web job green). Fixed: remote was SSH (agent refused) → HTTPS; many commits were local-only, now all pushed.
-- CI split: ci.yml = web+parity (per-push, green); rust.yml = nightly (clones platform, heavy dep tree); local+testnet authoritative for Rust.
+- CI split: ci.yml = web+parity (per-push, green); rust.yml = nightly (clones platform, heavy dep tree); local+testnet authoritative for Rust. **Superseded:** the Platform SDK is now a git dependency pinned to an immutable tag (no sibling clone), and rust.yml gates pull requests and pushes that touch Rust paths as well as running nightly — it is the Rust gate, not a backstop. See docs/BUILDING.md.
 - Web hardening gaps for Stage 5: token-history authz unwired in TS core (maintainer folds); evo-sdk WASM 9.4MB not lazy; browse-source ordering/fill assumptions; no syntax highlighting; dg+relay+web-UI reviews pending.
 
 ## Stage 5 — Backends GA + hardening → M4 (NEXT)

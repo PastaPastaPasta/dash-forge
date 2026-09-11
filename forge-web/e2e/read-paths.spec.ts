@@ -12,11 +12,13 @@ import {
  * Logged-out read-path scenarios (no keys required). These exercise the deployed foundry
  * design against real Dash Platform testnet data via the lazily-loaded WASM SDK.
  *
- * NOTE (observed 2026-07): the app connects to testnet and the DAPI `getDocuments` HTTP calls
- * return 200, but the proof-verified read (`queryWithProof`) currently rejects with a
- * wasm-bindgen error object, so data does NOT render — the app shows its "That read did not
- * land" state. Scenarios that require live data therefore fail *by design*, documenting the
- * bug; they will pass once the read path is fixed. See the run report for the root cause.
+ * These are expected to PASS. A note here used to say they failed by design, documenting a
+ * bug where the explicit `documents.queryWithProof(...)` facade rejected in a real browser
+ * with a wasm-bindgen object. That bug was fixed — `queryDocumentsWithProof` in
+ * `lib/sdk/query.ts` now delegates to the plain, still-proof-verified `.query()` (the
+ * connection is `testnetTrusted()`, which verifies proofs internally) — but the note
+ * outlived it, which left a permanently-red suite looking intentional. If a scenario here
+ * fails, that is a real regression in the read path, not a documented condition.
  */
 
 test.describe('logged-out read paths', () => {

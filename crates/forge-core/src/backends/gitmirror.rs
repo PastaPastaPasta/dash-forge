@@ -208,8 +208,7 @@ impl Scratch {
     fn new() -> Result<Self> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let dir =
             std::env::temp_dir().join(format!("forge-gitmirror-{}-{}", std::process::id(), nanos));
         fs::create_dir_all(&dir).map_err(|e| Error::Io(e.to_string()))?;
@@ -266,8 +265,7 @@ mod tests {
         let env_ok = std::process::Command::new("git")
             .arg("--version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+            .is_ok_and(|o| o.status.success());
         if !env_ok {
             eprintln!("SKIP push_mirror_then_rebuild_covers_tips: git not available");
             return;

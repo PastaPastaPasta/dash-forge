@@ -17,11 +17,14 @@ check-rust:
 		echo "== rust: skipped (no Cargo.toml / crates/ yet) =="; \
 	fi
 
+## check-web: one `cd` for the whole recipe — each line of a recipe is its own shell,
+## but the lines within it are not, so a second `cd forge-web` would fail from inside it.
 check-web:
 	@if [ -f forge-web/package.json ]; then \
-		echo "== web: typecheck =="; cd forge-web && pnpm typecheck; \
-		echo "== web: lint =="; cd forge-web && pnpm lint; \
-		echo "== web: test =="; cd forge-web && pnpm test; \
+		cd forge-web && \
+		echo "== web: typecheck ==" && pnpm typecheck && \
+		echo "== web: lint ==" && pnpm lint && \
+		echo "== web: test ==" && pnpm test; \
 	else \
 		echo "== web: skipped (no forge-web/package.json yet) =="; \
 	fi

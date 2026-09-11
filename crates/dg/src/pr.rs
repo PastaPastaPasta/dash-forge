@@ -136,7 +136,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
                 "#{:<4} {}  ({})",
                 p.number,
                 p.title,
-                &p.head_oid.chars().take(12).collect::<String>()
+                p.head_oid.chars().take(12).collect::<String>()
             );
         }
     });
@@ -287,8 +287,7 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         created = Command::new("git")
             .args(["branch", "-f", &branch, &pr.head_oid])
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .is_ok_and(|s| s.success());
     }
 
     ctx.emit(
@@ -378,6 +377,5 @@ fn git_object_present(oid: &str) -> bool {
     Command::new("git")
         .args(["cat-file", "-e", oid])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }

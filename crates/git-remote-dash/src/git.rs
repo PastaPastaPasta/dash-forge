@@ -75,8 +75,7 @@ fn run_git_status(args: &[&str]) -> bool {
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// The local repository the helper reads objects from and writes fetched packs into. All
@@ -169,8 +168,7 @@ impl ScratchRepo {
     pub fn init() -> Result<Self> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let dir =
             std::env::temp_dir().join(format!("git-remote-dash-{}-{}", std::process::id(), nanos));
         std::fs::create_dir_all(&dir).map_err(|e| anyhow!("mkdir scratch: {e}"))?;

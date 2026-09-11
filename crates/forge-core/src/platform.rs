@@ -210,8 +210,9 @@ impl PlatformClient {
     /// Only testnet and mainnet have built-in seed address lists; devnet is rejected
     /// here (it needs an explicit address list this constructor does not take).
     // Kept `async` for a stable I/O-shaped contract: `SdkBuilder::build()` connects
-    // lazily today, but the connect surface should not churn if that changes.
-    #[allow(clippy::unused_async)]
+    // lazily today, but the connect surface should not churn if that changes. Two lints
+    // notice the missing `.await`; the second arrived in clippy 1.98.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn connect(network: Network) -> Result<Self> {
         let dashcore_network = network.to_dashcore();
 

@@ -10,10 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 # Per-push gate: the web app + the TS FORGE_RULES_V1 conformance suite (the
-# cross-client parity contract). The Rust workspace depends on the Dash Platform
-# monorepo (path deps on ../platform) — building that 3 GB dependency tree does
-# not fit a fast per-push job, so Rust is validated in `rust.yml` (nightly +
-# manual, clones platform) and, authoritatively, locally + against testnet.
+# cross-client parity contract). The Rust workspace pulls in the Dash Platform SDK
+# (a git dependency pinned to an immutable tag in Cargo.toml); building that
+# dependency tree does not fit a fast per-push job, so Rust is gated by `rust.yml`
+# on pull requests and pushes that touch Rust paths, plus nightly.
 jobs:
   web:
     name: web

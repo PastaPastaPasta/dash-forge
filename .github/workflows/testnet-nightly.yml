@@ -1,71 +1,178 @@
 name: Testnet Nightly
 
-# Placeholder nightly/on-demand job for the Stage 6 e2e certification suites
-# (CLI suite, token-ACL suite, Playwright, relay/import/chaos — see
-# docs/testing/e2e-test-plan.md and EXECUTION.md Stage 6). Until those suites
-# land, this job only verifies that the fixture-identity secrets required to
-# run them are configured in the repo/environment, so secret provisioning can
-# happen ahead of Stage 6 without the workflow silently no-oping.
+# Nightly certification against LIVE Dash Platform testnet.
 #
-# Required secrets (9 fixture identities, e2e plan §1.1 role pool):
-#   FORGE_TEST_IDENTITY_OWNER       - repo owner identity
-#   FORGE_TEST_IDENTITY_MAINTAINER  - maintainer w/ write access
-#   FORGE_TEST_IDENTITY_COLLAB      - collaborator w/ scoped access
-#   FORGE_TEST_IDENTITY_CONTRIB     - external contributor (PR-only)
-#   FORGE_TEST_IDENTITY_FROZEN      - revoked/frozen ACL token identity
-#   FORGE_TEST_IDENTITY_CI_RUNNER   - CI/automation identity
-#   FORGE_TEST_IDENTITY_RELAY       - forge-relay service identity
-#   FORGE_TEST_IDENTITY_DEPLOYER    - Pages/deploy identity
-#   FORGE_TEST_IDENTITY_TREASURY    - treasury/payment identity
+# The suites this drives are implemented and live in the repo:
+#   * forge-web/e2e/          — Playwright: read paths, fallback browse, zero-backend, a11y
+#   * e2e/cli/run.sh          — 7 CLI scenarios: clone/push round-trip, non-ff, ref delete,
+#                               frozen push, no-token push, third-party verify, depth+filter
 #
-# Each secret is expected to hold whatever the eventual suite runner needs
-# (private key / seed / identity id — TBD in Stage 6 design).
+# They split by what they need:
+#   * READ-ONLY specs need only a network path to testnet DAPI and the seeded fixture repo,
+#     so they run unconditionally and their failure fails this workflow.
+#   * The CLI suite and the write specs need FUNDED fixture identities, which cannot live in
+#     a fork's PR context. A separate `fixtures` probe job decides whether they run, so when
+#     the secrets are absent the suite job's conclusion is literally `skipped` rather than a
+#     green job with everything gated out — a distinction any badge or alert rule can see.
+#
+# Fixture identity secrets (e2e/cli/config.sh names the roles):
+#   FORGE_TEST_IDENTITY_DEPLOYER  - owns the reused m1 repo, grants tokens
+#   FORGE_TEST_IDENTITY_COLLAB    - holds an unfrozen WRITE token
+#   FORGE_TEST_IDENTITY_CONTRIB   - holds no token (negative push case)
+#   FORGE_TEST_IDENTITY_FROZEN    - holds a frozen WRITE token (negative push case)
+# Each holds the bridge-format identity JSON that `dg` reads from
+# ~/.config/dash-forge/test-identities/<ROLE>.identity.json.
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * *"
 
+concurrency:
+  group: testnet-nightly
+  cancel-in-progress: false
+
 jobs:
-  placeholder:
-    name: check-secrets
+  web-read-paths:
+    name: playwright (read-only, live testnet)
     runs-on: ubuntu-latest
-    env:
-      FORGE_TEST_IDENTITY_OWNER: ${{ secrets.FORGE_TEST_IDENTITY_OWNER }}
-      FORGE_TEST_IDENTITY_MAINTAINER: ${{ secrets.FORGE_TEST_IDENTITY_MAINTAINER }}
-      FORGE_TEST_IDENTITY_COLLAB: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
-      FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
-      FORGE_TEST_IDENTITY_FROZEN: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
-      FORGE_TEST_IDENTITY_CI_RUNNER: ${{ secrets.FORGE_TEST_IDENTITY_CI_RUNNER }}
-      FORGE_TEST_IDENTITY_RELAY: ${{ secrets.FORGE_TEST_IDENTITY_RELAY }}
-      FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
-      FORGE_TEST_IDENTITY_TREASURY: ${{ secrets.FORGE_TEST_IDENTITY_TREASURY }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: forge-web
     steps:
-      - name: Check required fixture-identity secrets
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: forge-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm build
+      # auth-write needs a funded identity; everything else is a read against live testnet.
+      # E2E_SKIP_BUILD reuses the `out/` just built — the Playwright webServer would
+      # otherwise run `pnpm build` a second time before serving it.
+      - name: Playwright read-path + a11y specs
+        env:
+          E2E_SKIP_BUILD: '1'
+        run: pnpm exec playwright test read-paths.spec.ts fallback-browse.spec.ts zero-backend.spec.ts a11y.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: forge-web/e2e/report
+          retention-days: 7
+
+  # A separate probe job so the suite job's CONCLUSION is literally `skipped` when the
+  # fixtures are absent. Gating the steps inside one job leaves that job green, which is
+  # indistinguishable from a real pass to a badge, the checks API, or a "notify on failed
+  # nightly" rule — the exact confusion this workflow is meant to remove.
+  fixtures:
+    name: fixture identities configured?
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - name: Probe
+        id: probe
+        env:
+          FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+          FORGE_TEST_IDENTITY_COLLAB: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
+          FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
+          FORGE_TEST_IDENTITY_FROZEN: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
         run: |
           missing=()
-          for name in \
-            FORGE_TEST_IDENTITY_OWNER \
-            FORGE_TEST_IDENTITY_MAINTAINER \
-            FORGE_TEST_IDENTITY_COLLAB \
-            FORGE_TEST_IDENTITY_CONTRIB \
-            FORGE_TEST_IDENTITY_FROZEN \
-            FORGE_TEST_IDENTITY_CI_RUNNER \
-            FORGE_TEST_IDENTITY_RELAY \
-            FORGE_TEST_IDENTITY_DEPLOYER \
-            FORGE_TEST_IDENTITY_TREASURY \
-          ; do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
+          # Report the SECRET names an operator has to create, not internal aliases.
+          for name in FORGE_TEST_IDENTITY_DEPLOYER FORGE_TEST_IDENTITY_COLLAB \
+                      FORGE_TEST_IDENTITY_CONTRIB FORGE_TEST_IDENTITY_FROZEN; do
+            [ -z "${!name}" ] && missing+=("$name")
           done
-
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::warning::Missing fixture-identity secrets: ${missing[*]}"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### CLI e2e suite skipped"
+              echo
+              echo "Missing repository secrets: \`${missing[*]}\`."
+              echo
+              echo "These identities must exist and be funded on testnet for the CLI suite"
+              echo "to run. The suite job below reports SKIPPED — it is **not** a passing"
+              echo "run. See \`e2e/cli/config.sh\` for the role pool and"
+              echo "\`docs/testing/e2e-test-plan.md\` for provisioning."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=CLI e2e skipped::missing secrets: ${missing[*]}"
           else
-            echo "All fixture-identity secrets are configured."
+            echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "Testnet nightly e2e suites (CLI, token-ACL, Playwright, relay/import/chaos) are not implemented yet."
-          echo "Suites land in Stage 6 — see EXECUTION.md and docs/testing/e2e-test-plan.md."
-          exit 0
+  cli-suite:
+    name: cli e2e (live testnet)
+    needs: fixtures
+    if: needs.fixtures.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ID_DEPLOYER_JSON: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+      ID_COLLAB_JSON: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
+      ID_CONTRIB_JSON: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
+      ID_FROZEN_JSON: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ubuntu's `protobuf-compiler` package is protoc 3.21.x, whose `libprotoc 3.21.12`
+      # version string the tenderdash proto-compiler cannot parse ("invalid float literal") —
+      # protobuf renumbered to `libprotoc <major>.<minor>` at v22. Install a pinned modern
+      # release directly so the version is explicit and reproducible.
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+          protoc --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Materialize fixture identities
+        run: |
+          dir="${HOME}/.config/dash-forge/test-identities"
+          mkdir -p "$dir" && chmod 700 "$dir"
+          printf '%s' "$ID_DEPLOYER_JSON" > "$dir/DEPLOYER.identity.json"
+          printf '%s' "$ID_COLLAB_JSON"   > "$dir/COLLAB.identity.json"
+          printf '%s' "$ID_CONTRIB_JSON"  > "$dir/CONTRIB.identity.json"
+          printf '%s' "$ID_FROZEN_JSON"   > "$dir/FROZEN.identity.json"
+          chmod 600 "$dir"/*.identity.json
+
+      # run.sh exits non-zero if any scenario FAILs. SKIPs (testnet funds / InstantSend
+      # flakiness) do not fail it — which means an all-SKIP run would otherwise exit 0 and
+      # look identical to a full pass. The matrix goes to stderr, so capture it, put it in
+      # the step summary, and warn loudly when nothing actually ran.
+      - name: CLI e2e suite
+        run: |
+          # GH Actions runs this under `bash -e`, so the pipeline's failure must be caught
+          # with `|| rc=$?` — otherwise the step exits before writing the summary, which is
+          # precisely the run whose output matters most.
+          set -o pipefail
+          rc=0
+          make e2e 2>&1 | tee /tmp/e2e.log || rc=$?
+          {
+            echo "### CLI e2e result"
+            echo
+            echo '```'
+            tail -n 25 /tmp/e2e.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          counts=$(grep -oE 'passed=[0-9]+ +skipped=[0-9]+ +failed=[0-9]+' /tmp/e2e.log | tail -1 || true)
+          passed=$(sed -nE 's/.*passed=([0-9]+).*/\1/p' <<<"$counts")
+          skipped=$(sed -nE 's/.*skipped=([0-9]+).*/\1/p' <<<"$counts")
+          if [ "${passed:-0}" -eq 0 ] && [ "${skipped:-0}" -gt 0 ]; then
+            echo "::warning title=CLI e2e ran nothing::every scenario SKIPPED (${skipped}); this is not a pass"
+          fi
+          exit $rc
