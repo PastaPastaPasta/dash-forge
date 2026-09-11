@@ -47,6 +47,29 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
  * `refNameHash` participate. `configHistory` is the repo's full config timeline.
  * `isAncestor(a, b)` reports whether commit `a` is an ancestor of (or equal to) `b`.
  */
+/**
+ * The name to DISPLAY for the ref keyed by `refNameHashHex`: the `refName` of the newest
+ * update (on the `(createdAt, id)` total order) whose name actually hashes to that key.
+ *
+ * A shared rule, not a reader convenience, because the two halves of a ref document are
+ * trusted differently: `refNameHash` is the indexed key, while `refName` is caller-supplied
+ * content. A token holder may therefore file an update under `main`'s hash carrying any legal
+ * name. {@link resolveRef} already ignores such an update when resolving the tip, so a client
+ * that named the ref from it would show a different branch name for the same ref than a
+ * client that did not. Parity: forge-core `rules::display_ref_name`.
+ *
+ * `undefined` when no update carries a name matching the key.
+ */
+export function displayRefName(
+  updates: readonly RefUpdate[],
+  refNameHashHex: string,
+): string | undefined {
+  const named = updates
+    .filter((u) => u.refNameHash === refNameHashHex && refNameHashMatches(u.refName, refNameHashHex))
+    .sort(compareKey)
+  return named[named.length - 1]?.refName
+}
+
 export function resolveRef(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],

@@ -511,15 +511,13 @@ impl<'a> RepoService<'a> {
         let mut out = Vec::with_capacity(hashes.len());
         for hash in &hashes {
             let updates = self.fetch_ref_updates(&repo_contract, *hash).await?;
-            let Some(newest) = updates.iter().max_by(|a, b| {
-                a.created_at
-                    .cmp(&b.created_at)
-                    .then_with(|| a.id.cmp(&b.id))
-            }) else {
+            let hash_hex = hex::encode(hash);
+            // Shared naming rule (forge-web applies the same one) — never the raw newest
+            // update, which may carry a name that does not hash to this key.
+            let Some(ref_name) = rules::display_ref_name(&updates, &hash_hex).map(str::to_owned)
+            else {
                 continue;
             };
-            let ref_name = newest.ref_name.clone();
-            let hash_hex = hex::encode(hash);
             let state = rules::resolve_ref(&updates, &configs, &hash_hex, |a, b| a == b);
             out.push((ref_name, state));
         }
@@ -668,18 +666,26 @@ impl<'a> RepoService<'a> {
             .await
     }
 
-    /// Read a repo's `packManifest` documents, newest first.
+    /// Read **every** `packManifest` document of a repo, newest first.
+    ///
+    /// Completeness is load-bearing for the transport, not just for display: `fetch`
+    /// downloads the union of every live kind-0 pack, and each push stores an *incremental*
+    /// pack. Drop the oldest manifests — which is what a capped newest-first read does once
+    /// a repo passes one page — and the initial import pack, holding the root objects and
+    /// the delta bases everything else is built against, falls out of the set. The clone
+    /// then fails to index rather than failing to be current. `repack` reads the same list,
+    /// so a truncated read would consolidate over an incomplete input and then delete the
+    /// chunks it superseded.
+    ///
     pub async fn read_pack_manifests(&self, repo: &RepoHandle) -> Result<Vec<PackManifestInfo>> {
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 &repo_contract,
                 DOC_PACK_MANIFEST,
                 &[],
                 &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
             )
             .await?;
 
@@ -1112,15 +1118,16 @@ impl<'a> RepoService<'a> {
         if !repo_contract.has_document_type(DOC_PACK_MIRROR) {
             return Ok(Vec::new());
         }
+        // Complete: mirrors are the availability fallback set, and a capped read would drop
+        // whole packs' alternate URIs from `dg storage status`'s probe set while reporting
+        // the packs it did see as fully probed.
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 &repo_contract,
                 DOC_PACK_MIRROR,
                 &[],
                 &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
             )
             .await?;
         let mut out = Vec::new();
@@ -1202,21 +1209,24 @@ impl<'a> RepoService<'a> {
 
     // --- internal read helpers ---
 
-    /// The repo's full `config` history (append-only, non-deletable), as [`ConfigDoc`]s
-    /// ordered by `$createdAt`.
+    /// The repo's **complete** `config` history (append-only, non-deletable), as
+    /// [`ConfigDoc`]s ordered by `$createdAt`.
+    ///
+    /// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
+    /// UNPROTECTED, so a truncated history does not merely go stale — it silently
+    /// re-admits plain `refUpdate`s on protected refs that the rules layer had correctly
+    /// rendered inert. It also has to be complete for cross-client agreement: forge-web
+    /// reads the same timeline, and if the two clients hold different slices of it they
+    /// resolve the same ref differently, which is precisely what FORGE_RULES_V1 exists to
+    /// prevent.
     async fn fetch_config_history(&self, repo_contract: &LoadedContract) -> Result<Vec<ConfigDoc>> {
-        // config is append-only & non-deletable; a repo's config history is tiny (one doc
-        // per protect/settings change), so a single page covers M1. Pagination TODO if a
-        // repo ever exceeds ~100 config revisions.
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 repo_contract,
                 DOC_CONFIG,
                 &[],
                 &[QueryOrder::asc("$createdAt")],
-                0,
-                None,
             )
             .await?;
         Ok(docs
@@ -1271,8 +1281,15 @@ impl<'a> RepoService<'a> {
         Ok(())
     }
 
-    /// Fetch every `refUpdate` + `protectedRefUpdate` for one ref-name hash, flattened to
-    /// the [`RefUpdate`] shape [`crate::rules::resolve_ref`] consumes.
+    /// Fetch **every** `refUpdate` + `protectedRefUpdate` for one ref-name hash, flattened
+    /// to the [`RefUpdate`] shape [`crate::rules::resolve_ref`] consumes.
+    ///
+    /// Paged to exhaustion: `resolve_ref` folds the whole causal chain, so stopping at one
+    /// page pins a branch at its 100th push. Everything downstream then compounds that —
+    /// `list` advertises the stale oid, clones get a stale HEAD, and `plan_pushes` compares
+    /// new pushes against it and reports correct fast-forwards as non-fast-forward.
+    /// `base_ref_tips` already pages the same data, so a capped read here also made one
+    /// binary disagree with itself about a ref.
     async fn fetch_ref_updates(
         &self,
         repo_contract: &LoadedContract,
@@ -1283,7 +1300,7 @@ impl<'a> RepoService<'a> {
         for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
             let docs = self
                 .client
-                .query_documents(
+                .query_all_documents(
                     repo_contract,
                     doc_type,
                     &[QueryFilter::eq(
@@ -1291,8 +1308,6 @@ impl<'a> RepoService<'a> {
                         FieldValue::bytes32(ref_name_hash),
                     )],
                     &[QueryOrder::asc("$createdAt")],
-                    0,
-                    None,
                 )
                 .await?;
             for d in &docs {

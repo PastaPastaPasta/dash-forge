@@ -13,6 +13,13 @@
 //! ports run the exact same vectors and must produce the exact same `expected`. The
 //! test at the bottom of this file is that suite for the Rust side.
 //!
+//! What that proves, precisely: every vector hands these functions a ready-made input
+//! array, so the suite establishes that the two ports FOLD identically given identical
+//! input. It does not establish that each client FETCHES identical input. A divergence in
+//! the read layer — one client paging a history to exhaustion while the other stops at
+//! Drive's 100-row default — yields two different answers from two green conformance runs.
+//! That class of bug belongs to the readers (`repo.rs`, `collab.rs`) and their own tests.
+//!
 //! Everything here is **pure**: no SDK, no network, no funds, no clock. Callers fetch
 //! the documents (refUpdate / config / event / token-history / flatIndex) and hand
 //! them in as plain structs; these functions resolve. The only "clock" available is
@@ -369,11 +376,43 @@ fn is_content_hash(h: &str) -> bool {
 
 /// Whether `refNameHash` is exactly `sha256(refName)` — the normative invariant binding
 /// the indexed key to the name it claims to hash.
-fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
+///
+/// Public because callers that only want to *display* a ref must apply the same predicate
+/// the fold does. `refName` is caller-supplied content and only `refNameHash` is indexed, so
+/// a token holder can post an update carrying a name that does not hash to the key it is
+/// filed under. `resolve_ref` already ignores such an update, and any client naming a ref
+/// from one would show a different branch name for the same ref than a client that does not.
+pub fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
     use sha2::{Digest as _, Sha256};
     let mut h = Sha256::new();
     h.update(ref_name.as_bytes());
     hex::encode(h.finalize()).eq_ignore_ascii_case(ref_name_hash)
+}
+
+/// The name to DISPLAY for the ref keyed by `ref_name_hash`: the `refName` of the newest
+/// update (on the `(created_at, id)` total order) whose name actually hashes to that key.
+///
+/// This is a shared rule, not a reader convenience, because the two halves of the ref
+/// document are trusted differently: `refNameHash` is the indexed key, while `refName` is
+/// caller-supplied content. A token holder may therefore file an update under `main`'s hash
+/// carrying any legal name. [`resolve_ref`] already ignores such an update when resolving the
+/// tip, so a client that named the ref from it would show a different branch name for the
+/// same ref than a client that did not — and `git ls-remote` would advertise the tip under a
+/// name that no longer matches the `HEAD` symref.
+///
+/// `None` when no update carries a name matching the key (nothing safe to display).
+pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Option<&'a str> {
+    updates
+        .iter()
+        .filter(|u| {
+            u.ref_name_hash == ref_name_hash && ref_name_hash_matches(&u.ref_name, ref_name_hash)
+        })
+        .max_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
+        .map(|u| u.ref_name.as_str())
 }
 
 /// The as-of-time protection check from §4: is update `u` a valid mover of its ref?
@@ -1031,10 +1070,10 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name, matches_protected,
-        overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event, EventKind, FlatIndex,
-        Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind, TokenOp, TokenRecord,
-        TreeDiff,
+        display_ref_name, fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name,
+        matches_protected, overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event,
+        EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
+        TokenOp, TokenRecord, TreeDiff,
     };
     use serde::Deserialize;
     use std::path::PathBuf;
@@ -1225,6 +1264,13 @@ mod tests {
         diffs: Vec<TreeDiff>,
     }
 
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DisplayRefNameInput {
+        updates: Vec<RefUpdate>,
+        ref_name_hash: String,
+    }
+
     fn vectors_dir() -> PathBuf {
         // crates/forge-core/src/rules.rs -> repo root -> forge-contracts/vectors
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1248,6 +1294,14 @@ mod tests {
                 let want: RefState =
                     serde_json::from_value(v.expected.clone()).expect("resolve_ref expected");
                 assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "display_ref_name" => {
+                let inp: DisplayRefNameInput =
+                    serde_json::from_value(v.input.clone()).expect("display_ref_name input");
+                let got = display_ref_name(&inp.updates, &inp.ref_name_hash);
+                let want: Option<String> =
+                    serde_json::from_value(v.expected.clone()).expect("display_ref_name expected");
+                assert_eq!(got.map(str::to_owned), want, "vector `{ctx}`");
             }
             "matches_protected" => {
                 let inp: MatchesProtectedInput =

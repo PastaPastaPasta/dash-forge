@@ -1,0 +1,33 @@
+{
+  "name": "display_ref_name_tie_at_timestamp_id_tiebreak",
+  "description": "Two matching updates at the same createdAt: the greater $id wins, the same (createdAt, id) total order used everywhere else.",
+  "case": "display_ref_name",
+  "input": {
+    "updates": [
+      {
+        "id": "u2",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u1",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+  },
+  "expected": "refs/heads/main"
+}

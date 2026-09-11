@@ -208,15 +208,9 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
     let handle = svc.resolve_repo(owner, repo).await?;
     let contract = client.fetch_contract(&handle.repo_contract_id).await?;
     for doc_type in ["refUpdate", "protectedRefUpdate"] {
+        // A diagnostic that dumps "the raw history" must dump all of it.
         let docs = client
-            .query_documents(
-                &contract,
-                doc_type,
-                &[],
-                &[QueryOrder::asc("$createdAt")],
-                0,
-                None,
-            )
+            .query_all_documents(&contract, doc_type, &[], &[QueryOrder::asc("$createdAt")])
             .await?;
         println!("--- {doc_type}: {} docs ---", docs.len());
         for d in &docs {

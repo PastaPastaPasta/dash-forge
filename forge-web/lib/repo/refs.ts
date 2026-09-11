@@ -16,8 +16,15 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { resolveRef, type ConfigDoc, type IsAncestor, type RefState, type RefUpdate } from '../rules'
-import { base64ToHex, queryDocumentsWithProof, skipScanDistinct } from '../sdk'
+import {
+  displayRefName,
+  resolveRef,
+  type ConfigDoc,
+  type IsAncestor,
+  type RefState,
+  type RefUpdate,
+} from '../rules'
+import { base64ToHex, queryAllDocuments, queryDocumentsWithProof, skipScanDistinct } from '../sdk'
 import { DOC, toRefUpdate, type RepoRef } from './contract'
 import { readConfigHistory } from './config'
 
@@ -53,35 +60,51 @@ export async function enumerateRefHashes(sdk: EvoSDK, repo: RepoRef): Promise<st
   return [...new Set([...plain, ...protectedHashes])]
 }
 
-/** Fetch a single ref's full update history (both types), converted to rules inputs. */
+/**
+ * Fetch a single ref's **complete** update history (both types), converted to rules inputs.
+ *
+ * Pages to exhaustion: {@link resolveRef} folds the whole causal chain, so stopping at one
+ * page pins a branch at its 100th push — the tip stops advancing and every later commit
+ * becomes unreachable through the UI. It also feeds {@link historicalTipsPredicate}, where
+ * a truncated tip set makes a genuinely merged PR fold as still-open. Parity: forge-core
+ * `base_ref_tips` pages here too.
+ */
 export async function readRefUpdates(
   sdk: EvoSDK,
   repo: RepoRef,
   refNameHashB64: string,
 ): Promise<RefUpdate[]> {
   const [plain, prot] = await Promise.all([
-    queryDocumentsWithProof(sdk, {
+    queryAllDocuments(sdk, {
       dataContractId: repo.contractId,
       documentTypeName: DOC.refUpdate,
       where: [['refNameHash', '==', refNameHashB64]],
       orderBy: [['$createdAt', 'asc']],
-      limit: 100,
     }),
-    queryDocumentsWithProof(sdk, {
+    queryAllDocuments(sdk, {
       dataContractId: repo.contractId,
       documentTypeName: DOC.protectedRefUpdate,
       where: [['refNameHash', '==', refNameHashB64]],
       orderBy: [['$createdAt', 'asc']],
-      limit: 100,
     }),
   ])
   return [
-    ...plain.documents.map((d) => toRefUpdate(d, false)),
-    ...prot.documents.map((d) => toRefUpdate(d, true)),
+    ...plain.map((d) => toRefUpdate(d, false)),
+    ...prot.map((d) => toRefUpdate(d, true)),
   ]
 }
 
-/** Fold a ref's full (`$createdAt asc`) update history into its resolved list-view state. */
+/**
+ * Fold a ref's full (`$createdAt asc`) update history into its resolved list-view state.
+ *
+ * The display name comes from the newest update whose `refName` actually hashes to this key,
+ * on the `(createdAt, id)` total order. `refName` is caller-supplied content while only
+ * `refNameHash` is indexed, so a token holder can file an update under `main`'s hash carrying
+ * any legal name; `resolveRef` already ignores such an update, and naming the ref from it
+ * would show a different branch name than a client that does not. Taking the last element of
+ * the plain-then-protected concatenation — which is not even the newest update overall —
+ * was the forge-web half of that divergence. forge-core `read_refs` applies the same rule.
+ */
 function toResolvedRef(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],
@@ -89,8 +112,11 @@ function toResolvedRef(
   isAncestor: IsAncestor,
 ): ResolvedRef {
   const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
-  const refName = updates[updates.length - 1]?.refName ?? ''
-  return { refName, refNameHash: refNameHashHex, state }
+  return {
+    refName: displayRefName(updates, refNameHashHex) ?? '',
+    refNameHash: refNameHashHex,
+    state,
+  }
 }
 
 /** Resolve a single ref by its (base64) `refNameHash`. */

@@ -1,0 +1,22 @@
+{
+  "name": "display_ref_name_no_matching_name_is_none",
+  "description": "When no update under the key carries a name that hashes to it, there is nothing safe to display.",
+  "case": "display_ref_name",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/zzz",
+        "prevOid": "0",
+        "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+  },
+  "expected": null
+}

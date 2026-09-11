@@ -10,9 +10,7 @@
  *     come back base64. This is load-bearing — a raw-bytes operand silently returns nothing.
  *  2. **`in`-batches do NOT round-robin** — a single global `limit` is drawn in
  *     orderBy-traversal order, so one hot key starves all siblings (measured 9/9 starved).
- *     The **per-key completeness fallback is the NORMAL path**: after an `in` batch, every
- *     key that returned zero rows is re-queried individually (`== key, limit 1`), all in
- *     parallel. See {@link inBatchWithCompleteness}.
+ *     So a multi-key read is done per key, in parallel, not as one `in` batch.
  *
  * Plus **skip-scan** ref enumeration ({@link skipScanDistinct}): `> lastKey` orderBy key
  * `limit 1` hops to the next distinct key — O(log n) per distinct ref, not O(total pushes).
@@ -188,12 +186,34 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+/** Thrown when a read that must be complete could not be proven complete. */
+export class IncompleteReadError extends Error {
+  constructor(
+    readonly documentTypeName: string,
+    readonly fetched: number,
+    reason: string,
+  ) {
+    super(`incomplete read of ${documentTypeName} after ${fetched} documents: ${reason}`)
+    this.name = 'IncompleteReadError'
+  }
+}
+
 /**
  * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
  * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
- * past the last `$id` of each page, until a short page signals the end. Used by reads that
- * MUST be complete — e.g. the token-history reconstruction, where dropping a late `mint`
- * would make a legitimate collaborator's events fold as unauthorized.
+ * past the last `$id` of each page, until a **short page** proves the end was reached. Used by
+ * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueState`,
+ * `foldPrState`) are folds over a whole history, so a silently truncated input does not
+ * degrade the answer — it produces a confidently wrong one (a closed issue that reads open,
+ * a branch pinned at its 100th push).
+ *
+ * **A short page is the only accepted proof of completeness.** If the cursor cannot advance
+ * (a row without a string `$id`) or the `maxPages` safety cap is hit, this THROWS
+ * {@link IncompleteReadError} rather than returning what it has: a caller folding a partial
+ * history cannot tell the difference between "no more events" and "I stopped early", and the
+ * whole point of the rules layer is that every client resolves identically. Callers that
+ * genuinely want a bounded window should use {@link queryDocumentsWithProof} with a `limit`
+ * and present it as a window.
  *
  * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
  */
@@ -213,13 +233,23 @@ export async function queryAllDocuments(
       startAfter,
     })
     out.push(...documents)
-    if (documents.length < pageLimit) break
+    if (documents.length < pageLimit) return out
     const last = documents[documents.length - 1]
     const lastId = last?.['$id']
-    if (typeof lastId !== 'string') break
+    if (typeof lastId !== 'string') {
+      throw new IncompleteReadError(
+        query.documentTypeName,
+        out.length,
+        'a full page ended on a document with no $id, so the cursor cannot advance',
+      )
+    }
     startAfter = lastId
   }
-  return out
+  throw new IncompleteReadError(
+    query.documentTypeName,
+    out.length,
+    `the ${maxPages}-page safety cap was reached before a short page proved the end`,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -259,106 +289,25 @@ export async function skipScanDistinct(
       limit: 1,
     })
     const row = rows[0]
-    if (row === undefined) break
+    // No further row: the strictly-increasing cursor has passed the last key. This is the
+    // only way out that proves the enumeration is complete.
+    if (row === undefined) return keys
     const key = row[keyField]
-    if (typeof key !== 'string') break
+    if (typeof key !== 'string') {
+      throw new IncompleteReadError(
+        documentTypeName,
+        keys.length,
+        `a row has no string ${keyField}, so the skip-scan cursor cannot advance`,
+      )
+    }
     keys.push(key)
     last = key
   }
-  return keys
-}
-
-// ---------------------------------------------------------------------------
-// in-batch with per-key completeness fallback (the NORMAL path)
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch the newest row per key (e.g. the current tip per `refNameHash`, or the newest
- * event per target) with the S0.8 completeness fallback baked in:
- *   1. one `in` batch over all keys (`keyField in [...]`, orderBy `keyField, $createdAt desc`)
- *   2. any key that returned zero rows — starved by a hot sibling — is re-queried
- *      individually (`keyField == key`, `$createdAt desc`, limit 1), **all in parallel**.
- *
- * Returns a `Map<key, newestRow>` covering every key that has at least one row.
- * `keys` are the base64 operand form; the fallback re-encodes each identically.
- */
-export async function inBatchNewestPerKey(
-  sdk: EvoSDK,
-  params: {
-    readonly dataContractId: string
-    readonly documentTypeName: string
-    readonly keyField: string
-    readonly keys: readonly string[]
-    readonly batchLimit?: number
-  },
-): Promise<Map<string, PlainDocument>> {
-  const { dataContractId, documentTypeName, keyField, keys } = params
-  const result = new Map<string, PlainDocument>()
-  if (keys.length === 0) return result
-
-  const batch = await queryDocuments(sdk, {
-    dataContractId,
+  // A truncated ref enumeration is the same class of confidently-wrong answer as a
+  // truncated history: the caller would render "these are the branches" from a partial set.
+  throw new IncompleteReadError(
     documentTypeName,
-    where: [[keyField, 'in', keys]],
-    orderBy: [
-      [keyField, 'asc'],
-      ['$createdAt', 'desc'],
-    ],
-    limit: params.batchLimit ?? 100,
-  })
-  for (const row of batch) {
-    const k = row[keyField]
-    if (typeof k === 'string' && !result.has(k)) result.set(k, row)
-  }
-
-  // Completeness fallback: re-query every starved key individually, in parallel.
-  const missing = keys.filter((k) => !result.has(k))
-  const fallbacks = await Promise.all(
-    missing.map((k) =>
-      queryDocuments(sdk, {
-        dataContractId,
-        documentTypeName,
-        where: [[keyField, '==', k]],
-        orderBy: [['$createdAt', 'desc']],
-        limit: 1,
-      }).then((rows) => [k, rows[0]] as const),
-    ),
+    keys.length,
+    `the ${maxKeys}-key safety cap was reached before the key space was exhausted`,
   )
-  for (const [k, row] of fallbacks) {
-    if (row !== undefined) result.set(k, row)
-  }
-  return result
-}
-
-/**
- * Fetch ALL rows for a set of keys with the same completeness discipline — used by event
- * folds (an issue/PR needs every event, not just the newest). Pages the `in` batch, then
- * re-queries each key that looks truncated. Returns `Map<key, rows[]>` (ascending time).
- */
-export async function inBatchAllPerKey(
-  sdk: EvoSDK,
-  params: {
-    readonly dataContractId: string
-    readonly documentTypeName: string
-    readonly keyField: string
-    readonly keys: readonly string[]
-    readonly perKeyLimit?: number
-  },
-): Promise<Map<string, PlainDocument[]>> {
-  const { dataContractId, documentTypeName, keyField, keys } = params
-  const perKeyLimit = params.perKeyLimit ?? 100
-  // On active repos the per-key path is correct regardless of Drive traversal order, so
-  // fetch each key's full timeline directly (parallelized) rather than trusting the batch.
-  const entries = await Promise.all(
-    keys.map((k) =>
-      queryDocuments(sdk, {
-        dataContractId,
-        documentTypeName,
-        where: [[keyField, '==', k]],
-        orderBy: [['$createdAt', 'asc']],
-        limit: perKeyLimit,
-      }).then((rows) => [k, rows] as const),
-    ),
-  )
-  return new Map(entries)
 }
