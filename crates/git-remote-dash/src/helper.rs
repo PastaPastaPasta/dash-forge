@@ -469,12 +469,12 @@ async fn upload_push_pack(
 
     let want_refs: Vec<&str> = want_tips.iter().map(String::as_str).collect();
     let base_refs: Vec<&str> = have_bases.iter().map(String::as_str).collect();
-    let report =
+    let pack =
         build_pack(git_dir, &want_refs, &base_refs).context("building self-contained push pack")?;
-    let bytes = &report.pack.bytes;
+    let bytes = &pack.bytes;
     let meta = PackMeta::for_bytes(bytes);
     let pack_hash = meta.pack_hash_bytes()?;
-    let object_count = report.pack.parsed.object_count() as u64;
+    let object_count = pack.parsed.object_count() as u64;
     let chunk_vec_len = split(bytes).len();
     let chunk_count = chunk_vec_len as u64;
     let chunk_count_u32 = u32::try_from(chunk_vec_len)
@@ -484,7 +484,6 @@ async fn upload_push_pack(
         bytes = bytes.len(),
         objects = object_count,
         chunks = chunk_count,
-        premium = report.premium_ratio(),
         "uploading push pack"
     );
 
@@ -528,6 +527,38 @@ async fn upload_push_pack(
 
     // Push fully landed (chunks + manifest): retire the journal.
     let _ = std::fs::remove_file(&jpath);
+
+    // Publish the browse-index fragment over the pack just stored, so the repo is
+    // browsable from the web app without waiting for a repack. Best-effort and reported,
+    // never fatal: the push is already on-chain and paid for by this point, and a repo
+    // whose index is behind still clones, fetches and pushes — it just falls back to the
+    // in-browser whole-pack clone until the next push or repack refreshes the index.
+    match svc
+        .publish_push_locator(
+            repo,
+            &pack.parsed,
+            pack_hash,
+            forge_core::repo::RepackTarget::Platform,
+        )
+        .await
+    {
+        Ok(forge_core::repo::PushIndexOutcome::Fragment { pack_ref, .. }) => {
+            tracing::info!(pack_ref, "published browse-index fragment");
+        }
+        Ok(forge_core::repo::PushIndexOutcome::Consolidated { folded, .. }) => {
+            tracing::info!(folded, "folded browse-index fragments into one locator");
+        }
+        Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => {
+            tracing::warn!(reason = %why, "browse index not updated by this push");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "the push landed but its browse-index fragment could not be published; \
+                 browse stays on the fallback path until the next push or repack"
+            );
+        }
+    }
     Ok(())
 }
 

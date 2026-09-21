@@ -1,20 +1,20 @@
 //! Pack creation by shelling out to the system `git` binary.
 //!
-//! Two entry points mirror the two producers in the push / repack flows:
+//! Two entry points mirror the two producers in the push / repack flows. Both emit a
+//! **locator-quality** pack: 0 `REF_DELTA`, every OFS delta base earlier in the same pack,
+//! every object's delta chain contiguous. That is the invariant the `objectLocator`
+//! single-span read depends on, and [`Pack::from_files`] enforces it on the way out, so no
+//! pack this module produces can ever be stored un-indexable.
 //!
-//! - [`build_pack`] — the *push* path. `git pack-objects --thin` computes a thin pack
-//!   (deltas allowed against objects the receiver already has), then
-//!   `git index-pack --fix-thin` materializes those external bases so the **stored
-//!   pack is self-contained** (data-contracts §2.3). The thin/fixed byte delta is the
-//!   measurable *fix-thin premium*.
-//! - [`repack_all`] — the *repack* path. `git pack-objects --all` (non-thin, with
-//!   `--delta-base-offset`) produces one consolidated pack with **0 `REF_DELTA`** and
-//!   every OFS base earlier in the same pack — the invariant the `objectLocator`
-//!   single-span read depends on. It is non-destructive (never rewrites the repo odb).
+//! - [`build_pack`] — the *push* path. `git pack-objects --revs --delta-base-offset` over
+//!   `want ^have` produces the push delta as a self-contained pack.
+//! - [`repack_all`] — the *repack* path. `git pack-objects --all` produces one consolidated
+//!   pack over the whole reachable graph. Non-destructive (never rewrites the repo odb).
 //!
-//! git subcommands used, and why: `pack-objects` (delta compute), `index-pack`
-//! (`--fix-thin` completion + `.idx` generation). No `verify-pack` in the library
-//! path — see `parse.rs`.
+//! NO `--thin` / `--fix-thin` (changed, with measurements — see [`build_pack`]).
+//!
+//! git subcommands used, and why: `pack-objects` (delta compute), `index-pack` (`.idx`
+//! generation). No `verify-pack` in the library path — see `parse.rs`.
 
 use super::parse::ParsedPack;
 use crate::error::{Error, Result};
@@ -38,6 +38,7 @@ impl Pack {
         let bytes = fs::read(pack_path).map_err(|e| Error::Io(e.to_string()))?;
         let idx_bytes = fs::read(idx_path).map_err(|e| Error::Io(e.to_string()))?;
         let parsed = ParsedPack::parse(&bytes, &idx_bytes)?;
+        ensure_locator_quality(&parsed)?;
         Ok(Self {
             bytes,
             idx_bytes,
@@ -46,37 +47,70 @@ impl Pack {
     }
 }
 
-/// The result of [`build_pack`]: the self-contained pack plus the thin/fixed sizes
-/// that quantify the fix-thin premium.
-pub struct BuildReport {
-    /// The completed, self-contained pack.
-    pub pack: Pack,
-    /// Bytes of the raw thin pack from `pack-objects` (before completion).
-    pub thin_size: usize,
-    /// Bytes of the completed pack after `index-pack --fix-thin`.
-    pub fixed_size: usize,
-}
-
-impl BuildReport {
-    /// The fix-thin premium: fraction of extra bytes materialized to make the pack
-    /// self-contained (`(fixed - thin) / thin`). S0.5 measured 0.9–4.4% for normal
-    /// pushes. `0.0` when the thin pack was already self-contained.
-    #[allow(clippy::cast_precision_loss)] // ratio of byte counts; f64 precision ample
-    pub fn premium_ratio(&self) -> f64 {
-        if self.thin_size == 0 {
-            return 0.0;
-        }
-        let extra = self.fixed_size.saturating_sub(self.thin_size);
-        extra as f64 / self.thin_size as f64
+/// Refuse a pack the browse plane could not index.
+///
+/// A `REF_DELTA` object, or one whose delta chain is not a contiguous byte range, makes
+/// [`ObjectLocator::build`](super::ObjectLocator::build) fail — so a pack carrying either
+/// can be stored but never browsed without a full client-side clone. Every producer here
+/// is supposed to emit `--delta-base-offset` packs whose bases precede their deltas; this
+/// turns that expectation into a checked invariant at the one place every produced pack
+/// passes through, rather than a comment that silently stops being true.
+///
+/// This does NOT reject packs from elsewhere: [`repack_from_packs`] absorbs arbitrary
+/// stored packs (including fix-thin'd ones written by older clients) through
+/// `index-pack --stdin` and only its *output* comes back through here.
+fn ensure_locator_quality(parsed: &ParsedPack) -> Result<()> {
+    let refs = parsed.ref_delta_count();
+    let noncontig = parsed.objects.iter().filter(|o| !o.contiguous).count();
+    if refs > 0 || noncontig > 0 {
+        return Err(Error::Config(format!(
+            "git produced a pack the browse index cannot describe \
+             ({refs} REF_DELTA + {noncontig} non-contiguous objects); \
+             refusing to store it"
+        )));
     }
+    Ok(())
 }
 
-/// Build a self-contained pack carrying the objects reachable from `want_tips` but
-/// not from `have_bases` (the push delta). The pack is thin on the wire and completed
-/// locally via `index-pack --fix-thin`, exactly as a git server does on receive.
+/// Build a self-contained pack carrying the objects reachable from `want_tips` but not from
+/// `have_bases` (the push delta), with `--delta-base-offset` so every delta base sits
+/// earlier in the same pack. The result is locator-quality: it can be indexed for the
+/// browse plane the moment it is stored.
 ///
 /// `want_tips` / `have_bases` are revision names (OIDs or refs) understood by git.
-pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Result<BuildReport> {
+///
+/// ## Why no `--thin` / `--fix-thin`
+///
+/// This path used to mirror a git *server*: compute a thin pack (deltas allowed against
+/// objects the receiver already has), then complete it with `index-pack --fix-thin` so the
+/// stored pack is self-contained. That mirrors the wrong thing. A git server does it
+/// because the thin pack is what crossed the network and the completion is pure local
+/// repair. Here there is no wire step — the pack this function computes is byte-for-byte
+/// the pack that gets chunked and paid for — so `--thin` buys nothing and `--fix-thin`
+/// *appends the external delta bases in full*, duplicating objects that are already stored
+/// in an earlier pack, and appends them AFTER the deltas that reference them, leaving
+/// `REF_DELTA` + non-contiguous objects that [`ObjectLocator::build`](super::ObjectLocator::build)
+/// must refuse.
+///
+/// So it cost bytes *and* forfeited the browse index. Measured stored-pack size,
+/// non-thin ÷ fix-thin'd (this repo's history, and a synthetic repo for the edge cases):
+///
+/// | push shape                        | non-thin ÷ fix-thin'd |
+/// |-----------------------------------|-----------------------|
+/// | first push (whole history)        | 1.000                 |
+/// | 1 commit                          | 0.844                 |
+/// | 5 commits                         | 0.880                 |
+/// | 20 commits                        | 0.877                 |
+/// | 55 commits that only ADD files    | 1.000                 |
+/// | 20 commits editing one large file | 0.980                 |
+///
+/// Never larger, up to 16% smaller. The two 1.000 rows are the cases with no external
+/// delta base at all, where `--thin` was already a no-op — which is also why the
+/// previously published "fix-thin premium: 0.9–4.4%" reads so low: it is
+/// `(fixed - thin) / thin`, a ratio against a pack that is never stored, measured on
+/// add-only pushes. Against the pack that would otherwise be stored, completion costs
+/// 0–19%.
+pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Result<Pack> {
     if want_tips.is_empty() {
         return Err(Error::Config("build_pack: no want tips".into()));
     }
@@ -93,42 +127,28 @@ pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Resul
         revs.push('\n');
     }
 
-    let thin = git_capture(
+    let pack_bytes = git_capture(
         repo,
-        &[
-            "pack-objects",
-            "--thin",
-            "--revs",
-            "--stdout",
-            "--delta-base-offset",
-        ],
+        &["pack-objects", "--revs", "--stdout", "--delta-base-offset"],
         Some(revs.as_bytes()),
     )?;
 
     let scratch = Scratch::new()?;
     let pack_path = scratch.dir.join("out.pack");
     let idx_path = scratch.dir.join("out.idx");
-    // --fix-thin resolves external bases against the source repo's odb.
     git_capture(
         repo,
         &[
             "index-pack",
-            "--fix-thin",
             "--stdin",
             "-o",
             &idx_path.to_string_lossy(),
             &pack_path.to_string_lossy(),
         ],
-        Some(&thin),
+        Some(&pack_bytes),
     )?;
 
-    let pack = Pack::from_files(&pack_path, &idx_path)?;
-    let fixed_size = pack.bytes.len();
-    Ok(BuildReport {
-        pack,
-        thin_size: thin.len(),
-        fixed_size,
-    })
+    Pack::from_files(&pack_path, &idx_path)
 }
 
 /// Consolidate every object reachable from all refs into one optimized,

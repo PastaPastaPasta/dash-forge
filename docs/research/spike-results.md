@@ -36,7 +36,7 @@ All nine Phase-0 spikes executed against live testnet / real backends. Per-spike
 - Token admin ops require a **CRITICAL** auth key (HIGH rejected); document create/delete accept HIGH.
 
 **Browse plane (from S0.5, S0.9):**
-- fix-thin premium: **0.9–4.4%** typical push (17% for a 100-commit batch). Raw thin packs fail standalone `index-pack` → the self-contained-pack mandate is correct.
+- ~~fix-thin premium: **0.9–4.4%** typical push (17% for a 100-commit batch).~~ **Superseded.** The self-contained-pack mandate is correct (raw thin packs do fail standalone `index-pack`), but the premium figure compares the completed pack against the *thin* pack, which is never stored, on add-only pushes that have no external delta base. Against the storable alternative — a non-thin pack over the same range — completion costs 0–19% extra and leaves `REF_DELTA` objects the `objectLocator` must refuse. The push path now builds the non-thin pack directly (`economics.md`).
 - After `repack -adf`: **0 REF_DELTA**, all OFS_DELTA bases earlier in same pack → single contiguous ranged read covers a blob + its delta chain. Confirmed O(blob) for blobs; median 1.21× over-fetch.
 - IPFS gateway, MinIO, nginx all honor HTTP Range (206). objectLocator lookup is O(1/256) of the index (40 KB vs 10.4 MB).
 - Partial clone works via the helper `fetch` capability with bare-OID fetches + `.promisor` markers (S0.9). Shallow/`--depth` cannot be served by a fetch/push helper (git gives no reply channel) — **drop shallow**, make `--depth` fail loudly; partial clone + objectLocator single-object reads are the supported subsetting path.

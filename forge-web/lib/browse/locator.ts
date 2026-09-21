@@ -114,6 +114,95 @@ export class ObjectLocator {
   }
 
   /**
+   * Merge published index fragments into one locator — the reader half of fragmented index
+   * publication.
+   *
+   * A push publishes a locator over just the pack it stored (36 bytes per object ADDED,
+   * rather than republishing the whole index on every push), so a repo between repacks has
+   * several live fragments and a reader must fold them. Parity: forge-core
+   * `pack::ObjectLocator::merge`.
+   *
+   * `parts` are oldest-first; an OID carried by more than one keeps its EARLIEST row. Every
+   * fragment is live, so either row reads correctly — preferring the earliest means the set
+   * a reader resolves does not change as fragments are added.
+   *
+   * Sound only when the fragments share a `packRef` space (or index prefixes of one).
+   * {@link locatorPackSpace} defines that space and `loadBrowseContext` checks the
+   * fragments cover it before trusting the result.
+   */
+  static merge(parts: readonly ObjectLocator[]): ObjectLocator {
+    if (parts.length === 1) return parts[0] as ObjectLocator
+    const cursors = new Array<number>(parts.length).fill(0)
+    const rows: Uint8Array[] = []
+    for (;;) {
+      let pick = -1
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i] as ObjectLocator
+        if ((cursors[i] as number) >= part.count) continue
+        if (pick < 0) {
+          pick = i
+          continue
+        }
+        const best = parts[pick] as ObjectLocator
+        if (compareOidBytes(part.row(cursors[i] as number), best.row(cursors[pick] as number)) < 0) {
+          pick = i
+        }
+      }
+      if (pick < 0) break
+      const chosen = parts[pick] as ObjectLocator
+      const row = chosen.row(cursors[pick] as number)
+      cursors[pick] = (cursors[pick] as number) + 1
+      // Drop every other fragment's row for the same OID.
+      for (let j = 0; j < parts.length; j++) {
+        const part = parts[j] as ObjectLocator
+        while (
+          (cursors[j] as number) < part.count &&
+          sameOid(part.row(cursors[j] as number), row)
+        ) {
+          cursors[j] = (cursors[j] as number) + 1
+        }
+      }
+      rows.push(row)
+    }
+    return ObjectLocator.fromSortedRows(rows)
+  }
+
+  /** Assemble `fanout || rows` from rows already sorted ascending by OID. */
+  private static fromSortedRows(rows: readonly Uint8Array[]): ObjectLocator {
+    const bytes = new Uint8Array(FANOUT_LEN + rows.length * LOCATOR_ROW_LEN)
+    const counts = new Uint32Array(256)
+    for (const r of rows) counts[r[0] as number] = (counts[r[0] as number] as number) + 1
+    const view = new DataView(bytes.buffer)
+    let cum = 0
+    for (let b = 0; b < 256; b++) {
+      cum += counts[b] as number
+      view.setUint32(b * 4, cum, false)
+    }
+    rows.forEach((r, i) => bytes.set(r, FANOUT_LEN + i * LOCATOR_ROW_LEN))
+    return new ObjectLocator(bytes, rows.length)
+  }
+
+  /** The serialized `fanout || rows` bytes. Parity: forge-core `ObjectLocator::as_bytes`. */
+  asBytes(): Uint8Array {
+    return this.bytes
+  }
+
+  /** The distinct `packRef`s this locator indexes — what a coverage check compares. */
+  packRefsCovered(): Set<number> {
+    const refs = new Set<number>()
+    for (let i = 0; i < this.count; i++) {
+      refs.add(u16be(this.bytes, this.rowStart(i) + OID_LEN))
+    }
+    return refs
+  }
+
+  /** One row's raw bytes (a view into the backing buffer — never mutated). */
+  private row(i: number): Uint8Array {
+    const start = this.rowStart(i)
+    return this.bytes.subarray(start, start + LOCATOR_ROW_LEN)
+  }
+
+  /**
    * Build a `"packRef:offset" → entry` index over every row — the reverse map the
    * per-base delta walk needs to resolve an OFS base (referenced by pack offset, not
    * OID). Keyed by pack AND offset: different packs routinely store objects at the same
@@ -158,6 +247,20 @@ export class ObjectLocator {
     }
     return null
   }
+}
+
+/** Compare two rows by their leading OID. */
+function compareOidBytes(x: Uint8Array, y: Uint8Array): number {
+  for (let k = 0; k < OID_LEN; k++) {
+    const d = (x[k] as number) - (y[k] as number)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/** Whether two rows carry the same OID. */
+function sameOid(a: Uint8Array, b: Uint8Array): boolean {
+  return compareOidBytes(a, b) === 0
 }
 
 /** A ranged byte fetcher: returns `bytes[start, end)` of a resource. */

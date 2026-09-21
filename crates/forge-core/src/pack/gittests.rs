@@ -136,14 +136,53 @@ fn make_repo() -> TempDir {
     dir
 }
 
+/// The pack the push path used to store: `pack-objects --thin` completed with
+/// `index-pack --fix-thin`. Kept as a fixture, not a producer — older clients stored packs
+/// built exactly this way, so the readers must keep resolving `REF_DELTA` and
+/// non-contiguous objects, and [`ObjectLocator::build`] must keep refusing such a pack.
+fn thin_fixed_pack(p: &Path, want: &str, base: &str) -> (Vec<u8>, super::parse::ParsedPack) {
+    let revs = format!("{want}\n^{base}\n");
+    let thin = git_bytes(
+        p,
+        &[
+            "pack-objects",
+            "--thin",
+            "--revs",
+            "--stdout",
+            "--delta-base-offset",
+        ],
+        Some(revs.as_bytes()),
+    );
+    let scratch = TempDir::new().unwrap();
+    let pack_path = scratch.path().join("fixed.pack");
+    let idx_path = scratch.path().join("fixed.idx");
+    git_bytes(
+        p,
+        &[
+            "index-pack",
+            "--fix-thin",
+            "--stdin",
+            "-o",
+            &idx_path.to_string_lossy(),
+            &pack_path.to_string_lossy(),
+        ],
+        Some(&thin),
+    );
+    let bytes = std::fs::read(&pack_path).unwrap();
+    let idx_bytes = std::fs::read(&idx_path).unwrap();
+    let parsed = super::parse::ParsedPack::parse(&bytes, &idx_bytes).unwrap();
+    (bytes, parsed)
+}
+
 #[test]
-fn thin_pack_is_unresolvable_but_fixed_pack_is_self_contained() {
+fn push_pack_is_locator_quality_and_no_larger_than_the_fix_thin_alternative() {
     let repo = make_repo();
     let p = repo.path();
     let head = git_str(p, &["rev-parse", "HEAD~1"]); // skip the gitlink commit
     let base = git_str(p, &["rev-parse", "HEAD~2"]);
 
-    // Raw thin pack (mirror S0.5): must fail standalone in an empty odb.
+    // A raw thin pack cannot stand alone — that much of S0.5 still holds, and is why the
+    // push path may not simply store `pack-objects --thin` output.
     let revs = format!("{head}\n^{base}\n");
     let thin = git_bytes(
         p,
@@ -161,20 +200,32 @@ fn thin_pack_is_unresolvable_but_fixed_pack_is_self_contained() {
         "raw thin pack should have unresolved external deltas"
     );
 
-    // forge-core build_pack must complete it into a self-contained pack.
-    let report = build_pack(p, &[&head], &[&base]).unwrap();
+    // What the push path stores now: self-contained AND indexable.
+    let pack = build_pack(p, &[&head], &[&base]).unwrap();
+    assert!(is_self_contained(&pack.bytes), "push pack must stand alone");
+    assert_eq!(pack.parsed.ref_delta_count(), 0, "no REF_DELTA");
     assert!(
-        is_self_contained(&report.pack.bytes),
-        "fix-thin'd pack must be self-contained"
+        pack.parsed.objects.iter().all(|o| o.contiguous),
+        "every delta chain must be a contiguous byte range"
     );
-    assert!(report.fixed_size >= report.thin_size);
-    // Premium is the materialized-base overhead; positive for a genuinely thin push.
-    let premium = report.premium_ratio();
+    assert!(pack.parsed.object_count() > 0);
+    // The invariant is what makes the push publishable to the browse plane at all.
+    ObjectLocator::build(&pack.parsed, 0).expect("push pack must be locator-quality");
+
+    // And it costs no more than the fix-thin'd pack it replaces: completion appends every
+    // external delta base in full, duplicating bytes an earlier pack already stores.
+    let (fixed_bytes, fixed) = thin_fixed_pack(p, &head, &base);
     assert!(
-        premium > 0.0,
-        "expected a positive fix-thin premium, got {premium}"
+        pack.bytes.len() <= fixed_bytes.len(),
+        "non-thin pack ({}) should be no larger than the fix-thin'd one ({})",
+        pack.bytes.len(),
+        fixed_bytes.len()
     );
-    assert!(report.pack.parsed.object_count() > 0);
+    // ...and the pack it replaces is precisely the un-indexable shape.
+    assert!(
+        fixed.ref_delta_count() > 0,
+        "the fix-thin'd alternative carries REF_DELTA bases"
+    );
 }
 
 #[test]
@@ -189,8 +240,8 @@ fn repack_from_packs_consolidates_offdisk_packs_over_tips() {
     let mid = git_str(p, &["rev-parse", "HEAD~3"]);
 
     // Two packs whose union covers the whole graph: [root..mid] and (mid..tip].
-    let pack_a = build_pack(p, &[&mid], &[]).unwrap().pack.bytes;
-    let pack_b = build_pack(p, &[&tip], &[&mid]).unwrap().pack.bytes;
+    let pack_a = build_pack(p, &[&mid], &[]).unwrap().bytes;
+    let pack_b = build_pack(p, &[&tip], &[&mid]).unwrap().bytes;
 
     let consolidated = repack_from_packs(&[pack_a, pack_b], &[&tip]).unwrap();
     // 0 REF_DELTA, self-contained, every OID verifies.
@@ -237,6 +288,93 @@ fn packhash_is_sha256_of_pack_bytes() {
     let pack = repack_all(repo.path()).unwrap();
     let expect: [u8; 32] = sha2::Sha256::digest(&pack.bytes).into();
     assert_eq!(pack.parsed.pack_hash, expect);
+}
+
+#[test]
+fn locator_merge_folds_fragments_without_disturbing_the_earliest() {
+    // The index-consolidation shape: pack A is indexed at packRef 0 by one fragment and
+    // pack B at packRef 1 by another. Merging must cover both without moving A's rows.
+    let repo = make_repo();
+    let p = repo.path();
+    let tip = git_str(p, &["rev-parse", "HEAD"]);
+    let mid = git_str(p, &["rev-parse", "HEAD~3"]);
+    let pack_a = build_pack(p, &[&mid], &[]).unwrap();
+    let pack_b = build_pack(p, &[&tip], &[&mid]).unwrap();
+
+    let a_only = ObjectLocator::build(&pack_a.parsed, 0).unwrap();
+    let b_only = ObjectLocator::build(&pack_b.parsed, 1).unwrap();
+    let both = ObjectLocator::merge(&[&a_only, &b_only]);
+    // Merging is idempotent and order-stable: folding in a part already covered changes
+    // nothing, so a re-run after a partially-observed publish cannot corrupt the index.
+    assert_eq!(
+        ObjectLocator::merge(&[&both, &a_only]).as_bytes(),
+        both.as_bytes()
+    );
+
+    // Serialized form is well-formed (fanout consistent with the row count).
+    let reparsed = ObjectLocator::parse(both.as_bytes()).unwrap();
+    assert_eq!(reparsed.object_count(), both.object_count());
+    assert_eq!(both.max_pack_ref(), Some(1));
+
+    // Every object of A keeps its exact row, at packRef 0.
+    for o in &pack_a.parsed.objects {
+        let before = a_only.lookup(&o.oid).expect("A object indexed before");
+        let after = both.lookup(&o.oid).expect("A object still indexed");
+        assert_eq!(before, after, "merge moved an already-indexed object");
+        assert_eq!(after.pack_ref, 0);
+    }
+
+    // Every object of B is indexed, at packRef 1 with B's own offsets — unless A already
+    // carried it, in which case the existing row wins (both are live and readable).
+    let mut from_b = 0usize;
+    for o in &pack_b.parsed.objects {
+        let e = both.lookup(&o.oid).expect("B object indexed");
+        if a_only.lookup(&o.oid).is_some() {
+            assert_eq!(e.pack_ref, 0, "duplicate OID must keep its existing row");
+            continue;
+        }
+        assert_eq!(e.pack_ref, 1);
+        assert_eq!(e.offset, o.offset);
+        assert_eq!(u64::from(e.length), o.length);
+        from_b += 1;
+    }
+    assert!(from_b > 0, "pack B contributed no new objects");
+
+    // The offsets B's rows carry really do address B's bytes: reconstruct one through the
+    // single-span read the locator advertises.
+    let obj = pack_b
+        .parsed
+        .objects
+        .iter()
+        .find(|o| a_only.lookup(&o.oid).is_none() && o.contiguous)
+        .expect("a new contiguous object in B");
+    let e = both.lookup(&obj.oid).unwrap();
+    assert_eq!(e.pack_ref, 1);
+    assert!(
+        e.single_read_advised(),
+        "a small blob should be single-read"
+    );
+    // Exactly the range a browse reader would request, computed from the locator row alone.
+    let end = e.offset + u64::from(e.length);
+    let span = &pack_b.bytes[(end - u64::from(e.delta_chain_span)) as usize..end as usize];
+    let (ty, bytes) = pack_b.parsed.reconstruct_from_span(obj, span).unwrap();
+    assert_eq!(super::parse::git_oid(ty, &bytes), obj.oid);
+}
+
+#[test]
+fn locator_fragment_refuses_a_pack_it_cannot_describe() {
+    // Compatibility guard: a fix-thin'd pack (what older clients stored) must never get an
+    // index fragment — its rows would advertise a span that misses the base.
+    let repo = make_repo();
+    let p = repo.path();
+    let head = git_str(p, &["rev-parse", "HEAD~1"]);
+    let base = git_str(p, &["rev-parse", "HEAD~2"]);
+    let (_, fixed) = thin_fixed_pack(p, &head, &base);
+    let err = ObjectLocator::build(&fixed, 1).unwrap_err();
+    assert!(
+        format!("{err}").contains("self-contained repacked pack"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -384,12 +522,12 @@ fn locator_build_rejects_non_self_contained_pack() {
     let p = repo.path();
     let head = git_str(p, &["rev-parse", "HEAD~1"]);
     let base = git_str(p, &["rev-parse", "HEAD~2"]);
-    let report = build_pack(p, &[&head], &[&base]).unwrap();
+    let (_, fixed) = thin_fixed_pack(p, &head, &base);
     assert!(
-        report.pack.parsed.ref_delta_count() > 0,
-        "expected the push pack to carry REF_DELTA bases"
+        fixed.ref_delta_count() > 0,
+        "expected the fix-thin'd pack to carry REF_DELTA bases"
     );
-    let err = ObjectLocator::build(&report.pack.parsed, 0).unwrap_err();
+    let err = ObjectLocator::build(&fixed, 0).unwrap_err();
     assert!(
         format!("{err}").contains("self-contained repacked pack"),
         "unexpected error: {err}"
@@ -402,28 +540,23 @@ fn span_read_refuses_non_contiguous_object_but_full_read_works() {
     let p = repo.path();
     let head = git_str(p, &["rev-parse", "HEAD~1"]);
     let base = git_str(p, &["rev-parse", "HEAD~2"]);
-    let report = build_pack(p, &[&head], &[&base]).unwrap();
+    let (fixed_bytes, fixed) = thin_fixed_pack(p, &head, &base);
 
-    let obj = report
-        .pack
-        .parsed
+    let obj = fixed
         .objects
         .iter()
         .find(|o| !o.contiguous)
-        .expect("push pack has a non-contiguous object")
+        .expect("fix-thin'd pack has a non-contiguous object")
         .clone();
 
     // The single-span read must refuse a non-contiguous object outright.
-    let err = report
-        .pack
-        .parsed
-        .reconstruct_from_span(&obj, &report.pack.bytes)
-        .unwrap_err();
+    let err = fixed.reconstruct_from_span(&obj, &fixed_bytes).unwrap_err();
     assert!(format!("{err}").contains("not contiguous"), "{err}");
 
     // But the REF-aware full-pack reconstruction still recovers it correctly,
-    // exercising decode_at's allow_ref path.
-    let (ty, bytes) = report.pack.parsed.object_bytes(&obj.oid).unwrap();
+    // exercising decode_at's allow_ref path — the compatibility path for packs older
+    // clients stored before the push pipeline dropped `--fix-thin`.
+    let (ty, bytes) = fixed.object_bytes(&obj.oid).unwrap();
     assert_eq!(super::parse::git_oid(ty, &bytes), obj.oid);
 }
 

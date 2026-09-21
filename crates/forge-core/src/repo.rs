@@ -146,6 +146,9 @@ pub struct PackManifestInput {
 pub struct PackManifestInfo {
     /// The manifest document id.
     pub document_id: String,
+    /// `$createdAt` (ms). With `document_id` this is the platform total order that
+    /// [`locator_pack_space`] turns into the locator's `packRef` space.
+    pub created_at: u64,
     /// The base58 `$ownerId` of the manifest's creator (whose own docs are deletable).
     pub owner_id: String,
     /// SHA-256 pack hash.
@@ -168,6 +171,14 @@ pub struct PackManifestInfo {
     pub supersedes: Vec<[u8; 32]>,
 }
 
+/// Live index fragments tolerated before a push folds them into one locator.
+///
+/// Trades writer cost against reader fan-out: each fragment is one more artifact a browser
+/// fetches before its first object read, while folding republishes the whole index. 16 keeps
+/// the cold-browse fan-out small and the amortized write cost at roughly a sixteenth of a
+/// whole-index republish per push.
+const MAX_LOCATOR_FRAGMENTS: usize = 16;
+
 /// Where a repack writes the consolidated pack.
 #[derive(Clone, Copy, Default)]
 pub enum RepackTarget<'a> {
@@ -180,6 +191,27 @@ pub enum RepackTarget<'a> {
     External(&'a dyn PackBackend),
 }
 
+/// What [`RepoService::publish_push_locator`] did to the browse index.
+#[derive(Debug, Clone)]
+pub enum PushIndexOutcome {
+    /// An index fragment covering just the pushed pack was published.
+    Fragment {
+        /// The new `packManifest` document id.
+        manifest_id: String,
+        /// The pushed pack's position in the live pack space.
+        pack_ref: u16,
+    },
+    /// The live fragments were folded into one locator covering the whole live pack space.
+    Consolidated {
+        /// The new `packManifest` document id.
+        manifest_id: String,
+        /// How many fragments it superseded.
+        folded: usize,
+    },
+    /// Nothing was published; the string says why, in terms a user can act on.
+    Skipped(String),
+}
+
 /// The result of [`RepoService::repack`] (architecture §4.2 repack/GC).
 #[derive(Debug, Clone)]
 pub struct RepackReport {
@@ -187,6 +219,12 @@ pub struct RepackReport {
     pub new_pack_hash: [u8; 32],
     /// The new `packManifest` document id.
     pub new_manifest_id: String,
+    /// The `objectLocator` manifest published over the consolidated pack, when it landed.
+    ///
+    /// `None` means the repack succeeded but the browse index was not written — browsing
+    /// stays on the whole-pack fallback until the next repack. Not an error: the
+    /// consolidation is already paid for and durable by then.
+    pub locator_manifest_id: Option<String>,
     /// Size of the consolidated pack in bytes.
     pub new_pack_bytes: u64,
     /// Object count of the consolidated pack.
@@ -737,6 +775,7 @@ impl<'a> RepoService<'a> {
                     .unwrap_or_default();
                 Ok(PackManifestInfo {
                     document_id: d.id.clone(),
+                    created_at: d.created_at.unwrap_or_default(),
                     owner_id: d.owner_id.clone(),
                     pack_hash,
                     kind: d.field_u64("kind").unwrap_or_default(),
@@ -982,6 +1021,12 @@ impl<'a> RepoService<'a> {
             )
             .await?;
 
+        // 3b. Publish the objectLocator over the consolidated pack. Best-effort — see
+        // `publish_locator_best_effort` for why a failure here is reported, not unwound.
+        let locator_manifest_id = self
+            .publish_locator_best_effort(repo, &consolidated.parsed, &manifests, target)
+            .await;
+
         // 4. Delete the caller's own superseded storage (refund). Sample balance around the
         // deletes so the report is the *observed* on-chain refund, not an estimate.
         let balance_before_delete = self
@@ -1005,6 +1050,7 @@ impl<'a> RepoService<'a> {
         Ok(RepackReport {
             new_pack_hash,
             new_manifest_id,
+            locator_manifest_id,
             new_pack_bytes: new_bytes.len() as u64,
             object_count,
             new_uris: new_uris.iter().map(|u| u.0.clone()).collect(),
@@ -1125,6 +1171,196 @@ impl<'a> RepoService<'a> {
             announced_on_chain,
             mirror_docs_written,
         })
+    }
+
+    /// Publish the consolidated browse index for a repack, reporting failure as `None`
+    /// rather than unwinding it.
+    ///
+    /// A repack is the one place the whole index can be rebuilt from scratch, and doing so
+    /// collapses however many per-push fragments have accumulated back into one artifact —
+    /// so a cold browse is a single fetch again. See [`Self::publish_locator`].
+    ///
+    /// Best-effort because by this point the repack has already landed and been paid for.
+    /// Failing the whole operation because the index could not be written would leave the
+    /// caller with a consolidated repo reported as a failure.
+    async fn publish_locator_best_effort(
+        &self,
+        repo: &RepoHandle,
+        pack: &crate::pack::ParsedPack,
+        prior_manifests: &[PackManifestInfo],
+        target: RepackTarget<'_>,
+    ) -> Option<String> {
+        match self
+            .publish_locator(repo, pack, prior_manifests, target)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "repack consolidated the packs but could not publish the objectLocator; \
+                     browse stays on the fallback path until the next repack"
+                );
+                None
+            }
+        }
+    }
+
+    /// Build and publish an `objectLocator` (kind 1) over the consolidated repack pack,
+    /// superseding every prior locator fragment.
+    ///
+    /// The locator is the browse plane's index: a fanout header plus OID-sorted fixed-width
+    /// rows, so a single-object read is the header plus one ~1/256 slice instead of a
+    /// whole-pack download. See [`crate::pack::ObjectLocator`] for the row format and for
+    /// why `pack` must be repack-quality.
+    ///
+    /// `pack_ref` is 0: the consolidated pack supersedes every previously live kind-0 pack,
+    /// so it alone is the live pack set as of this locator — which is what `packRef` indexes
+    /// ([`locator_pack_space`]).
+    async fn publish_locator(
+        &self,
+        repo: &RepoHandle,
+        pack: &crate::pack::ParsedPack,
+        prior_manifests: &[PackManifestInfo],
+        target: RepackTarget<'_>,
+    ) -> Result<String> {
+        let locator = crate::pack::ObjectLocator::build(pack, 0)?;
+        let supersedes = live_locator_manifests(prior_manifests)
+            .iter()
+            .map(|m| m.pack_hash)
+            .collect();
+        self.store_locator(repo, &locator, supersedes, target).await
+    }
+
+    /// Publish the browse-index fragment for a pack that a push just stored.
+    ///
+    /// The index is published in FRAGMENTS, one per stored pack, rather than as a single
+    /// whole-repo locator rewritten on every push. A locator row is 36 bytes per object, so
+    /// republishing the whole index on each push would charge a deposit proportional to the
+    /// repo on every push — on a 40k-object repo, ~1.4 MB of `chunk` documents to record a
+    /// one-file change. A fragment costs 36 bytes per object the push actually added, which
+    /// is the only cost that scales with what the user did. Readers merge the live
+    /// fragments ([`crate::pack::ObjectLocator::merge`]).
+    ///
+    /// Fan-out is bounded the other way by folding: once the live fragment count would
+    /// exceed [`MAX_LOCATOR_FRAGMENTS`], this fetches them, merges them with the new
+    /// fragment, and publishes ONE locator superseding the lot — so the whole-index
+    /// republish happens about once per [`MAX_LOCATOR_FRAGMENTS`] pushes instead of every
+    /// push, and a reader never faces an unbounded number of index artifacts.
+    ///
+    /// Returns what it did, including the reasons it declined; a push has already landed by
+    /// the time this runs, so nothing here is fatal to it.
+    pub async fn publish_push_locator(
+        &self,
+        repo: &RepoHandle,
+        pack: &crate::pack::ParsedPack,
+        pack_hash: [u8; 32],
+        target: RepackTarget<'_>,
+    ) -> Result<PushIndexOutcome> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let space = locator_pack_space(&manifests, None);
+        let Some(idx) = space.iter().position(|m| m.pack_hash == pack_hash) else {
+            return Ok(PushIndexOutcome::Skipped(
+                "the pushed pack is not in the live pack set (superseded by a concurrent \
+                 repack?) — its index would address the wrong bytes"
+                    .into(),
+            ));
+        };
+        let Ok(pack_ref) = u16::try_from(idx) else {
+            return Ok(PushIndexOutcome::Skipped(format!(
+                "live pack set has {} packs — past the locator's 16-bit packRef; \
+                 run `dg maint repack` to consolidate",
+                space.len()
+            )));
+        };
+
+        // Every live fragment must index a PREFIX of the current pack space, or the packRefs
+        // a reader merges would mean different packs. Between repacks the live pack list only
+        // grows at the end, so this holds; a repack breaks it and supersedes the fragments it
+        // consolidated, so the only way to fail here is a fragment published concurrently
+        // with a repack. Checked from the manifest list alone — no downloads.
+        let live_locators = live_locator_manifests(&manifests);
+        for m in &live_locators {
+            let as_of = locator_pack_space(&manifests, Some(m.created_at));
+            if as_of.len() > space.len()
+                || as_of
+                    .iter()
+                    .zip(&space)
+                    .any(|(a, b)| a.pack_hash != b.pack_hash)
+            {
+                return Ok(PushIndexOutcome::Skipped(
+                    "a published index fragment no longer matches the live pack set \
+                     (a repack landed concurrently) — run `dg maint repack` to rebuild it"
+                        .into(),
+                ));
+            }
+        }
+
+        let fragment = crate::pack::ObjectLocator::build(pack, pack_ref)?;
+        if live_locators.len() < MAX_LOCATOR_FRAGMENTS {
+            let manifest_id = self
+                .store_locator(repo, &fragment, Vec::new(), target)
+                .await?;
+            return Ok(PushIndexOutcome::Fragment {
+                manifest_id,
+                pack_ref,
+            });
+        }
+
+        // Fold: oldest-first, so an OID carried by several fragments keeps its earliest row.
+        let mut parts = Vec::with_capacity(live_locators.len() + 1);
+        for m in live_locators.iter().rev() {
+            let bytes = self.fetch_pack_bytes(repo, m).await?;
+            parts.push(crate::pack::ObjectLocator::parse(&bytes)?);
+        }
+        parts.push(fragment);
+        let folded = crate::pack::ObjectLocator::merge(&parts.iter().collect::<Vec<_>>());
+        let supersedes = live_locators.iter().map(|m| m.pack_hash).collect();
+        let manifest_id = self
+            .store_locator(repo, &folded, supersedes, target)
+            .await?;
+        Ok(PushIndexOutcome::Consolidated {
+            manifest_id,
+            folded: live_locators.len(),
+        })
+    }
+
+    /// Upload a locator artifact and record its `packManifest` (kind 1).
+    async fn store_locator(
+        &self,
+        repo: &RepoHandle,
+        locator: &crate::pack::ObjectLocator,
+        supersedes: Vec<[u8; 32]>,
+        target: RepackTarget<'_>,
+    ) -> Result<String> {
+        let bytes = locator.as_bytes().to_vec();
+        let meta = PackMeta::for_bytes(&bytes);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let chunk_count = crate::pack::split(&bytes).len() as u64;
+
+        let (storage, uris) = match target {
+            RepackTarget::Platform => (0u64, self.put_pack(repo, &bytes, &meta).await?),
+            RepackTarget::External(backend) => (1u64, backend.put(&bytes, &meta).await?),
+        };
+
+        self.write_pack_manifest(
+            repo,
+            &PackManifestInput {
+                pack_hash,
+                kind: u64::from(crate::pack::KIND_OBJECT_LOCATOR),
+                size_bytes: bytes.len() as u64,
+                object_count: locator.object_count() as u64,
+                chunk_count,
+                storage,
+                // No separate `manifestPart` offset-index doc is written for the locator
+                // itself; never claim a part that was not stored.
+                offset_index_parts: 0,
+                uris: uris.iter().map(|u| u.0.clone()).collect(),
+                supersedes,
+                tips: Vec::new(),
+            },
+        )
+        .await
     }
 
     /// Read the extra availability URIs announced via `packMirror` docs, grouped by
@@ -1497,6 +1733,66 @@ fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
 
 /// The live (non-superseded) kind-0 git packs among `manifests`: kind-0 manifests whose
 /// `packHash` no *other* manifest lists in its `supersedes`. This is what repack
+/// The pack list a locator's `packRef` indexes — THE normative definition, shared with the
+/// web client (`forge-web/lib/view/browse-source.ts::locatorPackSpace`) and with whatever
+/// publishes a locator.
+///
+/// `packRef` is "an index into the manifest's pack list", but no pack list is stored
+/// on-chain, so reader and writer must derive the same one. It is: **the LIVE kind-0 packs
+/// as of `as_of`, oldest-first by `($createdAt, $id)`.** Three parts, each load-bearing:
+///
+/// * *as of* — a locator only indexes packs that existed when it was built; later
+///   incremental packs are outside its space. `None` means "as of now".
+/// * *live* — a repack consolidates several packs into one and marks the originals
+///   `supersedes`. Counting superseded packs would leave every index shifted by however many
+///   of them happen to survive, and survival is incidental: [`RepoService::repack`] deletes
+///   only the CALLER's own manifests, so in a multi-author repo some remain. Liveness is
+///   computed WITHIN the as-of bound, so a later repack cannot retroactively change what an
+///   older locator meant.
+/// * *oldest-first by `($createdAt, $id)`* — the platform total order, not a reversed
+///   `$createdAt desc` query, which drops the `$id` tiebreak on equal timestamps.
+pub fn locator_pack_space(
+    manifests: &[PackManifestInfo],
+    as_of: Option<u64>,
+) -> Vec<PackManifestInfo> {
+    let bounded: Vec<PackManifestInfo> = match as_of {
+        None => manifests.to_vec(),
+        Some(t) => manifests
+            .iter()
+            .filter(|m| m.created_at <= t)
+            .cloned()
+            .collect(),
+    };
+    let mut live = live_kind0_manifests(&bounded);
+    live.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.document_id.cmp(&b.document_id))
+    });
+    live
+}
+
+/// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a
+/// reader must merge, and the set a consolidation supersedes.
+fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
+    let superseded: BTreeSet<[u8; 32]> = manifests
+        .iter()
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
+    let mut live: Vec<PackManifestInfo> = manifests
+        .iter()
+        .filter(|m| m.kind == u64::from(crate::pack::KIND_OBJECT_LOCATOR))
+        .filter(|m| !superseded.contains(&m.pack_hash))
+        .cloned()
+        .collect();
+    live.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.document_id.cmp(&a.document_id))
+    });
+    live
+}
+
 /// consolidates and reseed re-uploads.
 fn live_kind0_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
     let superseded: BTreeSet<[u8; 32]> = manifests
@@ -1551,8 +1847,81 @@ fn normalize_name(name: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{current_protected_patterns, normalize_name, REPO_V1_TEMPLATE};
+    use super::{
+        current_protected_patterns, live_locator_manifests, locator_pack_space, normalize_name,
+        PackManifestInfo, REPO_V1_TEMPLATE,
+    };
     use crate::rules::ConfigDoc;
+
+    /// A manifest stub carrying only what the packRef space is derived from.
+    fn manifest(id: &str, created_at: u64, kind: u8, hash: u8) -> PackManifestInfo {
+        PackManifestInfo {
+            document_id: id.into(),
+            created_at,
+            owner_id: "owner".into(),
+            pack_hash: [hash; 32],
+            kind: u64::from(kind),
+            size_bytes: 0,
+            object_count: 0,
+            chunk_count: 0,
+            storage: 0,
+            offset_index_parts: 0,
+            uris: Vec::new(),
+            supersedes: Vec::new(),
+        }
+    }
+
+    fn hashes(ms: &[PackManifestInfo]) -> Vec<u8> {
+        ms.iter().map(|m| m.pack_hash[0]).collect()
+    }
+
+    #[test]
+    fn locator_pack_space_orders_live_packs_oldest_first_with_the_id_tiebreak() {
+        // Query order is `$createdAt desc`; the packRef space is the reverse WITH the id
+        // tiebreak, which a plain reversal of the query result would lose.
+        let manifests = vec![
+            manifest("zz", 200, 0, 3),
+            manifest("aa", 200, 0, 2),
+            manifest("mm", 100, 0, 1),
+            manifest("ll", 150, 1, 9), // a locator is not part of the pack space
+        ];
+        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn locator_pack_space_excludes_superseded_packs_within_the_as_of_bound() {
+        let mut consolidated = manifest("cc", 300, 0, 9);
+        consolidated.supersedes = vec![[1u8; 32], [2u8; 32]];
+        let manifests = vec![
+            consolidated,
+            manifest("bb", 200, 0, 2),
+            manifest("aa", 100, 0, 1),
+        ];
+
+        // As of now: only the consolidated pack is live.
+        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![9]);
+
+        // As of a locator published BEFORE the repack, the originals are still live and
+        // still hold packRef 0 and 1 — a later repack must not retroactively renumber what
+        // an older index fragment meant.
+        assert_eq!(
+            hashes(&locator_pack_space(&manifests, Some(250))),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn live_locator_manifests_drops_superseded_fragments_newest_first() {
+        let mut folded = manifest("ff", 300, 1, 9);
+        folded.supersedes = vec![[7u8; 32]];
+        let manifests = vec![
+            folded,
+            manifest("ee", 250, 1, 8),
+            manifest("dd", 200, 1, 7), // superseded by the fold
+            manifest("aa", 100, 0, 1), // a git pack is not a fragment
+        ];
+        assert_eq!(hashes(&live_locator_manifests(&manifests)), vec![9, 8]);
+    }
 
     #[test]
     fn normalize_name_accepts_valid_and_rejects_invalid() {

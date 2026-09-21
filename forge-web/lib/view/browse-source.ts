@@ -25,6 +25,7 @@ import {
 } from '../browse'
 import {
   liveGitPackManifests,
+  liveLocatorManifests,
   readNewestManifestOfKind,
   readPackManifests,
   type PackManifest,
@@ -350,17 +351,52 @@ export function orderGitPacks(
 }
 
 /**
- * A {@link PackSource} over a repo's git-pack manifests (kind 0), indexed by `packRef` = the
- * pack's position in oldest-first `($createdAt, $id)` order (see {@link orderGitPacks}).
- * `asOf` bounds the pack list to those published at/before the owning locator's `$createdAt`.
+ * The pack list a locator's `packRef` indexes — THE normative definition, shared by both
+ * clients and by whatever publishes a locator.
+ *
+ * `packRef` is "an index into the manifest's pack list", but no pack list is stored on-chain,
+ * so reader and writer must derive the same one. It is: **the LIVE kind-0 packs as of the
+ * locator's `$createdAt`, oldest-first by `($createdAt, $id)`.** Three parts, each
+ * load-bearing:
+ *
+ * * *as of the locator* — a locator only indexes packs that existed when it was built; later
+ *   incremental packs are outside its space.
+ * * *live* — a repack consolidates several packs into one and marks the originals
+ *   `supersedes`. Counting superseded packs would leave every index shifted by however many
+ *   of them happened to survive, and whether they survive is incidental: `repack` deletes
+ *   only the CALLER's own manifests, so in a multi-author repo some remain. Liveness is
+ *   computed within the as-of bound, so a later repack cannot retroactively change what an
+ *   older locator meant.
+ * * *oldest-first by `($createdAt, $id)`* — the platform total order, not a reversed `desc`
+ *   query, which drops the `$id` tiebreak on equal timestamps.
+ *
+ * This used to differ between the two browse paths: the indexed path counted ALL kind-0
+ * packs while the fallback counted live ones, so the two disagreed about which bytes
+ * `packRef 0` meant — a valid offset in the wrong pack, undetectable downstream.
+ */
+export function locatorPackSpace(
+  manifests: readonly PackManifest[],
+  asOf?: number,
+): PackManifest[] {
+  const bounded = asOf === undefined ? manifests : manifests.filter((m) => m.createdAt <= asOf)
+  return orderGitPacks(liveGitPackManifests(bounded))
+}
+
+/**
+ * A {@link PackSource} over a repo's pack manifests, indexed by `packRef` as
+ * {@link locatorPackSpace} defines it. `asOf` is the owning locator's `$createdAt`.
+ *
+ * Takes the FULL manifest list, not a pre-filtered kind-0 list: liveness is a property of
+ * the whole set (a kind-0 pack is superseded by whatever names it, of any kind), so
+ * filtering to kind-0 first would lose the information needed to compute it.
  */
 export function buildPackSource(
   sdk: EvoSDK,
   repo: RepoRef,
-  gitPacks: readonly PackManifest[],
+  manifests: readonly PackManifest[],
   asOf?: number,
 ): PackSource {
-  const ordered = orderGitPacks(gitPacks, asOf)
+  const ordered = locatorPackSpace(manifests, asOf)
   return {
     async fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array> {
       const manifest = ordered[packRef]
@@ -391,45 +427,98 @@ export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatInd
 
 /**
  * Discriminated browse availability:
- *  - `ready` — a published locator exists; the normal browse plane serves reads.
- *  - `unindexed` — no locator, but live kind-0 packs exist: the fallback clone can
- *    download + index them in-browser (`livePacks` / `totalSizeBytes` feed that UI).
+ *  - `ready` — a published index covers every live pack; the browse plane serves reads.
+ *  - `unindexed` — live kind-0 packs exist but the published index does not cover them
+ *    all: the fallback clone can download + index them in-browser (`livePacks` /
+ *    `totalSizeBytes` feed that UI). `reason` distinguishes no index at all from one that
+ *    is behind, which is what the user can act on.
  *  - `no-packs` — nothing stored to browse at all.
  */
 export type BrowseState =
   | { readonly kind: 'ready'; readonly context: BrowseContext }
   | {
       readonly kind: 'unindexed'
+      readonly reason: UnindexedReason
       readonly livePacks: PackManifest[]
       readonly totalSizeBytes: number
     }
   | { readonly kind: 'no-packs' }
 
 /**
- * Assemble a repo's browse availability: newest objectLocator + a pack source over its git
- * packs when indexed, or the live pack set the fallback clone would need when not.
+ * Why the locator path is unavailable.
+ *
+ * `index-behind` is the case that used to be indistinguishable from `ready`: a published
+ * locator whose `packRef` space does not cover the current live packs. Reading through it
+ * would resolve every object stored before the index was published and throw
+ * `object not in locator` on everything pushed since — so a repo would look browsable right
+ * up until someone opened a recent commit. Both cases route to the same in-browser clone,
+ * which reads the packs directly and is always correct; only the wording differs.
+ */
+export type UnindexedReason =
+  /** No live objectLocator manifest at all. */
+  | 'no-index'
+  /** Fragments exist but leave live packs unindexed, or disagree about the pack space. */
+  | 'index-behind'
+
+/**
+ * Assemble a repo's browse availability: the merged published index plus a pack source over
+ * its git packs when the index covers them, or the live pack set the fallback clone would
+ * need when it does not.
  */
 export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
   // ONE snapshot, deliberately. `readPackManifests` applies no `kind` filter and is now
-  // complete, so the newest locator is already in this list and the `(kind, $createdAt desc)`
-  // index lookup is unnecessary here — and reading the two separately would be actively
-  // wrong: a repack committing between the two queries pairs a post-repack locator with a
-  // pre-repack pack list, and `packRef` then resolves to the wrong pack silently. That is the
-  // same misalignment the completeness fix exists to prevent, reintroduced through the back
-  // door. The list is `$createdAt desc`, so the first kind-1 entry is the newest.
+  // complete, so every index fragment is already in this list — and reading packs and
+  // fragments separately would be actively wrong: a repack committing between the two
+  // queries pairs a post-repack index with a pre-repack pack list, and `packRef` then
+  // resolves to the wrong pack silently. That is the same misalignment the completeness fix
+  // exists to prevent, reintroduced through the back door.
   const manifests = await readPackManifests(sdk, repo)
-  const locatorManifest = manifests.find((m) => m.kind === PACK_KIND.OBJECT_LOCATOR) ?? null
-  if (!locatorManifest) {
-    const livePacks = orderGitPacks(liveGitPackManifests(manifests))
-    if (livePacks.length === 0) return { kind: 'no-packs' }
-    const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
-    return { kind: 'unindexed', livePacks, totalSizeBytes }
+  const livePacks = locatorPackSpace(manifests)
+  if (livePacks.length === 0) return { kind: 'no-packs' }
+  const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
+  const behind = (reason: UnindexedReason): BrowseState => ({
+    kind: 'unindexed',
+    reason,
+    livePacks,
+    totalSizeBytes,
+  })
+
+  const fragments = liveLocatorManifests(manifests)
+  if (fragments.length === 0) return behind('no-index')
+
+  // Every fragment must index a PREFIX of the current pack space, or the `packRef`s merged
+  // from different fragments would mean different packs. Between repacks the live pack list
+  // only grows at the end, so this holds; a repack breaks it and supersedes the fragments it
+  // consolidated, so the only way to fail is a fragment published concurrently with a
+  // repack. Checked from the manifest list alone, before any bytes are fetched.
+  for (const f of fragments) {
+    const asOf = locatorPackSpace(manifests, f.createdAt)
+    if (asOf.length > livePacks.length) return behind('index-behind')
+    if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
   }
-  const gitPacks = manifests.filter((m) => m.kind === PACK_KIND.GIT_PACK)
-  const locatorBytes = await loadArtifactBytes(sdk, repo, locatorManifest)
-  const locator = ObjectLocator.parse(locatorBytes)
-  // Bound the packRef space to packs that existed when this locator was published.
-  const packs = buildPackSource(sdk, repo, gitPacks, locatorManifest.createdAt)
+
+  // Oldest-first, so an OID carried by several fragments keeps its earliest row.
+  const ordered = [...fragments].reverse()
+  const parts = await Promise.all(
+    ordered.map(async (m) => ObjectLocator.parse(await loadArtifactBytes(sdk, repo, m))),
+  )
+  const locator = ObjectLocator.merge(parts)
+
+  // Coverage: every pack in the space must be indexed by some fragment. A gap means objects
+  // that exist on-chain are unreachable through the index — the honest answer is the
+  // fallback clone, not a reader that throws on the first uncovered object.
+  const covered = locator.packRefsCovered()
+  const complete = livePacks.every((_, i) => covered.has(i))
+  if (!complete) return behind('index-behind')
+  // Out-of-range refs mean the fragments were built over a different pack space than the
+  // one derived here — a prefix check cannot see this, a bounds check can.
+  for (const r of covered) {
+    if (r >= livePacks.length) return behind('index-behind')
+  }
+
+  // The packRef space is the current live pack set: the fragments cover all of it, and each
+  // was built over a prefix of it, so every row's packRef means the same pack here.
+  const packs = buildPackSource(sdk, repo, manifests)
   const reader = new BrowseReader(locator, packs)
   return { kind: 'ready', context: { locator, packs, reader } }
 }

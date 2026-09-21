@@ -11,7 +11,12 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
 import { bytesToBase64 } from '../sdk'
-import { liveGitPackManifests, readPackManifests, type PackManifest } from './packs'
+import {
+  liveGitPackManifests,
+  liveLocatorManifests,
+  readPackManifests,
+  type PackManifest,
+} from './packs'
 import type { RepoRef } from './contract'
 
 const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
@@ -119,5 +124,32 @@ describe('liveGitPackManifests', () => {
     const b = manifest({ packHash: hashHex(0x02), supersedes: [hashHex(0x01)], documentId: 'b' })
     // b supersedes a; nothing supersedes b — b is live even though it references a chain.
     expect(liveGitPackManifests([a, b]).map((m) => m.documentId)).toEqual(['b'])
+  })
+})
+
+describe('liveLocatorManifests', () => {
+  it('returns live index fragments newest-first, dropping superseded ones', () => {
+    // A repo between repacks has several live fragments — one per push — and the reader
+    // merges them oldest-first, so the order this returns is load-bearing.
+    const first = manifest({ packHash: hashHex(0x01), kind: 1, createdAt: 100, documentId: 'a' })
+    const second = manifest({ packHash: hashHex(0x02), kind: 1, createdAt: 200, documentId: 'b' })
+    const folded = manifest({
+      packHash: hashHex(0x03),
+      kind: 1,
+      createdAt: 300,
+      documentId: 'c',
+      supersedes: [hashHex(0x01)],
+    })
+    const gitPack = manifest({ packHash: hashHex(0x04), createdAt: 400, documentId: 'd' })
+
+    expect(liveLocatorManifests([gitPack, first, second, folded]).map((m) => m.documentId)).toEqual(
+      ['c', 'b'],
+    )
+  })
+
+  it('breaks $createdAt ties by documentId, descending', () => {
+    const a = manifest({ packHash: hashHex(0x01), kind: 1, createdAt: 100, documentId: 'aa' })
+    const b = manifest({ packHash: hashHex(0x02), kind: 1, createdAt: 100, documentId: 'bb' })
+    expect(liveLocatorManifests([a, b]).map((m) => m.documentId)).toEqual(['bb', 'aa'])
   })
 })

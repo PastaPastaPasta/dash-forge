@@ -47,6 +47,7 @@ export {
 } from './refs'
 export {
   liveGitPackManifests,
+  liveLocatorManifests,
   readNewestFlatIndexManifest,
   readNewestLocatorManifest,
   readNewestManifestOfKind,

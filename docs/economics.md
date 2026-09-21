@@ -9,15 +9,17 @@ Forge stores **git packfiles**, not loose blobs, at every layer (push transport,
 1. **Delta compression** — similar objects (successive versions of a file, similar trees) stored as diffs against a base.
 2. **zlib deflate** — every object/delta individually compressed.
 
-Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs on the wire* (deltas against objects the remote already has), completed via `index-pack --fix-thin` before storage so stored packs are self-contained. An incremental push therefore costs the compressed change **plus its direct delta-base objects** (duplicated until the next repack reclaims them) — a premium that keeps every stored pack independently readable. **S0.5 measured this fix-thin premium at 0.9–4.4% for typical pushes** (rising to ~17% for a 100-commit batch); it is fully reclaimed at the next repack.
+Typical source repos pack to **20–35% of checkout size**. A push stores the compressed change as one self-contained pack: `git pack-objects --revs --delta-base-offset` over `want ^have`, with every delta base inside the pack.
+
+> **Corrected (was: thin pack + `index-pack --fix-thin`, "0.9–4.4% premium").** The pipeline used to mirror a git *server* — compute a thin pack, then complete it locally so the stored pack is self-contained — and priced the completion at 0.9–4.4%. Both parts were wrong for this system. A git server completes a thin pack because the thin pack is what crossed the network; here there is no wire step, so the pack that gets computed is the pack that gets paid for, and completion **appends every external delta base in full**, duplicating objects an earlier pack already stores. The published premium is `(fixed − thin) / thin`: a ratio against a pack that is never stored, measured on pushes that only ADD files and therefore have no external delta base at all. Measured against the pack that would otherwise be stored, non-thin ÷ fix-thin'd is **1.000 / 0.844 / 0.880 / 0.877** (first push / 1 / 5 / 20 commits of this repo) and **1.000 / 0.980** (55 add-only commits / 20 commits editing one large file) — never larger, up to 16% smaller. Completion also left `REF_DELTA` objects whose bases sit *after* them, which the `objectLocator` must refuse, so it cost bytes AND forfeited the browse index. Dropped: `crates/forge-core/src/pack/build.rs`.
 
 Additional levers on top:
 
 | Lever | Gain | When |
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
-| Per-pack offset index | *mandatory* for git packs (~30 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
-| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
+| Per-push browse-index fragment | *mandatory* for git packs (36 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
+| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; the locator is published as per-push fragments and folded every 16, so a push pays for its own objects rather than republishing the whole index; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)
@@ -80,7 +82,7 @@ Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes
 
 1. External or mixed backend for anything bulky (the biggest lever by 100×).
 2. Thin packs always; max-effort compression at repack.
-3. Fill chunks to ~14.4 KiB. The per-pack offset index is mandatory (tiny — it indexes only the push's own objects — and it's the only random-access path to objects newer than the last repack).
+3. Fill chunks to ~14.4 KiB. Each push also publishes its **browse-index fragment** — a locator over just that pack, 36 B per object the push added. It is the only random-access path to objects newer than the last repack, and it replaces the `manifestPart` per-pack offset index the design originally called for: same role, but it is the same artifact and the same reader as the repack-time index, rather than a second format. (`packManifest.offsetIndexParts` stays 0 — no `manifestPart` doc is written, and nothing claims one.)
 4. Repack regularly — refunds fund future pushes; surface reclaimable credits in `dg cost audit`.
 5. Keep social docs lean (5 KiB body cap already enforces this); `documentsKeepHistory` means every edit re-deposits the doc — the UI shows edit cost like any write.
 6. Cost engine displays deposit vs burn separately (DASH primary), so users learn that most of a platform push is a *recoverable deposit*, not a fee.

@@ -2,10 +2,11 @@
 
 /**
  * BrowseBoundary — resolves a repo's browse context and renders the honest degraded state when
- * a repo has not published browse artifacts (locator/pack). On success it hands the caller a
- * ready {@link BrowseReader}. When only the locator is missing, the raw kind-0 packs are still
- * fully readable, so the boundary offers (or, for small repos, auto-runs) the in-browser
- * fallback clone: download the live packs, index them client-side, browse from local memory.
+ * a repo's published browse index does not cover what is stored. On success it hands the caller
+ * a ready {@link BrowseReader}. When only the index is missing or behind, the raw kind-0 packs
+ * are still fully readable, so the boundary offers (or, for small repos, auto-runs) the
+ * in-browser fallback clone: download the live packs, index them client-side, browse from
+ * local memory.
  */
 
 import type { ReactNode } from 'react'
@@ -52,12 +53,14 @@ export function BrowseBoundary({
   }
   if (data.kind === 'ready') return <>{children(data.context.reader)}</>
 
-  // No published locator — the in-browser fallback clone takes over.
+  // No usable published index — the in-browser fallback clone takes over.
+  const behind = data.reason === 'index-behind'
   if (fallback.status === 'ready' && fallback.context !== null) {
     return (
       <div>
         <p className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
-          Viewing a copy loaded into your browser — this repo hasn&apos;t published a browse index yet.
+          Viewing a copy loaded into your browser — this repo&apos;s browse index{' '}
+          {behind ? "doesn't cover everything stored" : "hasn't been published"} yet.
         </p>
         {children(fallback.context.reader)}
       </div>
@@ -82,8 +85,12 @@ export function BrowseBoundary({
   return (
     <EmptyState
       icon={PackageOpen}
-      title="Not indexed for browsing yet"
-      body={`This repo has not published an objectLocator, but its raw packs are fully readable. Load them here to browse in your browser (about ${formatBytes(data.totalSizeBytes)}), or clone via dash:// to read it locally.`}
+      title={behind ? 'Browse index is behind' : 'Not indexed for browsing yet'}
+      body={`${
+        behind
+          ? "This repo's published index does not cover every stored pack, so reading through it would miss recent objects."
+          : 'This repo has not published an objectLocator.'
+      } Its raw packs are fully readable. Load them here to browse in your browser (about ${formatBytes(data.totalSizeBytes)}), or clone via dash:// to read it locally.`}
       action={
         <Button variant="primary" onClick={fallback.start}>
           <HardDriveDownload className="h-4 w-4" aria-hidden />

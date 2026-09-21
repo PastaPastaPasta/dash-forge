@@ -229,11 +229,11 @@ fn size_git_data(gh: &GithubClient, clone_dir: &Path, plan: &mut Plan) -> Result
         return Ok(());
     }
     let want: Vec<&str> = tips.iter().map(|(oid, _)| oid.as_str()).collect();
-    let report = build_pack(clone_dir, &want, &[]).context("building import pack")?;
-    let objects = report.pack.parsed.object_count() as u64;
-    plan.set_pack(&report.pack.bytes, objects, tips.len());
+    let pack = build_pack(clone_dir, &want, &[]).context("building import pack")?;
+    let objects = pack.parsed.object_count() as u64;
+    plan.set_pack(&pack.bytes, objects, tips.len());
     tracing::info!(
-        bytes = report.pack.bytes.len(),
+        bytes = pack.bytes.len(),
         objects,
         chunks = plan.pack_chunks,
         refs = tips.len(),
