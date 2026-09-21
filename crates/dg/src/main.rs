@@ -288,7 +288,7 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
-    /// Check out a pull request's branch (thin git wrapper).
+    /// Check out a pull request's branch, fetching its head from the source repo first.
     Checkout {
         /// The repository (`owner/name`).
         repo: String,
@@ -321,7 +321,7 @@ pub enum PrCommand {
         #[arg(long = "merge-oid")]
         merge_oid: Option<String>,
     },
-    /// Show a pull request's diff (thin git wrapper).
+    /// Show a pull request's diff, fetching its head from the source repo first.
     Diff {
         /// The repository (`owner/name`).
         repo: String,

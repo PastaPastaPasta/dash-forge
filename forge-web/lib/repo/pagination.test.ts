@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { bytesToBase64, IncompleteReadError, queryAllDocuments, skipScanDistinct } from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
-import { emptyAuthz, listIssues, readEvents, readIssue } from './issues'
+import { emptyAuthz, listIssues, readEvents, readIssue, readReviews } from './issues'
 import { orderGitPacks } from '../view/browse-source'
 import { readPackManifests } from './packs'
 import { readComments } from '../view/issues-view'
@@ -320,6 +320,45 @@ describe('list surfaces tolerate one unreadable row', () => {
         emptyAuthz(),
       ),
     ).rejects.toThrow(IncompleteReadError)
+  })
+})
+
+describe('reviews across a page boundary', () => {
+  it('reads every review on a patch, including a verdict past the first page', async () => {
+    // `review` is un-gated like `event`, so a verdict can be buried the same way — and the
+    // buried one is the one that matters.
+    const reviews = Array.from({ length: PAGE + 1 }, (_, i) => ({
+      $id: `r-${String(i).padStart(4, '0')}`,
+      $ownerId: i === PAGE ? 'maintainer' : 'noise',
+      $createdAt: 5_000 + i,
+      patchId: 'patch-1',
+      verdict: i === PAGE ? 2 : 3,
+      commitOid: bytesToBase64(new Uint8Array(20).fill(7)),
+      body: i === PAGE ? 'please rename this' : '',
+    }))
+    const sdk = paginatingSdk({ [DOC.review]: reviews })
+
+    const read = await readReviews(sdk, REPO, 'patch-1')
+
+    expect(read).toHaveLength(PAGE + 1)
+    const last = read[read.length - 1]
+    expect(last?.verdict).toBe('requestChanges')
+    expect(last?.reviewer).toBe('maintainer')
+    expect(last?.commitOid).toBe('07'.repeat(20))
+  })
+
+  it('keeps an unrecognized verdict code rather than dropping the review', async () => {
+    // A document written by a newer client must still appear in the history.
+    const sdk = paginatingSdk({
+      [DOC.review]: [
+        { $id: 'r-1', $ownerId: 'someone', $createdAt: 1, patchId: 'patch-1', verdict: 99 },
+      ],
+    })
+
+    const read = await readReviews(sdk, REPO, 'patch-1')
+
+    expect(read).toHaveLength(1)
+    expect(read[0]?.verdict).toBe('unknown')
   })
 })
 

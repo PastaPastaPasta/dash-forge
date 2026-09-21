@@ -73,7 +73,7 @@ function num(doc: PlainDocument, field: string): number {
 }
 
 /** A byteArray field returns base64; normalize to hex (empty string when absent/null). */
-function byteFieldToHex(doc: PlainDocument, field: string): string {
+export function byteFieldToHex(doc: PlainDocument, field: string): string {
   const v = doc[field]
   if (typeof v === 'string' && v.length > 0) {
     try {

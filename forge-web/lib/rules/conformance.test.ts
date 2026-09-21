@@ -31,6 +31,7 @@ import {
   overlayTree,
   resolveRef,
 } from './index'
+import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import type {
   ConfigDoc,
   Event,
@@ -115,6 +116,12 @@ function runCase(v: Vector): void {
         ancestryFromPairs(inp.ancestry ?? []),
       )
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'verdict_label': {
+      const inp = v.input as { readonly code: number }
+      const r = verdictFromCode(inp.code)
+      expect({ label: VERDICT_LABEL[r.verdict], code: r.code }).toEqual(v.expected)
       break
     }
     case 'display_ref_name': {

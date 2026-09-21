@@ -3,8 +3,12 @@
 /**
  * PullsContent — the patch (PR) list with folded PR state (open/draft/merged/closed). PR state
  * is the FORGE_RULES fold of the event log including the historical-tips merge predicate (core
- * listPulls). Composing PRs from the browser needs a pushed head branch (helper); the web app
- * lists, reviews, and merges.
+ * listPulls).
+ *
+ * Read-only. The web app lists PRs and shows their timelines, including reviews posted from
+ * the CLI; it cannot yet OPEN a PR (that needs a pushed head branch and a `patch` write path)
+ * or record a review verdict. Its "merge" appends a merge event, which is not a git merge —
+ * see PullContent.
  */
 
 import { useMemo, useState } from 'react'

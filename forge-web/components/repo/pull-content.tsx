@@ -1,10 +1,21 @@
 'use client'
 
 /**
- * PullContent — PR detail: folded state, base/head, the author's body, the review timeline, a
- * comment composer, and merge / close / reopen. Merge appends a `merge` event with the head oid;
- * the fold makes it authoritative only for a MAINTAIN holder once the base ref reaches that oid.
- * The head-tree diff vs base is shown when both are browsable (best-effort).
+ * PullContent — PR detail: folded state, base/head, where the PR's objects live, the author's
+ * body, the timeline (comments, state events and review verdicts), a comment composer, and
+ * merge / close / reopen.
+ *
+ * Two things this does NOT do, stated here because the names suggest otherwise:
+ *
+ * * **Merge does not merge.** It appends a `merge` event carrying the PR head oid. The fold
+ *   accepts that event only from a WRITE or MAINTAIN holder, and only once the base ref has
+ *   actually reached that oid — which something else must push. For a base branch that has
+ *   moved on, the merge commit is not the head oid at all, so the event can never become
+ *   authoritative; the dialog says so rather than reporting success.
+ * * **No diff is rendered.** A PR's head commit normally lives in a different contract from
+ *   the repo being viewed, and the browse boundary is bound to a single contract, so showing
+ *   one needs a second browse context against `sourceContractId`. Until then the page links
+ *   out rather than pretending.
  */
 
 import { useState } from 'react'
@@ -31,7 +42,7 @@ import { errorMessage } from '@/lib/utils'
 
 type Pending = 'merge' | 'close' | 'reopen' | null
 
-export function PullContent({ home, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
+export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready } = useSdk([home.repo.contractId])
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
@@ -105,6 +116,20 @@ export function PullContent({ home, number }: { home: RepoHome; addr: RepoAddres
           </span>
           {pull.headOid ? <span className="flex items-center gap-1 text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
         </div>
+        {/* Where the PR's objects actually live. Without this a reviewer has a commit id
+            with no stated home: a PR's head normally sits in the contributor's own contract,
+            and the patch document's sourceContractId is the only pointer to it. */}
+        {pull.sourceContractId ? (
+          <div className="mt-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+            <span className="text-anvil-500 dark:text-anvil-400">
+              Objects live in contract <span className="font-mono break-all">{pull.sourceContractId}</span>
+              {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
+            </span>
+            <div className="mt-1 font-mono text-[12px] text-anvil-400 break-all">
+              dg pr checkout {addr.owner}/{addr.name} {pull.number}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -151,7 +176,7 @@ export function PullContent({ home, number }: { home: RepoHome; addr: RepoAddres
         title={pending === 'merge' ? `Merge PR #${pull.number}` : pending === 'close' ? `Close PR #${pull.number}` : `Reopen PR #${pull.number}`}
         description={
           pending === 'merge'
-            ? 'Appends a merge event with the head oid. Authoritative once you hold MAINTAIN and the base ref reaches this commit (fast-forward / clean merge pushed via the helper).'
+            ? `Appends a merge event naming ${pull.headOid.slice(0, 9)} — it does not perform a git merge. The event becomes authoritative only once you hold WRITE or MAINTAIN on this repo AND ${pull.baseRefName || 'the base ref'} has been advanced to that commit by a push. If the base branch has moved on, the commit that lands there will be a merge commit, not this head — record that merge with the CLI instead (dg pr merge --merge-oid).`
             : 'Appends a state event to the append-only log.'
         }
         cost={previewDocumentCreate('event')}

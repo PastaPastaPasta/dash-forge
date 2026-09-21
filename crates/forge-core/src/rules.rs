@@ -389,6 +389,56 @@ pub fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
     hex::encode(h.finalize()).eq_ignore_ascii_case(ref_name_hash)
 }
 
+/// A review verdict, as recorded on-chain.
+///
+/// The integer codes are the wire form (`review.verdict`); they match `dg`'s
+/// `--verdict` flag. An unrecognized code reads as [`Verdict::Unknown`] rather than being
+/// dropped, so a document written by a newer client is still shown rather than silently
+/// omitted from a PR's history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Approve (1).
+    Approve,
+    /// Request changes (2).
+    RequestChanges,
+    /// Comment only, no verdict (3).
+    Comment,
+    /// A code this client does not know.
+    Unknown(u64),
+}
+
+impl Verdict {
+    /// Decode the on-chain integer.
+    pub fn from_code(code: u64) -> Self {
+        match code {
+            1 => Self::Approve,
+            2 => Self::RequestChanges,
+            3 => Self::Comment,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The on-chain integer.
+    pub fn code(self) -> u64 {
+        match self {
+            Self::Approve => 1,
+            Self::RequestChanges => 2,
+            Self::Comment => 3,
+            Self::Unknown(c) => c,
+        }
+    }
+
+    /// A short label for display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Approve => "approved",
+            Self::RequestChanges => "changes requested",
+            Self::Comment => "commented",
+            Self::Unknown(_) => "unknown verdict",
+        }
+    }
+}
+
 /// The name to DISPLAY for the ref keyed by `ref_name_hash`: the `refName` of the newest
 /// update (on the `(created_at, id)` total order) whose name actually hashes to that key.
 ///
@@ -1073,7 +1123,7 @@ mod tests {
         display_ref_name, fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name,
         matches_protected, overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event,
         EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
-        TokenOp, TokenRecord, TreeDiff,
+        TokenOp, TokenRecord, TreeDiff, Verdict,
     };
     use serde::Deserialize;
     use std::path::PathBuf;
@@ -1265,6 +1315,11 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    struct VerdictInput {
+        code: u64,
+    }
+
+    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct DisplayRefNameInput {
         updates: Vec<RefUpdate>,
@@ -1294,6 +1349,13 @@ mod tests {
                 let want: RefState =
                     serde_json::from_value(v.expected.clone()).expect("resolve_ref expected");
                 assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "verdict_label" => {
+                let inp: VerdictInput =
+                    serde_json::from_value(v.input.clone()).expect("verdict_label input");
+                let verdict = Verdict::from_code(inp.code);
+                let got = serde_json::json!({ "label": verdict.label(), "code": verdict.code() });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
             }
             "display_ref_name" => {
                 let inp: DisplayRefNameInput =

@@ -21,6 +21,7 @@ use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 use forge_core::repo::{PackManifestInput, RepoHandle, RepoService};
 use forge_core::rules::RefState;
+use forge_core::tokens::TokenService;
 
 use crate::git::{LocalRepo, ScratchRepo};
 use crate::options::OptionState;
@@ -114,11 +115,17 @@ impl Helper {
                 .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
             let repo = {
                 let svc = RepoService::new(&client, &identity, &bridge);
-                svc.resolve_repo(&self.url.owner, &self.url.repo)
-                    .await
-                    .with_context(|| {
-                        format!("resolving repo {}/{}", self.url.owner, self.url.repo)
-                    })?
+                match &self.url {
+                    DashUrl::Named { owner, repo } => svc
+                        .resolve_repo(owner, repo)
+                        .await
+                        .with_context(|| format!("resolving repo {owner}/{repo}"))?,
+                    // Contract-addressed: no registry lookup, the contract carries its owner.
+                    DashUrl::Contract { contract_id } => svc
+                        .resolve_repo_by_contract(contract_id)
+                        .await
+                        .with_context(|| format!("resolving repo contract {contract_id}"))?,
+                }
             };
             tracing::info!(
                 repo_contract = %repo.repo_contract_id,
@@ -270,6 +277,23 @@ impl Helper {
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
         let remote_refs = svc.read_refs(&conn.repo).await?;
+
+        // Fail fast when this identity holds no spendable token on the repo. The ACL itself
+        // is enforced at consensus — `refUpdate`, `chunk` and `packManifest` all carry a
+        // WRITE token cost, so an unauthorized push cannot land regardless. But without this
+        // check the helper builds a pack and broadcasts chunk state transitions that
+        // consensus rejects one at a time, burning processing fees and surfacing a raw
+        // platform error. That error is the first thing a would-be contributor sees, and it
+        // teaches them nothing; this is the moment to point them at the PR flow instead.
+        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) {
+            if let Some(reason) = write_access_denied(conn).await {
+                return Ok(specs
+                    .iter()
+                    .map(|s| PushOutcome::Error(s.dst.clone(), reason.clone()))
+                    .collect());
+            }
+        }
+
         let planned = plan_pushes(specs, &remote_refs);
 
         // Build + upload one pack covering all accepted, non-delete updates.
@@ -579,6 +603,41 @@ pub(crate) fn network_from_env() -> Network {
     }
 }
 
+/// `Some(reason)` when the connected identity provably holds no spendable WRITE or MAINTAIN
+/// token on the repo, and so cannot land any push.
+///
+/// Returns `None` — i.e. proceed — when the holding cannot be determined. The token history
+/// read is advisory: consensus is the authority, and a transient read failure must not block
+/// a push a holder is entitled to make.
+async fn write_access_denied(conn: &Conn) -> Option<String> {
+    let tokens = TokenService::new(&conn.client, &conn.identity, &conn.bridge);
+    let records = tokens
+        .token_history(&conn.repo.repo_contract_id)
+        .await
+        .ok()?;
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+    .ok()?;
+    let holdings = forge_core::rules::holdings_as_of(&records, &conn.identity.id(), now);
+    if holdings.any() {
+        return None;
+    }
+    // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
+    // pusher typed into their remote URL — not the contract id, which is not an address
+    // `dg` accepts here.
+    Some(format!(
+        "no WRITE token on this repo — you cannot push to it. Fork it and open a pull \
+         request instead: `dg repo create <name>`, push your branch there, then \
+         `dg pr create {}/{} --title <t> --source-contract <your contract id> \
+         --head-oid <oid>`",
+        conn.repo.owner_id, conn.repo.name
+    ))
+}
+
 /// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
 /// `~/.config/dash-forge/identities/<owner>.identity.json`.
 fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
@@ -588,9 +647,21 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("neither DASH_FORGE_KEY nor HOME is set; cannot locate identity"))?;
+    // The per-owner default only makes sense for the named form. A contract-addressed URL
+    // names no owner (that is the point), so it requires an explicit DASH_FORGE_KEY —
+    // which is fine, because it is reached from `dg`, not typed by hand.
+    let owner = match url {
+        DashUrl::Named { owner, .. } => owner.clone(),
+        DashUrl::Contract { .. } => {
+            bail!(
+                "a contract-addressed dash:// URL has no owner to pick a default key for; \
+                 set DASH_FORGE_KEY to the identity JSON to use"
+            )
+        }
+    };
     Ok(home
         .join(".config/dash-forge/identities")
-        .join(format!("{}.identity.json", url.owner)))
+        .join(format!("{owner}.identity.json")))
 }
 
 #[cfg(test)]

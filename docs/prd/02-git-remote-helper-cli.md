@@ -10,7 +10,14 @@ One **Rust workspace** (shared `forge-core` crate on rs-sdk/rs-dpp), multiple bi
 ### URL scheme & config
 ```
 dash://<owner>/<repo>        # owner = DPNS label or base58 identity id
+dash://<contractId>          # contract-addressed; no registry lookup
 ```
+The contract-addressed form exists because the registry indexes name → contract but nothing
+indexes contract → name, so a repo referenced only by contract id — which is how a pull
+request points at the repo holding its head commit (`patch.sourceContractId`) — would
+otherwise be unaddressable. It also reaches a repo whose listing is missing. It names no
+owner, so it cannot derive a default identity file and requires an explicit
+`DASH_FORGE_KEY`; `dg` supplies that automatically.
 Config in git config: `dash.identity`, `dash.network`, `dash.costWarnThreshold`, per-remote backend override (`remote.<name>.dashBackend`).
 
 ### Protocol
@@ -52,7 +59,8 @@ dg doctor
 ```
 
 ### Behaviors
-- `pr merge`: merge happens client-side (it's just git) → push merge commit → `merged` event closes patch doc. `pr checkout` fetches the patch manifest's pack.
+- `pr merge`: merge happens client-side (it's just git) → push merge commit → `merged` event closes patch doc. `dg pr merge` posts only that event and then re-reads the fold, reporting `merge_event_posted` rather than `merged` when the event is not yet authoritative (the actor holds no token, or the oid has not reached the base ref).
+- `pr checkout` / `pr diff` fetch the PR head from the repo that holds it — `patch.sourceContractId`, addressed as `dash://<contractId>` — before touching git. A per-PR `patchManifest` is **not** used: nothing writes one (`patchManifestHash` is never set), so the fetch pulls the source repo's live pack set, which contains the head commit.
 - `repo fork`: new repo contract + copied refs pointing at same content where backend allows (shared CIDs), else re-upload; listing gets `forkOf`.
 - `collab`: grants are 10⁹-unit mints; `suspend` freezes; `remove` freezes + destroys frozen funds; `list` = token-balance query (on-chain collaborator list).
 - Cost engine: every mutating command prints DASH (primary) + USD (secondary) estimate; `--yes` for automation; `cost audit` reconciles actual credits consumed vs estimates.

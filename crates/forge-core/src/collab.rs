@@ -27,6 +27,11 @@ use crate::platform::{
     WriteEngine,
 };
 use crate::rules::{self, AuthzResolver, Event, EventKind, IssueState, PrState};
+
+// The verdict mapping is a cross-client rule (both ports render a PR's review history
+// from it), so it lives in `rules` with the other shared mappings and is re-exported here
+// for the service API that returns it.
+pub use crate::rules::Verdict;
 use crate::tokens::TokenService;
 
 // Repo-contract document types.
@@ -642,6 +647,38 @@ pub struct PullRequest {
     pub base_ref_name: String,
     /// Head oid (hex).
     pub head_oid: String,
+    /// The **source** repo contract id (base58) — where the PR's objects actually live.
+    ///
+    /// Read back because a reviewer cannot fetch a PR without it: a `dash://` URL is
+    /// `<owner>/<repo>`, and this is the only pointer the patch carries to the repo that
+    /// holds the head commit. Empty only for a malformed document.
+    pub source_contract_id: String,
+    /// The source repo's registry `repoListing` `$id`, when the author recorded one.
+    ///
+    /// Optional extra provenance. A bare contract id IS fetchable — `dash://<contractId>`
+    /// resolves straight from the contract — so nothing depends on this being present.
+    pub source_listing_id: Option<String>,
+    /// The branch the PR was opened from, in the source repo.
+    pub source_ref_name: Option<String>,
+    /// `patchManifest` hash in the source contract (hex), when the author published one.
+    pub patch_manifest_hash: Option<String>,
+    /// Consensus `$createdAt` (ms).
+    pub created_at: u64,
+}
+
+/// A `review` document, flattened.
+#[derive(Debug, Clone)]
+pub struct Review {
+    /// Document `$id`.
+    pub document_id: String,
+    /// Reviewer `$ownerId` (base58).
+    pub reviewer: String,
+    /// The verdict.
+    pub verdict: Verdict,
+    /// The commit the review was made against (hex).
+    pub commit_oid: String,
+    /// Review body.
+    pub body: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
@@ -776,6 +813,10 @@ impl<'a> PullRequestService<'a> {
                         body: input.body.clone(),
                         base_ref_name: input.base_ref_name.clone(),
                         head_oid: hex::encode(&input.head_oid),
+                        source_contract_id: input.source_contract_id.clone(),
+                        source_listing_id: input.source_listing_id.clone(),
+                        source_ref_name: input.source_ref_name.clone(),
+                        patch_manifest_hash: input.patch_manifest_hash.map(hex::encode),
                         created_at: 0,
                     });
                 }
@@ -971,6 +1012,35 @@ impl<'a> PullRequestService<'a> {
         engine.create_document(&contract, DOC_REVIEW, props).await
     }
 
+    /// Every `review` on a patch, oldest first.
+    ///
+    /// Reviews were write-only until this existed: `dg pr review --verdict request-changes`
+    /// created a document that no command, reader or view ever queried, so "changes
+    /// requested" was a paid-for record that was invisible to everyone — including the
+    /// contributor it was addressed to. Uses the `(patchId asc, $createdAt asc)` index and
+    /// pages to exhaustion, because a verdict buried past row 100 is exactly the one that
+    /// matters (`review` is un-gated, so anyone may append).
+    pub async fn list_reviews(
+        &self,
+        repo_contract_id: &str,
+        patch_id: &str,
+    ) -> Result<Vec<Review>> {
+        let contract = self.client.fetch_contract(repo_contract_id).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &contract,
+                DOC_REVIEW,
+                &[QueryFilter::eq(
+                    "patchId",
+                    FieldValue::identifier(platform::decode_identifier(patch_id)?),
+                )],
+                &[QueryOrder::asc("patchId"), QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        Ok(docs.iter().map(review_from_doc).collect())
+    }
+
     /// Post a `merge` event with the merge-commit `oid` (the actual git merge is done by the
     /// caller). Authoritative only if the fold accepts it (holder + reachable oid, §4).
     pub async fn merge_event(
@@ -1009,6 +1079,30 @@ fn pr_from_doc(d: &platform::FetchedDocument) -> PullRequest {
         body: d.field_str("body").unwrap_or_default(),
         base_ref_name: d.field_str("baseRefName").unwrap_or_default(),
         head_oid: d.field_hex("headOid").unwrap_or_default(),
+        // `sourceContractId` / `sourceListingId` are identifier byteArrays; base58 is the
+        // form every Platform contract/document API takes.
+        source_contract_id: d
+            .field_bytes("sourceContractId")
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(platform::encode_identifier)
+            .unwrap_or_default(),
+        source_listing_id: d
+            .field_bytes("sourceListingId")
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(platform::encode_identifier),
+        source_ref_name: d.field_str("sourceRefName"),
+        patch_manifest_hash: d.field_hex("patchManifestHash"),
+        created_at: d.created_at.unwrap_or(0),
+    }
+}
+
+fn review_from_doc(d: &platform::FetchedDocument) -> Review {
+    Review {
+        document_id: d.id.clone(),
+        reviewer: d.owner_id.clone(),
+        verdict: Verdict::from_code(d.field_u64("verdict").unwrap_or_default()),
+        commit_oid: d.field_hex("commitOid").unwrap_or_default(),
+        body: d.field_str("body").unwrap_or_default(),
         created_at: d.created_at.unwrap_or(0),
     }
 }
@@ -1592,8 +1686,31 @@ impl<'a> SocialService<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{event_kind_to_u64, u64_to_event_kind};
+    use super::{event_kind_to_u64, u64_to_event_kind, Verdict};
     use crate::rules::EventKind;
+
+    #[test]
+    fn verdict_codes_round_trip() {
+        for (v, code) in [
+            (Verdict::Approve, 1),
+            (Verdict::RequestChanges, 2),
+            (Verdict::Comment, 3),
+        ] {
+            assert_eq!(v.code(), code, "{v:?} encodes as {code}");
+            assert_eq!(Verdict::from_code(code), v, "{code} decodes as {v:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_verdict_is_preserved_not_dropped() {
+        // A review written by a newer client must still appear in a PR's history rather
+        // than vanishing from it, so an unrecognized code round-trips instead of
+        // collapsing to a default.
+        let v = Verdict::from_code(99);
+        assert_eq!(v, Verdict::Unknown(99));
+        assert_eq!(v.code(), 99);
+        assert_eq!(v.label(), "unknown verdict");
+    }
 
     #[test]
     fn event_kind_numbering_round_trips() {

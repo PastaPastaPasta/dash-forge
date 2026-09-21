@@ -32,7 +32,7 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { DOC, toEvent, type RepoRef } from './contract'
+import { asIdentifierString, byteFieldToHex, DOC, toEvent, type RepoRef } from './contract'
 import { readRefUpdates } from './refs'
 import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
@@ -70,9 +70,60 @@ export interface PullView {
   readonly createdAt: number
   readonly baseRefName: string
   readonly headOid: string
+  /**
+   * The **source** repo contract id (base58) — where the PR's objects actually live.
+   *
+   * Surfaced because a reviewer cannot fetch a PR without it: a PR's head commit usually
+   * sits in a different contract from the repo it targets, and this is the only pointer the
+   * patch document carries to it. Empty for a malformed document.
+   */
+  readonly sourceContractId: string
+  /** The branch the PR was opened from, in the source repo, when recorded. */
+  readonly sourceRefName: string | null
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
+}
+
+/** A review verdict, as recorded on-chain. Parity with forge-core `Verdict`. */
+export type VerdictName = 'approve' | 'requestChanges' | 'comment' | 'unknown'
+
+const VERDICT_BY_INT: Readonly<Record<number, VerdictName>> = {
+  1: 'approve',
+  2: 'requestChanges',
+  3: 'comment',
+}
+
+/** Short label for a verdict, matching `dg pr view`. */
+export const VERDICT_LABEL: Readonly<Record<VerdictName, string>> = {
+  approve: 'approved',
+  requestChanges: 'changes requested',
+  comment: 'commented',
+  unknown: 'unknown verdict',
+}
+
+/**
+ * Decode an on-chain verdict code.
+ *
+ * Keeps the raw `code` alongside the name so an unrecognized verdict retains its identity
+ * instead of collapsing into an untyped "unknown" — a review written by a newer client
+ * still belongs in a PR's history, and forge-core's `Verdict::Unknown(n)` keeps the same
+ * information. Pinned by the shared `verdict__*` conformance vectors.
+ */
+export function verdictFromCode(code: number): { verdict: VerdictName; code: number } {
+  return { verdict: VERDICT_BY_INT[code] ?? 'unknown', code }
+}
+
+/** A `review` document, flattened. */
+export interface ReviewView {
+  readonly id: string
+  readonly reviewer: string
+  readonly verdict: VerdictName
+  /** The raw on-chain code, retained even when `verdict` is `unknown`. */
+  readonly verdictCode: number
+  readonly commitOid: string
+  readonly body: string
+  readonly createdAt: number
 }
 
 function num(doc: PlainDocument, field: string): number {
@@ -106,6 +157,37 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
     orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
   })
   return documents.map(toEvent).filter((e): e is Event => e !== null)
+}
+
+/**
+ * Read **every** `review` on a patch, oldest first.
+ *
+ * Reviews were write-only across the whole codebase until this existed: the CLI could post
+ * "changes requested" and no reader, view or command ever queried it back, so the verdict
+ * was a paid-for record invisible to everyone — including the contributor it was addressed
+ * to. Complete, for the same reason the event log is: `review` is un-gated, so anyone may
+ * append, and a verdict buried past row 100 is exactly the one that matters.
+ * Parity: forge-core `PullRequestService::list_reviews`.
+ */
+export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): Promise<ReviewView[]> {
+  const documents = await queryAllDocuments(sdk, {
+    dataContractId: repo.contractId,
+    documentTypeName: DOC.review,
+    where: [['patchId', '==', patchId]],
+    orderBy: [['patchId', 'asc'], ['$createdAt', 'asc']],
+  })
+  return documents.map((d) => {
+    const { verdict, code } = verdictFromCode(num(d, 'verdict'))
+    return {
+      id: str(d, '$id'),
+      reviewer: str(d, '$ownerId'),
+      verdict,
+      verdictCode: code,
+      commitOid: byteFieldToHex(d, 'commitOid'),
+      body: str(d, 'body'),
+      createdAt: num(d, '$createdAt'),
+    }
+  })
 }
 
 /** Read one issue and fold its state. Resolves the token-history authz when not supplied. */
@@ -226,6 +308,8 @@ export async function readPull(
     createdAt: num(patchDoc, '$createdAt'),
     baseRefName: str(patchDoc, 'baseRefName'),
     headOid,
+    sourceContractId: asIdentifierString(patchDoc['sourceContractId']),
+    sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
     state: foldPrState(events, author, resolver, baseTip, isAncestor),
     stateComplete: true,
   }
@@ -276,6 +360,10 @@ function incompletePullView(doc: PlainDocument): PullView {
     createdAt: num(doc, '$createdAt'),
     baseRefName: str(doc, 'baseRefName'),
     headOid,
+    // The source pointer is plain document content, not a fold — it is readable even when
+    // the event log is not, and it is what a reviewer needs to fetch the PR at all.
+    sourceContractId: asIdentifierString(doc['sourceContractId']),
+    sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
   }
