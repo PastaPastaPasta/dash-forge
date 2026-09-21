@@ -246,29 +246,18 @@ pub async fn preload_targets(
     client: &PlatformClient,
     contract: &LoadedContract,
 ) -> Result<BTreeMap<String, TargetInfo>> {
+    // Complete reads: this index maps every event's `targetId` back to its issue/PR, so a
+    // target missing from it is an event the relay cannot describe. It also must not depend
+    // on how many issues a repo has.
     let mut map = BTreeMap::new();
     for issue in client
-        .query_documents(
-            contract,
-            DOC_ISSUE,
-            &[],
-            &[QueryOrder::desc("$createdAt")],
-            0,
-            None,
-        )
+        .query_all_documents(contract, DOC_ISSUE, &[], &[QueryOrder::desc("$createdAt")])
         .await?
     {
         map.insert(issue.id.clone(), target_info_from_issue(&issue));
     }
     for pr in client
-        .query_documents(
-            contract,
-            DOC_PATCH,
-            &[],
-            &[QueryOrder::desc("$createdAt")],
-            0,
-            None,
-        )
+        .query_all_documents(contract, DOC_PATCH, &[], &[QueryOrder::desc("$createdAt")])
         .await?
     {
         map.insert(pr.id.clone(), target_info_from_patch(&pr));

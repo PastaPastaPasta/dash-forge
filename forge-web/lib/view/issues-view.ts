@@ -9,7 +9,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DOC, readEvents, readIssue, readPull, type IssueView, type PullView, type RepoRef } from '../repo'
-import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import type { Event } from '../rules'
 
 /** One comment on an issue/PR. */
@@ -29,14 +29,19 @@ function num(doc: PlainDocument, field: string): number {
   return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : 0
 }
 
-/** Read all comments on a target (issue/PR), oldest first. */
+/**
+ * Read **every** comment on a target (issue/PR), oldest first.
+ *
+ * Paged rather than capped: `readThread` interleaves these with the event log, which is
+ * itself read to completion, and a thread that silently stopped at comment 100 would show a
+ * materially different conversation than any paging client — with no marker saying so.
+ */
 export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<CommentView[]> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
+  const documents = await queryAllDocuments(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.comment,
     where: [['targetId', '==', targetId]],
     orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
-    limit: 100,
   })
   return documents.map((d) => ({
     id: str(d, '$id'),

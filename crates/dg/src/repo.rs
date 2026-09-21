@@ -205,8 +205,10 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     let owner_bytes = platform::decode_identifier(&owner_id)?;
 
     let registry = client.fetch_contract(TESTNET_REGISTRY_CONTRACT_ID).await?;
+    // Complete: this prints "the owner's repos", so a 101st repo silently missing from the
+    // list would be a wrong answer, not a short one.
     let docs = client
-        .query_documents(
+        .query_all_documents(
             &registry,
             "repoListing",
             &[QueryFilter::eq(
@@ -216,8 +218,6 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
             // Order by normalizedName to match the registry's `ownerName`
             // `($ownerId, normalizedName)` compound index ($createdAt is not indexed here).
             &[QueryOrder::asc("normalizedName")],
-            0,
-            None,
         )
         .await
         .context("querying the registry for repoListing docs")?;

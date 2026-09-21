@@ -47,6 +47,10 @@ const DOC_FOLLOW: &str = "follow";
 /// number past the collision the previous attempt hit).
 const MAX_NUMBER_ATTEMPTS: u32 = 8;
 
+/// The page size a caller-supplied `limit` of 0 means: "one page of the server default".
+/// Drive's own default and maximum are both 100 rows.
+const DEFAULT_PAGE: u32 = 100;
+
 /// Build a HIGH-key document write/delete engine over `client` for `identity`.
 ///
 /// Document create/delete accept a HIGH auth key (S0.7); only token admin needs CRITICAL.
@@ -342,6 +346,11 @@ impl<'a> IssueService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<IssueWithState>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let docs = self
             .client
             .query_documents(
@@ -807,6 +816,11 @@ impl<'a> PullRequestService<'a> {
         start_after: Option<&str>,
     ) -> Result<Vec<PullRequest>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let docs = self
             .client
             .query_documents(
@@ -1103,17 +1117,21 @@ impl<'a> ReleaseService<'a> {
 
     /// List releases, newest doc per `tagName` (newest-wins supersede resolution, §2.2),
     /// ordered newest first.
+    ///
+    /// Read to exhaustion: this is a newest-wins fold over an append-only type, so a capped
+    /// read does not surface a stale value — it drops the row entirely. A tag whose only
+    /// revision is older than the newest page simply disappears from the listing, and
+    /// because every surviving entry still looks current there is no signal that anything
+    /// was lost.
     pub async fn list_releases(&self, repo_contract_id: &str) -> Result<Vec<Release>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 &contract,
                 DOC_RELEASE,
                 &[],
                 &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
             )
             .await?;
 
@@ -1232,16 +1250,11 @@ impl<'a> LabelService<'a> {
     /// is carried so callers can hide retired labels.
     pub async fn list_labels(&self, repo_contract_id: &str) -> Result<Vec<Label>> {
         let contract = self.client.fetch_contract(repo_contract_id).await?;
+        // Complete for the same reason as `list_releases`: a newest-wins fold over a capped
+        // read silently omits labels rather than showing them stale.
         let docs = self
             .client
-            .query_documents(
-                &contract,
-                DOC_LABEL,
-                &[],
-                &[QueryOrder::desc("$createdAt")],
-                0,
-                None,
-            )
+            .query_all_documents(&contract, DOC_LABEL, &[], &[QueryOrder::desc("$createdAt")])
             .await?;
         let mut newest: BTreeMap<String, Label> = BTreeMap::new();
         for d in &docs {
@@ -1394,6 +1407,11 @@ impl<'a> SocialService<'a> {
         limit: u32,
         start_after: Option<&str>,
     ) -> Result<Vec<String>> {
+        // `0` is the CLI's documented "server default page", not a request for
+        // everything and not a request for one row. `query_documents` now rejects 0
+        // outright (it used to mean "unset", which Drive filled with 100 — the silent
+        // truncation this whole change is about), so spell the page size out.
+        let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
         let registry = self
             .client
             .fetch_contract(&self.registry_contract_id)

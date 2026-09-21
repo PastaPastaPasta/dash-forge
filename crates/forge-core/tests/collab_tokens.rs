@@ -31,13 +31,11 @@ async fn event_timestamps_present(client: &PlatformClient, target_id: &str) -> b
         .expect("fetch contract");
     let target = platform::decode_identifier(target_id).expect("decode target id");
     let docs = client
-        .query_documents(
+        .query_all_documents(
             &contract,
             "event",
             &[QueryFilter::eq("targetId", FieldValue::identifier(target))],
             &[QueryOrder::asc("$createdAt")],
-            0,
-            None,
         )
         .await
         .expect("query events");

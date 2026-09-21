@@ -9,7 +9,7 @@ The thesis is proven, not asserted:
 - **Frozen collaborator's push rejected at consensus** (error 40702) through real git — the headline INIT criterion, proven end-to-end in the CLI e2e suite.
 - No-token push rejected (40700); third-party hash-chain verification ("no trust in any server").
 - Browser app renders live testnet data with the trust panel; zero-backend proven (only Platform DAPI + quorum endpoint contacted); resumable push (interrupted, resumed, no double-pay).
-- CLI↔web interop: an issue created in the browser is read and folded identically by the CLI (shared `FORGE_RULES_V1`, 66 conformance vectors passing in **both** Rust and TS).
+- CLI↔web interop: an issue created in the browser is read and folded identically by the CLI (shared `FORGE_RULES_V1`, 70 conformance vectors passing in **both** Rust and TS).
 
 ## As-built decisions & deviations
 
@@ -23,7 +23,7 @@ The thesis is proven, not asserted:
 8. **Query completeness is mandatory, not optional** — `in`-batch starvation and the 100-row default truncate authz/fold reads; every fold/authz path paginates to exhaustion + the per-key completeness fallback. Ref enumeration uses flat `limit-1` skip-scan.
 9. **Shallow clone dropped; partial clone kept** (S0.9) — a fetch/push helper has no depth reply channel; `--depth` fails loudly, `--filter=blob:none` works via `.promisor`. **jj works unmodified** (gitoxide).
 10. **objectLocator: 36-byte fixed-stride rows** (deltaChainSpan fixed 4-byte, not varint; +1-byte delta-depth hint); single-span read for blobs, per-base walk for deep-delta trees. Cold browse loads root-tree-via-locator, not the O(files) flatIndex.
-11. **CI reality**: the Rust workspace's path dep on the 3 GB Platform monorepo makes per-push GitHub CI impractical; per-push CI runs the web app + the 66-vector TS parity suite, Rust builds nightly (clones platform). Local + testnet is the authoritative Rust gate.
+11. **CI reality**: per-push CI runs the web app + the 70-vector TS parity suite; the Rust workspace's large Platform dependency tree does not fit a per-push job for unrelated changes, so `rust.yml` gates pull requests and pushes that touch Rust paths, plus nightly. **Superseded in part:** the Platform SDK is no longer a path dep on a sibling checkout — it is a git dependency pinned to an immutable tag, so nothing clones the monorepo and `rust.yml` is the Rust gate rather than a backstop.
 12. **Codex computer-use** verification was environment-blocked (no browser window); **Playwright headless** substituted and is the better repeatable fit — it caught the browser read bug all node/jsdom tests missed.
 
 ## Known limitations (documented, accepted for v1)

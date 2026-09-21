@@ -50,7 +50,7 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 
 **Built and testnet-complete.** All components are implemented, live-tested against Dash Platform testnet, and independently code-reviewed. The web app is live at **https://pastapastapasta.github.io/dash-forge/**. See [EXECUTION.md](EXECUTION.md) for the build log, [design-freeze-2.md](docs/design-freeze-2.md) for as-built decisions, and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (rehearsed, not-yet-executed) mainnet deployment.
 
-Proven end-to-end on testnet: `git clone dash://…` / `git push` byte-identical round-trip; frozen-collaborator push rejected at consensus; third-party "no trust in any server" verification; browser app rendering live proof-verified data with the trust panel; CLI↔web parity via 66 shared conformance vectors.
+Proven end-to-end on testnet: `git clone dash://…` / `git push` byte-identical round-trip; frozen-collaborator push rejected at consensus; third-party "no trust in any server" verification; browser app rendering live proof-verified data with the trust panel; CLI↔web parity via 70 shared conformance vectors.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`. Verification: `e2e/cli/` (CLI suite) + `forge-web/e2e/` (Playwright).
 

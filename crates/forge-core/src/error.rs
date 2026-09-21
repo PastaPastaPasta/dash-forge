@@ -36,6 +36,22 @@ pub enum Error {
         retryable: bool,
     },
 
+    /// A read that must be complete could not be proven complete.
+    ///
+    /// Returned instead of a short answer: a caller folding a partial history cannot tell
+    /// "no more documents" from "I stopped early", and the rules layer only guarantees that
+    /// every client resolves identically when every client folds the same input. Mirrors
+    /// forge-web's `IncompleteReadError` so both ports fail at the same boundary.
+    #[error("incomplete read of {document_type} after {fetched} documents: {reason}")]
+    IncompleteRead {
+        /// The document type being read.
+        document_type: String,
+        /// How many documents were collected before giving up.
+        fetched: usize,
+        /// Why completeness could not be established.
+        reason: String,
+    },
+
     /// The identity lacks the token/key authorization for the requested write.
     #[error("unauthorized: missing the required WRITE or MAINTAIN token")]
     Unauthorized,

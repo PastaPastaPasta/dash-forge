@@ -20,9 +20,9 @@
 export const FORGE_RULES_V1 = 'FORGE_RULES_V1' as const
 
 export * from './types'
-export { isLegalRefName, isNullOid } from './oid'
+export { compareKey, isLegalRefName, isNullOid } from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
 export { AuthzResolver, holdingsAny, holdingsAsOf } from './holdings'
-export { resolveRef } from './resolveRef'
+export { displayRefName, resolveRef } from './resolveRef'
 export { foldIssueState, foldPrState } from './fold'
 export { overlayTree } from './overlay'

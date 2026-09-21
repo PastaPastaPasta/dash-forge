@@ -25,12 +25,22 @@ import {
 } from '../browse'
 import {
   liveGitPackManifests,
+  readNewestManifestOfKind,
   readPackManifests,
   type PackManifest,
   type RepoRef,
 } from '../repo'
 import { base64ToBytes, hexToBase64, queryDocumentsWithProof } from '../sdk'
 import { DOC } from '../repo'
+
+/**
+ * Platform's per-query document cap. A document query returns at most this many rows, so any
+ * read spanning more than this must be split — see {@link queryChunkBatch}.
+ */
+const CHUNK_QUERY_MAX = 100
+
+/** Chunk queries in flight at once when one range spans more than a single query. */
+const CHUNK_QUERY_POOL = 6
 
 /** Concatenate the `d0..d2` byteArray fields (base64) of one chunk row, in order. */
 function chunkPayload(doc: Record<string, unknown>): Uint8Array {
@@ -116,25 +126,51 @@ async function queryChunkBatch(
   packHashHex: string,
   seqs: readonly number[],
 ): Promise<Map<number, Uint8Array>> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: contractId,
-    documentTypeName: DOC.chunk,
-    where: [
-      ['packHash', '==', hexToBase64(packHashHex)],
-      ['seq', 'in', [...seqs]],
-    ],
-    orderBy: [
-      ['packHash', 'asc'],
-      ['seq', 'asc'],
-    ],
-    limit: 100,
-  })
-  const bySeq = new Map<number, Uint8Array>()
-  for (const doc of documents) {
-    const raw = doc['seq']
-    const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
-    if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+  // One query returns at most CHUNK_QUERY_MAX rows, so a request spanning more seqs than
+  // that is split into several parallel queries rather than silently coming back short.
+  // Without this split a single range spanning more than 100 chunks could never load, which
+  // capped any artifact at ~1.47 MB — the browse plane's hard ceiling at roughly 40k
+  // objects. `seq` is unique per `packHash`, so each sub-batch is exact and no
+  // `in`-starvation fallback is needed.
+  const batches: number[][] = []
+  for (let i = 0; i < seqs.length; i += CHUNK_QUERY_MAX) {
+    batches.push([...seqs.slice(i, i + CHUNK_QUERY_MAX)])
   }
+
+  const bySeq = new Map<number, Uint8Array>()
+  // Bounded concurrency, not `Promise.all` over every batch. A whole-artifact range on a
+  // large pack spans thousands of chunk documents — a 100 MB artifact is ~7,100 docs, i.e.
+  // ~72 batches — and firing those at once means 72 simultaneous proof-verified queries
+  // with all-or-nothing failure and no bound on peak memory. A small pool keeps the
+  // round-trip overlap that makes this fast without turning one read into a burst.
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      const batch = batches[i]
+      if (batch === undefined) return
+      const { documents } = await queryDocumentsWithProof(sdk, {
+        dataContractId: contractId,
+        documentTypeName: DOC.chunk,
+        where: [
+          ['packHash', '==', hexToBase64(packHashHex)],
+          ['seq', 'in', batch],
+        ],
+        orderBy: [
+          ['packHash', 'asc'],
+          ['seq', 'asc'],
+        ],
+        limit: CHUNK_QUERY_MAX,
+      })
+      for (const doc of documents) {
+        const raw = doc['seq']
+        const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
+        // `seq` is unique per `packHash`, so no batch can claim a seq another already set.
+        if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CHUNK_QUERY_POOL, batches.length) }, worker))
   return bySeq
 }
 
@@ -231,22 +267,28 @@ export function artifactRangeFetch(
       : fetchExternalRange(manifest.uris, start, end)
 }
 
-/** Load a whole artifact's bytes (small artifacts: locator ~101 KB, flatIndex). */
-export async function loadArtifactBytes(
+/**
+ * Load a whole artifact's bytes (locator, flatIndex).
+ *
+ * Delegates to the windowed loader so a multi-MB artifact streams in
+ * {@link DOWNLOAD_WINDOW} strides instead of being requested as one enormous range. Both
+ * paths are correct now that oversized chunk requests split, but the windowed one bounds
+ * how much is in flight and in memory at once.
+ */
+export function loadArtifactBytes(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
 ): Promise<Uint8Array> {
-  if (manifest.sizeBytes <= 0) return new Uint8Array(0)
-  const fetchRange = artifactRangeFetch(sdk, repo, manifest)
-  return fetchRange(0, manifest.sizeBytes)
+  return loadArtifactBytesProgress(sdk, repo, manifest)
 }
 
 /**
- * Max bytes per windowed whole-artifact fetch: `fetchPlatformRange` queries with
- * `limit: 100`, so one call can cover at most 100 chunk documents.
+ * Bytes per windowed whole-artifact fetch. `fetchPlatformRange` now splits an oversized
+ * request across parallel {@link CHUNK_QUERY_MAX}-row queries, so this is a
+ * memory/progress-granularity knob rather than a correctness ceiling.
  */
-const DOWNLOAD_WINDOW = 100 * CHUNK_PAYLOAD_MAX
+const DOWNLOAD_WINDOW = CHUNK_QUERY_MAX * CHUNK_PAYLOAD_MAX
 
 /**
  * Load a whole artifact with download progress — the fallback-clone path for full git
@@ -340,8 +382,8 @@ export interface BrowseContext {
  * has not published one. Used by deep tree-browse and filename search — never the cold home.
  */
 export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatIndex | null> {
-  const manifests = await readPackManifests(sdk, repo, 100)
-  const flatManifest = manifests.find((m) => m.kind === PACK_KIND.FLAT_INDEX)
+  // Index lookup (`kind ==`, `$createdAt desc`, limit 1) — independent of manifest volume.
+  const flatManifest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
   if (!flatManifest) return null
   const bytes = await loadArtifactBytes(sdk, repo, flatManifest)
   return FlatIndex.parse(bytes)
@@ -368,8 +410,15 @@ export type BrowseState =
  * packs when indexed, or the live pack set the fallback clone would need when not.
  */
 export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
-  const manifests = await readPackManifests(sdk, repo, 100)
-  const locatorManifest = manifests.find((m) => m.kind === PACK_KIND.OBJECT_LOCATOR)
+  // ONE snapshot, deliberately. `readPackManifests` applies no `kind` filter and is now
+  // complete, so the newest locator is already in this list and the `(kind, $createdAt desc)`
+  // index lookup is unnecessary here — and reading the two separately would be actively
+  // wrong: a repack committing between the two queries pairs a post-repack locator with a
+  // pre-repack pack list, and `packRef` then resolves to the wrong pack silently. That is the
+  // same misalignment the completeness fix exists to prevent, reintroduced through the back
+  // door. The list is `$createdAt desc`, so the first kind-1 entry is the newest.
+  const manifests = await readPackManifests(sdk, repo)
+  const locatorManifest = manifests.find((m) => m.kind === PACK_KIND.OBJECT_LOCATOR) ?? null
   if (!locatorManifest) {
     const livePacks = orderGitPacks(liveGitPackManifests(manifests))
     if (livePacks.length === 0) return { kind: 'no-packs' }

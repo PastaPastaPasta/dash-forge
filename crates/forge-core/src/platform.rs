@@ -341,9 +341,13 @@ impl PlatformClient {
         Ok(found.is_some())
     }
 
-    /// Query documents of `document_type` in `contract`, applying `filters` (AND-ed
-    /// where-clauses), `order` (traversal order), an optional `limit` (0 = server
-    /// default, ~100) and an optional `start_after` cursor (a base58 document id).
+    /// Query **one page** of `document_type` in `contract`, applying `filters` (AND-ed
+    /// where-clauses), `order` (traversal order), a `limit` (which must be >= 1; see below)
+    /// and an optional `start_after` cursor (a base58 document id).
+    ///
+    /// For a read that must be COMPLETE, use [`PlatformClient::query_all_documents`]
+    /// instead — this returns at most one page and gives the caller no signal about whether
+    /// more rows exist.
     ///
     /// Returns SDK-free [`FetchedDocument`]s (no `Document` / `Value` leaks across the
     /// module boundary, style guide §B).
@@ -381,9 +385,21 @@ impl PlatformClient {
                 ascending: o.ascending,
             });
         }
-        if limit > 0 {
-            query = query.with_limit(limit);
+        // `limit` is REQUIRED to be a real bound. It used to be optional, with 0 meaning
+        // "leave it unset" — but unset does not mean unlimited: Drive fills an absent limit
+        // from `DriveConfig::default_query_limit`, which is 100, the same value as its
+        // maximum. So `limit = 0` read as "give me everything" and silently delivered the
+        // first 100 rows with no short-page signal, which is how several
+        // state-reconstructing reads in this crate came to fold truncated histories. Callers
+        // that genuinely want everything must use `query_all_documents`.
+        if limit == 0 {
+            return Err(Error::Config(
+                "query limit must be greater than 0; use query_all_documents() for a \
+                 complete read (limit 0 does not mean unlimited — Drive caps it at 100)"
+                    .into(),
+            ));
         }
+        query = query.with_limit(limit);
         if let Some(after) = start_after {
             let id = parse_id(after, "start_after document id")?;
             query.start = Some(Start::StartAfter(id.to_vec()));
@@ -414,30 +430,20 @@ impl PlatformClient {
         filters: &[QueryFilter],
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
-        const PAGE: u32 = 100;
-        let mut out: Vec<FetchedDocument> = Vec::new();
-        let mut start_after: Option<String> = None;
-        loop {
-            let page = self
-                .query_documents(
-                    contract,
-                    document_type,
-                    filters,
-                    order,
-                    PAGE,
-                    start_after.as_deref(),
-                )
-                .await?;
-            let n = page.len();
-            if let Some(last) = page.last() {
-                start_after = Some(last.id.clone());
-            }
-            out.extend(page);
-            if n < PAGE as usize {
-                break;
-            }
-        }
-        Ok(out)
+        // `async move` so the future owns the cursor String; returning a future that
+        // borrows the closure's parameter would not outlive the call.
+        page_to_exhaustion(document_type, |start_after: Option<String>| async move {
+            self.query_documents(
+                contract,
+                document_type,
+                filters,
+                order,
+                PAGE_SIZE,
+                start_after.as_deref(),
+            )
+            .await
+        })
+        .await
     }
 
     /// Create a data contract (WITH tokens) from a JSON template, signing with `key`
@@ -1491,6 +1497,63 @@ pub fn decode_identifier(base58: &str) -> Result<[u8; 32]> {
     Ok(parse_id(base58, "identifier")?.to_buffer())
 }
 
+/// Rows per page. Drive's default and maximum are both 100.
+const PAGE_SIZE: u32 = 100;
+
+/// Hard safety cap on total rounds, matching forge-web's `queryAllDocuments`.
+/// 1000 pages x 100 rows = 100k documents.
+const MAX_PAGES: usize = 1000;
+
+/// Page a `$id`-cursored query to exhaustion, given a page fetcher.
+///
+/// Transport-free so the loop itself is testable: `query_all_documents` owns a live `Sdk`,
+/// which made the one piece of logic that decides whether a read is complete the one piece
+/// with no test. `fetch` receives the `start_after` cursor (`None` for the first page) and
+/// returns one page.
+///
+/// A **short page is the only accepted proof** that the end was reached. If the cursor
+/// cannot advance, or the page cap is hit, this returns [`Error::IncompleteRead`] rather
+/// than a partial answer — forge-web throws at the same two points, because failing at
+/// different points on identical data would itself be the cross-client divergence these
+/// reads exist to prevent.
+async fn page_to_exhaustion<F, Fut>(
+    document_type: &str,
+    mut fetch: F,
+) -> Result<Vec<FetchedDocument>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
+{
+    let mut out: Vec<FetchedDocument> = Vec::new();
+    let mut start_after: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let page = fetch(start_after.clone()).await?;
+        let n = page.len();
+        if n < PAGE_SIZE as usize {
+            out.extend(page);
+            return Ok(out);
+        }
+        let Some(last) = page.last() else {
+            // A full page with no last element is impossible, but treating it as "done"
+            // would silently truncate; treat it as unprovable instead.
+            return Err(Error::IncompleteRead {
+                document_type: document_type.to_string(),
+                fetched: out.len(),
+                reason: "a full page yielded no cursor document".to_string(),
+            });
+        };
+        start_after = Some(last.id.clone());
+        out.extend(page);
+    }
+    Err(Error::IncompleteRead {
+        document_type: document_type.to_string(),
+        fetched: out.len(),
+        reason: format!(
+            "the {MAX_PAGES}-page safety cap was reached before a short page proved the end"
+        ),
+    })
+}
+
 /// Encode raw 32 identifier bytes back to base58 (the form ids are named by everywhere
 /// else in the workspace).
 pub fn encode_identifier(bytes: [u8; 32]) -> String {
@@ -1842,10 +1905,96 @@ impl PushJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        JournalStore, Network, PushJournal, SignedTransition, WriteIntent, WriteOp, NONCE_MASK,
+        page_to_exhaustion, FetchedDocument, JournalStore, Network, PushJournal, SignedTransition,
+        WriteIntent, WriteOp, MAX_PAGES, NONCE_MASK, PAGE_SIZE,
     };
-    use crate::error::Result;
+    use crate::error::{Error, Result};
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    fn doc(i: usize) -> FetchedDocument {
+        FetchedDocument {
+            id: format!("d-{i:06}"),
+            owner_id: "owner".to_string(),
+            created_at: Some(i as u64),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// Serve `total` documents in `PAGE_SIZE` pages, honoring the `start_after` cursor.
+    fn serve(
+        total: usize,
+    ) -> impl FnMut(Option<String>) -> std::future::Ready<Result<Vec<FetchedDocument>>> {
+        move |start_after: Option<String>| {
+            let from = match &start_after {
+                None => 0,
+                Some(id) => {
+                    let n: usize = id.trim_start_matches("d-").parse().unwrap();
+                    n + 1
+                }
+            };
+            let to = (from + PAGE_SIZE as usize).min(total);
+            let page = (from..to).map(doc).collect::<Vec<_>>();
+            std::future::ready(Ok(page))
+        }
+    }
+
+    #[tokio::test]
+    async fn pages_past_the_first_page_boundary() {
+        // 101 rows: the case the whole change exists for. A single page would stop at 100.
+        let got = page_to_exhaustion("event", serve(101)).await.unwrap();
+        assert_eq!(got.len(), 101);
+        assert_eq!(got[100].id, "d-000100");
+    }
+
+    #[tokio::test]
+    async fn a_short_first_page_is_the_end() {
+        let got = page_to_exhaustion("event", serve(7)).await.unwrap();
+        assert_eq!(got.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn an_exactly_full_last_page_still_probes_once_more() {
+        // Exactly PAGE_SIZE rows: the first page is full, so the end is NOT yet proven and
+        // a second (empty, therefore short) page must be requested.
+        let mut calls = 0usize;
+        let got = page_to_exhaustion("event", |start_after| {
+            calls += 1;
+            let mut f = serve(PAGE_SIZE as usize);
+            f(start_after)
+        })
+        .await
+        .unwrap();
+        assert_eq!(got.len(), PAGE_SIZE as usize);
+        assert_eq!(calls, 2, "a full page is never itself proof of the end");
+    }
+
+    #[tokio::test]
+    async fn refuses_to_return_a_partial_answer_at_the_page_cap() {
+        // A cursor that always advances and pages that are always full: the end is never
+        // proven, so this must fail rather than hand back 100k rows as if complete.
+        let got = page_to_exhaustion("event", serve(usize::MAX)).await;
+        match got {
+            Err(Error::IncompleteRead {
+                document_type,
+                fetched,
+                ..
+            }) => {
+                assert_eq!(document_type, "event");
+                assert_eq!(fetched, MAX_PAGES * PAGE_SIZE as usize);
+            }
+            other => panic!("expected IncompleteRead, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn propagates_a_fetch_error() {
+        let got = page_to_exhaustion("event", |_| {
+            std::future::ready(Err(Error::Platform("boom".into())))
+        })
+        .await;
+        assert!(matches!(got, Err(Error::Platform(_))));
+    }
 
     #[test]
     fn nonce_mask_is_low_40_bits() {

@@ -1,0 +1,33 @@
+{
+  "name": "display_ref_name_name_from_newest_matching_update",
+  "description": "A ref is named from the newest update whose refName hashes to the indexed key; an update filed under the same key carrying a different (legal) name does not rename it. Pins the preimage/key FILTER, not the newest-wins ordering: two distinct names cannot hash to one key, so which matching update wins is unobservable through this rule.",
+  "case": "display_ref_name",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/zzz",
+        "prevOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "newOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      }
+    ],
+    "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+  },
+  "expected": "refs/heads/main"
+}
