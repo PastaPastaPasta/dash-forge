@@ -21,7 +21,7 @@ use serde_json::json;
 use forge_core::collab::{PullRequestInput, PullRequestService};
 
 use crate::common::{resolve, RepoRef};
-use crate::context::Ctx;
+use crate::context::{network_label, Ctx};
 use crate::{PrCommand, VerdictArg};
 
 /// Dispatch a `pr` subcommand.
@@ -163,10 +163,14 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
     // Reviews were write-only: `dg pr review` created documents nothing ever read back, so
     // a requested change was invisible to the contributor it was addressed to.
-    let reviews = svc
+    // Distinguish "no reviews" from "could not read the reviews". Collapsing the two with
+    // `unwrap_or_default()` would print "no reviews" on a failed read — reintroducing the
+    // exact invisibility that made reviews worth surfacing in the first place.
+    let reviews_result = svc
         .list_reviews(&handle.repo_contract_id, &pw.pr.document_id)
-        .await
-        .unwrap_or_default();
+        .await;
+    let reviews = reviews_result.as_deref().unwrap_or(&[]);
+    let reviews_error = reviews_result.as_ref().err().map(ToString::to_string);
 
     let reviews_json: Vec<_> = reviews
         .iter()
@@ -196,6 +200,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "patchManifestHash": pw.pr.patch_manifest_hash,
             "state": serde_json::to_value(&pw.state).unwrap_or_default(),
             "reviews": reviews_json,
+            "reviewsError": reviews_error,
         }),
         || {
             let mark = if pw.state.merged {
@@ -221,11 +226,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             if !pw.pr.body.is_empty() {
                 println!("\n{}", pw.pr.body);
             }
-            if reviews.is_empty() {
+            if let Some(err) = &reviews_error {
+                println!("\nreviews: COULD NOT BE READ — {err}");
+            } else if reviews.is_empty() {
                 println!("\nno reviews");
             } else {
                 println!("\nreviews:");
-                for r in &reviews {
+                for r in reviews {
                     println!("  {} — {}", r.verdict.label(), r.reviewer);
                     if !r.body.is_empty() {
                         println!("      {}", r.body);
@@ -419,7 +426,12 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                     pr.head_oid
                 );
                 println!("Fetch it by hand, then re-run checkout:");
-                println!("  git fetch dash://{}", pr.source_contract_id);
+                // A contract-addressed URL names no owner, so the helper cannot pick a
+                // default identity file — spell out the variable it needs.
+                println!(
+                    "  DASH_FORGE_KEY=<identity.json> git fetch dash://{}",
+                    pr.source_contract_id
+                );
             }
         },
     );
@@ -430,9 +442,24 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 ///
 /// Addresses the source repo by contract id (`dash://<contractId>`), because that is the
 /// only pointer a `patch` document carries and nothing indexes a contract back to its
-/// registry listing. The helper downloads the repo's live pack set, so fetching the PR's
-/// source branch brings the head commit with it; when the PR did not record a source ref,
-/// fall back to the remote's default refspec.
+/// registry listing.
+///
+/// **The PR's `sourceRefName` is deliberately NOT passed to `git fetch`.** It is
+/// attacker-chosen: `patch` carries no `tokenCost`, so any identity can open a PR against
+/// any repo, and the field has no schema pattern. A positional `git fetch` argument is a
+/// *refspec*, not a ref name — a value of `+refs/heads/evil:refs/heads/release` would
+/// silently force-update a branch in the maintainer's own working repo the moment they ran
+/// `dg pr checkout` (git refuses only the currently checked-out branch; every other local
+/// branch is fair game — verified against git 2.43). `rules::is_legal_ref_name` does not
+/// save us here: it permits both `:` and `+`, and being a write-side check it binds no
+/// other client anyway.
+///
+/// Naming the ref bought nothing in the first place: the helper's fetch downloads the
+/// union of the repo's kind-0 packs whatever refspec it is handed, so the default refspec
+/// delivers exactly the same objects — including the head commit.
+///
+/// `source_contract_id` is safe to interpolate: it is re-encoded base58 from a decoded
+/// `[u8; 32]`, and the empty case returns early.
 fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool> {
     if pr.source_contract_id.is_empty() {
         return Ok(false);
@@ -441,14 +468,14 @@ fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool
 
     let mut cmd = Command::new("git");
     cmd.arg("fetch").arg(&url);
-    if let Some(source_ref) = &pr.source_ref_name {
-        cmd.arg(source_ref);
-    }
     // A contract-addressed URL names no owner, so the helper cannot derive a default key
-    // path from it; hand it the identity this invocation already resolved.
+    // path from it; hand it the identity this invocation already resolved. The network
+    // must travel too, or the helper falls back to its own default and a
+    // `--network mainnet` checkout would quietly query testnet.
     if let Some(path) = &ctx.identity_path {
         cmd.env("DASH_FORGE_KEY", path);
     }
+    cmd.env("DASH_FORGE_NETWORK", network_label(ctx.network));
 
     let status = cmd.status().context("running git fetch for the PR head")?;
     Ok(status.success())
@@ -485,7 +512,10 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                     pr.head_oid
                 );
                 if !pr.source_contract_id.is_empty() {
-                    println!("  git fetch dash://{}", pr.source_contract_id);
+                    println!(
+                        "  DASH_FORGE_KEY=<identity.json> git fetch dash://{}",
+                        pr.source_contract_id
+                    );
                 }
             },
         );

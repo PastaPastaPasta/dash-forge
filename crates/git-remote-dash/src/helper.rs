@@ -626,11 +626,15 @@ async fn write_access_denied(conn: &Conn) -> Option<String> {
     if holdings.any() {
         return None;
     }
+    // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
+    // pusher typed into their remote URL — not the contract id, which is not an address
+    // `dg` accepts here.
     Some(format!(
         "no WRITE token on this repo — you cannot push to it. Fork it and open a pull \
-         request instead: dg repo create <name>, push there, then dg pr create --repo \
-         {} --source-contract <your contract id>",
-        conn.repo.repo_contract_id
+         request instead: `dg repo create <name>`, push your branch there, then \
+         `dg pr create {}/{} --title <t> --source-contract <your contract id> \
+         --head-oid <oid>`",
+        conn.repo.owner_id, conn.repo.name
     ))
 }
 

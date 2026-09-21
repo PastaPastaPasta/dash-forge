@@ -126,7 +126,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
               {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
             </span>
             <div className="mt-1 font-mono text-[12px] text-anvil-400 break-all">
-              dg pr checkout --repo {addr.owner}/{addr.name} {pull.number}
+              dg pr checkout {addr.owner}/{addr.name} {pull.number}
             </div>
           </div>
         ) : null}

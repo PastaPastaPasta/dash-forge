@@ -24,7 +24,8 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3). Submodules: gitlink entries (mode 160000) render as links — resolved to a Forge repo page when the `.gitmodules` URL is a `dash://` URL, otherwise shown as an external-repo badge with the pinned commit. Blame is its own implementation task (isomorphic-git provides no blame primitive — see implementation plan Phase 3).
 2. **Issues**: list/filter (state, labels)/create/comment/close/reopen; label management (MAINTAIN); event timeline fold.
-3. **PRs**: diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dg); patch checkout instructions.
+3. **PRs** (TARGET, largely unbuilt — see below): diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dg); patch checkout instructions.
+   **As built:** the web app lists PRs, folds their state, and renders their timeline including review verdicts posted from the CLI. It renders **no diff**, cannot **open** a PR, and cannot **record a verdict**; its merge button appends a `merge` event and performs no git merge. The checkout instructions are shown as a `dg pr checkout` command.
 4. **Releases** with asset manifests (hash-verified downloads).
 5. **Repo lifecycle**: create (contract instantiation + cost preview), settings, backend switch, delete (refund estimate).
 6. **Collaborators**: token UI — grant (mint), suspend (freeze), revoke (freeze+destroy), balances-as-collaborator-list.

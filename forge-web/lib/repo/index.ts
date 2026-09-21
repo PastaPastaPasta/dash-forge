@@ -67,6 +67,7 @@ export {
   readIssue,
   readPull,
   readReviews,
+  verdictFromCode,
   VERDICT_LABEL,
   type IssueView,
   type PullView,

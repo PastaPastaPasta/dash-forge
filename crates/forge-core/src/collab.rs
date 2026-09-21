@@ -27,6 +27,11 @@ use crate::platform::{
     WriteEngine,
 };
 use crate::rules::{self, AuthzResolver, Event, EventKind, IssueState, PrState};
+
+// The verdict mapping is a cross-client rule (both ports render a PR's review history
+// from it), so it lives in `rules` with the other shared mappings and is re-exported here
+// for the service API that returns it.
+pub use crate::rules::Verdict;
 use crate::tokens::TokenService;
 
 // Repo-contract document types.
@@ -648,8 +653,10 @@ pub struct PullRequest {
     /// `<owner>/<repo>`, and this is the only pointer the patch carries to the repo that
     /// holds the head commit. Empty only for a malformed document.
     pub source_contract_id: String,
-    /// The source repo's registry `repoListing` `$id`, when the author recorded one. This is
-    /// the directly resolvable handle — a bare contract id is not a fetchable address.
+    /// The source repo's registry `repoListing` `$id`, when the author recorded one.
+    ///
+    /// Optional extra provenance. A bare contract id IS fetchable — `dash://<contractId>`
+    /// resolves straight from the contract — so nothing depends on this being present.
     pub source_listing_id: Option<String>,
     /// The branch the PR was opened from, in the source repo.
     pub source_ref_name: Option<String>,
@@ -657,56 +664,6 @@ pub struct PullRequest {
     pub patch_manifest_hash: Option<String>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
-}
-
-/// A review verdict, as recorded on-chain.
-///
-/// The integer codes are the wire form (`review.verdict`); they match `dg`'s
-/// `--verdict` flag. An unrecognized code reads as [`Verdict::Unknown`] rather than being
-/// dropped, so a document written by a newer client is still shown rather than silently
-/// omitted from a PR's history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    /// Approve (1).
-    Approve,
-    /// Request changes (2).
-    RequestChanges,
-    /// Comment only, no verdict (3).
-    Comment,
-    /// A code this client does not know.
-    Unknown(u64),
-}
-
-impl Verdict {
-    /// Decode the on-chain integer.
-    pub fn from_code(code: u64) -> Self {
-        match code {
-            1 => Self::Approve,
-            2 => Self::RequestChanges,
-            3 => Self::Comment,
-            other => Self::Unknown(other),
-        }
-    }
-
-    /// The on-chain integer.
-    pub fn code(self) -> u64 {
-        match self {
-            Self::Approve => 1,
-            Self::RequestChanges => 2,
-            Self::Comment => 3,
-            Self::Unknown(c) => c,
-        }
-    }
-
-    /// A short label for display.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Approve => "approved",
-            Self::RequestChanges => "changes requested",
-            Self::Comment => "commented",
-            Self::Unknown(_) => "unknown verdict",
-        }
-    }
 }
 
 /// A `review` document, flattened.

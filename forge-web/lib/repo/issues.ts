@@ -102,11 +102,25 @@ export const VERDICT_LABEL: Readonly<Record<VerdictName, string>> = {
   unknown: 'unknown verdict',
 }
 
+/**
+ * Decode an on-chain verdict code.
+ *
+ * Keeps the raw `code` alongside the name so an unrecognized verdict retains its identity
+ * instead of collapsing into an untyped "unknown" — a review written by a newer client
+ * still belongs in a PR's history, and forge-core's `Verdict::Unknown(n)` keeps the same
+ * information. Pinned by the shared `verdict__*` conformance vectors.
+ */
+export function verdictFromCode(code: number): { verdict: VerdictName; code: number } {
+  return { verdict: VERDICT_BY_INT[code] ?? 'unknown', code }
+}
+
 /** A `review` document, flattened. */
 export interface ReviewView {
   readonly id: string
   readonly reviewer: string
   readonly verdict: VerdictName
+  /** The raw on-chain code, retained even when `verdict` is `unknown`. */
+  readonly verdictCode: number
   readonly commitOid: string
   readonly body: string
   readonly createdAt: number
@@ -163,11 +177,12 @@ export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): 
     orderBy: [['patchId', 'asc'], ['$createdAt', 'asc']],
   })
   return documents.map((d) => {
-    const code = num(d, 'verdict')
+    const { verdict, code } = verdictFromCode(num(d, 'verdict'))
     return {
       id: str(d, '$id'),
       reviewer: str(d, '$ownerId'),
-      verdict: VERDICT_BY_INT[code] ?? 'unknown',
+      verdict,
+      verdictCode: code,
       commitOid: byteFieldToHex(d, 'commitOid'),
       body: str(d, 'body'),
       createdAt: num(d, '$createdAt'),

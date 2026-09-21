@@ -128,7 +128,7 @@ fn fork(ctx: &Ctx, repo: &str) -> Result<()> {
             eprintln!("Until it is, fork by hand:");
             eprintln!("  1. dg repo create <name>          # mints your own repo contract");
             eprintln!("  2. git push dash://<you>/<name> <branch>");
-            eprintln!("  3. dg pr create --repo {repo} --source-contract <contract id> ...");
+            eprintln!("  3. dg pr create {repo} --title <t> --source-contract <contract id> --head-oid <oid>");
             eprintln!();
             eprintln!("Step 1 instantiates a data contract, which is not cheap — see `dg repo create --help`.");
         },

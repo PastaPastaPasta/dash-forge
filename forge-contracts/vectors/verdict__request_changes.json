@@ -1,0 +1,12 @@
+{
+  "name": "verdict_request_changes",
+  "description": "Review verdict code 2 decodes to the label 'changes requested'. Both clients render a PR's review history from this mapping, so a divergence would show the same on-chain verdict differently in the CLI and the browser. An unrecognized code must keep its identity rather than collapse to a default \u2014 a review written by a newer client still belongs in the history.",
+  "case": "verdict_label",
+  "input": {
+    "code": 2
+  },
+  "expected": {
+    "label": "changes requested",
+    "code": 2
+  }
+}
