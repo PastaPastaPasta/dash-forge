@@ -66,8 +66,12 @@ export {
   readEvents,
   readIssue,
   readPull,
+  readReviews,
+  VERDICT_LABEL,
   type IssueView,
   type PullView,
+  type ReviewView,
+  type VerdictName,
 } from './issues'
 export {
   balanceIsNonzero,

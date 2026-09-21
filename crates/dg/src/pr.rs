@@ -1,9 +1,17 @@
 //! `dg pr` — pull requests (patches).
 //!
 //! `create`/`list`/`view`/`review`/`merge` are wired to `forge-core`'s
-//! [`PullRequestService`]; `merge` posts the `merge` event (the git merge itself is
-//! client-side, per PRD 02 §B). `checkout`/`diff` are deliberately thin git wrappers that
-//! operate on objects already in the local odb.
+//! [`PullRequestService`].
+//!
+//! `merge` posts the `merge` event; it does NOT perform a git merge. The event is
+//! authoritative only if the fold accepts it — the actor holds WRITE or MAINTAIN, and the
+//! oid has already reached the base ref — so the command re-reads the PR afterwards and
+//! reports what the fold says rather than assuming success (PRD 02 §B).
+//!
+//! `checkout`/`diff` fetch the PR head from the repo that holds it before touching git. A
+//! PR's objects usually live in a different contract from the repo it targets, addressed by
+//! `patch.sourceContractId`; the remote helper's `dash://<contractId>` form makes that
+//! fetchable without a registry lookup.
 
 use std::process::Command;
 
@@ -153,6 +161,26 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .await
         .context("pr_state")?
         .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+    // Reviews were write-only: `dg pr review` created documents nothing ever read back, so
+    // a requested change was invisible to the contributor it was addressed to.
+    let reviews = svc
+        .list_reviews(&handle.repo_contract_id, &pw.pr.document_id)
+        .await
+        .unwrap_or_default();
+
+    let reviews_json: Vec<_> = reviews
+        .iter()
+        .map(|r| {
+            json!({
+                "reviewer": r.reviewer,
+                "verdict": r.verdict.code(),
+                "verdictLabel": r.verdict.label(),
+                "commitOid": r.commit_oid,
+                "body": r.body,
+                "createdAt": r.created_at,
+            })
+        })
+        .collect();
 
     ctx.emit(
         json!({
@@ -162,7 +190,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "author": pw.pr.author,
             "baseRef": pw.pr.base_ref_name,
             "headOid": pw.pr.head_oid,
+            "sourceContractId": pw.pr.source_contract_id,
+            "sourceListingId": pw.pr.source_listing_id,
+            "sourceRefName": pw.pr.source_ref_name,
+            "patchManifestHash": pw.pr.patch_manifest_hash,
             "state": serde_json::to_value(&pw.state).unwrap_or_default(),
+            "reviews": reviews_json,
         }),
         || {
             let mark = if pw.state.merged {
@@ -176,8 +209,28 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             println!("author: {}", pw.pr.author);
             println!("base:   {}", pw.pr.base_ref_name);
             println!("head:   {}", pw.pr.head_oid);
+            // The source pointer is what a reviewer needs to fetch the PR at all; without
+            // it, `head` names a commit with no stated home.
+            if !pw.pr.source_contract_id.is_empty() {
+                print!("source: contract {}", pw.pr.source_contract_id);
+                match &pw.pr.source_ref_name {
+                    Some(r) => println!(" ref {r}"),
+                    None => println!(),
+                }
+            }
             if !pw.pr.body.is_empty() {
                 println!("\n{}", pw.pr.body);
+            }
+            if reviews.is_empty() {
+                println!("\nno reviews");
+            } else {
+                println!("\nreviews:");
+                for r in &reviews {
+                    println!("  {} — {}", r.verdict.label(), r.reviewer);
+                    if !r.body.is_empty() {
+                        println!("      {}", r.body);
+                    }
+                }
             }
         },
     );
@@ -230,8 +283,14 @@ async fn review(
     Ok(())
 }
 
-/// Post the `merge` event closing a PR. The actual git merge is client-side; pass
-/// `--merge-oid` for the merge commit, else the PR head oid is recorded.
+/// Post the `merge` event closing a PR.
+///
+/// This command does NOT perform a git merge, and the event it posts is inert unless two
+/// things hold: the caller holds WRITE or MAINTAIN, and the oid has already been pushed to
+/// the base ref (`fold_pr_state` only accepts a merge whose oid was a base-ref tip). It used
+/// to report `"status": "merged"` unconditionally, so a caller holding no token on a repo
+/// saw a successful merge, exited 0, and the PR stayed open forever — and `--json`
+/// consumers keyed off that. Now the state is re-read afterwards and reported as it is.
 async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!("Merge PR #{number}? (posts a merge event)"))? {
@@ -251,25 +310,65 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
         .await
         .context("merge_event")?;
 
+    // Re-read the fold. A merge event is only authoritative if the fold accepts it, so
+    // asking the same question a reader would ask is the only honest way to report the
+    // outcome.
+    let merged = svc
+        .pr_state(&handle.repo_contract_id, number, None)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|pw| pw.state.merged);
+
+    let (status, reason) = if merged {
+        ("merged", None)
+    } else {
+        (
+            "merge_event_posted",
+            Some(
+                "the event is not authoritative yet: it counts only once you hold WRITE or \
+                 MAINTAIN on this repo AND the merge oid has been pushed to the base ref",
+            ),
+        )
+    };
+
     ctx.emit(
         json!({
-            "status": "merged",
+            "status": status,
             "pr": number,
             "mergeOid": oid_hex,
             "eventId": event_id,
-            "note": "the merge commit must also be pushed to the base ref (git push) for the merge to be reachable",
+            "merged": merged,
+            "reason": reason,
         }),
         || {
-            println!("Posted merge event for PR #{number} (merge {oid_hex}, event {event_id}).");
-            println!("note: push the merge commit to the base ref so the merge resolves reachable.");
+            if merged {
+                println!("Merged PR #{number} (merge {oid_hex}, event {event_id}).");
+            } else {
+                println!(
+                    "Posted merge event for PR #{number} (merge {oid_hex}, event {event_id}), \
+                     but the PR does not read as merged."
+                );
+                println!(
+                    "The event counts only once you hold WRITE or MAINTAIN on this repo AND \
+                     {oid_hex} has been pushed to {}.",
+                    pr.base_ref_name
+                );
+                println!("  git push <dash-remote> {oid_hex}:{}", pr.base_ref_name);
+            }
         },
     );
     Ok(())
 }
 
-/// Thin `checkout`: create a local `pr/<n>` branch at the PR head **if the object is
-/// already in the local odb** (fetch it first via the `dash://` remote). No network fetch
-/// is performed here — the pack transport is the remote helper's job.
+/// Check a PR out: fetch its head from the repo that actually holds it, then create a
+/// local `pr/<n>` branch at it.
+///
+/// This used to do no network I/O at all — it ran `git branch` only if the head object
+/// happened to be in the local odb, which for a PR opened from a fork it never is, and told
+/// the user to "fetch it first" without naming a remote that could deliver it. The PR
+/// document does carry that pointer (`sourceContractId`), and the helper can now address a
+/// repo by contract id, so the fetch it was describing can just be performed.
 async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -281,6 +380,11 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
 
     let branch = format!("pr/{number}");
+    let mut fetched = false;
+    if !git_object_present(&pr.head_oid) {
+        fetched = fetch_pr_head(ctx, &pr)?;
+    }
+
     let present = git_object_present(&pr.head_oid);
     let mut created = false;
     if present {
@@ -295,10 +399,11 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "pr": number,
             "headOid": pr.head_oid,
             "branch": branch,
+            "sourceContractId": pr.source_contract_id,
+            "sourceRefName": pr.source_ref_name,
+            "fetched": fetched,
             "objectPresent": present,
             "branchCreated": created,
-            "note": if present { "created local branch at PR head" }
-                    else { "PR head not in local odb — fetch it first: git fetch <dash-remote>" },
         }),
         || {
             if created {
@@ -309,15 +414,48 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                     pr.head_oid
                 );
             } else {
-                println!("PR #{number} head {} is not in the local odb.", pr.head_oid);
-                println!("Fetch it first (git fetch on the dash:// remote), then re-run checkout.");
+                println!(
+                    "Could not obtain PR #{number} head {} from its source repo.",
+                    pr.head_oid
+                );
+                println!("Fetch it by hand, then re-run checkout:");
+                println!("  git fetch dash://{}", pr.source_contract_id);
             }
         },
     );
     Ok(())
 }
 
-/// Thin `diff`: run `git diff <base>...<head>` when both objects are in the local odb.
+/// Fetch a PR's objects from the repo that holds them, returning whether the fetch ran.
+///
+/// Addresses the source repo by contract id (`dash://<contractId>`), because that is the
+/// only pointer a `patch` document carries and nothing indexes a contract back to its
+/// registry listing. The helper downloads the repo's live pack set, so fetching the PR's
+/// source branch brings the head commit with it; when the PR did not record a source ref,
+/// fall back to the remote's default refspec.
+fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool> {
+    if pr.source_contract_id.is_empty() {
+        return Ok(false);
+    }
+    let url = format!("dash://{}", pr.source_contract_id);
+
+    let mut cmd = Command::new("git");
+    cmd.arg("fetch").arg(&url);
+    if let Some(source_ref) = &pr.source_ref_name {
+        cmd.arg(source_ref);
+    }
+    // A contract-addressed URL names no owner, so the helper cannot derive a default key
+    // path from it; hand it the identity this invocation already resolved.
+    if let Some(path) = &ctx.identity_path {
+        cmd.env("DASH_FORGE_KEY", path);
+    }
+
+    let status = cmd.status().context("running git fetch for the PR head")?;
+    Ok(status.success())
+}
+
+/// `diff`: run `git diff <base>...<head>`, fetching the PR head from its source repo first
+/// when it is not already local.
 async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -329,18 +467,26 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
 
     if !git_object_present(&pr.head_oid) {
+        fetch_pr_head(ctx, &pr)?;
+    }
+
+    if !git_object_present(&pr.head_oid) {
         ctx.emit(
             json!({
                 "pr": number,
                 "headOid": pr.head_oid,
+                "sourceContractId": pr.source_contract_id,
                 "diffAvailable": false,
-                "note": "PR head not in local odb — fetch it first, then re-run diff",
+                "note": "could not obtain the PR head from its source repo",
             }),
             || {
                 println!(
-                    "PR #{number} head {} is not local; fetch it first.",
+                    "Could not obtain PR #{number} head {} from its source repo.",
                     pr.head_oid
                 );
+                if !pr.source_contract_id.is_empty() {
+                    println!("  git fetch dash://{}", pr.source_contract_id);
+                }
             },
         );
         return Ok(());

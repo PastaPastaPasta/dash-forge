@@ -8,7 +8,17 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { DOC, readEvents, readIssue, readPull, type IssueView, type PullView, type RepoRef } from '../repo'
+import {
+  DOC,
+  readEvents,
+  readIssue,
+  readPull,
+  readReviews,
+  type IssueView,
+  type PullView,
+  type RepoRef,
+  type ReviewView,
+} from '../repo'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import type { Event } from '../rules'
 
@@ -55,6 +65,7 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
 export type TimelineItem =
   | { readonly kind: 'comment'; readonly at: number; readonly comment: CommentView }
   | { readonly kind: 'event'; readonly at: number; readonly event: Event }
+  | { readonly kind: 'review'; readonly at: number; readonly review: ReviewView }
 
 /** Find an issue document by its `number` field, or null. */
 async function issueDocByNumber(sdk: EvoSDK, repo: RepoRef, number: number): Promise<PlainDocument | null> {
@@ -101,13 +112,27 @@ export interface PullThread {
   readonly timeline: TimelineItem[]
 }
 
-/** Load a PR (folded state) + its comment/event timeline by number. Null if not found. */
+/**
+ * Load a PR (folded state) + its timeline by number. Null if not found.
+ *
+ * A PR's timeline includes its `review` documents, which nothing read until now — an
+ * approve or a request-for-changes was a paid-for record the contributor could not see.
+ * Reviews are keyed by `patchId`, so unlike comments and events they are a PR-only read.
+ */
 export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number): Promise<PullThread | null> {
   const doc = await patchDocByNumber(sdk, repo, number)
   if (!doc) return null
   const pull = await readPull(sdk, repo, doc)
-  const timeline = await readThread(sdk, repo, pull.id)
-  return { pull, timeline }
+  const [timeline, reviews] = await Promise.all([
+    readThread(sdk, repo, pull.id),
+    readReviews(sdk, repo, pull.id),
+  ])
+  const merged: TimelineItem[] = [
+    ...timeline,
+    ...reviews.map((r) => ({ kind: 'review' as const, at: r.createdAt, review: r })),
+  ]
+  merged.sort((a, b) => a.at - b.at)
+  return { pull, timeline: merged }
 }
 
 /** Read comments + events for a target and merge them into one chronological timeline. */

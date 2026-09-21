@@ -436,6 +436,27 @@ impl<'a> RepoService<'a> {
         })
     }
 
+    /// Resolve a repo by its **contract id**, bypassing the registry.
+    ///
+    /// The registry maps `(ownerId, normalizedName)` to a contract, and that is the right
+    /// lookup for a human-typed `dash://alice/project`. But a pull request points at its
+    /// source repo by contract id only — `patch.sourceContractId` — and there is no index
+    /// from a contract id back to its listing, so a reviewer holding a PR has a repo they
+    /// cannot address. This closes that: the contract itself carries its owner, which is
+    /// everything a [`RepoHandle`] needs for reads.
+    ///
+    /// The handle's `name` is the contract id, since no name is recoverable this way. It is
+    /// a display label; nothing in the read or transport path resolves by it.
+    pub async fn resolve_repo_by_contract(&self, repo_contract_id: &str) -> Result<RepoHandle> {
+        let contract = self.client.fetch_contract(repo_contract_id).await?;
+        Ok(RepoHandle {
+            repo_contract_id: contract.id(),
+            owner_id: contract.owner_id(),
+            name: contract.id(),
+            normalized_name: contract.id(),
+        })
+    }
+
     /// Append a ref update. `new_oid` all-zero = ref deletion; `prev_oid` = the expected
     /// prior tip (for divergence detection). Protected refs (per the current `config`
     /// patterns) route to the MAINTAIN-gated `protectedRefUpdate` type; everything else

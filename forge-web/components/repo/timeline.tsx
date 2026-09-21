@@ -1,18 +1,32 @@
 'use client'
 
 /**
- * Timeline — the interleaved comment + event stream of an issue/PR. Comments render the author
- * pill + markdown body; events render a compact, git-native one-liner ("closed this", "added
- * the bug label"). Spam events from non-holders are already folded out of state, but appear
- * here as the audit trail they are.
+ * Timeline — the interleaved comment + event + review stream of an issue/PR. Comments render
+ * the author pill + markdown body; events render a compact, git-native one-liner ("closed
+ * this", "added the bug label"); reviews render their verdict and the commit they were made
+ * against. Spam events from non-holders are already folded out of state, but appear here as
+ * the audit trail they are.
  */
 
-import { GitMerge, Lock, LockOpen, Tag, UserPlus } from 'lucide-react'
+import { Check, GitMerge, Lock, LockOpen, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
+import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { EventKind } from '@/lib/rules'
 import { Author } from '@/components/author'
 import { MarkdownView } from '@/components/markdown-view'
+import { Oid } from '@/components/ui/oid'
+
+function verdictIcon(verdict: VerdictName): JSX.Element {
+  switch (verdict) {
+    case 'approve':
+      return <Check className="h-3.5 w-3.5 text-verify" aria-hidden />
+    case 'requestChanges':
+      return <X className="h-3.5 w-3.5 text-danger" aria-hidden />
+    default:
+      return <MessageSquare className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+  }
+}
 
 function eventPhrase(kind: EventKind, value?: string | null): { text: string; icon: JSX.Element } {
   switch (kind) {
@@ -55,6 +69,30 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
               <div className="px-4 py-3">
                 <MarkdownView source={item.comment.body} />
               </div>
+            </div>
+          )
+        }
+        if (item.kind === 'review') {
+          const { review } = item
+          return (
+            <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+              <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
+                  {verdictIcon(review.verdict)}
+                </span>
+                <Author identityId={review.reviewer} />
+                <span className="text-anvil-400">{VERDICT_LABEL[review.verdict]} {timeAgo(review.createdAt)}</span>
+                {/* Which commit was reviewed: a verdict on an older head is not a verdict on
+                    the current one, and only the oid says which. */}
+                {review.commitOid ? (
+                  <span className="flex items-center gap-1 text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
+                ) : null}
+              </div>
+              {review.body ? (
+                <div className="px-4 py-3">
+                  <MarkdownView source={review.body} />
+                </div>
+              ) : null}
             </div>
           )
         }

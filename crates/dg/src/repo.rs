@@ -111,20 +111,29 @@ fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
 }
 
 /// Fork — not yet wired (needs the fork-contract + copied-refs pipeline, PRD 02 §B).
-#[allow(clippy::unnecessary_wraps)]
+///
+/// Fails rather than returning success. It used to print a TODO and exit 0, which made
+/// `dg repo fork X && dg pr create ...` proceed as though a fork existed, and left the
+/// contributor half of the PR flow with an entry point that silently did nothing.
 fn fork(ctx: &Ctx, repo: &str) -> Result<()> {
     ctx.emit(
         json!({
             "status": "not_implemented",
             "repo": repo,
-            "todo": "fork mints a new repo contract + copied refs (shared CIDs where the backend allows); pipeline not yet wired",
+            "workaround": "dg repo create <name>, push your branch to it, then dg pr create --source-contract <its contract id>",
         }),
         || {
-            eprintln!("dg repo fork: not yet wired");
-            eprintln!("  TODO: mint a fork contract + copy refs (shared CIDs where possible), set forkOf on the listing");
+            eprintln!("dg repo fork is not implemented.");
+            eprintln!();
+            eprintln!("Until it is, fork by hand:");
+            eprintln!("  1. dg repo create <name>          # mints your own repo contract");
+            eprintln!("  2. git push dash://<you>/<name> <branch>");
+            eprintln!("  3. dg pr create --repo {repo} --source-contract <contract id> ...");
+            eprintln!();
+            eprintln!("Step 1 instantiates a data contract, which is not cheap — see `dg repo create --help`.");
         },
     );
-    Ok(())
+    bail!("dg repo fork is not implemented");
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, collaborator count.
