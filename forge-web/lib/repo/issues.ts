@@ -26,7 +26,12 @@ import {
   type IssueState,
   type PrState,
 } from '../rules'
-import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import {
+  IncompleteReadError,
+  queryAllDocuments,
+  queryDocumentsWithProof,
+  type PlainDocument,
+} from '../sdk'
 import { DOC, toEvent, type RepoRef } from './contract'
 import { readRefUpdates } from './refs'
 import { resolveAuthz } from './tokens'
@@ -46,6 +51,13 @@ export interface IssueView {
   readonly author: string
   readonly createdAt: number
   readonly state: IssueState
+  /**
+   * False when the event log could not be read to completion, so `state` is a fold over a
+   * partial history and must not be presented as authoritative. Only list surfaces can
+   * produce this — a detail read throws instead, because there a wrong state is worse than
+   * an error. See {@link listIssues}.
+   */
+  readonly stateComplete: boolean
 }
 
 /** A PR (patch) with its folded state. */
@@ -59,6 +71,8 @@ export interface PullView {
   readonly baseRefName: string
   readonly headOid: string
   readonly state: PrState
+  /** See {@link IssueView.stateComplete}. */
+  readonly stateComplete: boolean
 }
 
 function num(doc: PlainDocument, field: string): number {
@@ -113,6 +127,7 @@ export async function readIssue(
     author,
     createdAt: num(issueDoc, '$createdAt'),
     state: foldIssueState(events, author, resolver),
+    stateComplete: true,
   }
 }
 
@@ -130,7 +145,32 @@ export async function listIssues(
     orderBy: [['$createdAt', 'desc']],
     limit,
   })
-  return Promise.all(documents.map((doc) => readIssue(sdk, repo, doc, resolver)))
+  // Per-row tolerance. `issue`, `event` and `comment` are un-gated, so one target padded
+  // past the reader's completeness bound must not take down a whole page of issues — and
+  // dropping the row silently would be the same class of bug this all fixes. The row is
+  // kept with `stateComplete: false`; callers render the state as unverified.
+  return Promise.all(
+    documents.map((doc) =>
+      readIssue(sdk, repo, doc, resolver).catch((e: unknown) => {
+        if (!(e instanceof IncompleteReadError)) throw e
+        return incompleteIssueView(doc)
+      }),
+    ),
+  )
+}
+
+/** An issue row whose event log could not be read completely: identity only, no folded state. */
+function incompleteIssueView(doc: PlainDocument): IssueView {
+  return {
+    id: str(doc, '$id'),
+    number: num(doc, 'number'),
+    title: str(doc, 'title'),
+    body: str(doc, 'body'),
+    author: str(doc, '$ownerId'),
+    createdAt: num(doc, '$createdAt'),
+    state: { open: true, labels: [], assignees: [] },
+    stateComplete: false,
+  }
 }
 
 /**
@@ -187,6 +227,7 @@ export async function readPull(
     baseRefName: str(patchDoc, 'baseRefName'),
     headOid,
     state: foldPrState(events, author, resolver, baseTip, isAncestor),
+    stateComplete: true,
   }
 }
 
@@ -204,5 +245,38 @@ export async function listPulls(
     orderBy: [['$createdAt', 'desc']],
     limit,
   })
-  return Promise.all(documents.map((doc) => readPull(sdk, repo, doc, resolver)))
+  // Same per-row tolerance as `listIssues`.
+  return Promise.all(
+    documents.map((doc) =>
+      readPull(sdk, repo, doc, resolver).catch((e: unknown) => {
+        if (!(e instanceof IncompleteReadError)) throw e
+        return incompletePullView(doc)
+      }),
+    ),
+  )
+}
+
+/** A PR row whose event log could not be read completely: identity only, no folded state. */
+function incompletePullView(doc: PlainDocument): PullView {
+  let headOid = ''
+  const raw = doc['headOid']
+  if (typeof raw === 'string' && raw.length > 0) {
+    try {
+      headOid = base64ToHex(raw)
+    } catch {
+      headOid = raw
+    }
+  }
+  return {
+    id: str(doc, '$id'),
+    number: num(doc, 'number'),
+    title: str(doc, 'title'),
+    body: str(doc, 'body'),
+    author: str(doc, '$ownerId'),
+    createdAt: num(doc, '$createdAt'),
+    baseRefName: str(doc, 'baseRefName'),
+    headOid,
+    state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
+    stateComplete: false,
+  }
 }

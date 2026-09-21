@@ -39,6 +39,9 @@ import { DOC } from '../repo'
  */
 const CHUNK_QUERY_MAX = 100
 
+/** Chunk queries in flight at once when one range spans more than a single query. */
+const CHUNK_QUERY_POOL = 6
+
 /** Concatenate the `d0..d2` byteArray fields (base64) of one chunk row, in order. */
 function chunkPayload(doc: Record<string, unknown>): Uint8Array {
   const parts: Uint8Array[] = []
@@ -125,17 +128,28 @@ async function queryChunkBatch(
 ): Promise<Map<number, Uint8Array>> {
   // One query returns at most CHUNK_QUERY_MAX rows, so a request spanning more seqs than
   // that is split into several parallel queries rather than silently coming back short.
-  // Without this split, `loadArtifactBytes` — which asks for a whole artifact in one range —
-  // could never load a locator or flatIndex larger than 100 chunks (~1.47 MB), which is the
-  // browse plane's hard ceiling at roughly 40k objects. `seq` is unique per `packHash`, so
-  // each sub-batch is exact and no `in`-starvation fallback is needed.
+  // Without this split a single range spanning more than 100 chunks could never load, which
+  // capped any artifact at ~1.47 MB — the browse plane's hard ceiling at roughly 40k
+  // objects. `seq` is unique per `packHash`, so each sub-batch is exact and no
+  // `in`-starvation fallback is needed.
   const batches: number[][] = []
   for (let i = 0; i < seqs.length; i += CHUNK_QUERY_MAX) {
     batches.push([...seqs.slice(i, i + CHUNK_QUERY_MAX)])
   }
-  const pages = await Promise.all(
-    batches.map((batch) =>
-      queryDocumentsWithProof(sdk, {
+
+  const bySeq = new Map<number, Uint8Array>()
+  // Bounded concurrency, not `Promise.all` over every batch. A whole-artifact range on a
+  // large pack spans thousands of chunk documents — a 100 MB artifact is ~7,100 docs, i.e.
+  // ~72 batches — and firing those at once means 72 simultaneous proof-verified queries
+  // with all-or-nothing failure and no bound on peak memory. A small pool keeps the
+  // round-trip overlap that makes this fast without turning one read into a burst.
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++
+      const batch = batches[i]
+      if (batch === undefined) return
+      const { documents } = await queryDocumentsWithProof(sdk, {
         dataContractId: contractId,
         documentTypeName: DOC.chunk,
         where: [
@@ -147,17 +161,16 @@ async function queryChunkBatch(
           ['seq', 'asc'],
         ],
         limit: CHUNK_QUERY_MAX,
-      }),
-    ),
-  )
-  const bySeq = new Map<number, Uint8Array>()
-  for (const { documents } of pages) {
-    for (const doc of documents) {
-      const raw = doc['seq']
-      const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
-      if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+      })
+      for (const doc of documents) {
+        const raw = doc['seq']
+        const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
+        // `seq` is unique per `packHash`, so no batch can claim a seq another already set.
+        if (seq >= 0) bySeq.set(seq, chunkPayload(doc))
+      }
     }
   }
+  await Promise.all(Array.from({ length: Math.min(CHUNK_QUERY_POOL, batches.length) }, worker))
   return bySeq
 }
 
@@ -254,15 +267,20 @@ export function artifactRangeFetch(
       : fetchExternalRange(manifest.uris, start, end)
 }
 
-/** Load a whole artifact's bytes (small artifacts: locator ~101 KB, flatIndex). */
-export async function loadArtifactBytes(
+/**
+ * Load a whole artifact's bytes (locator, flatIndex).
+ *
+ * Delegates to the windowed loader so a multi-MB artifact streams in
+ * {@link DOWNLOAD_WINDOW} strides instead of being requested as one enormous range. Both
+ * paths are correct now that oversized chunk requests split, but the windowed one bounds
+ * how much is in flight and in memory at once.
+ */
+export function loadArtifactBytes(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
 ): Promise<Uint8Array> {
-  if (manifest.sizeBytes <= 0) return new Uint8Array(0)
-  const fetchRange = artifactRangeFetch(sdk, repo, manifest)
-  return fetchRange(0, manifest.sizeBytes)
+  return loadArtifactBytesProgress(sdk, repo, manifest)
 }
 
 /**

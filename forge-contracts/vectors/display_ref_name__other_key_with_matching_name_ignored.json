@@ -1,11 +1,11 @@
 {
-  "name": "display_ref_name_duplicate_updates_at_same_timestamp",
-  "description": "Two matching updates sharing a createdAt resolve deterministically. NOTE: which one wins is not observable through this rule's return value \u2014 two distinct names cannot hash to the same key \u2014 so this pins determinism and the absence of a panic/empty result on a tie, not the (createdAt, id) tiebreak itself. The tiebreak is covered where it IS observable, in the resolve_ref vectors.",
+  "name": "display_ref_name_other_key_with_matching_name_ignored",
+  "description": "An update filed under a DIFFERENT refNameHash does not name this ref, even though its refName hashes to the key being queried \u2014 the key guard, not the preimage check, is what rejects it.",
   "case": "display_ref_name",
   "input": {
     "updates": [
       {
-        "id": "u2",
+        "id": "u1",
         "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
         "refName": "refs/heads/main",
         "prevOid": "0",
@@ -16,15 +16,15 @@
         "createdAt": 100
       },
       {
-        "id": "u1",
-        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "id": "u2",
+        "refNameHash": "6f7148837ea1aaf4922e5593c5e712926b8da095a33029a2c573181dea2cfa19",
         "refName": "refs/heads/main",
         "prevOid": "0",
         "newOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "force": false,
         "protected": false,
         "author": "alice",
-        "createdAt": 100
+        "createdAt": 300
       }
     ],
     "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"

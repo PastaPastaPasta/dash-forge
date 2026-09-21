@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { bytesToBase64, IncompleteReadError, queryAllDocuments } from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
-import { emptyAuthz, readEvents, readIssue } from './issues'
+import { emptyAuthz, listIssues, readEvents, readIssue } from './issues'
 import { readPackManifests } from './packs'
 import { readRefUpdates, resolveRefByHash } from './refs'
 
@@ -182,6 +182,62 @@ describe('config timeline across a page boundary', () => {
     expect(bundle.history).toHaveLength(PAGE + 1)
     expect(bundle.history[0]?.id).toBe('c-0000')
     expect(bundle.config?.defaultBranch).toBe('trunk')
+  })
+})
+
+describe('list surfaces tolerate one unreadable row', () => {
+  /** An SDK whose event pages never end, so the reader hits its page cap and throws. */
+  function endlessEventsSdk(issues: Record<string, unknown>[]): EvoSDK {
+    return {
+      documents: {
+        query: (q: QueryLike): Promise<Map<string, unknown>> => {
+          if (q.documentTypeName === DOC.issue) {
+            return Promise.resolve(new Map(issues.map((d) => [String(d['$id']), d])))
+          }
+          if (q.documentTypeName === DOC.event) {
+            // Always a full page whose cursor advances: the end is never proven.
+            const base = q.startAfter === undefined ? 0 : Number(String(q.startAfter).slice(2)) + 1
+            const rows = Array.from({ length: PAGE }, (_, i) => ({
+              $id: `e-${base + i}`,
+              $ownerId: 'spammer',
+              $createdAt: base + i,
+              targetId: 'target-1',
+              kind: 4,
+            }))
+            return Promise.resolve(new Map(rows.map((d) => [String(d['$id']), d])))
+          }
+          return Promise.resolve(new Map())
+        },
+      },
+    } as unknown as EvoSDK
+  }
+
+  it('keeps the row and marks its state unverified instead of failing the page', async () => {
+    // `issue` and `event` are un-gated, so one target can be padded without limit. That
+    // must not take down the whole issue list — and dropping the row silently would be the
+    // same class of bug as truncating it.
+    const sdk = endlessEventsSdk([
+      { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 'buried' },
+    ])
+
+    const issues = await listIssues(sdk, REPO, emptyAuthz(), 10)
+
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.title).toBe('buried')
+    expect(issues[0]?.stateComplete).toBe(false)
+  })
+
+  it('still throws on a detail read, where a wrong state is worse than an error', async () => {
+    const sdk = endlessEventsSdk([])
+
+    await expect(
+      readIssue(
+        sdk,
+        REPO,
+        { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 't', body: '' },
+        emptyAuthz(),
+      ),
+    ).rejects.toThrow(IncompleteReadError)
   })
 })
 

@@ -104,18 +104,25 @@ export async function readRefUpdates(
  * would show a different branch name than a client that does not. Taking the last element of
  * the plain-then-protected concatenation — which is not even the newest update overall —
  * was the forge-web half of that divergence. forge-core `read_refs` applies the same rule.
+ *
+ * **Null means the ref is omitted, not rendered blank.** When no update under this key
+ * carries a name that hashes to it there is nothing safe to display, and forge-core's
+ * `read_refs` skips the ref entirely (`continue`). Returning an empty name here instead
+ * would have re-opened the same cross-client divergence one level up: one client listing a
+ * nameless row, the other listing nothing.
  */
 function toResolvedRef(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],
   refNameHashHex: string,
   isAncestor: IsAncestor,
-): ResolvedRef {
-  const state = resolveRef(updates, configHistory, refNameHashHex, isAncestor)
+): ResolvedRef | null {
+  const refName = displayRefName(updates, refNameHashHex)
+  if (refName === undefined) return null
   return {
-    refName: displayRefName(updates, refNameHashHex) ?? '',
+    refName,
     refNameHash: refNameHashHex,
-    state,
+    state: resolveRef(updates, configHistory, refNameHashHex, isAncestor),
   }
 }
 
@@ -190,9 +197,11 @@ export async function readRefs(
     configHistoryPromise ?? readConfigHistory(sdk, repo),
   ])
   if (complete !== null) {
-    return [...complete].map(([refNameHashHex, updates]) =>
-      toResolvedRef(updates, configHistory, refNameHashHex, isAncestor),
-    )
+    return [...complete]
+      .map(([refNameHashHex, updates]) =>
+        toResolvedRef(updates, configHistory, refNameHashHex, isAncestor),
+      )
+      .filter((r): r is ResolvedRef => r !== null)
   }
 
   const hashes = await enumerateRefHashes(sdk, repo)

@@ -431,9 +431,13 @@ impl PlatformClient {
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
         const PAGE: u32 = 100;
+        /// Hard safety cap on total rounds, matching forge-web's `queryAllDocuments`.
+        /// 1000 pages x 100 rows = 100k documents.
+        const MAX_PAGES: usize = 1000;
+
         let mut out: Vec<FetchedDocument> = Vec::new();
         let mut start_after: Option<String> = None;
-        loop {
+        for _ in 0..MAX_PAGES {
             let page = self
                 .query_documents(
                     contract,
@@ -445,15 +449,33 @@ impl PlatformClient {
                 )
                 .await?;
             let n = page.len();
-            if let Some(last) = page.last() {
-                start_after = Some(last.id.clone());
-            }
-            out.extend(page);
+            // A SHORT page is the only accepted proof that the end was reached.
             if n < PAGE as usize {
-                break;
+                out.extend(page);
+                return Ok(out);
             }
+            let Some(last) = page.last() else {
+                // A full page with no last element is impossible, but treating it as
+                // "done" would silently truncate; treat it as unprovable instead.
+                return Err(Error::IncompleteRead {
+                    document_type: document_type.to_string(),
+                    fetched: out.len(),
+                    reason: "a full page yielded no cursor document".to_string(),
+                });
+            };
+            start_after = Some(last.id.clone());
+            out.extend(page);
         }
-        Ok(out)
+        // Bail rather than return a partial history. The TypeScript port throws here for the
+        // same reason; failing at different points on identical data would itself be a
+        // cross-client divergence.
+        Err(Error::IncompleteRead {
+            document_type: document_type.to_string(),
+            fetched: out.len(),
+            reason: format!(
+                "the {MAX_PAGES}-page safety cap was reached before a short page proved the end"
+            ),
+        })
     }
 
     /// Create a data contract (WITH tokens) from a JSON template, signing with `key`

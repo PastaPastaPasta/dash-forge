@@ -102,6 +102,17 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                   <span className="font-mono">#{issue.number}</span>
                   <span>opened {timeAgo(issue.createdAt)} by</span>
                   <Author identityId={issue.author} link={false} />
+                  {/* The event log for this issue could not be read to completion, so the
+                      open/closed marker beside it is a guess. Say so rather than showing a
+                      fold over a partial history as fact. */}
+                  {!issue.stateComplete ? (
+                    <span
+                      className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger"
+                      title="This issue's event log could not be read completely, so its open/closed state is unverified."
+                    >
+                      state unverified
+                    </span>
+                  ) : null}
                   {issue.state.labels.map((l) => (
                     <span key={l} className="rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-600 dark:text-forge-400">{l}</span>
                   ))}
