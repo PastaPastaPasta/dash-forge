@@ -1,6 +1,6 @@
 {
   "name": "display_ref_name_name_from_newest_matching_update",
-  "description": "A ref is named from the newest update whose refName hashes to the indexed key; an update filed under the same key carrying a different (legal) name does not rename it.",
+  "description": "A ref is named from the newest update whose refName hashes to the indexed key; an update filed under the same key carrying a different (legal) name does not rename it. Pins the preimage/key FILTER, not the newest-wins ordering: two distinct names cannot hash to one key, so which matching update wins is unobservable through this rule.",
   "case": "display_ref_name",
   "input": {
     "updates": [

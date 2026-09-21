@@ -13,11 +13,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
-import { bytesToBase64, IncompleteReadError, queryAllDocuments } from '../sdk'
+import { bytesToBase64, IncompleteReadError, queryAllDocuments, skipScanDistinct } from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
 import { emptyAuthz, listIssues, readEvents, readIssue } from './issues'
+import { orderGitPacks } from '../view/browse-source'
 import { readPackManifests } from './packs'
+import { readComments } from '../view/issues-view'
 import { readRefUpdates, resolveRefByHash } from './refs'
 
 const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
@@ -33,9 +35,27 @@ interface QueryLike {
   startAfter?: string
 }
 
+/** Compare on the `(field, $id)` key a Drive index traversal uses. */
+function byField(field: string) {
+  return (a: Record<string, unknown>, b: Record<string, unknown>): number => {
+    const av = a[field]
+    const bv = b[field]
+    if (typeof av === 'number' && typeof bv === 'number' && av !== bv) return av - bv
+    if (typeof av === 'string' && typeof bv === 'string' && av !== bv) return av < bv ? -1 : 1
+    return String(a['$id']) < String(b['$id']) ? -1 : String(a['$id']) > String(b['$id']) ? 1 : 0
+  }
+}
+
 /**
- * A Drive-shaped mock: caps every query at {@link PAGE} rows and honors the `startAfter`
- * `$id` cursor. Rows are stored in ascending order per type; a `desc` orderBy reverses.
+ * A Drive-shaped mock: applies `where` clauses, sorts by the **named** orderBy field (not
+ * just its direction), caps every query at {@link PAGE} rows, and honors the `startAfter`
+ * `$id` cursor.
+ *
+ * Applying `where` is load-bearing for this suite, not realism for its own sake. With a mock
+ * that ignores filters and a store holding rows for one target, deleting
+ * `where: [['targetId','==',targetId]]` from a reader passes every test here while making
+ * every issue in a repo fold every other issue's close events — `foldIssueState` never checks
+ * `targetId` itself. So the fixtures below deliberately seed rows the filter MUST exclude.
  */
 function paginatingSdk(
   store: Record<string, Record<string, unknown>[]>,
@@ -46,7 +66,20 @@ function paginatingSdk(
       query: (q: QueryLike): Promise<Map<string, unknown>> => {
         seen.push(q)
         let rows = [...(store[q.documentTypeName] ?? [])]
-        if (q.orderBy?.some(([, dir]) => dir === 'desc')) rows.reverse()
+
+        for (const [field, op, value] of q.where ?? []) {
+          if (op === '==') rows = rows.filter((d) => d[field] === value)
+          else if (op === 'in' && Array.isArray(value)) {
+            rows = rows.filter((d) => (value as unknown[]).includes(d[field]))
+          } else if (op === '>') rows = rows.filter((d) => String(d[field]) > String(value))
+        }
+
+        // Sort by the FIRST orderBy field, so a reader that orders on the wrong key is
+        // visible. Ties fall back to `$id`, the same terminal key Drive uses.
+        const [orderField, orderDir] = q.orderBy?.[0] ?? ['$createdAt', 'asc']
+        rows.sort(byField(orderField))
+        if (orderDir === 'desc') rows.reverse()
+
         if (q.startAfter !== undefined) {
           const idx = rows.findIndex((d) => d['$id'] === q.startAfter)
           rows = idx < 0 ? [] : rows.slice(idx + 1)
@@ -60,6 +93,8 @@ function paginatingSdk(
 
 const REF_NAME = 'refs/heads/main'
 const REF_HASH_B64 = bytesToBase64(sha256(new TextEncoder().encode(REF_NAME)))
+/** A second ref in the same store: every ref read must filter it out. */
+const OTHER_REF_HASH_B64 = bytesToBase64(sha256(new TextEncoder().encode('refs/heads/other')))
 
 /** A 32-byte oid, hex, distinct per `seed`. */
 function oidHex(seed: number): string {
@@ -67,6 +102,16 @@ function oidHex(seed: number): string {
 }
 function oidB64(seed: number): string {
   return bytesToBase64(new Uint8Array(32).fill(seed))
+}
+
+/** A decoy update on a DIFFERENT ref, which every ref read must filter out. */
+function otherRefUpdateDoc(i: number): Record<string, unknown> {
+  return {
+    ...refUpdateDoc(i),
+    $id: `x-${String(i).padStart(4, '0')}`,
+    refNameHash: OTHER_REF_HASH_B64,
+    refName: 'refs/heads/other',
+  }
 }
 
 /** Update `i` of a linear chain: oid(i) replacing oid(i-1). */
@@ -81,6 +126,11 @@ function refUpdateDoc(i: number): Record<string, unknown> {
     newOid: oidB64(i),
     force: false,
   }
+}
+
+/** A decoy event on a DIFFERENT target, which every event read must filter out. */
+function otherTargetEventDoc(i: number, kind: number): Record<string, unknown> {
+  return { ...eventDoc(i, kind), $id: `z-${String(i).padStart(4, '0')}`, targetId: 'target-2' }
 }
 
 /** `kind` uses the on-chain integer codes: 1 = close, 4 = labelAdd. */
@@ -98,15 +148,34 @@ function eventDoc(i: number, kind: number): Record<string, unknown> {
 
 describe('ref history across a page boundary', () => {
   it('reads every update of a ref pushed more than one page of times', async () => {
-    const sdk = paginatingSdk({
-      [DOC.refUpdate]: Array.from({ length: PAGE + 1 }, (_, i) => refUpdateDoc(i)),
-      [DOC.protectedRefUpdate]: [],
-    })
+    const seen: QueryLike[] = []
+    const sdk = paginatingSdk(
+      {
+        // Interleaved decoys on another ref: a reader that drops its `refNameHash` filter
+        // would fold another branch's history into this one.
+        [DOC.refUpdate]: [
+          ...Array.from({ length: PAGE + 1 }, (_, i) => refUpdateDoc(i)),
+          ...Array.from({ length: 5 }, (_, i) => otherRefUpdateDoc(i)),
+        ],
+        [DOC.protectedRefUpdate]: [],
+      },
+      seen,
+    )
 
     const updates = await readRefUpdates(sdk, REPO, REF_HASH_B64)
 
     expect(updates).toHaveLength(PAGE + 1)
+    expect(updates.every((u) => u.refName === REF_NAME)).toBe(true)
     expect(updates[updates.length - 1]?.newOid).toBe(oidHex(PAGE))
+
+    // The query SHAPE, not just the row count: the filter must be carried on every page,
+    // and page 2 must resume from the last `$id` of page 1 rather than re-reading page 1.
+    const refQueries = seen.filter((q) => q.documentTypeName === DOC.refUpdate)
+    expect(refQueries).toHaveLength(2)
+    expect(refQueries[0]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
+    expect(refQueries[0]?.startAfter).toBeUndefined()
+    expect(refQueries[1]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
+    expect(refQueries[1]?.startAfter).toBe(`u-${String(PAGE - 1).padStart(4, '0')}`)
   })
 
   it('resolves the tip to the newest push, not the last one on page 1', async () => {
@@ -137,12 +206,25 @@ describe('ref history across a page boundary', () => {
 })
 
 describe('event log across a page boundary', () => {
-  it('reads every event of a target', async () => {
-    const sdk = paginatingSdk({
-      [DOC.event]: Array.from({ length: PAGE + 1 }, (_, i) => eventDoc(i, 4)),
-    })
+  it('reads every event of a target, and only that target', async () => {
+    const seen: QueryLike[] = []
+    const sdk = paginatingSdk(
+      {
+        [DOC.event]: [
+          ...Array.from({ length: PAGE + 1 }, (_, i) => eventDoc(i, 4)),
+          // `foldIssueState` never checks `targetId` itself, so a reader that drops its
+          // filter would silently fold another issue's close events into this one.
+          ...Array.from({ length: 5 }, (_, i) => otherTargetEventDoc(i, 1)),
+        ],
+      },
+      seen,
+    )
 
-    expect(await readEvents(sdk, REPO, 'target-1')).toHaveLength(PAGE + 1)
+    const events = await readEvents(sdk, REPO, 'target-1')
+
+    expect(events).toHaveLength(PAGE + 1)
+    expect(events.every((e) => e.targetId === 'target-1')).toBe(true)
+    expect(seen.every((q) => q.where?.some(([f, op, v]) => f === 'targetId' && op === '==' && v === 'target-1'))).toBe(true)
   })
 
   it('folds a close that lands past the first page', async () => {
@@ -262,6 +344,95 @@ describe('pack manifests across a page boundary', () => {
     expect(read).toHaveLength(PAGE + 1)
     expect(read[0]?.documentId).toBe(`m-${String(PAGE).padStart(4, '0')}`)
     expect(read[read.length - 1]?.documentId).toBe('m-0000')
+  })
+})
+
+describe('packRef alignment is what completeness protects', () => {
+  it('resolves packRef 0 to the OLDEST pack when the manifest list spans pages', async () => {
+    // The count assertion above proves the read is complete; this proves the CONSEQUENCE.
+    // A locator addresses pack bytes by position in oldest-first order, so a truncated
+    // manifest read shifts every index and packRef 0 silently becomes the second-oldest
+    // pack — a valid offset in the wrong pack, which nothing downstream can detect.
+    const manifests = Array.from({ length: PAGE + 1 }, (_, i) => ({
+      $id: `m-${String(i).padStart(4, '0')}`,
+      $createdAt: 4_000 + i,
+      packHash: bytesToBase64(new Uint8Array(32).fill(i % 256)),
+      kind: 0,
+      sizeBytes: 1,
+      objectCount: 1,
+      chunkCount: 1,
+      storage: 0,
+    }))
+    const sdk = paginatingSdk({ [DOC.packManifest]: manifests })
+
+    const read = await readPackManifests(sdk, REPO)
+    const ordered = orderGitPacks(read.filter((m) => m.kind === 0))
+
+    // Under a truncated read the oldest manifests fall out and packRef 0 becomes m-0001.
+    expect(ordered).toHaveLength(PAGE + 1)
+    expect(ordered[0]?.documentId).toBe('m-0000')
+    expect(ordered[ordered.length - 1]?.documentId).toBe(`m-${String(PAGE).padStart(4, '0')}`)
+  })
+})
+
+describe('comment threads across a page boundary', () => {
+  it('reads every comment on a target, and only that target', async () => {
+    const comments = [
+      ...Array.from({ length: PAGE + 1 }, (_, i) => ({
+        $id: `c-${String(i).padStart(4, '0')}`,
+        $ownerId: 'author',
+        $createdAt: 6_000 + i,
+        targetId: 'target-1',
+        body: `comment ${i}`,
+      })),
+      { $id: 'zz-1', $ownerId: 'author', $createdAt: 6_500, targetId: 'target-2', body: 'other' },
+    ]
+    const sdk = paginatingSdk({ [DOC.comment]: comments })
+
+    const read = await readComments(sdk, REPO, 'target-1')
+
+    expect(read).toHaveLength(PAGE + 1)
+    expect(read[read.length - 1]?.body).toBe(`comment ${PAGE}`)
+    expect(read.some((c) => c.body === 'other')).toBe(false)
+  })
+})
+
+describe('skip-scan enumeration', () => {
+  /** Rows across `n` distinct keys, one row each. */
+  function keyed(n: number): Record<string, unknown>[] {
+    return Array.from({ length: n }, (_, i) => ({
+      $id: `k-${i}`,
+      $createdAt: i,
+      refNameHash: `key-${String(i).padStart(3, '0')}`,
+    }))
+  }
+
+  it('enumerates every distinct key when the space fits the cap exactly', async () => {
+    // The boundary case: a key space of exactly `maxKeys` IS complete, and must not be
+    // mistaken for one that overflowed.
+    const sdk = paginatingSdk({ [DOC.refUpdate]: keyed(3) })
+
+    const keys = await skipScanDistinct(sdk, {
+      dataContractId: 'c',
+      documentTypeName: DOC.refUpdate,
+      keyField: 'refNameHash',
+      maxKeys: 3,
+    })
+
+    expect(keys).toEqual(['key-000', 'key-001', 'key-002'])
+  })
+
+  it('throws rather than returning a short key list when the cap is exceeded', async () => {
+    const sdk = paginatingSdk({ [DOC.refUpdate]: keyed(4) })
+
+    await expect(
+      skipScanDistinct(sdk, {
+        dataContractId: 'c',
+        documentTypeName: DOC.refUpdate,
+        keyField: 'refNameHash',
+        maxKeys: 3,
+      }),
+    ).rejects.toThrow(IncompleteReadError)
   })
 })
 

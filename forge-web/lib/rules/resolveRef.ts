@@ -41,13 +41,6 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
 }
 
 /**
- * Fold a ref's update history into its {@link RefState}.
- *
- * `updates` may contain updates for *other* refs; only those whose `refNameHash` equals
- * `refNameHash` participate. `configHistory` is the repo's full config timeline.
- * `isAncestor(a, b)` reports whether commit `a` is an ancestor of (or equal to) `b`.
- */
-/**
  * The name to DISPLAY for the ref keyed by `refNameHashHex`: the `refName` of the newest
  * update (on the `(createdAt, id)` total order) whose name actually hashes to that key.
  *
@@ -70,6 +63,13 @@ export function displayRefName(
   return named[named.length - 1]?.refName
 }
 
+/**
+ * Fold a ref's update history into its {@link RefState}.
+ *
+ * `updates` may contain updates for *other* refs; only those whose `refNameHash` equals
+ * `refNameHash` participate. `configHistory` is the repo's full config timeline.
+ * `isAncestor(a, b)` reports whether commit `a` is an ancestor of (or equal to) `b`.
+ */
 export function resolveRef(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],

@@ -1,6 +1,6 @@
 {
   "name": "display_ref_name_no_matching_name_is_none",
-  "description": "When no update under the key carries a name that hashes to it, there is nothing safe to display.",
+  "description": "When no update under the key carries a name that hashes to it, there is nothing safe to display. Pins the preimage/key FILTER, not the newest-wins ordering: two distinct names cannot hash to one key, so which matching update wins is unobservable through this rule.",
   "case": "display_ref_name",
   "input": {
     "updates": [

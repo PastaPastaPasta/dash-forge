@@ -279,7 +279,9 @@ export async function skipScanDistinct(
   const keys: string[] = []
   let last: string | undefined
 
-  for (let i = 0; i < maxKeys; i++) {
+  // maxKeys + 1 iterations: the extra probe distinguishes "exactly maxKeys keys, and we are
+  // done" from "more keys remain". Without it an enumeration that WAS complete throws.
+  for (let i = 0; i <= maxKeys; i++) {
     const where: WhereClause[] = last === undefined ? [] : [[keyField, '>', last]]
     const rows = await queryDocuments(sdk, {
       dataContractId,
@@ -308,6 +310,6 @@ export async function skipScanDistinct(
   throw new IncompleteReadError(
     documentTypeName,
     keys.length,
-    `the ${maxKeys}-key safety cap was reached before the key space was exhausted`,
+    `more than ${maxKeys} distinct ${keyField} values exist; the safety cap was reached`,
   )
 }

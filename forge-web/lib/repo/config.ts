@@ -8,7 +8,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import type { ConfigDoc } from '../rules'
+import { compareKey, type ConfigDoc } from '../rules'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { DOC, parseJsonList, type RepoRef } from './contract'
 
@@ -77,10 +77,22 @@ export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<Conf
     documentTypeName: DOC.config,
     orderBy: [['$createdAt', 'asc']],
   })
-  const newest = documents[documents.length - 1]
+  // Do NOT take the wire order's last row as "newest". Drive orders the terminal
+  // document-id subtree by the RAW 32 bytes of `$id`, while `configAsOf` — the rule that
+  // decides which config is in force — tie-breaks on the base58 `$id` STRING. For two
+  // configs sharing a `$createdAt` those orders can disagree, so the config this surfaces
+  // and the config `resolveRef` considers in force could be different documents. Pick the
+  // maximum with the same comparison the fold uses, and the three agree by construction.
+  const history = documents.map(toConfigDoc)
+  const newest = history.reduce<ConfigDoc | undefined>(
+    (best, c) => (best === undefined || compareKey(c, best) > 0 ? c : best),
+    undefined,
+  )
+  const newestDoc =
+    newest === undefined ? undefined : documents.find((d) => d['$id'] === newest.id)
   return {
-    config: newest === undefined ? null : toRepoConfig(newest),
-    history: documents.map(toConfigDoc),
+    config: newestDoc === undefined ? null : toRepoConfig(newestDoc),
+    history,
   }
 }
 
@@ -92,7 +104,16 @@ export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<Con
   return (await readConfigBundle(sdk, repo)).history
 }
 
-/** The current (newest) config, surfaced as a {@link RepoConfig}. */
+/**
+ * The current config, from a single cheap `$createdAt desc limit 1` read.
+ *
+ * This is an approximation of {@link readConfigBundle}'s `config`, and can differ from it in
+ * exactly one case: two configs written in the same block, where this returns whichever Drive
+ * orders first by raw `$id` bytes while the rules layer picks the greater base58 `$id`
+ * string. Resolving that would cost a full paged read of the timeline for what is usually a
+ * default-branch lookup. Use {@link readConfigBundle} where the answer must match the config
+ * `resolveRef` considers in force. forge-core `read_default_branch` makes the same trade.
+ */
 export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: repo.contractId,

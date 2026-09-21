@@ -410,14 +410,15 @@ export type BrowseState =
  * packs when indexed, or the live pack set the fallback clone would need when not.
  */
 export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
-  // The locator comes from the `(kind, $createdAt desc)` index rather than from scanning the
-  // manifest list, so locator discovery cannot be hidden by manifest volume. The manifest
-  // list itself must still be COMPLETE: `packRef` is a position in the oldest-first pack
-  // order, so a missing early pack silently shifts every index (see `readPackManifests`).
-  const [manifests, locatorManifest] = await Promise.all([
-    readPackManifests(sdk, repo),
-    readNewestManifestOfKind(sdk, repo, PACK_KIND.OBJECT_LOCATOR),
-  ])
+  // ONE snapshot, deliberately. `readPackManifests` applies no `kind` filter and is now
+  // complete, so the newest locator is already in this list and the `(kind, $createdAt desc)`
+  // index lookup is unnecessary here — and reading the two separately would be actively
+  // wrong: a repack committing between the two queries pairs a post-repack locator with a
+  // pre-repack pack list, and `packRef` then resolves to the wrong pack silently. That is the
+  // same misalignment the completeness fix exists to prevent, reintroduced through the back
+  // door. The list is `$createdAt desc`, so the first kind-1 entry is the newest.
+  const manifests = await readPackManifests(sdk, repo)
+  const locatorManifest = manifests.find((m) => m.kind === PACK_KIND.OBJECT_LOCATOR) ?? null
   if (!locatorManifest) {
     const livePacks = orderGitPacks(liveGitPackManifests(manifests))
     if (livePacks.length === 0) return { kind: 'no-packs' }

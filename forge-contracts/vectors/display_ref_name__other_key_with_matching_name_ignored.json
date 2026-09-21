@@ -1,6 +1,6 @@
 {
   "name": "display_ref_name_other_key_with_matching_name_ignored",
-  "description": "An update filed under a DIFFERENT refNameHash does not name this ref, even though its refName hashes to the key being queried \u2014 the key guard, not the preimage check, is what rejects it.",
+  "description": "An update filed under a DIFFERENT refNameHash does not name this ref, even though its refName hashes to the key being queried \u2014 the key guard, not the preimage check, is what rejects it. Pins the preimage/key FILTER, not the newest-wins ordering: two distinct names cannot hash to one key, so which matching update wins is unobservable through this rule.",
   "case": "display_ref_name",
   "input": {
     "updates": [

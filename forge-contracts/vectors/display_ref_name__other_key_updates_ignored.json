@@ -1,6 +1,6 @@
 {
   "name": "display_ref_name_other_key_updates_ignored",
-  "description": "Updates belonging to a different refNameHash never contribute a name.",
+  "description": "Updates belonging to a different refNameHash never contribute a name. Pins the preimage/key FILTER, not the newest-wins ordering: two distinct names cannot hash to one key, so which matching update wins is unobservable through this rule.",
   "case": "display_ref_name",
   "input": {
     "updates": [
