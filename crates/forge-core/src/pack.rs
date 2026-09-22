@@ -8,9 +8,10 @@
 //!   payloads and rejoin them. Platform caps a single field at ~5 KiB and a whole
 //!   state transition at 20 KiB, so a `chunk` carries up to [`FIELDS_PER_DOC`] fields
 //!   of at most [`FIELD_MAX`] bytes, all within [`ST_SIZE_LIMIT`].
-//! - [`build`] — pack creation via system git: [`build_pack`] (thin push pack +
-//!   `index-pack --fix-thin` → self-contained) and [`repack_all`] (consolidated pack,
-//!   0 `REF_DELTA`).
+//! - [`build`] — pack creation via system git: [`build_pack`] (the push delta, as the
+//!   smaller of two locator-quality candidates) and [`repack_all`] (consolidated pack).
+//!   Both emit 0 `REF_DELTA` with every delta base earlier in the same pack, and refuse to
+//!   hand back anything else.
 //! - [`parse`] — packfile + `.idx` v2 parsing, object reconstruction (inflate + OFS/REF
 //!   delta), and SHA-256 `packHash`. Hand-parsed rather than scraping
 //!   `git verify-pack -v`; see that module for why (verify-pack can't distinguish

@@ -471,6 +471,18 @@ async fn upload_push_pack(
     let base_refs: Vec<&str> = have_bases.iter().map(String::as_str).collect();
     let pack =
         build_pack(git_dir, &want_refs, &base_refs).context("building self-contained push pack")?;
+
+    // `have_bases` is every remote tip we already hold, so pushing a ref at an
+    // already-stored commit — a new branch or tag at the current tip — packs zero objects.
+    // Storing that pack would charge for 32 bytes of nothing AND permanently occupy a
+    // packRef no index row can ever reference: browse coverage is proved from rows, so the
+    // repo would read as index-behind until someone paid for a repack. The `refUpdate` the
+    // caller actually wanted still lands; only the empty pack is skipped.
+    if pack.parsed.object_count() == 0 {
+        tracing::info!("push adds no new objects; skipping pack upload and browse index");
+        return Ok(());
+    }
+
     let bytes = &pack.bytes;
     let meta = PackMeta::for_bytes(bytes);
     let pack_hash = meta.pack_hash_bytes()?;

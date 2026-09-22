@@ -497,18 +497,25 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
     if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
   }
 
-  // Oldest-first, so an OID carried by several fragments keeps its earliest row.
+  // Oldest-first for a stable row order. Rows are keyed by `(oid, packRef)`, so the merge
+  // result does not actually depend on it — `ObjectLocator.merge` explains why.
   const ordered = [...fragments].reverse()
   const parts = await Promise.all(
     ordered.map(async (m) => ObjectLocator.parse(await loadArtifactBytes(sdk, repo, m))),
   )
   const locator = ObjectLocator.merge(parts)
 
-  // Coverage: every pack in the space must be indexed by some fragment. A gap means objects
-  // that exist on-chain are unreachable through the index — the honest answer is the
-  // fallback clone, not a reader that throws on the first uncovered object.
+  // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
+  // A gap means objects that exist on-chain are unreachable through the index — the honest
+  // answer is the fallback clone, not a reader that throws on the first uncovered object.
+  //
+  // The `objectCount > 0` exemption is not a loophole: a zero-object pack contributes no
+  // rows, so its packRef could never appear in `covered` and the repo would read as
+  // index-behind forever. The push path no longer stores one (forge-core
+  // `upload_push_pack`), but repos pushed by an older client can already carry one — a new
+  // branch or tag at an already-stored commit packed nothing.
   const covered = locator.packRefsCovered()
-  const complete = livePacks.every((_, i) => covered.has(i))
+  const complete = livePacks.every((m, i) => m.objectCount === 0 || covered.has(i))
   if (!complete) return behind('index-behind')
   // Out-of-range refs mean the fragments were built over a different pack space than the
   // one derived here — a prefix check cannot see this, a bounds check can.
@@ -540,10 +547,27 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
 const BROWSE_READY_TTL_MS = 5 * 60_000
 const BROWSE_RETRY_TTL_MS = 60_000
 
+/**
+ * Age at which a live `ready` hit is still served, but refreshed behind it.
+ *
+ * A `ready` context used to be treated as effectively immutable — the locator is
+ * content-addressed, so why re-read it? That stopped being true when pushes started
+ * extending the index: the artifacts are immutable, the SET of live fragments is not. Held
+ * for the full TTL, a context resolved before a push is paired with a ref list that
+ * `useRepoHome` revalidates after 30 s, so the page shows a tip commit the reader's
+ * fragments do not cover and `readObject` throws `object not in locator` — precisely the
+ * failure the coverage check exists to turn into an honest `index-behind`. Those checks run
+ * at resolve time, so the only way to see a push is to resolve again. Matched to
+ * `HOME_REVALIDATE_MS` in `hooks/use-repo.ts` so the two cannot drift apart.
+ */
+const BROWSE_REVALIDATE_MS = 30_000
+
 interface BrowseCacheEntry {
   at: number
   promise: Promise<BrowseState>
   settled?: BrowseState
+  /** A background refresh is in flight for this entry (see `loadBrowseContextCached`). */
+  revalidating?: boolean
 }
 const browseCache = new Map<string, BrowseCacheEntry>()
 
@@ -567,10 +591,33 @@ export function peekBrowseState(contractId: string): BrowseState | undefined {
   return entry.settled
 }
 
-/** {@link loadBrowseContext} through the session cache (in-flight loads are joined). */
+/**
+ * {@link loadBrowseContext} through the session cache (in-flight loads are joined).
+ *
+ * Stale-while-revalidate: a hit older than {@link BROWSE_REVALIDATE_MS} is still returned
+ * immediately, and a fresh resolve starts behind it so the next read sees any push since.
+ */
 export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
   const hit = browseCache.get(repo.contractId)
-  if (hit !== undefined && browseEntryLive(hit)) return hit.promise
+  if (hit !== undefined && browseEntryLive(hit)) {
+    const stale = hit.settled !== undefined && Date.now() - hit.at >= BROWSE_REVALIDATE_MS
+    if (stale && !hit.revalidating) {
+      hit.revalidating = true
+      const next = loadBrowseContext(sdk, repo)
+      next
+        .then((state) => {
+          // Only replace an entry this refresh still owns — an explicit reload may have
+          // dropped it, and a newer resolve must not be clobbered by an older one.
+          if (browseCache.get(repo.contractId) !== hit) return
+          browseCache.set(repo.contractId, { at: Date.now(), promise: next, settled: state })
+        })
+        .catch(() => {
+          // Keep serving the last good state; the TTL will force a fresh resolve.
+          hit.revalidating = false
+        })
+    }
+    return hit.promise
+  }
   const entry: BrowseCacheEntry = { at: Date.now(), promise: loadBrowseContext(sdk, repo) }
   browseCache.set(repo.contractId, entry)
   entry.promise

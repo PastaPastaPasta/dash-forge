@@ -108,16 +108,24 @@ impl ObjectLocator {
     /// and a repack supersedes every locator it consolidates.
     /// `RepoService::publish_push_locator` establishes that before calling.
     ///
-    /// `parts` are oldest-first and an OID present in more than one keeps its EARLIEST row.
-    /// Every part is live, so either row reads correctly; preferring the earliest means a
-    /// consolidation never silently moves a reader onto different bytes for an object it
-    /// could already fetch.
+    /// **Rows are keyed by `(oid, packRef)`, not by `oid`.** An object routinely sits in
+    /// more than one live pack — a push whose `have` set was incomplete re-sends history an
+    /// earlier pack already holds — and each copy's row is the only record of that pack's
+    /// address for it. The locator is not just an OID→entry map: a reader resolving an
+    /// `OFS_DELTA` base looks it up by `(packRef, offset)`, and the base of an object in
+    /// pack N is always in pack N. Dropping the pack-N row because pack 0 also carried the
+    /// object leaves every delta in pack N that uses it unreadable. So every copy is kept
+    /// and only exact `(oid, packRef)` duplicates collapse, which keeps the fold idempotent.
+    /// [`Self::lookup`] returns the lowest-`packRef` copy, so which pack an OID resolves to
+    /// does not change as fragments accumulate.
     pub fn merge(parts: &[&Self]) -> Self {
+        // Rows sort by their first OID_LEN+2 bytes: the oid, then packRef big-endian. That
+        // IS the (oid, packRef) order, so a plain byte comparison drives the k-way merge.
+        const KEY: usize = OID_LEN + 2;
         let total = parts.iter().map(|p| p.count).sum();
         let mut cursors = vec![0usize; parts.len()];
         let mut merged: Vec<[u8; LOCATOR_ROW_LEN]> = Vec::with_capacity(total);
         loop {
-            // Smallest remaining OID across the parts; ties resolve to the earliest part.
             let mut pick: Option<usize> = None;
             for (i, part) in parts.iter().enumerate() {
                 if cursors[i] >= part.count {
@@ -125,9 +133,7 @@ impl ObjectLocator {
                 }
                 let better = match pick {
                     None => true,
-                    Some(j) => {
-                        part.row(cursors[i])[..OID_LEN] < parts[j].row(cursors[j])[..OID_LEN]
-                    }
+                    Some(j) => part.row(cursors[i])[..KEY] < parts[j].row(cursors[j])[..KEY],
                 };
                 if better {
                     pick = Some(i);
@@ -139,9 +145,9 @@ impl ObjectLocator {
                 .try_into()
                 .expect("fixed-width row");
             cursors[i] += 1;
-            // Drop every other part's row for the same OID.
+            // Collapse only exact (oid, packRef) duplicates — the same pack indexed twice.
             for (j, part) in parts.iter().enumerate() {
-                while cursors[j] < part.count && part.row(cursors[j])[..OID_LEN] == row[..OID_LEN] {
+                while cursors[j] < part.count && part.row(cursors[j])[..KEY] == row[..KEY] {
                     cursors[j] += 1;
                 }
             }
@@ -235,7 +241,17 @@ impl ObjectLocator {
             match row[..OID_LEN].cmp(oid) {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => return Some(decode_row(row)),
+                std::cmp::Ordering::Equal => {
+                    // A merged locator can hold one row per pack that stores this OID
+                    // ([`Self::merge`]). They are adjacent and ordered by `packRef`, so
+                    // walking back to the first makes the answer the lowest-`packRef` copy
+                    // regardless of where the binary search landed.
+                    let mut at = mid;
+                    while at > 0 && self.row(at - 1)[..OID_LEN] == *oid {
+                        at -= 1;
+                    }
+                    return Some(decode_row(self.row(at)));
+                }
             }
         }
         None

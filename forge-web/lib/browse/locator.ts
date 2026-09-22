@@ -118,20 +118,31 @@ export class ObjectLocator {
    * publication.
    *
    * A push publishes a locator over just the pack it stored (36 bytes per object ADDED,
-   * rather than republishing the whole index on every push), so a repo between repacks has
-   * several live fragments and a reader must fold them. Parity: forge-core
-   * `pack::ObjectLocator::merge`.
+   * rather than republishing the whole index on every push — forge-core
+   * `RepoService::publish_push_locator`), so a repo between repacks has several live
+   * fragments and a reader must fold them. Parity: forge-core `pack::ObjectLocator::merge`.
    *
-   * `parts` are oldest-first; an OID carried by more than one keeps its EARLIEST row. Every
-   * fragment is live, so either row reads correctly — preferring the earliest means the set
-   * a reader resolves does not change as fragments are added.
+   * **Rows are keyed by `(oid, packRef)`, not by `oid`.** An object routinely sits in more
+   * than one live pack — a push whose `have` set was incomplete re-sends history an earlier
+   * pack already holds — and each copy's row is the only record of that pack's address for
+   * it. This locator is not just an OID map: {@link buildOffsetIndex} is built from these
+   * rows and {@link BrowseReader} resolves an `OFS_DELTA` base by `(packRef, offset)`, where
+   * the base of an object in pack N is always in pack N. Dropping the pack-N row because
+   * pack 0 also carried the object leaves every delta in pack N that uses it unreadable —
+   * and coverage checks cannot see it, because the surviving rows still name both packs.
+   * So every copy is kept and only exact `(oid, packRef)` duplicates collapse, which keeps
+   * the fold idempotent. {@link lookup} returns the lowest-`packRef` copy, so which pack an
+   * OID resolves to does not change as fragments accumulate.
    *
    * Sound only when the fragments share a `packRef` space (or index prefixes of one).
-   * {@link locatorPackSpace} defines that space and `loadBrowseContext` checks the
-   * fragments cover it before trusting the result.
+   * `locatorPackSpace` defines that space and `loadBrowseContext` checks the fragments
+   * cover it before trusting the result.
    */
   static merge(parts: readonly ObjectLocator[]): ObjectLocator {
     if (parts.length === 1) return parts[0] as ObjectLocator
+    // Rows sort by their first OID_LEN+2 bytes: the oid, then packRef big-endian. That IS
+    // the (oid, packRef) order, so a plain byte comparison drives the k-way merge.
+    const KEY = OID_LEN + 2
     const cursors = new Array<number>(parts.length).fill(0)
     const rows: Uint8Array[] = []
     for (;;) {
@@ -144,20 +155,23 @@ export class ObjectLocator {
           continue
         }
         const best = parts[pick] as ObjectLocator
-        if (compareOidBytes(part.row(cursors[i] as number), best.row(cursors[pick] as number)) < 0) {
-          pick = i
-        }
+        const cmp = compareBytes(
+          part.row(cursors[i] as number),
+          best.row(cursors[pick] as number),
+          KEY,
+        )
+        if (cmp < 0) pick = i
       }
       if (pick < 0) break
       const chosen = parts[pick] as ObjectLocator
       const row = chosen.row(cursors[pick] as number)
       cursors[pick] = (cursors[pick] as number) + 1
-      // Drop every other fragment's row for the same OID.
+      // Collapse only exact (oid, packRef) duplicates — the same pack indexed twice.
       for (let j = 0; j < parts.length; j++) {
         const part = parts[j] as ObjectLocator
         while (
           (cursors[j] as number) < part.count &&
-          sameOid(part.row(cursors[j] as number), row)
+          compareBytes(part.row(cursors[j] as number), row, KEY) === 0
         ) {
           cursors[j] = (cursors[j] as number) + 1
         }
@@ -243,24 +257,26 @@ export class ObjectLocator {
       const cmp = compareOid(this.bytes, start, oid)
       if (cmp < 0) lo = mid + 1
       else if (cmp > 0) hi = mid
-      else return decodeRow(this.bytes, start)
+      else {
+        // A merged locator can hold one row per pack storing this OID ({@link merge}).
+        // They are adjacent and ordered by packRef, so walking back to the first makes the
+        // answer the lowest-packRef copy wherever the binary search landed.
+        let at = mid
+        while (at > 0 && compareOid(this.bytes, this.rowStart(at - 1), oid) === 0) at--
+        return decodeRow(this.bytes, this.rowStart(at))
+      }
     }
     return null
   }
 }
 
-/** Compare two rows by their leading OID. */
-function compareOidBytes(x: Uint8Array, y: Uint8Array): number {
-  for (let k = 0; k < OID_LEN; k++) {
+/** Compare the first `n` bytes of two rows. */
+function compareBytes(x: Uint8Array, y: Uint8Array, n: number): number {
+  for (let k = 0; k < n; k++) {
     const d = (x[k] as number) - (y[k] as number)
     if (d !== 0) return d
   }
   return 0
-}
-
-/** Whether two rows carry the same OID. */
-function sameOid(a: Uint8Array, b: Uint8Array): boolean {
-  return compareOidBytes(a, b) === 0
 }
 
 /** A ranged byte fetcher: returns `bytes[start, end)` of a resource. */

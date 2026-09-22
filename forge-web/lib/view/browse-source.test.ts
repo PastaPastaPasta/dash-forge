@@ -251,6 +251,7 @@ interface ManifestSpec {
   readonly kind: 0 | 1
   readonly hash: number
   readonly sizeBytes?: number
+  readonly objectCount?: number
   readonly supersedes?: readonly number[]
 }
 
@@ -265,7 +266,8 @@ function manifestDoc(m: ManifestSpec): Record<string, unknown> {
     kind: m.kind,
     sizeBytes: m.sizeBytes ?? 0,
     chunkCount: 1,
-    objectCount: 0,
+    // Kind-0 packs hold objects unless a test says otherwise; coverage exempts empty ones.
+    objectCount: m.objectCount ?? (m.kind === 0 ? 2 : 0),
     storage: 0,
     uris: '[]',
     tips: '',
@@ -417,6 +419,36 @@ describe('loadBrowseContext', () => {
     }
     // frag0 (createdAt 110) indexed packRef 0 when that meant pack0.
     const sdk = browseSdk([pack0, pack1, consolidated, frag0].map(manifestDoc), artifacts)
+    expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
+      kind: 'unindexed',
+      reason: 'index-behind',
+    })
+  })
+
+  it('does not demand coverage for a pack that holds no objects', async () => {
+    // An older client stored an empty pack (a branch or tag pushed at an already-stored
+    // commit). It contributes no rows, so its packRef can never appear in the coverage set;
+    // requiring it would pin the repo to the fallback clone forever.
+    const empty: ManifestSpec = { id: 'p1', createdAt: 200, kind: 0, hash: 0xa1, objectCount: 0 }
+    const sdk = browseSdk([pack0, empty, frag0].map(manifestDoc), artifacts)
+    expect((await loadBrowseContext(sdk, REPO)).kind).toBe('ready')
+  })
+
+  it('reports index-behind when a fragment addresses a pack outside the live set', async () => {
+    // Coverage can be complete while a fragment still names a pack that does not exist —
+    // it was built over a longer space. The rows would resolve to nothing; only a bounds
+    // check on the packRefs sees it.
+    const wild = fragmentBytes(5, [0x99])
+    const wildManifest: ManifestSpec = {
+      id: 'f9',
+      createdAt: 220,
+      kind: 1,
+      hash: 0xb9,
+      sizeBytes: wild.length,
+    }
+    const withWild = new Map(artifacts)
+    withWild.set('b9'.repeat(32).slice(0, 64), wild)
+    const sdk = browseSdk([pack0, pack1, frag0, frag1, wildManifest].map(manifestDoc), withWild)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
       reason: 'index-behind',

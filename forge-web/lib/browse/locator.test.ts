@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { serializeLocator, type IndexedObject } from './indexer'
-import { ObjectLocator } from './locator'
+import { ObjectLocator, offsetKey } from './locator'
 
 const oid = (n: number): string => n.toString(16).padStart(40, '0')
 
@@ -50,10 +50,12 @@ describe('ObjectLocator.merge', () => {
     expect([...merged.packRefsCovered()].sort()).toEqual([0, 1])
   })
 
-  it('keeps the EARLIEST row for an OID carried by more than one fragment', () => {
-    // The same object can be stored in two packs (a force-push re-sending it, say). Both
-    // are live and either reads correctly, but the set a reader resolves must not shift as
-    // fragments accumulate — so the earliest fragment's row wins.
+  it('keeps EVERY pack\'s row for a duplicated OID, and resolves to the lowest packRef', () => {
+    // The same object is routinely stored in two packs (a push whose `have` set was
+    // incomplete re-sends history an earlier pack already holds). Each copy's row is the
+    // only record of THAT pack's address for it, and the OFS-base walk needs both — so the
+    // fold must not collapse them. Lookup still answers with the lowest packRef, so which
+    // pack an OID resolves to does not drift as fragments accumulate.
     const a = fragment(0, [[0x10, 100]])
     const b = fragment(1, [
       [0x10, 999],
@@ -61,9 +63,14 @@ describe('ObjectLocator.merge', () => {
     ])
     const merged = ObjectLocator.merge([a, b])
 
-    expect(merged.count).toBe(2)
+    expect(merged.count).toBe(3)
     expect(merged.lookup(bytes(oid(0x10)))).toMatchObject({ packRef: 0, offset: 100 })
     expect(merged.lookup(bytes(oid(0x20)))).toMatchObject({ packRef: 1, offset: 200 })
+    // Pack 1's address for the duplicated object survives — this is the record the reader's
+    // OFS-delta base walk resolves against, and an OID-keyed fold destroys it.
+    const byOffset = merged.buildOffsetIndex()
+    expect(byOffset.get(offsetKey(1, 999))).toMatchObject({ packRef: 1, offset: 999 })
+    expect(byOffset.get(offsetKey(0, 100))).toMatchObject({ packRef: 0, offset: 100 })
   })
 
   it('is idempotent: folding in a fragment already covered changes nothing', () => {
@@ -75,6 +82,7 @@ describe('ObjectLocator.merge', () => {
     const once = ObjectLocator.merge([a, b])
     const twice = ObjectLocator.merge([once, a, b])
     expect(twice.count).toBe(once.count)
+    expect(twice.asBytes()).toEqual(once.asBytes())
     for (const n of [0x10, 0x20, 0x30]) {
       expect(twice.lookup(bytes(oid(n)))).toEqual(once.lookup(bytes(oid(n))))
     }
@@ -101,6 +109,21 @@ describe('ObjectLocator.merge', () => {
     const reparsed = ObjectLocator.parse(merged.asBytes())
     expect(reparsed.count).toBe(merged.count)
     expect(reparsed.lookup(bytes(oid(0x0105)))).toMatchObject({ packRef: 1 })
+  })
+
+  it('does not depend on the order the fragments are folded in', () => {
+    // Keying rows by (oid, packRef) makes the fold order-independent — worth pinning,
+    // because the reader and the writer arrive at their fragment lists by different routes
+    // (a `$createdAt desc` query reversed, vs. a manifest scan) and must agree byte-for-byte.
+    const a = fragment(0, [
+      [0x10, 100],
+      [0x30, 300],
+    ])
+    const b = fragment(1, [
+      [0x10, 999],
+      [0x20, 200],
+    ])
+    expect(ObjectLocator.merge([a, b]).asBytes()).toEqual(ObjectLocator.merge([b, a]).asBytes())
   })
 
   it('returns a single fragment unchanged', () => {
