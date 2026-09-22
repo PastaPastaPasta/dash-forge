@@ -455,6 +455,28 @@ describe('loadBrowseContext', () => {
     })
   })
 
+  it('falls back rather than erroring when a fragment cannot be loaded', async () => {
+    // One transient chunk-query failure out of up to 16 fragment fetches must not deny the
+    // user a repo whose raw packs are perfectly readable.
+    const partial = new Map(artifacts)
+    partial.delete('b1'.repeat(32).slice(0, 64))
+    const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), partial)
+    expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
+      kind: 'unindexed',
+      reason: 'index-behind',
+    })
+  })
+
+  it('falls back rather than erroring when a fragment is malformed', async () => {
+    const corrupt = new Map(artifacts)
+    corrupt.set('b1'.repeat(32).slice(0, 64), new Uint8Array(17))
+    const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), corrupt)
+    expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
+      kind: 'unindexed',
+      reason: 'index-behind',
+    })
+  })
+
   it('reports no-packs when nothing is stored', async () => {
     expect(await loadBrowseContext(browseSdk([], artifacts), REPO)).toEqual({ kind: 'no-packs' })
   })

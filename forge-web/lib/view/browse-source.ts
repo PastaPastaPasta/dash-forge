@@ -500,10 +500,23 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // Oldest-first for a stable row order. Rows are keyed by `(oid, packRef)`, so the merge
   // result does not actually depend on it — `ObjectLocator.merge` explains why.
   const ordered = [...fragments].reverse()
-  const parts = await Promise.all(
-    ordered.map(async (m) => ObjectLocator.parse(await loadArtifactBytes(sdk, repo, m))),
-  )
-  const locator = ObjectLocator.merge(parts)
+  // A fragment that will not load or parse leaves an index that cannot answer for the
+  // packs it was supposed to cover — the same situation as a missing one, and the same
+  // honest answer: the raw packs are still readable, so route to the fallback clone. It
+  // must not become a browse ERROR, which is what a rejection here would produce
+  // (`loadBrowseContextCached` evicts the entry and `BrowseBoundary` renders `ErrorState`),
+  // because that hides a repo the reader could perfectly well have served. Up to
+  // MAX_LOCATOR_FRAGMENTS artifacts are fetched per resolve, so one transient `chunk`
+  // query failure is enough to reach this.
+  let locator: ObjectLocator
+  try {
+    const parts = await Promise.all(
+      ordered.map(async (m) => ObjectLocator.parse(await loadArtifactBytes(sdk, repo, m))),
+    )
+    locator = ObjectLocator.merge(parts)
+  } catch {
+    return behind('index-behind')
+  }
 
   // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
   // A gap means objects that exist on-chain are unreachable through the index — the honest
