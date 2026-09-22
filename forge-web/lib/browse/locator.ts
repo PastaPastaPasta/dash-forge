@@ -310,7 +310,15 @@ export async function lookupRanged(
     const cmp = compareOid(slice, start, oid)
     if (cmp < 0) a = mid + 1
     else if (cmp > 0) c = mid
-    else return decodeRow(slice, start)
+    else {
+      // A merged locator can hold one row per pack storing this OID
+      // ({@link ObjectLocator.merge}). The whole group is inside this fanout slice, so
+      // walking back to its first row answers with the lowest packRef — the same choice
+      // {@link ObjectLocator.lookup} makes over the fully-downloaded locator.
+      let at = mid
+      while (at > 0 && compareOid(slice, (at - 1) * LOCATOR_ROW_LEN, oid) === 0) at--
+      return decodeRow(slice, at * LOCATOR_ROW_LEN)
+    }
   }
   return null
 }

@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { serializeLocator, type IndexedObject } from './indexer'
-import { ObjectLocator, offsetKey } from './locator'
+import { ObjectLocator, lookupRanged, offsetKey } from './locator'
 
 const oid = (n: number): string => n.toString(16).padStart(40, '0')
 
@@ -130,5 +130,34 @@ describe('ObjectLocator.merge', () => {
     const a = fragment(2, [[0x10, 100]])
     expect(ObjectLocator.merge([a])).toBe(a)
     expect([...a.packRefsCovered()]).toEqual([2])
+  })
+})
+
+describe('lookupRanged', () => {
+  // The size-independent path: it never downloads the locator, it fetches the fanout and
+  // one 1/256 slice. It must reach the SAME row as `ObjectLocator.lookup` — a merged
+  // locator holds one row per pack for a duplicated OID, and a binary search can land on
+  // any of them, so it needs the same walk-back to the lowest packRef.
+  const rangeOver = (loc: ObjectLocator) => {
+    const bytes = loc.asBytes()
+    return (start: number, end: number): Promise<Uint8Array> =>
+      Promise.resolve(bytes.subarray(start, end))
+  }
+
+  it('agrees with lookup on a duplicated OID, whichever row the search lands on', async () => {
+    // Three packs carry the same object, so the binary search over the group can land in
+    // the middle. Only a walk-back gets back to packRef 0.
+    const parts = [0, 1, 2].map((r) => fragment(r, [[0x10, 100 + r]]))
+    const merged = ObjectLocator.merge(parts)
+    expect(merged.count).toBe(3)
+
+    const ranged = await lookupRanged(rangeOver(merged), bytes(oid(0x10)))
+    expect(ranged).toEqual(merged.lookup(bytes(oid(0x10))))
+    expect(ranged).toMatchObject({ packRef: 0, offset: 100 })
+  })
+
+  it('still returns null for an absent OID', async () => {
+    const merged = ObjectLocator.merge([fragment(0, [[0x10, 100]]), fragment(1, [[0x20, 200]])])
+    expect(await lookupRanged(rangeOver(merged), bytes(oid(0x30)))).toBeNull()
   })
 })
