@@ -149,8 +149,15 @@ pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Resul
         Ok(_) => Ok(direct),
         Err(e) => {
             // The direct candidate is always available and always correct; the second one is
-            // an optimization. Never fail a push because it could not be built.
-            tracing::debug!(error = %e, "completed-then-reordered pack candidate unavailable");
+            // an optimization. Never fail a push because it could not be built — but say so
+            // at `warn`, not `debug`: a systematic failure here (an old git, a constrained
+            // temp dir) is invisible otherwise and costs up to ~37% more stored bytes on a
+            // multi-branch push, which is real money.
+            tracing::warn!(
+                error = %e,
+                "could not build the completed-then-reordered pack candidate; storing the \
+                 non-thin one, which may be larger"
+            );
             Ok(direct)
         }
     }
