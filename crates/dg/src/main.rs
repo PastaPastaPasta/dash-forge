@@ -486,6 +486,10 @@ pub enum StorageCommand {
     Advertise {
         /// The repository (`owner/name`).
         repo: String,
+        /// Read the policy the helper would use for this git remote (its
+        /// `remote.<name>.dash*` overrides), not just `dash.*`.
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 

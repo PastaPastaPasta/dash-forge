@@ -17,6 +17,7 @@ use serde_json::json;
 
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
+use forge_core::storage::policy::pick_scoped;
 use forge_core::storage::profiles::{
     valid_profile_name, KeyId, KuboProfile, PinningProfile, PlatformProfile, S3Profile,
 };
@@ -42,7 +43,7 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
             platform_fallback,
             global,
         } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global),
-        StorageCommand::Advertise { repo } => advertise(ctx, repo).await,
+        StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
     }
 }
 
@@ -430,7 +431,7 @@ async fn test_s3(p: &S3Profile, http: &reqwest::Client, r: &mut Report) {
     }) else {
         return;
     };
-    let backend = S3Backend::with_client(cfg, http.clone());
+    let backend = S3Backend::with_client(cfg, S3Backend::client());
     let body = probe_body();
     let key = backend.object_key(&format!(
         "probe/dg-storage-test-{}.txt",
@@ -649,10 +650,22 @@ fn use_profiles(
     Ok(())
 }
 
-async fn advertise(ctx: &Ctx, repo: &str) -> Result<()> {
-    let storage = crate_git_config_get("dash.storage");
-    let replicas = crate_git_config_get("dash.replicas");
-    let policy = StoragePolicy::from_git_values(storage.as_deref(), replicas.as_deref(), None)?;
+async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
+    // The same precedence the helper uses (forge_core::storage::policy::pick_scoped).
+    let value = |remote_key: &str, key: &str| {
+        pick_scoped(
+            remote.and_then(|r| git_config_scoped(&format!("remote.{r}.{remote_key}"))),
+            git_config_scoped(&format!("dash.{key}")),
+        )
+    };
+    let storage = value("dashStorage", "storage");
+    let replicas = value("dashReplicas", "replicas");
+    let fallback = value("dashPlatformFallback", "platformFallback");
+    let policy = StoragePolicy::from_git_values(
+        storage.as_deref(),
+        replicas.as_deref(),
+        fallback.as_deref(),
+    )?;
     let resolved = policy.resolve(&StorageProfiles::load()?)?;
     let mode = resolved.advertised_mode();
     let uris = resolved.advertised_uris();
@@ -681,13 +694,19 @@ async fn advertise(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-fn crate_git_config_get(key: &str) -> Option<String> {
+/// `git config --show-scope --get <key>` → `(scope, value)`.
+fn git_config_scoped(key: &str) -> Option<(String, String)> {
     let out = Process::new("git")
-        .args(["config", "--get", key])
+        .args(["config", "--show-scope", "--get", key])
         .output()
         .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    let (scope, value) = line.split_once('\t')?;
+    let value = value.trim().to_string();
+    (!value.is_empty()).then(|| (scope.to_string(), value))
 }
 
 /// Probe each pack's mirror URIs and report an availability matrix. Platform-tier packs

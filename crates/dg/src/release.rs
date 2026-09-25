@@ -137,7 +137,11 @@ async fn download(
     // Race the recorded URIs with the configured IPFS gateway list (storage.toml, else the
     // shared defaults), accepting only bytes that hash to the release's sha256.
     let bytes = PackReader::from_user_config()
-        .fetch_verified(&asset.uris, &asset.sha256.to_ascii_lowercase())
+        .fetch_verified(
+            &asset.uris,
+            &asset.sha256.to_ascii_lowercase(),
+            (asset.size_bytes > 0).then_some(asset.size_bytes),
+        )
         .await
         .context("downloading + verifying asset")?;
 
