@@ -28,7 +28,7 @@ use forge_core::repo::{
 };
 use forge_core::rules::{Holdings, RefState, TokenRecord};
 use forge_core::storage::{
-    human_bytes, replicate, ExternalTarget, PackReader, Replication, StorageTarget,
+    human_bytes, replicate, ExternalTarget, PackReader, Replica, Replication, StorageTarget,
 };
 use forge_core::tokens::TokenService;
 
@@ -316,10 +316,18 @@ impl Helper {
     ) -> Result<Vec<PushOutcome>> {
         let git_dir = LocalRepo::git_dir()?;
         let dry_run = options.dry_run;
-        // Resolve the storage policy before touching the network: a typo in dash.storage or
-        // a missing profile must fail the push before anything is built or paid for.
-        let push_policy = PushPolicy::load(self.remote.as_deref())
-            .context("reading the storage policy (dash.storage / dash.replicas)")?;
+        // Resolve the storage policy before touching the network when this push stores
+        // objects: a typo in dash.storage or a missing profile must fail the push before
+        // anything is built or paid for. A delete-only push stores nothing, so a broken
+        // storage.toml must not block it.
+        let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
+            Some(
+                PushPolicy::load(self.remote.as_deref())
+                    .context("reading the storage policy (dash.storage / dash.replicas)")?,
+            )
+        } else {
+            None
+        };
         let conn = self.ensure_conn().await?;
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
@@ -352,20 +360,29 @@ impl Helper {
             .filter(|p| p.reject.is_none())
             .filter_map(|p| p.new_oid.clone())
             .collect();
-        if !want_tips.is_empty() && !dry_run {
+        if let (false, Some(push_policy)) = (want_tips.is_empty(), push_policy.as_ref()) {
             let ref_count = planned.iter().filter(|p| p.reject.is_none()).count();
             let ctx = PushContext {
                 svc: &svc,
                 repo: &conn.repo,
                 git_dir: &git_dir,
-                policy: &push_policy,
+                policy: push_policy,
                 ref_count,
                 verbose: options.verbosity >= 1,
+                dry_run,
             };
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
-            // is written, so no ref can point at history the policy did not store.
+            // is written, so no ref can point at history the policy did not store. A dry
+            // run builds the pack and prints the plan, then stops.
             upload_push_pack(&ctx, &want_tips, &remote_refs).await?;
+            // Test affordance (like DASH_FORGE_KILL_AFTER_CHUNK): stop after the manifest
+            // landed and before any ref is written — the state a push interrupted between
+            // the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise the
+            // re-push-of-an-already-recorded-pack path.
+            if !dry_run && std::env::var_os("DASH_FORGE_FAIL_BEFORE_REFS").is_some() {
+                bail!("simulated interruption after the manifest, before the refs (DASH_FORGE_FAIL_BEFORE_REFS)");
+            }
         }
 
         // Apply ref updates for accepted specs.
@@ -522,6 +539,8 @@ struct PushContext<'a> {
     policy: &'a PushPolicy,
     ref_count: usize,
     verbose: bool,
+    /// `--dry-run`: build the pack and print the plan, store nothing.
+    dry_run: bool,
 }
 
 impl PushContext<'_> {
@@ -580,20 +599,37 @@ async fn upload_push_pack(
 
     // What goes where, and what it costs, BEFORE anything is paid for.
     let estimate = job.estimate(ctx, resolved.platform);
-    ctx.say(&policy::plan_line(
-        resolved,
-        job.bytes.len() as u64,
-        &estimate,
-    ));
+    let plan = policy::plan_line(resolved, job.bytes.len() as u64, &estimate);
+    if ctx.dry_run {
+        // A dry run always shows the plan (it is the point of asking), then stops.
+        eprintln!("{plan} (dry run: nothing stored)");
+        return Ok(());
+    }
+    ctx.say(&plan);
+    // Resolve every secret BEFORE asking the user to pay: a missing env var must fail
+    // here, not after a "y" at the cost prompt.
+    let externals = external_targets(ctx)?;
     policy::enforce(estimate.total(), ctx.policy).map_err(|why| anyhow!(why))?;
 
-    let externals = external_targets(ctx)?;
     let jpath = crate::journal::journal_path(ctx.git_dir, &job.meta.pack_hash);
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
     record_pack(ctx, &job, &replication).await?;
 
-    // Push fully landed (copies + manifest): retire the journal.
-    let _ = std::fs::remove_file(&jpath);
+    // Push fully landed (copies + manifest). The chunk journal is the only record of
+    // chunks an interrupted Platform upload wrote; retire it only when this manifest
+    // references those chunks. Otherwise keep it and say so — those chunks are paid for,
+    // referenced by nothing, and reclaimable only while the journal names them.
+    if replication.has_platform() {
+        let _ = std::fs::remove_file(&jpath);
+    } else if jpath.exists() {
+        ctx.say(&format!(
+            "dash: note: an earlier interrupted push left Platform chunks for this pack that \
+             this push did not use (journal kept at {}); they hold a refundable deposit until \
+             deleted (dg repo delete / admin teardown), or re-push with dash.storage including \
+             platform to put them to use",
+            jpath.display()
+        ));
+    }
     publish_browse_index(ctx, &pack.parsed, job.pack_hash, &replication, &externals).await;
     Ok(())
 }
@@ -685,6 +721,24 @@ async fn store_pack(
         targets.push(c);
     }
 
+    // No policy (Platform only): keep the pre-policy behaviour exactly — the chunk
+    // upload's own typed error (TokenFrozen, Unauthorized, InsufficientCredits, …) under
+    // the familiar context, with no policy/fallback advice that cannot apply.
+    if let (true, 1, Some(chain)) = (resolved.external.is_empty(), resolved.total(), &chain) {
+        let uris = chain
+            .store(job.bytes, &job.meta)
+            .await
+            .context("uploading pack chunks")?;
+        return Ok(Replication {
+            replicas: vec![Replica {
+                target: forge_core::storage::PLATFORM_PROFILE.into(),
+                uris,
+                platform: true,
+            }],
+            failures: Vec::new(),
+        });
+    }
+
     let err = match replicate(&targets, job.bytes, &job.meta, resolved.replicas).await {
         Ok(rep) => return Ok(rep),
         Err(err) => err,
@@ -737,6 +791,18 @@ async fn record_pack(
     }
     let stored = StoredArtifact::from_replication(replication, job.bytes)
         .context("recording the confirmed copies")?;
+    // The manifest's `packHash` is unique and a duplicate create is treated as "already
+    // stored" (idempotent resume). That is only true if the EXISTING manifest's copies are
+    // still readable: a re-push of the same pack under a different policy must not leave
+    // refs pointing at a manifest whose storage is gone while the new copies go unrecorded.
+    if let Some(existing) = ctx
+        .svc
+        .read_pack_manifest(ctx.repo, job.pack_hash)
+        .await
+        .context("checking for an existing manifest of this pack")?
+    {
+        return confirm_existing_manifest(ctx, job, &existing, &stored.uris).await;
+    }
     ctx.svc
         .write_pack_manifest(
             ctx.repo,
@@ -769,6 +835,64 @@ async fn record_pack(
         confirmed.len()
     ));
     Ok(())
+}
+
+/// This pack already has a manifest (an earlier push stored it). Accept it only if at least
+/// one copy it records is readable and hash-matches; otherwise refuse, naming both the dead
+/// copies and the ones this push just confirmed, so the user can restore or reseed.
+async fn confirm_existing_manifest(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    existing: &forge_core::repo::PackManifestInfo,
+    new_uris: &[String],
+) -> Result<()> {
+    let reader = PackReader::from_user_config();
+    match ctx.svc.fetch_artifact(ctx.repo, existing, &reader).await {
+        Ok(bytes) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
+            let unrecorded: Vec<&String> = new_uris
+                .iter()
+                .filter(|u| !existing.uris.contains(u))
+                .collect();
+            ctx.say(&format!(
+                "dash: pack {} was already recorded by an earlier push and is still readable",
+                &job.meta.pack_hash[..12]
+            ));
+            if !unrecorded.is_empty() {
+                ctx.say(&format!(
+                    "dash: note: this push's new copies are not in that manifest: {} — announce \
+                     them with `dg reseed` (packMirror) if you want readers to use them",
+                    unrecorded
+                        .iter()
+                        .map(|u| u.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            Ok(())
+        }
+        other => {
+            let why = match other {
+                Ok(_) => "bytes did not match".to_string(),
+                Err(e) => e.to_string(),
+            };
+            let recorded = if existing.uris.is_empty() {
+                "Platform chunks".to_string()
+            } else {
+                existing.uris.join(", ")
+            };
+            bail!(
+                "pack {} already recorded at {recorded}, none reachable ({why}); restore that \
+                 storage or run `dg reseed`. This push confirmed new copies at {} — record \
+                 them with `dg reseed` (packMirror) once the pack is readable. No ref was updated.",
+                job.meta.pack_hash,
+                if new_uris.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    new_uris.join(", ")
+                }
+            )
+        }
+    }
 }
 
 /// Publish the browse-index fragment over the pack just stored, to the same targets that

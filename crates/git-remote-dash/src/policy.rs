@@ -20,6 +20,7 @@ use std::io::{BufRead as _, Write as _};
 use anyhow::{anyhow, bail, Result};
 use forge_core::cost::estimate;
 use forge_core::repo::credits_to_dash;
+use forge_core::storage::policy::pick_scoped;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoragePolicy, StorageProfiles};
 
 use crate::git::LocalRepo;
@@ -69,11 +70,14 @@ pub struct PushPolicy {
     pub confirm: ConfirmMode,
 }
 
-/// Read `remote.<remote>.<remote_key>` first (when a named remote is in use), then `dash.<key>`.
+/// The effective value of a setting that exists both per remote
+/// (`remote.<remote>.<remote_key>`) and repo-wide (`dash.<key>`), by the scope rule of
+/// [`pick_scoped`].
 fn config_value(remote: Option<&str>, remote_key: &str, key: &str) -> Option<String> {
-    remote
-        .and_then(|r| LocalRepo::config_get(&format!("remote.{r}.{remote_key}")))
-        .or_else(|| LocalRepo::config_get(&format!("dash.{key}")))
+    let per_remote =
+        remote.and_then(|r| LocalRepo::config_get_scoped(&format!("remote.{r}.{remote_key}")));
+    let repo_wide = LocalRepo::config_get_scoped(&format!("dash.{key}"));
+    pick_scoped(per_remote, repo_wide)
 }
 
 impl PushPolicy {
@@ -286,12 +290,15 @@ pub fn have_tty() -> bool {
 
 /// Run the guard end to end: `Ok(())` to proceed, `Err(reason)` (one line) to refuse.
 pub fn enforce(credits: u64, policy: &PushPolicy) -> std::result::Result<(), String> {
-    match guard(
-        credits,
-        policy.cost_warn_threshold,
-        policy.confirm,
-        have_tty(),
-    ) {
+    // Only look for a terminal when the guard could actually ask (no /dev/tty open on a
+    // push that has no threshold and `dash.confirm` auto/never).
+    let could_ask = match policy.confirm {
+        ConfirmMode::Never => false,
+        ConfirmMode::Always => credits > 0,
+        ConfirmMode::Auto => policy.cost_warn_threshold.is_some(),
+    };
+    let tty = could_ask && have_tty();
+    match guard(credits, policy.cost_warn_threshold, policy.confirm, tty) {
         Guard::Proceed => Ok(()),
         Guard::Refuse(msg) => Err(msg),
         Guard::Ask(q) => match ask_on_tty(&q) {
@@ -391,6 +398,28 @@ mod tests {
             guard(10, None, ConfirmMode::Always, true),
             Guard::Ask(_)
         ));
+    }
+
+    #[test]
+    fn more_specific_scope_wins_then_per_remote() {
+        let s = |scope: &str, v: &str| Some((scope.to_string(), v.to_string()));
+        // Repo-local dash.storage beats a global per-remote key.
+        assert_eq!(
+            pick_scoped(s("global", "remote"), s("local", "repo")).as_deref(),
+            Some("repo")
+        );
+        // Same scope: the per-remote key wins.
+        assert_eq!(
+            pick_scoped(s("local", "remote"), s("local", "repo")).as_deref(),
+            Some("remote")
+        );
+        // `git -c` beats everything.
+        assert_eq!(
+            pick_scoped(s("local", "remote"), s("command", "cli")).as_deref(),
+            Some("cli")
+        );
+        assert_eq!(pick_scoped(None, s("global", "g")).as_deref(), Some("g"));
+        assert_eq!(pick_scoped(None, None), None);
     }
 
     #[test]

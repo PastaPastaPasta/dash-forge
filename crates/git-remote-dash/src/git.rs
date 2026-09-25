@@ -99,15 +99,19 @@ impl LocalRepo {
         }
     }
 
-    /// `git config --get <key>` for the repo being pushed/fetched (inheriting `GIT_DIR`, so
-    /// repo-local, global and `-c` values all apply). `None` when unset.
-    pub fn config_get(key: &str) -> Option<String> {
+    /// `git config --show-scope --get <key>` for the repo being pushed (inheriting
+    /// `GIT_DIR`, so repo-local, global and `-c` values all apply): `(scope, value)` where
+    /// scope is `local`,
+    /// `worktree`, `global`, `system` or `command` (`-c`). `None` when unset.
+    pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
         if key.starts_with('-') || key.chars().any(char::is_control) {
             return None;
         }
-        let out = run_git(&["config", "--get", key], None, false, None).ok()?;
-        let s = String::from_utf8_lossy(&out).trim().to_string();
-        (!s.is_empty()).then_some(s)
+        let out = run_git(&["config", "--show-scope", "--get", key], None, false, None).ok()?;
+        let line = String::from_utf8_lossy(&out).trim_end().to_string();
+        let (scope, value) = line.split_once('\t')?;
+        let value = value.trim().to_string();
+        (!value.is_empty()).then(|| (scope.to_string(), value))
     }
 
     /// Whether object `oid` is present in the local odb.
