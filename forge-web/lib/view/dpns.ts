@@ -34,10 +34,6 @@ export async function resolveDpnsName(
   if (cached !== undefined) return cached
 
   const dpns = NETWORKS[network].dpnsContractId
-  if (dpns === null) {
-    cache.set(key, null)
-    return null
-  }
   try {
     const docs = await queryDocuments(sdk, {
       dataContractId: dpns,

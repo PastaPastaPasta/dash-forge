@@ -42,11 +42,6 @@ const REPO_V1_TEMPLATE: &str = include_str!(concat!(
     "/../../forge-contracts/templates/repo-v1.json"
 ));
 
-/// The deployed testnet registry contract id
-/// (`forge-contracts/deployments/testnet.json`). The `repoListing` discovery docs live
-/// here; resolution and publish target it.
-pub const TESTNET_REGISTRY_CONTRACT_ID: &str = "DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh";
-
 // Document type names (repo contract).
 const DOC_CONFIG: &str = "config";
 const DOC_REF_UPDATE: &str = "refUpdate";
@@ -471,6 +466,11 @@ impl<'a> RepoService<'a> {
         let normalized = normalize_name(name)?;
         let owner_b58 = self.identity.id();
 
+        // No registry on this network: fail before paying for a contract whose listing
+        // could never be published. The idempotency guard below treats any resolve error as
+        // "does not exist yet", so it would not stop this on its own.
+        self.client.registry_contract_id()?;
+
         // Idempotency guard (financial safety): if a prior create already published this
         // repo's listing, re-running must NOT pay for a second ~1 DASH contract. Resolve
         // first and short-circuit to the existing handle (cost 0) when it already exists.
@@ -576,10 +576,7 @@ impl<'a> RepoService<'a> {
             )
             .await?;
 
-        let registry = self
-            .client
-            .fetch_contract(TESTNET_REGISTRY_CONTRACT_ID)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let repo_id_bytes = platform::decode_identifier(repo_contract_id)?;
         let mut listing = BTreeMap::new();
         listing.insert("name".to_string(), FieldValue::text(name));
@@ -606,10 +603,7 @@ impl<'a> RepoService<'a> {
     /// `repoListing` unique `(ownerId, normalizedName)` index.
     pub async fn resolve_repo(&self, owner_id: &str, repo_name: &str) -> Result<RepoHandle> {
         let normalized = normalize_name(repo_name)?;
-        let registry = self
-            .client
-            .fetch_contract(TESTNET_REGISTRY_CONTRACT_ID)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let owner_bytes = platform::decode_identifier(owner_id)?;
 
         let docs = self

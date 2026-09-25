@@ -38,8 +38,9 @@ node scripts/deploy.mjs --contract registry --identity <deployer-mainnet.json> -
 
 ## 3. Wire the mainnet registry id into clients
 
-- `forge-core` reads deployments from `forge-contracts/deployments/<network>.json`; confirm `mainnet.json` is present and bundled (dg embeds it; forge-web `lib/constants.ts` picks it up).
-- forge-web: build with `NEXT_PUBLIC_NETWORK=mainnet` (or the network switcher) — the SDK uses `EvoSDK.mainnetTrusted()`.
+- Until `mainnet.json` exists, every client reports "no Dash Forge registry is deployed on mainnet yet" for registry operations. That is the expected pre-deploy state; they never fall back to testnet ids.
+- `forge-core` embeds every `forge-contracts/deployments/*.json` at build time (`crates/forge-core/build.rs`), so committing `mainnet.json` is the whole Rust change; rebuild and confirm with `dg doctor --network mainnet` (the `contracts` line names `forge-contracts/deployments/mainnet.json` as the source).
+- forge-web: add `mainnet` to `forge-web/lib/deployments.ts` (the `deployments bundle` unit test fails until you do), then build with `NEXT_PUBLIC_NETWORK=mainnet`; the SDK uses `EvoSDK.mainnetTrusted()`. See [BUILDING.md § Networks](BUILDING.md#networks).
 
 ## 4. Contract-update rehearsal (before any template change)
 

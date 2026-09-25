@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use serde_json::{json, Value};
 
 use forge_core::keystore::BridgeIdentity;
+use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 
 use crate::config::Config;
@@ -19,50 +20,43 @@ pub struct Ctx {
     pub json: bool,
     /// Skip confirmation prompts (automation / CI).
     pub yes: bool,
-    /// The resolved network.
-    pub network: Network,
+    /// The resolved network and the registry to use on it.
+    pub target: NetworkTarget,
     /// The resolved identity file path (from `--identity` / `DASH_FORGE_KEY` / config), if any.
     pub identity_path: Option<PathBuf>,
 }
 
-/// Map the CLI network enum to the forge-core network.
-fn to_core_network(n: crate::NetworkArg) -> Network {
-    match n {
-        crate::NetworkArg::Testnet => Network::Testnet,
-        crate::NetworkArg::Mainnet => Network::Mainnet,
-    }
-}
-
-/// The lowercase network label used in JSON / config.
-pub fn network_label(n: Network) -> &'static str {
-    match n {
-        Network::Testnet => "testnet",
-        Network::Mainnet => "mainnet",
-        Network::Devnet => "devnet",
-    }
+/// Stack the network layers in `dg`'s precedence order and resolve them.
+///
+/// Precedence, field by field: flags (`--network` / `--devnet-name` / `--dapi-addresses`) >
+/// config file > environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
+/// `DASH_FORGE_DAPI_ADDRESSES`, `FORGE_REGISTRY_CONTRACT_ID`) > the embedded
+/// `forge-contracts/deployments/<network>.json` > testnet. A lower layer that names a
+/// different network contributes nothing network-specific (see `NetworkSettings::overlay`).
+fn resolve_target(
+    flags: NetworkSettings,
+    config: &Config,
+    env: NetworkSettings,
+) -> Result<NetworkTarget> {
+    Ok(flags
+        .overlay(config.network_settings())
+        .overlay(env)
+        .resolve()?)
 }
 
 impl Ctx {
     /// Resolve the context from parsed CLI flags and the persisted config.
     ///
-    /// Precedence — network: `--network` > config > `DASH_FORGE_NETWORK` env > testnet.
-    /// Identity: `--identity` > `DASH_FORGE_KEY` env > config default.
-    pub fn resolve(cli: &Cli, config: &Config) -> Self {
-        let network = if let Some(n) = cli.network {
-            to_core_network(n)
-        } else if let Some(n) = config.network.as_deref() {
-            match n {
-                "mainnet" => Network::Mainnet,
-                "devnet" => Network::Devnet,
-                _ => Network::Testnet,
-            }
-        } else {
-            match std::env::var("DASH_FORGE_NETWORK").as_deref() {
-                Ok("mainnet") => Network::Mainnet,
-                Ok("devnet") => Network::Devnet,
-                _ => Network::Testnet,
-            }
-        };
+    /// Network: see [`resolve_target`]. Identity: `--identity` > `DASH_FORGE_KEY` env >
+    /// config default.
+    pub fn resolve(cli: &Cli, config: &Config) -> Result<Self> {
+        let flags = NetworkSettings::from_flags(
+            cli.network.map(|n| n.kind().to_string()),
+            cli.devnet_name.clone(),
+            cli.dapi_addresses.clone(),
+        );
+        let target = resolve_target(flags, config, NetworkSettings::from_env())
+            .context("resolving the network (--network / --devnet-name / config.toml)")?;
 
         let identity_path = cli
             .identity
@@ -70,12 +64,22 @@ impl Ctx {
             .or_else(|| std::env::var_os("DASH_FORGE_KEY").map(PathBuf::from))
             .or_else(|| config.default_identity.as_deref().map(PathBuf::from));
 
-        Self {
+        Ok(Self {
             json: cli.json,
             yes: cli.yes,
-            network,
+            target,
             identity_path,
-        }
+        })
+    }
+
+    /// The resolved network.
+    pub fn network(&self) -> &Network {
+        &self.target.network
+    }
+
+    /// The network label used in JSON / output: `testnet`, `mainnet` or `devnet-<name>`.
+    pub fn network_label(&self) -> String {
+        self.target.network.key()
     }
 
     /// The resolved identity path, or an actionable error explaining how to set one.
@@ -97,9 +101,9 @@ impl Ctx {
 
     /// Connect to the resolved network.
     pub async fn connect(&self) -> Result<PlatformClient> {
-        PlatformClient::connect(self.network)
+        PlatformClient::connect(self.target.clone())
             .await
-            .context("connecting to Dash Platform")
+            .with_context(|| format!("connecting to Dash Platform ({})", self.target.network))
     }
 
     /// Connect and fetch the signing identity in one step (the common preamble for
@@ -211,6 +215,91 @@ fn actionable_hint(err: &anyhow::Error) -> Option<String> {
         CoreError::Timeout { retryable: true } => {
             "timed out; the signed transition may still land — retry".to_string()
         }
+        CoreError::NotDeployed { .. } => {
+            "pick a network with a deployment (`--network testnet`), or point \
+             FORGE_REGISTRY_CONTRACT_ID / `registry_contract_id` in config.toml at a registry \
+             you deployed; `dg doctor` shows what is configured"
+                .to_string()
+        }
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::network::{ContractSource, Registry};
+
+    fn config(network: &str) -> Config {
+        Config {
+            network: Some(network.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn flags_beat_config_beat_env() {
+        let env = NetworkSettings {
+            network: Some("mainnet".into()),
+            ..Default::default()
+        };
+        // Config wins over env.
+        let t =
+            resolve_target(NetworkSettings::default(), &config("testnet"), env.clone()).unwrap();
+        assert_eq!(t.network, Network::Testnet);
+        // Env applies when nothing above sets a network.
+        let t = resolve_target(NetworkSettings::default(), &Config::default(), env).unwrap();
+        assert_eq!(t.network, Network::Mainnet);
+        // A flag wins over config.
+        let flags = NetworkSettings::from_flags(Some("mainnet".into()), None, None);
+        let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
+        assert_eq!(t.network, Network::Mainnet);
+    }
+
+    #[test]
+    fn devnet_name_flag_overrides_a_testnet_config() {
+        let flags = NetworkSettings::from_flags(None, Some("moutai".into()), None);
+        let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
+        assert_eq!(t.network.key(), "devnet-moutai");
+    }
+
+    #[test]
+    fn env_registry_override_beats_the_deployment_but_not_config() {
+        let env = NetworkSettings {
+            registry: Some(Registry::override_from(
+                "ENVREG",
+                "env FORGE_REGISTRY_CONTRACT_ID",
+            )),
+            ..Default::default()
+        };
+        let t =
+            resolve_target(NetworkSettings::default(), &Config::default(), env.clone()).unwrap();
+        assert_eq!(t.require_registry().unwrap().contract_id, "ENVREG");
+
+        let cfg = Config {
+            registry_contract_id: Some("CFGREG".into()),
+            ..Default::default()
+        };
+        let t = resolve_target(NetworkSettings::default(), &cfg, env).unwrap();
+        assert_eq!(t.require_registry().unwrap().contract_id, "CFGREG");
+    }
+
+    #[test]
+    fn a_configured_testnet_registry_does_not_follow_network_mainnet() {
+        let cfg = Config {
+            network: Some("testnet".into()),
+            registry_contract_id: Some("TESTREG".into()),
+            ..Default::default()
+        };
+        let flags = NetworkSettings::from_flags(Some("mainnet".into()), None, None);
+        let t = resolve_target(flags, &cfg, NetworkSettings::default()).unwrap();
+        assert_eq!(t.network, Network::Mainnet);
+        assert!(
+            t.registry.is_none()
+                || matches!(
+                    t.registry.as_ref().unwrap().source,
+                    ContractSource::Deployment(_)
+                )
+        );
+    }
 }

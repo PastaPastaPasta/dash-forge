@@ -5,11 +5,11 @@ use serde_json::json;
 
 use forge_core::cost::prompt_delete_refund;
 use forge_core::platform::{self, FieldValue, QueryFilter, QueryOrder};
-use forge_core::repo::{CreateRepoOpts, RepoService, TESTNET_REGISTRY_CONTRACT_ID};
+use forge_core::repo::{CreateRepoOpts, RepoService};
 use forge_core::tokens::TokenService;
 
 use crate::common::{resolve, RepoRef};
-use crate::context::{network_label, Ctx};
+use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, refund_line, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::{RepoBackendCommand, RepoCommand};
 
@@ -213,7 +213,7 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     let owner_id = owner.map_or_else(|| identity.id(), str::to_string);
     let owner_bytes = platform::decode_identifier(&owner_id)?;
 
-    let registry = client.fetch_contract(TESTNET_REGISTRY_CONTRACT_ID).await?;
+    let registry = client.fetch_registry().await?;
     // Complete: this prints "the owner's repos", so a 101st repo silently missing from the
     // list would be a wrong answer, not a short one.
     let docs = client
@@ -344,7 +344,7 @@ async fn remove_listing(
     identity: &forge_core::platform::LoadedIdentity,
     handle: &forge_core::repo::RepoHandle,
 ) -> Result<bool> {
-    let registry = client.fetch_contract(TESTNET_REGISTRY_CONTRACT_ID).await?;
+    let registry = client.fetch_registry().await?;
     let owner_bytes = platform::decode_identifier(&handle.owner_id)?;
     let docs = client
         .query_documents(
@@ -366,7 +366,7 @@ async fn remove_listing(
         return Ok(false);
     };
     let svc = RepoService::new(client, identity, bridge);
-    svc.delete_document(TESTNET_REGISTRY_CONTRACT_ID, "repoListing", &listing.id)
+    svc.delete_document(&registry.id(), "repoListing", &listing.id)
         .await?;
     Ok(true)
 }
@@ -397,7 +397,7 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
             "backend": label,
             "mode": mode,
             "configDocumentId": doc_id,
-            "network": network_label(ctx.network),
+            "network": ctx.network_label(),
         }),
         || {
             println!(

@@ -11,7 +11,7 @@ import { IdentityPill } from '@/components/ui/identity-pill'
 import { Oid } from '@/components/ui/oid'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { DEFAULT_NETWORK } from '@/lib/constants'
+import { NetworkBadge } from '@/components/ui/network-badge'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
@@ -43,7 +43,7 @@ export default function SettingsPage(): JSX.Element {
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Identity</h2>
           <div className="flex items-center justify-between">
             <IdentityPill identityId={identity} />
-            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash-600 dark:text-dash-400">{DEFAULT_NETWORK}</span>
+            <NetworkBadge always />
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>

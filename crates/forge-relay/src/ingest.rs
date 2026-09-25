@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use forge_core::platform::{
     encode_identifier, FetchedDocument, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
-use forge_core::repo::TESTNET_REGISTRY_CONTRACT_ID;
 
 use crate::error::Result;
 use crate::payload::{
@@ -200,13 +199,14 @@ pub async fn build_repo_meta(
 }
 
 /// Find the repo name by scanning the registry owner's `repoListing`s for one whose
-/// `repoContractId` matches. Testnet registry only; returns `None` if not found.
+/// `repoContractId` matches, in the client network's registry. Errors (including no
+/// registry deployed on this network) are the caller's to swallow; `None` if not found.
 async fn resolve_repo_name(
     client: &PlatformClient,
     owner_id: &str,
     contract_id: &str,
 ) -> Result<Option<String>> {
-    let registry = client.fetch_contract(TESTNET_REGISTRY_CONTRACT_ID).await?;
+    let registry = client.fetch_registry().await?;
     let owner_bytes = forge_core::platform::decode_identifier(owner_id)?;
     let want = forge_core::platform::decode_identifier(contract_id)?;
     let mut start_after: Option<String> = None;

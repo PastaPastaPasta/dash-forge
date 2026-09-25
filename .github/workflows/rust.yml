@@ -15,7 +15,7 @@ on:
       - 'Cargo.lock'
       - 'rustfmt.toml'
       # Compiled into the binaries, not just test data: forge-core include_str!s
-      # templates/repo-v1.json and dg include_str!s deployments/testnet.json, and the
+      # templates/repo-v1.json and embeds every deployments/*.json (build.rs), and the
       # conformance test loads vectors/.
       - 'forge-contracts/**'
       - '.github/workflows/rust.yml'

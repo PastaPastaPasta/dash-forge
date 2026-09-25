@@ -27,7 +27,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     }
 
     let client = Arc::new(
-        PlatformClient::connect(cfg.network)
+        PlatformClient::connect(cfg.target.clone())
             .await
             .map_err(RelayError::Core)?,
     );

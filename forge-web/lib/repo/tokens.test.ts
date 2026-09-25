@@ -104,9 +104,11 @@ describe('readTokenHistory', () => {
     expect(m).toMatchObject({ token: 'maintain', op: 'mint', createdAt: 100 })
   })
 
-  it('degrades to empty history on unknown (mainnet) network', async () => {
-    const sdk = mockSdk({ mints: {} })
-    expect(await readTokenHistory(sdk, REPO, 'mainnet')).toEqual([])
+  it('degrades to empty history when the history read fails', async () => {
+    const sdk = {
+      tokens: { calculateId: (): Promise<string> => Promise.reject(new Error('offline')) },
+    } as unknown as EvoSDK
+    expect(await readTokenHistory(sdk, REPO)).toEqual([])
   })
 })
 

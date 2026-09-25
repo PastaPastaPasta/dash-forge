@@ -16,6 +16,11 @@
 //!
 //! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--teardown`,
 //! `--balance`) used to provision/inspect repos outside the git protocol.
+//!
+//! The network comes from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` /
+//! `DASH_FORGE_DAPI_ADDRESSES`, else git config `dash.network` / `dash.devnetName` /
+//! `dash.dapiAddresses` (e.g. `git clone -c dash.network=devnet -c dash.devnetName=moutai
+//! dash://…`), else testnet. See `helper::network_target`.
 
 mod admin;
 mod git;

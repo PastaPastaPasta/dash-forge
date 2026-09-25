@@ -11,6 +11,7 @@ import { GitBranch } from 'lucide-react'
 import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
@@ -41,6 +42,14 @@ export function RepoScaffold({
           body="This page needs ?owner= and &name= in the URL."
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
+      </AppShell>
+    )
+  }
+
+  if (!isRegistryDeployed()) {
+    return (
+      <AppShell wide>
+        <NotDeployedState />
       </AppShell>
     )
   }

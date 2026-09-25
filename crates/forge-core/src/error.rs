@@ -87,6 +87,18 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
+    /// The selected network has no Dash Forge registry deployment (no id in
+    /// `forge-contracts/deployments/<network>.json`, and no override). Returned instead of
+    /// falling back to another network's contract id.
+    #[error(
+        "no Dash Forge registry is deployed on {network} yet; see docs/mainnet-runbook.md \
+         (or set FORGE_REGISTRY_CONTRACT_ID to a registry you deployed there)"
+    )]
+    NotDeployed {
+        /// The network key (`mainnet`, `devnet-moutai`).
+        network: String,
+    },
+
     /// An error surfaced by the Dash Platform SDK (connect, fetch, sign, broadcast).
     ///
     /// The SDK's rich error type is flattened to a message here so the SDK stays

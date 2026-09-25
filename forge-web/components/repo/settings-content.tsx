@@ -18,6 +18,7 @@ import type { RepoHome } from '@/lib/view'
 import type { Collaborator } from '@/lib/repo'
 import { readCollaborators, grantCollaborator, revokeCollaborator, suspendCollaborator } from '@/lib/repo'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -177,7 +178,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
             {registryContractId !== null ? <Oid value={registryContractId} chars={12} label="registry contract id" /> : <NotSet />}
           </DetailRow>
           <DetailRow label="Network">
-            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash-600 dark:text-dash-400">{DEFAULT_NETWORK}</span>
+            <NetworkBadge always />
           </DetailRow>
         </dl>
         <p className="mt-2 text-[12px] text-anvil-400">

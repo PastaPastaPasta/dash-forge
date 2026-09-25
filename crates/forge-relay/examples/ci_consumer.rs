@@ -67,11 +67,15 @@ async fn main() -> anyhow::Result<()> {
              must be configured, never derived from the (untrusted) webhook payload."
         )
     })?;
-    let network = match env::var("CI_NETWORK").as_deref() {
-        Ok("mainnet") => Network::Mainnet,
-        Ok("devnet") => Network::Devnet,
-        _ => Network::Testnet,
-    };
+    // CI_NETWORK selects the kind; a devnet also reads DASH_FORGE_DEVNET_NAME /
+    // DASH_FORGE_DAPI_ADDRESSES (forge_core::network's env layer).
+    let network = forge_core::network::NetworkSettings {
+        network: env::var("CI_NETWORK").ok(),
+        ..Default::default()
+    }
+    .overlay(forge_core::network::NetworkSettings::from_env())
+    .resolve()?
+    .network;
 
     let listener = TcpListener::bind(&listen).await?;
     tracing::info!(%listen, ci_repo = %ci_repo, "reference CI consumer listening");
@@ -81,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         let secret = secret.clone();
         let ci_identity = ci_identity.clone();
         let ci_repo = ci_repo.clone();
-        if let Err(e) = handle(stream, &secret, ci_identity.as_deref(), &ci_repo, network).await {
+        if let Err(e) = handle(stream, &secret, ci_identity.as_deref(), &ci_repo, &network).await {
             tracing::warn!(error = %e, "request handling failed");
         }
     }
@@ -92,7 +96,7 @@ async fn handle(
     secret: &str,
     ci_identity: Option<&str>,
     ci_repo: &str,
-    network: Network,
+    network: &Network,
 ) -> anyhow::Result<()> {
     let req = read_request(&mut stream).await?;
 
@@ -140,7 +144,7 @@ async fn verify_and_check_run(
     payload: &serde_json::Value,
     ci_identity: Option<&str>,
     ci_repo: &str,
-    network: Network,
+    network: &Network,
 ) -> anyhow::Result<()> {
     let after = payload["after"].as_str().unwrap_or_default().to_string();
     let ref_name = payload["ref"].as_str().unwrap_or_default();
@@ -157,7 +161,7 @@ async fn verify_and_check_run(
     }
     let repo_id = ci_repo.to_string();
 
-    let client = PlatformClient::connect(network).await?;
+    let client = PlatformClient::connect_network(network.clone()).await?;
     let contract = client.fetch_contract(&repo_id).await?;
 
     // Independent verification: does the after-oid actually exist in the repo's refUpdate

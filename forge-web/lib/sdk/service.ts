@@ -2,7 +2,7 @@
  * evo-sdk singleton service — the one Platform connection for the whole app.
  *
  * S0.3 (DECIDED): the ONLY WASM-viable connection is `EvoSDK.testnetTrusted()` /
- * `mainnetTrusted()` with `*WithProof` reads. `EvoSDK.testnet()` and `{proofs:false}`
+ * `mainnetTrusted()` (or the trusted devnet equivalent) with `*WithProof` reads. `EvoSDK.testnet()` and `{proofs:false}`
  * both crash WASM, so forge-web is trust-minimized (quorum keys from a known endpoint),
  * never "fully trustless". Proofs are always on (~0% per-query overhead).
  *
@@ -12,7 +12,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import type { Network } from '../constants'
+import { NETWORKS, type Network } from '../constants'
 import { setPlatformVersion } from './query'
 
 export interface EvoSdkConfig {
@@ -87,10 +87,28 @@ class EvoSdkService {
     // Dynamic import so the ~9.4 MB evo-sdk WASM chunk loads on first data need (post-paint),
     // never in the initial bundle — the whole app is a static-export SPA (yappr lazy-init pattern).
     const { EvoSDK } = await import('@dashevo/evo-sdk')
-    this.sdk =
-      config.network === 'mainnet'
-        ? EvoSDK.mainnetTrusted(options)
-        : EvoSDK.testnetTrusted(options)
+    if (config.network === 'devnet') {
+      // A named devnet: trusted quorum keys from `quorums.<name>.networks.dash.org` (or the
+      // deployment file's quorumBaseUrl); DAPI from the configured list, else discovered by
+      // the trusted context.
+      const devnet = NETWORKS.devnet
+      if (devnet.devnetName === null) {
+        throw new Error('devnet selected without NEXT_PUBLIC_DEVNET_NAME')
+      }
+      this.sdk = new EvoSDK({
+        ...options,
+        network: 'devnet',
+        trusted: true,
+        devnetName: devnet.devnetName,
+        ...(devnet.quorumBaseUrl !== null ? { quorumUrl: devnet.quorumBaseUrl } : {}),
+        ...(devnet.dapiAddresses.length > 0 ? { addresses: [...devnet.dapiAddresses] } : {}),
+      })
+    } else {
+      this.sdk =
+        config.network === 'mainnet'
+          ? EvoSDK.mainnetTrusted(options)
+          : EvoSDK.testnetTrusted(options)
+    }
     await this.sdk.connect()
     // Both constructors above are the *Trusted variants — record it so the UI reports what
     // this connection does rather than what the app intends.

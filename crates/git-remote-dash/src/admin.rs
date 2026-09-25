@@ -12,7 +12,7 @@ use forge_core::keystore::BridgeIdentity;
 use forge_core::platform::{PlatformClient, QueryOrder};
 use forge_core::repo::{credits_to_dash, CreateRepoOpts, RepoService};
 
-use crate::helper::network_from_env;
+use crate::helper::network_target;
 
 /// Default nonce-scan window for `--resume-repo` (how many nonces back to look for the
 /// orphan contract). Widened from the original 3 so intervening writes cannot hide it.
@@ -90,7 +90,7 @@ async fn connect() -> Result<(PlatformClient, BridgeIdentity)> {
         .ok_or_else(|| anyhow!("DASH_FORGE_KEY must point at the identity JSON for admin ops"))?;
     let bridge = BridgeIdentity::load_from_file(&key_path)
         .with_context(|| format!("loading identity from {}", key_path.display()))?;
-    let client = PlatformClient::connect(network_from_env())
+    let client = PlatformClient::connect(network_target()?)
         .await
         .context("connecting to Dash Platform")?;
     Ok((client, bridge))

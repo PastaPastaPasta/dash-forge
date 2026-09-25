@@ -14,11 +14,15 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { DEFAULT_NETWORK } from '../constants'
+import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
 import { normalizeToWif } from './wif'
-import { parseIdentityFileText, type ParsedIdentityFile } from './identity-file'
+import {
+  identityFileMatchesNetwork,
+  parseIdentityFileText,
+  type ParsedIdentityFile,
+} from './identity-file'
 import {
   clearPrivateKey,
   getPrivateKey,
@@ -174,8 +178,10 @@ export class AuthController {
       this.setState({ error: message })
       throw e
     }
-    if (parsed.network !== null && parsed.network !== this.network) {
-      const message = `identity file is for ${parsed.network}, but this app is on ${this.network}`
+    // Compare full keys so a devnet-paloma identity is refused by a devnet-moutai build.
+    const buildKey = NETWORKS[this.network].key
+    if (!identityFileMatchesNetwork(parsed.networkKey, buildKey)) {
+      const message = `identity file is for ${parsed.networkKey}, but this app is on ${buildKey}`
       this.setState({ error: message })
       throw new Error(message)
     }

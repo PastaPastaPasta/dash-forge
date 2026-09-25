@@ -125,6 +125,77 @@ Two things matter here:
 The patch stays active until you remove it. Confirm which source is in use with
 `cargo tree -p dash-sdk`, which prints the resolved source for the package.
 
+## Networks
+
+Every binary and the web app target one of **testnet** (the default), **mainnet**, or a
+**named devnet** such as `moutai`. Contract ids are never written into code: they come from
+`forge-contracts/deployments/<key>.json`, where the key is `testnet`, `mainnet` or
+`devnet-<name>`. The Rust crates embed every file in that directory at build time
+(`crates/forge-core/build.rs`); forge-web bundles them through `forge-web/lib/deployments.ts`,
+and a unit test fails if that map is missing a file.
+
+A network with no registry id in its deployment file is **not deployed**. Commands that need
+the registry fail with
+
+```
+no Dash Forge registry is deployed on mainnet yet; see docs/mainnet-runbook.md
+```
+
+and never fall back to another network's ids. Identity and balance reads still work there.
+`dg doctor` prints the network, the registry id, and where the id came from.
+
+### Selecting a network
+
+| Tool | Network | Devnet name | Devnet DAPI addresses | Registry override |
+|---|---|---|---|---|
+| `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name moutai` | `--dapi-addresses a,b` | — |
+| `dg` (`~/.config/dash-forge/config.toml`) | `network` | `devnet_name` | `dapi_addresses` | `registry_contract_id` |
+| `git-remote-dash` (git config) | `dash.network` | `dash.devnetName` | `dash.dapiAddresses` | `dash.registryContractId` |
+| `forge-relay` (flags / TOML) | `--network` / `network` | `--devnet-name` / `devnet-name` | `--dapi-addresses` / `dapi-addresses` | `registry-contract-id` |
+| `forge-import` (flags) | `--network` | `--devnet-name` | `--dapi-addresses` | — |
+| any of the above (env) | `DASH_FORGE_NETWORK` | `DASH_FORGE_DEVNET_NAME` | `DASH_FORGE_DAPI_ADDRESSES` | `FORGE_REGISTRY_CONTRACT_ID` |
+| forge-web (build env) | `NEXT_PUBLIC_NETWORK` | `NEXT_PUBLIC_DEVNET_NAME` | `NEXT_PUBLIC_DAPI_ADDRESSES` | `NEXT_PUBLIC_REGISTRY_CONTRACT_ID` |
+
+Precedence is per field. For `dg`, `forge-relay` and `forge-import` it is: flags, then the
+config file, then the environment, then the deployment file. For `git-remote-dash` it is the
+environment, then git config, then the deployment file. The environment comes first there
+because `dg` and `forge-import` pass their resolved network to the helper through it. Two
+more rules apply to every tool:
+
+- `--devnet-name` on its own implies `--network devnet`.
+- A layer that names a different network contributes nothing network-specific. For example,
+  a `registry_contract_id` saved for testnet in `config.toml` is ignored under
+  `--network mainnet`.
+
+A devnet's quorum keys come from `https://quorums.<name>.networks.dash.org`. Override the
+URL with `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl`. The devnet's DAPI addresses
+are taken from the first of these that is set:
+
+1. the flag, config or env setting;
+2. `dapiAddresses` in `deployments/devnet-<name>.json`;
+3. discovery through the quorum service's `/masternodes` endpoint.
+
+Each address is `host`, `host:port` or `https://host:port`. The port defaults to 1443.
+
+```sh
+dg --devnet-name moutai doctor                       # moutai, addresses from devnet-moutai.json
+dg --network devnet --devnet-name moutai --dapi-addresses 68.67.122.254,68.67.122.207 repo list
+git config dash.network devnet && git config dash.devnetName moutai   # per repo
+git clone -c dash.network=devnet -c dash.devnetName=moutai dash://<owner>/<repo>
+NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai pnpm build  # forge-web
+```
+
+The web header shows a network badge on every network except mainnet. On a network with no
+registry, the badge is amber and the pages that need the registry show a "not deployed"
+state instead of querying.
+
+### Adding a network
+
+To add a network, commit its deployment file: `deploy.mjs` writes `mainnet.json`, and a new
+devnet gets `devnet-<name>.json`. Then add a matching import to
+`forge-web/lib/deployments.ts`. `devnet-moutai.json` is a skeleton with DAPI addresses and a
+null registry until the PV14 contracts are registered there.
+
 ## Checks
 
 ```sh

@@ -500,7 +500,9 @@ async fn platform_backend_live_put() {
     let keystore_path = std::env::var("FORGE_TESTNET_KEYSTORE").expect("FORGE_TESTNET_KEYSTORE");
     let contract_id = std::env::var("FORGE_TESTNET_CONTRACT").expect("FORGE_TESTNET_CONTRACT");
 
-    let client = PlatformClient::connect(Network::Testnet).await.unwrap();
+    let client = PlatformClient::connect_network(Network::Testnet)
+        .await
+        .unwrap();
     let contract = client.fetch_contract(&contract_id).await.unwrap();
     let identity = client.fetch_identity(&identity_id).await.unwrap();
     let bridge = BridgeIdentity::load_from_file(&keystore_path).unwrap();

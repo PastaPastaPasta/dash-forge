@@ -9,7 +9,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { NETWORKS, type Network } from '../constants'
+import { requireRegistryContractId, type Network } from '../constants'
 import {
   branchesOf,
   readConfigBundle,
@@ -71,7 +71,7 @@ export async function loadRepoHome(
   // One registry lookup serves both §4-verified resolution and the stars listing id.
   const resolved = await resolveRepoWithListing(
     sdk,
-    requireRegistry(params.network),
+    requireRegistryContractId(params.network),
     params.ownerId,
     params.name,
   )
@@ -99,10 +99,4 @@ export async function loadRepoHome(
     starCount,
     backend: backendInfo(config),
   }
-}
-
-function requireRegistry(network: Network): string {
-  const id = NETWORKS[network].registryContractId
-  if (id === null) throw new Error('no registry contract id configured for this network')
-  return id
 }

@@ -22,6 +22,7 @@ import { IdentityPill } from '@/components/ui/identity-pill'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 
 interface ProfileData {
   readonly name: string | null
@@ -56,7 +57,7 @@ export function ProfileContent({ identityId }: { identityId: string }): JSX.Elem
       return { name, repos, followers, following: followingCount }
     },
     [ready, identityId, network],
-    { enabled: ready && sdk !== null && identityId !== '' },
+    { enabled: isRegistryDeployed() && ready && sdk !== null && identityId !== '' },
   )
 
   const isSelf = identity === identityId
@@ -80,6 +81,7 @@ export function ProfileContent({ identityId }: { identityId: string }): JSX.Elem
   const followUnknown = identity !== null && signer !== null && follow.on === null
 
   if (!identityId) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id) to the URL." />
+  if (!isRegistryDeployed()) return <NotDeployedState />
   if (loading) return <LoadingBlock label="Reading profile" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />

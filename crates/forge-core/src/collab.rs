@@ -1384,42 +1384,26 @@ fn label_from_doc(d: &platform::FetchedDocument) -> Label {
 // Social graph (registry)
 // ===========================================================================
 
-/// The registry social service (stars / follows) over the global registry contract.
+/// The registry social service (stars / follows) over the global registry contract of the
+/// client's network ([`PlatformClient::fetch_registry`]).
 pub struct SocialService<'a> {
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,
     bridge: &'a BridgeIdentity,
-    registry_contract_id: String,
 }
 
 impl<'a> SocialService<'a> {
-    /// Bind the service to the default testnet registry
-    /// ([`crate::repo::TESTNET_REGISTRY_CONTRACT_ID`]).
+    /// Bind the service to `client` (and so to its network's registry), the acting
+    /// `identity`, and its `bridge` key material.
     pub fn new(
         client: &'a PlatformClient,
         identity: &'a LoadedIdentity,
         bridge: &'a BridgeIdentity,
     ) -> Self {
-        Self::with_registry(
-            client,
-            identity,
-            bridge,
-            crate::repo::TESTNET_REGISTRY_CONTRACT_ID,
-        )
-    }
-
-    /// Bind the service to an explicit registry contract id (mainnet / devnet).
-    pub fn with_registry(
-        client: &'a PlatformClient,
-        identity: &'a LoadedIdentity,
-        bridge: &'a BridgeIdentity,
-        registry_contract_id: &str,
-    ) -> Self {
         Self {
             client,
             identity,
             bridge,
-            registry_contract_id: registry_contract_id.to_string(),
         }
     }
 
@@ -1430,10 +1414,7 @@ impl<'a> SocialService<'a> {
     /// [`Error::DuplicateUniqueIndex`] is caught and the caller's existing star id is
     /// returned instead of an error (mirroring [`crate::tokens::TokenService::grant`]).
     pub async fn star(&self, listing_id: &str) -> Result<String> {
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
         props.insert(
@@ -1461,10 +1442,7 @@ impl<'a> SocialService<'a> {
     /// the countable `listing` index and fails proof verification on the deployed registry
     /// — "wrong element type" — so the single-field owner query is used instead.)
     pub async fn unstar(&self, listing_id: &str) -> Result<()> {
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let Some(doc) = self
             .find_own(&registry, DOC_STAR, "listingId", listing_id)
             .await?
@@ -1506,10 +1484,7 @@ impl<'a> SocialService<'a> {
         // outright (it used to mean "unset", which Drive filled with 100 — the silent
         // truncation this whole change is about), so spell the page size out.
         let limit = if limit == 0 { DEFAULT_PAGE } else { limit };
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let docs = self
             .client
             .query_documents(
@@ -1529,10 +1504,7 @@ impl<'a> SocialService<'a> {
 
     /// Follow an identity (`identity_id`, base58). Returns the follow document id.
     pub async fn follow(&self, identity_id: &str) -> Result<String> {
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         let mut props = BTreeMap::new();
         props.insert(
@@ -1545,10 +1517,7 @@ impl<'a> SocialService<'a> {
     /// Unfollow (delete the caller's own `follow` of `identity_id`). No-op if not following.
     /// Same single-field owner-query strategy as [`SocialService::unstar`].
     pub async fn unfollow(&self, identity_id: &str) -> Result<()> {
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         let Some(doc) = self
             .find_own(&registry, DOC_FOLLOW, "identityId", identity_id)
             .await?
@@ -1629,10 +1598,7 @@ impl<'a> SocialService<'a> {
     /// Count `doc_type` documents matching `filter`: try the O(1) count-tree, and on the
     /// registry's compound-countable-index rejection fall back to a paginated row count.
     async fn social_count(&self, doc_type: &str, filter: QueryFilter) -> Result<u64> {
-        let registry = self
-            .client
-            .fetch_contract(&self.registry_contract_id)
-            .await?;
+        let registry = self.client.fetch_registry().await?;
         match self
             .client
             .count_documents(&registry, doc_type, std::slice::from_ref(&filter))
