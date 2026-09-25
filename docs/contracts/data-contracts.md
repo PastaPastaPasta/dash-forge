@@ -1,5 +1,7 @@
 # Dash Forge — Data Contract Design (v3)
 
+> **Superseded for protocol 14 by [forge-v2](forge-v2.md)**: two shared contracts (forge-core, forge-collab) with consensus writer gates replace the per-repo template and the registry described here. This document remains the reference for reading v1 repositories.
+
 One global **registry contract** + **one repo contract per repository** from a versioned template (INIT.md). This revision adds: explicit count-tree assignments per user story, delete-gating via `tokenCost.delete`, a `config` document type that makes protected refs enforceable, non-deletable audit types (closing the ref-rewind hole), and an enforcement matrix stating exactly what consensus enforces vs what `FORGE_RULES_V1` client rules enforce.
 
 ## 0. Platform mechanics this design is built on (verified in `../platform`)
