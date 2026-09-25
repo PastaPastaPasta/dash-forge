@@ -792,7 +792,10 @@
     },
     "webhook": {
       "type": "object",
-      "documentsMutable": false,
+      "immutable": [
+        "repoId",
+        "hookId"
+      ],
       "ownerRefersTo": {
         "type": "deletableDocument",
         "contractId": "FORGE_CORE_CONTRACT_ID",

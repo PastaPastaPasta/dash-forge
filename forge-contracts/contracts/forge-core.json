@@ -104,6 +104,12 @@
             "pattern": "^[a-z0-9][a-z0-9-]*$"
           },
           "position": 5
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100,
+          "maxBytes": 400,
+          "position": 6
         }
       },
       "indices": [
@@ -707,10 +713,24 @@
               "repoId": "asc"
             },
             {
+              "$ownerId": "asc"
+            },
+            {
               "packHash": "asc"
             }
           ],
           "unique": true
+        },
+        {
+          "name": "byHash",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "packHash": "asc"
+            }
+          ]
         },
         {
           "name": "created",
@@ -810,6 +830,9 @@
               "repoId": "asc"
             },
             {
+              "$ownerId": "asc"
+            },
+            {
               "packHash": "asc"
             },
             {
@@ -830,7 +853,7 @@
     "chunk": {
       "type": "object",
       "documentsMutable": false,
-      "canBeDeleted": true,
+      "canBeDeleted": false,
       "ownerRefersTo": {
         "anyOf": [
           {
@@ -897,6 +920,9 @@
               "repoId": "asc"
             },
             {
+              "$ownerId": "asc"
+            },
+            {
               "packHash": "asc"
             },
             {
@@ -920,30 +946,15 @@
       "documentsMutable": false,
       "canBeDeleted": true,
       "ownerRefersTo": {
-        "anyOf": [
-          {
-            "type": "deletableDocument",
-            "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
-            }
-          },
-          {
-            "type": "deletableDocument",
-            "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
-            }
+        "type": "deletableDocument",
+        "documentType": "maintainer",
+        "lookup": {
+          "index": "byRepoMember",
+          "keys": {
+            "repoId": "repoId",
+            "memberId": "."
           }
-        ]
+        }
       },
       "properties": {
         "repoId": {
@@ -1180,6 +1191,9 @@
             },
             {
               "epoch": "asc"
+            },
+            {
+              "$ownerId": "asc"
             }
           ],
           "unique": true
