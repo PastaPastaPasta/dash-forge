@@ -3,6 +3,14 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
+//        [--only collab [--force-new]]
+//
+// --only collab registers forge-collab alone, against the forge-core and contract group already
+// recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
+// registers a NEW forge-collab even though one is recorded: the old record moves to
+// v2.forgeCollabSuperseded and the new one takes the next identity nonce, so it gets a new id.
+// That is how a schema change the update rules refuse (e.g. narrowing an ownerRefersTo) ships;
+// documents under the old contract stay where they are, under its id.
 //
 // Steps, each skipped when deployments/<network>.json shows it already done and the chain
 // confirms it (so a failed run is resumed by running the same command again):
@@ -147,6 +155,10 @@ async function main() {
   if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const dryRun = Boolean(args['dry-run']);
+  const only = args.only === undefined ? null : String(args.only);
+  if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
+  const forceNew = Boolean(args['force-new']);
+  if (forceNew && only !== 'collab') throw new Error('--force-new needs --only collab');
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
     : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
@@ -325,18 +337,45 @@ async function main() {
 
   // forge-core registers the group, so the group id is derived from forge-core's own nonce,
   // whichever nonce that turns out to be (fresh, reused, or recorded by an earlier run).
-  const coreId = await registerContract({
-    key: 'forgeCore',
-    schemaName: 'forge-core',
-    substitutions: {},
-    registerGroup: true,
-    groupIdFor: (nonce) => contractGroupId(ownerId, nonce),
-  });
-  const coreNonce = dryRun ? BigInt(report.steps[0].nonce) : BigInt(v2.forgeCore.identityNonce);
+  let coreId;
+  if (only === 'collab') {
+    // forge-core must already be registered and on chain; this mode never registers it
+    coreId = await reconcile('forgeCore');
+    if (!coreId) throw new Error('--only collab: forge-core is not registered on this network; run without --only first');
+  } else {
+    coreId = await registerContract({
+      key: 'forgeCore',
+      schemaName: 'forge-core',
+      substitutions: {},
+      registerGroup: true,
+      groupIdFor: (nonce) => contractGroupId(ownerId, nonce),
+    });
+  }
+  // The nonce forge-core was (or, in a dry run, would be) registered with
+  const coreStep = report.steps.find((s) => s.key === 'forgeCore');
+  const coreNonce = BigInt(coreStep?.dryRun ? coreStep.nonce : v2.forgeCore.identityNonce);
   const groupIdFinal = contractGroupId(ownerId, coreNonce);
-  if (!dryRun && v2.forgeCore.contractGroupId && v2.forgeCore.contractGroupId !== groupIdFinal) {
+  if (v2.forgeCore?.contractGroupId && v2.forgeCore.contractGroupId !== groupIdFinal) {
     throw new Error(`recorded group ${v2.forgeCore.contractGroupId} does not derive from forge-core's nonce ${coreNonce}`);
   }
+
+  if (forceNew && v2.forgeCollab?.contractId) {
+    const old = v2.forgeCollab;
+    // Only a contract that is really there is superseded; a reservation that never landed is
+    // simply retried by registerContract below (it re-reads the nonce from the chain).
+    if (old.status === 'registered' || (await sdk.contracts.fetch(old.contractId))) {
+      if (dryRun) {
+        log(`forgeCollab: --force-new would supersede ${old.contractId} with a new contract`);
+      } else {
+        v2.forgeCollabSuperseded = [...(v2.forgeCollabSuperseded ?? []), { ...old, supersededAt: new Date().toISOString() }];
+        delete v2.forgeCollab;
+        record();
+        log(`forgeCollab: ${old.contractId} moved to forgeCollabSuperseded; registering a new forge-collab`);
+      }
+    }
+  }
+  const collabRecordBeforeDryRun = dryRun && forceNew ? v2.forgeCollab : undefined;
+  if (collabRecordBeforeDryRun) delete v2.forgeCollab; // a dry run sizes the new one, records nothing
   await registerContract({
     key: 'forgeCollab',
     schemaName: 'forge-collab',
@@ -344,6 +383,7 @@ async function main() {
     registerGroup: false,
     groupIdFor: () => groupIdFinal,
   });
+  if (collabRecordBeforeDryRun) v2.forgeCollab = collabRecordBeforeDryRun;
 
   if (!dryRun) {
     const info = await sdk.contractGroups.info(groupIdFinal);

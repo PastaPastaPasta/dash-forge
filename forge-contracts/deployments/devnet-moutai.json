@@ -13,24 +13,39 @@
       "costDash": 0.6057107936
     },
     "forgeCollab": {
-      "contractId": "9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y",
+      "contractId": "6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W",
       "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
-      "identityNonce": "2",
+      "identityNonce": "3",
       "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
       "status": "registered",
-      "sizeBytes": 11314,
-      "balanceBefore": "4939297347920",
-      "deployedAt": "2026-09-25T06:38:02.975Z",
-      "costCredits": "51515695120",
-      "costDash": 0.5151569512,
-      "costNote": "balance re-read after confirmation; the script's immediate post-broadcast read was stale (recorded 0)"
+      "sizeBytes": 12087,
+      "balanceBefore": "4887781652800",
+      "deployedAt": "2026-09-25T07:06:05.791Z",
+      "costCredits": "54547323690",
+      "costDash": 0.5454732369
     },
+    "forgeCollabSuperseded": [
+      {
+        "contractId": "9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y",
+        "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+        "identityNonce": "2",
+        "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
+        "status": "registered",
+        "sizeBytes": 11314,
+        "balanceBefore": "4939297347920",
+        "deployedAt": "2026-09-25T06:38:02.975Z",
+        "costCredits": "51515695120",
+        "costDash": 0.5151569512,
+        "costNote": "balance re-read after confirmation; the script's immediate post-broadcast read was stale (recorded 0)",
+        "supersededAt": "2026-09-25T07:06:03.759Z"
+      }
+    ],
     "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
     "contractGroup": {
       "id": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
       "name": "dash-forge",
       "owner": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
-      "verifiedAt": "2026-09-25T06:38:48.688Z"
+      "verifiedAt": "2026-09-25T07:06:06.037Z"
     },
     "protocolVersion": 14,
     "sdk": "@dashevo/evo-sdk@4.2.0-beta.4",
