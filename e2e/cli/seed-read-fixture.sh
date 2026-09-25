@@ -61,24 +61,55 @@ remote_main() { # prints the remote main oid, or nothing
   awk '$2 == "refs/heads/main" { print $1 }' "$1.out"
 }
 
-step "is ${FIX_REMOTE} main already at the fixture commit?"
+# The stored packs, as `dg storage status` sees them: prints "ok" when every manifest is a
+# kind-0 git pack stored on Platform (no external copy, no browse index), else what is wrong.
+packs_ok() { # packs_ok <log-prefix>
+  dg_read_retry "$ID_DEPLOYER" "$1.json" "$1.err" --json storage status "$FIX_REPO" || return 1
+  python3 - "$1.json" <<'PY'
+import json, sys
+packs = json.load(open(sys.argv[1])).get("packs", [])
+bad = [f"{p.get('packHash','?')[:12]} kind={p.get('kind')} tier={p.get('storageTier')}"
+       for p in packs if p.get("kind") != 0 or p.get("storageTier") != "platform"]
+print("ok" if packs and not bad else ("no packs" if not packs else "; ".join(bad)))
+PY
+}
+
+step "is ${FIX_REMOTE} main already at the fixture commit, on Platform, unindexed?"
 if ! HAVE="$(remote_main "$LOG-ls1")"; then
   cat "$LOG-ls1.err" >&2; bad "could not list the fixture's refs"; finish_scenario
 fi
 if [[ "$HAVE" == "$WANT" ]]; then
-  ok "already seeded (main = ${WANT}); nothing written"
+  if ! PACKS="$(packs_ok "$LOG-packs1")"; then
+    cat "$LOG-packs1.err" >&2; bad "could not read the fixture's pack manifests"; finish_scenario
+  fi
+  if [[ "$PACKS" == "ok" ]]; then
+    ok "already seeded (main = ${WANT}, Platform-stored, no browse index); nothing written"
+  else
+    # A re-push cannot fix this: the right pack is already recorded and the helper will not
+    # store it again. The repo needs its storage torn down (dg repo delete) and reseeding.
+    bad "main is at the fixture commit but its storage is wrong (${PACKS}); tear the fixture's storage down and reseed"
+  fi
   finish_scenario
 fi
 info "main is ${HAVE:-absent}; force-pushing the fixture commit"
 
-step "push the fixture (Platform storage, no browse index)"
+step "push the fixture (Platform storage only, no browse index)"
+# `-c` is git's command scope, which the helper ranks above any global or repo setting, so
+# a developer's `dash.storage=minio` (or a per-remote override) cannot redirect this pack.
 if ! DASH_FORGE_NO_BROWSE_INDEX=1 git_dash_retry "$ID_DEPLOYER" "$LOG-push" \
-      -C "$SRC" push "$FIX_REMOTE" "+refs/heads/main:refs/heads/main"; then
+      -C "$SRC" -c dash.storage=platform -c dash.platformFallback=false \
+      -c "remote.origin.dashStorage=platform" \
+      push "$FIX_REMOTE" "+refs/heads/main:refs/heads/main"; then
   cat "$LOG-push.err" >&2; bad "fixture push failed"; finish_scenario
 fi
 if HAVE="$(remote_main "$LOG-ls2")" && [[ "$HAVE" == "$WANT" ]]; then
   ok "seeded: main = ${WANT}"
 else
   bad "after the push, main is ${HAVE:-unreadable}, not ${WANT}"
+fi
+if PACKS="$(packs_ok "$LOG-packs2")" && [[ "$PACKS" == "ok" ]]; then
+  ok "fixture packs are Platform-stored with no browse index"
+else
+  bad "fixture storage after the push: ${PACKS:-unreadable}"
 fi
 finish_scenario

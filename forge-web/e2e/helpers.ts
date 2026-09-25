@@ -17,8 +17,19 @@ export const M1 = {
   name: process.env['E2E_FIXTURE_NAME'] ?? process.env['NIGHTLY_FIXTURE_REPO'] ?? 'm1-5124',
 } as const
 
-export function repoUrl(path = ''): string {
-  const q = `owner=${M1.owner}&name=${M1.name}`
+/**
+ * The repo the opt-in WRITE spec (auth-write, E2E_WRITE=1) creates issues on — never the read
+ * fixture above, which only its seeder may write (its issues page is asserted on). This is
+ * the CLI suite's DEPLOYER-owned repo, which test runs already write to. Override with
+ * E2E_WRITE_FIXTURE_NAME. See e2e/README.md.
+ */
+export const WRITE_FIXTURE = {
+  owner: M1.owner,
+  name: process.env['E2E_WRITE_FIXTURE_NAME'] ?? 'm1-75299',
+} as const
+
+export function repoUrl(path = '', repo: { owner: string; name: string } = M1): string {
+  const q = `owner=${repo.owner}&name=${repo.name}`
   if (path === '') return `/repo/?${q}`
   return `/repo/${path}/?${q}`
 }
