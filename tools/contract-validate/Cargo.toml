@@ -1,0 +1,22 @@
+[package]
+name = "contract-validate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Offline validation of the forge-v2 data contracts against Dash Platform protocol 14 (rs-dpp v4.2.0-beta.4)"
+
+# Standalone: its own workspace so it never joins (or perturbs the lockfile of) the main
+# workspace, whose Platform SDK is pinned to a different tag.
+[workspace]
+
+[dependencies]
+# PLATFORM_TAG = v4.2.0-beta.4 (protocol 14). Only the schema and transition machinery is
+# needed: no signing (a placeholder signature of the real length is sized instead), no
+# client, no system contracts.
+dpp = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false, features = [
+  "state-transitions",
+  "validation",
+  "json-conversion",
+] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
