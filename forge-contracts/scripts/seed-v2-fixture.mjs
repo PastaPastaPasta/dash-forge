@@ -275,6 +275,14 @@ async function main() {
   const packHash = sha256(pack);
   const locator = buildLocator(dir, pack);
   const locatorHash = sha256(locator.bytes);
+  // Pack bytes depend on the git and zlib versions: a rerun must not write the rest of an
+  // interrupted artifact under a different hash than its first chunks.
+  const hashes = { pack: packHash.toString('hex'), locator: locatorHash.toString('hex') };
+  if (state.hashes && JSON.stringify(state.hashes) !== JSON.stringify(hashes)) {
+    throw new Error(`the packed bytes changed (${JSON.stringify(hashes)} vs recorded ${JSON.stringify(state.hashes)}); seed from scratch`);
+  }
+  state.hashes = hashes;
+  save();
 
   async function storeArtifact(label, bytes, hash, kind, objectCount) {
     const chunks = split(bytes);

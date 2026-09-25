@@ -58,8 +58,12 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
       ],
     }),
   )
+  // Private forge-v2 repo: a stranger's ciphertext is shown to no one (`forge-v2.md` §5),
+  // as in the lists.
+  const oracle = repo.kind === 'v2' && repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
   return documents
     .filter((d) => wellFormed(repo, 'comment', d))
+    .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
     .map((d) => ({
       id: str(d, '$id'),
       author: str(d, '$ownerId'),

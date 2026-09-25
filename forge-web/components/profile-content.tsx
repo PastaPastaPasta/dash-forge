@@ -66,8 +66,9 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       if (identityId === null) return null
       const forge = NETWORKS[network].v2
       // Follows live in forge-collab where forge-v2 is deployed, else in the v1 registry.
+      const noCounts = { followers: null, following: null }
       const follows = forge !== null
-        ? readV2FollowCounts(sdk!, forge, identityId)
+        ? readV2FollowCounts(sdk!, forge, identityId).catch(() => noCounts)
         : Promise.all([
             readFollowerCount(sdk!, identityId, { network }).catch(() => null),
             readFollowingCount(sdk!, identityId, { network }).catch(() => null),

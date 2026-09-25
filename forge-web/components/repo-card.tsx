@@ -14,12 +14,12 @@ import { Author } from '@/components/author'
 import { V1Badge } from '@/components/ui/v1-badge'
 
 export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
-  // A v1 card pins its contract, so a forge-v2 repo with the same owner and name cannot
-  // shadow it on a network that has both.
+  // Every card pins the repo it shows (v1 its contract, v2 its repo id), so another repo
+  // answering to the same owner and name can never stand in for it.
   const href = repoHref('/repo', {
     owner: repo.ownerId,
     name: repo.slug,
-    ...(repo.contractId ? { contractId: repo.contractId } : {}),
+    ...(repo.kind === 'v2' ? { repoId: repo.key } : repo.contractId ? { contractId: repo.contractId } : {}),
   })
   return (
     <div className="group rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">

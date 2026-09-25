@@ -173,11 +173,16 @@ export async function listRecentRepos(
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = NETWORKS[network].v2
   const limit = opts.limit ?? 24
-  const [v2, v1] = await Promise.all([
+  // Independent sources: one failing must not blank the other. Both failing is an error.
+  const [v2, v1] = await Promise.allSettled([
     forge !== null ? listRecentV2Repos(sdk, forge, limit) : Promise.resolve([]),
     listRecentV1Repos(sdk, network, limit),
   ])
-  return { v2, v1 }
+  if (v2.status === 'rejected' && v1.status === 'rejected') throw v2.reason
+  return {
+    v2: v2.status === 'fulfilled' ? v2.value : [],
+    v1: v1.status === 'fulfilled' ? v1.value : [],
+  }
 }
 
 /**
@@ -236,7 +241,13 @@ export async function listReposByOwner(
       .map((doc) => ({ ...fromV2(doc), role: roleOf.get(doc.repoId) }))
   }
 
-  const [ownedV2, ownedV1, member] = await Promise.all([v2Owned(), v1Owned(), v2Member()])
+  const settled = await Promise.allSettled([v2Owned(), v1Owned(), v2Member()])
+  if (settled.every((r) => r.status === 'rejected')) throw (settled[0] as PromiseRejectedResult).reason
+  const [ownedV2, ownedV1, member] = settled.map((r) => (r.status === 'fulfilled' ? r.value : [])) as [
+    DiscoveredRepo[],
+    DiscoveredRepo[],
+    DiscoveredRepo[],
+  ]
   const newestFirst = (x: DiscoveredRepo, y: DiscoveredRepo): number => y.createdAt - x.createdAt
   return {
     owned: [...ownedV2.sort(newestFirst), ...ownedV1.sort(newestFirst)],
