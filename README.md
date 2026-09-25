@@ -45,10 +45,11 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides.
 12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
 13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
+14. [Product roadmap](docs/roadmap.md) — verified current state, owner decisions, and the phased plan from testnet proof-of-concept to a product real users adopt.
 
 ## Status
 
-**Built and testnet-complete.** All components are implemented, live-tested against Dash Platform testnet, and independently code-reviewed. The web app is live at **https://pastapastapasta.github.io/dash-forge/**. See [EXECUTION.md](EXECUTION.md) for the build log, [design-freeze-2.md](docs/design-freeze-2.md) for as-built decisions, and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (rehearsed, not-yet-executed) mainnet deployment.
+**Testnet proof-of-concept; not yet ready for real users.** All components exist and the core protocol is proven live on testnet, but mainnet is not deployed, `git push` does not yet honor external storage backends, and several web surfaces overstate what they do — see the [roadmap](docs/roadmap.md) for the verified gap list and plan. The web app is live at **https://forge.dashhq.org/** (testnet). See [EXECUTION.md](EXECUTION.md) for the build log, [design-freeze-2.md](docs/design-freeze-2.md) for as-built decisions, and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (rehearsed, not-yet-executed) mainnet deployment.
 
 Proven end-to-end on testnet: `git clone dash://…` / `git push` byte-identical round-trip; frozen-collaborator push rejected at consensus; third-party "no trust in any server" verification; browser app rendering live proof-verified data with the trust panel; CLI↔web parity via 70 shared conformance vectors.
 
