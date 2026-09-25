@@ -186,6 +186,28 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+/**
+ * The all-ascending `orderBy` whose traversal, reversed, is exactly `query`'s — or null when
+ * the order is already ascending or has no such equivalent. Parity: forge-core
+ * `platform::ascending_equivalent`.
+ *
+ * A complete read pages with a `startAfter` cursor. The grovedb verifier in evo-sdk 4.2 checks
+ * that every proof op matches the walk direction. Protocol-13 nodes (testnet today) answer a
+ * descending page after a cursor with a proof that fails that check. It surfaced as
+ * `packManifest` reads failing once a repo passed 100 manifests. Ascending pages verify, and
+ * Drive's descending walk is the exact reverse of its ascending walk. Reversing also
+ * reverses any clause that was already ascending, which is only harmless when an `==` filter
+ * pins that clause's field, so any other mixed order is left as requested.
+ */
+export function ascendingEquivalent(query: DocumentQuery): OrderByClause[] | null {
+  const orderBy = query.orderBy ?? []
+  if (orderBy.every(([, direction]) => direction === 'asc')) return null
+  const pinned = (field: string): boolean =>
+    (query.where ?? []).some(([f, op]) => f === field && op === '==')
+  if (orderBy.some(([field, direction]) => direction === 'asc' && !pinned(field))) return null
+  return orderBy.map(([field]) => [field, 'asc'] as const)
+}
+
 /** Thrown when a read that must be complete could not be proven complete. */
 export class IncompleteReadError extends Error {
   constructor(
@@ -217,6 +239,33 @@ export class IncompleteReadError extends Error {
  *
  * `pageLimit` bounds each round-trip; `maxPages` is a hard safety cap on total rounds.
  */
+/**
+ * Whether a complete read can make its page boundaries tie-safe. Parity: forge-core
+ * `platform::tie_probe_allowed`. The conditions: the order ends in `$createdAt` ascending,
+ * every earlier order field is pinned by an `==` filter, and every filter is an `==` on some
+ * other field. The index then ends in `$createdAt`, so an equality on the boundary timestamp
+ * is a valid query on the same index.
+ *
+ * Why: on protocol 13, a `startAfter` cursor excludes the cursor's whole `$createdAt` key.
+ * Documents created in the same block as a page's last row that sort after it would be
+ * silently skipped. Protocol 14 bounds the cursor by document id and does not drop them.
+ *
+ * Limitation: the fix needs the boundary row's `$createdAt`. The history-keeping repo-v1
+ * types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return it from a proved
+ * query, so their reads keep the protocol-13 gap until they move to forge-v2 on protocol 14.
+ */
+export function tieProbeAllowed(query: DocumentQuery): boolean {
+  const orderBy = query.orderBy ?? []
+  const last = orderBy[orderBy.length - 1]
+  if (last === undefined || last[0] !== '$createdAt' || last[1] !== 'asc') return false
+  const where = query.where ?? []
+  const pinned = (field: string): boolean => where.some(([f, op]) => f === field && op === '==')
+  return (
+    orderBy.slice(0, -1).every(([field, direction]) => direction === 'asc' && pinned(field)) &&
+    where.every(([field, op]) => op === '==' && field !== '$createdAt')
+  )
+}
+
 export async function queryAllDocuments(
   sdk: EvoSDK,
   query: DocumentQuery,
@@ -224,16 +273,32 @@ export async function queryAllDocuments(
 ): Promise<PlainDocument[]> {
   const pageLimit = opts.pageLimit ?? 100
   const maxPages = opts.maxPages ?? 1000
+  // Page a descending read ascending and reverse it — see `ascendingEquivalent`.
+  const ascending = ascendingEquivalent(query)
+  const paged = ascending === null ? query : { ...query, orderBy: ascending }
+  const tieSafe = tieProbeAllowed(paged)
   const out: PlainDocument[] = []
+  const held = new Set<string>()
+  const take = (rows: PlainDocument[]): void => {
+    for (const d of rows) {
+      const id = d['$id']
+      if (typeof id === 'string') {
+        if (held.has(id)) continue
+        held.add(id)
+      }
+      out.push(d)
+    }
+  }
+  const done = (): PlainDocument[] => (ascending === null ? out : out.reverse())
   let startAfter: string | undefined
   for (let page = 0; page < maxPages; page++) {
     const { documents } = await queryDocumentsWithProof(sdk, {
-      ...query,
+      ...paged,
       limit: pageLimit,
       startAfter,
     })
-    out.push(...documents)
-    if (documents.length < pageLimit) return out
+    take(documents)
+    if (documents.length < pageLimit) return done()
     const last = documents[documents.length - 1]
     const lastId = last?.['$id']
     if (typeof lastId !== 'string') {
@@ -243,7 +308,28 @@ export async function queryAllDocuments(
         'a full page ended on a document with no $id, so the cursor cannot advance',
       )
     }
-    startAfter = lastId
+    let cursor: string = lastId
+    // Same-block rows past the boundary: read the boundary timestamp in full (see
+    // `tieProbeAllowed`), then continue after the last of them.
+    const createdAt = last?.['$createdAt']
+    if (tieSafe && typeof createdAt === 'number') {
+      const { documents: tied } = await queryDocumentsWithProof(sdk, {
+        ...paged,
+        where: [...(paged.where ?? []), ['$createdAt', '==', createdAt]],
+        limit: pageLimit,
+      })
+      if (tied.length >= pageLimit) {
+        throw new IncompleteReadError(
+          query.documentTypeName,
+          out.length,
+          `${pageLimit} or more documents share $createdAt ${createdAt}; the page boundary tie cannot be read completely`,
+        )
+      }
+      const lastTied = tied[tied.length - 1]?.['$id']
+      if (typeof lastTied === 'string') cursor = lastTied
+      take(tied)
+    }
+    startAfter = cursor
   }
   throw new IncompleteReadError(
     query.documentTypeName,

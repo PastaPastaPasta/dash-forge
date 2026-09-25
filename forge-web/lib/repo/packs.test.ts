@@ -88,9 +88,12 @@ describe('packed byteArray parsing (tips / supersedes)', () => {
       ]),
       REPO,
     )
-    expect(docs[0]?.supersedes).toEqual(['deadbeef'])
-    expect(docs[1]?.supersedes).toEqual([])
-    expect(docs[1]?.tips).toEqual([])
+    // The read's row order is the reader's concern (it pages ascending and reverses); look
+    // the rows up by pack instead of by position.
+    const byPack = (b: number) => docs.find((d) => d.packHash === hashHex(b))
+    expect(byPack(0xaa)?.supersedes).toEqual(['deadbeef'])
+    expect(byPack(0xbb)?.supersedes).toEqual([])
+    expect(byPack(0xbb)?.tips).toEqual([])
   })
 })
 

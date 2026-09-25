@@ -37,7 +37,11 @@ use crate::config::{CliOverrides, RelayConfig};
 
 /// forge-relay command-line interface.
 #[derive(Debug, Parser)]
-#[command(name = "forge-relay", version, about = "Dash Forge relay daemon")]
+#[command(
+    name = "forge-relay",
+    version = env!("DASH_FORGE_VERSION"),
+    about = "Dash Forge relay daemon"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -70,6 +70,14 @@ pub enum Error {
     #[error("integrity check failed: reassembled bytes did not match the manifest hash")]
     Integrity,
 
+    /// Consensus rejected a document create because its id was derived at a different
+    /// protocol version than the network's (protocol 14 derives ids from the nonce too). The
+    /// transition was refused at basic validation, so nothing landed and nothing was
+    /// charged. [`crate::platform::WriteEngine::create_document`] refreshes the version and
+    /// retries once.
+    #[error("document id derived at a stale protocol version: {0}")]
+    StaleProtocolVersion(String),
+
     /// An identity-contract nonce desync was detected.
     #[error("nonce error: identity-contract nonce desynchronized")]
     Nonce,

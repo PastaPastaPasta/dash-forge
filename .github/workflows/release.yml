@@ -1,0 +1,531 @@
+name: Release
+
+# Builds the prebuilt binaries users install instead of compiling the Platform SDK tree:
+#   dg, git-remote-dash, forge-relay, forge-import, dg's shell completions, README, INSTALL
+# for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
+# SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
+# signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
+#
+# Triggers:
+#   * push of a tag `v<semver>`: build, attest, and publish a GitHub Release.
+#   * workflow_dispatch: build everything; with dry_run=true (the default) stop before
+#     attesting or publishing, so the pipeline can be exercised from any branch without
+#     creating a release. A non-dry-run dispatch must run on a `v*` tag ref.
+#   * pull_request, and push to master, touching crates/Cargo/the pipeline: always a dry
+#     run (master's also seeds the build cache).
+#
+# Least privilege: the workflow default is `contents: read`, and every build, test and
+# checksum job runs with only that. `publish` alone gets `contents: write` (create the
+# release), `id-token: write` (Sigstore OIDC) and `attestations: write`; it runs only when
+# actually publishing, checks out no code and runs no build tooling — it downloads the
+# archives and SHA256SUMS, re-verifies them, attests and uploads them.
+#
+# Apple code signing / notarization is deliberately out of scope for now; docs/INSTALL.md
+# says so and explains Gatekeeper.
+
+on:
+  push:
+    tags: ['v*']
+    # A dry run on master: keeps master releasable and seeds the build cache that PR dry
+    # runs restore (only master saves it).
+    branches: [master]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'install.sh'
+      - 'build-support/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and package only; do not attest or publish a release
+        type: boolean
+        default: true
+  # A dry run on every PR that could break a release-only leg (musl, Windows, macOS), so it
+  # fails at review time rather than at tag time.
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'install.sh'
+      - 'build-support/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Superseded PR dry runs are worth cancelling; a tag build never is.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PROTOC_VERSION: '28.3'
+  # Every binary reports this in `--version` (build-support/version.rs).
+  DASH_FORGE_BUILD_SHA: ${{ github.sha }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # History for the "is this commit on master" check below.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the version and whether to publish
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # The workspace version every crate inherits.
+          crate_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          [ -n "$crate_version" ] || { echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; }
+
+          publish=false
+          if [ "$REF_TYPE" = tag ]; then
+            if [ "$EVENT" = push ] || [ "$DRY_RUN" = false ]; then publish=true; fi
+          elif [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            echo "::error::a publishing (dry_run=false) dispatch must run on a v* tag, not ${REF_TYPE} ${REF_NAME}"
+            exit 1
+          fi
+
+          if [ "$REF_TYPE" = tag ]; then
+            version=${REF_NAME#v}
+            if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag ${REF_NAME} is not v<semver>"; exit 1
+            fi
+            # The tag, the binaries' --version and cargo binstall's lookup must all agree.
+            if [ "$version" != "$crate_version" ]; then
+              echo "::error::tag ${REF_NAME} does not match the workspace version ${crate_version} in Cargo.toml; bump it first"
+              exit 1
+            fi
+          else
+            # Dry run from a branch: name the archives after the crate version + commit.
+            version="${crate_version}-dev.$(git rev-parse --short=12 HEAD)"
+          fi
+
+          # Only reviewed code is published: the tagged commit must be on master. (A tag on
+          # a side branch would otherwise be built, attested and published by that branch's
+          # own copy of this workflow, and would verify.)
+          if [ "$publish" = true ] && ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::${REF_NAME} (${GITHUB_SHA}) is not on master; tag a commit on master"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "### Release plan: \`$version\` (publish: $publish)" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc builds run on the oldest supported Ubuntu so the binaries load on older
+          # distributions (glibc 2.35+).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            protoc: linux-x86_64
+            protoc_sha256: 0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            protoc: linux-aarch_64
+            protoc_sha256: 1de522032a8b194002fe35cab86d747848238b5e4de4f99648372079f5b46f9a
+          # Fully static; runs on any x86_64 Linux (Alpine, old glibc, containers). Built in
+          # an Alpine container, where the whole C toolchain is musl-native.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            container: rust:1.98-alpine3.22@sha256:a1796ca6fa216d6727b5f61c69e4c665b120b1a4dcb969639e2f25f1ed309456
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            protoc: osx-x86_64
+            protoc_sha256: 97fe5d442090b4dbc23cd1384fb9b444fa1dc6e67d15bb5e1fe4de0da7638b20
+          - target: aarch64-apple-darwin
+            os: macos-15
+            protoc: osx-aarch_64
+            protoc_sha256: 92ceefda6a7293ec014e6ecac82d64719357145cb6fc2865badadeb5e62c0431
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            protoc: win64
+            protoc_sha256: ce64f49bdeddef49ce4bd313a8f59bcf92fcf67b5831efbf66170386d2e66948
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      # aws-lc-sys (rustls' crypto provider) needs NASM for x86_64 Windows; use the
+      # prebuilt objects it ships instead of installing NASM on the runner.
+      AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '1' || '' }}
+    steps:
+      - name: Install Alpine build dependencies
+        if: matrix.container != ''
+        shell: sh
+        run: |
+          # bash for the steps below, tar for actions/cache, protobuf-dev for protoc (29.x,
+          # >= the 25 tenderdash-proto needs), g++/cmake for aws-lc-sys and blst, perl +
+          # linux-headers for the vendored OpenSSL build.
+          apk add --no-cache bash tar git musl-dev protobuf-dev cmake make perl g++ linux-headers file
+          protoc --version
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Platform monorepo (a git dependency) has paths that push a checkout under
+      # C:\Users\runneradmin\.cargo\git\checkouts\... past Windows' 260-character MAX_PATH,
+      # and cargo's libgit2 checkout then fails with "path too long". A short CARGO_HOME
+      # keeps them under it; longpaths covers git itself.
+      - name: Shorten CARGO_HOME (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.longpaths true
+          printf '%s\n' 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
+          printf '%s\n' 'C:\ch\bin' >> "$GITHUB_PATH"
+
+      # tenderdash-proto compiles .proto files at build time and needs protoc >= 25; distro
+      # packages are too old (see docs/BUILDING.md). The zip is checked against a pinned
+      # digest so a swapped upstream asset cannot slip into a release build.
+      - name: Install protoc
+        if: matrix.protoc != ''
+        env:
+          PROTOC_ASSET: ${{ matrix.protoc }}
+          PROTOC_SHA256: ${{ matrix.protoc_sha256 }}
+        run: |
+          set -euo pipefail
+          tmp="${RUNNER_TEMP}/protoc"
+          mkdir -p "$tmp"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$tmp/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ASSET}.zip"
+          # Hash stdin: given a Windows path with backslashes, sha256sum escapes the output
+          # line and prefixes the digest with `\`.
+          if command -v sha256sum >/dev/null; then
+            actual=$(sha256sum < "$tmp/protoc.zip" | cut -d' ' -f1)
+          else
+            actual=$(shasum -a 256 < "$tmp/protoc.zip" | cut -d' ' -f1)
+          fi
+          [ "$actual" = "$PROTOC_SHA256" ] || { echo "::error::protoc zip sha256 $actual != pinned $PROTOC_SHA256"; exit 1; }
+          if command -v unzip >/dev/null; then
+            unzip -q -o "$tmp/protoc.zip" -d "$tmp"
+          else
+            7z x -y -bso0 -bsp0 "-o$tmp" "$tmp/protoc.zip"
+          fi
+          echo "$tmp/bin" >> "$GITHUB_PATH"
+          echo "PROTOC=$tmp/bin/protoc$([ "$RUNNER_OS" = Windows ] && echo .exe || true)" >> "$GITHUB_ENV"
+
+      # rustup reads rust-toolchain.toml, so the release is compiled by the same pinned
+      # compiler CI lints and tests with.
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null; then
+            # Not every runner image ships rustup; install it with no toolchain (the pinned
+            # one comes from rust-toolchain.toml below).
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
+          protoc --version
+
+      # Dry runs only. A published binary is compiled from scratch, from the tagged source
+      # alone, so no object built in another run can end up inside an attested release.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.plan.outputs.publish != 'true'
+        with:
+          key: release-${{ matrix.target }}
+          # Save from master only, so PR dry runs do not evict rust.yml's caches.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # On Linux, OpenSSL (pulled in via the Platform SDK's reqwest default features) is
+      # compiled in statically, so the binaries do not depend on the host's libssl version.
+      - name: Build
+        env:
+          # Debug symbols roughly double the binaries; users never need them.
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: |
+          features=""
+          case "$TARGET" in *-linux-*) features="forge-core/vendored-openssl" ;; esac
+          cargo build --locked --release --target "$TARGET" --features "$features" \
+            -p dg -p git-remote-dash -p forge-relay -p forge-import
+
+      - name: Smoke-test the binaries
+        run: |
+          set -euo pipefail
+          ext=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
+          dir="target/${TARGET}/release"
+          for bin in dg git-remote-dash forge-relay forge-import; do
+            out=$("$dir/$bin$ext" --version)
+            echo "$out"
+            # The version line must name this build's commit and target.
+            case "$out" in
+              *"${GITHUB_SHA:0:12} ${TARGET})"*) ;;
+              *) echo "::error::$bin --version does not name ${GITHUB_SHA:0:12} ${TARGET}: $out"; exit 1 ;;
+            esac
+          done
+          case "$TARGET" in
+            *-linux-musl)
+              file "$dir/dg"
+              file "$dir/dg" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::musl dg is not statically linked"; exit 1; }
+              ;;
+            *-linux-gnu)
+              # vendored-openssl must have taken effect: no dynamic libssl/libcrypto.
+              for bin in dg git-remote-dash forge-relay forge-import; do
+                if readelf -d "$dir/$bin" | grep -E 'NEEDED.*lib(ssl|crypto)'; then
+                  echo "::error::$bin links the system OpenSSL dynamically"; exit 1
+                fi
+              done
+              readelf -d "$dir/dg" | grep NEEDED
+              ;;
+          esac
+
+      - name: Package
+        id: pkg
+        run: |
+          set -euo pipefail
+          name="dash-forge-${VERSION}-${TARGET}"
+          stage="${RUNNER_TEMP}/stage/${name}"
+          mkdir -p "$stage/completions" dist
+          ext=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
+          for bin in dg git-remote-dash forge-relay forge-import; do
+            cp "target/${TARGET}/release/${bin}${ext}" "$stage/"
+          done
+          dg="target/${TARGET}/release/dg${ext}"
+          "$dg" completions bash > "$stage/completions/dg.bash"
+          "$dg" completions zsh > "$stage/completions/_dg"
+          "$dg" completions fish > "$stage/completions/dg.fish"
+          "$dg" completions powershell > "$stage/completions/_dg.ps1"
+          cp README.md "$stage/README.md"
+          cp docs/INSTALL.md "$stage/INSTALL.md"
+
+          cd "${RUNNER_TEMP}/stage"
+          if [ "$RUNNER_OS" = Windows ]; then
+            archive="${name}.zip"
+            7z a -tzip -bso0 -bsp0 "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
+          else
+            archive="${name}.tar.gz"
+            # GNU tar (Linux): sorted entries, no runner uid/gid. bsdtar (macOS): uid/gid 0.
+            # (No bash arrays: an empty "${a[@]}" is an unbound-variable error under
+            # `set -u` in macOS's bash 3.2.)
+            if tar --version 2>/dev/null | grep 'GNU tar' >/dev/null; then
+              tar --sort=name --owner=0 --group=0 --numeric-owner \
+                -czf "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
+            else
+              tar --uid 0 --gid 0 -czf "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
+            fi
+          fi
+          cd "$GITHUB_WORKSPACE"
+          ls -l dist/
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          size=$(wc -c < "dist/$archive" | tr -d ' ')
+          echo "| \`$archive\` | $((size / 1024 / 1024)) MiB ($size bytes) |" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/${{ steps.pkg.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Runs install.sh end to end against the real archives: the checksum path, the target
+  # detection on each OS, and that the installed binaries start.
+  install-check:
+    name: install.sh (${{ matrix.os }}${{ matrix.target && format(', {0}', matrix.target) || '' }})
+    needs: [plan, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel]
+        target: ['']
+        include:
+          # The static musl build, forced on a glibc host (install.sh's escape hatch for
+          # distributions whose glibc is older than the gnu build's).
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Install from a local release mirror
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          DASH_FORGE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # Lay the archives out like GitHub Releases: download/v<version>/<asset>.
+          rel="${RUNNER_TEMP}/releases/download/v${VERSION}"
+          mkdir -p "$rel"
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum -- *; else shasum -a 256 -- *; fi > "${RUNNER_TEMP}/SHA256SUMS"
+          cd ..
+          cp dist/* "${RUNNER_TEMP}/SHA256SUMS" "$rel/"
+          prefix="${RUNNER_TEMP}/prefix"
+          DASH_FORGE_RELEASE_BASE_URL="file://${RUNNER_TEMP}/releases" \
+          DASH_FORGE_VERSION="$VERSION" \
+          DASH_FORGE_INSTALL_DIR="$prefix/bin" \
+          DASH_FORGE_COMPLETIONS=1 \
+          XDG_DATA_HOME="$prefix/share" XDG_CONFIG_HOME="$prefix/config" \
+            sh ./install.sh
+          "$prefix/bin/dg" --version
+          "$prefix/bin/git-remote-dash" --version
+          test -s "$prefix/share/zsh/site-functions/_dg"
+
+  # Read-only: gathers the archives, writes SHA256SUMS and the size/digest summary. Runs on
+  # dry runs too, so they exercise everything except the privileged job below.
+  checksums:
+    name: SHA256SUMS
+    needs: [plan, build, install-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          expected=6
+          count=$(find . -maxdepth 1 -name "dash-forge-${VERSION}-*" | wc -l)
+          [ "$count" -eq "$expected" ] || { echo "::error::expected $expected archives, found $count"; ls -l; exit 1; }
+          sha256sum dash-forge-* > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "### Artifacts (\`$VERSION\`)"
+            echo
+            echo '| archive | size | sha256 |'
+            echo '|---|---|---|'
+            while read -r digest file; do
+              size=$(stat -c %s "$file")
+              echo "| \`$file\` | $(awk -v s="$size" 'BEGIN { printf "%.1f", s / 1048576 }') MiB | \`$digest\` |"
+            done < SHA256SUMS
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sha256sums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+      - name: Dry run note
+        if: needs.plan.outputs.publish != 'true'
+        run: |
+          echo "Dry run of ${VERSION}: built, packaged and checksummed; no attestation, no release." >> "$GITHUB_STEP_SUMMARY"
+
+  # The only job with write permissions, and it exists only when publishing. It checks out
+  # no code and runs no build tooling: it re-verifies the downloaded archives against
+  # SHA256SUMS, attests them, and creates the release.
+  publish:
+    name: attest + publish
+    needs: [plan, checksums]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Gate for publishing. Its protection (required reviewers, a `v*` deployment tag rule)
+    # is repository configuration, not code — see docs/INSTALL.md "Cutting a release".
+    environment: release
+    permissions:
+      contents: write # create the GitHub Release and upload its assets
+      id-token: write # Sigstore OIDC token for the provenance attestation
+      attestations: write # store the attestation in this repository
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sha256sums
+          path: dist
+      - name: Re-verify the archives against SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS
+          # Nothing unlisted gets uploaded.
+          [ "$(find . -maxdepth 1 -type f ! -name SHA256SUMS | wc -l)" -eq "$(wc -l < SHA256SUMS)" ]
+
+      # One Sigstore-signed SLSA provenance statement covering every archive (by the digests
+      # in SHA256SUMS), and one for SHA256SUMS itself. `gh attestation verify <file> --repo
+      # PastaPastaPasta/dash-forge` then proves a file came from this workflow at this tag,
+      # with no key of ours to distribute. Never on dry runs: an attestation is a permanent
+      # public statement, and a branch build must not produce one.
+      - name: Attest archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Attest SHA256SUMS
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
+          cat > "${RUNNER_TEMP}/notes.md" <<EOF
+          ## Install
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${GH_REPO}/${TAG}/install.sh | DASH_FORGE_VERSION=${VERSION} sh
+          \`\`\`
+
+          or \`cargo binstall --git https://github.com/${GH_REPO} dg git-remote-dash\`, or
+          download an archive below. Every archive
+          is listed in \`SHA256SUMS\` and has a build provenance attestation:
+
+          \`\`\`sh
+          sha256sum --check --ignore-missing SHA256SUMS
+          gh attestation verify dash-forge-${VERSION}-<target>.tar.gz --repo ${GH_REPO}
+          \`\`\`
+
+          macOS binaries are not signed or notarized by Apple yet; see
+          [docs/INSTALL.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/INSTALL.md#macos-gatekeeper).
+          EOF
+          # Draft first, upload, then publish: the release never appears with missing assets.
+          # Idempotent, so a failed run can simply be re-run: reuse an existing draft.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
+              --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
+          fi
+          gh release upload "$TAG" dist/dash-forge-* dist/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false

@@ -343,6 +343,9 @@ impl<'a> IssueService<'a> {
     /// List issues, newest first, folding each one's `event` log into its state and
     /// filtering by `filter`. `limit` (0 = server default ~100) and `start_after` (a base58
     /// issue `$id`) paginate the underlying `issue` query — the state fold runs per page.
+    /// A `start_after` page is served from a complete ascending read (see
+    /// `PlatformClient::query_documents`), because protocol 13 cannot prove a descending page
+    /// after a cursor under the 4.2 verifier.
     pub async fn list_issues(
         &self,
         repo_contract_id: &str,

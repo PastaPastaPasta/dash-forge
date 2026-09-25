@@ -15,6 +15,23 @@ Dash Forge is a suite of tools that together provide a GitHub-class experience �
 | **forge relay** | Stateless, interchangeable Rust daemon bridging Platform events to GitHub-shaped webhooks (CI/notifications). Trust = availability only. |
 | **forge import** | One-command GitHub migration (code, issues, PRs, releases) with cost gating and author claim flow. |
 
+## Install
+
+Prebuilt `dg` and `git-remote-dash` binaries for Linux (x86_64 and aarch64 glibc builds, a
+static x86_64 musl build), macOS (Intel and Apple silicon) and Windows are published with
+every [release](https://github.com/PastaPastaPasta/dash-forge/releases):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
+dg doctor
+```
+
+The script verifies the archive against the release's `SHA256SUMS`. If the GitHub CLI is
+available, it also checks the archive's build provenance attestation. It installs into
+`~/.local/bin` and never uses sudo. The macOS binaries are not signed by Apple yet. See
+[docs/INSTALL.md](docs/INSTALL.md) for manual download and verification,
+`cargo binstall`, shell completions (`dg completions <shell>`) and Gatekeeper.
+
 ## Building
 
 A fresh clone builds with no out-of-tree setup — `cargo build --workspace` for the Rust
@@ -51,7 +68,7 @@ testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
 9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
 10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict).
-11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides.
+11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
 12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
 13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
 14. [Product roadmap](docs/roadmap.md) — verified current state, owner decisions, and the phased plan from testnet proof-of-concept to a product real users adopt.

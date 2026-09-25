@@ -23,7 +23,7 @@ mod storage;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
 use config::Config;
@@ -31,7 +31,11 @@ use context::{report_error, Ctx};
 
 /// Dash Forge command-line interface.
 #[derive(Debug, Parser)]
-#[command(name = "dg", version, about = "Dash Forge CLI (gh-shaped)")]
+#[command(
+    name = "dg",
+    version = env!("DASH_FORGE_VERSION"),
+    about = "Dash Forge CLI (gh-shaped)"
+)]
 pub struct Cli {
     /// Emit machine-readable JSON instead of human output.
     #[arg(long, global = true)]
@@ -151,6 +155,17 @@ pub enum Command {
     },
     /// Diagnose local environment and configuration.
     Doctor,
+    /// Print a shell completion script to stdout.
+    ///
+    /// bash: `dg completions bash > ~/.local/share/bash-completion/completions/dg`
+    /// zsh:  `dg completions zsh > "${fpath[1]}/_dg"`
+    /// fish: `dg completions fish > ~/.config/fish/completions/dg.fish`
+    /// PowerShell: `dg completions powershell | Out-String | Invoke-Expression`
+    #[command(visible_alias = "completion")]
+    Completions {
+        /// The shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -720,6 +735,25 @@ fn main() {
     let cli = Cli::parse();
     let json = cli.json;
 
+    // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
+    // so a broken config or an undeployed network cannot stop a shell from loading them.
+    if let Command::Completions { shell } = cli.command {
+        // Render to a buffer, then write once: `generate` panics on a write error, and a
+        // closed pipe (`dg completions zsh | head`) is not an error worth a backtrace.
+        let mut script = Vec::new();
+        print_completions(shell, &mut script);
+        let mut stdout = std::io::stdout().lock();
+        if let Err(e) = std::io::Write::write_all(&mut stdout, &script)
+            .and_then(|()| std::io::Write::flush(&mut stdout))
+        {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                eprintln!("dg: writing completions: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     match run(&cli) {
         Ok(()) => {}
         Err(err) => {
@@ -727,6 +761,11 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Write the `shell` completion script for `dg` to `out`.
+fn print_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
+    clap_complete::generate(shell, &mut Cli::command(), "dg", out);
 }
 
 /// Build the tokio runtime and dispatch the parsed command.
@@ -776,6 +815,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import { url } => maint::import(ctx, url),
         Command::Doctor => doctor::run(ctx).await,
+        Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
 }
 
@@ -898,6 +938,43 @@ mod tests {
             }
             _ => panic!("expected collab unsuspend"),
         }
+    }
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn version_names_commit_and_target() {
+        let v = Cli::command().render_version();
+        assert!(v.starts_with("dg "), "{v}");
+        assert!(v.contains(env!("CARGO_PKG_VERSION")), "{v}");
+        assert!(v.contains(env!("DASH_FORGE_TARGET")), "{v}");
+        assert!(v.contains(env!("DASH_FORGE_GIT_SHA")), "{v}");
+    }
+
+    #[test]
+    fn completions_generate_for_every_shell() {
+        for (name, marker) in [
+            ("bash", "_dg()"),
+            ("zsh", "#compdef dg"),
+            ("fish", "complete -c dg"),
+            ("powershell", "Register-ArgumentCompleter"),
+        ] {
+            let cli = Cli::parse_from(["dg", "completions", name]);
+            let Command::Completions { shell } = cli.command else {
+                panic!("expected completions");
+            };
+            let mut out = Vec::new();
+            print_completions(shell, &mut out);
+            let script = String::from_utf8(out).unwrap();
+            assert!(script.contains(marker), "{name}: missing {marker}");
+            assert!(script.contains("doctor"), "{name}: subcommands missing");
+        }
+        // `completion` (gh's spelling, spec §7.6) is an alias.
+        let cli = Cli::parse_from(["dg", "completion", "zsh"]);
+        assert!(matches!(cli.command, Command::Completions { .. }));
     }
 
     #[test]

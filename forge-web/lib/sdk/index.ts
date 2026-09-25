@@ -14,6 +14,8 @@ export {
   SECURITY_LEVEL,
   WriteAuthError,
   createDocumentIdempotent,
+  isStaleDocumentIdError,
+  pendingWriteKey,
   createGateFor,
   creditsToDash,
   deleteDocumentIdempotent,
@@ -44,6 +46,7 @@ export {
   type JsonValue,
 } from './contract-create'
 export {
+  ascendingEquivalent,
   base64ToBytes,
   base64ToHex,
   bytesToBase64,
@@ -56,6 +59,7 @@ export {
   queryDocuments,
   queryDocumentsWithProof,
   skipScanDistinct,
+  tieProbeAllowed,
   type DocumentQuery,
   type OrderByClause,
   type PlainDocument,
