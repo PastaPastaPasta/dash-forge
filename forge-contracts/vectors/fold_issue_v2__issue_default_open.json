@@ -1,0 +1,16 @@
+{
+  "name": "issue_default_open",
+  "description": "No event or authorEvent: an issue is open with no labels or assignees.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

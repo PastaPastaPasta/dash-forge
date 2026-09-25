@@ -1,0 +1,15 @@
+{
+  "name": "private_issue_empty_enc",
+  "description": "An empty enc counts as absent.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "issue",
+      "enc": "",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

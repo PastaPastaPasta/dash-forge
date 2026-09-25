@@ -1,0 +1,16 @@
+{
+  "name": "private_ref_update_plaintext_ref_name",
+  "description": "A private ref update carrying a plaintext refName is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/secret",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

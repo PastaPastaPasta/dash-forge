@@ -1,0 +1,36 @@
+{
+  "name": "pr_merge_without_base_tip_inert",
+  "description": "With no base tip, reachability cannot be proven, so a merge is inert.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": null,
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

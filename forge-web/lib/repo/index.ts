@@ -47,6 +47,7 @@ export {
 } from './refs'
 export {
   liveGitPackManifests,
+  liveLocatorManifests,
   readNewestFlatIndexManifest,
   readNewestLocatorManifest,
   readNewestManifestOfKind,
@@ -54,8 +55,10 @@ export {
   type PackManifest,
 } from './packs'
 export {
+  currentHoldings,
   invalidateAuthz,
   readTokenHistory,
+  readViewerHoldings,
   resolveAuthz,
 } from './tokens'
 export {
@@ -97,6 +100,8 @@ export {
   createRepo,
   followIdentity,
   grantCollaborator,
+  hasStarred,
+  isFollowing,
   labelTarget,
   normalizeRepoName,
   pushRefUpdate,

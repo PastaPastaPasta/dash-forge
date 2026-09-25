@@ -1,0 +1,9 @@
+{
+  "$comment": "Shared storage defaults for every Dash Forge client: forge-core (and through it dg, git-remote-dash, forge-relay) embeds this file with include_str!, and forge-web imports it. The gateways are only ever byte sources. Every read is SHA-256-verified against the on-chain packManifest, so a gateway that lies or disappears costs a retry, never integrity. Users override the list in ~/.config/dash-forge/storage.toml ([read] ipfs_gateways). The Forge project operates none of these.",
+  "ipfsGateways": [
+    "https://ipfs.io",
+    "https://dweb.link",
+    "https://w3s.link",
+    "https://4everland.io"
+  ]
+}

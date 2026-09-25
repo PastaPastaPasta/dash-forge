@@ -1,0 +1,15 @@
+{
+  "name": "private_review_enc",
+  "description": "A private review with enc and epoch is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 2
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

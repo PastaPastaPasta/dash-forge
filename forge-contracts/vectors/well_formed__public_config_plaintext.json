@@ -1,0 +1,16 @@
+{
+  "name": "public_config_plaintext",
+  "description": "A public config is plaintext; none of its fields is required.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "protectedPatterns": [
+        "refs/heads/main"
+      ]
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

@@ -9,7 +9,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { NETWORKS, type Network } from '../constants'
+import { DEFAULT_NETWORK, requireRegistryContractId, type Network } from '../constants'
 import { queryDocumentsWithProof } from '../sdk'
 import { REGISTRY_DOC, asIdentifierString, type RepoListing } from '../repo'
 
@@ -34,8 +34,7 @@ export async function listRecentRepos(
   opts: { network?: Network; registryContractId?: string; limit?: number } = {},
 ): Promise<DiscoveredRepo[]> {
   const registryId =
-    opts.registryContractId ?? NETWORKS[opts.network ?? 'testnet'].registryContractId
-  if (registryId === null) throw new Error('no registry contract id configured for this network')
+    opts.registryContractId ?? requireRegistryContractId(opts.network ?? DEFAULT_NETWORK)
 
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: registryId,
@@ -61,8 +60,7 @@ export async function listReposByOwner(
   opts: { network?: Network; registryContractId?: string; limit?: number } = {},
 ): Promise<DiscoveredRepo[]> {
   const registryId =
-    opts.registryContractId ?? NETWORKS[opts.network ?? 'testnet'].registryContractId
-  if (registryId === null) throw new Error('no registry contract id configured for this network')
+    opts.registryContractId ?? requireRegistryContractId(opts.network ?? DEFAULT_NETWORK)
 
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: registryId,

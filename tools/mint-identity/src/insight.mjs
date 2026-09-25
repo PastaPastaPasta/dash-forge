@@ -1,5 +1,7 @@
 // Insight API client: UTXO lookup, broadcast, tx status polling.
 // Ported from mainnet-bridge/src/api/insight.ts (browser fetch -> Node fetch).
+import { hexToBytes } from './bytes.mjs';
+
 export class InsightClient {
   constructor(config) {
     this.baseUrl = config.insightApiUrl;
@@ -43,6 +45,32 @@ export class InsightClient {
       txlock: data.txlock || false,
       blockheight: rawHeight !== undefined && rawHeight >= 0 ? rawHeight : undefined,
     };
+  }
+
+  async getRawTransactionBytes(txid) {
+    const res = await fetch(`${this.baseUrl}/rawtx/${txid}`);
+    if (!res.ok) throw new Error(`Failed to get raw transaction ${txid}: ${res.status}`);
+    return hexToBytes((await res.json()).rawtx);
+  }
+
+  /** Sum of `address`'s UTXOs, in duffs. */
+  async getBalance(address) {
+    return (await this.getUTXOs(address)).reduce((s, u) => s + u.satoshis, 0);
+  }
+
+  /** Poll until output `vout` of `txid` shows up in `address`'s UTXOs; returns it. */
+  async waitForOutpoint(address, txid, vout, { timeoutMs = 180000, pollIntervalMs = 4000, log = () => {} } = {}) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const hit = (await this.getUTXOs(address)).find((u) => u.txid === txid && u.vout === vout);
+        if (hit) return hit;
+      } catch (err) {
+        log(`  poll error (${address}): ${err.message}`);
+      }
+      await sleep(pollIntervalMs);
+    }
+    throw new Error(`Timed out waiting for ${txid}:${vout} at ${address}`);
   }
 
   /**

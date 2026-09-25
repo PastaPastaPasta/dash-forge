@@ -16,9 +16,16 @@ forge-core = { path = "../forge-core" }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 serde_json.workspace = true
 hex = "0.4"
+futures = "0.3"
+
+[features]
+# Fault-injection environment hooks for the e2e harness (DASH_FORGE_FAIL_BEFORE_REFS,
+# DASH_FORGE_KILL_AFTER_CHUNK). Off in normal builds so a stray variable can never
+# interrupt a real push; `make storage-e2e` builds with it.
+test-hooks = ["forge-core/test-hooks"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,29 @@
+{
+  "name": "readded_member_old_review_ignored",
+  "description": "A member revoked and re-added has only the new membership document (createdAt 300), so a review from before it does not count.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "dev",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "dev",
+        "role": "writer",
+        "createdAt": 300
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}

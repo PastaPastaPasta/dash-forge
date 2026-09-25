@@ -1,0 +1,1159 @@
+{
+  "$formatVersion": "1",
+  "id": "11111111111111111111111111111111",
+  "ownerId": "11111111111111111111111111111111",
+  "version": 1,
+  "description": "Dash Forge v2 collaboration: issues, pull requests, reviews, social",
+  "schemaDefs": {
+    "id": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 32,
+      "maxItems": 32,
+      "contentMediaType": "application/x.dash.dpp.identifier"
+    },
+    "oid": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 20,
+      "maxItems": 32
+    },
+    "h32": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 32,
+      "maxItems": 32
+    },
+    "num": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "maxBytes": 1024
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 5120,
+      "maxBytes": 5120
+    },
+    "enc": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 28,
+      "maxItems": 5120
+    },
+    "refName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "maxBytes": 255
+    },
+    "imported": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string",
+          "maxLength": 120,
+          "maxBytes": 480,
+          "position": 0
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0,
+          "position": 1
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 300,
+          "maxBytes": 300,
+          "position": 2
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "documentSchemas": {
+    "issue": {
+      "type": "object",
+      "canBeDeleted": false,
+      "documentsKeepHistory": true,
+      "immutable": [
+        "repoId",
+        "number"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo"
+          },
+          "position": 0
+        },
+        "number": {
+          "$ref": "#/$defs/num",
+          "position": 1
+        },
+        "title": {
+          "$ref": "#/$defs/title",
+          "position": 2
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 3
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 4
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 5
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 6
+        }
+      },
+      "indices": [
+        {
+          "name": "number",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true,
+          "rangeCountable": true
+        },
+        {
+          "name": "created",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "number"
+      ],
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "canBeDeleted": false,
+      "documentsKeepHistory": true,
+      "immutable": [
+        "repoId",
+        "number",
+        "sourceRepoId"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo"
+          },
+          "position": 0
+        },
+        "number": {
+          "$ref": "#/$defs/num",
+          "position": 1
+        },
+        "title": {
+          "$ref": "#/$defs/title",
+          "position": 2
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 3
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 4
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 5
+        },
+        "baseRefNameHash": {
+          "$ref": "#/$defs/h32",
+          "position": 6
+        },
+        "baseRefName": {
+          "$ref": "#/$defs/refName",
+          "position": 7
+        },
+        "sourceRepoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo"
+          },
+          "position": 8
+        },
+        "sourceRefNameHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 9
+        },
+        "sourceRefName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "maxBytes": 255,
+          "position": 10
+        },
+        "headOid": {
+          "$ref": "#/$defs/oid",
+          "position": 11
+        },
+        "patchManifestHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 12
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 13
+        }
+      },
+      "indices": [
+        {
+          "name": "number",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true,
+          "rangeCountable": true
+        },
+        {
+          "name": "created",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "source",
+          "properties": [
+            {
+              "sourceRepoId": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "number",
+        "baseRefNameHash",
+        "sourceRepoId",
+        "headOid"
+      ],
+      "additionalProperties": false
+    },
+    "comment": {
+      "type": "object",
+      "immutable": [
+        "repoId",
+        "targetId"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "propertyAgreement": {
+                  "repoId": "repoId"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "propertyAgreement": {
+                  "repoId": "repoId"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 2
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 3
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 4
+        },
+        "replyTo": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 5
+        },
+        "commitOid": {
+          "$ref": "#/$defs/oid",
+          "position": 6
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 500,
+          "maxBytes": 1000,
+          "position": 7
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 8
+        },
+        "side": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "position": 9
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 10
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "rangeCountable": true
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId"
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "documentsMutable": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "patchId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "propertyAgreement": {
+              "repoId": "repoId"
+            }
+          },
+          "position": 1
+        },
+        "verdict": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "position": 2
+        },
+        "commitOid": {
+          "$ref": "#/$defs/oid",
+          "position": 3
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 4
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 5
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 6
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 7
+        }
+      },
+      "indices": [
+        {
+          "name": "patch",
+          "properties": [
+            {
+              "patchId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "patchId",
+        "verdict",
+        "commitOid"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "lookup": {
+              "index": "byRepoMember",
+              "keys": {
+                "repoId": "repoId",
+                "memberId": "."
+              }
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "lookup": {
+              "index": "byRepoMember",
+              "keys": {
+                "repoId": "repoId",
+                "memberId": "."
+              }
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "position": 3
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 120,
+          "maxBytes": 480,
+          "position": 4
+        },
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "authorEvent": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "permanentDocument",
+            "documentType": "issue",
+            "lookup": {
+              "index": "author",
+              "keys": {
+                "$ownerId": ".",
+                "repoId": "repoId",
+                "number": "targetNumber"
+              }
+            },
+            "propertyAgreement": {
+              "targetId": "$id"
+            }
+          },
+          {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "lookup": {
+              "index": "author",
+              "keys": {
+                "$ownerId": ".",
+                "repoId": "repoId",
+                "number": "targetNumber"
+              }
+            },
+            "propertyAgreement": {
+              "targetId": "$id"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 3
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "checkRun": {
+      "type": "object",
+      "immutable": [
+        "repoId",
+        "headOid",
+        "name"
+      ],
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "lookup": {
+              "index": "byRepoMember",
+              "keys": {
+                "repoId": "repoId",
+                "memberId": "."
+              }
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "lookup": {
+              "index": "byRepoMember",
+              "keys": {
+                "repoId": "repoId",
+                "memberId": "."
+              }
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "headOid": {
+          "$ref": "#/$defs/oid",
+          "position": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "maxBytes": 200,
+          "position": 2
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "in_progress",
+            "completed"
+          ],
+          "position": 3
+        },
+        "conclusion": {
+          "type": "string",
+          "maxLength": 30,
+          "position": 4
+        },
+        "detailsUrl": {
+          "type": "string",
+          "maxLength": 300,
+          "maxBytes": 300,
+          "position": 5
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1000,
+          "maxBytes": 2000,
+          "position": 6
+        }
+      },
+      "indices": [
+        {
+          "name": "head",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "headOid": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "headOid",
+        "name",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "webhook": {
+      "type": "object",
+      "immutable": [
+        "repoId",
+        "hookId"
+      ],
+      "ownerRefersTo": {
+        "type": "deletableDocument",
+        "contractId": "FORGE_CORE_CONTRACT_ID",
+        "documentType": "maintainer",
+        "lookup": {
+          "index": "byRepoMember",
+          "keys": {
+            "repoId": "repoId",
+            "memberId": "."
+          }
+        }
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "hookId": {
+          "$ref": "#/$defs/h32",
+          "position": 1
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "maxBytes": 300,
+          "position": 2
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          },
+          "position": 3
+        },
+        "relayIdentityId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "identityPublicKey",
+            "keyIdProperty": "relayKeyId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          },
+          "position": 4
+        },
+        "relayKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 5
+        },
+        "senderKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "refersTo": {
+            "type": "identityPublicKey",
+            "identityProperty": "$ownerId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          },
+          "position": 6
+        },
+        "secret": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 128,
+          "encryptedFor": {
+            "recipient": "relayIdentityId",
+            "recipientKey": "relayKeyId",
+            "senderKey": "senderKeyId",
+            "scheme": "ecdh-secp256k1-aes256-cbc"
+          },
+          "position": 7
+        },
+        "disabled": {
+          "type": "boolean",
+          "position": 8
+        }
+      },
+      "indices": [
+        {
+          "name": "hook",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "hookId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "list",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "relay",
+          "properties": [
+            {
+              "relayIdentityId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "hookId",
+        "url",
+        "relayIdentityId",
+        "relayKeyId",
+        "senderKeyId",
+        "secret"
+      ],
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "maxLength": 60,
+          "maxBytes": 240,
+          "position": 0
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 500,
+          "maxBytes": 1000,
+          "position": 1
+        },
+        "avatarConfig": {
+          "type": "string",
+          "maxLength": 200,
+          "maxBytes": 200,
+          "position": 2
+        },
+        "links": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "position": 3
+        }
+      },
+      "indices": [
+        {
+          "name": "owner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "additionalProperties": false
+    },
+    "star": {
+      "type": "object",
+      "documentsMutable": false,
+      "indexOnly": true,
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo"
+          },
+          "position": 0
+        }
+      },
+      "indices": [
+        {
+          "name": "byRepo",
+          "properties": [
+            {
+              "repoId": "asc"
+            }
+          ],
+          "countable": "countable"
+        },
+        {
+          "name": "byOwner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "terminal": "repoId"
+        }
+      ],
+      "required": [
+        "repoId"
+      ],
+      "additionalProperties": false
+    },
+    "follow": {
+      "type": "object",
+      "documentsMutable": false,
+      "indexOnly": true,
+      "properties": {
+        "identityId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "distinctFrom": "$ownerId",
+          "refersTo": {
+            "type": "identity"
+          },
+          "position": 0
+        }
+      },
+      "indices": [
+        {
+          "name": "byTarget",
+          "properties": [
+            {
+              "identityId": "asc"
+            }
+          ],
+          "countable": "countable"
+        },
+        {
+          "name": "byOwner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "terminal": "identityId",
+          "countable": "countable"
+        }
+      ],
+      "required": [
+        "identityId"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

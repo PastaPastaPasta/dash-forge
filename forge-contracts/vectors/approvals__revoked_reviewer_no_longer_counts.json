@@ -1,0 +1,23 @@
+{
+  "name": "revoked_reviewer_no_longer_counts",
+  "description": "A reviewer whose membership document has been deleted is absent from the oracle, so their approval stops counting.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "exmaint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}

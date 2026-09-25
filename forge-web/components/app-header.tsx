@@ -1,8 +1,9 @@
 'use client'
 
 /**
- * App header — the persistent foundry chrome: wordmark, global repo jump, network badge, theme
- * toggle, and the auth surface (sign-in trigger, or balance + identity + logout when signed in).
+ * App header — the persistent foundry chrome: wordmark, global repo jump, network badge (every
+ * network except mainnet), theme toggle, and the auth surface (sign-in trigger, or balance +
+ * identity + logout when signed in).
  */
 
 import Link from 'next/link'
@@ -14,7 +15,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { DEFAULT_NETWORK } from '@/lib/constants'
+import { NetworkBadge } from '@/components/ui/network-badge'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
@@ -49,9 +50,7 @@ export function AppHeader(): JSX.Element {
           </span>
         </Link>
 
-        <span className="hidden rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash sm:inline">
-          {DEFAULT_NETWORK}
-        </span>
+        <NetworkBadge className="hidden sm:inline" />
 
         <form onSubmit={onSearch} className="relative ml-2 hidden max-w-xs flex-1 sm:block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-400" aria-hidden />
@@ -122,7 +121,7 @@ function AccountMenu({
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance
             </div>
-            <div className="mt-0.5 font-mono text-prose text-dash">{dash} DASH</div>
+            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
             <div className="font-mono text-[12px] text-anvil-400">
               {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
             </div>

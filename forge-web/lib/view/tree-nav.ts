@@ -7,20 +7,35 @@
  * hash-verified by the reader before it is returned, so a tampered pack byte fails the read.
  */
 
-import type { BrowseReader } from '../browse'
+import type { BrowseReader, GitObject, LocatorEntry } from '../browse'
 import { MODE_TREE } from '../browse'
 import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntry } from './git-objects'
 
-/** Resolve a commit's root tree oid. */
-export async function commitRootTree(reader: BrowseReader, commitOid: string): Promise<{ commit: CommitObject; tree: string }> {
+/**
+ * The slice of {@link BrowseReader} object reads need. `locate` is optional so a test double
+ * or a combined reader can omit it; when present it lets a diff skip downloading a blob whose
+ * stored size alone rules out showing it inline.
+ */
+export interface ObjectReader {
+  readObject(oidHex: string): Promise<GitObject>
+  locate?(oidHex: string): LocatorEntry | null
+}
+
+/** Read a commit object, failing clearly when the oid names something else. */
+export async function readCommit(reader: ObjectReader, commitOid: string): Promise<CommitObject> {
   const obj = await reader.readObject(commitOid)
   if (obj.type !== 'commit') throw new Error(`${commitOid.slice(0, 8)} is not a commit`)
-  const commit = parseCommit(obj.bytes)
+  return parseCommit(obj.bytes)
+}
+
+/** Resolve a commit's root tree oid. */
+export async function commitRootTree(reader: ObjectReader, commitOid: string): Promise<{ commit: CommitObject; tree: string }> {
+  const commit = await readCommit(reader, commitOid)
   return { commit, tree: commit.tree }
 }
 
 /** Read a tree object's entries by tree oid. */
-export async function readTree(reader: BrowseReader, treeOid: string): Promise<TreeEntry[]> {
+export async function readTree(reader: ObjectReader, treeOid: string): Promise<TreeEntry[]> {
   const obj = await reader.readObject(treeOid)
   if (obj.type !== 'tree') throw new Error(`${treeOid.slice(0, 8)} is not a tree`)
   return parseTree(obj.bytes)

@@ -19,12 +19,15 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   AuthzResolver,
+  compareKey,
   foldIssueState,
   foldPrState,
+  isNullOid,
   type Event,
   type IsAncestor,
   type IssueState,
   type PrState,
+  type RefUpdate,
 } from '../rules'
 import {
   IncompleteReadError,
@@ -69,6 +72,19 @@ export interface PullView {
   readonly author: string
   readonly createdAt: number
   readonly baseRefName: string
+  /**
+   * The base ref's newest non-deleted `newOid`, or `''` when it has none. This is the tip the
+   * merge fold uses (parity with forge-core); it is taken from the raw update history, so a
+   * view that has the ref resolved through `resolveRef` should prefer that tip.
+   */
+  readonly baseTipOid: string
+  /**
+   * The base ref's tip when the PR was opened (the newest update at or before the patch's
+   * `$createdAt`), else its current tip; `''` when it had none. The diff falls back to this
+   * once the PR is merged: the current tip then contains the head, so a merge base computed
+   * from it is the head itself — an empty diff.
+   */
+  readonly baseOidAtOpen: string
   readonly headOid: string
   /**
    * The **source** repo contract id (base58) — where the PR's objects actually live.
@@ -80,6 +96,16 @@ export interface PullView {
   readonly sourceContractId: string
   /** The branch the PR was opened from, in the source repo, when recorded. */
   readonly sourceRefName: string | null
+  /**
+   * Whether {@link headOid} has been a tip of the base ref — the exact test the fold applies
+   * to a `merge` event naming the head, so a merge mark will count iff this is true (and the
+   * marker holds WRITE or MAINTAIN). False when the base history or head is unknown.
+   */
+  readonly headOnBase: boolean
+  /** Archived from another forge (`imported` provenance present) rather than opened here. */
+  readonly imported: boolean
+  /** The original PR's URL when the import recorded one, else `''`. */
+  readonly importedUrl: string
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
@@ -266,6 +292,44 @@ export function historicalTipsPredicate(baseRefNewOidsHex: readonly string[]): I
   return (oid) => tips.has(oid)
 }
 
+/** A patch's `imported` provenance (present on PRs archived from another forge). */
+function readImported(doc: PlainDocument): { imported: boolean; importedUrl: string } {
+  const value = doc['imported']
+  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '' }
+  const url = (value as PlainDocument)['url']
+  return { imported: true, importedUrl: typeof url === 'string' ? url : '' }
+}
+
+/** A base ref's tips, as a PR read needs them. */
+export interface BaseRefTips {
+  /** Every oid the ref has ever pointed at (deletions excluded), oldest first. */
+  readonly historical: string[]
+  /** The newest of those — the ref's current tip. */
+  readonly tip: string | undefined
+  /**
+   * Where the ref pointed at `openedAt`: `''` when it was deleted then, `undefined` when it
+   * had no update yet. Raw history, like `tip`: only a diff baseline, never a trust input.
+   */
+  readonly atOpen: string | undefined
+}
+
+/**
+ * Derive {@link BaseRefTips} from a ref's full update history, on the `(createdAt, id)` total
+ * order. A null `newOid` is a deletion, never a reachable tip, so the current tip is the
+ * newest NON-null one — parity with forge-core `base_ref_tips`, where taking the last element
+ * of the plain-then-protected concatenation was neither the newest update nor deletion-aware.
+ */
+export function baseRefTips(updates: readonly RefUpdate[], openedAt: number): BaseRefTips {
+  const ordered = [...updates].sort(compareKey)
+  const historical = ordered.map((u) => u.newOid).filter((o) => !isNullOid(o))
+  const openOid = ordered.filter((u) => u.createdAt <= openedAt).at(-1)?.newOid
+  return {
+    historical,
+    tip: historical[historical.length - 1],
+    atOpen: openOid === undefined ? undefined : isNullOid(openOid) ? '' : openOid,
+  }
+}
+
 /** Read one PR (patch) and fold its state, using the historical-tips merge predicate. */
 export async function readPull(
   sdk: EvoSDK,
@@ -276,18 +340,18 @@ export async function readPull(
   const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
+  const createdAt = num(patchDoc, '$createdAt')
   const baseRefNameHashRaw = patchDoc['baseRefNameHash']
   const baseHeadOidRaw = patchDoc['headOid']
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.
   let isAncestor: IsAncestor = () => false
-  let baseTip: string | undefined
+  let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
-    const baseUpdates = await readRefUpdates(sdk, repo, baseRefNameHashRaw)
-    const newOids = baseUpdates.map((u) => u.newOid).filter((o) => o.length > 0)
-    isAncestor = historicalTipsPredicate(newOids)
-    baseTip = newOids[newOids.length - 1]
+    tips = baseRefTips(await readRefUpdates(sdk, repo, baseRefNameHashRaw), createdAt)
+    isAncestor = historicalTipsPredicate(tips.historical)
   }
+  const baseTip = tips.tip
 
   const events = await readEvents(sdk, repo, id)
   let headOid = ''
@@ -305,11 +369,15 @@ export async function readPull(
     title: str(patchDoc, 'title'),
     body: str(patchDoc, 'body'),
     author,
-    createdAt: num(patchDoc, '$createdAt'),
+    createdAt,
     baseRefName: str(patchDoc, 'baseRefName'),
+    baseTipOid: baseTip ?? '',
+    baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     headOid,
     sourceContractId: asIdentifierString(patchDoc['sourceContractId']),
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
+    headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
+    ...readImported(patchDoc),
     state: foldPrState(events, author, resolver, baseTip, isAncestor),
     stateComplete: true,
   }
@@ -359,11 +427,16 @@ function incompletePullView(doc: PlainDocument): PullView {
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
     baseRefName: str(doc, 'baseRefName'),
+    // No ref history was read for this row, so there is no baseline to diff against.
+    baseTipOid: '',
+    baseOidAtOpen: '',
     headOid,
     // The source pointer is plain document content, not a fold — it is readable even when
     // the event log is not, and it is what a reviewer needs to fetch the PR at all.
     sourceContractId: asIdentifierString(doc['sourceContractId']),
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
+    headOnBase: false,
+    ...readImported(doc),
     state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
   }

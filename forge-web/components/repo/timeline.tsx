@@ -35,7 +35,9 @@ function eventPhrase(kind: EventKind, value?: string | null): { text: string; ic
     case 'reopen':
       return { text: 'reopened this', icon: <LockOpen className="h-3.5 w-3.5 text-verify" aria-hidden /> }
     case 'merge':
-      return { text: 'merged this', icon: <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden /> }
+      // The event records a claim; whether the PR folds as merged depends on who signed it
+      // and whether the oid reached the base branch, so say what the event is.
+      return { text: 'marked this as merged', icon: <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden /> }
     case 'labelAdd':
       return { text: `added the ${value ?? ''} label`, icon: <Tag className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'labelRemove':

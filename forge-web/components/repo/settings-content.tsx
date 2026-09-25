@@ -2,17 +2,23 @@
 
 /**
  * SettingsContent — repo administration: the storage backend, the collaborator ACL (which IS
- * the token balances), and the danger zone. Grant mints a WRITE/MAINTAIN token; suspend freezes;
- * revoke freezes + destroys — all CRITICAL-key token ops, each with a pre-sign cost + confirm.
- * Consensus is the real gate; the UI shows the controls and surfaces the on-chain result.
+ * the token balances), and the raw Platform identifiers. Grant mints a WRITE/MAINTAIN token;
+ * suspend freezes; revoke freezes + destroys — all CRITICAL-key token ops, each with a
+ * pre-sign cost + confirm. Consensus is the real gate; the UI shows the controls and surfaces
+ * the on-chain result.
+ *
+ * There is deliberately no "Archive" control: the web app has no config write, and the
+ * config `archived` flag is display-only (token holders can still write), so a button here
+ * could only pretend.
  */
 
 import { useState } from 'react'
-import { AlertTriangle, Fingerprint, ShieldPlus, Snowflake, Trash2, UserCog } from 'lucide-react'
+import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator } from '@/lib/repo'
 import { readCollaborators, grantCollaborator, revokeCollaborator, suspendCollaborator } from '@/lib/repo'
-import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -53,7 +59,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   }
 
   const cost = previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin)
-  const registryContractId = NETWORKS[DEFAULT_NETWORK].registryContractId
+  const registryContractId = ACTIVE_NETWORK.registryContractId
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
@@ -71,7 +77,9 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Readers follow manifest URIs; no explicit backend URIs set.</span>
           )}
         </div>
-        <p className="mt-2 text-[12px] text-anvil-400">Changing the backend mode is an owner-signed config write (helper / CLI).</p>
+        <p className="mt-2 text-[12px] text-anvil-400">
+          Change it with <span className="font-mono">dg repo backend set</span> (an owner-signed config write). It records a preference: git push currently stores packs on Platform whatever it says, and <span className="font-mono">dg repack</span> / <span className="font-mono">dg reseed</span> move them.
+        </p>
       </Section>
 
       {/* Collaborators */}
@@ -170,27 +178,12 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
             {registryContractId !== null ? <Oid value={registryContractId} chars={12} label="registry contract id" /> : <NotSet />}
           </DetailRow>
           <DetailRow label="Network">
-            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash">{DEFAULT_NETWORK}</span>
+            <NetworkBadge always />
           </DetailRow>
         </dl>
         <p className="mt-2 text-[12px] text-anvil-400">
           Raw Platform identifiers for CLI / SDK use (query the repo contract directly, or the listing on the registry). Click an id to copy the full value.
         </p>
-      </Section>
-
-      {/* Danger zone */}
-      <Section title="Danger zone" icon={<AlertTriangle className="h-4 w-4 text-danger" aria-hidden />} danger>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-dense font-medium">Archive repository</div>
-            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              Read-only banner + disabled write UIs. The contract is permanent and cannot be deleted — only its pack bytes are refundable.
-            </p>
-          </div>
-          <Button variant="danger" disabled={!isOwner} title={isOwner ? undefined : 'Owner only'}>
-            <Trash2 className="h-3.5 w-3.5" aria-hidden /> Archive
-          </Button>
-        </div>
       </Section>
 
       <ConfirmDialog
@@ -221,21 +214,19 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
 function Section({
   title,
   icon,
-  danger,
   children,
 }: {
   title: string
   icon: React.ReactNode
-  danger?: boolean
   children: React.ReactNode
 }): JSX.Element {
   return (
     <section>
-      <h2 className={`mb-3 flex items-center gap-2 text-prose ${danger ? 'text-danger' : ''}`}>
+      <h2 className="mb-3 flex items-center gap-2 text-prose">
         {icon}
         {title}
       </h2>
-      <div className={danger ? 'rounded-lg border border-danger/30 bg-danger/5 p-4' : ''}>{children}</div>
+      <div>{children}</div>
     </section>
   )
 }

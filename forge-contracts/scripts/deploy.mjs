@@ -60,10 +60,14 @@ async function main() {
   log(`connecting (${network})...`);
   await sdk.connect();
 
-  const pv = EvoSDK.getLatestVersionNumber ? await EvoSDK.getLatestVersionNumber() : undefined;
-
   // identity nonce for contract-id derivation (facade returns the masked value)
   const nextNonce = ((await sdk.identities.nonce(ownerId)) ?? 0n) + 1n;
+
+  // The network's protocol version, not the SDK's latest (evo-sdk 4.2 knows 14
+  // while testnet still runs 13). Read it only after the proved nonce query:
+  // the SDK starts at the network's protocol floor and ratchets up to the live
+  // version on its first verified response.
+  const pv = sdk.version();
 
   const schemas = contractJson.documentSchemas;
   const idProbe = new DataContract({ ownerId, identityNonce: nextNonce, schemas, fullValidation: false, platformVersion: pv });

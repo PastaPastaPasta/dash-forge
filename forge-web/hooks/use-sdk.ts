@@ -19,6 +19,8 @@ import { errorMessage } from '@/lib/utils'
 interface SdkState {
   readonly sdk: EvoSDK | null
   readonly ready: boolean
+  /** The connection proof-checks its reads (see `evoSdkService.isTrusted`). */
+  readonly trusted: boolean
   readonly error: string | null
   readonly network: Network
 }
@@ -29,6 +31,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   const [state, setState] = useState<SdkState>({
     sdk: evoSdkService.isReady ? safeGet() : null,
     ready: evoSdkService.isReady,
+    trusted: evoSdkService.isTrusted,
     error: null,
     network,
   })
@@ -50,11 +53,23 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
       .initialize({ network, contractIds, timeoutMs: 15000 })
       .then(() => {
         if (cancelled) return
-        setState({ sdk: evoSdkService.getSdk(), ready: true, error: null, network })
+        setState({
+          sdk: evoSdkService.getSdk(),
+          ready: true,
+          trusted: evoSdkService.isTrusted,
+          error: null,
+          network,
+        })
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setState({ sdk: null, ready: false, error: errorMessage(e, 'could not reach Platform'), network })
+        setState({
+          sdk: null,
+          ready: false,
+          trusted: false,
+          error: errorMessage(e, 'could not reach Platform'),
+          network,
+        })
       })
     return () => {
       cancelled = true

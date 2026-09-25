@@ -1,0 +1,13 @@
+{
+  "name": "too_long_64",
+  "description": "64 characters is too long.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

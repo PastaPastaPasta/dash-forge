@@ -1,0 +1,13 @@
+{
+  "name": "dots_underscores_digits",
+  "description": "Dots, underscores, dashes and digits are allowed after the first character.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "a.b_c-d9"
+  },
+  "expected": {
+    "valid": true,
+    "normalized": "a.b_c-d9"
+  }
+}

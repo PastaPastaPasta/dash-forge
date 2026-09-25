@@ -1,0 +1,40 @@
+{
+  "name": "pr_illegal_retarget_inert",
+  "description": "A retarget whose value is not a legal ref name (newline injection) is inert, as in v1.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/x\n0000 refs/heads/main",
+        "oid": null,
+        "createdAt": 110
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": "refs/heads/dev",
+    "labels": [],
+    "assignees": []
+  }
+}

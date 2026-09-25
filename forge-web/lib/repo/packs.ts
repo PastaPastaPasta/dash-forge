@@ -152,6 +152,35 @@ export function liveGitPackManifests(manifests: readonly PackManifest[]): PackMa
   )
 }
 
+/**
+ * The live (non-superseded) `objectLocator` manifests among `manifests`, NEWEST-FIRST — the
+ * index fragments a reader merges. Mirror of forge-core `repo.rs::live_locator_manifests`.
+ *
+ * There is normally more than one: a push publishes a locator over just the pack it stored,
+ * so the index accumulates fragments between repacks (see forge-core
+ * `RepoService::publish_push_locator` for why it is published that way). A repack — or a
+ * push that folds them — supersedes the fragments it consolidates.
+ */
+export function liveLocatorManifests(manifests: readonly PackManifest[]): PackManifest[] {
+  const superseded = new Set<string>()
+  for (const m of manifests) {
+    for (const h of m.supersedes) superseded.add(h.toLowerCase())
+  }
+  return manifests
+    .filter(
+      (m) => m.kind === PACK_KIND.OBJECT_LOCATOR && !superseded.has(m.packHash.toLowerCase()),
+    )
+    .sort((a, b) =>
+      a.createdAt !== b.createdAt
+        ? b.createdAt - a.createdAt
+        : a.documentId < b.documentId
+          ? 1
+          : a.documentId > b.documentId
+            ? -1
+            : 0,
+    )
+}
+
 /** The current flatIndex manifest (kind 2) — the full recursive tree listing. */
 export function readNewestFlatIndexManifest(
   sdk: EvoSDK,

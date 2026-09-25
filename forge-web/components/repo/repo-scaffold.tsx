@@ -11,25 +11,23 @@ import { GitBranch } from 'lucide-react'
 import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
-import type { TrustChain } from '@/components/ui/trust-panel'
 import { useRepoHome } from '@/hooks/use-repo'
-import { selectRef, tipOidOf, type RepoHome } from '@/lib/view'
+import { selectRef, type RepoHome } from '@/lib/view'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 export function RepoScaffold({
   addr,
   children,
   rail = true,
-  chainOverride,
   refParam = '',
 }: {
   addr: RepoAddress
   children: (home: RepoHome) => ReactNode
   rail?: boolean
-  chainOverride?: Partial<TrustChain>
   /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
   refParam?: string
 }): JSX.Element {
@@ -44,6 +42,14 @@ export function RepoScaffold({
           body="This page needs ?owner= and &name= in the URL."
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
+      </AppShell>
+    )
+  }
+
+  if (!isRegistryDeployed()) {
+    return (
+      <AppShell wide>
+        <NotDeployedState />
       </AppShell>
     )
   }
@@ -91,13 +97,9 @@ export function RepoScaffold({
 
   const home = data
 
-  // A non-default ref selection retargets the rail's assay at that ref's tip (an explicit
-  // page-level chainOverride — blob/commit serials — still wins).
-  let railOverride = chainOverride
-  if (refParam) {
-    const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
-    if (selected.ref) railOverride = { tipOid: tipOidOf(selected.ref) ?? undefined, ...chainOverride }
-  }
+  // The rail's assay attests the ref the page shows: the `?ref=` selection, else the
+  // default branch.
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
 
   return (
     <AppShell wide>
@@ -105,7 +107,7 @@ export function RepoScaffold({
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
           <div className="min-w-0">{children(home)}</div>
-          <RepoRail home={home} addr={addr} chainOverride={railOverride} />
+          <RepoRail home={home} addr={addr} selected={selected} />
         </div>
       ) : (
         <div className="min-w-0">{children(home)}</div>

@@ -1,0 +1,13 @@
+{
+  "name": "single_char",
+  "description": "One character is enough.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "x"
+  },
+  "expected": {
+    "valid": true,
+    "normalized": "x"
+  }
+}

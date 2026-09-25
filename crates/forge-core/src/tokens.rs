@@ -42,9 +42,11 @@ pub const MAINTAIN_POSITION: u16 = 1;
 /// `tokenCost` spends over the repo's lifetime.
 pub const GRANT_AMOUNT: u64 = 1_000_000_000;
 
-/// The system **TokenHistory** contract (testnet) holding the `mint` / `freeze` /
+/// The system **TokenHistory** contract holding the `mint` / `freeze` /
 /// `unfreeze` / `destroyFrozenFunds` audit documents with consensus `$createdAt`
-/// (S0.7 experiment 7).
+/// (S0.7 experiment 7). A Platform system contract: its id is fixed by rs-dpp
+/// (`token_history_contract::ID_BYTES`) and identical on every network, so it is not a
+/// per-network deployment value.
 pub const TOKEN_HISTORY_CONTRACT_ID: &str = "43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF";
 
 // TokenHistory document types.

@@ -39,9 +39,17 @@ export interface PackSource {
   fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array>
 }
 
+/** What happened to one reconstructed object's hash check. */
+export type ObjectVerdict = 'verified' | 'unchecked' | 'failed'
+
 export interface BrowseReaderOptions {
   /** Verify the reconstructed object hashes to the requested OID (default true). */
   readonly verify?: boolean
+  /**
+   * Told the outcome of every fresh reconstruction (memo hits were reported when first
+   * read). This is how the UI learns what was actually checked rather than assuming it.
+   */
+  readonly onObject?: (verdict: ObjectVerdict) => void
 }
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
@@ -118,8 +126,12 @@ export class BrowseReader {
     if (this.opts.verify !== false) {
       const got = gitOidHex(obj.type, obj.bytes)
       if (got !== oidKey) {
+        this.opts.onObject?.('failed')
         throw new Error(`oid mismatch: wanted ${oidHex}, reconstructed ${got}`)
       }
+      this.opts.onObject?.('verified')
+    } else {
+      this.opts.onObject?.('unchecked')
     }
     this.objectsByOid.set(oidKey, obj)
     return obj

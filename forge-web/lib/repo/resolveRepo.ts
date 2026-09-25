@@ -9,7 +9,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { NETWORKS, type Network } from '../constants'
+import { DEFAULT_NETWORK, requireRegistryContractId, type Network } from '../constants'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { REGISTRY_DOC, asIdentifierString, type RepoRef } from './contract'
 
@@ -136,8 +136,7 @@ export async function resolveRepo(
   },
 ): Promise<RepoRef | null> {
   const registryId =
-    params.registryContractId ?? NETWORKS[params.network ?? 'testnet'].registryContractId
-  if (registryId === null) throw new Error('no registry contract id configured for this network')
+    params.registryContractId ?? requireRegistryContractId(params.network ?? DEFAULT_NETWORK)
 
   const resolved = await resolveRepoWithListing(sdk, registryId, params.ownerId, params.name)
   return resolved === null ? null : resolved.repo

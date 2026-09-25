@@ -31,11 +31,14 @@ check "amended tip is NOT a descendant of base" \
   bash -c "! git -C '$SRC' merge-base --is-ancestor '$A' '$B'"
 
 step "push WITHOUT + (expect rejection)"
-if git_dash "$ID_DEPLOYER" "$LOG-noff" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
+# Retried on a flake: the verdict is the whole point of this scenario, so one bad DAPI node
+# must not turn it into a SKIP. A rejection is not a flake and ends the retries at once.
+if git_dash_retry "$ID_DEPLOYER" "$LOG-noff" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
   bad "non-fast-forward push was ACCEPTED (should be rejected)"
 else
   if is_flake "$LOG-noff.err"; then
-    skip_scenario "could not evaluate reject — transport flake on the reject push"
+    cat "$LOG-noff.err" >&2
+    skip_scenario "could not evaluate reject — every attempt (${E2E_ATTEMPTS}) flaked on transport"
   fi
   if grep -qiE 'non-fast-forward|rejected|fetch first|not a fast.?forward|behind' "$LOG-noff.err"; then
     ok "non-fast-forward rejected (client-side FF guard)"

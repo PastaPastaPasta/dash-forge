@@ -1,0 +1,39 @@
+{
+  "name": "tie_break_created_at_then_id",
+  "description": "Within a role, copies order by createdAt, then id.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "m-b",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "m-a",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "m-c",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 5,
+        "verified": true
+      }
+    ]
+  },
+  "expected": {
+    "order": [
+      "m-c",
+      "m-a",
+      "m-b"
+    ],
+    "selected": "m-c"
+  }
+}

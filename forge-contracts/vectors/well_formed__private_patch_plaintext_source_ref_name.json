@@ -1,0 +1,16 @@
+{
+  "name": "private_patch_plaintext_source_ref_name",
+  "description": "A private patch must not carry a plaintext sourceRefName.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 1,
+      "sourceRefName": "refs/heads/fix"
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

@@ -56,17 +56,32 @@ export function refNameHashMatches(refName: string, refNameHash: string): boolea
 }
 
 /**
+ * Compare two strings by Unicode code point, which is UTF-8 byte order: the order Rust's
+ * `String`/`str` `Ord` uses. JavaScript's `<` compares UTF-16 code units instead, which puts
+ * an astral character (a surrogate pair, 0xD800–0xDFFF) before U+E000–U+FFFF, so it disagrees
+ * with Rust on strings such as "！" (U+FF01) and "😀" (U+1F600). Every string ordering in the
+ * rules goes through this. Returns <0, 0, >0.
+ */
+export function compareStrings(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    const ca = a.codePointAt(i) as number
+    const cb = b.codePointAt(i) as number
+    if (ca !== cb) return ca - cb
+    // Equal code points have equal lengths; step over the low surrogate of a pair
+    if (ca > 0xffff) i++
+  }
+  return a.length - b.length
+}
+
+/**
  * Total-order comparison on the `(createdAt, id)` key used everywhere in the module.
- * Numeric `createdAt` ascending, then `id` (byte/scalar) ascending. Returns <0, 0, >0.
+ * Numeric `createdAt` ascending, then `id` by code point ({@link compareStrings}).
  */
 export function compareKey(
   a: { createdAt: number; id?: string },
   b: { createdAt: number; id?: string },
 ): number {
   if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
-  const ai = a.id ?? ''
-  const bi = b.id ?? ''
-  if (ai < bi) return -1
-  if (ai > bi) return 1
-  return 0
+  return compareStrings(a.id ?? '', b.id ?? '')
 }

@@ -1,0 +1,49 @@
+{
+  "name": "pr_author_event_draft_retarget_label_inert",
+  "description": "authorEvent kinds other than close/reopen (draft, retarget, label) are inert.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "draft",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "a2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "alice",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 110
+      },
+      {
+        "id": "a3",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "alice",
+        "value": "urgent",
+        "oid": null,
+        "createdAt": 120
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

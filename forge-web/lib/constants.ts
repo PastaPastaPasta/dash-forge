@@ -5,58 +5,242 @@
  * Ref-resolution / event-fold / chunking rules exist twice (Rust forge-core + this TS) by
  * necessity — both implement `FORGE_RULES_V1` against the shared JSON conformance vectors.
  * Any value here that mirrors forge-core MUST stay byte-for-byte in sync with those vectors;
- * CI runs both suites on every vector change. Do not hand-edit derived values — they are meant
- * to be generated from `forge-contracts/deployments/*.json` once the deploy pipeline lands.
+ * CI runs both suites on every vector change. Per-network contract ids are never written here:
+ * they come from `forge-contracts/deployments/*.json` (see `./deployments`), selected by the
+ * build-time `NEXT_PUBLIC_NETWORK` / `NEXT_PUBLIC_DEVNET_NAME` / `NEXT_PUBLIC_DAPI_ADDRESSES` /
+ * `NEXT_PUBLIC_QUORUM_URL` / `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`.
  */
+
+import {
+  DEPLOYMENTS,
+  forgeV2Ids,
+  recordedDapiAddresses,
+  type DeploymentFile,
+  type ForgeIds,
+} from './deployments'
 
 // ---------------------------------------------------------------------------
 // Network
 // ---------------------------------------------------------------------------
 
-export type Network = 'testnet' | 'mainnet'
-
-export const DEFAULT_NETWORK: Network = 'testnet'
+/** The network kinds forge-web can be built for. A devnet is further named (`moutai`). */
+export type Network = 'testnet' | 'mainnet' | 'devnet'
 
 /**
- * Registry contract is deployed once per network under the DCG/DAO identity;
- * the canonical id lives in `forge-contracts/deployments/<network>.json`.
- * These are placeholders — FILLED BY DEPLOYMENT (do not commit real ids by hand here).
+ * Platform **system** contracts. Their ids are fixed by rs-dpp (`dpns_contract::ID_BYTES`,
+ * `token_history_contract::ID_BYTES`) and identical on every network — protocol constants,
+ * not deployment values.
  */
-export interface NetworkConfig {
-  readonly network: Network
-  /** Global registry contract id (discovery + social graph). Deploy-time value. */
-  readonly registryContractId: string | null
-  /** DPNS system contract id — supplies human-readable identity names. Deploy-time value. */
-  readonly dpnsContractId: string | null
-}
-
-export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
-  testnet: {
-    network: 'testnet',
-    // Source: forge-contracts/deployments/testnet.json (registry.contractId).
-    registryContractId: 'DXocbV5xJb9hYwSAUGsyTTskdem7nVmngeJbH5TRzLnh',
-    // DPNS system contract (testnet).
-    dpnsContractId: 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec',
-  },
-  mainnet: {
-    network: 'mainnet',
-    registryContractId: null, // FILLED BY DEPLOYMENT: forge-contracts/deployments/mainnet.json
-    dpnsContractId: null, // FILLED BY DEPLOYMENT
-  },
-}
-
-/** The deployed registry contract owner (DCG/DAO identity) — for listing-authenticity checks. */
-export const TESTNET_REGISTRY_OWNER = '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB'
-
+export const DPNS_CONTRACT_ID = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
 /**
- * The system **TokenHistory** contract (testnet) holding the `mint` / `freeze` / `unfreeze` /
+ * The system **TokenHistory** contract holding the `mint` / `freeze` / `unfreeze` /
  * `destroyFrozenFunds` audit documents with consensus `$createdAt` (parity with forge-core
  * `tokens.rs::TOKEN_HISTORY_CONTRACT_ID`, S0.7). Its records reconstruct as-of-time WRITE /
- * MAINTAIN holdings for the issue/PR event fold. Mainnet id is FILLED BY DEPLOYMENT.
+ * MAINTAIN holdings for the issue/PR event fold.
  */
-export const TOKEN_HISTORY_CONTRACT_ID: Readonly<Record<Network, string | null>> = {
-  testnet: '43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF',
-  mainnet: null,
+export const TOKEN_HISTORY_CONTRACT_ID = '43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF'
+
+/** The DAPI port assumed when a configured address omits one (Platform HTTPS gateway). */
+export const DEFAULT_DAPI_PORT = 1443
+
+/** One network's resolved configuration. */
+export interface NetworkConfig {
+  readonly network: Network
+  /** The devnet name (`moutai`), or null for testnet/mainnet. */
+  readonly devnetName: string | null
+  /** Deployment key / display label: `testnet`, `mainnet`, or `devnet-<name>`. */
+  readonly key: string
+  /** Devnet DAPI endpoints (`https://host:port`); empty = discovered by the SDK. */
+  readonly dapiAddresses: readonly string[]
+  /** Devnet quorum service URL; null = `https://quorums.<name>.networks.dash.org`. */
+  readonly quorumBaseUrl: string | null
+  /**
+   * Global registry contract id (discovery + social graph), from
+   * `forge-contracts/deployments/<key>.json` or `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`. Null =
+   * no Dash Forge registry on this network — see {@link NotDeployedError}.
+   */
+  readonly registryContractId: string | null
+  /** Where {@link registryContractId} came from (shown in the UI and the error). */
+  readonly registrySource: string | null
+  /** DPNS system contract id — supplies human-readable identity names. */
+  readonly dpnsContractId: string
+  /** The forge-v2 contracts registered here (`deployments/<key>.json` `v2`), else null. */
+  readonly v2: ForgeIds | null
+}
+
+/** Build-time network selection (`NEXT_PUBLIC_*`, inlined by Next at build). */
+export interface NetworkEnv {
+  readonly network?: string
+  readonly devnetName?: string
+  readonly dapiAddresses?: string
+  /** Devnet quorum service URL (`NEXT_PUBLIC_QUORUM_URL`; parity with `DASH_FORGE_QUORUM_URL`). */
+  readonly quorumBaseUrl?: string
+  readonly registryContractId?: string
+}
+
+/** Thrown by registry-backed reads/writes on a network with no Dash Forge registry. */
+export class NotDeployedError extends Error {
+  constructor(readonly networkKey: string) {
+    super(
+      `no Dash Forge registry is deployed on ${networkKey} yet; see docs/mainnet-runbook.md ` +
+        `(or build with NEXT_PUBLIC_REGISTRY_CONTRACT_ID set to a registry deployed there)`,
+    )
+    this.name = 'NotDeployedError'
+  }
+}
+
+function nonEmpty(v: string | undefined | null): string | null {
+  const t = v?.trim()
+  return t ? t : null
+}
+
+/**
+ * Parse a comma-separated DAPI list: `host`, `host:port` or `https://host:port`. A missing
+ * scheme becomes `https://`, a missing port {@link DEFAULT_DAPI_PORT} (parity with
+ * forge-core `network::parse_dapi_addresses`).
+ */
+export function parseDapiAddresses(list: string): string[] {
+  return list
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((raw) => {
+      const idx = raw.indexOf('://')
+      const scheme = idx >= 0 ? raw.slice(0, idx) : 'https'
+      const authority = (idx >= 0 ? raw.slice(idx + 3) : raw).replace(/\/+$/, '')
+      if (authority === '' || authority.includes('/') || /\s/.test(authority)) {
+        throw new Error(`invalid DAPI address "${raw}": expected host, host:port or https://host:port`)
+      }
+      return authority.includes(':')
+        ? `${scheme}://${authority}`
+        : `${scheme}://${authority}:${DEFAULT_DAPI_PORT}`
+    })
+}
+
+/** Same rule forge-core and the SDK's quorum-URL builder apply. */
+function validateDevnetName(name: string): void {
+  const reserved = ['mainnet', 'testnet', 'devnet', 'local', 'regtest']
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(name) || reserved.includes(name.toLowerCase())) {
+    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. moutai)`)
+  }
+}
+
+/**
+ * Resolve the active network and every network's config from the build env and the
+ * embedded deployment files. Precedence per field: env > `deployments/<key>.json` >
+ * testnet default. The registry override applies to the active network only. A network
+ * without a deployment resolves with `registryContractId: null` — never another network's.
+ * Throws on a malformed env (unknown network, devnet without a name) so the BUILD fails.
+ */
+export function resolveNetworks(
+  env: NetworkEnv,
+  deployments: Readonly<Record<string, DeploymentFile>>,
+): { readonly active: Network; readonly networks: Readonly<Record<Network, NetworkConfig>> } {
+  const devnetName = nonEmpty(env.devnetName)
+  const kind = (nonEmpty(env.network) ?? (devnetName ? 'devnet' : 'testnet')).toLowerCase()
+  if (kind !== 'testnet' && kind !== 'mainnet' && kind !== 'devnet') {
+    throw new Error(`unknown NEXT_PUBLIC_NETWORK "${env.network}": expected testnet, mainnet or devnet`)
+  }
+  const active: Network = kind
+  if (active === 'devnet') {
+    if (devnetName === null) {
+      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. moutai)')
+    }
+    validateDevnetName(devnetName)
+  }
+
+  const build = (network: Network, name: string | null): NetworkConfig => {
+    const key = network === 'devnet' ? `devnet-${name ?? ''}` : network
+    const file = name !== null || network !== 'devnet' ? deployments[key] : undefined
+    const isActive = network === active
+    const override = isActive ? nonEmpty(env.registryContractId) : null
+    const deployed = nonEmpty(file?.registry?.contractId)
+    const envAddresses = isActive ? nonEmpty(env.dapiAddresses) : null
+    const envQuorum = isActive ? nonEmpty(env.quorumBaseUrl) : null
+    return {
+      network,
+      devnetName: name,
+      key,
+      dapiAddresses:
+        envAddresses !== null
+          ? parseDapiAddresses(envAddresses)
+          : parseDapiAddresses(recordedDapiAddresses(file).join(',')),
+      quorumBaseUrl: envQuorum ?? nonEmpty(file?.quorumBaseUrl),
+      registryContractId: override ?? deployed,
+      registrySource:
+        override !== null
+          ? 'NEXT_PUBLIC_REGISTRY_CONTRACT_ID'
+          : deployed !== null
+            ? `forge-contracts/deployments/${key}.json`
+            : null,
+      dpnsContractId: DPNS_CONTRACT_ID,
+      v2: forgeV2Ids(file),
+    }
+  }
+
+  return {
+    active,
+    networks: {
+      testnet: build('testnet', null),
+      mainnet: build('mainnet', null),
+      devnet: build('devnet', active === 'devnet' ? devnetName : null),
+    },
+  }
+}
+
+// `process.env.NEXT_PUBLIC_*` must be written out literally — Next inlines each at build time.
+const RESOLVED = resolveNetworks(
+  {
+    network: process.env.NEXT_PUBLIC_NETWORK,
+    devnetName: process.env.NEXT_PUBLIC_DEVNET_NAME,
+    dapiAddresses: process.env.NEXT_PUBLIC_DAPI_ADDRESSES,
+    quorumBaseUrl: process.env.NEXT_PUBLIC_QUORUM_URL,
+    registryContractId: process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID,
+  },
+  DEPLOYMENTS,
+)
+
+/** The network this build targets (`NEXT_PUBLIC_NETWORK`, default testnet). */
+export const DEFAULT_NETWORK: Network = RESOLVED.active
+
+/** Per-network config (the active network's carries any build-time overrides). */
+export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = RESOLVED.networks
+
+/**
+ * Where a trusted evo-sdk connection fetches the quorum public keys every proof is checked
+ * against — the web app's trust anchor (S0.3, roadmap D-C). Testnet and mainnet mirror the
+ * defaults compiled into evo-sdk's `testnetTrusted()` / `mainnetTrusted()`; a devnet uses its
+ * configured `quorumBaseUrl` (`NEXT_PUBLIC_QUORUM_URL`, else the deployment file), else
+ * `quorums.<name>.networks.dash.org` — what `service.ts` hands the SDK (parity with forge-core
+ * `Network::quorum_base_url`). The trust panel discloses this, so it must name the endpoint
+ * the SDK actually uses. `''` for a devnet config with no name (one this build does not target).
+ */
+export function quorumEndpoint(config: NetworkConfig): string {
+  switch (config.network) {
+    case 'testnet':
+    case 'mainnet':
+      return `https://quorums.${config.network}.networks.dash.org`
+    case 'devnet':
+      if (config.quorumBaseUrl !== null) return config.quorumBaseUrl
+      return config.devnetName !== null ? `https://quorums.${config.devnetName}.networks.dash.org` : ''
+  }
+}
+
+/** {@link quorumEndpoint} for each network as this build resolved it. */
+export const QUORUM_KEY_ENDPOINT: Readonly<Record<Network, string>> = {
+  testnet: quorumEndpoint(NETWORKS.testnet),
+  mainnet: quorumEndpoint(NETWORKS.mainnet),
+  devnet: quorumEndpoint(NETWORKS.devnet),
+}
+
+/** The config of the network this build targets. */
+export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]
+
+/** The registry id for `network`, or a {@link NotDeployedError}. */
+export function requireRegistryContractId(network: Network): string {
+  const config = NETWORKS[network]
+  if (config.registryContractId === null) throw new NotDeployedError(config.key)
+  return config.registryContractId
 }
 
 // ---------------------------------------------------------------------------

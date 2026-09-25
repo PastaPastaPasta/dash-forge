@@ -14,7 +14,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Encode } from '../auth/base58'
 import { AuthzResolver, foldIssueState, type Event } from '../rules'
 import type { RepoRef } from './contract'
-import { invalidateAuthz, readTokenHistory, resolveAuthz } from './tokens'
+import {
+  currentHoldings,
+  invalidateAuthz,
+  readTokenHistory,
+  readViewerHoldings,
+  resolveAuthz,
+} from './tokens'
 
 /** A deterministic base58 32-byte id from a seed byte. */
 function id(seed: number): string {
@@ -98,9 +104,11 @@ describe('readTokenHistory', () => {
     expect(m).toMatchObject({ token: 'maintain', op: 'mint', createdAt: 100 })
   })
 
-  it('degrades to empty history on unknown (mainnet) network', async () => {
-    const sdk = mockSdk({ mints: {} })
-    expect(await readTokenHistory(sdk, REPO, 'mainnet')).toEqual([])
+  it('degrades to empty history when the history read fails', async () => {
+    const sdk = {
+      tokens: { calculateId: (): Promise<string> => Promise.reject(new Error('offline')) },
+    } as unknown as EvoSDK
+    expect(await readTokenHistory(sdk, REPO)).toEqual([])
   })
 })
 
@@ -206,5 +214,31 @@ describe('resolveAuthz caching', () => {
     await resolveAuthz(sdk, repo) // failure was NOT pinned — the read retries
     expect(calculateCalls).toBeGreaterThan(before)
     invalidateAuthz(repo.contractId)
+  })
+})
+
+describe('viewer holdings (the PR/issue control gate)', () => {
+  it('reads the owner, a granted maintainer, and a stranger correctly', async () => {
+    const repo: RepoRef = { contractId: id(40), ownerId: OWNER }
+    const sdk = mockSdk({ mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] } })
+
+    expect(await readViewerHoldings(sdk, repo, OWNER)).toEqual({ write: true, maintain: true })
+    expect(await readViewerHoldings(sdk, repo, MAINTAINER)).toEqual({ write: false, maintain: true })
+    expect(await readViewerHoldings(sdk, repo, OUTSIDER)).toEqual({ write: false, maintain: false })
+    invalidateAuthz(repo.contractId)
+  })
+
+  it('sees a freeze: a suspended maintainer holds nothing spendable', async () => {
+    const repo: RepoRef = { contractId: id(41), ownerId: OWNER }
+    const sdk = mockSdk({
+      mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] },
+      freezes: { [MAINTAIN_TOKEN]: [{ $id: 'f1', $createdAt: 200, frozenIdentityId: MAINTAINER }] },
+    })
+    expect(await readViewerHoldings(sdk, repo, MAINTAINER)).toEqual({ write: false, maintain: false })
+    invalidateAuthz(repo.contractId)
+  })
+
+  it('returns null (unknown, not "holds nothing") when the history read failed', () => {
+    expect(currentHoldings([], OWNER)).toBeNull()
   })
 })

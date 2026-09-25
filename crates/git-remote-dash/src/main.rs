@@ -11,16 +11,23 @@
 //! - `option`      → recorded via [`options::handle_option`]; shallow refused loudly.
 //! - `list` / `list for-push` → resolve the repo and emit refs + HEAD symref.
 //! - `fetch`       → download + index packs (full clone; `--filter` partial clone).
-//! - `push`        → build a self-contained pack, upload, write manifest + ref updates.
+//! - `push`        → build a self-contained pack, store it per the repo's storage policy
+//!   (`dash.storage` / `dash.replicas`), write the manifest, then the ref updates.
 //!
 //! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--teardown`,
 //! `--balance`) used to provision/inspect repos outside the git protocol.
+//!
+//! The network comes from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` /
+//! `DASH_FORGE_DAPI_ADDRESSES`, else git config `dash.network` / `dash.devnetName` /
+//! `dash.dapiAddresses` (e.g. `git clone -c dash.network=devnet -c dash.devnetName=moutai
+//! dash://…`), else testnet. See `helper::network_target`.
 
 mod admin;
 mod git;
 mod helper;
 mod journal;
 mod options;
+mod policy;
 mod url;
 
 use std::io::{self, BufRead, Write};
@@ -70,8 +77,15 @@ fn main() -> Result<()> {
     // to an absolute path once so every child agrees on the repository.
     normalize_git_dir_env();
 
+    // A named remote (`git push origin`) selects its `remote.<name>.dash*` storage
+    // settings; a bare URL has no remote name (git passes the URL twice).
+    let remote_name = args
+        .get(1)
+        .filter(|a| !a.contains("://") && args.get(2).is_some_and(|u| u != *a))
+        .cloned();
+
     let rt = runtime()?;
-    let mut helper = Helper::new(dash_url)?;
+    let mut helper = Helper::new(dash_url, remote_name)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock())

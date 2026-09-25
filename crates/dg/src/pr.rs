@@ -21,7 +21,7 @@ use serde_json::json;
 use forge_core::collab::{PullRequestInput, PullRequestService};
 
 use crate::common::{resolve, RepoRef};
-use crate::context::{network_label, Ctx};
+use crate::context::Ctx;
 use crate::{PrCommand, VerdictArg};
 
 /// Dispatch a `pr` subcommand.
@@ -470,12 +470,13 @@ fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool
     cmd.arg("fetch").arg(&url);
     // A contract-addressed URL names no owner, so the helper cannot derive a default key
     // path from it; hand it the identity this invocation already resolved. The network
-    // must travel too, or the helper falls back to its own default and a
-    // `--network mainnet` checkout would quietly query testnet.
+    // (devnet name, DAPI list, registry override) must travel too, or the helper falls
+    // back to its own default and a `--network mainnet` checkout would quietly query
+    // testnet.
     if let Some(path) = &ctx.identity_path {
         cmd.env("DASH_FORGE_KEY", path);
     }
-    cmd.env("DASH_FORGE_NETWORK", network_label(ctx.network));
+    cmd.envs(ctx.target.env_vars());
 
     let status = cmd.status().context("running git fetch for the PR head")?;
     Ok(status.success())

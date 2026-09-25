@@ -21,7 +21,7 @@ LOG="${WORKROOT}/s04"
 
 # Echo "<present:yes|no> <frozen:yes|no>" for COLLAB's WRITE token from a live query.
 collab_write_status() {
-  dg_as "$ID_DEPLOYER" --json collab list "$REPO" >"$LOG-list.json" 2>"$LOG-list.err" || return 1
+  dg_read_retry "$ID_DEPLOYER" "$LOG-list.json" "$LOG-list.err" --json collab list "$REPO" || return 1
   python3 - "$IDID_COLLAB" "$LOG-list.json" <<'PY'
 import json,sys
 me=sys.argv[1]
@@ -45,7 +45,11 @@ wait_until_frozen() {
 }
 
 step "query COLLAB's current WRITE-token status"
-STATUS="$(collab_write_status)" || skip_scenario "could not query collaborators (transport flake)"
+if ! STATUS="$(collab_write_status)"; then
+  cat "$LOG-list.err" >&2 || true
+  is_flake "$LOG-list.err" && skip_scenario "could not query collaborators: every attempt (${E2E_ATTEMPTS}) flaked"
+  bad "collab list failed (not a transport flake)"; finish_scenario
+fi
 info "COLLAB write status (present frozen): ${STATUS}"
 
 PRESENT="${STATUS% *}"; FROZEN="${STATUS#* }"
@@ -107,7 +111,11 @@ else
 fi
 
 step "COLLAB pushes again (expect CONSENSUS rejection: token frozen)"
-if git_dash "$ID_COLLAB" "$LOG-frozen" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
+# The helper refuses a push from a token-less or frozen identity locally, before anything
+# is broadcast (a UX pre-check added 2026-09-21). This scenario exists to prove the network
+# itself enforces the freeze, so it turns that pre-check off. Retried on a flake so that a
+# bad DAPI node cannot turn the headline check into a SKIP; a rejection ends the retries.
+if DASH_FORGE_SKIP_WRITE_PRECHECK=1 git_dash_retry "$ID_COLLAB" "$LOG-frozen" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
   bad "frozen COLLAB's push was ACCEPTED — token freeze did NOT gate at consensus"
   finish_scenario
 fi
@@ -117,7 +125,11 @@ cat "$LOG-frozen.err" >&2
 echo "-----------------------------------------" >&2
 
 if is_flake "$LOG-frozen.err" && ! is_consensus_frozen "$LOG-frozen.err"; then
-  skip_scenario "frozen push failed but on a transport flake — inconclusive; retry"
+  skip_scenario "frozen push flaked on transport on every attempt (${E2E_ATTEMPTS}) — inconclusive"
+fi
+if grep -qiE 'no WRITE token on this repo|tokens? on this repo (is|are) frozen' "$LOG-frozen.err"; then
+  bad "push was refused by the helper's local pre-check, not at consensus (DASH_FORGE_SKIP_WRITE_PRECHECK not honored?)"
+  finish_scenario
 fi
 if grep -qiE 'non-fast-forward|fetch first' "$LOG-frozen.err"; then
   bad "push was refused CLIENT-SIDE (non-fast-forward), not at consensus"

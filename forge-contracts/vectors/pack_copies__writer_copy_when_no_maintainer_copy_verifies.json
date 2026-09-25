@@ -1,0 +1,39 @@
+{
+  "name": "writer_copy_when_no_maintainer_copy_verifies",
+  "description": "When no maintainer copy verifies, a writer's verified copy is read before a former member's.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "o1",
+        "packHash": "P",
+        "ownerRole": null,
+        "createdAt": 1,
+        "verified": true
+      },
+      {
+        "id": "m1",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 10,
+        "verified": false
+      },
+      {
+        "id": "w1",
+        "packHash": "P",
+        "ownerRole": "writer",
+        "createdAt": 30,
+        "verified": true
+      }
+    ]
+  },
+  "expected": {
+    "order": [
+      "m1",
+      "w1",
+      "o1"
+    ],
+    "selected": "w1"
+  }
+}

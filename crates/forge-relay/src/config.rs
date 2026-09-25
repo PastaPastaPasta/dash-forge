@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use forge_core::platform::Network;
+use forge_core::network::{NetworkSettings, NetworkTarget, Registry};
 
 use crate::error::{RelayError, Result};
 
@@ -59,6 +59,10 @@ impl std::fmt::Debug for StaticWebhook {
 #[serde(rename_all = "kebab-case")]
 struct FileConfig {
     network: Option<String>,
+    devnet_name: Option<String>,
+    dapi_addresses: Option<String>,
+    quorum_url: Option<String>,
+    registry_contract_id: Option<String>,
     identity: Option<PathBuf>,
     poll_interval_secs: Option<u64>,
     #[serde(default)]
@@ -80,6 +84,10 @@ impl std::fmt::Debug for FileConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileConfig")
             .field("network", &self.network)
+            .field("devnet_name", &self.devnet_name)
+            .field("dapi_addresses", &self.dapi_addresses)
+            .field("quorum_url", &self.quorum_url)
+            .field("registry_contract_id", &self.registry_contract_id)
             .field("identity", &self.identity)
             .field("poll_interval_secs", &self.poll_interval_secs)
             .field("repos", &self.repos)
@@ -103,8 +111,9 @@ impl std::fmt::Debug for FileConfig {
 /// relies on [`StaticWebhook`]'s own redacting `Debug`.
 #[derive(Clone)]
 pub struct RelayConfig {
-    /// Target network.
-    pub network: Network,
+    /// Target network and the registry resolved for it (used to name repos in payloads;
+    /// without one the relay still delivers, naming repos by contract id).
+    pub target: NetworkTarget,
     /// Relay identity file (bridge-format JSON). The relay mostly READS, so its balance
     /// stays tiny; a CI-runner identity that writes `checkRun` docs is separate.
     pub identity_path: Option<PathBuf>,
@@ -133,7 +142,7 @@ pub struct RelayConfig {
 impl std::fmt::Debug for RelayConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RelayConfig")
-            .field("network", &self.network)
+            .field("target", &self.target)
             .field("identity_path", &self.identity_path)
             .field("poll_interval", &self.poll_interval)
             .field("repos", &self.repos)
@@ -154,8 +163,8 @@ impl std::fmt::Debug for RelayConfig {
 /// CLI overrides applied on top of the file config.
 #[derive(Debug, Default, Clone)]
 pub struct CliOverrides {
-    /// `--network`.
-    pub network: Option<Network>,
+    /// `--network`, `--devnet-name`, `--dapi-addresses`.
+    pub network: NetworkSettings,
     /// `--identity`.
     pub identity: Option<PathBuf>,
     /// `--repos` (comma-separated contract ids).
@@ -170,15 +179,6 @@ pub struct CliOverrides {
     pub listen: Option<String>,
     /// `--web-base-url`.
     pub web_base_url: Option<String>,
-}
-
-fn parse_network(s: &str) -> Result<Network> {
-    match s.to_ascii_lowercase().as_str() {
-        "testnet" => Ok(Network::Testnet),
-        "mainnet" => Ok(Network::Mainnet),
-        "devnet" => Ok(Network::Devnet),
-        other => Err(RelayError::Config(format!("unknown network {other:?}"))),
-    }
 }
 
 impl RelayConfig {
@@ -204,13 +204,25 @@ impl RelayConfig {
             None => FileConfig::default(),
         };
 
-        let network = if let Some(n) = cli.network {
-            n
-        } else if let Some(n) = &file.network {
-            parse_network(n)?
-        } else {
-            Network::Testnet
+        // Network precedence, field by field: flags > config file > environment
+        // (`DASH_FORGE_NETWORK`, `FORGE_REGISTRY_CONTRACT_ID`, …) > embedded deployment.
+        let file_network = NetworkSettings {
+            network: file.network.clone(),
+            devnet_name: file.devnet_name.clone(),
+            dapi_addresses: file.dapi_addresses.clone(),
+            quorum_base_url: file.quorum_url.clone(),
+            registry: file
+                .registry_contract_id
+                .clone()
+                .map(|id| Registry::override_from(id, "relay config registry-contract-id")),
         };
+        let target = cli
+            .network
+            .clone()
+            .overlay(file_network)
+            .overlay(NetworkSettings::from_env())
+            .resolve()
+            .map_err(|e| RelayError::Config(e.to_string()))?;
 
         let identity_path = cli.identity.clone().or(file.identity);
 
@@ -231,7 +243,7 @@ impl RelayConfig {
         );
 
         Ok(Self {
-            network,
+            target,
             identity_path,
             poll_interval,
             repos,
@@ -253,6 +265,41 @@ impl RelayConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_core::platform::Network;
+
+    #[test]
+    fn devnet_and_registry_keys_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("relay-cfg-devnet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("relay.toml");
+        std::fs::write(
+            &path,
+            "network = \"devnet\"\ndevnet-name = \"moutai\"\n\
+             registry-contract-id = \"RELAYREG\"\n",
+        )
+        .unwrap();
+
+        let cfg = RelayConfig::load(Some(&path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.target.network.key(), "devnet-moutai");
+        assert_eq!(
+            cfg.target.require_registry().unwrap().contract_id,
+            "RELAYREG"
+        );
+
+        // A `--network testnet` flag drops the file's devnet-scoped registry override.
+        let cli = CliOverrides {
+            network: NetworkSettings::from_flags(Some("testnet".into()), None, None),
+            ..Default::default()
+        };
+        let cfg = RelayConfig::load(Some(&path), &cli).unwrap();
+        assert_eq!(cfg.target.network, Network::Testnet);
+        assert_ne!(
+            cfg.target.require_registry().unwrap().contract_id,
+            "RELAYREG"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn parses_full_toml() {
@@ -283,7 +330,7 @@ secret = "s3cr3t"
         std::fs::write(&path, toml_src).unwrap();
 
         let cfg = RelayConfig::load(Some(&path), &CliOverrides::default()).unwrap();
-        assert_eq!(cfg.network, Network::Testnet);
+        assert_eq!(cfg.target.network, Network::Testnet);
         assert_eq!(cfg.poll_interval, Duration::from_secs(10));
         // repos includes the static webhook's repo (CCC) plus AAA, BBB.
         assert!(cfg.repos.contains(&"AAA".to_string()));
@@ -304,14 +351,14 @@ secret = "s3cr3t"
     #[test]
     fn cli_overrides_win() {
         let cli = CliOverrides {
-            network: Some(Network::Mainnet),
+            network: NetworkSettings::from_flags(Some("mainnet".into()), None, None),
             repos: Some(vec!["ZZZ".into()]),
             poll_interval_secs: Some(42),
             allow_private: Some(true),
             ..Default::default()
         };
         let cfg = RelayConfig::load(None, &cli).unwrap();
-        assert_eq!(cfg.network, Network::Mainnet);
+        assert_eq!(cfg.target.network, Network::Mainnet);
         assert_eq!(cfg.repos, vec!["ZZZ".to_string()]);
         assert_eq!(cfg.poll_interval, Duration::from_secs(42));
         assert!(cfg.allow_private);
@@ -327,7 +374,7 @@ secret = "s3cr3t"
     #[test]
     fn defaults_are_sane() {
         let cfg = RelayConfig::load(None, &CliOverrides::default()).unwrap();
-        assert_eq!(cfg.network, Network::Testnet);
+        assert_eq!(cfg.target.network, Network::Testnet);
         assert_eq!(cfg.poll_interval, Duration::from_secs(DEFAULT_POLL_SECS));
         assert!(!cfg.allow_private);
         assert!(cfg.use_platform_webhooks);

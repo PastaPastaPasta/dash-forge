@@ -1,0 +1,15 @@
+{
+  "name": "private_ref_update_enc",
+  "description": "A private ref update with only enc and epoch is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

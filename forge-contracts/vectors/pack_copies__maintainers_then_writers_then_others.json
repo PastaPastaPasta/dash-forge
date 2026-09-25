@@ -1,0 +1,39 @@
+{
+  "name": "maintainers_then_writers_then_others",
+  "description": "Copies are tried maintainers first, then writers, then uploaders who are no longer members; the first verified is read.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "w1",
+        "packHash": "P",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "o1",
+        "packHash": "P",
+        "ownerRole": null,
+        "createdAt": 5,
+        "verified": true
+      },
+      {
+        "id": "m1",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 20,
+        "verified": true
+      }
+    ]
+  },
+  "expected": {
+    "order": [
+      "m1",
+      "w1",
+      "o1"
+    ],
+    "selected": "m1"
+  }
+}

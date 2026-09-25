@@ -1,0 +1,29 @@
+{
+  "name": "non_member_ignored",
+  "description": "An approval from someone with no membership document does not count.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "stranger",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}

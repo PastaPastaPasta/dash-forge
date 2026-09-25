@@ -2,8 +2,9 @@
 
 /**
  * Landing + discovery. The foundry hero states the thesis (no server to trust), the signature
- * verification chip sits under it, and the discovery feed lists recent registry repos — live
- * testnet data when the SDK connects, a clear empty/error state otherwise.
+ * verification chip sits under it — reporting whether this session's Platform connection
+ * actually proof-checks reads — and the discovery feed lists recent registry repos from the
+ * active network when the SDK connects, a clear empty/error state otherwise.
  */
 
 import Link from 'next/link'
@@ -14,16 +15,19 @@ import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { listRecentRepos } from '@/lib/view'
+import { connectionTrust, deriveConnectionTrust, listRecentRepos } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
-  const { sdk, ready, error: sdkError, network } = useSdk()
+  const { sdk, ready, trusted, error: sdkError, network } = useSdk()
+  const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted))
+  const deployed = isRegistryDeployed()
   const feed = useAsync(
     () => listRecentRepos(sdk!, { network, limit: 24 }),
     [ready, network],
-    { enabled: ready && sdk !== null },
+    { enabled: deployed && ready && sdk !== null },
   )
 
   return (
@@ -34,9 +38,9 @@ export default function LandingPage(): JSX.Element {
           A git forge with <span className="text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          Browse code, review pull requests, and collaborate — every view backed by
-          cryptographic proofs and content hashes, served straight from Dash Platform and IPFS.
-          Foundry, not SaaS.
+          Browse code, discuss issues and pull requests, and collaborate. Platform reads are
+          checked against quorum proofs and file contents against their git hashes, straight
+          from Dash Platform or the storage the repo owner chose. Foundry, not SaaS.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Link href="/new">
@@ -44,15 +48,23 @@ export default function LandingPage(): JSX.Element {
               <Plus className="h-4 w-4" aria-hidden /> New repo
             </Button>
           </Link>
-          <VerificationChip refs="verified" packs="verified" source="platform" />
+          <VerificationChip
+            segments={[
+              {
+                label: `${network} reads`,
+                state: proofs.state,
+                detail: proofs.state === 'verified' ? 'proof-checked' : undefined,
+              },
+            ]}
+          />
         </div>
       </section>
 
       {/* Capability strip */}
       <section className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3">
-        <Feature icon={<Search className="h-4 w-4 text-forge-500" aria-hidden />} title="Size-independent browse" body="Tree, blob, and commit views ride the browse plane — O(view) bytes at any repo size." />
-        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-verified reads" body="Refs by platform proof, packs by sha256. The assay panel shows the whole chain." />
-        <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Review & merge in-browser" body="Comments, close/reopen, and grants signed by your Platform identity." />
+        <Feature icon={<Search className="h-4 w-4 text-forge-500" aria-hidden />} title="Size-independent browse" body="With a published browse index, tree, blob, and commit views fetch only the bytes they show, at any repo size." />
+        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's assay panel shows what this session actually checked." />
+        <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Issues & threads in-browser" body="Open issues, comment, close and reopen, and grant collaborators — each write signed by your Platform identity." />
       </section>
 
       {/* Discovery */}
@@ -62,7 +74,9 @@ export default function LandingPage(): JSX.Element {
           {feed.loading ? <Spinner label="Reading registry" /> : null}
         </div>
 
-        {sdkError ? (
+        {!deployed ? (
+          <NotDeployedState />
+        ) : sdkError ? (
           <ErrorState title="Could not reach Platform" message={sdkError} />
         ) : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />

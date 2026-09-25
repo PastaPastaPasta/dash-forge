@@ -1,0 +1,35 @@
+{
+  "name": "issue_same_key_events_keep_input_order",
+  "description": "Two events with the same (createdAt, id) keep their input order (stable sort): label added then removed.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "k",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "k",
+        "targetId": "T",
+        "kind": "labelRemove",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

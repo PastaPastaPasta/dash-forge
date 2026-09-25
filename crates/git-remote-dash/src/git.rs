@@ -65,6 +65,15 @@ fn run_git(
     Ok(out.stdout)
 }
 
+/// `git config --get <key>` in the helper's environment (the repo git spawned it for, then
+/// global/system config, plus any `git -c key=value` the user passed, which git forwards
+/// to the helper). `None` when the key is unset or git fails.
+pub fn config_get(key: &str) -> Option<String> {
+    let out = run_git(&["config", "--get", key], None, false, None).ok()?;
+    let value = String::from_utf8(out).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
 /// never an error. Used for the boolean predicates `cat-file -e` / `merge-base
 /// --is-ancestor`.
@@ -97,6 +106,17 @@ impl LocalRepo {
         } else {
             Some(s)
         }
+    }
+
+    /// `git config --show-scope --get <key>` for the repo being pushed (inheriting
+    /// `GIT_DIR`, so repo-local, global and `-c` values all apply): `(scope, value)` where
+    /// scope is `local`,
+    /// `worktree`, `global`, `system` or `command` (`-c`). `None` when unset.
+    ///
+    /// On a git without `--show-scope` (< 2.26) the value is still read, via plain
+    /// `--get` (see [`forge_core::storage::policy::git_config_scoped`]) — never dropped.
+    pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
+        forge_core::storage::policy::git_config_scoped(key)
     }
 
     /// Whether object `oid` is present in the local odb.

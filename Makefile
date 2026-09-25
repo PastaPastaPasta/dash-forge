@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify storage-it storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -60,3 +60,56 @@ infra-down:
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
 e2e: build-rust
 	@bash e2e/cli/run.sh
+
+## devnet-identities: mint (or resume) the 9-role identity pool on a devnet,
+## funded from the devnet's faucet wallet key, then verify every identity on
+## Platform. The key is read from dash-network-configs at runtime (process
+## substitution, never copied to disk) unless FORGE_DEVNET_FUNDING_WIF is set.
+## Knobs: DEVNET (moutai), DEVNET_CONFIGS (~/workspace/dash-network-configs),
+## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
+DEVNET ?= moutai
+DEVNET_CONFIGS ?= $(HOME)/workspace/dash-network-configs
+DEVNET_IDENTITY_DIR ?= $(HOME)/.config/dash-forge/test-identities/devnet-$(DEVNET)
+DEVNET_POOL_AMOUNT ?= 5
+DEVNET_ROLE_AMOUNTS ?= DEPLOYER=50
+MINT := node tools/mint-identity/mint.mjs
+DEVNET_POOL := $(MINT) pool --network devnet --devnet-name $(DEVNET) --out "$(DEVNET_IDENTITY_DIR)" \
+	--amount $(DEVNET_POOL_AMOUNT) --role-amounts "$(DEVNET_ROLE_AMOUNTS)"
+
+tools/mint-identity/node_modules: tools/mint-identity/package.json tools/mint-identity/package-lock.json
+	cd tools/mint-identity && npm ci
+	@touch $@
+
+devnet-identities: tools/mint-identity/node_modules
+	@if [ -n "$${FORGE_DEVNET_FUNDING_WIF:-}" ]; then \
+		$(DEVNET_POOL); \
+	else \
+		$(DEVNET_POOL) --funding-key-file <(git -C "$(DEVNET_CONFIGS)" show origin/master:devnet-$(DEVNET).yml); \
+	fi
+	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"
+
+## devnet-identities-verify: check the devnet pool exists on Platform with balances and keys.
+devnet-identities-verify: tools/mint-identity/node_modules
+	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"
+
+## storage-it: bring-your-own-storage integration tests against LOCAL MinIO + kubo
+## (infra/docker-compose.yml): SigV4-signed PUT/HEAD/GET/DELETE on a bucket that refuses
+## anonymous writes, kubo CID == local CIDv1 derivation, N-of-M replication + gateway
+## read-back. FORGE_IT_S3/FORGE_IT_IPFS turn an unreachable fixture into a FAILURE
+## instead of a silent skip. No network beyond localhost; no Platform spend.
+storage-it: infra-up
+	@for i in $$(seq 1 30); do \
+		curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && \
+		curl -fsS -o /dev/null -X POST http://127.0.0.1:5001/api/v0/version && break; \
+		sleep 2; \
+	done
+	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
+
+## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
+## on local MinIO + kubo and only the manifest + ref on testnet, against the dedicated
+## storage-e2e-a / storage-e2e-b repos (e2e/README.md; created once, ~1.18 tDASH each).
+## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
+storage-e2e: infra-up
+	cargo build -p dg
+	cargo build -p git-remote-dash --features test-hooks
+	@bash e2e/cli/storage-byo.sh

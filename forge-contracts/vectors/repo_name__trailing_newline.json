@@ -1,0 +1,13 @@
+{
+  "name": "trailing_newline",
+  "description": "A trailing newline is invalid (a regex `$` that matches before a final newline would admit it).",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "repo\n"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

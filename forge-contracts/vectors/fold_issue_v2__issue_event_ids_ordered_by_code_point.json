@@ -1,0 +1,35 @@
+{
+  "name": "issue_event_ids_ordered_by_code_point",
+  "description": "Two events at the same createdAt order by id in code-point order: id U+FF01 (reopen) before id U+1F600 (close), so the issue ends closed.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "😀",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "！",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

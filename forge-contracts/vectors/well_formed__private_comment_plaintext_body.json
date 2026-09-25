@@ -1,0 +1,16 @@
+{
+  "name": "private_comment_plaintext_body",
+  "description": "A private comment must not carry a plaintext body beside enc.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "comment",
+      "body": "hi",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

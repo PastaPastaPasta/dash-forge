@@ -18,8 +18,9 @@ use forge_core::collab::{
     ReleaseService,
 };
 use forge_core::keystore::BridgeIdentity;
+use forge_core::network::NetworkTarget;
 use forge_core::pack::build_pack;
-use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
+use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{credits_to_dash, CreateRepoOpts, RepoService};
 use forge_core::rules::EventKind;
 
@@ -68,8 +69,8 @@ pub struct ImportConfig {
     pub limit: u64,
     /// Resume-state file path.
     pub resume_path: PathBuf,
-    /// Dash network.
-    pub network: Network,
+    /// Dash network and the registry resolved for it.
+    pub network: NetworkTarget,
     /// Identity file path (bridge JSON).
     pub identity_path: PathBuf,
 }
@@ -141,7 +142,7 @@ pub async fn run(cfg: &ImportConfig) -> Result<()> {
     // 4. Connect to Platform with the signing identity.
     let bridge = BridgeIdentity::load_from_file(&cfg.identity_path)
         .with_context(|| format!("loading identity from {}", cfg.identity_path.display()))?;
-    let client = PlatformClient::connect(cfg.network)
+    let client = PlatformClient::connect(cfg.network.clone())
         .await
         .context("connecting to Dash Platform")?;
     let identity = client
@@ -229,11 +230,11 @@ fn size_git_data(gh: &GithubClient, clone_dir: &Path, plan: &mut Plan) -> Result
         return Ok(());
     }
     let want: Vec<&str> = tips.iter().map(|(oid, _)| oid.as_str()).collect();
-    let report = build_pack(clone_dir, &want, &[]).context("building import pack")?;
-    let objects = report.pack.parsed.object_count() as u64;
-    plan.set_pack(&report.pack.bytes, objects, tips.len());
+    let pack = build_pack(clone_dir, &want, &[]).context("building import pack")?;
+    let objects = pack.parsed.object_count() as u64;
+    plan.set_pack(&pack.bytes, objects, tips.len());
     tracing::info!(
-        bytes = report.pack.bytes.len(),
+        bytes = pack.bytes.len(),
         objects,
         chunks = plan.pack_chunks,
         refs = tips.len(),
@@ -390,7 +391,7 @@ fn push_git_data(cfg: &ImportConfig, clone_dir: &Path, state: &ImportState) -> R
             ])
             .env("PATH", &new_path)
             .env("DASH_FORGE_KEY", &cfg.identity_path)
-            .env("DASH_FORGE_NETWORK", network_label(cfg.network));
+            .envs(cfg.network.env_vars());
         // Own process group, so a stall-kill reaches the git-remote-dash helper child too —
         // killing only `git` orphans a wedged helper that would keep writing the journal
         // concurrently with the next attempt.
@@ -466,15 +467,6 @@ fn journal_idle_time(clone_dir: &Path) -> Option<std::time::Duration> {
         .filter_map(|e| e.metadata().ok()?.modified().ok())
         .max()?;
     Some(newest.elapsed().unwrap_or(std::time::Duration::ZERO))
-}
-
-/// The lowercase network label the helper reads from `DASH_FORGE_NETWORK`.
-fn network_label(n: Network) -> &'static str {
-    match n {
-        Network::Testnet => "testnet",
-        Network::Mainnet => "mainnet",
-        Network::Devnet => "devnet",
-    }
 }
 
 /// Import labels, milestone-derived labels, issues (+ state/label events + comments), PRs

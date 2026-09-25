@@ -83,62 +83,115 @@ impl ObjectLocator {
     /// Build a locator over one pack's objects. `pack_ref` is the pack's position in
     /// the owning manifest's pack list.
     ///
-    /// The pack **must be self-contained and repack-quality**: the single contiguous
-    /// `deltaChainSpan` read is only sound when every delta base sits earlier in the
-    /// same pack (the `repack -adf` invariant). A pack straight off the push path
-    /// carries `REF_DELTA` objects whose fix-thin'd bases were appended *after* them —
-    /// a reader would see a small span, single-read it, and miss the base. This errors
-    /// on any such pack rather than emit a locator that lies about read safety. Feed it
-    /// [`repack_all`](super::repack_all) output. As defense-in-depth, if a
-    /// non-contiguous object ever reaches serialization its span is written as
-    /// [`SPAN_SENTINEL`] so the wire format still self-signals the hazard.
+    /// The pack **must be locator-quality**: the single contiguous `deltaChainSpan` read is
+    /// only sound when every delta base sits earlier in the same pack. Both producers in
+    /// [`crate::pack::build`] emit such packs and check it on the way out, so the push pack
+    /// and the repack pack alike are accepted. A pack completed with `index-pack
+    /// --fix-thin` is not: its external bases are appended *after* the deltas that reference
+    /// them, so a reader would see a small span, single-read it, and miss the base. Such a
+    /// pack (anything an older client stored) is rejected here rather than indexed by a
+    /// locator that lies about read safety.
     pub fn build(pack: &ParsedPack, pack_ref: u16) -> Result<Self> {
-        let refs = pack.ref_delta_count();
-        let noncontig = pack.objects.iter().filter(|o| !o.contiguous).count();
-        if refs > 0 || noncontig > 0 {
-            return Err(Error::Config(format!(
-                "objectLocator requires a self-contained repacked pack \
-                 (found {refs} REF_DELTA + {noncontig} non-contiguous objects); \
-                 build it from repack_all output"
-            )));
+        Ok(Self::from_sorted_rows(&rows_for(pack, pack_ref)?))
+    }
+
+    /// Merge published locators into one — the index-consolidation step.
+    ///
+    /// The browse index is published in fragments: a push adds a pack and publishes a
+    /// locator over just that pack (cost proportional to the push, not to the repo), so a
+    /// reader normally merges several. When the fragment count gets high enough to make
+    /// that fan-out the dominant read cost, the writer folds them into one with this and
+    /// supersedes the parts.
+    ///
+    /// Sound only when every part indexes the same `packRef` space, or a prefix of it —
+    /// which holds because the live pack list only ever grows at the end between repacks,
+    /// and a repack supersedes every locator it consolidates.
+    /// `RepoService::publish_push_locator` establishes that before calling.
+    ///
+    /// **Rows are keyed by `(oid, packRef)`, not by `oid`.** An object routinely sits in
+    /// more than one live pack — a push whose `have` set was incomplete re-sends history an
+    /// earlier pack already holds — and each copy's row is the only record of that pack's
+    /// address for it. The locator is not just an OID→entry map: a reader resolving an
+    /// `OFS_DELTA` base looks it up by `(packRef, offset)`, and the base of an object in
+    /// pack N is always in pack N. Dropping the pack-N row because pack 0 also carried the
+    /// object leaves every delta in pack N that uses it unreadable. So every copy is kept
+    /// and only exact `(oid, packRef)` duplicates collapse, which keeps the fold idempotent.
+    /// [`Self::lookup`] returns the lowest-`packRef` copy, so which pack an OID resolves to
+    /// does not change as fragments accumulate.
+    pub fn merge(parts: &[&Self]) -> Self {
+        // Rows sort by their first OID_LEN+2 bytes: the oid, then packRef big-endian. That
+        // IS the (oid, packRef) order, so a plain byte comparison drives the k-way merge.
+        const KEY: usize = OID_LEN + 2;
+        let total = parts.iter().map(|p| p.count).sum();
+        let mut cursors = vec![0usize; parts.len()];
+        let mut merged: Vec<[u8; LOCATOR_ROW_LEN]> = Vec::with_capacity(total);
+        loop {
+            let mut pick: Option<usize> = None;
+            for (i, part) in parts.iter().enumerate() {
+                if cursors[i] >= part.count {
+                    continue;
+                }
+                let better = match pick {
+                    None => true,
+                    Some(j) => part.row(cursors[i])[..KEY] < parts[j].row(cursors[j])[..KEY],
+                };
+                if better {
+                    pick = Some(i);
+                }
+            }
+            let Some(i) = pick else { break };
+            let row: [u8; LOCATOR_ROW_LEN] = parts[i]
+                .row(cursors[i])
+                .try_into()
+                .expect("fixed-width row");
+            cursors[i] += 1;
+            // Collapse only exact (oid, packRef) duplicates — the same pack indexed twice.
+            for (j, part) in parts.iter().enumerate() {
+                while cursors[j] < part.count && part.row(cursors[j])[..KEY] == row[..KEY] {
+                    cursors[j] += 1;
+                }
+            }
+            merged.push(row);
         }
+        Self::from_sorted_rows(&merged)
+    }
 
-        let mut rows: Vec<&super::parse::PackObject> = pack.objects.iter().collect();
-        rows.sort_by_key(|a| a.oid);
+    /// The largest `packRef` any row carries — `None` for an empty locator. Lets a caller
+    /// check a locator against the pack space it claims to index before trusting it.
+    pub fn max_pack_ref(&self) -> Option<u16> {
+        (0..self.count)
+            .map(|i| {
+                u16::from_be_bytes(
+                    self.row(i)[OFF_PACKREF..OFF_PACKREF + 2]
+                        .try_into()
+                        .expect("fixed-width row"),
+                )
+            })
+            .max()
+    }
 
+    /// Assemble `fanout || rows` from rows already sorted ascending by OID.
+    fn from_sorted_rows(rows: &[[u8; LOCATOR_ROW_LEN]]) -> Self {
         let mut fanout = [0u32; 256];
-        for o in &rows {
-            fanout[o.oid[0] as usize] += 1;
+        for r in rows {
+            fanout[r[0] as usize] += 1;
         }
         let mut cum = 0u32;
         for f in &mut fanout {
             cum += *f;
             *f = cum;
         }
-
         let mut bytes = Vec::with_capacity(FANOUT_LEN + rows.len() * LOCATOR_ROW_LEN);
         for f in fanout {
             bytes.extend_from_slice(&f.to_be_bytes());
         }
-        for o in &rows {
-            // Non-contiguous objects (unreachable given the guard above, but the wire
-            // format is defined to be safe on its own) carry the sentinel span.
-            let span = if o.contiguous {
-                sat_u32(o.delta_chain_span)
-            } else {
-                SPAN_SENTINEL
-            };
-            bytes.extend_from_slice(&o.oid);
-            bytes.extend_from_slice(&pack_ref.to_be_bytes());
-            bytes.extend_from_slice(&u40_be(o.offset)?);
-            bytes.extend_from_slice(&sat_u32(o.length).to_be_bytes());
-            bytes.extend_from_slice(&span.to_be_bytes());
-            bytes.push(u8::try_from(o.delta_depth).unwrap_or(u8::MAX));
+        for r in rows {
+            bytes.extend_from_slice(r);
         }
-        Ok(Self {
+        Self {
             bytes,
             count: rows.len(),
-        })
+        }
     }
 
     /// Serialized bytes (the artifact to chunk/upload).
@@ -188,7 +241,17 @@ impl ObjectLocator {
             match row[..OID_LEN].cmp(oid) {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => return Some(decode_row(row)),
+                std::cmp::Ordering::Equal => {
+                    // A merged locator can hold one row per pack that stores this OID
+                    // ([`Self::merge`]). They are adjacent and ordered by `packRef`, so
+                    // walking back to the first makes the answer the lowest-`packRef` copy
+                    // regardless of where the binary search landed.
+                    let mut at = mid;
+                    while at > 0 && self.row(at - 1)[..OID_LEN] == *oid {
+                        at -= 1;
+                    }
+                    return Some(decode_row(self.row(at)));
+                }
             }
         }
         None
@@ -202,6 +265,45 @@ impl ObjectLocator {
         let s = FANOUT_LEN + i * LOCATOR_ROW_LEN;
         &self.bytes[s..s + LOCATOR_ROW_LEN]
     }
+}
+
+/// One pack's locator rows, sorted ascending by OID and tagged with `pack_ref`.
+///
+/// Rejects a pack the single-span read model cannot describe, for the reason spelled out on
+/// [`ObjectLocator::build`]. As defense-in-depth a non-contiguous object that somehow
+/// reached serialization is written with [`SPAN_SENTINEL`], so the wire format still
+/// self-signals the hazard to a reader that never saw the source pack.
+fn rows_for(pack: &ParsedPack, pack_ref: u16) -> Result<Vec<[u8; LOCATOR_ROW_LEN]>> {
+    let refs = pack.ref_delta_count();
+    let noncontig = pack.objects.iter().filter(|o| !o.contiguous).count();
+    if refs > 0 || noncontig > 0 {
+        return Err(Error::Config(format!(
+            "objectLocator requires a self-contained repacked pack \
+             (found {refs} REF_DELTA + {noncontig} non-contiguous objects); \
+             build it from repack_all output"
+        )));
+    }
+
+    let mut objects: Vec<&super::parse::PackObject> = pack.objects.iter().collect();
+    objects.sort_by_key(|a| a.oid);
+
+    let mut rows = Vec::with_capacity(objects.len());
+    for o in objects {
+        let span = if o.contiguous {
+            sat_u32(o.delta_chain_span)
+        } else {
+            SPAN_SENTINEL
+        };
+        let mut row = [0u8; LOCATOR_ROW_LEN];
+        row[..OID_LEN].copy_from_slice(&o.oid);
+        row[OFF_PACKREF..OFF_PACKREF + 2].copy_from_slice(&pack_ref.to_be_bytes());
+        row[OFF_OFFSET..OFF_OFFSET + 5].copy_from_slice(&u40_be(o.offset)?);
+        row[OFF_LENGTH..OFF_LENGTH + 4].copy_from_slice(&sat_u32(o.length).to_be_bytes());
+        row[OFF_SPAN..OFF_SPAN + 4].copy_from_slice(&span.to_be_bytes());
+        row[OFF_HINT] = u8::try_from(o.delta_depth).unwrap_or(u8::MAX);
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 fn decode_row(row: &[u8]) -> LocatorEntry {

@@ -1,0 +1,60 @@
+{
+  "name": "maintainer_outranks_writer",
+  "description": "Writer from 10, maintainer from 20: before 10 nothing, from 10 writer, from 20 maintainer; now maintainer.",
+  "case": "role_oracle",
+  "rules": "v2",
+  "input": {
+    "memberships": [
+      {
+        "identity": "x",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "x",
+        "role": "maintainer",
+        "createdAt": 20
+      }
+    ],
+    "queries": [
+      {
+        "identity": "x",
+        "at": 5
+      },
+      {
+        "identity": "x",
+        "at": 10
+      },
+      {
+        "identity": "x",
+        "at": 15
+      },
+      {
+        "identity": "x",
+        "at": 20
+      }
+    ]
+  },
+  "expected": [
+    {
+      "roleAt": null,
+      "memberAt": false,
+      "currentRole": "maintainer"
+    },
+    {
+      "roleAt": "writer",
+      "memberAt": true,
+      "currentRole": "maintainer"
+    },
+    {
+      "roleAt": "writer",
+      "memberAt": true,
+      "currentRole": "maintainer"
+    },
+    {
+      "roleAt": "maintainer",
+      "memberAt": true,
+      "currentRole": "maintainer"
+    }
+  ]
+}

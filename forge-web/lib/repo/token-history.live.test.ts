@@ -29,7 +29,7 @@ describe.skipIf(!LIVE)('live TokenHistory query shape', () => {
       // are accepted by the live contract, not the (expected-empty) results.
       const tokenB58 = base58Encode(new Uint8Array(32).fill(7))
       const { documents } = await queryDocumentsWithProof(sdk, {
-        dataContractId: TOKEN_HISTORY_CONTRACT_ID.testnet as string,
+        dataContractId: TOKEN_HISTORY_CONTRACT_ID,
         documentTypeName: 'mint',
         where: [['tokenId', '==', tokenB58]],
         orderBy: [['$createdAt', 'asc']],

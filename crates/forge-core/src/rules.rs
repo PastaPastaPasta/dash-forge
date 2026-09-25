@@ -39,10 +39,16 @@
 //! * [`overlay_tree`] — apply the tree diffs of the ≤ 20 commits since a flatIndex's
 //!   indexed tip on top of it, so browse views stay fresh without a full re-walk
 //!   (the S0.5 cold-load correction).
+//!
+//! [`v2`] holds `FORGE_RULES_V2`, the rules for repositories on the shared forge-v2
+//! contracts. It reuses this module's event order and per-kind effects; everything here stays
+//! the v1 rule set, so v1 repositories remain readable.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+
+pub mod v2;
 
 /// The versioned rules identifier shared with forge-web and the conformance vectors.
 ///
@@ -837,6 +843,10 @@ impl Default for PrState {
 /// `merge` additionally requires the merge `oid` to be reachable from the base tip
 /// (an ancestor of it). Everything else from a non-holder is **inert** — the event
 /// exists on-chain (the spammer paid fees) but the fold ignores it.
+///
+/// This is the v1 rule only. forge-v2 splits events by gate (`event` for members,
+/// `authorEvent` for the target's author, close/reopen only), so its fold
+/// ([`v2::fold_issue_state_v2`], [`v2::fold_pr_state_v2`]) needs no actor check.
 fn actor_authorized(
     e: &Event,
     target_author: &str,
@@ -847,17 +857,22 @@ fn actor_authorized(
     let holder = authz.holdings_as_of(&e.actor, e.created_at).any();
     match e.kind {
         EventKind::Close | EventKind::Reopen => holder || e.actor == target_author,
-        EventKind::Merge => {
-            if !holder {
-                return false;
-            }
-            match (e.oid.as_deref(), base_tip) {
-                (Some(oid), Some(tip)) => is_ancestor(oid, tip),
-                // No merge oid or no base tip ⇒ cannot prove reachability ⇒ inert.
-                _ => false,
-            }
-        }
+        EventKind::Merge => holder && merge_reachable(e, base_tip, is_ancestor),
         _ => holder,
+    }
+}
+
+/// Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
+/// tip. No merge oid or no base tip means reachability cannot be proven, so the merge is inert.
+/// Shared by both rule versions.
+fn merge_reachable(
+    e: &Event,
+    base_tip: Option<&str>,
+    is_ancestor: &impl Fn(&str, &str) -> bool,
+) -> bool {
+    match (e.oid.as_deref(), base_tip) {
+        (Some(oid), Some(tip)) => is_ancestor(oid, tip),
+        _ => false,
     }
 }
 
@@ -878,37 +893,41 @@ pub fn fold_issue_state(
     let no_ancestry = |_: &str, _: &str| false;
 
     for e in ordered {
-        if !actor_authorized(e, target_author, authz, None, &no_ancestry) {
-            continue;
-        }
-        match e.kind {
-            EventKind::Close => state.open = false,
-            EventKind::Reopen => state.open = true,
-            EventKind::LabelAdd => {
-                if let Some(v) = &e.value {
-                    state.labels.insert(v.clone());
-                }
-            }
-            EventKind::LabelRemove => {
-                if let Some(v) = &e.value {
-                    state.labels.remove(v);
-                }
-            }
-            EventKind::Assign => {
-                if let Some(v) = &e.value {
-                    state.assignees.insert(v.clone());
-                }
-            }
-            EventKind::Unassign => {
-                if let Some(v) = &e.value {
-                    state.assignees.remove(v);
-                }
-            }
-            // PR-only kinds do not apply to issues.
-            EventKind::Merge | EventKind::Retarget | EventKind::Draft | EventKind::Ready => {}
+        if actor_authorized(e, target_author, authz, None, &no_ancestry) {
+            apply_issue_event(&mut state, e);
         }
     }
     state
+}
+
+/// Apply one authorized event to an issue's state (both rule versions). PR-only kinds
+/// (merge/retarget/draft/ready) do not apply to issues.
+fn apply_issue_event(state: &mut IssueState, e: &Event) {
+    match e.kind {
+        EventKind::Close => state.open = false,
+        EventKind::Reopen => state.open = true,
+        EventKind::LabelAdd => {
+            if let Some(v) = &e.value {
+                state.labels.insert(v.clone());
+            }
+        }
+        EventKind::LabelRemove => {
+            if let Some(v) = &e.value {
+                state.labels.remove(v);
+            }
+        }
+        EventKind::Assign => {
+            if let Some(v) = &e.value {
+                state.assignees.insert(v.clone());
+            }
+        }
+        EventKind::Unassign => {
+            if let Some(v) = &e.value {
+                state.assignees.remove(v);
+            }
+        }
+        EventKind::Merge | EventKind::Retarget | EventKind::Draft | EventKind::Ready => {}
+    }
 }
 
 /// Fold a PR's `event` log into its [`PrState`].
@@ -929,67 +948,74 @@ pub fn fold_pr_state(
     let mut state = PrState::default();
 
     for e in ordered {
-        if !actor_authorized(e, target_author, authz, base_tip, &is_ancestor) {
-            continue;
-        }
-        match e.kind {
-            EventKind::Close => state.open = false,
-            EventKind::Reopen => {
-                // A merged PR cannot be reopened; reopen only revives a plain close.
-                if !state.merged {
-                    state.open = true;
-                }
-            }
-            EventKind::Merge => {
-                state.merged = true;
-                state.open = false;
-            }
-            EventKind::LabelAdd => {
-                if let Some(v) = &e.value {
-                    state.labels.insert(v.clone());
-                }
-            }
-            EventKind::LabelRemove => {
-                if let Some(v) = &e.value {
-                    state.labels.remove(v);
-                }
-            }
-            EventKind::Assign => {
-                if let Some(v) = &e.value {
-                    state.assignees.insert(v.clone());
-                }
-            }
-            EventKind::Unassign => {
-                if let Some(v) = &e.value {
-                    state.assignees.remove(v);
-                }
-            }
-            EventKind::Retarget => {
-                // Defense-in-depth (mirrors `resolve_ref`'s `is_legal_ref_name` gate): a
-                // retarget's `value` is a base ref name; an illegal one (newline/NUL/leading
-                // dash) could spoof a ref-advertisement line when rendered, so it is inert.
-                if let Some(v) = &e.value {
-                    if is_legal_ref_name(v) {
-                        state.base_ref = Some(v.clone());
-                    }
-                }
-            }
-            EventKind::Draft => state.draft = true,
-            EventKind::Ready => state.draft = false,
+        if actor_authorized(e, target_author, authz, base_tip, &is_ancestor) {
+            apply_pr_event(&mut state, e);
         }
     }
     state
 }
 
+/// Apply one authorized event to a PR's state (both rule versions).
+fn apply_pr_event(state: &mut PrState, e: &Event) {
+    match e.kind {
+        EventKind::Close => state.open = false,
+        EventKind::Reopen => {
+            // A merged PR cannot be reopened; reopen only revives a plain close.
+            if !state.merged {
+                state.open = true;
+            }
+        }
+        EventKind::Merge => {
+            state.merged = true;
+            state.open = false;
+        }
+        EventKind::LabelAdd => {
+            if let Some(v) = &e.value {
+                state.labels.insert(v.clone());
+            }
+        }
+        EventKind::LabelRemove => {
+            if let Some(v) = &e.value {
+                state.labels.remove(v);
+            }
+        }
+        EventKind::Assign => {
+            if let Some(v) = &e.value {
+                state.assignees.insert(v.clone());
+            }
+        }
+        EventKind::Unassign => {
+            if let Some(v) = &e.value {
+                state.assignees.remove(v);
+            }
+        }
+        EventKind::Retarget => {
+            // Defense-in-depth (mirrors `resolve_ref`'s `is_legal_ref_name` gate): a
+            // retarget's `value` is a base ref name; an illegal one (newline/NUL/leading
+            // dash) could spoof a ref-advertisement line when rendered, so it is inert.
+            if let Some(v) = &e.value {
+                if is_legal_ref_name(v) {
+                    state.base_ref = Some(v.clone());
+                }
+            }
+        }
+        EventKind::Draft => state.draft = true,
+        EventKind::Ready => state.draft = false,
+    }
+}
+
 /// Order events deterministically by `(createdAt, id)`.
 fn ordered_events(events: &[Event]) -> Vec<&Event> {
     let mut v: Vec<&Event> = events.iter().collect();
-    v.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    v.sort_by(|a, b| event_order(a, b));
     v
+}
+
+/// The `(createdAt, id)` total order every fold applies events in.
+fn event_order(a: &Event, b: &Event) -> std::cmp::Ordering {
+    a.created_at
+        .cmp(&b.created_at)
+        .then_with(|| a.id.cmp(&b.id))
 }
 
 // ===========================================================================
@@ -1121,11 +1147,11 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 mod tests {
     use super::{
         display_ref_name, fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name,
-        matches_protected, overlay_tree, resolve_ref, Ancestry, AuthzResolver, ConfigDoc, Event,
-        EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
+        matches_protected, overlay_tree, resolve_ref, v2, Ancestry, AuthzResolver, ConfigDoc,
+        Event, EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
         TokenOp, TokenRecord, TreeDiff, Verdict,
     };
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
 
     /// A minted-at-genesis WRITE holder record (the common authz fixture).
@@ -1252,6 +1278,9 @@ mod tests {
         #[allow(dead_code)]
         description: String,
         case: String,
+        /// `"v1"` or `"v2"`; absent means v1 (every vector written before v2).
+        #[serde(default)]
+        rules: Option<String>,
         input: serde_json::Value,
         expected: serde_json::Value,
     }
@@ -1417,8 +1446,219 @@ mod tests {
         }
     }
 
+    // --- FORGE_RULES_V2 input envelopes. Unknown keys are refused at every depth (see
+    // `input`), so a vector cannot carry a field, such as v1's `tokenRecords` or a misspelt
+    // `authorEvent` key, that the v2 rules would silently ignore -----------------------------
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FoldIssueV2Input {
+        #[serde(default)]
+        events: Vec<Event>,
+        #[serde(default)]
+        author_events: Vec<Event>,
+        target_author: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FoldPrV2Input {
+        #[serde(default)]
+        events: Vec<Event>,
+        #[serde(default)]
+        author_events: Vec<Event>,
+        target_author: String,
+        #[serde(default)]
+        base_tip: Option<String>,
+        #[serde(default)]
+        ancestry: Ancestry,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct AllocateNumberInput {
+        count: u64,
+        taken_numbers_desc: Vec<u32>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct PackCopiesInput {
+        copies: Vec<v2::PackCopy>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ApprovalsInput {
+        reviews: Vec<v2::Review>,
+        memberships: Vec<v2::Membership>,
+        head_oid: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct WellFormedInput {
+        doc: v2::ContentDoc,
+        visibility: v2::Visibility,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RepoNameInput {
+        name: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoleQuery {
+        identity: String,
+        at: u64,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoleOracleInput {
+        memberships: Vec<v2::Membership>,
+        queries: Vec<RoleQuery>,
+    }
+
+    /// Every key of `given` (the vector's JSON) must survive a parse + re-serialize into
+    /// `parsed`, at every depth. A key the rule types do not have would be dropped by serde's
+    /// default (ignore unknown fields) on the nested public types, so a typo there would
+    /// otherwise pass silently.
+    fn assert_no_unknown_keys(given: &serde_json::Value, parsed: &serde_json::Value, at: &str) {
+        match (given, parsed) {
+            (serde_json::Value::Object(g), serde_json::Value::Object(p)) => {
+                for (k, gv) in g {
+                    let pv = p
+                        .get(k)
+                        .unwrap_or_else(|| panic!("unknown input key `{at}.{k}`"));
+                    assert_no_unknown_keys(gv, pv, &format!("{at}.{k}"));
+                }
+            }
+            (serde_json::Value::Array(g), serde_json::Value::Array(p)) => {
+                for (i, (gv, pv)) in g.iter().zip(p).enumerate() {
+                    assert_no_unknown_keys(gv, pv, &format!("{at}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn input<T: serde::de::DeserializeOwned + Serialize>(v: &Vector) -> T {
+        let parsed: T = serde_json::from_value(v.input.clone())
+            .unwrap_or_else(|e| panic!("vector `{}`: {} input: {e}", v.name, v.case));
+        let again = serde_json::to_value(&parsed).expect("re-serialize input");
+        assert_no_unknown_keys(&v.input, &again, &format!("{} input", v.name));
+        parsed
+    }
+
+    fn expected<T: serde::de::DeserializeOwned>(v: &Vector) -> T {
+        serde_json::from_value(v.expected.clone())
+            .unwrap_or_else(|e| panic!("vector `{}`: {} expected: {e}", v.name, v.case))
+    }
+
+    fn run_case_v2(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fold_issue" => {
+                let inp: FoldIssueV2Input = input(v);
+                let got =
+                    v2::fold_issue_state_v2(&inp.events, &inp.author_events, &inp.target_author);
+                assert_eq!(got, expected::<IssueState>(v), "vector `{ctx}`");
+            }
+            "fold_pr" => {
+                let inp: FoldPrV2Input = input(v);
+                let got = v2::fold_pr_state_v2(
+                    &inp.events,
+                    &inp.author_events,
+                    &inp.target_author,
+                    inp.base_tip.as_deref(),
+                    |a, d| inp.ancestry.is_ancestor(a, d),
+                );
+                assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
+            }
+            "allocate_number" => {
+                let inp: AllocateNumberInput = input(v);
+                let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc);
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            }
+            "pack_copies" => {
+                // `expected` names any non-empty subset of the three results; each named is checked
+                let inp: PackCopiesInput = input(v);
+                let want = v
+                    .expected
+                    .as_object()
+                    .expect("pack_copies expected is an object");
+                assert!(
+                    !want.is_empty()
+                        && want
+                            .keys()
+                            .all(|k| ["order", "selected", "readOrder"].contains(&k.as_str())),
+                    "vector `{ctx}`: expected must name some of order / selected / readOrder"
+                );
+                if let Some(order) = want.get("order") {
+                    let got: Vec<&str> = v2::order_pack_copies(&inp.copies)
+                        .into_iter()
+                        .map(|c| c.id.as_str())
+                        .collect();
+                    assert_eq!(serde_json::json!(got), *order, "vector `{ctx}` order");
+                }
+                if let Some(selected) = want.get("selected") {
+                    let got = v2::select_pack_copy(&inp.copies).map(|c| c.id.as_str());
+                    assert_eq!(serde_json::json!(got), *selected, "vector `{ctx}` selected");
+                }
+                if let Some(read_order) = want.get("readOrder") {
+                    let got = v2::pack_read_order(&inp.copies);
+                    assert_eq!(
+                        serde_json::json!(got),
+                        *read_order,
+                        "vector `{ctx}` readOrder"
+                    );
+                }
+            }
+            "approvals" => {
+                let inp: ApprovalsInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got = v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid);
+                assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
+            }
+            "well_formed" => {
+                let inp: WellFormedInput = input(v);
+                let got = v2::is_well_formed(&inp.doc, inp.visibility);
+                assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
+            }
+            "repo_name" => {
+                let inp: RepoNameInput = input(v);
+                let got = serde_json::json!({
+                    "valid": v2::is_valid_repo_name(&inp.name),
+                    "normalized": v2::normalize_repo_name(&inp.name),
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "role_oracle" => {
+                let inp: RoleOracleInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got: Vec<serde_json::Value> = inp
+                    .queries
+                    .iter()
+                    .map(|q| {
+                        serde_json::json!({
+                            "roleAt": oracle.role_at(&q.identity, q.at),
+                            "memberAt": oracle.member_at(&q.identity, q.at),
+                            "currentRole": oracle.current_role(&q.identity),
+                        })
+                    })
+                    .collect();
+                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
+        }
+    }
+
     /// Load every `forge-contracts/vectors/*.json` and assert the rules reproduce
-    /// `expected`. This is the suite the TypeScript port also runs.
+    /// `expected`, dispatching on the vector's `rules` (absent means v1). This is the suite the
+    /// TypeScript port also runs.
     #[test]
     fn conformance_vectors() {
         let dir = vectors_dir();
@@ -1434,16 +1674,26 @@ mod tests {
             files.len()
         );
 
-        let mut ran = 0usize;
+        let (mut ran_v1, mut ran_v2) = (0usize, 0usize);
         for path in files {
             let bytes = std::fs::read(&path).expect("read vector");
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-            run_case(&v);
-            ran += 1;
+            match v.rules.as_deref() {
+                None | Some("v1") => {
+                    run_case(&v);
+                    ran_v1 += 1;
+                }
+                Some("v2") => {
+                    run_case_v2(&v);
+                    ran_v2 += 1;
+                }
+                Some(other) => panic!("vector `{}`: unknown rules `{other}`", v.name),
+            }
         }
-        assert!(ran >= 20, "ran {ran} vectors, expected 20+");
-        println!("conformance_vectors: {ran} vectors green");
+        assert!(ran_v1 >= 70, "ran {ran_v1} v1 vectors, expected 70+");
+        assert!(ran_v2 >= 110, "ran {ran_v2} v2 vectors, expected 110+");
+        println!("conformance_vectors: {ran_v1} v1 + {ran_v2} v2 vectors green");
     }
 
     // --- targeted unit tests for the pinned glob semantics ----------------

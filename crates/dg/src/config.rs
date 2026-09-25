@@ -3,6 +3,13 @@
 //! Records the default network and default identity so subsequent commands run without
 //! repeating `--network` / `--identity`. Written by `dg auth login`; read by every
 //! command's context resolution ([`crate::context`]).
+//!
+//! ```toml
+//! network = "devnet"            # testnet | mainnet | devnet
+//! devnet_name = "moutai"        # devnet only
+//! dapi_addresses = "68.67.122.254,68.67.122.207"   # devnet only; default: deployments file
+//! registry_contract_id = "…"    # optional override of deployments/<network>.json
+//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -12,9 +19,19 @@ use serde::{Deserialize, Serialize};
 /// The persisted CLI configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    /// Default network (`testnet` / `mainnet`). Overridden by `--network`.
+    /// Default network (`testnet` / `mainnet` / `devnet`). Overridden by `--network`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    /// Devnet name (`moutai`) when `network = "devnet"`. Overridden by `--devnet-name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devnet_name: Option<String>,
+    /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dapi_addresses: Option<String>,
+    /// Registry contract id override for `network` (default: the embedded
+    /// `forge-contracts/deployments/<network>.json`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_contract_id: Option<String>,
     /// Absolute path to the default identity file. Overridden by `--identity` / `DASH_FORGE_KEY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_identity: Option<String>,
@@ -42,6 +59,19 @@ pub fn identities_dir(network: &str) -> Result<PathBuf> {
 }
 
 impl Config {
+    /// This config's network settings, as one layer for [`forge_core::network`] resolution.
+    pub fn network_settings(&self) -> forge_core::network::NetworkSettings {
+        forge_core::network::NetworkSettings {
+            network: self.network.clone(),
+            devnet_name: self.devnet_name.clone(),
+            dapi_addresses: self.dapi_addresses.clone(),
+            quorum_base_url: None,
+            registry: self.registry_contract_id.clone().map(|id| {
+                forge_core::network::Registry::override_from(id, "config registry_contract_id")
+            }),
+        }
+    }
+
     /// Load the config from `config.toml`, returning [`Config::default`] when absent.
     pub fn load() -> Result<Self> {
         let path = config_path()?;
@@ -95,6 +125,7 @@ mod tests {
             network: Some("testnet".into()),
             default_identity: Some("/home/u/.config/dash-forge/identities/testnet/x.json".into()),
             default_identity_id: Some("abc123".into()),
+            ..Default::default()
         };
         let raw = toml::to_string_pretty(&cfg).unwrap();
         std::fs::write(&path, raw).unwrap();
@@ -116,5 +147,23 @@ mod tests {
         let raw = toml::to_string_pretty(&cfg).unwrap();
         assert!(raw.contains("network"));
         assert!(!raw.contains("default_identity"));
+        assert!(!raw.contains("devnet_name"));
+    }
+
+    #[test]
+    fn devnet_config_parses_into_a_network_layer() {
+        let cfg: Config = toml::from_str(
+            "network = \"devnet\"\ndevnet_name = \"moutai\"\n\
+             dapi_addresses = \"10.0.0.1\"\nregistry_contract_id = \"REG\"\n",
+        )
+        .unwrap();
+        let target = cfg.network_settings().resolve().unwrap();
+        assert_eq!(target.network.key(), "devnet-moutai");
+        let registry = target.require_registry().unwrap();
+        assert_eq!(registry.contract_id, "REG");
+        assert_eq!(
+            registry.source.to_string(),
+            "override (config registry_contract_id)"
+        );
     }
 }

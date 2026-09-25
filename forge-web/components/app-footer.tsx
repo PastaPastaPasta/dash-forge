@@ -7,8 +7,8 @@ export function AppFooter(): JSX.Element {
     <footer className="mt-16 border-t border-anvil-200 dark:border-anvil-800">
       <div className="mx-auto flex max-w-[1280px] flex-col gap-2 px-4 py-6 text-[12px] text-anvil-500 dark:text-anvil-400 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <p>
-          Dash Forge — a git forge with no server to trust. Zero backend; every read
-          proof-verified against Platform.
+          Dash Forge — a git forge with no server to trust. Zero backend; Platform reads are
+          proof-checked and file contents hash-checked.
         </p>
         <div className="flex items-center gap-4">
           <span className="font-mono">trust-minimized</span>

@@ -1,0 +1,39 @@
+{
+  "name": "first_verified_wins",
+  "description": "A maintainer copy that fails verification is skipped; the next copy in order that verifies is read.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "w1",
+        "packHash": "P",
+        "ownerRole": "writer",
+        "createdAt": 1,
+        "verified": true
+      },
+      {
+        "id": "m1",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 10,
+        "verified": false
+      },
+      {
+        "id": "m2",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 30,
+        "verified": true
+      }
+    ]
+  },
+  "expected": {
+    "order": [
+      "m1",
+      "m2",
+      "w1"
+    ],
+    "selected": "m2"
+  }
+}

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { repoUrl, waitForRepoResolved, shot, M1 } from './helpers'

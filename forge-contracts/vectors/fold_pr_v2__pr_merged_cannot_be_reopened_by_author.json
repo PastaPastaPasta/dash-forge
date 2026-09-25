@@ -1,0 +1,46 @@
+{
+  "name": "pr_merged_cannot_be_reopened_by_author",
+  "description": "After a valid merge, the author's reopen does not reopen the PR.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

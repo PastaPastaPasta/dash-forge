@@ -1,0 +1,36 @@
+{
+  "name": "issue_same_key_event_before_author_event",
+  "description": "An event and an authorEvent with the same (createdAt, id) keep the input order events-then-authorEvents (the sort is stable): close then reopen, so the issue is open.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "k",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "k",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

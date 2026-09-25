@@ -1,0 +1,36 @@
+{
+  "name": "supersedes_ignored_when_unverified",
+  "description": "A superseding pack whose only copy fails verification is left out, and its supersedes claim is ignored.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "c1",
+        "packHash": "P1",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "c2",
+        "packHash": "P2",
+        "ownerRole": "maintainer",
+        "createdAt": 20,
+        "verified": false,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "readOrder": [
+      {
+        "packHash": "P1",
+        "copyId": "c1",
+        "superseded": false
+      }
+    ]
+  }
+}

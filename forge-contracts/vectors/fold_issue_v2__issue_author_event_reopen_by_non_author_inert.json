@@ -1,0 +1,36 @@
+{
+  "name": "issue_author_event_reopen_by_non_author_inert",
+  "description": "A member closes; an authorEvent reopen by someone other than the author is ignored, so the issue stays closed.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "mallory",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

@@ -5,53 +5,33 @@
  * chip to show the whole trust chain of a repo view, top to bottom, the way a foundry stamps
  * a certificate of assay on struck metal:
  *
- *   Platform proof  →  signed refs  →  content hashes  →  backend source
+ *   Platform proof  →  refs  →  content hashes  →  byte source
  *
- * It states the honest trust posture (S0.3): the web app is trust-MINIMIZED, not fully
- * trustless — quorum public keys come from a known endpoint, and everything downstream is
- * proof-verified against them. Each link shows its state (verified / degraded / failed) in the
- * semantic palette; the OIDs/hashes render as monospace serials.
+ * Every state shown comes from {@link deriveTrust} over checks that actually ran this session
+ * (roadmap invariant 4) — never from what the app intends to check. It also states the honest
+ * trust posture (S0.3, roadmap D-C): the web app is trust-MINIMIZED, not trustless — the
+ * quorum public keys every proof is checked against come from one known HTTPS endpoint.
  */
 
 import { useState } from 'react'
-import { ChevronRight, ShieldCheck, ShieldAlert, ShieldX } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { VerifyState, Source } from './verification-chip'
+import type { TrustLink, TrustReport } from '@/lib/view'
+import { TRUST_META } from './verification-chip'
 import { Oid } from './oid'
 
-export interface TrustChain {
-  readonly refs: VerifyState
-  readonly packs: VerifyState
-  readonly source: Source
-  /** Optional concrete artifacts, shown as serials when present. */
-  readonly tipOid?: string
-  readonly packHash?: string
-  /** The repo/registry contract id the proof was verified against. */
-  readonly contractId?: string
-}
-
-const STATE_META: Readonly<
-  Record<VerifyState, { label: string; klass: string; Icon: typeof ShieldCheck }>
-> = {
-  verified: { label: 'verified', klass: 'text-verify', Icon: ShieldCheck },
-  degraded: { label: 'degraded', klass: 'text-caution', Icon: ShieldAlert },
-  failed: { label: 'failed', klass: 'text-danger', Icon: ShieldX },
-}
-
-function Link({
+function Step({
   step,
   title,
-  detail,
-  state,
+  link,
   serial,
 }: {
   step: string
   title: string
-  detail: string
-  state: VerifyState
+  link: TrustLink
   serial?: string
 }): JSX.Element {
-  const meta = STATE_META[state]
+  const meta = TRUST_META[link.state]
   return (
     <li className="relative flex gap-3 pb-4 last:pb-0">
       {/* rail */}
@@ -69,7 +49,7 @@ function Link({
           <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{title}</span>
           <span className={cn('text-[11px] font-mono', meta.klass)}>{meta.label}</span>
         </div>
-        <p className="mt-0.5 text-[12px] leading-snug text-anvil-500 dark:text-anvil-400">{detail}</p>
+        <p className="mt-0.5 text-[12px] leading-snug text-anvil-500 dark:text-anvil-400">{link.detail}</p>
         {serial ? (
           <div className="mt-1.5">
             <Oid value={serial} chars={12} />
@@ -80,15 +60,19 @@ function Link({
   )
 }
 
-export function TrustPanel({ chain }: { chain: TrustChain }): JSX.Element {
+export function TrustPanel({
+  report,
+  contractId,
+  tipOid,
+}: {
+  report: TrustReport
+  /** The repo contract the proofs were read from. */
+  contractId?: string
+  /** The commit the attested ref points at. */
+  tipOid?: string
+}): JSX.Element {
   const [open, setOpen] = useState(false)
-  const worst: VerifyState =
-    chain.refs === 'failed' || chain.packs === 'failed'
-      ? 'failed'
-      : chain.refs === 'degraded' || chain.packs === 'degraded'
-        ? 'degraded'
-        : 'verified'
-  const meta = STATE_META[worst]
+  const meta = TRUST_META[report.overall]
 
   return (
     <div className="rounded-lg border border-anvil-200 bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-850">
@@ -100,12 +84,13 @@ export function TrustPanel({ chain }: { chain: TrustChain }): JSX.Element {
       >
         <meta.Icon className={cn('h-4 w-4 shrink-0', meta.klass)} aria-hidden />
         <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">Assay</span>
-        <span className="hidden text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline">
-          refs proof · packs sha256 · src {chain.source}
+        <span className={cn('font-mono text-[11px]', meta.klass)}>{meta.label}</span>
+        <span className="hidden truncate text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline">
+          refs {report.refs.summary} · content {report.content.summary}
         </span>
         <ChevronRight
           className={cn(
-            'ml-auto h-4 w-4 text-anvil-400 transition-transform',
+            'ml-auto h-4 w-4 shrink-0 text-anvil-400 transition-transform',
             open && 'rotate-90',
           )}
           aria-hidden
@@ -115,37 +100,16 @@ export function TrustPanel({ chain }: { chain: TrustChain }): JSX.Element {
       {open ? (
         <div className="animate-fade-in border-t border-anvil-200 px-4 py-4 dark:border-anvil-750">
           <ol className="mb-3">
-            <Link
-              step="01"
-              title="Platform quorum proof"
-              detail="Reads are Merkle-proof verified against the testnet quorum. Trust-minimized: the quorum public keys come from a known endpoint (testnetTrusted) — the fully-trustless path is the Rust CLI."
-              state="verified"
-              serial={chain.contractId}
-            />
-            <Link
-              step="02"
-              title="Signed refs"
-              detail="The current tip resolves from the append-only, non-deletable refUpdate log — every push is a consensus-signed document, folded by FORGE_RULES_V1."
-              state={chain.refs}
-              serial={chain.tipOid}
-            />
-            <Link
-              step="03"
-              title="Content hashes"
-              detail="Pack + browse-artifact bytes are checked against the manifest sha256 before any object is reconstructed. A hash mismatch fails the read."
-              state={chain.packs}
-              serial={chain.packHash}
-            />
-            <Link
-              step="04"
-              title="Backend source"
-              detail={`Bytes served from ${chain.source}. Availability, not authenticity — a degraded source cannot forge content that survives step 03.`}
-              state={chain.packs === 'failed' ? 'failed' : chain.packs}
-            />
+            <Step step="01" title="Platform proofs" link={report.proofs} serial={contractId} />
+            <Step step="02" title="Refs" link={report.refs} serial={tipOid} />
+            <Step step="03" title="Content hashes" link={report.content} />
+            <Step step="04" title="Byte source" link={report.source} />
           </ol>
           <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[12px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
-            Trust-minimized, not fully trustless — quorum keys come from a known endpoint;
-            everything else is proof-verified.
+            Trust-minimized, not trustless: proofs are only as good as the {report.networkLabel} quorum
+            keys they are checked against, and this app fetches those from{' '}
+            <span className="font-mono">{report.quorumHost}</span>. Whoever controls
+            that endpoint could vouch for false data.
           </p>
         </div>
       ) : null}

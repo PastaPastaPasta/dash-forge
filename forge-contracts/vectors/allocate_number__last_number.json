@@ -1,0 +1,13 @@
+{
+  "name": "last_number",
+  "description": "Base 2^32-2 at a saturated ceiling allocates 2^32-1.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 2147483598,
+    "takenNumbersDesc": [
+      4294967294
+    ]
+  },
+  "expected": 4294967295
+}

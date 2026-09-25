@@ -3,15 +3,17 @@
 /**
  * IssueContent — the issue detail: folded state header, the author's body, the merged
  * comment/event timeline, a comment composer, and close/reopen — each write shown with its
- * pre-sign cost + confirm. Close/reopen is authoritative only if the fold deems the actor
- * authorized (author or MAINTAIN); a non-holder's event lands but stays inert.
+ * pre-sign cost + confirm. The fold honors close/reopen only from the issue's author or a
+ * WRITE/MAINTAIN holder, so the control is shown only to them: anyone else's event would land,
+ * cost credits, and change nothing.
  */
 
 import { useState } from 'react'
 import { CheckCircle2, CircleDot } from 'lucide-react'
 import type { RepoHome, IssueThread } from '@/lib/view'
 import { loadIssueThread, timeAgo } from '@/lib/view'
-import { closeTarget, createComment, reopenTarget } from '@/lib/repo'
+import { closeTarget, createComment, readViewerHoldings, reopenTarget } from '@/lib/repo'
+import type { Holdings } from '@/lib/rules'
 import { previewDocumentCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -34,7 +36,7 @@ export function IssueContent({
   home: RepoHome
   number: number
 }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.contractId])
+  const { sdk, ready, network } = useSdk([home.repo.contractId])
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
 
@@ -42,6 +44,12 @@ export function IssueContent({
     () => loadIssueThread(sdk!, home.repo, number),
     [ready, home.repo.contractId, number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
+  )
+
+  const holdings = useAsync<Holdings | null>(
+    () => readViewerHoldings(sdk!, home.repo, identity!, network),
+    [ready, home.repo.contractId, identity ?? '', network],
+    { enabled: ready && sdk !== null && identity !== null },
   )
 
   const [comment, setComment] = useState('')
@@ -56,6 +64,14 @@ export function IssueContent({
 
   const { issue, timeline } = data
   const open = issue.state.open
+  const holder = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const canToggle = identity !== null && (identity === issue.author || holder)
+  // A token history that could not be read leaves a maintainer's permission unknown: say so
+  // rather than silently withholding the control (the PR page does the same for merge).
+  const toggleHint =
+    !canToggle && identity !== null && holdings.settled && holdings.data === null
+      ? "Couldn't read this repo's token history, so close/reopen permission is unknown."
+      : null
 
   const postComment = async (): Promise<void> => {
     if (!identity || !signer) {
@@ -125,14 +141,19 @@ export function IssueContent({
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={previewDocumentCreate('comment')} />
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setConfirmToggle(true)} disabled={!signer}>
-              {open ? 'Close issue' : 'Reopen issue'}
-            </Button>
+            {canToggle ? (
+              <Button variant="outline" onClick={() => setConfirmToggle(true)} disabled={!signer}>
+                {open ? 'Close issue' : 'Reopen issue'}
+              </Button>
+            ) : null}
             <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === ''}>
               {identity ? 'Comment' : 'Sign in to comment'}
             </Button>
           </div>
         </div>
+        {toggleHint !== null ? (
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p>
+        ) : null}
         {commentError ? (
           <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
         ) : null}
@@ -142,7 +163,7 @@ export function IssueContent({
         open={confirmToggle}
         onClose={() => setConfirmToggle(false)}
         title={open ? `Close issue #${issue.number}` : `Reopen issue #${issue.number}`}
-        description="Appends a state event to the append-only log. Authoritative only if you're the author or a maintainer."
+        description="Appends a state event to the append-only log. It counts because you are the issue's author or hold WRITE or MAINTAIN on this repo."
         cost={previewDocumentCreate('event')}
         confirmLabel={open ? 'Close issue' : 'Reopen issue'}
         onConfirm={toggleState}

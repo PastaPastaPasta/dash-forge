@@ -1,0 +1,13 @@
+{
+  "name": "saturated",
+  "description": "Base is 2^32-1, the largest number the contract admits: nothing is left to allocate.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 2147483598,
+    "takenNumbersDesc": [
+      4294967295
+    ]
+  },
+  "expected": null
+}

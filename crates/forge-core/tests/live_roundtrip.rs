@@ -46,7 +46,7 @@ async fn create_verify_delete_refund_roundtrip() {
     );
 
     // --- Connect to testnet (proof-verified via trusted context provider).
-    let client = PlatformClient::connect(Network::Testnet)
+    let client = PlatformClient::connect_network(Network::Testnet)
         .await
         .expect("connect to testnet");
 

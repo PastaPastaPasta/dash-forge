@@ -1,0 +1,16 @@
+{
+  "name": "private_config_empty_patterns_enc",
+  "description": "An empty protectedPatterns list counts as absent.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "protectedPatterns": [],
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

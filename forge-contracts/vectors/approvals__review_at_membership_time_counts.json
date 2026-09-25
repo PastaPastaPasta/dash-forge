@@ -1,0 +1,31 @@
+{
+  "name": "review_at_membership_time_counts",
+  "description": "A review at the same createdAt as the membership document counts (the document applies at equal times).",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "dev",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 150
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "dev",
+        "role": "writer",
+        "createdAt": 150
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "dev"
+    ],
+    "changesRequested": []
+  }
+}

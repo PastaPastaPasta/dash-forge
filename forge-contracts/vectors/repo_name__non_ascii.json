@@ -1,0 +1,13 @@
+{
+  "name": "non_ascii",
+  "description": "Non-ASCII letters are invalid.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "café"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

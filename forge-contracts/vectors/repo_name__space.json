@@ -1,0 +1,13 @@
+{
+  "name": "space",
+  "description": "Spaces are invalid.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "my repo"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "public_issue_with_enc",
+  "description": "A public repo's documents are plaintext: enc is malformed there.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "issue",
+      "title": "t",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

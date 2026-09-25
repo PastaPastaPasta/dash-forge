@@ -1,0 +1,13 @@
+{
+  "name": "uppercase_normalizes",
+  "description": "Uppercase is invalid as a name but normalizes to the lowercase slug.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "Dash-Forge"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": "dash-forge"
+  }
+}

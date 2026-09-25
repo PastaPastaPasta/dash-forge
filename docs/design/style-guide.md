@@ -22,9 +22,14 @@ colors: {
   verify: '#16a34a',   // proof/hash verified
   caution:'#d97706',   // degraded availability
   danger: '#dc2626',   // force-push, delete, failed verification
-  dash:   '#008de4'    // Dash brand blue — reserved for identity/credits/network UI only
+  dash: {              // Dash brand blue — reserved for identity/credits/network UI only
+    DEFAULT:'#008de4', // fills, tints, icons
+    400:'#4aaef0',     // TEXT on dark surfaces
+    600:'#006bb0'      // TEXT on light surfaces
+  }
 }
 ```
+- **Dash-blue text is `text-dash-600 dark:text-dash-400`**, never plain `text-dash`: the brand value is under WCAG AA's 4.5:1 as text on every surface in both themes (4.28:1 on `anvil-800`). `forge-web/lib/design/contrast.test.ts` pins the ratios and fails on a raw `text-dash` that is not an icon.
 - **Dark mode is the primary theme** (class-based, `next-themes`); light mode fully supported. Backgrounds: `anvil-950/900/850` layered surfaces (dark), `anvil-50/white` (light).
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
 

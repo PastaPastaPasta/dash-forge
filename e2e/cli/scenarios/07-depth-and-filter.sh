@@ -13,7 +13,7 @@ LOG="${WORKROOT}/s07"
 
 step "git clone --depth 1  (expect a LOUD failure, not a silent full clone)"
 D1="${WORKROOT}/s07-depth"; rm -rf "$D1"
-if git_dash "$ID_DEPLOYER" "$LOG-depth" clone --depth 1 "$E2E_REMOTE" "$D1"; then
+if git_dash_retry "$ID_DEPLOYER" "$LOG-depth" clone --depth 1 "$E2E_REMOTE" "$D1"; then
   bad "shallow clone SUCCEEDED — it must fail loudly (silent full clone is the Design-Freeze bug)"
 else
   echo "----- --depth stderr (captured) -----" >&2
@@ -40,7 +40,7 @@ else
   echo "----- --filter stderr (captured) -----" >&2
   cat "$LOG-filter.err" >&2
   echo "--------------------------------------" >&2
-  is_flake "$LOG-filter.err" && skip_scenario "partial clone failed on a transport flake"
+  is_flake "$LOG-filter.err" && skip_scenario "partial clone flaked on every attempt (${E2E_ATTEMPTS})"
   bad "partial clone failed (should succeed)"; finish_scenario
 fi
 

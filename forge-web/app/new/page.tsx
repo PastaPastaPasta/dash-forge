@@ -15,17 +15,21 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { useSdk } from '@/hooks/use-sdk'
 import { createRepo, normalizeRepoName } from '@/lib/repo'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
 
+// The mode is recorded in the repo config. It does not yet route pushes: `git push` stores
+// packs on Platform whatever this says (roadmap gap 3), and only `dg repack` / `dg reseed`
+// move them — so the hints describe the preference, not where bytes will land.
 const BACKENDS = [
-  { mode: 0, label: '⛓ platform', hint: 'Pack bytes stored on Dash Platform' },
-  { mode: 1, label: '🌐 ipfs', hint: 'Bytes on IPFS, hashes on Platform' },
-  { mode: 2, label: '🌐 s3', hint: 'Bytes on S3-compatible storage' },
-  { mode: 3, label: '🌐 https', hint: 'Bytes at an HTTPS origin' },
+  { mode: 0, label: '⛓ platform', hint: 'Packs stored on Dash Platform' },
+  { mode: 1, label: '🌐 ipfs', hint: 'Prefer IPFS for packs; hashes stay on Platform' },
+  { mode: 2, label: '🌐 s3', hint: 'Prefer S3-compatible storage for packs' },
+  { mode: 3, label: '🌐 https', hint: 'Prefer an HTTPS origin for packs' },
 ]
 
 export default function NewRepoPage(): JSX.Element {
@@ -61,6 +65,14 @@ export default function NewRepoPage(): JSX.Element {
     })
     void result
     router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(normalizeRepoName(name.trim()))}`)
+  }
+
+  if (!isRegistryDeployed()) {
+    return (
+      <AppShell>
+        <NotDeployedState />
+      </AppShell>
+    )
   }
 
   if (!identity) {
@@ -114,7 +126,7 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           </Field>
 
-          <Field label="Storage backend" hint="Where pack bytes live. You can change this later in settings.">
+          <Field label="Storage backend" hint="Recorded in the repo config. git push currently stores packs on Platform whatever you pick; dg repack / dg reseed move them. Change it later with dg repo backend set.">
             <div className="grid grid-cols-2 gap-2">
               {BACKENDS.map((b) => (
                 <button
@@ -153,7 +165,7 @@ export default function NewRepoPage(): JSX.Element {
         open={confirm}
         onClose={() => setConfirm(false)}
         title="Create this repository?"
-        description="This instantiates a new on-chain token contract with your identity's CRITICAL key. It cannot be deleted (the contract is permanent), only archived."
+        description="This instantiates a new on-chain token contract with your identity's CRITICAL key. The contract is permanent: it cannot be deleted, and the fee is not refunded."
         cost={cost}
         confirmLabel="Sign & create"
         successNote="Contract created — opening your repo"

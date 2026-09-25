@@ -1,0 +1,13 @@
+{
+  "name": "empty",
+  "description": "The empty name is invalid.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": ""
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

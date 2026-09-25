@@ -22,6 +22,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { BrowseReader, ObjectLocator } from '../browse'
 import type { PackManifest, RepoRef } from '../repo'
 import { loadArtifactBytesProgress, type BrowseContext } from './browse-source'
+import { noteContentCheck, objectObserver } from './content-checks'
 import {
   deleteStoredFallback,
   fallbackManifestKey,
@@ -93,7 +94,9 @@ export function restoreFallback(
 
     try {
       validatePacks(stored.packs, livePacks)
-      return await remember(repo.contractId, manifestKey, contextFromStored(stored))
+      // The stored copy passed the same sha256 check a fresh download does.
+      noteContentCheck(repo.contractId, { packsVerified: livePacks.length, source: 'browser cache' })
+      return await remember(repo.contractId, manifestKey, contextFromStored(repo, stored))
     } catch {
       await deleteStoredFallback(repo.contractId)
       return null
@@ -150,11 +153,12 @@ function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackMan
   }
 }
 
-function contextFromStored(stored: StoredFallback): Promise<BrowseContext> {
+function contextFromStored(repo: RepoRef, stored: StoredFallback): Promise<BrowseContext> {
   const locator = ObjectLocator.parse(stored.locator)
   return import('../browse/indexer').then(({ memoryPackSource }) => {
     const packs = memoryPackSource(stored.packs)
-    return { locator, packs, reader: new BrowseReader(locator, packs) }
+    const onObject = objectObserver(repo.contractId)
+    return { locator, packs, reader: new BrowseReader(locator, packs, { onObject }) }
   })
 }
 
@@ -184,7 +188,15 @@ async function runFallback(
     fetchedBefore += manifest.sizeBytes
     packs.push(bytes)
   }
-  validatePacks(packs, livePacks)
+  try {
+    validatePacks(packs, livePacks)
+  } catch (e) {
+    // A downloaded pack that does not match its proof-read manifest is a content-check
+    // failure the trust panel must report, not only an error on this page.
+    noteContentCheck(repo.contractId, { packsFailed: 1 })
+    throw e
+  }
+  noteContentCheck(repo.contractId, { packsVerified: livePacks.length })
 
   const { indexPacks, serializeLocator, memoryPackSource } = await import('../browse/indexer')
   const objects = await indexPacks(packs, (objectsIndexed, objectsTotal) =>
@@ -193,7 +205,7 @@ async function runFallback(
   const locatorBytes = serializeLocator(objects)
   const locator = ObjectLocator.parse(locatorBytes)
   const packSource = memoryPackSource(packs)
-  const reader = new BrowseReader(locator, packSource)
+  const reader = new BrowseReader(locator, packSource, { onObject: objectObserver(repo.contractId) })
   await storeFallback(repo.contractId, livePacks, { locator: locatorBytes, packs })
   return { locator, packs: packSource, reader }
 }

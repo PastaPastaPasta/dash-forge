@@ -1,0 +1,38 @@
+{
+  "name": "reapproval_clears_request_changes",
+  "description": "An approval after a request for changes replaces it.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 200
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

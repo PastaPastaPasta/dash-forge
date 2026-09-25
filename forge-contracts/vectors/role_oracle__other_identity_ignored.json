@@ -1,0 +1,28 @@
+{
+  "name": "other_identity_ignored",
+  "description": "Another identity's document says nothing about this one.",
+  "case": "role_oracle",
+  "rules": "v2",
+  "input": {
+    "memberships": [
+      {
+        "identity": "y",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "queries": [
+      {
+        "identity": "x",
+        "at": 100
+      }
+    ]
+  },
+  "expected": [
+    {
+      "roleAt": null,
+      "memberAt": false,
+      "currentRole": null
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "latest_verdict_wins",
+  "description": "A reviewer's newest approve/request-changes review stands.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 200
+      },
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": [
+      "maint"
+    ]
+  }
+}

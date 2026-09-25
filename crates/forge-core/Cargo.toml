@@ -20,6 +20,11 @@ flate2 = "1"
 hex = "0.4"
 glob-match = "0.2"
 
+# storage profiles (`~/.config/dash-forge/storage.toml`) + AWS SigV4 request signing.
+# hmac 0.12 shares sha2's digest 0.10, so no second RustCrypto stack is pulled in.
+toml = "0.8"
+hmac = "0.12"
+
 # storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);
 # multipart for the kubo `/api/v0/add` upload. async-trait keeps `PackBackend`
 # object-safe (heterogeneous backends behind `dyn` in the failover registry);
@@ -37,6 +42,11 @@ dapi-grpc.workspace = true
 drive-proof-verifier.workspace = true
 rs-sdk-trusted-context-provider.workspace = true
 simple-signer.workspace = true
+
+[features]
+# Fault-injection environment hooks for the e2e harness (DASH_FORGE_KILL_AFTER_CHUNK).
+# Off in normal builds; enabled through git-remote-dash's `test-hooks`.
+test-hooks = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

@@ -1,0 +1,16 @@
+{
+  "name": "private_patch_plaintext_base_ref_name",
+  "description": "A private patch must not carry a plaintext baseRefName beside enc.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 1,
+      "baseRefName": "refs/heads/main"
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

@@ -8,24 +8,41 @@
 //!   `git index-pack` into the local odb. A `--filter` partial clone re-packs the download
 //!   through a scratch repo and writes the `.promisor` marker (S0.9).
 //! - **push** → fast-forward check vs remote refs → `build_pack` (thin + `--fix-thin` =
-//!   self-contained) → `put_pack` (pipelined chunk STs) → `write_pack_manifest` →
-//!   `write_ref_update` (prevOid recorded; non-FF refused without `+`) → post-push ref
-//!   re-read for a lost-race late non-fast-forward.
+//!   self-contained) → the repo's storage policy (`dash.storage` / `dash.replicas`, see
+//!   [`crate::policy`]) → cost guard → replicate the pack to every target in parallel,
+//!   each upload re-read and hash-verified, failing unless N confirm →
+//!   `write_pack_manifest` (every confirmed URI + the SHA-256) → `write_ref_update`
+//!   (prevOid recorded; non-FF refused without `+`) → post-push ref re-read for a
+//!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
+//!   met and the manifest has landed.
 
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
-use forge_core::backends::{PackMeta, Uri};
+use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
+use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
-use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
-use forge_core::repo::{PackManifestInput, RepoHandle, RepoService};
-use forge_core::rules::RefState;
+use forge_core::platform::{LoadedIdentity, PlatformClient};
+use forge_core::repo::{
+    PackManifestInput, PlatformChunkTarget, RepackTarget, RepoHandle, RepoService, StoredArtifact,
+};
+use forge_core::rules::{Holdings, RefState, TokenRecord};
+use forge_core::storage::{
+    human_bytes, replicate, ExternalTarget, PackReader, Replica, Replication, StorageTarget,
+};
 use forge_core::tokens::TokenService;
+
+use futures::stream::{self, StreamExt, TryStreamExt};
 
 use crate::git::{LocalRepo, ScratchRepo};
 use crate::options::OptionState;
+use crate::policy::{self, PushPolicy};
 use crate::url::DashUrl;
+
+/// Packs downloaded concurrently by a fetch — the same window the platform backend
+/// pipelines chunk uploads with (spike S0.1).
+const PACK_DOWNLOAD_WINDOW: usize = forge_core::backends::platform::PIPELINE_WINDOW;
 
 /// A single want from a `fetch <oid> <name>` line.
 #[derive(Debug, Clone)]
@@ -75,24 +92,29 @@ struct Conn {
 /// The remote helper, holding parsed config and a lazily-established connection.
 pub struct Helper {
     url: DashUrl,
+    /// The git remote name (`origin`), when git invoked us for a named remote — selects
+    /// the per-remote `remote.<name>.dash*` storage settings.
+    remote: Option<String>,
     key_path: PathBuf,
-    network: Network,
+    target: NetworkTarget,
     conn: Option<Conn>,
 }
 
 impl Helper {
-    /// Build a helper for `url`, reading identity + network config from the environment.
+    /// Build a helper for `url`, reading identity + network config from the environment
+    /// and git config.
     ///
     /// `DASH_FORGE_KEY` names the bridge-format identity JSON (falling back to
-    /// `~/.config/dash-forge/identities/<owner>.identity.json`); `DASH_FORGE_NETWORK`
-    /// selects the network (testnet default).
-    pub fn new(url: DashUrl) -> Result<Self> {
+    /// `~/.config/dash-forge/identities/<owner>.identity.json`). The network comes from
+    /// [`network_target`].
+    pub fn new(url: DashUrl, remote: Option<String>) -> Result<Self> {
         let key_path = resolve_key_path(&url)?;
-        let network = network_from_env();
+        let target = network_target()?;
         Ok(Self {
             url,
+            remote,
             key_path,
-            network,
+            target,
             conn: None,
         })
     }
@@ -106,9 +128,11 @@ impl Helper {
                     self.key_path.display()
                 )
             })?;
-            let client = PlatformClient::connect(self.network)
+            let client = PlatformClient::connect(self.target.clone())
                 .await
-                .context("connecting to Dash Platform")?;
+                .with_context(|| {
+                    format!("connecting to Dash Platform ({})", self.target.network)
+                })?;
             let identity = client
                 .fetch_identity(&bridge.identity_id)
                 .await
@@ -218,25 +242,48 @@ impl Helper {
         }
 
         // Download + verify every pack (M1: whole-repo packs; the want-set is served by the
-        // union of stored packs, and git dedups objects it already has).
-        let mut downloaded: Vec<Vec<u8>> = Vec::with_capacity(git_packs.len());
-        for m in &git_packs {
-            let uri = match m.uris.first() {
-                Some(u) => Uri(u.clone()),
-                None => default_platform_uri(&conn.repo.repo_contract_id, &m.pack_hash),
+        // union of stored packs, and git dedups objects it already has). Every push adds a
+        // pack, so this grows with the repo's push count; downloading them one at a time
+        // took ~50 s for the nightly's 56-pack test repo, per fetch — and a partial clone
+        // fetches twice. `buffered` keeps a bounded window in flight and preserves order.
+        // Each pack comes from the first of its recorded copies that hash-verifies —
+        // external URIs raced with the configured IPFS gateways — with Platform chunks as
+        // the last resort.
+        let svc = &svc;
+        let repo = &conn.repo;
+        let contract = &svc.repo_contract(repo).await?;
+        let reader = &PackReader::from_user_config();
+        let fetched: Vec<Option<Vec<u8>>> = stream::iter(git_packs.iter().map(|m| async move {
+            let hash = hex::encode(m.pack_hash);
+            let got = svc.fetch_artifact_from(repo, contract, m, reader).await;
+            let bytes = match got {
+                Ok(bytes) => bytes,
+                Err(e) if m.storage == 0 => {
+                    return Err(anyhow::Error::from(e).context(format!("downloading pack {hash}")));
+                }
+                // An external-only pack whose copies are down, rate-limited or absent is
+                // skipped rather than failing the fetch: git verifies after the fetch that
+                // every wanted object arrived, so if this pack was actually needed the
+                // fetch still fails, and if it was not (e.g. it only holds a deleted
+                // branch) the clone is not held hostage by one dead mirror. Every
+                // candidate is bounded (size-scaled deadline + idle timeout), so this
+                // cannot hang.
+                Err(e) => {
+                    tracing::warn!(pack = %hash, mirrors = ?m.uris, error = %e, "external pack unobtainable; skipping it");
+                    return Ok(None);
+                }
             };
-            let bytes = svc
-                .get_pack(&conn.repo, &uri, None)
-                .await
-                .with_context(|| format!("downloading pack {}", hex::encode(m.pack_hash)))?;
-            // Integrity: reassembled bytes must match the manifest packHash (SHA-256).
+            // Integrity: re-checked here, at the boundary that hands bytes to git.
             let got = PackMeta::for_bytes(&bytes).pack_hash;
-            let expected = hex::encode(m.pack_hash);
-            if !got.eq_ignore_ascii_case(&expected) {
-                bail!("pack integrity check failed: expected {expected}, got {got}");
+            if !got.eq_ignore_ascii_case(&hash) {
+                bail!("pack integrity check failed: expected {hash}, got {got}");
             }
-            downloaded.push(bytes);
-        }
+            Ok(Some(bytes))
+        }))
+        .buffered(PACK_DOWNLOAD_WINDOW)
+        .try_collect()
+        .await?;
+        let downloaded: Vec<Vec<u8>> = fetched.into_iter().flatten().collect();
 
         if let Some(filter) = options.filter.as_deref() {
             // Partial clone: re-pack the downloaded objects through a scratch repo applying
@@ -273,6 +320,18 @@ impl Helper {
     ) -> Result<Vec<PushOutcome>> {
         let git_dir = LocalRepo::git_dir()?;
         let dry_run = options.dry_run;
+        // Resolve the storage policy before touching the network when this push stores
+        // objects: a typo in dash.storage or a missing profile must fail the push before
+        // anything is built or paid for. A delete-only push stores nothing, so a broken
+        // storage.toml must not block it.
+        let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
+            Some(
+                PushPolicy::load(self.remote.as_deref())
+                    .context("reading the storage policy (dash.storage / dash.replicas)")?,
+            )
+        } else {
+            None
+        };
         let conn = self.ensure_conn().await?;
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
@@ -285,7 +344,10 @@ impl Helper {
         // consensus rejects one at a time, burning processing fees and surfacing a raw
         // platform error. That error is the first thing a would-be contributor sees, and it
         // teaches them nothing; this is the moment to point them at the PR flow instead.
-        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) {
+        //
+        // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
+        // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
+        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) && !skip_write_precheck() {
             if let Some(reason) = write_access_denied(conn).await {
                 return Ok(specs
                     .iter()
@@ -302,8 +364,30 @@ impl Helper {
             .filter(|p| p.reject.is_none())
             .filter_map(|p| p.new_oid.clone())
             .collect();
-        if !want_tips.is_empty() && !dry_run {
-            upload_push_pack(&svc, &conn.repo, &git_dir, &want_tips, &remote_refs).await?;
+        if let (false, Some(push_policy)) = (want_tips.is_empty(), push_policy.as_ref()) {
+            let ref_count = planned.iter().filter(|p| p.reject.is_none()).count();
+            let ctx = PushContext {
+                svc: &svc,
+                repo: &conn.repo,
+                git_dir: &git_dir,
+                policy: push_policy,
+                ref_count,
+                verbose: options.verbosity >= 1,
+                dry_run,
+            };
+            // Storage first. Any error here — the policy's N not met, the cost guard
+            // refusing, the manifest write failing — returns before a single ref update
+            // is written, so no ref can point at history the policy did not store. A dry
+            // run builds the pack and prints the plan, then stops.
+            upload_push_pack(&ctx, &want_tips, &remote_refs).await?;
+            // Test affordance, compiled only with `--features test-hooks`: stop after the
+            // manifest landed and before any ref is written — the state a push interrupted
+            // between the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise
+            // the re-push-of-an-already-recorded-pack path.
+            #[cfg(feature = "test-hooks")]
+            if !dry_run && std::env::var_os("DASH_FORGE_FAIL_BEFORE_REFS").is_some() {
+                bail!("simulated interruption after the manifest, before the refs (DASH_FORGE_FAIL_BEFORE_REFS)");
+            }
         }
 
         // Apply ref updates for accepted specs.
@@ -452,12 +536,36 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
     planned
 }
 
+/// What [`upload_push_pack`] needs from the push.
+struct PushContext<'a> {
+    svc: &'a RepoService<'a>,
+    repo: &'a RepoHandle,
+    git_dir: &'a std::path::Path,
+    policy: &'a PushPolicy,
+    ref_count: usize,
+    verbose: bool,
+    /// `--dry-run`: build the pack and print the plan, store nothing.
+    dry_run: bool,
+}
+
+impl PushContext<'_> {
+    /// A status line for the user (git shows the helper's stderr).
+    fn say(&self, line: &str) {
+        if self.verbose {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Rough JSON length of the manifest `uris` each external target adds (public URL + locator).
+const URIS_JSON_PER_TARGET: u64 = 180;
+
 /// Build one self-contained pack for `want_tips` (excluding remote tips already local as
-/// thin-pack bases), upload its chunks, and record the `packManifest`.
+/// thin-pack bases), store it according to the repo's storage policy, and record the
+/// `packManifest`. Returns only once the policy's N copies are confirmed and the manifest
+/// has landed; every failure before that is an error, and the caller writes no refs.
 async fn upload_push_pack(
-    svc: &RepoService<'_>,
-    repo: &RepoHandle,
-    git_dir: &std::path::Path,
+    ctx: &PushContext<'_>,
     want_tips: &[String],
     remote_refs: &[(String, RefState)],
 ) -> Result<()> {
@@ -469,66 +577,394 @@ async fn upload_push_pack(
 
     let want_refs: Vec<&str> = want_tips.iter().map(String::as_str).collect();
     let base_refs: Vec<&str> = have_bases.iter().map(String::as_str).collect();
-    let report =
-        build_pack(git_dir, &want_refs, &base_refs).context("building self-contained push pack")?;
-    let bytes = &report.pack.bytes;
-    let meta = PackMeta::for_bytes(bytes);
-    let pack_hash = meta.pack_hash_bytes()?;
-    let object_count = report.pack.parsed.object_count() as u64;
-    let chunk_vec_len = split(bytes).len();
-    let chunk_count = chunk_vec_len as u64;
-    let chunk_count_u32 = u32::try_from(chunk_vec_len)
-        .map_err(|_| anyhow!("pack has too many chunks ({chunk_vec_len}) for a u32 journal"))?;
+    let pack = build_pack(ctx.git_dir, &want_refs, &base_refs)
+        .context("building self-contained push pack")?;
+
+    // `have_bases` is every remote tip we already hold, so pushing a ref at an
+    // already-stored commit — a new branch or tag at the current tip — packs zero objects.
+    // Storing that pack would charge for 32 bytes of nothing AND permanently occupy a
+    // packRef no index row can ever reference: browse coverage is proved from rows, so the
+    // repo would read as index-behind until someone paid for a repack. The `refUpdate` the
+    // caller actually wanted still lands; only the empty pack is skipped.
+    if pack.parsed.object_count() == 0 {
+        tracing::info!("push adds no new objects; skipping pack upload and browse index");
+        return Ok(());
+    }
+
+    let job = PackJob::new(&pack.bytes, pack.parsed.object_count() as u64)?;
+    let resolved = &ctx.policy.resolved;
     tracing::info!(
-        pack_hash = %meta.pack_hash,
-        bytes = bytes.len(),
-        objects = object_count,
-        chunks = chunk_count,
-        premium = report.premium_ratio(),
-        "uploading push pack"
+        pack_hash = %job.meta.pack_hash,
+        bytes = job.bytes.len(),
+        objects = job.object_count,
+        targets = ?resolved.target_names(),
+        replicas = resolved.replicas,
+        "storing push pack"
     );
 
-    // Resumable upload: a journal under .git/dash/journal/<packHash>.json records confirmed
-    // chunks so an interrupted push resumes without re-paying (PRD 02 §A). Re-broadcasts of
-    // an already-stored chunk/manifest also idempotently no-op via the unique-index →
-    // AlreadyExists classification, so a re-run is safe even if the journal is lost.
-    let jpath = crate::journal::journal_path(git_dir, &meta.pack_hash);
-    let mut journal = crate::journal::load_or_new(&jpath, &meta.pack_hash, chunk_count_u32);
-    let already = journal.uploaded.len();
-    if already > 0 {
-        tracing::info!(
-            resumed_chunks = already,
-            total = chunk_count,
-            "resuming interrupted push from journal"
-        );
+    // What goes where, and what it costs, BEFORE anything is paid for.
+    let estimate = job.estimate(ctx, resolved.platform);
+    let plan = policy::plan_line(resolved, job.bytes.len() as u64, &estimate);
+    if ctx.dry_run {
+        // A dry run always shows the plan (it is the point of asking), then stops.
+        eprintln!("{plan} (dry run: nothing stored)");
+        return Ok(());
     }
-    let store = crate::journal::FileJournalStore::new(jpath.clone());
-    let uris = svc
-        .put_pack_resumable(repo, bytes, &meta, &mut journal, &store)
+    ctx.say(&plan);
+    // Resolve every secret BEFORE asking the user to pay: a missing env var must fail
+    // here, not after a "y" at the cost prompt.
+    let externals = external_targets(ctx)?;
+    policy::enforce(estimate.total(), ctx.policy).map_err(|why| anyhow!(why))?;
+
+    // An earlier push may already have recorded this exact pack (unique packHash; a
+    // duplicate manifest create is treated as "already stored"). Decide BEFORE paying:
+    // still readable → nothing to store; unreadable → refuse now, not after new copies.
+    if let Some(existing) = ctx
+        .svc
+        .read_pack_manifest(ctx.repo, job.pack_hash)
         .await
-        .context("uploading pack chunks")?;
-    svc.write_pack_manifest(
-        repo,
-        &PackManifestInput {
+        .context("checking for an existing manifest of this pack")?
+    {
+        // The browse index is left alone: the earlier push published (or tried to) the
+        // fragment for this pack, and a missing one is rebuilt by the next repack.
+        return confirm_existing_manifest(ctx, &job, &existing).await;
+    }
+
+    let jpath = crate::journal::journal_path(ctx.git_dir, &job.meta.pack_hash);
+    let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    // Keep this clone's copy of an externally stored pack (.git/dash/packs/<sha256>.pack)
+    // BEFORE the manifest names it: if every external copy is later lost — or this push
+    // dies between the manifest and the refs — `dg reseed --from-local` can restore the
+    // exact bytes. A Platform copy needs no local backup (chunks are on-chain).
+    if !replication.has_platform() {
+        if let Err(e) = forge_core::storage::local::keep_pushed_pack(
+            ctx.git_dir,
+            &job.meta.pack_hash,
+            job.bytes,
+        ) {
+            tracing::warn!(error = %e, "could not keep a local copy of the pushed pack");
+        }
+    }
+    record_pack(ctx, &job, &replication).await?;
+
+    // Push fully landed (copies + manifest). The chunk journal is the only record of
+    // chunks an interrupted Platform upload wrote; retire it only when this manifest
+    // references those chunks. Otherwise keep it and say so — those chunks are paid for,
+    // referenced by nothing, and reclaimable only while the journal names them.
+    if replication.has_platform() {
+        let _ = std::fs::remove_file(&jpath);
+    } else if jpath.exists() {
+        ctx.say(&format!(
+            "dash: note: an earlier interrupted push left Platform chunks for this pack that \
+             this push did not use (journal kept at {}); they hold a refundable deposit until \
+             deleted (dg repo delete / admin teardown), or re-push with dash.storage including \
+             platform to put them to use",
+            jpath.display()
+        ));
+    }
+    publish_browse_index(ctx, &pack.parsed, job.pack_hash, &replication, &externals).await;
+    Ok(())
+}
+
+/// The pack being pushed, with the facts every storage step needs.
+struct PackJob<'a> {
+    bytes: &'a [u8],
+    meta: PackMeta,
+    pack_hash: [u8; 32],
+    object_count: u64,
+    chunk_count: u32,
+}
+
+impl<'a> PackJob<'a> {
+    fn new(bytes: &'a [u8], object_count: u64) -> Result<Self> {
+        let meta = PackMeta::for_bytes(bytes);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let chunks = split(bytes).len();
+        let chunk_count = u32::try_from(chunks)
+            .map_err(|_| anyhow!("pack has too many chunks ({chunks}) for a u32 journal"))?;
+        Ok(Self {
+            bytes,
+            meta,
             pack_hash,
-            kind: u64::from(KIND_GIT_PACK),
-            size_bytes: bytes.len() as u64,
             object_count,
             chunk_count,
-            storage: 0,
-            offset_index_parts: 0,
-            uris: uris.iter().map(|u| u.0.clone()).collect(),
-            // An incremental push supersedes nothing and carries no flatIndex tips.
-            supersedes: Vec::new(),
-            tips: Vec::new(),
-        },
-    )
-    .await
-    .context("writing pack manifest")?;
+        })
+    }
 
-    // Push fully landed (chunks + manifest): retire the journal.
-    let _ = std::fs::remove_file(&jpath);
+    /// The on-chain cost of this push with (or without) Platform storing the bytes.
+    fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> policy::PushEstimate {
+        policy::estimate_push(
+            self.bytes.len() as u64,
+            self.object_count,
+            ctx.ref_count,
+            URIS_JSON_PER_TARGET * ctx.policy.resolved.external.len() as u64,
+            platform_bytes,
+        )
+    }
+}
+
+/// The policy's external targets, built from the user's profiles (secrets resolved here,
+/// never logged).
+fn external_targets(ctx: &PushContext<'_>) -> Result<Vec<ExternalTarget>> {
+    let http = forge_core::storage::http_client();
+    ctx.policy
+        .resolved
+        .external
+        .iter()
+        .map(|(name, profile)| {
+            ExternalTarget::from_profile(name, profile, &http)
+                .with_context(|| format!("storage profile {name:?}"))
+        })
+        .collect()
+}
+
+/// Replicate the pack to the policy's targets (plus the Platform fallback when armed and
+/// needed). Platform chunks upload resumably through the push journal at `jpath`, so an
+/// interrupted push resumes without re-paying (PRD 02 §A).
+async fn store_pack(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    externals: &[ExternalTarget],
+    jpath: &std::path::Path,
+) -> Result<Replication> {
+    let resolved = &ctx.policy.resolved;
+    let journal_store = crate::journal::FileJournalStore::new(jpath.to_path_buf());
+    let platform_target = || {
+        let journal = crate::journal::load_or_new(jpath, &job.meta.pack_hash, job.chunk_count);
+        if !journal.uploaded.is_empty() {
+            tracing::info!(
+                resumed_chunks = journal.uploaded.len(),
+                total = job.chunk_count,
+                "resuming interrupted push from journal"
+            );
+        }
+        PlatformChunkTarget::resumable(
+            ctx.svc,
+            ctx.repo,
+            forge_core::storage::PLATFORM_PROFILE,
+            journal,
+            &journal_store,
+        )
+    };
+    let chain = resolved.platform.then(platform_target);
+    let mut targets: Vec<&dyn StorageTarget> =
+        externals.iter().map(|t| t as &dyn StorageTarget).collect();
+    if let Some(c) = &chain {
+        targets.push(c);
+    }
+
+    // No policy (Platform only): keep the pre-policy behaviour exactly — the chunk
+    // upload's own typed error (TokenFrozen, Unauthorized, InsufficientCredits, …) under
+    // the familiar context, with no policy/fallback advice that cannot apply.
+    if let (true, 1, Some(chain)) = (resolved.external.is_empty(), resolved.total(), &chain) {
+        let uris = chain
+            .store(job.bytes, &job.meta)
+            .await
+            .context("uploading pack chunks")?;
+        return Ok(Replication {
+            replicas: vec![Replica {
+                target: forge_core::storage::PLATFORM_PROFILE.into(),
+                uris,
+                platform: true,
+            }],
+            failures: Vec::new(),
+        });
+    }
+
+    let err = match replicate(&targets, job.bytes, &job.meta, resolved.replicas).await {
+        Ok(rep) => return Ok(rep),
+        Err(err) => err,
+    };
+    if !resolved.platform_fallback {
+        bail!(
+            "{err}. No packManifest and no ref was written. Fix the failing target(s) and push \
+             again (uploads are content-addressed, so confirmed copies are not re-uploaded), \
+             lower dash.replicas, or set dash.platformFallback=true"
+        );
+    }
+
+    // The external copies could not meet N: keep what did confirm, and add the on-chain
+    // copy the user opted into as the fallback (costed and guarded like any paid write).
+    ctx.say(&format!("dash: {err}"));
+    let fallback_cost = job.estimate(ctx, true);
+    ctx.say(&format!(
+        "dash: dash.platformFallback: storing the pack on Platform instead, est. {} DASH",
+        policy::dash(fallback_cost.total())
+    ));
+    policy::enforce(fallback_cost.total(), ctx.policy).map_err(|why| anyhow!(why))?;
+    let fallback = platform_target();
+    let chain_rep = replicate(&[&fallback as &dyn StorageTarget], job.bytes, &job.meta, 1)
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "{err}; Platform fallback failed too: {e}. No ref was updated; push again to \
+                 resume (confirmed chunks are journaled)"
+            )
+        })?;
+    let mut replicas = err.confirmed;
+    replicas.extend(chain_rep.replicas);
+    Ok(Replication {
+        replicas,
+        failures: err.failures,
+    })
+}
+
+/// Write the pack's `packManifest` recording every confirmed copy.
+async fn record_pack(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    replication: &Replication,
+) -> Result<()> {
+    for f in &replication.failures {
+        ctx.say(&format!(
+            "dash: warning: {} did not confirm: {}",
+            f.target, f.reason
+        ));
+    }
+    let stored = StoredArtifact::from_replication(replication, job.bytes)
+        .context("recording the confirmed copies")?;
+    ctx.svc
+        .write_pack_manifest(
+            ctx.repo,
+            &PackManifestInput {
+                pack_hash: job.pack_hash,
+                kind: u64::from(KIND_GIT_PACK),
+                size_bytes: job.bytes.len() as u64,
+                object_count: job.object_count,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
+                offset_index_parts: 0,
+                uris: stored.uris,
+                // An incremental push supersedes nothing and carries no flatIndex tips.
+                supersedes: Vec::new(),
+                tips: Vec::new(),
+            },
+        )
+        .await
+        .context("writing pack manifest")?;
+    let confirmed: Vec<&str> = replication
+        .replicas
+        .iter()
+        .map(|r| r.target.as_str())
+        .collect();
+    ctx.say(&format!(
+        "dash: pack {} ({}) stored on {} ({} verified)",
+        &job.meta.pack_hash[..12],
+        human_bytes(job.bytes.len() as u64),
+        confirmed.join(", "),
+        confirmed.len()
+    ));
     Ok(())
+}
+
+/// This pack already has a manifest (an earlier push recorded it). Accept it only if at
+/// least one copy it records is readable and hash-matches; otherwise refuse — before this
+/// push pays for anything — naming the dead copies and the way back.
+///
+/// A Platform-tier (`storage = 0`) manifest written by this identity for a pack of the
+/// same size is accepted without a download: its chunks were confirmed at consensus when
+/// it was written, and a plain Platform re-push (the common "interrupted after the
+/// manifest" resume) must not re-download the whole pack to find that out.
+async fn confirm_existing_manifest(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    existing: &forge_core::repo::PackManifestInfo,
+) -> Result<()> {
+    let short = &job.meta.pack_hash[..12];
+    let on_chain = existing.storage == 0
+        && existing.chunk_count == u64::from(job.chunk_count)
+        && existing.size_bytes == job.bytes.len() as u64;
+    if on_chain {
+        ctx.say(&format!(
+            "dash: pack {short} is already stored on Platform by an earlier push; not storing it again"
+        ));
+        return Ok(());
+    }
+    let reader = PackReader::from_user_config();
+    match ctx.svc.fetch_artifact(ctx.repo, existing, &reader).await {
+        Ok(bytes) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
+            ctx.say(&format!(
+                "dash: pack {short} was already recorded by an earlier push and is still \
+                 readable; not storing it again"
+            ));
+            Ok(())
+        }
+        other => {
+            let why = match other {
+                Ok(_) => "bytes did not match".to_string(),
+                Err(e) => e.to_string(),
+            };
+            let recorded = if existing.uris.is_empty() {
+                "Platform chunks".to_string()
+            } else {
+                existing.uris.join(", ")
+            };
+            bail!(
+                "pack {} already recorded at {recorded}, none reachable ({why}). Restore that \
+                 storage, or re-upload the pack from this clone with `dg reseed --from-local \
+                 <owner>/<repo>` (run inside this repository), then push again. Nothing was \
+                 stored and no ref was updated.",
+                job.meta.pack_hash
+            )
+        }
+    }
+}
+
+/// Publish the browse-index fragment over the pack just stored, to the same targets that
+/// confirmed the pack, so the repo is browsable without waiting for a repack.
+///
+/// Best-effort and reported, never fatal: the push is already stored and paid for by this
+/// point, and a repo whose index is behind still clones, fetches and pushes — it just falls
+/// back to the whole-pack path until the next push or repack refreshes the index.
+async fn publish_browse_index(
+    ctx: &PushContext<'_>,
+    parsed: &forge_core::pack::ParsedPack,
+    pack_hash: [u8; 32],
+    replication: &Replication,
+    externals: &[ExternalTarget],
+) {
+    let chain = replication.has_platform().then(|| {
+        PlatformChunkTarget::new(ctx.svc, ctx.repo, forge_core::storage::PLATFORM_PROFILE)
+    });
+    let mut targets: Vec<&dyn StorageTarget> = externals
+        .iter()
+        .filter(|t| {
+            replication
+                .replicas
+                .iter()
+                .any(|r| r.target == StorageTarget::name(*t))
+        })
+        .map(|t| t as &dyn StorageTarget)
+        .collect();
+    if let Some(c) = &chain {
+        targets.push(c);
+    }
+    let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
+    let target = RepackTarget::Replicated {
+        targets: &targets,
+        required,
+    };
+    match ctx
+        .svc
+        .publish_push_locator(ctx.repo, parsed, pack_hash, target)
+        .await
+    {
+        Ok(forge_core::repo::PushIndexOutcome::Fragment { pack_ref, .. }) => {
+            tracing::info!(pack_ref, "published browse-index fragment");
+        }
+        Ok(forge_core::repo::PushIndexOutcome::Consolidated { folded, .. }) => {
+            tracing::info!(folded, "folded browse-index fragments into one locator");
+        }
+        Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => {
+            tracing::warn!(reason = %why, "browse index not updated by this push");
+        }
+        Err(e) => {
+            ctx.say(&format!(
+                "dash: warning: the push landed but its browse-index fragment could not be \
+                 published ({e}); browsing uses the fallback path until the next push or repack"
+            ));
+        }
+    }
 }
 
 /// Turn the plan + post-push ref state into per-ref outcomes. A rejected spec keeps its
@@ -585,22 +1021,30 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
     Ok(raw)
 }
 
-/// The default `platform://<contract>/<packHashHex>` locator when a manifest recorded no
-/// explicit URI (platform-tier packs are addressable by contract + packHash).
-fn default_platform_uri(contract_id: &str, pack_hash: &[u8; 32]) -> Uri {
-    Uri(format!(
-        "platform://{contract_id}/{}",
-        hex::encode(pack_hash)
-    ))
+/// Resolve the network and registry. Precedence, field by field: the environment
+/// (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`,
+/// `DASH_FORGE_QUORUM_URL`, `FORGE_REGISTRY_CONTRACT_ID` — what `dg` and forge-import set
+/// per invocation) > git config (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`,
+/// `dash.quorumUrl`, `dash.registryContractId`) > the embedded deployment > testnet.
+pub(crate) fn network_target() -> Result<NetworkTarget> {
+    resolve_network(
+        NetworkSettings::from_env(),
+        NetworkSettings::from_git_config(crate::git::config_get),
+    )
 }
 
-/// Select the network from `DASH_FORGE_NETWORK` (testnet default).
-pub(crate) fn network_from_env() -> Network {
-    match std::env::var("DASH_FORGE_NETWORK").as_deref() {
-        Ok("mainnet") => Network::Mainnet,
-        Ok("devnet") => Network::Devnet,
-        _ => Network::Testnet,
-    }
+fn resolve_network(env: NetworkSettings, git: NetworkSettings) -> Result<NetworkTarget> {
+    env.overlay(git)
+        .resolve()
+        .context("resolving the network (DASH_FORGE_NETWORK / git config dash.network)")
+}
+
+/// Whether `DASH_FORGE_SKIP_WRITE_PRECHECK` asks to bypass [`write_access_denied`].
+fn skip_write_precheck() -> bool {
+    matches!(
+        std::env::var("DASH_FORGE_SKIP_WRITE_PRECHECK").as_deref(),
+        Ok("1" | "true")
+    )
 }
 
 /// `Some(reason)` when the connected identity provably holds no spendable WRITE or MAINTAIN
@@ -622,20 +1066,60 @@ async fn write_access_denied(conn: &Conn) -> Option<String> {
             .as_millis(),
     )
     .ok()?;
-    let holdings = forge_core::rules::holdings_as_of(&records, &conn.identity.id(), now);
+    let me = conn.identity.id();
+    let holdings = forge_core::rules::holdings_as_of(&records, &me, now);
     if holdings.any() {
         return None;
+    }
+    Some(write_denied_reason(
+        frozen_grants(&records, &me, now),
+        &conn.repo.owner_id,
+        &conn.repo.name,
+    ))
+}
+
+/// Which of `identity`'s WRITE / MAINTAIN grants are still held but frozen at `now` (a
+/// suspended collaborator), as opposed to never held. Frozen tokens are not spendable, so
+/// [`forge_core::rules::holdings_as_of`] reports both cases the same way; replaying the
+/// history with the freezes left out tells them apart without a second copy of the token
+/// state machine. Only meaningful when the real holdings are empty.
+fn frozen_grants(records: &[TokenRecord], identity: &str, now: u64) -> Holdings {
+    use forge_core::rules::TokenOp;
+    let unfrozen: Vec<TokenRecord> = records
+        .iter()
+        .filter(|r| !matches!(r.op, TokenOp::Freeze | TokenOp::Unfreeze))
+        .cloned()
+        .collect();
+    forge_core::rules::holdings_as_of(&unfrozen, identity, now)
+}
+
+/// The push refusal for an identity with no spendable token. A suspended collaborator is
+/// told which token is frozen: "no WRITE token" is false for them, and forking is not the
+/// fix.
+fn write_denied_reason(frozen: Holdings, owner_id: &str, name: &str) -> String {
+    // Worded unlike the consensus error ("token frozen: this identity's write access has
+    // been suspended"), so a caller can tell this local refusal from a network verdict.
+    let which = match (frozen.write, frozen.maintain) {
+        (true, true) => Some("WRITE and MAINTAIN tokens on this repo are"),
+        (true, false) => Some("WRITE token on this repo is"),
+        (false, true) => Some("MAINTAIN token on this repo is"),
+        (false, false) => None,
+    };
+    if let Some(which) = which {
+        return format!(
+            "your {which} frozen: a maintainer suspended your push access, so consensus \
+             would reject this push. Ask a maintainer to unfreeze it."
+        );
     }
     // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
     // pusher typed into their remote URL — not the contract id, which is not an address
     // `dg` accepts here.
-    Some(format!(
+    format!(
         "no WRITE token on this repo — you cannot push to it. Fork it and open a pull \
          request instead: `dg repo create <name>`, push your branch there, then \
-         `dg pr create {}/{} --title <t> --source-contract <your contract id> \
-         --head-oid <oid>`",
-        conn.repo.owner_id, conn.repo.name
-    ))
+         `dg pr create {owner_id}/{name} --title <t> --source-contract <your contract id> \
+         --head-oid <oid>`"
+    )
 }
 
 /// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
@@ -666,7 +1150,120 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oid_to_bytes, PushOutcome};
+    use super::{frozen_grants, oid_to_bytes, resolve_network, write_denied_reason, PushOutcome};
+    use forge_core::network::NetworkSettings;
+    use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
+
+    fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
+        TokenRecord {
+            id: format!("r{created_at}"),
+            identity: identity.to_string(),
+            token,
+            op,
+            created_at,
+        }
+    }
+
+    #[test]
+    fn frozen_grants_are_told_apart_from_no_grant() {
+        use TokenKind::{Maintain, Write};
+        let frozen = [
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&frozen, "me", 10),
+            Holdings {
+                write: true,
+                maintain: false
+            }
+        );
+        // Never granted, or granted to someone else: nothing frozen.
+        assert!(!frozen_grants(&[], "me", 10).any());
+        assert!(!frozen_grants(&frozen, "someone-else", 10).any());
+        // Revoked (destroyed) after the freeze: nothing is held any more.
+        let revoked = [
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+            rec("me", Write, TokenOp::Destroy, 3),
+        ];
+        assert!(!frozen_grants(&revoked, "me", 10).any());
+        // A suspended maintainer who never held WRITE.
+        let maint = [
+            rec("me", Maintain, TokenOp::Mint, 1),
+            rec("me", Maintain, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&maint, "me", 10),
+            Holdings {
+                write: false,
+                maintain: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_frozen_pusher_is_not_told_to_fork() {
+        let write = Holdings {
+            write: true,
+            maintain: false,
+        };
+        let frozen = write_denied_reason(write, "owner", "repo");
+        assert!(
+            frozen.contains("WRITE token on this repo is frozen"),
+            "{frozen}"
+        );
+        assert!(!frozen.contains("dg pr create"), "{frozen}");
+        // Must not read as the consensus error, or e2e scenario 04 could not tell a local
+        // refusal from a network verdict.
+        assert!(!frozen.contains("token frozen"), "{frozen}");
+
+        let maintain = Holdings {
+            write: false,
+            maintain: true,
+        };
+        let frozen = write_denied_reason(maintain, "owner", "repo");
+        assert!(
+            frozen.contains("MAINTAIN token on this repo is frozen"),
+            "{frozen}"
+        );
+
+        let none = write_denied_reason(Holdings::default(), "owner", "repo");
+        assert!(none.starts_with("no WRITE token"), "{none}");
+        assert!(none.contains("dg pr create owner/repo"), "{none}");
+    }
+
+    fn git_devnet() -> NetworkSettings {
+        NetworkSettings::from_git_config(|k| match k {
+            "dash.network" => Some("devnet".into()),
+            "dash.devnetName" => Some("moutai".into()),
+            "dash.dapiAddresses" => Some("10.0.0.1,10.0.0.2".into()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn git_config_selects_a_devnet_when_the_env_is_silent() {
+        let t = resolve_network(NetworkSettings::default(), git_devnet()).unwrap();
+        assert_eq!(t.network.key(), "devnet-moutai");
+    }
+
+    #[test]
+    fn the_env_beats_git_config() {
+        let env = NetworkSettings {
+            network: Some("testnet".into()),
+            ..Default::default()
+        };
+        let t = resolve_network(env, git_devnet()).unwrap();
+        assert_eq!(t.network.key(), "testnet");
+    }
+
+    #[test]
+    fn nothing_configured_is_testnet() {
+        let t = resolve_network(NetworkSettings::default(), NetworkSettings::default()).unwrap();
+        assert_eq!(t.network.key(), "testnet");
+        assert!(t.registry.is_some());
+    }
 
     #[test]
     fn oid_round_trips_to_20_bytes() {

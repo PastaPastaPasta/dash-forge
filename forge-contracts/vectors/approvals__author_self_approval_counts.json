@@ -1,0 +1,31 @@
+{
+  "name": "author_self_approval_counts",
+  "description": "Known design choice: a member's approval counts even on their own PR (reviews carry no PR author); clients may show self-approval distinctly.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "alice",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "alice",
+        "role": "writer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "alice"
+    ],
+    "changesRequested": []
+  }
+}
