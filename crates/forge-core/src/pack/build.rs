@@ -357,10 +357,35 @@ pub fn ensure_safe_rev(rev: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success.
-pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+/// Repository-location variables git exports to hooks and remote helpers. Every call here
+/// names its repository explicitly (`-C <cwd>`), so these must not leak into the child:
+/// under `git push`, the helper inherits `GIT_DIR=<user repo>`, and git honours `GIT_DIR`
+/// over `-C` — so `git -C <scratch> init --bare` re-initialised the USER's repository as
+/// bare (`core.bare = true`) and the scratch-odb `index-pack`/`pack-objects` ran against it.
+const REPO_LOCATION_ENV: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// `git -C <cwd> <args>` with the inherited repo-location variables cleared, so the
+/// repository is exactly `cwd`.
+fn git_at(cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(args);
+    for var in REPO_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success. The
+/// repository is exactly `cwd` — inherited repo-location variables are cleared.
+pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let mut cmd = git_at(cwd, args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()

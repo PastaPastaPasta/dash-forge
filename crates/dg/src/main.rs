@@ -89,17 +89,35 @@ pub enum Command {
     Repack {
         /// The repository (`owner/name`).
         repo: Option<String>,
-        /// Destination backend for the consolidated pack (default: platform).
-        #[arg(long)]
+        /// Destination backend for the consolidated pack (default: platform). Legacy
+        /// env-configured targets (FORGE_S3_* / FORGE_IPFS_*); prefer --profile.
+        #[arg(long, conflicts_with = "profile")]
         backend: Option<Backend>,
+        /// Storage profile (from `dg storage add`) for the consolidated pack.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Re-upload packs and append mirror URIs.
     Reseed {
         /// The repository (`owner/name`).
         repo: Option<String>,
-        /// Target backend to reseed to.
-        #[arg(long = "to")]
+        /// Target backend to reseed to. Legacy env-configured targets; prefer --profile.
+        #[arg(long = "to", conflicts_with = "profile")]
         to: Option<Backend>,
+        /// Storage profile (from `dg storage add`) to reseed to.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Restore lost copies from THIS clone's local pack files (the git dir, default
+        /// `.git`) instead of downloading them, uploading to the repo's storage policy
+        /// (dash.storage / dash.replicas), or to --profile.
+        #[arg(long, value_name = "GIT_DIR", num_args = 0..=1, default_missing_value = ".git", conflicts_with = "to")]
+        from_local: Option<PathBuf>,
+        /// With --from-local: only this pack (hex SHA-256).
+        #[arg(long, requires = "from_local")]
+        pack: Option<String>,
+        /// With --from-local: re-upload even packs whose recorded copies still verify.
+        #[arg(long, requires = "from_local")]
+        force: bool,
     },
     /// Storage availability.
     #[command(subcommand)]
@@ -446,6 +464,117 @@ pub enum StorageCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
+    /// Add (or replace) a storage profile in ~/.config/dash-forge/storage.toml.
+    Add(Box<StorageAddArgs>),
+    /// List storage profiles (secrets are shown as references, never values).
+    List,
+    /// Remove a storage profile.
+    Remove {
+        /// The profile name.
+        name: String,
+    },
+    /// Put/get/delete a probe object, then check public reads and browser CORS.
+    Test {
+        /// The profile name.
+        name: String,
+    },
+    /// Set which profiles `git push` stores packs on, for the repo in the current
+    /// directory (git config dash.storage / dash.replicas).
+    Use {
+        /// Comma-separated profile names (`platform` is built in).
+        profiles: String,
+        /// Confirmations required (default: every listed profile).
+        #[arg(long)]
+        replicas: Option<usize>,
+        /// Store on Platform when the external targets cannot confirm.
+        #[arg(long)]
+        platform_fallback: bool,
+        /// Write to the user's global git config instead of this repo's.
+        #[arg(long)]
+        global: bool,
+    },
+    /// Advertise this repo's storage mode + public read URLs on-chain (config.backend).
+    Advertise {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Read the policy the helper would use for this git remote (its
+        /// `remote.<name>.dash*` overrides), not just `dash.*`.
+        #[arg(long)]
+        remote: Option<String>,
+    },
+}
+
+/// A storage profile kind (`dg storage add --kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ProfileKindArg {
+    /// S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, MinIO).
+    S3,
+    /// A kubo node's RPC API.
+    IpfsKubo,
+    /// kubo add + an IPFS Pinning Service API pin.
+    IpfsPinningService,
+    /// On-chain Platform chunk documents.
+    Platform,
+}
+
+/// `dg storage add` arguments. Secrets are given as references (`env:VAR` or
+/// `keychain:<service>/<account>`), never values.
+#[derive(Debug, clap::Args)]
+#[allow(clippy::struct_field_names)]
+pub struct StorageAddArgs {
+    /// The profile name (letters, digits, `-`, `_`, `.`).
+    pub name: String,
+    /// The profile kind.
+    #[arg(long, value_enum)]
+    pub kind: ProfileKindArg,
+    /// s3: API endpoint origin (e.g. https://<account>.r2.cloudflarestorage.com).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+    /// s3: SigV4 region (R2: auto; B2: e.g. us-west-004).
+    #[arg(long)]
+    pub region: Option<String>,
+    /// s3: bucket name.
+    #[arg(long)]
+    pub bucket: Option<String>,
+    /// s3: use virtual-hosted addressing (bucket.endpoint) instead of path-style.
+    #[arg(long)]
+    pub virtual_hosted: bool,
+    /// s3: public read origin readers use (r2.dev / custom domain / CDN).
+    #[arg(long)]
+    pub public_url: Option<String>,
+    /// s3: key prefix inside the bucket.
+    #[arg(long)]
+    pub prefix: Option<String>,
+    /// s3: access key id (literal, or env:/keychain: reference).
+    #[arg(long)]
+    pub access_key_id: Option<String>,
+    /// s3: secret access key REFERENCE (env:VAR or keychain:service/account).
+    #[arg(long)]
+    pub secret_access_key: Option<String>,
+    /// s3: session token reference.
+    #[arg(long)]
+    pub session_token: Option<String>,
+    /// ipfs: kubo RPC API origin (e.g. http://127.0.0.1:5001).
+    #[arg(long)]
+    pub api: Option<String>,
+    /// ipfs: a gateway serving this node's content (for upload verification).
+    #[arg(long)]
+    pub gateway: Option<String>,
+    /// ipfs: a PUBLIC https gateway to record for browsers.
+    #[arg(long)]
+    pub public_gateway: Option<String>,
+    /// ipfs: kubo RPC Authorization header reference.
+    #[arg(long)]
+    pub api_auth: Option<String>,
+    /// pinning service: Pinning Service API base URL.
+    #[arg(long)]
+    pub pinning_endpoint: Option<String>,
+    /// pinning service: access token reference.
+    #[arg(long)]
+    pub pinning_token: Option<String>,
+    /// pinning service: seconds to wait for `pinned`.
+    #[arg(long)]
+    pub pin_timeout_secs: Option<u64>,
 }
 
 /// A storage backend mode (`repo backend set`).
@@ -597,8 +726,32 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
-        Command::Repack { repo, backend } => maint::repack(ctx, repo.as_deref(), *backend).await,
-        Command::Reseed { repo, to } => maint::reseed(ctx, repo.as_deref(), *to).await,
+        Command::Repack {
+            repo,
+            backend,
+            profile,
+        } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref()).await,
+        Command::Reseed {
+            repo,
+            profile,
+            from_local: Some(git_dir),
+            pack,
+            force,
+            ..
+        } => {
+            maint::reseed_from_local(
+                ctx,
+                repo.as_deref(),
+                git_dir,
+                profile.as_deref(),
+                pack.as_deref(),
+                *force,
+            )
+            .await
+        }
+        Command::Reseed {
+            repo, to, profile, ..
+        } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import { url } => maint::import(ctx, url),
         Command::Doctor => doctor::run(ctx).await,
     }

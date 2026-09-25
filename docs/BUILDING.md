@@ -139,6 +139,17 @@ its `Cargo.lock`. A green `make check-rust` therefore does not by itself prove a
 run after a dependency bump — run `cargo test --locked --workspace` once before pushing
 one.
 
+## Storage integration tests (local MinIO + kubo)
+
+* `make storage-it`: brings up `infra/docker-compose.yml`, then runs the bring-your-own
+  storage tests against it. Covered: SigV4-signed S3 operations on a bucket that refuses
+  anonymous writes, kubo CIDs matching the local CIDv1 derivation, and N-of-M
+  replication with gateway read-back. Localhost only; no testnet. `FORGE_IT_S3=1` /
+  `FORGE_IT_IPFS=1` make an unreachable fixture fail instead of skip.
+* `make storage-e2e`: a real `git push` / `git clone` over `dash://` with packs on the
+  local MinIO + kubo. Only the manifest and ref go to testnet, and it spends a few hundred
+  thousand credits of the e2e DEPLOYER identity. See `e2e/cli/storage-byo.sh`.
+
 ## End-to-end suites
 
 Both e2e suites run against **live Dash Platform testnet** and are not part of the

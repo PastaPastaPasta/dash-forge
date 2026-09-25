@@ -19,6 +19,14 @@ export E2E_REPO_NAME="m1-75299"
 export E2E_REPO_CONTRACT="5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"
 export E2E_REMOTE="dash://${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 
+# --- dedicated bring-your-own-storage repos (e2e/cli/storage-byo.sh) ------------
+# DEPLOYER-owned, created once by the script if absent (reserved in e2e/README.md).
+# Their packs live on the LOCAL MinIO/kubo fixtures, so no other scenario may use them —
+# and storage-byo.sh never touches the shared m1 repo above.
+: "${STORAGE_E2E_REPO:=storage-e2e-a}"
+: "${STORAGE_E2E_REPO_B:=storage-e2e-b}"
+export STORAGE_E2E_REPO STORAGE_E2E_REPO_B
+
 # --- fixture identity files --------------------------------------------------
 : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities}"
 export E2E_IDENTITY_DIR

@@ -99,6 +99,17 @@ impl LocalRepo {
         }
     }
 
+    /// `git config --show-scope --get <key>` for the repo being pushed (inheriting
+    /// `GIT_DIR`, so repo-local, global and `-c` values all apply): `(scope, value)` where
+    /// scope is `local`,
+    /// `worktree`, `global`, `system` or `command` (`-c`). `None` when unset.
+    ///
+    /// On a git without `--show-scope` (< 2.26) the value is still read, via plain
+    /// `--get` (see [`forge_core::storage::policy::git_config_scoped`]) — never dropped.
+    pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
+        forge_core::storage::policy::git_config_scoped(key)
+    }
+
     /// Whether object `oid` is present in the local odb.
     pub fn object_exists(oid: &str) -> bool {
         if ensure_safe_rev(oid).is_err() {

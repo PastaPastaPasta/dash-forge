@@ -1085,6 +1085,7 @@ dependencies = [
  "clap",
  "forge-core",
  "hex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
@@ -1451,6 +1452,7 @@ dependencies = [
  "futures",
  "glob-match",
  "hex",
+ "hmac",
  "reqwest 0.12.28",
  "rs-sdk-trusted-context-provider",
  "serde",
@@ -1461,6 +1463,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml 0.8.23",
  "tracing",
 ]
 

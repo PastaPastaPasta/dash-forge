@@ -41,10 +41,26 @@ async fn reachable(url: &str) -> bool {
     client.get(url).send().await.is_ok()
 }
 
-/// Skip-guard: returns `true` (skip) and prints when `url` is unreachable.
+/// Whether the integration run demands the fixtures (`make storage-it` sets
+/// `FORGE_IT_S3=1` / `FORGE_IT_IPFS=1`): then an unreachable fixture is a FAILURE, never
+/// a silent skip that would let a broken setup pass as green.
+fn fixtures_required() -> bool {
+    ["FORGE_IT_S3", "FORGE_IT_IPFS"]
+        .iter()
+        .any(|v| std::env::var(v).is_ok_and(|x| x == "1"))
+}
+
+/// Skip-guard: returns (skip) and prints when `url` is unreachable — or panics when the
+/// run requires the fixtures ([`fixtures_required`]).
 macro_rules! skip_unless {
     ($url:expr, $name:expr) => {
         if !reachable($url).await {
+            assert!(
+                !fixtures_required(),
+                "{}: {} unreachable but FORGE_IT_* requires it (make infra-up)",
+                $name,
+                $url
+            );
             eprintln!(
                 "SKIP {}: {} unreachable (bring up infra/docker-compose.yml)",
                 $name, $url
@@ -99,12 +115,12 @@ async fn s3_put_get_range_verify_probe() {
     let data = payload();
     let meta = PackMeta::for_bytes(&data);
 
-    // put → both an s3:// uri and the public http url.
+    // put → the public http url (what browsers read) first, then the s3:// locator.
     let uris = backend.put(&data, &meta).await.expect("S3 PUT");
     assert_eq!(uris.len(), 2);
-    assert_eq!(uris[0].scheme(), Some("s3"));
-    let s3_uri = &uris[0];
-    let http_uri = &uris[1];
+    assert_eq!(uris[1].scheme(), Some("s3"));
+    let s3_uri = &uris[1];
+    let http_uri = &uris[0];
 
     // Whole read via the s3:// uri, hash-verified through the OUTSIDE-the-adapter helper.
     let whole = verify_and_get(&backend, s3_uri, &meta.pack_hash)
@@ -215,6 +231,249 @@ async fn registry_live_failover_bad_then_good() {
         .expect("failover to the good uri");
     assert_eq!(got, data);
     assert_eq!(hex::encode(sha256(&got)), meta.pack_hash);
+}
+
+// ---- bring-your-own storage (SigV4 bucket, kubo CID, N-of-M replication) ---------------
+
+/// The SigV4-only bucket from infra/docker-compose.yml (anonymous READ, signed WRITE).
+const BYO_BUCKET: &str = "forge-byo";
+
+fn byo_config(secret: &str) -> S3Config {
+    S3Config {
+        endpoint: MINIO_ENDPOINT.into(),
+        region: "us-east-1".into(),
+        bucket: BYO_BUCKET.into(),
+        path_style: true,
+        public_url: Some(format!("{MINIO_ENDPOINT}/{BYO_BUCKET}")),
+        prefix: "it/".into(),
+        credentials: Some(super::s3::S3Credentials {
+            access_key_id: "minioadmin".into(),
+            secret_access_key: crate::keystore::Secret::new(secret),
+            session_token: None,
+        }),
+    }
+}
+
+/// SigV4: signed PUT/HEAD/GET(range)/DELETE against a bucket that refuses anonymous
+/// writes, with a key full of characters that must be percent-encoded exactly once; a
+/// wrong secret is rejected by the server; anonymous public reads still work.
+#[tokio::test]
+async fn s3_sigv4_signed_ops_on_private_write_bucket() {
+    skip_unless!(
+        &format!("{MINIO_ENDPOINT}/minio/health/live"),
+        "s3_sigv4_signed_ops_on_private_write_bucket"
+    );
+    let anon = S3Backend::new(S3Config {
+        credentials: None,
+        ..byo_config("unused")
+    });
+    let key = anon.object_key("special chars/a+b=c&d$e,f;g@h(i)!*'~.bin");
+    // Anonymous PUT must be refused — this is what proves the signed path below is real.
+    // (A failure here means the fixture bucket is missing or public-write: re-run
+    // `make infra-up` so minio-init provisions it.)
+    let anon_err = anon
+        .put_object(&key, b"x", "application/octet-stream")
+        .await
+        .expect_err("forge-byo must refuse anonymous writes");
+    assert!(anon_err.to_string().contains("403"), "{anon_err}");
+
+    let signed = S3Backend::new(byo_config("minioadmin"));
+    let data = payload();
+    signed
+        .put_object(&key, &data, "application/octet-stream")
+        .await
+        .expect("signed PUT");
+    assert_eq!(
+        signed.head_object(&key).await.expect("signed HEAD"),
+        Some(data.len() as u64)
+    );
+    let r = ByteRange::new(100, 300).unwrap();
+    assert_eq!(
+        signed
+            .get_object(&key, Some(r))
+            .await
+            .expect("signed ranged GET"),
+        &data[100..300]
+    );
+    // Credential-free read through the public URL.
+    let public = signed.public_url(&key).expect("public url");
+    let via_public = HttpsBackend::new()
+        .get(&Uri(public), None)
+        .await
+        .expect("anonymous public GET");
+    assert_eq!(via_public, data);
+
+    // A wrong secret is a server-side signature failure, never a silent success.
+    let wrong = S3Backend::new(byo_config("not-the-secret"));
+    let err = wrong
+        .put_object(&key, b"nope", "application/octet-stream")
+        .await
+        .expect_err("wrong secret must fail");
+    assert!(err.to_string().contains("403"), "{err}");
+    assert!(!err.to_string().contains("not-the-secret"));
+
+    signed.delete_object(&key).await.expect("signed DELETE");
+    assert_eq!(signed.head_object(&key).await.unwrap(), None);
+    signed
+        .delete_object(&key)
+        .await
+        .expect("DELETE is idempotent");
+}
+
+/// A re-put of the same bytes lands at the same content-addressed key and URIs (the
+/// idempotent re-push path).
+#[tokio::test]
+async fn s3_put_is_idempotent_and_content_addressed() {
+    skip_unless!(
+        &format!("{MINIO_ENDPOINT}/minio/health/live"),
+        "s3_put_is_idempotent_and_content_addressed"
+    );
+    let signed = S3Backend::new(byo_config("minioadmin"));
+    let data = payload();
+    let meta = PackMeta::for_bytes(&data);
+    let first = signed.put(&data, &meta).await.expect("signed put");
+    let second = signed.put(&data, &meta).await.expect("re-put");
+    assert_eq!(first, second);
+    assert!(first[0]
+        .0
+        .ends_with(&format!("it/packs/{}.pack", meta.pack_hash)));
+    assert_eq!(
+        first[1].0,
+        format!("s3://{BYO_BUCKET}/it/packs/{}.pack", meta.pack_hash)
+    );
+}
+
+/// kubo returns exactly the CID this crate derives for the pinned import parameters —
+/// single-chunk (raw leaf) and multi-chunk (dag-pb root) — and reports it pinned.
+#[tokio::test]
+async fn ipfs_cid_matches_kubo() {
+    skip_unless!(
+        &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
+        "ipfs_cid_matches_kubo"
+    );
+    let backend = IpfsBackend::new(IpfsConfig::local(IPFS_API, IPFS_GATEWAY));
+    let small = payload();
+    // 600 KiB + 7: three 256 KiB leaves under one dag-pb root.
+    let big: Vec<u8> = (0..(600 * 1024 + 7u32))
+        .map(|i| u8::try_from((i * 31 + 7) % 251).unwrap())
+        .collect();
+    for data in [&small, &big] {
+        let expected = super::cid::cid_v1_raw_leaves(data);
+        let got = backend.add(data).await.expect("kubo add");
+        assert_eq!(got, expected, "kubo CID must equal the local derivation");
+        assert!(backend.is_pinned(&got).await.expect("pin/ls"));
+        // And put() (which enforces the match) succeeds.
+        let uris = backend
+            .put(data, &PackMeta::for_bytes(data))
+            .await
+            .expect("put");
+        assert_eq!(uris[0].0, format!("ipfs://{expected}"));
+    }
+    assert!(super::cid::cid_v1_raw_leaves(&big).starts_with("bafybei"));
+}
+
+/// A file of MORE than 174 leaves (≈ 44 MiB → 175 leaves) forces a two-level balanced
+/// dag-pb tree; kubo's CID must still equal the local derivation.
+#[tokio::test]
+async fn ipfs_cid_matches_kubo_for_a_two_level_tree() {
+    skip_unless!(
+        &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
+        "ipfs_cid_matches_kubo_for_a_two_level_tree"
+    );
+    let leaves = super::cid::MAX_LINKS + 1;
+    let len = super::cid::CHUNK_SIZE * leaves - 12_345;
+    let data: Vec<u8> = (0..len)
+        .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) % 251).unwrap())
+        .collect();
+    let backend = IpfsBackend::new(IpfsConfig::local(IPFS_API, IPFS_GATEWAY));
+    let expected = super::cid::cid_v1_raw_leaves(&data);
+    let got = backend.add(&data).await.expect("kubo add (~44 MiB)");
+    assert_eq!(
+        got, expected,
+        "two-level tree: kubo CID must equal the local derivation"
+    );
+    backend.unpin(&got).await.expect("unpin");
+}
+
+/// Replication across the real stores: signed S3 + kubo, N = 2, then the reader races
+/// the recorded URIs back (hash-verified); a dead target with N = 2 fails the policy.
+#[tokio::test]
+async fn replicate_to_minio_and_kubo_then_read_back() {
+    use crate::storage::{replicate, ExternalTarget, PackReader, StorageProfiles, StorageTarget};
+    skip_unless!(
+        &format!("{MINIO_ENDPOINT}/minio/health/live"),
+        "replicate_to_minio_and_kubo_then_read_back"
+    );
+    skip_unless!(
+        &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
+        "replicate_to_minio_and_kubo_then_read_back"
+    );
+    let s3 = ExternalTarget::new(
+        "minio",
+        Box::new(S3Backend::new(byo_config("minioadmin"))),
+        None,
+        true,
+    );
+    let kubo = ExternalTarget::new(
+        "kubo",
+        Box::new(IpfsBackend::new(IpfsConfig::local(IPFS_API, IPFS_GATEWAY))),
+        Some(IPFS_GATEWAY.into()),
+        true,
+    );
+    let data: Vec<u8> = (0..70_000u32)
+        .map(|i| u8::try_from(i % 241).unwrap())
+        .collect();
+    let meta = PackMeta::for_bytes(&data);
+    let targets: [&dyn StorageTarget; 2] = [&s3, &kubo];
+    let rep = replicate(&targets, &data, &meta, 2)
+        .await
+        .unwrap_or_else(|e| panic!("replicate: {e}"));
+    assert_eq!(rep.replicas.len(), 2);
+    let uris = rep.uris();
+    assert!(uris
+        .iter()
+        .any(|u| u.starts_with("ipfs://bafk") || u.starts_with("ipfs://bafy")));
+    assert!(uris.iter().any(|u| u.contains("/forge-byo/it/packs/")));
+
+    // Read back through ONLY the kubo gateway list (as a reader without S3 creds would),
+    // from just the ipfs:// URI.
+    let reader = PackReader::new(vec![IPFS_GATEWAY.into()], &StorageProfiles::default());
+    let ipfs_only: Vec<String> = uris
+        .iter()
+        .filter(|u| u.starts_with("ipfs://"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        reader
+            .fetch_verified(&ipfs_only, &meta.pack_hash, Some(data.len() as u64), None)
+            .await
+            .unwrap(),
+        data
+    );
+    // And the full list.
+    assert_eq!(
+        reader
+            .fetch_verified(&uris, &meta.pack_hash, None, None)
+            .await
+            .unwrap(),
+        data
+    );
+
+    // A dead target + N = 2 → the policy fails, naming the dead target.
+    let dead = ExternalTarget::new(
+        "dead",
+        Box::new(S3Backend::new(S3Config::public(
+            "http://127.0.0.1:9",
+            "nope",
+        ))),
+        None,
+        true,
+    );
+    let targets: [&dyn StorageTarget; 2] = [&s3, &dead];
+    let err = replicate(&targets, &data, &meta, 2).await.unwrap_err();
+    assert_eq!(err.confirmed.len(), 1);
+    assert_eq!(err.confirmed[0].target, "minio");
+    assert!(err.to_string().contains("dead:"), "{err}");
 }
 
 /// LIVE platform-backend write (`chunk` docs via the WriteEngine). Ignored by default: it

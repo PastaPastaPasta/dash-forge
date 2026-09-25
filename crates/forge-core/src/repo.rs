@@ -21,11 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backends::ipfs::IpfsConfig;
-use crate::backends::{
-    BackendRegistry, ByteRange, HttpsBackend, IpfsBackend, PackBackend, PackMeta, PlatformBackend,
-    Uri,
-};
+use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
@@ -33,6 +29,7 @@ use crate::platform::{
     PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::{self, ConfigDoc, RefState, RefUpdate};
+use crate::storage::{PackReader, Replication, StorageTarget};
 
 /// The repo-v1 contract template (2 tokens + 15 doc types), embedded at build time.
 ///
@@ -189,6 +186,140 @@ pub enum RepackTarget<'a> {
     /// hash-verifiable at its URIs; the on-chain refund still comes from deleting the
     /// superseded platform chunks.
     External(&'a dyn PackBackend),
+    /// A storage policy's targets, requiring `required` verified confirmations
+    /// ([`crate::storage::replicate`]). This is what a `git push` writes through.
+    Replicated {
+        /// The targets (external and/or [`PlatformChunkTarget`]).
+        targets: &'a [&'a dyn StorageTarget],
+        /// Confirmations required before the manifest may be written.
+        required: usize,
+    },
+}
+
+/// The maximum length of the `packManifest.uris` JSON string (repo-v1 schema).
+pub const MANIFEST_URIS_MAX_LEN: usize = 2600;
+
+/// The maximum length of the `config.backend.uris` JSON string (repo-v1 schema).
+pub const BACKEND_URIS_MAX_LEN: usize = 1300;
+
+/// How a manifest records an artifact stored through [`RepackTarget::Replicated`]:
+/// `storage` 0 when an on-chain copy exists (Platform-reading clients, including today's
+/// web app, read the chunks; every other copy is still listed in `uris` for CLI readers to
+/// race), `storage` 1 when only external copies exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredArtifact {
+    /// `packManifest.storage`.
+    pub storage: u64,
+    /// `packManifest.chunkCount` — 0 unless an on-chain copy was written.
+    pub chunk_count: u64,
+    /// `packManifest.uris`.
+    pub uris: Vec<String>,
+}
+
+impl StoredArtifact {
+    /// Derive the manifest fields from a successful replication of `bytes`.
+    pub fn from_replication(rep: &Replication, bytes: &[u8]) -> Result<Self> {
+        let platform = rep.has_platform();
+        Ok(Self {
+            storage: u64::from(!platform),
+            chunk_count: if platform {
+                crate::pack::split(bytes).len() as u64
+            } else {
+                0
+            },
+            uris: rep.manifest_uris(MANIFEST_URIS_MAX_LEN)?,
+        })
+    }
+}
+
+/// The Platform `chunk`-document tier as a [`StorageTarget`].
+///
+/// This is the contract-model-specific end of the push seam: everything that knows chunks
+/// are documents in a repo-v1 contract lives here, so a new contract generation replaces
+/// this type and leaves the replication engine and the helper alone.
+///
+/// With a journal it uploads resumably (an interrupted push resumes without re-paying for
+/// confirmed chunks); without one it rolls back a partial upload, because chunks no
+/// manifest references are invisible to every deletion path and their deposit would be
+/// stranded. Chunk writes are consensus-confirmed one by one, which is this tier's upload
+/// verification — no re-read is needed.
+pub struct PlatformChunkTarget<'s> {
+    svc: &'s RepoService<'s>,
+    repo: &'s RepoHandle,
+    name: String,
+    journal: Option<(std::sync::Mutex<PushJournal>, &'s (dyn JournalStore + Sync))>,
+}
+
+impl<'s> PlatformChunkTarget<'s> {
+    /// A target writing `repo`'s chunks through `svc`, rolling back partial uploads.
+    pub fn new(svc: &'s RepoService<'s>, repo: &'s RepoHandle, name: impl Into<String>) -> Self {
+        Self {
+            svc,
+            repo,
+            name: name.into(),
+            journal: None,
+        }
+    }
+
+    /// A resumable target: confirmed chunks are checkpointed through `store`.
+    pub fn resumable(
+        svc: &'s RepoService<'s>,
+        repo: &'s RepoHandle,
+        name: impl Into<String>,
+        journal: PushJournal,
+        store: &'s (dyn JournalStore + Sync),
+    ) -> Self {
+        Self {
+            svc,
+            repo,
+            name: name.into(),
+            journal: Some((std::sync::Mutex::new(journal), store)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageTarget for PlatformChunkTarget<'_> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_platform(&self) -> bool {
+        true
+    }
+
+    async fn store(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+        if let Some((journal, store)) = &self.journal {
+            // Take the journal out for the upload (a std lock must not be held across an
+            // await) and put the checkpointed state back either way.
+            let poisoned = || Error::Io("push journal lock poisoned".into());
+            let mut j = std::mem::take(&mut *journal.lock().map_err(|_| poisoned())?);
+            let res = self
+                .svc
+                .put_pack_resumable(self.repo, bytes, meta, &mut j, *store)
+                .await;
+            *journal.lock().map_err(|_| poisoned())? = j;
+            return res;
+        }
+        let pack_hash = meta.pack_hash_bytes()?;
+        match self.svc.put_pack(self.repo, bytes, meta).await {
+            Ok(u) => Ok(u),
+            Err(e) => {
+                match self.svc.delete_chunks(self.repo, pack_hash).await {
+                    Ok(n) => {
+                        tracing::debug!(reclaimed_chunks = n, "rolled back a partial chunk upload");
+                    }
+                    Err(cleanup) => tracing::warn!(
+                        error = %cleanup,
+                        pack_hash = %meta.pack_hash,
+                        "could not roll back a partial chunk upload; its deposit is stranded \
+                         until the repo is deleted"
+                    ),
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 /// What [`RepoService::publish_push_locator`] did to the browse index.
@@ -270,6 +401,33 @@ pub struct ReseedReport {
     /// docs for the fallback).
     pub announced_on_chain: bool,
     /// The number of `packMirror` documents written (0 when `announced_on_chain` is false).
+    pub mirror_docs_written: usize,
+}
+
+/// One pack [`RepoService::reseed_from_local`] re-uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalReseed {
+    /// The pack.
+    pub pack_hash: [u8; 32],
+    /// Every URI the confirmed copies are at now.
+    pub uris: Vec<String>,
+    /// Whether one of them is a URI the manifest already records (the recorded copy is
+    /// readable again — the usual outcome when re-uploading through the original profile).
+    pub restored_recorded_uri: bool,
+}
+
+/// The result of [`RepoService::reseed_from_local`].
+#[derive(Debug, Clone, Default)]
+pub struct LocalReseedReport {
+    /// Packs re-uploaded from the local clone.
+    pub restored: Vec<LocalReseed>,
+    /// Packs whose recorded copies still verified (skipped).
+    pub healthy: Vec<[u8; 32]>,
+    /// Packs that needed restoring but have no local copy in this clone.
+    pub missing: Vec<[u8; 32]>,
+    /// Whether new locations could be announced on-chain (`packMirror` present).
+    pub announced_on_chain: bool,
+    /// `packMirror` docs written.
     pub mirror_docs_written: usize,
 }
 
@@ -626,6 +784,33 @@ impl<'a> RepoService<'a> {
     /// `baseSupply`). Returns the new config document id. This is the `dg repo backend set`
     /// write path.
     pub async fn set_backend_mode(&self, repo: &RepoHandle, backend_mode: u8) -> Result<String> {
+        self.set_backend(repo, backend_mode, None).await
+    }
+
+    /// [`Self::set_backend_mode`], optionally replacing the advertised read `uris` (the
+    /// public read bases of a storage policy — `dg storage advertise`). `None` keeps the
+    /// newest config's URIs.
+    pub async fn set_backend(
+        &self,
+        repo: &RepoHandle,
+        backend_mode: u8,
+        new_uris: Option<&[String]>,
+    ) -> Result<String> {
+        let replacement = match new_uris {
+            Some(list) => {
+                let json = serde_json::to_string(list)
+                    .map_err(|e| Error::Config(format!("serializing backend uris: {e}")))?;
+                if json.len() > BACKEND_URIS_MAX_LEN {
+                    return Err(Error::Config(format!(
+                        "advertised URIs are {} bytes of JSON; config.backend.uris holds \
+                         {BACKEND_URIS_MAX_LEN}",
+                        json.len()
+                    )));
+                }
+                Some(json)
+            }
+            None => None,
+        };
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
         let newest = self
             .client
@@ -650,14 +835,16 @@ impl<'a> RepoService<'a> {
             .and_then(|d| d.field_str("protectedPatterns"))
             .unwrap_or_else(|| "[]".to_string());
         let archived = newest.as_ref().is_some_and(|d| d.field_bool("archived"));
-        let uris = match newest.as_ref().and_then(|d| d.fields.get("backend")) {
-            Some(FieldValue::Object(backend)) => backend
-                .get("uris")
-                .and_then(FieldValue::as_str)
-                .unwrap_or("[]")
-                .to_string(),
-            _ => "[]".to_string(),
-        };
+        let uris = replacement.unwrap_or_else(|| {
+            match newest.as_ref().and_then(|d| d.fields.get("backend")) {
+                Some(FieldValue::Object(backend)) => backend
+                    .get("uris")
+                    .and_then(FieldValue::as_str)
+                    .unwrap_or("[]")
+                    .to_string(),
+                _ => "[]".to_string(),
+            }
+        });
 
         let mut props = BTreeMap::new();
         props.insert(
@@ -762,47 +949,28 @@ impl<'a> RepoService<'a> {
             )
             .await?;
 
-        docs.iter()
-            .map(|d| {
-                let pack_hash = d
-                    .field_bytes("packHash")
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or_else(|| Error::Platform("packManifest missing packHash".into()))?;
-                let uris = d
-                    .field_str("uris")
-                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                    .unwrap_or_default();
-                // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
-                let supersedes = d
-                    .field_bytes("supersedes")
-                    .map(|raw| {
-                        raw.as_chunks::<32>()
-                            .0
-                            .iter()
-                            .map(|c| {
-                                let mut h = [0u8; 32];
-                                h.copy_from_slice(c);
-                                h
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(PackManifestInfo {
-                    document_id: d.id.clone(),
-                    created_at: d.created_at.unwrap_or_default(),
-                    owner_id: d.owner_id.clone(),
-                    pack_hash,
-                    kind: d.field_u64("kind").unwrap_or_default(),
-                    size_bytes: d.field_u64("sizeBytes").unwrap_or_default(),
-                    object_count: d.field_u64("objectCount").unwrap_or_default(),
-                    chunk_count: d.field_u64("chunkCount").unwrap_or_default(),
-                    storage: d.field_u64("storage").unwrap_or_default(),
-                    offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
-                    uris,
-                    supersedes,
-                })
-            })
-            .collect()
+        docs.iter().map(manifest_info).collect()
+    }
+
+    /// Read the `packManifest` for `pack_hash`, if one exists (the index is unique).
+    pub async fn read_pack_manifest(
+        &self,
+        repo: &RepoHandle,
+        pack_hash: [u8; 32],
+    ) -> Result<Option<PackManifestInfo>> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let docs = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_PACK_MANIFEST,
+                &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
+                &[],
+                1,
+                None,
+            )
+            .await?;
+        docs.first().map(manifest_info).transpose()
     }
 
     /// Store pack `bytes` as pipelined `chunk` documents via [`PlatformBackend`], returning
@@ -832,7 +1000,7 @@ impl<'a> RepoService<'a> {
         bytes: &[u8],
         meta: &PackMeta,
         journal: &mut PushJournal,
-        store: &dyn JournalStore,
+        store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
         use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PLATFORM_SCHEME};
 
@@ -840,13 +1008,16 @@ impl<'a> RepoService<'a> {
         let engine = self.doc_engine()?;
         let pack_hash = meta.pack_hash_bytes()?;
 
-        // Test affordance (no effect unless the env var is set): abort after uploading N
-        // fresh chunks to simulate a `kill -9` mid-push, so the resume path can be
-        // exercised deterministically end-to-end. The journal is already checkpointed for
-        // every chunk written before the abort.
+        // Test affordance, compiled only with `--features test-hooks`: abort after
+        // uploading N fresh chunks to simulate a `kill -9` mid-push, so the resume path can
+        // be exercised deterministically end-to-end. The journal is already checkpointed
+        // for every chunk written before the abort.
+        #[cfg(feature = "test-hooks")]
         let kill_after: Option<usize> = std::env::var("DASH_FORGE_KILL_AFTER_CHUNK")
             .ok()
             .and_then(|s| s.parse().ok());
+        #[cfg(not(feature = "test-hooks"))]
+        let kill_after: Option<usize> = None;
         let mut uploaded_now = 0usize;
 
         for (seq, props) in chunk_documents(bytes, pack_hash) {
@@ -1008,7 +1179,6 @@ impl<'a> RepoService<'a> {
         let new_meta = PackMeta::for_bytes(&new_bytes);
         let new_pack_hash = new_meta.pack_hash_bytes()?;
         let object_count = consolidated.parsed.object_count() as u64;
-        let chunk_count = crate::pack::split(&new_bytes).len() as u64;
 
         // Guard: if the consolidated pack collides with a still-live pack's hash (already a
         // single optimal pack), there is nothing to gain and the unique-index write would
@@ -1022,10 +1192,11 @@ impl<'a> RepoService<'a> {
         let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);
 
         // 3. Upload the consolidated pack + write its manifest.
-        let (storage, new_uris) = match target {
-            RepackTarget::Platform => (0u64, self.put_pack(repo, &new_bytes, &new_meta).await?),
-            RepackTarget::External(backend) => (1u64, backend.put(&new_bytes, &new_meta).await?),
-        };
+        let stored = self
+            .store_consolidated(repo, &new_bytes, &new_meta, target)
+            .await?;
+        let (storage, chunk_count) = (stored.storage, stored.chunk_count);
+        let new_uris: Vec<Uri> = stored.uris.into_iter().map(Uri).collect();
         let (supersedes, new_manifest_id) = self
             .write_consolidated_manifest(
                 repo,
@@ -1094,6 +1265,45 @@ impl<'a> RepoService<'a> {
             upload_cost_credits,
             refund_credits,
             net_credits,
+        })
+    }
+
+    /// Store a repack's consolidated pack on `target`, returning the manifest fields.
+    async fn store_consolidated(
+        &self,
+        repo: &RepoHandle,
+        bytes: &[u8],
+        meta: &PackMeta,
+        target: RepackTarget<'_>,
+    ) -> Result<StoredArtifact> {
+        let chunk_count = crate::pack::split(bytes).len() as u64;
+        Ok(match target {
+            RepackTarget::Platform => StoredArtifact {
+                storage: 0,
+                chunk_count,
+                uris: self
+                    .put_pack(repo, bytes, meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::External(backend) => StoredArtifact {
+                storage: 1,
+                chunk_count: 0,
+                uris: backend
+                    .put(bytes, meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::Replicated { targets, required } => {
+                let rep = crate::storage::replicate(targets, bytes, meta, required)
+                    .await
+                    .map_err(|e| Error::Io(e.to_string()))?;
+                StoredArtifact::from_replication(&rep, bytes)?
+            }
         })
     }
 
@@ -1247,6 +1457,103 @@ impl<'a> RepoService<'a> {
             announced_on_chain,
             mirror_docs_written,
         })
+    }
+
+    /// Restore lost external copies from a LOCAL clone (`dg reseed --from-local`).
+    ///
+    /// For every live kind-0 pack (or just `only`), the pack's exact bytes are looked up in
+    /// `git_dir` ([`crate::storage::local::find_local_pack`]: the helper's kept copy, or a
+    /// fetched `objects/pack/*.pack`), SHA-256-verified against the manifest, and stored
+    /// on `targets` (≥ `required` must confirm). Storage keys are content-addressed — S3
+    /// `…/packs/<sha256>.pack`, the IPFS CID — so re-uploading through the SAME profile the
+    /// pack was pushed with recreates the very URI the immutable manifest already records,
+    /// and readers find it again. Copies at new locations are announced as `packMirror`
+    /// docs when the contract has that type; on repo-v1 (no `packMirror`) they are only
+    /// returned, for the caller to print.
+    ///
+    /// Packs with no local copy are reported in `missing`; packs whose recorded copies
+    /// still verify are skipped unless `force`.
+    pub async fn reseed_from_local(
+        &self,
+        repo: &RepoHandle,
+        git_dir: &std::path::Path,
+        targets: &[&dyn StorageTarget],
+        required: usize,
+        only: Option<[u8; 32]>,
+        force: bool,
+    ) -> Result<LocalReseedReport> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let live: Vec<PackManifestInfo> = live_kind0_manifests(&manifests)
+            .into_iter()
+            .filter(|m| only.is_none_or(|h| h == m.pack_hash))
+            .collect();
+        if let (Some(h), true) = (only, live.is_empty()) {
+            return Err(Error::Config(format!(
+                "no live pack {} in this repo's manifests",
+                hex::encode(h)
+            )));
+        }
+        let contract = self.repo_contract(repo).await?;
+        let reader = PackReader::from_user_config();
+        let mut report = LocalReseedReport::default();
+        for m in &live {
+            if !force
+                && self
+                    .fetch_artifact_from(repo, &contract, m, &reader)
+                    .await
+                    .is_ok()
+            {
+                report.healthy.push(m.pack_hash);
+                continue;
+            }
+            let Some(bytes) = crate::storage::local::find_local_pack(git_dir, m.pack_hash)? else {
+                report.missing.push(m.pack_hash);
+                continue;
+            };
+            let meta = PackMeta::for_bytes(&bytes);
+            let rep = crate::storage::replicate(targets, &bytes, &meta, required)
+                .await
+                .map_err(|e| Error::Io(format!("pack {}: {e}", meta.pack_hash)))?;
+            let uris = rep.uris();
+            let restored = uris.iter().any(|u| m.uris.contains(u));
+            report.restored.push(LocalReseed {
+                pack_hash: m.pack_hash,
+                uris,
+                restored_recorded_uri: restored,
+            });
+        }
+
+        // Announce new locations where the contract allows it.
+        if contract.has_document_type(DOC_PACK_MIRROR) {
+            let repo_id_bytes = platform::decode_identifier(&repo.repo_contract_id)?;
+            let engine = self.doc_engine()?;
+            for r in &report.restored {
+                let fresh: Vec<&String> = r
+                    .uris
+                    .iter()
+                    .filter(|u| {
+                        !live
+                            .iter()
+                            .any(|m| m.pack_hash == r.pack_hash && m.uris.contains(u))
+                    })
+                    .collect();
+                if fresh.is_empty() {
+                    continue;
+                }
+                let mut props = BTreeMap::new();
+                props.insert("repoId".to_string(), FieldValue::identifier(repo_id_bytes));
+                props.insert("packHash".to_string(), FieldValue::bytes32(r.pack_hash));
+                let json = serde_json::to_string(&fresh)
+                    .map_err(|e| Error::Config(format!("serializing packMirror uris: {e}")))?;
+                props.insert("uris".to_string(), FieldValue::text(json));
+                engine
+                    .create_document(&contract, DOC_PACK_MIRROR, props)
+                    .await?;
+                report.mirror_docs_written += 1;
+            }
+            report.announced_on_chain = true;
+        }
+        Ok(report)
     }
 
     /// Publish the consolidated browse index for a repack, reporting failure as `None`
@@ -1418,34 +1725,39 @@ impl<'a> RepoService<'a> {
         let pack_hash = meta.pack_hash_bytes()?;
         let chunk_count = crate::pack::split(&bytes).len() as u64;
 
-        let (storage, uris) = match target {
+        let stored = match target {
             RepackTarget::Platform => {
-                // Roll back a partial upload. Unlike the push pack there is no journal to
-                // resume from, and every deletion path (`delete_superseded`, `dg repo
-                // delete`, admin teardown) finds chunks by walking MANIFESTS — so chunks
-                // left behind by a failed upload, which no manifest will ever reference,
-                // are invisible to all of them and their deposit is stranded for good.
-                match self.put_pack(repo, &bytes, &meta).await {
-                    Ok(u) => (0u64, u),
-                    Err(e) => {
-                        let hash = hex::encode(pack_hash);
-                        match self.delete_chunks(repo, pack_hash).await {
-                            Ok(n) => tracing::debug!(
-                                reclaimed_chunks = n,
-                                "rolled back a partial browse-index upload"
-                            ),
-                            Err(cleanup) => tracing::warn!(
-                                error = %cleanup,
-                                pack_hash = %hash,
-                                "could not roll back a partial browse-index upload; its \
-                                 chunk deposit is stranded until the repo is deleted"
-                            ),
-                        }
-                        return Err(e);
-                    }
+                // Roll back a partial upload (see [`PlatformChunkTarget`]): there is no
+                // journal to resume from, and chunks no manifest references are invisible
+                // to every deletion path.
+                let t = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
+                StoredArtifact {
+                    storage: 0,
+                    chunk_count,
+                    uris: t
+                        .store(&bytes, &meta)
+                        .await?
+                        .into_iter()
+                        .map(|u| u.0)
+                        .collect(),
                 }
             }
-            RepackTarget::External(backend) => (1u64, backend.put(&bytes, &meta).await?),
+            RepackTarget::External(backend) => StoredArtifact {
+                storage: 1,
+                chunk_count: 0,
+                uris: backend
+                    .put(&bytes, &meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::Replicated { targets, required } => {
+                let rep = crate::storage::replicate(targets, &bytes, &meta, required)
+                    .await
+                    .map_err(|e| Error::Io(format!("browse index: {e}")))?;
+                StoredArtifact::from_replication(&rep, &bytes)?
+            }
         };
 
         self.write_pack_manifest(
@@ -1455,12 +1767,12 @@ impl<'a> RepoService<'a> {
                 kind: u64::from(crate::pack::KIND_OBJECT_LOCATOR),
                 size_bytes: bytes.len() as u64,
                 object_count: locator.object_count() as u64,
-                chunk_count,
-                storage,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
                 // No separate `manifestPart` offset-index doc is written for the locator
                 // itself; never claim a part that was not stored.
                 offset_index_parts: 0,
-                uris: uris.iter().map(|u| u.0.clone()).collect(),
+                uris: stored.uris,
                 supersedes,
                 tips: Vec::new(),
             },
@@ -1509,8 +1821,8 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
-    /// Fetch a stored pack's bytes: Platform `chunk` docs for a platform-tier manifest, or
-    /// the reader-side backend registry over the manifest's external mirror URIs.
+    /// Fetch a stored artifact's bytes with the user's read configuration (storage.toml
+    /// gateways and S3 profiles). See [`Self::fetch_artifact`].
     async fn fetch_pack_bytes(
         &self,
         repo: &RepoHandle,
@@ -1520,36 +1832,90 @@ impl<'a> RepoService<'a> {
         self.fetch_manifest_pack(repo, &contract, manifest).await
     }
 
-    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract. A platform-tier
-    /// manifest is read from its `chunk` docs; an external-tier one races its mirror URIs
-    /// (hash-verified) — its URIs are `ipfs://` / `https://`, which the platform backend
-    /// cannot read, so the tier decides the path, never the first URI.
+    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract, with the user's
+    /// read configuration. See [`Self::fetch_artifact_from`].
     pub async fn fetch_manifest_pack(
         &self,
         repo: &RepoHandle,
         repo_contract: &LoadedContract,
         manifest: &PackManifestInfo,
     ) -> Result<Vec<u8>> {
-        if manifest.storage == 0 {
-            let locator = Uri(format!(
-                "{}://{}/{}",
-                crate::backends::PLATFORM_SCHEME,
-                repo.repo_contract_id,
-                hex::encode(manifest.pack_hash),
-            ));
-            return self.get_pack_from(repo_contract, &locator, None).await;
-        }
-        // External tier: race the mirror URIs, hash-verified.
-        let mut registry = BackendRegistry::new();
-        registry.register(Box::new(HttpsBackend::new()));
-        registry.register(Box::new(IpfsBackend::new(IpfsConfig {
-            api: None,
-            gateway: "https://ipfs.io".to_string(),
-        })));
-        let uris: Vec<Uri> = manifest.uris.iter().map(|u| Uri(u.clone())).collect();
-        registry
-            .get_verified(&uris, &hex::encode(manifest.pack_hash))
+        self.fetch_artifact_from(
+            repo,
+            repo_contract,
+            manifest,
+            &PackReader::from_user_config(),
+        )
+        .await
+    }
+
+    /// Fetch a stored artifact's bytes, SHA-256-verified against its manifest.
+    ///
+    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
+    /// list (cheap, and needs no Platform queries). Platform `chunk` documents are the last
+    /// resort — used when no external copy verifies, or when the manifest records none.
+    /// An external-only manifest whose copies are all gone fails with every candidate's
+    /// reason.
+    pub async fn fetch_artifact(
+        &self,
+        repo: &RepoHandle,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let contract = self.repo_contract(repo).await?;
+        self.fetch_artifact_from(repo, &contract, manifest, reader)
             .await
+    }
+
+    /// [`Self::fetch_artifact`] against an already-fetched repo contract (a fetch reads
+    /// many packs and should not re-fetch the contract per pack).
+    pub async fn fetch_artifact_from(
+        &self,
+        repo: &RepoHandle,
+        repo_contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let expected = hex::encode(manifest.pack_hash);
+        let has_chunks = manifest.storage == 0;
+        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+        if reader.has_candidates(&manifest.uris) {
+            // With chunks to fall back on, the external copies get a size-scaled budget
+            // after which no new candidate starts — dead gateways must not cost minutes per
+            // pack before the on-chain read, but a big pack streaming from a healthy mirror
+            // is not abandoned mid-transfer.
+            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            match reader
+                .fetch_verified(&manifest.uris, &expected, size, budget)
+                .await
+            {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if !has_chunks => return Err(e),
+                Err(e) => tracing::info!(
+                    pack = %expected,
+                    error = %e,
+                    "no external copy verified; reading Platform chunks"
+                ),
+            }
+        } else if !has_chunks {
+            return Err(Error::Io(format!(
+                "artifact {expected} is stored externally but its manifest records no URI this \
+                 client can read ({:?})",
+                manifest.uris
+            )));
+        }
+        let locator = Uri(format!(
+            "{}://{}/{}",
+            crate::backends::PLATFORM_SCHEME,
+            repo.repo_contract_id,
+            expected,
+        ));
+        let bytes = self.get_pack_from(repo_contract, &locator, None).await?;
+        if hex::encode(crate::backends::sha256(&bytes)) != expected {
+            return Err(Error::Integrity);
+        }
+        Ok(bytes)
     }
 
     /// Delete every `manifestPart` document for a pack (WRITE-gated refund), returning the
@@ -2012,6 +2378,47 @@ pub fn locator_pack_space(
             .then_with(|| a.document_id.cmp(&b.document_id))
     });
     live
+}
+
+/// Decode a `packManifest` document.
+fn manifest_info(d: &platform::FetchedDocument) -> Result<PackManifestInfo> {
+    let pack_hash = d
+        .field_bytes("packHash")
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| Error::Platform("packManifest missing packHash".into()))?;
+    let uris = d
+        .field_str("uris")
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
+    let supersedes = d
+        .field_bytes("supersedes")
+        .map(|raw| {
+            raw.as_chunks::<32>()
+                .0
+                .iter()
+                .map(|c| {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(c);
+                    h
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(PackManifestInfo {
+        document_id: d.id.clone(),
+        created_at: d.created_at.unwrap_or_default(),
+        owner_id: d.owner_id.clone(),
+        pack_hash,
+        kind: d.field_u64("kind").unwrap_or_default(),
+        size_bytes: d.field_u64("sizeBytes").unwrap_or_default(),
+        object_count: d.field_u64("objectCount").unwrap_or_default(),
+        chunk_count: d.field_u64("chunkCount").unwrap_or_default(),
+        storage: d.field_u64("storage").unwrap_or_default(),
+        offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
+        uris,
+        supersedes,
+    })
 }
 
 /// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a
