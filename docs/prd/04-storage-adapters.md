@@ -63,11 +63,21 @@ User guide: [`docs/guides/bring-your-own-storage.md`](../guides/bring-your-own-s
 
 Every failure before step 6 returns an error. **No manifest and no ref is written unless N copies are confirmed.** The push seam is the `storage::StorageTarget` trait. `ExternalTarget` wraps a `PackBackend` and verifies uploads by re-reading them (full GET + SHA-256 up to 16 MiB; above that, size plus byte-exact head and tail ranges). `repo::PlatformChunkTarget` is the only piece that knows chunks are repo-v1 documents, so the PV14 forge-v2 contract replaces that one type. Browse-index fragments (kind-1 `objectLocator` artifacts from PR #4) are stored through the same targets that confirmed the pack (`RepackTarget::Replicated`).
 
-**Re-push of an already-recorded pack.** `packManifest.packHash` is unique, and a duplicate create is treated as idempotent success. Before writing refs, the helper therefore reads back the existing manifest and requires at least one of its recorded copies to be readable and hash-match. If none is, the push fails with "pack … already recorded at …, none reachable; restore that storage or run dg reseed", lists the copies this push confirmed, and writes no ref.
+**Re-push of an already-recorded pack.** `packManifest.packHash` is unique, and a duplicate create is treated as idempotent success. Before writing refs, the helper therefore reads back the existing manifest and requires at least one of its recorded copies to be readable and hash-match. The check runs **before** anything is stored:
+- readable: nothing is stored again, and the refs are written;
+- unreadable: the push fails with "pack … already recorded at …, none reachable", points at `dg reseed --from-local`, and has paid for nothing.
+
+A Platform-tier manifest of the same size written for this pack is accepted without a download, because its chunks were confirmed at consensus.
+
+**Restoring a lost copy** (`dg reseed --from-local`, `RepoService::reseed_from_local`). The helper keeps `.git/dash/packs/<sha256>.pack` for every pack it stores externally only, and fetched clones hold the exact bytes as `objects/pack/pack-*.pack`. The command finds the pack locally, verifies its SHA-256, and re-uploads it to the policy's (or a named profile's) targets. Keys are content-addressed, so re-uploading through the original profile recreates the manifest's recorded URI. New locations are announced as `packMirror` docs where the contract has that type; on repo-v1 they are only printed.
 
 **Pre-existing bug found by the live e2e (fixed here).** git exports `GIT_DIR` to remote helpers. The push-pack builder's scratch `git -C <tmp> init --bare` (PR #4) therefore re-initialised the **user's** repository with `core.bare = true`, which broke their worktree after any push that had a have-base. The fix: `pack::build::git_capture` clears the repo-location variables. The regression test is `forge-core/tests/build_pack_git_dir.rs`.
 
-**Reader bounds.** Every body is capped at the manifest's `sizeBytes`. Each candidate gets 120 s. With Platform chunks available, the external copies get a 90 s total budget before the fallback. S3 secrets resolve only when an `s3://` candidate is actually tried. S3 requests never follow redirects, and S3 errors echo only `<Code>`/`<Message>`.
+**Reader bounds.**
+- Every body is capped at the manifest's `sizeBytes`.
+- Each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, plus the client's 120 s idle timeout for stalled hosts.
+- With Platform chunks available, no new external candidate starts after `max(90 s, half that)`.
+- A fetch skips an external-only pack whose copies are all unreachable, with a warning (PR #10's behaviour). git still fails the fetch if an object it needs never arrived. S3 secrets resolve only when an `s3://` candidate is actually tried. S3 requests never follow redirects, and S3 errors echo only `<Code>`/`<Message>`.
 
 **Manifest encoding.** With an on-chain copy: `storage = 0`, `chunkCount = n`, and `uris` lists every external copy as well, with the `platform://` locator **first** (released helpers read `uris[0]` of a `storage = 0` manifest). Today's web app treats `storage === 0` as "read chunks", so it keeps working. Without one: `storage = 1`, `chunkCount = 0`, `uris` = public URLs first, then `s3://bucket/key` locators, then `ipfs://<cid>`. `s3://` locators are dropped first if the 2600-byte `uris` field would overflow. Object keys are content-addressed (`[prefix/]packs/<sha256>.pack`), so a re-push is idempotent: the S3 backend skips the PUT when `HEAD` already shows the same size.
 
@@ -81,6 +91,10 @@ Every failure before step 6 returns an error. **No manifest and no ref is writte
 
 **Verified live (local only, per D-K):** SigV4 PUT/HEAD/ranged GET/DELETE against MinIO's `forge-byo` bucket, which refuses anonymous writes, using a key full of reserved characters; a wrong secret gets a 403. kubo 0.42 CIDs match the local derivation for single-chunk, 3-chunk and 175-leaf (two-level, ~44 MiB) files. N-of-M replication to MinIO + kubo with gateway read-back. `make storage-e2e`: a real `git push` on testnet with packs on MinIO + kubo (manifest `storage=1, chunkCount=0`), a clone by a reader with no S3 profile that was byte-identical and passed `fsck --strict`, a dead second target with N=2 that refused the push and left the remote ref unmoved, N=1 tolerating the dead target, and a re-push of an already-recorded pack whose only recorded copy was deleted refusing with the ref unmoved.
 **Not verified against real services:** AWS S3, R2 and B2 (D-K: no external accounts); a real pinning service, whose client is tested only against a scripted local HTTP server; virtual-hosted addressing on a live endpoint, which is tested offline only.
+**Fault-injection hooks.** `DASH_FORGE_FAIL_BEFORE_REFS` and `DASH_FORGE_KILL_AFTER_CHUNK` are compiled only with the `test-hooks` cargo feature, which `make storage-e2e` uses.
+
+**Old git.** `git config --show-scope` needs git ≥ 2.26. On older git the policy keys are read with plain `--get` rather than dropped.
+
 **Deferred:** browser uploads and the web app's settings UI (Phase 1, web workstream); `packMirror` announcements from push (reseed has them already); multipart upload for packs above S3's 5 GiB single-PUT limit; streaming verification for very large packs.
 
 ## Acceptance

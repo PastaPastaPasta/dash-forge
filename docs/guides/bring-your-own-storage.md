@@ -266,8 +266,10 @@ Every clone, fetch, repack and reseed reads each pack like this:
 
 A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
 - a body larger than the manifest's `sizeBytes` is refused;
-- each candidate gets at most 120 s;
-- when Platform chunks exist, the external copies together get 90 s before the reader falls back to the chunks. The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash` and `dg` embed it, and the web app is meant to import the same file when its storage settings land. Override it in `storage.toml`:
+- each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
+- when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned.
+
+The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash` and `dg` embed it, and the web app is meant to import the same file when its storage settings land. Override it in `storage.toml`:
 
 ```toml
 [read]
@@ -275,6 +277,30 @@ ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.io", "https://dweb.link"
 ```
 
 `dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway.
+
+## Restoring a lost copy
+
+A pack's manifest is immutable. It permanently records the pack's SHA-256 and the URIs its copies were stored at. When every one of those copies is lost (the bucket was emptied, the kubo node wiped, the pinning service dropped it), the pack cannot be read, and neither can any clone that needs it. That situation is reported as `already recorded at …, none reachable`, or as a warning when a fetch skips the pack.
+
+Storage keys are content-addressed:
+- S3: `<prefix>/packs/<sha256>.pack`;
+- IPFS: the CID, which is derived from the bytes.
+
+So **re-uploading the same bytes through the same profile recreates the exact URI the manifest already records**, and every reader finds it again. `dg reseed --from-local` does this from a local clone:
+
+```sh
+cd my-repo                        # a clone that has the pack
+dg reseed <owner>/<repo> --from-local            # every unreadable pack, to this repo's dash.storage targets
+dg reseed <owner>/<repo> --from-local --pack <sha256> --profile r2-main
+```
+
+The command looks for the pack's exact bytes in two places:
+- `.git/dash/packs/<sha256>.pack`: `git-remote-dash` keeps a copy there of every pack it stores on external storage only. This covers the pusher's own clone, including a push that was interrupted before its refs landed.
+- `.git/objects/pack/pack-*.pack`: any clone that fetched the pack holds its exact bytes.
+
+It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest. On contracts with a `packMirror` type they are announced as `packMirror` documents. On repo-v1 (today's testnet repos) they are only printed, so re-upload through the pack's original profile to make the recorded copy readable again.
+
+Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone.
 
 ## Troubleshooting
 
@@ -288,5 +314,5 @@ ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.io", "https://dweb.link"
 | `pinning service request … still queued` | The service cannot reach your node. Make it dialable or raise `--pin-timeout-secs`. |
 | `dg storage test`: `browser CORS` FAIL | Paste the printed provider CORS configuration. The CLI works without CORS, but the web app does not. |
 | `No terminal to confirm on` | See [Cost guard](#cost-guard). |
-| `pack … already recorded at …, none reachable` | An earlier push already recorded this exact pack, but none of its copies can be read now. Restore that storage, or `dg reseed` the pack from a clone that has it. The error lists the copies this push did confirm, so you can record them afterwards. No ref was updated. |
+| `pack … already recorded at …, none reachable` | An earlier push already recorded this exact pack, but none of its copies can be read now. This push stored nothing and updated no ref. Restore the copy: see [Restoring a lost copy](#restoring-a-lost-copy). |
 | `note: an earlier interrupted push left Platform chunks …` | A Platform upload was interrupted and you then pushed the same pack to external storage only. Those chunks still hold a refundable deposit. Re-push with `platform` in `dash.storage` to use them, or reclaim them at teardown. The journal that names them is kept. |

@@ -106,7 +106,10 @@ storage-it: infra-up
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local MinIO + kubo (N = 2) and only the manifest + ref on testnet. Spends a few
-## thousand credits of the e2e DEPLOYER identity (e2e/cli/config.sh). Opt-in.
-storage-e2e: infra-up build-rust
+## on local MinIO + kubo and only the manifest + ref on testnet, against the dedicated
+## storage-e2e-a / storage-e2e-b repos (e2e/README.md; created once, ~1.18 tDASH each).
+## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
+storage-e2e: infra-up
+	cargo build -p dg
+	cargo build -p git-remote-dash --features test-hooks
 	@bash e2e/cli/storage-byo.sh
