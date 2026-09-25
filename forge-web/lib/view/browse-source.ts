@@ -15,7 +15,10 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
+import { CHUNK_PAYLOAD_MAX, IPFS_GATEWAYS, PACK_KIND } from '../constants'
 import {
   BrowseReader,
   FlatIndex,
@@ -236,30 +239,161 @@ async function fetchPlatformRange(
   return out
 }
 
+// ---------------------------------------------------------------------------
+// External (storage 1) artifacts
+// ---------------------------------------------------------------------------
+
 /**
- * Fetch a contiguous range of an external artifact via HTTP Range. `onServed` is told which
- * URI answered, so the trust panel can name the host bytes actually came from.
+ * Budget for one request to one external mirror. The mirror may be a dead host (a manifest
+ * written by a push to someone's local MinIO) or a public gateway searching the IPFS network
+ * for a CID nobody pins; neither may hold a browse hostage.
+ */
+const EXTERNAL_FETCH_TIMEOUT_MS = 15_000
+
+/**
+ * An external artifact that no mirror served authentically. Carries what a view needs to
+ * say *which* pack is missing and *where* it was looked for.
+ */
+export class PackUnavailableError extends Error {
+  constructor(
+    readonly packHash: string,
+    /** Hosts actually tried (empty: the manifest records no browser-fetchable mirror). */
+    readonly hosts: readonly string[],
+    /** Whether some mirror answered with bytes that failed the sha256 check. */
+    readonly corrupt: boolean,
+    reason: string,
+  ) {
+    super(
+      `pack ${packHash.slice(0, 12)}… could not be fetched from its storage (${
+        hosts.length > 0 ? hosts.join(', ') : 'no browser-fetchable mirror recorded'
+      }): ${reason}`,
+    )
+    this.name = 'PackUnavailableError'
+  }
+}
+
+/**
+ * The HTTP(S) URLs an external artifact can be fetched from, in order: the manifest's own
+ * `http(s)` mirrors, then each `ipfs://<cid>` through every gateway in `gateways`. Schemes a
+ * browser cannot fetch (`s3://`, `platform://`) are skipped — an `s3://` locator always
+ * travels with the bucket's public `https` URL, which is listed separately.
+ */
+export function externalFetchUrls(
+  uris: readonly string[],
+  gateways: readonly string[] = IPFS_GATEWAYS,
+): string[] {
+  const out: string[] = []
+  for (const uri of uris) {
+    if (/^https?:\/\//i.test(uri)) out.push(uri)
+    const ipfs = /^ipfs:\/\/(.+)$/i.exec(uri)
+    if (ipfs !== null) {
+      for (const gw of gateways) out.push(`${gw.replace(/\/+$/, '')}/ipfs/${ipfs[1]}`)
+    }
+  }
+  return [...new Set(out)]
+}
+
+/**
+ * GET `url` and read the whole body under one hard deadline (a stalled body counts, not only
+ * a stalled connect). A 206 is accepted alongside 2xx.
+ */
+async function fetchBody(url: string, init: RequestInit = {}): Promise<Uint8Array> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), EXTERNAL_FETCH_TIMEOUT_MS)
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal })
+    if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
+    return new Uint8Array(await resp.arrayBuffer())
+  } catch (e) {
+    throw controller.signal.aborted ? new Error(`no answer in ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`) : e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function hostsOf(urls: readonly string[]): string[] {
+  return [...new Set(urls.map(externalSourceName))]
+}
+
+/**
+ * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
+ * mirror in turn. `onServed` is told which URL answered, so the trust panel can name the host
+ * bytes actually came from. A range cannot be hashed on its own: the reader re-hashes every
+ * object it reconstructs from it.
  */
 async function fetchExternalRange(
-  uris: readonly string[],
+  manifest: PackManifest,
   start: number,
   end: number,
   onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
-  let lastErr: unknown
-  for (const uri of uris) {
+  const urls = externalFetchUrls(manifest.uris)
+  let lastErr: unknown = 'no browser-fetchable mirror'
+  for (const url of urls) {
     try {
-      const resp = await fetch(uri, { headers: { Range: `bytes=${start}-${end - 1}` } })
-      if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
-      const buf = new Uint8Array(await resp.arrayBuffer())
-      onServed?.(uri)
+      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
+      onServed?.(url)
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
       lastErr = e
     }
   }
-  throw new Error(`no external URI served the range: ${String(lastErr)}`)
+  throw new PackUnavailableError(manifest.packHash, hostsOf(urls), false, errorText(lastErr))
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Fetch a whole external artifact, racing every fetchable mirror; the first body whose size
+ * and sha256 match the proof-read manifest wins. Mirrors are availability, never authority:
+ * one answering with other bytes is treated as down (and flagged `corrupt`).
+ */
+async function fetchExternalWhole(
+  manifest: PackManifest,
+  onServed?: (uri: string) => void,
+): Promise<Uint8Array> {
+  const urls = externalFetchUrls(manifest.uris)
+  const want = manifest.packHash.toLowerCase()
+  if (urls.length === 0) {
+    throw new PackUnavailableError(manifest.packHash, [], false, 'nothing to try')
+  }
+  let corrupt = false
+  const reasons: string[] = []
+  const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
+    try {
+      const bytes = await fetchBody(url)
+      if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
+        corrupt = true
+        throw new Error('served bytes that do not match the manifest sha256')
+      }
+      return { url, bytes }
+    } catch (e) {
+      reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
+      throw e
+    }
+  }
+  try {
+    const { url, bytes } = await firstFulfilled(urls.map(attempt))
+    onServed?.(url)
+    return bytes
+  } catch {
+    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasons.join('; '))
+  }
+}
+
+/** The first promise to fulfil; rejects only once every one has rejected. */
+function firstFulfilled<T>(promises: readonly Promise<T>[]): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let pending = promises.length
+    for (const p of promises) {
+      p.then(resolve, () => {
+        if (--pending === 0) reject(new Error('every attempt failed'))
+      })
+    }
+  })
 }
 
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
@@ -277,7 +411,7 @@ export function artifactRangeFetch(
 ): RangeFetch {
   return async (start: number, end: number) => {
     if (manifest.storage !== 0) {
-      return fetchExternalRange(manifest.uris, start, end, (uri) => noteSource(repo, uri))
+      return fetchExternalRange(manifest, start, end, (uri) => noteSource(repo, uri))
     }
     const bytes = await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, start, end)
     noteSource(repo)
@@ -311,8 +445,9 @@ const DOWNLOAD_WINDOW = CHUNK_QUERY_MAX * CHUNK_PAYLOAD_MAX
 /**
  * Load a whole artifact with download progress — the fallback-clone path for full git
  * packs, which can exceed the single-query chunk window. Platform storage downloads in
- * `DOWNLOAD_WINDOW` strides; external storage fetches the body whole (progress reported
- * only at completion).
+ * `DOWNLOAD_WINDOW` strides; external storage races its mirrors for the whole body, which
+ * must match the manifest's size and sha256 (progress reported only at completion), and
+ * throws {@link PackUnavailableError} when none does.
  */
 export async function loadArtifactBytesProgress(
   sdk: EvoSDK,
@@ -324,8 +459,7 @@ export async function loadArtifactBytesProgress(
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await fetchExternalRange(manifest.uris, 0, total, (uri) => noteSource(repo, uri))
-    if (bytes.length !== total) throw new Error('external artifact length mismatch')
+    const bytes = await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri))
     onProgress?.(total, total)
     return bytes
   }
@@ -424,11 +558,24 @@ export function buildPackSource(
   }
 }
 
+/** A live pack the browser could not obtain from its external storage. */
+export interface UnavailablePack {
+  readonly packHash: string
+  /** Hosts tried (empty: the manifest records no browser-fetchable mirror). */
+  readonly hosts: readonly string[]
+  readonly reason: string
+}
+
 /** The assembled browse context for a repo, or a reason it is unavailable. */
 export interface BrowseContext {
   readonly locator: ObjectLocator
   readonly packs: PackSource
   readonly reader: BrowseReader
+  /**
+   * External packs the in-browser clone skipped because no mirror served them. Objects only
+   * those packs hold are absent from this context; empty/absent means nothing was skipped.
+   */
+  readonly unavailable?: readonly UnavailablePack[]
 }
 
 /**

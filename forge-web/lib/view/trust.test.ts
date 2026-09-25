@@ -123,6 +123,25 @@ describe('deriveTrust — content hashes', () => {
     expect(pack.content.detail).toMatch(/1 pack did not match its manifest/)
   })
 
+  it('is partial, never verified, when a live pack could not be fetched', () => {
+    const read = deriveTrust(
+      inputs({ checks: checks({ objectsVerified: 5, packsVerified: 3, unavailablePacks: ['ab'.repeat(32)] }) }),
+    )
+    expect(read.content.state).toBe('partial')
+    expect(read.content.summary).toBe('1 pack missing')
+    expect(read.content.detail).toMatch(/1 pack could not be fetched from its storage, so some objects may be missing/)
+    expect(read.overall).toBe('partial')
+
+    // Known before any object is read, so not `pending` either.
+    const none = deriveTrust(inputs({ checks: checks({ unavailablePacks: ['ab'.repeat(32), 'cd'.repeat(32)] }) }))
+    expect(none.content.state).toBe('partial')
+    expect(none.content.summary).toBe('2 packs missing')
+
+    // A hash failure still wins.
+    const bad = deriveTrust(inputs({ checks: checks({ objectsFailed: 1, unavailablePacks: ['ab'.repeat(32)] }) }))
+    expect(bad.content.state).toBe('failed')
+  })
+
   it('names every source bytes actually came from', () => {
     const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 1, sources: ['platform', 'ipfs.io'] }) }))
     expect(r.source.summary).toBe('2 sources')

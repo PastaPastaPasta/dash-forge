@@ -9,7 +9,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { zlibSync } from 'fflate'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { gitOidHex } from '../browse'
 import {
@@ -25,6 +25,9 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
+import { externalFetchUrls } from './browse-source'
+import { contentChecks, resetContentChecks } from './content-checks'
+import { deriveTrust } from './trust'
 
 /** Mock SDK serving each pack's bytes as `chunk` docs split at CHUNK_PAYLOAD_MAX. */
 function mockSdk(packsByHash: Map<string, Uint8Array>): EvoSDK {
@@ -119,5 +122,129 @@ describe('startFallback', () => {
     const repo: RepoRef = { contractId: 'fallback-badcount', ownerId: 'owner' }
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
     await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/header claims/)
+  })
+})
+
+/** A single-blob pack (no deltas) holding `text`. */
+function blobPack(text: string): { pack: Uint8Array; oid: string } {
+  const body = new TextEncoder().encode(text)
+  return { pack: packFrame(concat(objHeader(T_BLOB, body.length), zlibSync(body))), oid: gitOidHex('blob', body) }
+}
+
+/** Route `fetch` by URL: a handler returns bytes, or throws for a dead host. */
+function stubFetch(routes: Record<string, () => Uint8Array>): string[] {
+  const calls: string[] = []
+  vi.stubGlobal('fetch', (url: string) => {
+    calls.push(url)
+    const route = routes[url]
+    if (route === undefined) return Promise.reject(new TypeError('fetch failed: connection refused'))
+    const bytes = route()
+    return Promise.resolve(new Response(new Blob([bytes as BlobPart]), { status: 200 }))
+  })
+  return calls
+}
+
+describe('startFallback with external-storage packs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetContentChecks()
+  })
+
+  it('skips an external pack no mirror serves, reports it, and still serves the rest', async () => {
+    const plat = blobPack('on-chain content\n')
+    const ext = blobPack('content only the dead mirror had\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
+    const external = manifestFor(ext.pack, 1, {
+      storage: 1,
+      chunkCount: 0,
+      uris: ['http://127.0.0.1:9000/forge-byo/pack', 's3://forge-byo/pack'],
+      createdAt: 2,
+      documentId: 'b',
+    })
+    const repo: RepoRef = { contractId: 'fallback-partial', ownerId: 'owner' }
+    const calls = stubFetch({})
+    const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
+
+    expect(calls).toEqual(['http://127.0.0.1:9000/forge-byo/pack']) // s3:// is not browser-fetchable
+    expect(ctx.unavailable).toHaveLength(1)
+    expect(ctx.unavailable?.[0]?.packHash).toBe(external.packHash)
+    expect(ctx.unavailable?.[0]?.hosts).toEqual(['127.0.0.1:9000'])
+    expect(Array.from((await ctx.reader.readObject(plat.oid)).bytes)).toEqual(
+      Array.from(new TextEncoder().encode('on-chain content\n')),
+    )
+    // A needed object from the skipped pack gets a per-view error naming pack and storage.
+    await expect(ctx.reader.readObject(ext.oid)).rejects.toThrow(
+      new RegExp(`${external.packHash.slice(0, 12)}.*127\\.0\\.0\\.1:9000`),
+    )
+    // The trust ledger reports the gap: content is partial, never verified.
+    const checks = contentChecks(repo.contractId)
+    expect(checks.unavailablePacks).toEqual([external.packHash])
+    const trust = deriveTrust({
+      network: 'testnet',
+      connection: 'trusted',
+      tip: 'missing',
+      checks,
+      configuredBackend: 'platform',
+    })
+    expect(trust.content.state).toBe('partial')
+    expect(trust.content.detail).toMatch(/1 pack could not be fetched from its storage; some objects may be missing|could not be fetched/)
+  })
+
+  it('reports a pack named by several manifests once', async () => {
+    const plat = blobPack('kept\n')
+    const ext = blobPack('gone\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
+    const external = (documentId: string): PackManifest =>
+      manifestFor(ext.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'], createdAt: 2, documentId })
+    stubFetch({})
+    const ctx = await startFallback(
+      mockSdk(new Map([[platform.packHash, plat.pack]])),
+      { contractId: 'fallback-dup', ownerId: 'owner' },
+      [platform, external('b'), external('c')],
+    )
+    expect(ctx.unavailable).toHaveLength(1)
+  })
+
+  it('fetches an ipfs:// pack through a gateway and verifies it', async () => {
+    const ext = blobPack('pinned on ipfs\n')
+    const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreitest'] })
+    const repo: RepoRef = { contractId: 'fallback-ipfs', ownerId: 'owner' }
+    const [first, second] = externalFetchUrls(external.uris)
+    expect(first).toBe('https://ipfs.io/ipfs/bafkreitest')
+    // The first gateway is down; the second serves the right bytes.
+    stubFetch({ [second as string]: () => ext.pack })
+    const ctx = await startFallback(mockSdk(new Map()), repo, [external])
+    expect(ctx.unavailable).toEqual([])
+    expect((await ctx.reader.readObject(ext.oid)).type).toBe('blob')
+    expect(contentChecks(repo.contractId).sources).toEqual(['dweb.link'])
+  })
+
+  it('treats a mirror serving the wrong bytes as unavailable, not as content', async () => {
+    const plat = blobPack('real\n')
+    const ext = blobPack('expected\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
+    const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: 2, documentId: 'b' })
+    const repo: RepoRef = { contractId: 'fallback-liar', ownerId: 'owner' }
+    stubFetch({ 'https://mirror.example/p': () => blobPack('forged!!!\n').pack })
+    const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
+    expect(ctx.unavailable?.[0]?.reason).toMatch(/sha256/)
+    await expect(ctx.reader.readObject(ext.oid)).rejects.toThrow(/could not be fetched/)
+  })
+
+  it('still fails loudly when an on-chain pack cannot be read', async () => {
+    const plat = blobPack('on-chain\n')
+    const platform = manifestFor(plat.pack, 1)
+    const repo: RepoRef = { contractId: 'fallback-platform-missing', ownerId: 'owner' }
+    // The chunk documents are absent: platform storage must not be skipped.
+    await expect(startFallback(mockSdk(new Map()), repo, [platform])).rejects.toThrow(/missing chunk/)
+  })
+
+  it('fails with the reasons when no live pack at all could be fetched', async () => {
+    const ext = blobPack('x\n')
+    const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'] })
+    stubFetch({})
+    await expect(
+      startFallback(mockSdk(new Map()), { contractId: 'fallback-none', ownerId: 'owner' }, [external]),
+    ).rejects.toThrow(/none of this repo's 1 live packs could be fetched/)
   })
 })

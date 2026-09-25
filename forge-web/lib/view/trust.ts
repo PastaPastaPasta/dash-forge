@@ -170,6 +170,22 @@ function deriveRefs(input: TrustInputs): TrustLink {
 }
 
 function deriveContent(checks: ContentChecks): TrustLink {
+  const link = deriveReadContent(checks)
+  const missing = checks.unavailablePacks.length
+  if (missing === 0 || link.state === 'failed') return link
+  // Everything shown passed its check, but the answer is incomplete: objects only the
+  // skipped packs hold cannot be shown at all. That is at best `partial`, never `verified`
+  // — and never `pending` either, since the skip is known before any object is read.
+  const note = `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some objects may be missing.`
+  return {
+    state: link.state === 'unverified' ? 'unverified' : 'partial',
+    summary: `${missing} ${missing === 1 ? 'pack' : 'packs'} missing`,
+    detail: `${note} ${link.detail}`,
+  }
+}
+
+/** The content link from what was read, before accounting for packs that were skipped. */
+function deriveReadContent(checks: ContentChecks): TrustLink {
   const failed = checks.objectsFailed + checks.packsFailed
   if (failed > 0) {
     const parts: string[] = []
