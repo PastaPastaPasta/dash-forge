@@ -24,7 +24,7 @@ import {
   packFrame,
 } from '../browse/pack-fixtures'
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, RepoRef } from '../repo'
+import type { PackManifest, V1RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState } from './browse-source'
@@ -67,6 +67,7 @@ function manifestFor(pack: Uint8Array, objectCount: number, overrides: Partial<P
     supersedes: [],
     createdAt: 1,
     documentId: 'd1',
+    uploader: 'owner',
     ...overrides,
   }
 }
@@ -91,7 +92,7 @@ describe('startFallback', () => {
   it('downloads, verifies, indexes, and serves objects through the synthesized locator', async () => {
     const { pack, baseOid, targetOid, base, target } = fixturePack()
     const manifest = manifestFor(pack, 2)
-    const repo: RepoRef = { contractId: 'fallback-ok', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-ok', ownerId: 'owner', name: '' }
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
 
     const phases: FallbackProgress['phase'][] = []
@@ -110,7 +111,7 @@ describe('startFallback', () => {
   it('rejects on pack hash mismatch and evicts the cache entry', async () => {
     const { pack } = fixturePack()
     const manifest = manifestFor(pack, 2, { packHash: '00'.repeat(32) })
-    const repo: RepoRef = { contractId: 'fallback-badhash', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-badhash', ownerId: 'owner', name: '' }
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
 
     await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/hash mismatch/)
@@ -121,7 +122,7 @@ describe('startFallback', () => {
   it('rejects when the manifest objectCount disagrees with the pack header', async () => {
     const { pack } = fixturePack()
     const manifest = manifestFor(pack, 5)
-    const repo: RepoRef = { contractId: 'fallback-badcount', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-badcount', ownerId: 'owner', name: '' }
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
     await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/header claims/)
   })
@@ -164,8 +165,9 @@ describe('startFallback with external-storage packs', () => {
       uris: ['http://127.0.0.1:9000/forge-byo/pack', 's3://forge-byo/pack'],
       createdAt: 2,
       documentId: 'b',
+      uploader: 'owner',
     })
-    const repo: RepoRef = { contractId: 'fallback-partial', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-partial', ownerId: 'owner', name: '' }
     const calls = stubFetch({})
     const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
 
@@ -203,7 +205,7 @@ describe('startFallback with external-storage packs', () => {
     stubFetch({})
     const ctx = await startFallback(
       mockSdk(new Map([[platform.packHash, plat.pack]])),
-      { contractId: 'fallback-dup', ownerId: 'owner' },
+      { kind: 'v1', contractId: 'fallback-dup', ownerId: 'owner', name: '' },
       [platform, external('b'), external('c')],
     )
     expect(ctx.unavailable).toHaveLength(1)
@@ -212,7 +214,7 @@ describe('startFallback with external-storage packs', () => {
   it('fetches an ipfs:// pack through a gateway and verifies it', async () => {
     const ext = blobPack('pinned on ipfs\n')
     const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreitest'] })
-    const repo: RepoRef = { contractId: 'fallback-ipfs', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-ipfs', ownerId: 'owner', name: '' }
     const [first, second] = externalFetchUrls(external.uris)
     expect(first).toBe('https://ipfs.io/ipfs/bafkreitest')
     // The first gateway is down; the second serves the right bytes.
@@ -228,7 +230,7 @@ describe('startFallback with external-storage packs', () => {
     const ext = blobPack('expected\n')
     const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
     const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: 2, documentId: 'b' })
-    const repo: RepoRef = { contractId: 'fallback-liar', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-liar', ownerId: 'owner', name: '' }
     // Same length as the real pack, different bytes: only the sha256 check can catch it.
     stubFetch({ 'https://mirror.example/p': () => blobPack('forgery!\n').pack })
     const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
@@ -241,7 +243,7 @@ describe('startFallback with external-storage packs', () => {
   it('still fails loudly when an on-chain pack cannot be read', async () => {
     const plat = blobPack('on-chain\n')
     const platform = manifestFor(plat.pack, 1)
-    const repo: RepoRef = { contractId: 'fallback-platform-missing', ownerId: 'owner' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-platform-missing', ownerId: 'owner', name: '' }
     // The chunk documents are absent: platform storage must not be skipped.
     await expect(startFallback(mockSdk(new Map()), repo, [platform])).rejects.toThrow(/missing chunk/)
   })
@@ -251,7 +253,7 @@ describe('startFallback with external-storage packs', () => {
     const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'] })
     stubFetch({})
     await expect(
-      startFallback(mockSdk(new Map()), { contractId: 'fallback-none', ownerId: 'owner' }, [external]),
+      startFallback(mockSdk(new Map()), { kind: 'v1', contractId: 'fallback-none', ownerId: 'owner', name: '' }, [external]),
     ).rejects.toThrow(/none of this repo's 1 live packs could be fetched/)
   })
 
@@ -270,7 +272,7 @@ describe('startFallback with external-storage packs', () => {
       const i = Number(url.slice(url.lastIndexOf('p') + 1))
       return new Response(new Blob([packs[i]?.pack as BlobPart]), { status: 200 })
     })
-    const ctx = await startFallback(mockSdk(new Map()), { contractId: 'fallback-origin', ownerId: 'o' }, manifests)
+    const ctx = await startFallback(mockSdk(new Map()), { kind: 'v1', contractId: 'fallback-origin', ownerId: 'o', name: '' }, manifests)
     expect(ctx.unavailable).toEqual([])
     expect(peak).toBeLessThanOrEqual(4)
   })
@@ -290,7 +292,7 @@ describe('startFallback with external-storage packs', () => {
       }
       return Promise.resolve(new Response(new Blob([ext.pack as BlobPart]), { status: 200 }))
     })
-    const run = startFallback(mockSdk(new Map()), { contractId: 'fallback-retry', ownerId: 'o' }, [external])
+    const run = startFallback(mockSdk(new Map()), { kind: 'v1', contractId: 'fallback-retry', ownerId: 'o', name: '' }, [external])
     await vi.advanceTimersByTimeAsync(16_000)
     vi.useRealTimers()
     const ctx = await run
@@ -307,8 +309,8 @@ describe('startFallback with external-storage packs', () => {
     }
     const calls = stubFetch({})
     const sdk = mockSdk(new Map([[platform.packHash, plat.pack]]))
-    await startFallback(sdk, { contractId: 'fallback-dead', ownerId: 'o' }, [platform, dead(1)])
-    await startFallback(sdk, { contractId: 'fallback-dead-2', ownerId: 'o' }, [platform, dead(2)])
+    await startFallback(sdk, { kind: 'v1', contractId: 'fallback-dead', ownerId: 'o', name: '' }, [platform, dead(1)])
+    await startFallback(sdk, { kind: 'v1', contractId: 'fallback-dead-2', ownerId: 'o', name: '' }, [platform, dead(2)])
     expect(calls).toEqual(['http://127.0.0.1:9000/p'])
   })
 
@@ -329,7 +331,7 @@ describe('startFallback with external-storage packs', () => {
         ),
     )
     await expect(
-      startFallback(mockSdk(new Map()), { contractId: 'fallback-cancel', ownerId: 'o' }, [platform, external]),
+      startFallback(mockSdk(new Map()), { kind: 'v1', contractId: 'fallback-cancel', ownerId: 'o', name: '' }, [platform, external]),
     ).rejects.toThrow(/missing chunk/)
     expect(aborted).toBe(true)
   })
@@ -347,7 +349,7 @@ describe('startFallback with external-storage packs', () => {
     const b = manifestFor(packB, 1, { createdAt: 1, documentId: 'b' })
     stubFetch({})
     await expect(
-      startFallback(mockSdk(new Map([[b.packHash, packB]])), { contractId: 'fallback-thin', ownerId: 'o' }, [a, b]),
+      startFallback(mockSdk(new Map([[b.packHash, packB]])), { kind: 'v1', contractId: 'fallback-thin', ownerId: 'o', name: '' }, [a, b]),
     ).rejects.toThrow(new RegExp(`${a.packHash.slice(0, 12)}.*127\\.0\\.0\\.1:9000`))
   })
 
@@ -357,7 +359,7 @@ describe('startFallback with external-storage packs', () => {
     const platform = manifestFor(plat.pack, 1, { createdAt: 0, documentId: 'a' })
     const ext = blobPack('later\n')
     const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://flaky.example/p'], createdAt: 1, documentId: 'b' })
-    const repo: RepoRef = { contractId: 'fallback-expiry', ownerId: 'o' }
+    const repo: V1RepoRef = { kind: 'v1', contractId: 'fallback-expiry', ownerId: 'o', name: '' }
     vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 503 })))
     await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
     expect(cachedFallback(repo.contractId, [platform, external])).not.toBeNull()

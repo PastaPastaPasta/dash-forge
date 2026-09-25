@@ -13,10 +13,10 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { base64ToHex, bytesToBase64 } from '../sdk'
-import { DOC, type RepoRef } from './contract'
+import { DOC, type V1RepoRef } from './contract'
 import { hasMissingParent, readRefs } from './refs'
 
-const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
+const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
 
 /** Real `sha256(refName)` — the rules layer rejects updates whose hash doesn't match. */
 function refHashBytes(seed: number): Uint8Array {

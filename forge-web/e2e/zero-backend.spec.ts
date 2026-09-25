@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test'
-import { repoUrl, waitForRepoResolved } from './helpers'
+import { ON_TESTNET, repoUrl, waitForRepoResolved } from './helpers'
+
+// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
+test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
 
 /**
  * Scenario 5 — Zero-backend proof.

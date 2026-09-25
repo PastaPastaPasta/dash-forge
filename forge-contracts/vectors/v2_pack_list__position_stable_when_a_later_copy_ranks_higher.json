@@ -1,0 +1,77 @@
+{
+  "name": "position_stable_when_a_later_copy_ranks_higher",
+  "description": "A maintainer re-uploads P1 after P2 landed: its copy becomes P1's representative, but P1 keeps packRef 0 because its first upload is still the earliest.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "w1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "w2",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "m1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "w1"
+      },
+      "copies": [
+        "m1",
+        "w1"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "P2",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 20,
+        "id": "w2"
+      },
+      "copies": [
+        "w2"
+      ],
+      "superseded": false
+    }
+  ]
+}

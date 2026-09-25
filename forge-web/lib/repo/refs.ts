@@ -55,8 +55,9 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { DOC, toRefUpdate, type RepoRef } from './contract'
+import { DOC, toRefUpdate, wellFormed, type RepoRef } from './contract'
 import { readConfigHistory } from './config'
+import { repoSource } from './source'
 
 const NO_ANCESTRY: IsAncestor = () => false
 
@@ -105,12 +106,13 @@ function readOneRef(
   documentTypeName: string,
   refNameHashB64: string,
 ): Promise<PlainDocument[]> {
-  return queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName,
-    where: [['refNameHash', '==', refNameHashB64]],
-    orderBy: [['$createdAt', 'asc']],
-  })
+  return queryAllDocuments(
+    sdk,
+    repoSource(repo).repoQuery(documentTypeName, {
+      where: [['refNameHash', '==', refNameHashB64]],
+      orderBy: [['$createdAt', 'asc']],
+    }),
+  )
 }
 
 /** Drop repeated `$id`s, keeping the first occurrence. */
@@ -134,20 +136,22 @@ async function keysetScan(
   repo: RepoRef,
   documentTypeName: string,
 ): Promise<PlainDocument[] | null> {
+  const source = repoSource(repo)
   const rows: PlainDocument[] = []
   let after = null as { hex: string; b64: string } | null
   for (let round = 0; round < MAX_KEYSET_ROUNDS; round++) {
     const floorHex = after?.hex
-    const { documents: page } = await queryDocumentsWithProof(sdk, {
-      dataContractId: repo.contractId,
-      documentTypeName,
-      where: after === null ? [] : [['refNameHash', '>', after.b64]],
-      orderBy: [
-        ['refNameHash', 'asc'],
-        ['$createdAt', 'asc'],
-      ],
-      limit: PAGE,
-    })
+    const { documents: page } = await queryDocumentsWithProof(
+      sdk,
+      source.repoQuery(documentTypeName, {
+        where: after === null ? [] : [['refNameHash', '>', after.b64]],
+        orderBy: [
+          ['refNameHash', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+        limit: PAGE,
+      }),
+    )
     const hashes = page.map((d) => refHashHexOf(d, documentTypeName))
     const inOrder = hashes.every((h, i) => i === 0 || (hashes[i - 1] as string) <= h)
     const inRange = floorHex === undefined || hashes.every((h) => h > floorHex)
@@ -198,10 +202,13 @@ interface TypeScan {
 }
 
 /** Group rows per ref: plain before protected, each in read order (the fold re-sorts). */
-function groupByRef(scans: readonly TypeScan[]): Map<string, RefUpdate[]> {
+function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefUpdate[]> {
   const byHash = new Map<string, RefUpdate[]>()
   for (const { type, isProtected, rows } of scans) {
     for (const doc of rows) {
+      // forge-v2: a ref update not well-formed for the repo's visibility (a private repo's
+      // plaintext `refName`, say) is skipped before the fold sees it (`forge-v2.md` §5).
+      if (!wellFormed(repo, 'refUpdate', doc)) continue
       const hex = refHashHexOf(doc, type)
       const update = toRefUpdate(doc, isProtected)
       const group = byHash.get(hex)
@@ -229,7 +236,7 @@ export async function readAllRefUpdates(
     })),
   )
   if (scanned.every((s) => s.rows !== null)) {
-    const grouped = groupByRef(scanned as TypeScan[])
+    const grouped = groupByRef(repo, scanned as TypeScan[])
     if (![...grouped.values()].some(hasMissingParent)) return grouped
   }
 
@@ -239,15 +246,14 @@ export async function readAllRefUpdates(
       type,
       isProtected,
       rows: dedupeById(
-        await queryAllDocuments(sdk, {
-          dataContractId: repo.contractId,
-          documentTypeName: type,
-          orderBy: [['$createdAt', 'asc']],
-        }),
+        await queryAllDocuments(
+          sdk,
+          repoSource(repo).repoQuery(type, { orderBy: [['$createdAt', 'asc']] }),
+        ),
       ),
     })),
   )
-  return groupByRef(full)
+  return groupByRef(repo, full)
 }
 
 /**
@@ -269,8 +275,8 @@ export async function readRefUpdates(
     readOneRef(sdk, repo, DOC.protectedRefUpdate, refNameHashB64),
   ])
   return [
-    ...plain.map((d) => toRefUpdate(d, false)),
-    ...prot.map((d) => toRefUpdate(d, true)),
+    ...plain.filter((d) => wellFormed(repo, 'refUpdate', d)).map((d) => toRefUpdate(d, false)),
+    ...prot.filter((d) => wellFormed(repo, 'refUpdate', d)).map((d) => toRefUpdate(d, true)),
   ]
 }
 

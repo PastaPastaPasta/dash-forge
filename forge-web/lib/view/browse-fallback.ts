@@ -10,7 +10,7 @@
  * main bundles), and assembles the same {@link BrowseContext} the locator path produces,
  * so every downstream view works unchanged.
  *
- * One in-flight/completed context is cached per contract for the session, while completed
+ * One in-flight/completed context is cached per repo (`repoKey`) for the session, while completed
  * clones are persisted in IndexedDB — navigation and hard reloads neither re-download nor
  * re-index an unchanged pack set. Failed runs are evicted so a retry starts clean. When
  * flatIndex-backed features (filename search / full listing) gain UI consumers, this context
@@ -22,7 +22,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { BrowseReader, ObjectLocator } from '../browse'
-import type { PackManifest, RepoRef } from '../repo'
+import { repoKey, type PackManifest, type RepoRef } from '../repo'
 import {
   loadArtifactBytesProgress,
   PackUnavailableError,
@@ -63,29 +63,29 @@ const restores = new Map<string, Promise<BrowseContext | null>>()
  */
 export const PARTIAL_FALLBACK_TTL_MS = 60_000
 
-function remember(contractId: string, manifestKey: string, promise: Promise<BrowseContext>): Promise<BrowseContext> {
+function remember(key: string, manifestKey: string, promise: Promise<BrowseContext>): Promise<BrowseContext> {
   const entry: CacheEntry = { manifestKey, promise }
-  cache.set(contractId, entry)
+  cache.set(key, entry)
   promise.then(
     (ctx) => {
       if ((ctx.unavailable?.length ?? 0) === 0) return
       setTimeout(() => {
-        if (cache.get(contractId) === entry) cache.delete(contractId)
+        if (cache.get(key) === entry) cache.delete(key)
       }, PARTIAL_FALLBACK_TTL_MS)
     },
     () => {
-      if (cache.get(contractId) === entry) cache.delete(contractId)
+      if (cache.get(key) === entry) cache.delete(key)
     },
   )
   return promise
 }
 
-/** The session's in-flight or completed fallback context for a contract, if any. */
+/** The session's in-flight or completed fallback context for a repo (`repoKey`), if any. */
 export function cachedFallback(
-  contractId: string,
+  key: string,
   livePacks?: readonly PackManifest[],
 ): Promise<BrowseContext> | null {
-  const entry = cache.get(contractId)
+  const entry = cache.get(key)
   if (entry === undefined) return null
   if (livePacks !== undefined && entry.manifestKey !== fallbackManifestKey(livePacks)) return null
   return entry.promise
@@ -100,28 +100,28 @@ export function restoreFallback(
   livePacks: readonly PackManifest[],
 ): Promise<BrowseContext | null> {
   const manifestKey = fallbackManifestKey(livePacks)
-  const existing = cachedFallback(repo.contractId, livePacks)
+  const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
-  const restoreKey = `${repo.contractId}\0${manifestKey}`
+  const restoreKey = `${repoKey(repo)}\0${manifestKey}`
   const restoring = restores.get(restoreKey)
   if (restoring !== undefined) return restoring
 
   const restore = (async (): Promise<BrowseContext | null> => {
-    const stored = await loadStoredFallback(repo.contractId, livePacks)
+    const stored = await loadStoredFallback(repoKey(repo), livePacks)
     if (stored === null) return null
 
     // A download may have started while IndexedDB was being read; prefer that shared run.
-    const active = cachedFallback(repo.contractId, livePacks)
+    const active = cachedFallback(repoKey(repo), livePacks)
     if (active !== null) return active
 
     try {
       validatePacks(stored.packs, livePacks)
       // The stored copy passed the same sha256 check a fresh download does.
-      noteContentCheck(repo.contractId, { packsVerified: livePacks.length, source: 'browser cache' })
-      return await remember(repo.contractId, manifestKey, contextFromStored(repo, stored))
+      noteContentCheck(repoKey(repo), { packsVerified: livePacks.length, source: 'browser cache' })
+      return await remember(repoKey(repo), manifestKey, contextFromStored(repo, stored))
     } catch {
-      await deleteStoredFallback(repo.contractId)
+      await deleteStoredFallback(repoKey(repo))
       return null
     }
   })()
@@ -144,11 +144,11 @@ export function startFallback(
   onProgress?: (p: FallbackProgress) => void,
 ): Promise<BrowseContext> {
   const manifestKey = fallbackManifestKey(livePacks)
-  const existing = cachedFallback(repo.contractId, livePacks)
+  const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
   const run = runFallback(sdk, repo, livePacks, onProgress)
-  return remember(repo.contractId, manifestKey, run)
+  return remember(repoKey(repo), manifestKey, run)
 }
 
 function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackManifest[]): void {
@@ -180,7 +180,7 @@ function contextFromStored(repo: RepoRef, stored: StoredFallback): Promise<Brows
   const locator = ObjectLocator.parse(stored.locator)
   return import('../browse/indexer').then(({ memoryPackSource }) => {
     const packs = memoryPackSource(stored.packs)
-    const onObject = objectObserver(repo.contractId)
+    const onObject = objectObserver(repoKey(repo))
     return { locator, packs, reader: new BrowseReader(locator, packs, { onObject }) }
   })
 }
@@ -302,7 +302,7 @@ async function runFallback(
     ).values(),
   ]
   for (const u of unavailable) {
-    noteContentCheck(repo.contractId, { unavailablePack: u.packHash, corruptMirror: u.corrupt })
+    noteContentCheck(repoKey(repo), { unavailablePack: u.packHash, corruptMirror: u.corrupt })
   }
   if (got.length === 0) {
     throw new Error(
@@ -318,10 +318,10 @@ async function runFallback(
   } catch (e) {
     // A downloaded pack that does not match its proof-read manifest is a content-check
     // failure the trust panel must report, not only an error on this page.
-    noteContentCheck(repo.contractId, { packsFailed: 1 })
+    noteContentCheck(repoKey(repo), { packsFailed: 1 })
     throw e
   }
-  noteContentCheck(repo.contractId, { packsVerified: packs.length })
+  noteContentCheck(repoKey(repo), { packsVerified: packs.length })
 
   const { indexPacks, serializeLocator, memoryPackSource } = await import('../browse/indexer')
   let objects: Awaited<ReturnType<typeof indexPacks>>
@@ -343,14 +343,14 @@ async function runFallback(
   // The synthesized locator's packRef space is exactly the packs that downloaded.
   const packSource = memoryPackSource(packs)
   const reader = new BrowseReader(locator, packSource, {
-    onObject: objectObserver(repo.contractId),
+    onObject: objectObserver(repoKey(repo)),
     missingObject:
       unavailable.length > 0 ? (oid) => missingObjectError(oid, unavailable) : undefined,
   })
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
   if (unavailable.length === 0) {
-    await storeFallback(repo.contractId, livePacks, { locator: locatorBytes, packs })
+    await storeFallback(repoKey(repo), livePacks, { locator: locatorBytes, packs })
   }
   return { locator, packs: packSource, reader, unavailable }
 }

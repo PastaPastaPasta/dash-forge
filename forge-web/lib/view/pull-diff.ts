@@ -1,7 +1,8 @@
 /**
  * Reconstruct a pull request comparison from its base and source repository objects.
  *
- * A PR's head commit is pushed to the contributor's own contract (`sourceContractId`), while
+ * A PR's head commit is pushed to the contributor's own repo (v1 `sourceContractId`, forge-v2
+ * `sourceRepoId`), while
  * the base history lives in the repo being viewed. The comparison therefore reads through two
  * readers: head-side objects prefer the source repo, base-side objects prefer the target repo,
  * and each falls back to the other. Falling back is safe because objects are content-addressed

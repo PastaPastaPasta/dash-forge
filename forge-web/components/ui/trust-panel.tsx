@@ -62,12 +62,12 @@ function Step({
 
 export function TrustPanel({
   report,
-  contractId,
+  serial,
   tipOid,
 }: {
   report: TrustReport
-  /** The repo contract the proofs were read from. */
-  contractId?: string
+  /** The repo the proofs were read for: the v1 repo contract id or the forge-v2 repo id. */
+  serial?: string
   /** The commit the attested ref points at. */
   tipOid?: string
 }): JSX.Element {
@@ -100,7 +100,7 @@ export function TrustPanel({
       {open ? (
         <div className="animate-fade-in border-t border-anvil-200 px-4 py-4 dark:border-anvil-750">
           <ol className="mb-3">
-            <Step step="01" title="Platform proofs" link={report.proofs} serial={contractId} />
+            <Step step="01" title="Platform proofs" link={report.proofs} serial={serial} />
             <Step step="02" title="Refs" link={report.refs} serial={tipOid} />
             <Step step="03" title="Content hashes" link={report.content} />
             <Step step="04" title="Byte source" link={report.source} />

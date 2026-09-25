@@ -1,0 +1,131 @@
+{
+  "name": "supersedes_only_from_a_verified_representative",
+  "description": "C1 verified and supersedes P1; U1 is unchecked and claims to supersede P2: P1 is superseded, P2 is not. Superseded packs keep their packRef.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "b",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "c",
+        "packHash": "C1",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      },
+      {
+        "id": "u",
+        "packHash": "U1",
+        "kind": 0,
+        "createdAt": 40,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "supersedes": [
+          "P2"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": true
+    },
+    {
+      "packRef": 1,
+      "packHash": "P2",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 20,
+        "id": "b"
+      },
+      "copies": [
+        "b"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 2,
+      "packHash": "C1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [
+        "P1"
+      ],
+      "first": {
+        "createdAt": 30,
+        "id": "c"
+      },
+      "copies": [
+        "c"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 3,
+      "packHash": "U1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [
+        "P2"
+      ],
+      "first": {
+        "createdAt": 40,
+        "id": "u"
+      },
+      "copies": [
+        "u"
+      ],
+      "superseded": false
+    }
+  ]
+}

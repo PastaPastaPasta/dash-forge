@@ -37,7 +37,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, REGISTRY_DOC, type RepoRef } from './contract'
+import { DOC, REGISTRY_DOC, type V1RepoRef } from './contract'
 import { invalidateAuthz } from './tokens'
 
 /** Raised only by paths that remain out of scope for M3 (browser push internals). */
@@ -92,7 +92,7 @@ function registryId(auth: WriteAuth): string {
   return requireRegistryContractId(auth.network)
 }
 
-async function nextIssueNumber(sdk: EvoSDK, repo: RepoRef): Promise<number> {
+async function nextIssueNumber(sdk: EvoSDK, repo: V1RepoRef): Promise<number> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.issue,
@@ -122,7 +122,7 @@ export interface CreateIssueResult extends WriteResult {
 export async function createIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: { title: string; body: string },
 ): Promise<CreateIssueResult> {
   let number = await nextIssueNumber(sdk, repo)
@@ -151,7 +151,7 @@ export async function createIssue(
 export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: { targetId: string; body: string; replyTo?: string },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = {
@@ -174,7 +174,7 @@ export async function createComment(
 export async function addEvent(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: { targetId: string; kind: EventKindName; value?: string; oidHex?: string },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = {
@@ -194,7 +194,7 @@ export async function addEvent(
 export function closeTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   targetId: string,
 ): Promise<WriteResult> {
   return addEvent(sdk, auth, repo, { targetId, kind: 'close' })
@@ -204,7 +204,7 @@ export function closeTarget(
 export function reopenTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   targetId: string,
 ): Promise<WriteResult> {
   return addEvent(sdk, auth, repo, { targetId, kind: 'reopen' })
@@ -214,7 +214,7 @@ export function reopenTarget(
 export function labelTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   targetId: string,
   label: string,
   remove = false,
@@ -242,7 +242,7 @@ export interface ReleaseAsset {
 export async function createRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: {
     tagName: string
     name?: string
@@ -266,7 +266,7 @@ export async function createRelease(
 export async function createLabel(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: { name: string; color?: string; description?: string; retired?: boolean },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = { name: input.name, retired: input.retired ?? false }
@@ -439,7 +439,7 @@ export async function isFollowing(
 export async function grantCollaborator(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   memberId: string,
   maintain: boolean,
 ): Promise<{ minted: boolean; cost: CostPreview }> {
@@ -452,7 +452,7 @@ export async function grantCollaborator(
 export async function suspendCollaborator(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   memberId: string,
   maintain: boolean,
 ): Promise<{ frozen: boolean; cost: CostPreview }> {
@@ -465,7 +465,7 @@ export async function suspendCollaborator(
 export async function revokeCollaborator(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   memberId: string,
   maintain: boolean,
 ): Promise<{ revoked: boolean; cost: CostPreview }> {
@@ -580,7 +580,7 @@ export async function createRepo(
 export async function pushRefUpdate(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: RepoRef,
+  repo: V1RepoRef,
   input: {
     refName: string
     newOidHex: string

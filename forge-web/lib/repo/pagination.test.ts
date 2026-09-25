@@ -22,14 +22,14 @@ import {
   tieProbeAllowed,
 } from '../sdk'
 import { readConfigBundle } from './config'
-import { DOC, type RepoRef } from './contract'
+import { DOC, type V1RepoRef } from './contract'
 import { emptyAuthz, listIssues, readEvents, readIssue, readReviews } from './issues'
 import { orderGitPacks } from '../view/browse-source'
 import { readPackManifests } from './packs'
 import { readComments } from '../view/issues-view'
 import { readRefUpdates, resolveRefByHash } from './refs'
 
-const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
+const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
 
 /** Platform's per-query document cap — the whole point of these tests. */
 const PAGE = 100

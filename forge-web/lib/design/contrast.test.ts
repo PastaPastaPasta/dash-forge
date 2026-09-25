@@ -108,7 +108,7 @@ describe('no component renders text in the raw brand blue', () => {
   // dark surface.
   const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
   // Class strings that are applied only to an icon wrapper, checked by hand.
-  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:34'])
+  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:35'])
 
   it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']

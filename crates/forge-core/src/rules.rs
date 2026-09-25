@@ -1489,6 +1489,14 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct V2PackListInput {
+        copies: Vec<v2::PackCopyRow>,
+        #[serde(default)]
+        as_of: Option<v2::CopyKey>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ApprovalsInput {
         reviews: Vec<v2::Review>,
         memberships: Vec<v2::Membership>,
@@ -1616,6 +1624,11 @@ mod tests {
                         "vector `{ctx}` readOrder"
                     );
                 }
+            }
+            "v2_pack_list" => {
+                let inp: V2PackListInput = input(v);
+                let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
+                assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
             "approvals" => {
                 let inp: ApprovalsInput = input(v);

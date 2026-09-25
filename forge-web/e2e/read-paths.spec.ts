@@ -6,7 +6,11 @@ import {
   collectPageErrors,
   waitForRepoResolved,
   readErrorBanner,
+  ON_TESTNET,
 } from './helpers'
+
+// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
+test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
 
 /**
  * Logged-out read-path scenarios (no keys required). These exercise the deployed foundry

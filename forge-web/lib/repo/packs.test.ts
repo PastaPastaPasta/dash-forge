@@ -17,9 +17,9 @@ import {
   readPackManifests,
   type PackManifest,
 } from './packs'
-import type { RepoRef } from './contract'
+import type { V1RepoRef } from './contract'
 
-const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
+const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
 
 /** A 32-byte (or `len`-byte) hash filled with `seed`, as hex. */
 function hashHex(seed: number, len = 32): string {
@@ -43,6 +43,7 @@ function manifest(overrides: Partial<PackManifest>): PackManifest {
     supersedes: [],
     createdAt: 0,
     documentId: 'd',
+    uploader: 'owner',
     ...overrides,
   }
 }
@@ -104,6 +105,7 @@ describe('liveGitPackManifests', () => {
       packHash: hashHex(0x02),
       supersedes: [hashHex(0x01)],
       documentId: 'b',
+      uploader: 'owner',
     })
     const locator = manifest({ packHash: hashHex(0x03), kind: 1, documentId: 'c' })
 
@@ -118,6 +120,7 @@ describe('liveGitPackManifests', () => {
       kind: 1,
       supersedes: [hashHex(0x01)],
       documentId: 'c',
+      uploader: 'owner',
     })
     expect(liveGitPackManifests([pack, locator])).toEqual([])
   })
@@ -141,6 +144,7 @@ describe('liveLocatorManifests', () => {
       kind: 1,
       createdAt: 300,
       documentId: 'c',
+      uploader: 'owner',
       supersedes: [hashHex(0x01)],
     })
     const gitPack = manifest({ packHash: hashHex(0x04), createdAt: 400, documentId: 'd' })

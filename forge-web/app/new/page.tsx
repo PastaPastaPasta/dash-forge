@@ -8,14 +8,15 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { GitBranch, Hammer, Lock } from 'lucide-react'
+import { GitBranch, Hammer, Lock, Terminal } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/ui/states'
-import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isRegistryDeployed, isV2Deployed } from '@/components/ui/network-badge'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { useSdk } from '@/hooks/use-sdk'
@@ -70,7 +71,15 @@ export default function NewRepoPage(): JSX.Element {
   if (!isRegistryDeployed()) {
     return (
       <AppShell>
-        <NotDeployedState />
+        {isV2Deployed() ? (
+          <EmptyState
+            icon={Terminal}
+            title="Create forge-v2 repos with dg for now"
+            body={`${ACTIVE_NETWORK.key} runs forge-v2, where a repo is three documents (the repo, your maintainer membership, its first config). Creating one from the browser is coming next; until then: dg repo create <name>.`}
+          />
+        ) : (
+          <NotDeployedState />
+        )}
       </AppShell>
     )
   }

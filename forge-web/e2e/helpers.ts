@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright'
 import { type Page, type ConsoleMessage } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -16,6 +17,12 @@ export const M1 = {
   // seeded and read as the same repo.
   name: process.env['E2E_FIXTURE_NAME'] ?? process.env['NIGHTLY_FIXTURE_REPO'] ?? 'm1-5124',
 } as const
+
+/** The devnet this run's build targets (`E2E_DEVNET`), or '' for the default testnet build. */
+export const E2E_DEVNET = process.env['E2E_DEVNET'] ?? ''
+
+/** Skip a testnet-fixture spec on a devnet build (and vice versa). */
+export const ON_TESTNET = E2E_DEVNET === ''
 
 /**
  * The repo the opt-in WRITE spec (auth-write, E2E_WRITE=1) creates issues on — never the read
@@ -86,4 +93,47 @@ export async function waitForRepoResolved(page: Page, timeout = 60_000): Promise
     .catch(() => {
       /* fall through — assertions below decide pass/fail */
     })
+}
+
+/**
+ * Run axe (WCAG 2.1 A/AA) and return the serious/critical violations; everything is logged.
+ * Target: 0 serious/critical on every page.
+ */
+export async function runAxe(page: import('@playwright/test').Page, label: string) {
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze()
+
+  const seriousOrCritical = results.violations.filter(
+    (v) => v.impact === 'serious' || v.impact === 'critical',
+  )
+  const other = results.violations.filter(
+    (v) => v.impact !== 'serious' && v.impact !== 'critical',
+  )
+
+  const fmt = (vs: typeof results.violations) =>
+    vs
+      .map(
+        (v) =>
+          `  [${v.impact}] ${v.id}: ${v.help} (${v.nodes.length} node(s))\n` +
+          v.nodes
+            .map(
+              (n) =>
+                `      target: ${n.target.join(' ')}\n` +
+                `      summary: ${(n.failureSummary ?? '').replace(/\n/g, ' ')}\n` +
+                `      html: ${n.html.slice(0, 160)}`,
+            )
+            .join('\n'),
+      )
+      .join('\n')
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `\n[a11y ${label}] serious/critical: ${seriousOrCritical.length}, other: ${other.length}` +
+      (seriousOrCritical.length ? `\nSERIOUS/CRITICAL:\n${fmt(seriousOrCritical)}` : '') +
+      (other.length ? `\nother:\n${fmt(other)}` : '') +
+      '\n',
+  )
+
+  return seriousOrCritical
 }

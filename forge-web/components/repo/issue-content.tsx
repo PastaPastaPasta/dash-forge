@@ -11,8 +11,8 @@
 import { useState } from 'react'
 import { CheckCircle2, CircleDot } from 'lucide-react'
 import type { RepoHome, IssueThread } from '@/lib/view'
-import { loadIssueThread, timeAgo } from '@/lib/view'
-import { closeTarget, createComment, readViewerHoldings, reopenTarget } from '@/lib/repo'
+import { aclName, loadIssueThread, timeAgo } from '@/lib/view'
+import { closeTarget, createComment, readViewerPermissions, reopenTarget, repoContractIds, repoKey } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import { previewDocumentCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { V2WritesNote } from '@/components/repo/v2-writes-note'
 import { errorMessage } from '@/lib/utils'
 
 export function IssueContent({
@@ -36,19 +37,22 @@ export function IssueContent({
   home: RepoHome
   number: number
 }): JSX.Element {
-  const { sdk, ready, network } = useSdk([home.repo.contractId])
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  // The web app writes to v1 repos only; forge-v2 writes are the next step (`V2WritesNote`).
+  const v1 = home.repo.kind === 'v1' ? home.repo : null
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
 
   const { data, loading, error, reload } = useAsync<IssueThread | null>(
     () => loadIssueThread(sdk!, home.repo, number),
-    [ready, home.repo.contractId, number],
+    [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
 
+  // v1: WRITE/MAINTAIN token holdings; forge-v2: a current maintainer/writer document.
   const holdings = useAsync<Holdings | null>(
-    () => readViewerHoldings(sdk!, home.repo, identity!, network),
-    [ready, home.repo.contractId, identity ?? '', network],
+    () => readViewerPermissions(sdk!, home.repo, identity!, network),
+    [ready, repoKey(home.repo), identity ?? '', network],
     { enabled: ready && sdk !== null && identity !== null },
   )
 
@@ -70,7 +74,7 @@ export function IssueContent({
   // rather than silently withholding the control (the PR page does the same for merge).
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
-      ? "Couldn't read this repo's token history, so close/reopen permission is unknown."
+      ? `Couldn't read this repo's ${aclName(home.repo.kind)}, so close/reopen permission is unknown.`
       : null
 
   const postComment = async (): Promise<void> => {
@@ -78,11 +82,11 @@ export function IssueContent({
       openLogin()
       return
     }
-    if (!sdk || comment.trim() === '') return
+    if (!sdk || !v1 || comment.trim() === '') return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim() })
+      await createComment(sdk, signer, v1, { targetId: issue.id, body: comment.trim() })
       setComment('')
       reload()
     } catch (e) {
@@ -93,9 +97,9 @@ export function IssueContent({
   }
 
   const toggleState = async (): Promise<void> => {
-    if (!sdk || !signer) return
-    if (open) await closeTarget(sdk, signer, home.repo, issue.id)
-    else await reopenTarget(sdk, signer, home.repo, issue.id)
+    if (!sdk || !signer || !v1) return
+    if (open) await closeTarget(sdk, signer, v1, issue.id)
+    else await reopenTarget(sdk, signer, v1, issue.id)
     reload()
   }
 
@@ -142,15 +146,16 @@ export function IssueContent({
           <CostPreview cost={previewDocumentCreate('comment')} />
           <div className="flex items-center gap-2">
             {canToggle ? (
-              <Button variant="outline" onClick={() => setConfirmToggle(true)} disabled={!signer}>
+              <Button variant="outline" onClick={() => setConfirmToggle(true)} disabled={!signer || !v1}>
                 {open ? 'Close issue' : 'Reopen issue'}
               </Button>
             ) : null}
-            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === ''}>
+            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === '' || !v1}>
               {identity ? 'Comment' : 'Sign in to comment'}
             </Button>
           </div>
         </div>
+        {!v1 ? <V2WritesNote /> : null}
         {toggleHint !== null ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p>
         ) : null}

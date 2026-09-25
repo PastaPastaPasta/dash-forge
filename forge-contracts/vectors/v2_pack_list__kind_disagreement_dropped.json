@@ -1,0 +1,59 @@
+{
+  "name": "kind_disagreement_dropped",
+  "description": "Copies of one hash disagree on kind: the representative's kind wins and the disagreeing copy is left out of `copies`; it still counts for `first`.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "x1",
+        "packHash": "P1",
+        "kind": 1,
+        "createdAt": 5,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1
+      },
+      {
+        "id": "m1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      },
+      {
+        "id": "w1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 5,
+        "id": "x1"
+      },
+      "copies": [
+        "m1",
+        "w1"
+      ],
+      "superseded": false
+    }
+  ]
+}

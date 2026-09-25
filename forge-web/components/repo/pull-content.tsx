@@ -18,7 +18,7 @@ import { useState } from 'react'
 import { GitMerge, GitPullRequest, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
 import { loadPullThread, pullActions, timeAgo } from '@/lib/view'
-import { addEvent, closeTarget, createComment, readViewerHoldings, reopenTarget } from '@/lib/repo'
+import { addEvent, closeTarget, createComment, readViewerPermissions, reopenTarget, repoContractIds, repoKey } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import { previewDocumentCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
@@ -35,27 +35,32 @@ import { Oid } from '@/components/ui/oid'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { Approvals } from '@/components/repo/approvals'
+import { V2WritesNote } from '@/components/repo/v2-writes-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 
 type Pending = 'merge' | 'close' | 'reopen' | null
 
 export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
-  const { sdk, ready, network } = useSdk([home.repo.contractId])
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  // The web app writes to v1 repos only; forge-v2 writes are the next step (`V2WritesNote`).
+  const v1 = home.repo.kind === 'v1' ? home.repo : null
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
 
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     () => loadPullThread(sdk!, home.repo, number),
-    [ready, home.repo.contractId, number],
+    [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
 
-  // The viewer's current WRITE/MAINTAIN holdings — what the PR controls are gated on. Shares
-  // the token-history cache the fold itself reads, so this is usually free.
+  // What the PR controls are gated on: v1, the viewer's current WRITE/MAINTAIN holdings (the
+  // token-history cache the fold reads, so usually free); forge-v2, a current maintainer or
+  // writer document (the membership cache approvals read).
   const holdings = useAsync<Holdings | null>(
-    () => readViewerHoldings(sdk!, home.repo, identity!, network),
-    [ready, home.repo.contractId, identity ?? '', network],
+    () => readViewerPermissions(sdk!, home.repo, identity!, network),
+    [ready, repoKey(home.repo), identity ?? '', network],
     { enabled: ready && sdk !== null && identity !== null },
   )
 
@@ -77,6 +82,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     viewer: identity,
     // Signed in but not yet read: withhold the controls without a "can't" message.
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
+    model: home.repo.kind,
   })
   const base = pull.baseRefName || 'the base branch'
 
@@ -91,11 +97,11 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       openLogin()
       return
     }
-    if (!sdk || comment.trim() === '') return
+    if (!sdk || !v1 || comment.trim() === '') return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: pull.id, body: comment.trim() })
+      await createComment(sdk, signer, v1, { targetId: pull.id, body: comment.trim() })
       setComment('')
       reload()
     } catch (e) {
@@ -106,10 +112,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   }
 
   const runPending = async (): Promise<void> => {
-    if (!sdk || !signer) return
-    if (pending === 'merge') await addEvent(sdk, signer, home.repo, { targetId: pull.id, kind: 'merge', oidHex: pull.headOid })
-    else if (pending === 'close') await closeTarget(sdk, signer, home.repo, pull.id)
-    else if (pending === 'reopen') await reopenTarget(sdk, signer, home.repo, pull.id)
+    if (!sdk || !signer || !v1) return
+    if (pending === 'merge') await addEvent(sdk, signer, v1, { targetId: pull.id, kind: 'merge', oidHex: pull.headOid })
+    else if (pending === 'close') await closeTarget(sdk, signer, v1, pull.id)
+    else if (pending === 'reopen') await reopenTarget(sdk, signer, v1, pull.id)
     reload()
   }
 
@@ -130,12 +136,20 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           {pull.headOid ? <span className="flex items-center gap-1 text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
         </div>
         {/* Where the PR's objects actually live. Without this a reviewer has a commit id
-            with no stated home: a PR's head normally sits in the contributor's own contract,
-            and the patch document's sourceContractId is the only pointer to it. */}
-        {pull.sourceContractId ? (
+            with no stated home: a PR's head normally sits in the contributor's own repo, and
+            the patch document's source pointer (v1 sourceContractId, v2 sourceRepoId) is the
+            only pointer to it. */}
+        {pull.sourceId ? (
           <div className="mt-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
             <span className="text-anvil-500 dark:text-anvil-400">
-              Objects live in contract <span className="font-mono break-all">{pull.sourceContractId}</span>
+              {home.repo.kind === 'v2' && pull.sourceId === home.repo.repoId ? (
+                <>Objects live in this repo</>
+              ) : (
+                <>
+                  Objects live in {home.repo.kind === 'v1' ? 'contract' : 'repo'}{' '}
+                  <span className="font-mono break-all">{pull.sourceId}</span>
+                </>
+              )}
               {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
             </span>
             <div className="mt-1 font-mono text-[12px] text-anvil-400 break-all">
@@ -155,6 +169,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         </div>
       </div>
 
+      {data.approvals !== null ? (
+        <Approvals approvals={data.approvals} author={pull.author} headOid={pull.headOid} />
+      ) : null}
+
       <PullDiff pull={pull} home={home} />
 
       {timeline.length > 0 ? <Timeline items={timeline} /> : null}
@@ -166,20 +184,21 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           <CostPreview cost={previewDocumentCreate('comment')} />
           <div className="flex items-center gap-2">
             {actions.canCloseReopen ? (
-              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer}>
+              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || !v1}>
                 {open ? 'Close' : 'Reopen'}
               </Button>
             ) : null}
             {actions.canMarkMerged ? (
-              <Button variant="primary" onClick={() => setPending('merge')} disabled={!signer}>
+              <Button variant="primary" onClick={() => setPending('merge')} disabled={!signer || !v1}>
                 <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged
               </Button>
             ) : null}
-            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === ''}>
+            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === '' || !v1}>
               {identity ? 'Comment' : 'Sign in'}
             </Button>
           </div>
         </div>
+        {!v1 ? <V2WritesNote /> : null}
         {actions.canMarkMerged ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             {actions.markCountsNow

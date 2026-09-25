@@ -12,7 +12,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, RepoRef } from '../repo'
+import type { PackManifest, V1RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { DOC } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
@@ -28,7 +28,7 @@ import {
 // must be dropped between tests to keep the fixtures independent.
 beforeEach(() => clearChunkCache())
 
-const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
+const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
 
 function gitPack(packHashHex: string, createdAt: number, documentId: string): PackManifest {
   return {
@@ -43,6 +43,7 @@ function gitPack(packHashHex: string, createdAt: number, documentId: string): Pa
     supersedes: [],
     createdAt,
     documentId,
+    uploader: 'owner',
   }
 }
 

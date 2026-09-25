@@ -15,6 +15,14 @@ import { defineConfig, devices } from '@playwright/test'
 const PORT = Number(process.env.E2E_PORT ?? 4321)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
+/**
+ * The network the build under test reads: testnet (default; the v1 read fixture) or a
+ * devnet (`E2E_DEVNET=moutai`; the forge-v2 fixture, `v2-reads.spec.ts`). Each spec skips
+ * on the network its fixture does not live on, and the build below is made for this one.
+ */
+const DEVNET = process.env.E2E_DEVNET ?? ''
+const BUILD_ENV = DEVNET ? `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} ` : ''
+
 export default defineConfig({
   testDir: './e2e',
   // Real testnet round-trips (SDK connect + proof-verified reads) are slow; be generous.
@@ -45,7 +53,7 @@ export default defineConfig({
   webServer: {
     command: process.env.E2E_SKIP_BUILD
       ? `node e2e/static-server.mjs --port ${PORT}`
-      : `pnpm build && node e2e/static-server.mjs --port ${PORT}`,
+      : `${BUILD_ENV}pnpm build && node e2e/static-server.mjs --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,

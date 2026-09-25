@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, readErrorBanner, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, ON_TESTNET, readErrorBanner, repoUrl, shot, waitForRepoResolved } from './helpers'
+
+// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
+test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
 
 /**
  * In-browser fallback clone (no objectLocator). The M1 fixture repo has never published a

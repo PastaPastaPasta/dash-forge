@@ -28,6 +28,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { CloneBox } from '@/components/repo/clone-box'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { repoKey } from '@/lib/repo'
 
 export function RepoRail({
   home,
@@ -40,10 +41,10 @@ export function RepoRail({
   selected: SelectedRef
 }): JSX.Element {
   const { ready, trusted, network } = useSdk()
-  const contractId = home.repo.contractId
+  const key = repoKey(home.repo)
   const checks = useSyncExternalStore(
     subscribeContentChecks,
-    () => contentChecks(contractId),
+    () => contentChecks(key),
     () => NO_CONTENT_CHECKS,
   )
 
@@ -53,11 +54,16 @@ export function RepoRail({
     tip: selected.ref?.state ?? 'missing',
     checks,
     configuredBackend: home.backend.label,
+    model: home.repo.kind,
   })
 
   return (
     <aside className="space-y-4">
-      <TrustPanel report={report} contractId={contractId} tipOid={tipOidOf(selected.ref) ?? undefined} />
+      <TrustPanel
+        report={report}
+        serial={key}
+        tipOid={tipOidOf(selected.ref) ?? undefined}
+      />
       <CloneBox home={home} addr={addr} />
 
       <div className="rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-750 dark:bg-anvil-900">

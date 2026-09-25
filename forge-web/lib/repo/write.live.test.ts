@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest'
 import { NETWORKS } from '../constants'
 import { evoSdkService, queryDocumentsWithProof, type WriteAuth } from '../sdk'
 import { parseIdentityFileText } from '../auth'
-import { REGISTRY_DOC, type RepoRef } from './contract'
+import { REGISTRY_DOC, type V1RepoRef } from './contract'
 import { createIssue, starRepo } from './writes'
 import { asIdentifierString, fetchContractOwner, listIssues } from './index'
 
@@ -48,7 +48,7 @@ describe.skipIf(!LIVE)('live testnet browser-path writes', () => {
         timeoutMs: 20000,
       })
       const sdk = evoSdkService.getSdk()
-      const repo: RepoRef = { contractId: M1_REPO_CONTRACT, ownerId: parsed.identityId }
+      const repo: V1RepoRef = { kind: 'v1', contractId: M1_REPO_CONTRACT, ownerId: parsed.identityId, name: '' }
 
       // 2. Create an issue via the browser write path.
       const title = `web-path smoke ${new Date().toISOString()}`
@@ -59,6 +59,7 @@ describe.skipIf(!LIVE)('live testnet browser-path writes', () => {
       // eslint-disable-next-line no-console
       console.log('issue created:', {
         documentId: created.documentId,
+        uploader: 'owner',
         number: created.number,
         confirmed: created.confirmed,
         costDash: created.cost.dash,
