@@ -1,108 +1,74 @@
-//! [`RepoService`] — the repo-lifecycle API `git-remote-dash` calls.
+//! [`RepoService`] — the git data plane `git-remote-dash` and `dg` drive.
 //!
-//! This is the orchestration layer that turns the [`crate::platform`] SDK primitives
-//! (contract create, document create/delete, document query) and the pure
-//! [`crate::rules`] resolver into the operations a git remote helper needs:
+//! Every operation takes a resolved [`RepoRef`] and reaches its documents through the
+//! repo's [`DocScope`]: on forge-v2 that is the network's shared forge-core contract with
+//! `repoId == R` on every query and write; on forge-v1 it is the repo's own contract. v1
+//! repositories are **read only**: every write refuses them with [`Error::V1ReadOnly`]
+//! before signing anything.
 //!
-//! - [`RepoService::create_repo`] — instantiate a repo-v1 contract (2 tokens + 15 doc
-//!   types, `baseSupply` auto-crediting the owner WRITE+MAINTAIN), write the initial
-//!   `config`, and publish the `repoListing` into the global registry. Returns the
-//!   measured DataContractCreate cost (the repo-v1 instantiation number).
-//! - [`RepoService::resolve_repo`] — registry lookup `(ownerId, normalizedName)` →
-//!   repo contract id.
-//! - [`RepoService::write_ref_update`] / [`RepoService::read_refs`] — append a WRITE- (or
-//!   MAINTAIN-, for protected refs) gated ref update, and fold a repo's ref history into
-//!   resolved [`RefState`]s via [`crate::rules::resolve_ref`].
+//! - [`RepoService::write_ref_update`] / [`RepoService::read_refs`] — append a ref update
+//!   (`protectedRefUpdate` for a protected ref, routed by the as-of config rule) and fold a
+//!   repo's ref history into [`RefState`]s via [`crate::rules::resolve_ref`].
 //! - [`RepoService::write_pack_manifest`] / [`RepoService::read_pack_manifests`] and the
-//!   chunk put/get, delegating pack-byte storage to [`crate::backends::PlatformBackend`].
+//!   chunk tier ([`PlatformChunkTarget`]).
+//! - [`RepoService::fetch_artifact`] — read a pack: external copies first, then Platform
+//!   chunks. On v2 each uploader has its own copy of a pack; readers try them in the
+//!   `FORGE_RULES_V2` order (maintainers', then writers', then former members'), and use
+//!   the first that hash-verifies ([`crate::rules::v2::order_pack_copies`]).
+//! - [`RepoService::repack`] — consolidate the live packs into one superseding pack. On v2
+//!   nothing is deleted: chunks and manifests are permanent (forge-v2 §4).
 //!
-//! Everything SDK-shaped is reached through [`crate::platform`]; this module names no
-//! rs-sdk / rs-dpp type (style guide §B).
+//! Repository creation is [`crate::create`]; resolution is [`crate::resolve`]; membership
+//! is [`crate::members`]. This module names no rs-sdk type (style guide §B).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
+use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
-    self, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient, PushJournal,
-    QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient,
+    PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
+use crate::private::RefNameHasher;
+use crate::rules::v2::{PackCopy, Role};
 use crate::rules::{self, ConfigDoc, RefState};
-use crate::storage::{PackReader, Replication, StorageTarget};
+use crate::scope::{self, DocScope, RepoRef};
+use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
 
-/// The repo-v1 contract template (2 tokens + 15 doc types), embedded at build time.
-///
-/// The template's `id` / `ownerId` are placeholders — [`PlatformClient::contract_create`]
-/// derives the real id from the owner + nonce and stamps the real `ownerId`. Its token
-/// admin rules target an org control group; [`apply_solo_owner_token_rules`] rewrites them
-/// to `ContractOwner` for the solo-owner instantiation (see there for why).
-const REPO_V1_TEMPLATE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../forge-contracts/templates/repo-v1.json"
-));
-
-// Document type names (repo contract).
+// Document type names (the git data plane; the same names in forge-core and repo-v1).
 const DOC_CONFIG: &str = "config";
 use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
 const DOC_PACK_MANIFEST: &str = "packManifest";
-const DOC_MANIFEST_PART: &str = "manifestPart";
-const DOC_CHUNK: &str = "chunk";
-/// The template-v2 `packMirror` type (repoId, packHash, uris) — anyone announces extra
-/// availability URIs. Absent from the v1 template (feature-detected at runtime).
-const DOC_PACK_MIRROR: &str = "packMirror";
-// Document type name (registry contract).
-const DOC_REPO_LISTING: &str = "repoListing";
 
-/// Options for [`RepoService::create_repo`].
+/// A `packManifest` document read back from a repository.
 #[derive(Debug, Clone)]
-pub struct CreateRepoOpts {
-    /// The default branch recorded in `config` (e.g. `main`).
-    pub default_branch: String,
-    /// The writer-side backend mode (`0` platform, `1` ipfs, `2` s3, `3` https, `4`
-    /// mixed) recorded in `config.backend.mode`.
-    pub backend_mode: u8,
-    /// The listing description (registry `repoListing.description`, ≤ 500 chars).
-    pub description: String,
-    /// The template version stamped into the listing (migration tracking).
-    pub template_version: u32,
-}
-
-impl Default for CreateRepoOpts {
-    fn default() -> Self {
-        Self {
-            default_branch: "main".to_string(),
-            backend_mode: 0,
-            description: String::new(),
-            template_version: 1,
-        }
-    }
-}
-
-/// A handle to an instantiated repository.
-#[derive(Debug, Clone)]
-pub struct RepoHandle {
-    /// Base58 id of the per-repo data contract.
-    pub repo_contract_id: String,
-    /// Base58 id of the repo owner identity.
+pub struct PackManifestInfo {
+    /// The manifest document id.
+    pub document_id: String,
+    /// `$createdAt` (ms). With `document_id` this is the platform total order that
+    /// [`locator_pack_space`] turns into the locator's `packRef` space.
+    pub created_at: u64,
+    /// The base58 `$ownerId` of the uploader. On v2 its chunks are keyed by it.
     pub owner_id: String,
-    /// The display name.
-    pub name: String,
-    /// The normalized (lowercased, validated) name used for resolution.
-    pub normalized_name: String,
-}
-
-/// The result of [`RepoService::create_repo`], carrying the measured instantiation cost.
-#[derive(Debug, Clone)]
-pub struct CreateRepoResult {
-    /// The repo handle.
-    pub handle: RepoHandle,
-    /// The measured DataContractCreate cost, in credits (÷ 1e11 = DASH). **This is the
-    /// repo-v1 instantiation cost** the economics docs reconcile against.
-    pub repo_v1_instantiation_cost_credits: u64,
-    /// The registry `repoListing` document id (needed to delete the listing on repo
-    /// teardown — the contract itself is permanent).
-    pub listing_document_id: String,
+    /// SHA-256 pack hash.
+    pub pack_hash: [u8; 32],
+    /// Artifact kind.
+    pub kind: u64,
+    /// Pack size in bytes.
+    pub size_bytes: u64,
+    /// Object count.
+    pub object_count: u64,
+    /// Chunk count.
+    pub chunk_count: u64,
+    /// Storage tier.
+    pub storage: u64,
+    /// Offset-index part count.
+    pub offset_index_parts: u64,
+    /// External copies (`uris`: a typed array on v2, a JSON string on v1).
+    pub uris: Vec<String>,
+    /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
+    pub supersedes: Vec<[u8; 32]>,
 }
 
 /// Input for [`RepoService::write_pack_manifest`].
@@ -122,7 +88,7 @@ pub struct PackManifestInput {
     pub storage: u64,
     /// Offset-index part count (`≥ 1` for kind-0 packs, `0` for artifacts).
     pub offset_index_parts: u64,
-    /// External mirror URIs (serialized to the `uris` JSON-string field).
+    /// External mirror URIs.
     pub uris: Vec<String>,
     /// Prior artifact `packHash`es this manifest makes redundant (repack supersedes plan).
     /// Serialized as one packed `byteArray` = concatenated 32-byte hashes.
@@ -130,36 +96,6 @@ pub struct PackManifestInput {
     /// Tip OIDs this artifact covers (kind-2 flatIndex tip; a gitmirror pack's ref tips).
     /// Serialized as one packed `byteArray` = concatenated raw OID bytes.
     pub tips: Vec<Vec<u8>>,
-}
-
-/// A `packManifest` document read back from a repo contract.
-#[derive(Debug, Clone)]
-pub struct PackManifestInfo {
-    /// The manifest document id.
-    pub document_id: String,
-    /// `$createdAt` (ms). With `document_id` this is the platform total order that
-    /// [`locator_pack_space`] turns into the locator's `packRef` space.
-    pub created_at: u64,
-    /// The base58 `$ownerId` of the manifest's creator (whose own docs are deletable).
-    pub owner_id: String,
-    /// SHA-256 pack hash.
-    pub pack_hash: [u8; 32],
-    /// Artifact kind.
-    pub kind: u64,
-    /// Pack size in bytes.
-    pub size_bytes: u64,
-    /// Object count.
-    pub object_count: u64,
-    /// Chunk count.
-    pub chunk_count: u64,
-    /// Storage tier.
-    pub storage: u64,
-    /// Offset-index part count.
-    pub offset_index_parts: u64,
-    /// External mirror URIs (parsed from the `uris` JSON-string field).
-    pub uris: Vec<String>,
-    /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
-    pub supersedes: Vec<[u8; 32]>,
 }
 
 /// Live index fragments tolerated before a push folds them into one locator.
@@ -173,12 +109,11 @@ const MAX_LOCATOR_FRAGMENTS: usize = 16;
 /// Where a repack writes the consolidated pack.
 #[derive(Clone, Copy, Default)]
 pub enum RepackTarget<'a> {
-    /// On-chain `chunk` docs (the default; the tier repack refunds reclaim from).
+    /// On-chain `chunk` docs (the default).
     #[default]
     Platform,
     /// An external backend (ipfs/s3/https) — migrates cold history outward. The pack is
-    /// hash-verifiable at its URIs; the on-chain refund still comes from deleting the
-    /// superseded platform chunks.
+    /// hash-verifiable at its URIs.
     External(&'a dyn PackBackend),
     /// A storage policy's targets, requiring `required` verified confirmations
     /// ([`crate::storage::replicate`]). This is what a `git push` writes through.
@@ -190,11 +125,10 @@ pub enum RepackTarget<'a> {
     },
 }
 
-/// The maximum length of the `packManifest.uris` JSON string (repo-v1 schema).
-pub const MANIFEST_URIS_MAX_LEN: usize = 2600;
-
-/// The maximum length of the `config.backend.uris` JSON string (repo-v1 schema).
-pub const BACKEND_URIS_MAX_LEN: usize = 1300;
+/// The `packManifest.uris` budget of a v2 repo: a typed array (forge-core schema).
+pub const MANIFEST_URIS_V2: UriBudget = UriBudget::array(8, 300);
+/// The `config.backend.uris` budget of a v2 repo (forge-core schema).
+pub const BACKEND_URIS_V2: UriBudget = UriBudget::array(4, 300);
 
 /// How a manifest records an artifact stored through [`RepackTarget::Replicated`]:
 /// `storage` 0 when an on-chain copy exists (Platform-reading clients, including today's
@@ -211,7 +145,8 @@ pub struct StoredArtifact {
 }
 
 impl StoredArtifact {
-    /// Derive the manifest fields from a successful replication of `bytes`.
+    /// Derive the manifest fields from a successful replication of `bytes` into a v2
+    /// repository (the only kind anything is written to).
     pub fn from_replication(rep: &Replication, bytes: &[u8]) -> Result<Self> {
         let platform = rep.has_platform();
         Ok(Self {
@@ -221,32 +156,28 @@ impl StoredArtifact {
             } else {
                 0
             },
-            uris: rep.manifest_uris(MANIFEST_URIS_MAX_LEN)?,
+            uris: rep.manifest_uris(MANIFEST_URIS_V2)?,
         })
     }
 }
 
 /// The Platform `chunk`-document tier as a [`StorageTarget`].
 ///
-/// This is the contract-model-specific end of the push seam: everything that knows chunks
-/// are documents in a repo-v1 contract lives here, so a new contract generation replaces
-/// this type and leaves the replication engine and the helper alone.
-///
 /// With a journal it uploads resumably (an interrupted push resumes without re-paying for
-/// confirmed chunks); without one it rolls back a partial upload, because chunks no
-/// manifest references are invisible to every deletion path and their deposit would be
-/// stranded. Chunk writes are consensus-confirmed one by one, which is this tier's upload
-/// verification — no re-read is needed.
+/// confirmed chunks). On forge-v2 chunks are permanent and keyed by uploader, so a partial
+/// upload is simply resumed (or re-uploaded idempotently) by the next push: chunk writes are
+/// content-addressed by `(repoId, uploader, packHash, seq)`, so the retry of a stored chunk
+/// is refused as a duplicate and treated as stored.
 pub struct PlatformChunkTarget<'s> {
     svc: &'s RepoService<'s>,
-    repo: &'s RepoHandle,
+    repo: &'s RepoRef,
     name: String,
     journal: Option<(std::sync::Mutex<PushJournal>, &'s (dyn JournalStore + Sync))>,
 }
 
 impl<'s> PlatformChunkTarget<'s> {
-    /// A target writing `repo`'s chunks through `svc`, rolling back partial uploads.
-    pub fn new(svc: &'s RepoService<'s>, repo: &'s RepoHandle, name: impl Into<String>) -> Self {
+    /// A target writing `repo`'s chunks through `svc`.
+    pub fn new(svc: &'s RepoService<'s>, repo: &'s RepoRef, name: impl Into<String>) -> Self {
         Self {
             svc,
             repo,
@@ -258,7 +189,7 @@ impl<'s> PlatformChunkTarget<'s> {
     /// A resumable target: confirmed chunks are checkpointed through `store`.
     pub fn resumable(
         svc: &'s RepoService<'s>,
-        repo: &'s RepoHandle,
+        repo: &'s RepoRef,
         name: impl Into<String>,
         journal: PushJournal,
         store: &'s (dyn JournalStore + Sync),
@@ -295,24 +226,7 @@ impl StorageTarget for PlatformChunkTarget<'_> {
             *journal.lock().map_err(|_| poisoned())? = j;
             return res;
         }
-        let pack_hash = meta.pack_hash_bytes()?;
-        match self.svc.put_pack(self.repo, bytes, meta).await {
-            Ok(u) => Ok(u),
-            Err(e) => {
-                match self.svc.delete_chunks(self.repo, pack_hash).await {
-                    Ok(n) => {
-                        tracing::debug!(reclaimed_chunks = n, "rolled back a partial chunk upload");
-                    }
-                    Err(cleanup) => tracing::warn!(
-                        error = %cleanup,
-                        pack_hash = %meta.pack_hash,
-                        "could not roll back a partial chunk upload; its deposit is stranded \
-                         until the repo is deleted"
-                    ),
-                }
-                Err(e)
-            }
-        }
+        self.svc.put_pack(self.repo, bytes, meta).await
     }
 }
 
@@ -349,7 +263,7 @@ struct ConsolidatedPack<'a> {
     tips: &'a [String],
 }
 
-/// The result of [`RepoService::repack`] (architecture §4.2 repack/GC).
+/// The result of [`RepoService::repack`] (consolidate-only on forge-v2).
 #[derive(Debug, Clone)]
 pub struct RepackReport {
     /// SHA-256 of the new consolidated pack.
@@ -370,32 +284,41 @@ pub struct RepackReport {
     pub new_uris: Vec<String>,
     /// How many prior packs the new manifest supersedes.
     pub superseded_count: usize,
-    /// Bytes of superseded pack storage the caller reclaimed (sum of deleted pack sizes).
-    pub bytes_reclaimed: u64,
-    /// Deleted `chunk` documents (caller-owned, WRITE-gated refund).
-    pub deleted_chunks: usize,
-    /// Deleted `packManifest` (+ `manifestPart`) documents (caller-owned).
-    pub deleted_manifests: usize,
-    /// Credits spent uploading the new consolidated pack + writing its manifest.
-    pub upload_cost_credits: u64,
-    /// Credits reclaimed by the superseded-doc deletions (the observed on-chain refund).
-    pub refund_credits: u64,
-    /// Net credit change over the whole repack (`refund − upload`; negative = net spend).
-    pub net_credits: i128,
+    /// Bytes of the packs the new manifest supersedes. They stay stored (readers fall
+    /// back to them); on your own external storage they may be garbage-collected.
+    pub superseded_bytes: u64,
+    /// Credits spent uploading the consolidated pack and writing its manifest(s).
+    pub cost_credits: u64,
 }
 
-/// The result of [`RepoService::reseed`] (availability restore, architecture §5).
-#[derive(Debug, Clone)]
+/// The result of [`RepoService::reseed`].
+#[derive(Debug, Clone, Default)]
 pub struct ReseedReport {
-    /// Per-pack `(packHash, new URIs)` the reseed added.
-    pub reseeded: Vec<([u8; 32], Vec<String>)>,
-    /// Whether the new URIs were persisted on-chain as `packMirror` docs (needs the
-    /// template-v2 `packMirror` type). `false` = the type is absent on this contract, so
-    /// the URIs are returned to the caller but not announced on Platform (see the method
-    /// docs for the fallback).
-    pub announced_on_chain: bool,
-    /// The number of `packMirror` documents written (0 when `announced_on_chain` is false).
-    pub mirror_docs_written: usize,
+    /// Every pack re-uploaded.
+    pub reseeded: Vec<Reseeded>,
+}
+
+/// One pack [`RepoService::reseed`] re-uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reseeded {
+    /// The pack.
+    pub pack_hash: [u8; 32],
+    /// Where the new copy is.
+    pub uris: Vec<String>,
+    /// Whether the caller's own manifest now records it (`false`: the caller already had
+    /// one for this pack, and manifests are immutable).
+    pub announced: bool,
+}
+
+/// The result of [`RepoService::reseed_from_local`].
+#[derive(Debug, Clone, Default)]
+pub struct LocalReseedReport {
+    /// Packs re-uploaded from the local clone.
+    pub restored: Vec<LocalReseed>,
+    /// Packs whose recorded copies still verified (skipped).
+    pub healthy: Vec<[u8; 32]>,
+    /// Packs that needed restoring but have no local copy in this clone.
+    pub missing: Vec<[u8; 32]>,
 }
 
 /// One pack [`RepoService::reseed_from_local`] re-uploaded.
@@ -410,26 +333,14 @@ pub struct LocalReseed {
     pub restored_recorded_uri: bool,
 }
 
-/// The result of [`RepoService::reseed_from_local`].
-#[derive(Debug, Clone, Default)]
-pub struct LocalReseedReport {
-    /// Packs re-uploaded from the local clone.
-    pub restored: Vec<LocalReseed>,
-    /// Packs whose recorded copies still verified (skipped).
-    pub healthy: Vec<[u8; 32]>,
-    /// Packs that needed restoring but have no local copy in this clone.
-    pub missing: Vec<[u8; 32]>,
-    /// Whether new locations could be announced on-chain (`packMirror` present).
-    pub announced_on_chain: bool,
-    /// `packMirror` docs written.
-    pub mirror_docs_written: usize,
-}
+/// A repository's current members as the pack reader rule needs them (maintainers'
+/// copies first): empty on v1, where every copy is the repo contract's own.
+type RoleMap = BTreeMap<String, Role>;
 
-/// The repo-lifecycle service, bound to one owner identity and its keys.
+/// The git data-plane service, bound to one signing identity and its keys.
 ///
-/// Constructed per-operation-batch: it borrows a connected [`PlatformClient`], the
-/// fetched owner [`LoadedIdentity`], and the owner's [`BridgeIdentity`] key material
-/// (HIGH for document ops, CRITICAL for the token-bearing contract create — spike S0.7).
+/// Constructed per operation batch: it borrows a connected [`PlatformClient`], the fetched
+/// signer [`LoadedIdentity`] and its [`BridgeIdentity`] key material.
 pub struct RepoService<'a> {
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,
@@ -437,7 +348,7 @@ pub struct RepoService<'a> {
 }
 
 impl<'a> RepoService<'a> {
-    /// Bind the service to `client`, the owner `identity`, and its `bridge` key material.
+    /// Bind the service to `client`, the signer `identity`, and its `bridge` key material.
     pub fn new(
         client: &'a PlatformClient,
         identity: &'a LoadedIdentity,
@@ -450,221 +361,38 @@ impl<'a> RepoService<'a> {
         }
     }
 
-    /// A document write/delete engine bound to the owner, signing with the HIGH doc-op key.
+    /// A document write engine bound to the signer, signing with the HIGH doc-op key.
     fn doc_engine(&self) -> Result<WriteEngine<'a>> {
         WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)
     }
 
-    /// Instantiate a repo: publish the repo-v1 contract (tokens auto-credit the owner),
-    /// write the initial `config`, and publish the registry `repoListing`.
-    ///
-    /// Returns a [`CreateRepoResult`] with the measured DataContractCreate cost. The
-    /// `config` and `repoListing` writes each spend one gated/ungated document create on
-    /// top (small platform fees, not the headline cost).
-    pub async fn create_repo(&self, name: &str, opts: &CreateRepoOpts) -> Result<CreateRepoResult> {
-        let normalized = normalize_name(name)?;
-        let owner_b58 = self.identity.id();
-
-        // No registry on this network: fail before paying for a contract whose listing
-        // could never be published. The idempotency guard below treats any resolve error as
-        // "does not exist yet", so it would not stop this on its own.
-        self.client.registry_contract_id()?;
-
-        // Idempotency guard (financial safety): if a prior create already published this
-        // repo's listing, re-running must NOT pay for a second ~1 DASH contract. Resolve
-        // first and short-circuit to the existing handle (cost 0) when it already exists.
-        if let Ok(existing) = self.resolve_repo(&owner_b58, name).await {
-            tracing::warn!(
-                repo_contract = %existing.repo_contract_id,
-                "repo already exists; skipping create (idempotent, no double-pay)"
-            );
-            return Ok(CreateRepoResult {
-                handle: existing,
-                repo_v1_instantiation_cost_credits: 0,
-                listing_document_id: String::new(),
-            });
-        }
-
-        let mut template: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE)
-            .map_err(|e| Error::Config(format!("parsing repo-v1 template: {e}")))?;
-        // The committed `repo-v1.json` source is already the solo-owner, contiguous-position
-        // shape these two patches produce, so both are idempotent no-ops on it. They are kept
-        // as backward-compat safety nets: an org-shaped or globally-numbered template (an
-        // older on-disk source, or a future org variant) is still coerced to the deployable
-        // solo-owner shape rather than failing the DataContractCreate. See
-        // `apply_solo_owner_token_rules` / `normalize_document_positions` for the rules.
-        apply_solo_owner_token_rules(&mut template);
-        normalize_document_positions(&mut template);
-
-        // 1. Publish the token-bearing contract (CRITICAL key). This is the headline cost.
-        let crit_key = self.bridge.token_admin_key()?;
-        let (repo_contract_id, create_cost) = self
-            .client
-            .contract_create(&template, self.identity, crit_key)
-            .await?;
-        tracing::info!(
-            repo_contract_id = %repo_contract_id,
-            cost_credits = create_cost,
-            cost_dash = credits_to_dash(create_cost),
-            "repo-v1 contract created (DataContractCreate)"
-        );
-
-        // 2 + 3: config + registry listing against the freshly created contract.
-        let listing_document_id = self
-            .finalize_repo(&repo_contract_id, name, &normalized, opts)
-            .await?;
-
-        Ok(CreateRepoResult {
-            handle: RepoHandle {
-                repo_contract_id,
-                owner_id: owner_b58,
-                name: name.to_string(),
-                normalized_name: normalized,
-            },
-            repo_v1_instantiation_cost_credits: create_cost,
-            listing_document_id,
-        })
+    /// The contract holding `repo`'s git data (forge-core, or the v1 repo contract),
+    /// fetched and registered with the proof verifier.
+    pub async fn repo_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+        self.client.fetch_contract(&repo.scope()?.contract_id).await
     }
 
-    /// Finish instantiating a repo whose contract already exists but whose follow-on
-    /// writes did not complete — write the `config` and registry `repoListing` against
-    /// `repo_contract_id`. This is the recovery path for a [`RepoService::create_repo`]
-    /// whose (already paid-for) DataContractCreate landed but a later step failed, so the
-    /// expensive create is never repeated. `repo_v1_instantiation_cost_credits` is `0`
-    /// (nothing new was created).
-    pub async fn resume_repo(
-        &self,
-        repo_contract_id: &str,
-        name: &str,
-        opts: &CreateRepoOpts,
-    ) -> Result<CreateRepoResult> {
-        let normalized = normalize_name(name)?;
-        let listing_document_id = self
-            .finalize_repo(repo_contract_id, name, &normalized, opts)
-            .await?;
-        Ok(CreateRepoResult {
-            handle: RepoHandle {
-                repo_contract_id: repo_contract_id.to_string(),
-                owner_id: self.identity.id(),
-                name: name.to_string(),
-                normalized_name: normalized,
-            },
-            repo_v1_instantiation_cost_credits: 0,
-            listing_document_id,
-        })
+    /// The scope and contract of `repo`, for reading (a repo this client can read).
+    async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
+        repo.require_readable()?;
+        let scope = repo.scope()?;
+        let contract = self.client.fetch_contract(&scope.contract_id).await?;
+        Ok((scope, contract))
     }
 
-    /// Write the initial `config` (MAINTAIN-gated; owner holds MAINTAIN via baseSupply)
-    /// and the registry `repoListing` (ungated open create) for `repo_contract_id`,
-    /// returning the listing document id.
-    async fn finalize_repo(
-        &self,
-        repo_contract_id: &str,
-        name: &str,
-        normalized: &str,
-        opts: &CreateRepoOpts,
-    ) -> Result<String> {
-        let repo_contract = self.client.fetch_contract(repo_contract_id).await?;
-        let engine = self.doc_engine()?;
-
-        engine
-            .create_document(
-                &repo_contract,
-                DOC_CONFIG,
-                config_properties(&opts.default_branch, opts.backend_mode),
-            )
-            .await?;
-
-        let registry = self.client.fetch_registry().await?;
-        let repo_id_bytes = platform::decode_identifier(repo_contract_id)?;
-        let mut listing = BTreeMap::new();
-        listing.insert("name".to_string(), FieldValue::text(name));
-        listing.insert("normalizedName".to_string(), FieldValue::text(normalized));
-        listing.insert(
-            "repoContractId".to_string(),
-            FieldValue::identifier(repo_id_bytes),
-        );
-        listing.insert(
-            "templateVersion".to_string(),
-            FieldValue::integer(u64::from(opts.template_version)),
-        );
-        listing.insert(
-            "description".to_string(),
-            FieldValue::text(opts.description.clone()),
-        );
-        listing.insert("topics".to_string(), FieldValue::text("[]"));
-        engine
-            .create_document(&registry, DOC_REPO_LISTING, listing)
-            .await
-    }
-
-    /// Resolve a repo by owner identity id (base58) and repo name via the registry
-    /// `repoListing` unique `(ownerId, normalizedName)` index.
-    pub async fn resolve_repo(&self, owner_id: &str, repo_name: &str) -> Result<RepoHandle> {
-        let normalized = normalize_name(repo_name)?;
-        let registry = self.client.fetch_registry().await?;
-        let owner_bytes = platform::decode_identifier(owner_id)?;
-
-        let docs = self
-            .client
-            .query_documents(
-                &registry,
-                DOC_REPO_LISTING,
-                &[
-                    QueryFilter::eq("$ownerId", FieldValue::identifier(owner_bytes)),
-                    QueryFilter::eq("normalizedName", FieldValue::text(normalized.clone())),
-                ],
-                &[],
-                1,
-                None,
-            )
-            .await?;
-
-        let listing = docs.into_iter().next().ok_or(Error::NotFound)?;
-        let repo_id_bytes = listing
-            .field_bytes("repoContractId")
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            .ok_or_else(|| Error::Platform("repoListing missing repoContractId".into()))?;
-        let name = listing
-            .field_str("name")
-            .unwrap_or_else(|| repo_name.to_string());
-
-        Ok(RepoHandle {
-            repo_contract_id: platform::encode_identifier(repo_id_bytes),
-            owner_id: owner_id.to_string(),
-            name,
-            normalized_name: normalized,
-        })
-    }
-
-    /// Resolve a repo by its **contract id**, bypassing the registry.
-    ///
-    /// The registry maps `(ownerId, normalizedName)` to a contract, and that is the right
-    /// lookup for a human-typed `dash://alice/project`. But a pull request points at its
-    /// source repo by contract id only — `patch.sourceContractId` — and there is no index
-    /// from a contract id back to its listing, so a reviewer holding a PR has a repo they
-    /// cannot address. This closes that: the contract itself carries its owner, which is
-    /// everything a [`RepoHandle`] needs for reads.
-    ///
-    /// The handle's `name` is the contract id, since no name is recoverable this way. It is
-    /// a display label; nothing in the read or transport path resolves by it.
-    pub async fn resolve_repo_by_contract(&self, repo_contract_id: &str) -> Result<RepoHandle> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        Ok(RepoHandle {
-            repo_contract_id: contract.id(),
-            owner_id: contract.owner_id(),
-            name: contract.id(),
-            normalized_name: contract.id(),
-        })
+    /// The writable (v2) scope and contract of `repo`, or [`Error::V1ReadOnly`].
+    async fn writable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
+        repo.require_v2()?;
+        self.readable(repo).await
     }
 
     /// Append a ref update. `new_oid` all-zero = ref deletion; `prev_oid` = the expected
     /// prior tip (for divergence detection). Protected refs (per the current `config`
-    /// patterns) route to the MAINTAIN-gated `protectedRefUpdate` type; everything else
-    /// is a WRITE-gated `refUpdate`. Returns the created document id.
+    /// patterns) route to the maintainer-gated `protectedRefUpdate`; everything else is a
+    /// member-gated `refUpdate`. Returns the created document id.
     pub async fn write_ref_update(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         ref_name: &str,
         new_oid: &[u8],
         prev_oid: Option<&[u8]>,
@@ -679,43 +407,39 @@ impl<'a> RepoService<'a> {
                 "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
             )));
         }
+        let (scope, contract) = self.writable(repo).await?;
+        let hasher = crate::private::Public;
+        let ref_name_hash = hasher.hash(ref_name);
 
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let ref_name_hash = crate::backends::sha256(ref_name.as_bytes());
-
-        let configs = self.fetch_config_history(&repo_contract).await?;
-        let patterns = current_protected_patterns(&configs);
-        let protected = rules::matches_protected(ref_name, &patterns);
+        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
         let doc_type = if protected {
             DOC_PROTECTED_REF_UPDATE
         } else {
             DOC_REF_UPDATE
         };
 
-        let mut props = BTreeMap::new();
-        props.insert(
-            "refNameHash".to_string(),
-            FieldValue::bytes32(ref_name_hash),
-        );
-        props.insert("refName".to_string(), FieldValue::text(ref_name));
-        props.insert("newOid".to_string(), FieldValue::bytes(new_oid.to_vec()));
+        let mut props = scope.props([
+            ("refNameHash", FieldValue::bytes32(ref_name_hash)),
+            ("refName", FieldValue::text(ref_name)),
+            ("newOid", FieldValue::bytes(new_oid.to_vec())),
+            ("force", FieldValue::boolean(force)),
+        ]);
         if let Some(prev) = prev_oid {
-            props.insert("prevOid".to_string(), FieldValue::bytes(prev.to_vec()));
+            props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
         }
-        props.insert("force".to_string(), FieldValue::boolean(force));
-
         self.doc_engine()?
-            .create_document(&repo_contract, doc_type, props)
+            .create_document(&contract, doc_type, props)
             .await
     }
 
     /// Enumerate every ref and its resolved [`RefState`].
     ///
     /// Every ref's history comes from [`crate::refs::read_all_ref_updates`] — a keyset scan
-    /// over the `refState` index, ⌈updates/100⌉ queries per type plus one per ref that fills
-    /// a page by itself, with a `prevOid` completeness check — and each ref's combined
-    /// update history + the repo's `config` history is folded by
-    /// [`crate::rules::resolve_ref`].
+    /// over the `refState` index (scoped to the repo: `(repoId, refNameHash, $createdAt)` on
+    /// forge-v2), ⌈updates/100⌉ queries per type plus one per ref that fills a page by itself,
+    /// with a `prevOid` completeness check — and each ref's combined update history + the
+    /// repo's `config` history is folded by [`crate::rules::resolve_ref`].
     ///
     /// Two earlier readers failed in opposite ways. The S0.8 skip-scan (one `limit 1` query
     /// per ref per type, then one history read per ref) cost about four sequential
@@ -725,15 +449,13 @@ impl<'a> RepoService<'a> {
     /// the whole `reflog` index was correct but read every update of every ref on every
     /// command, so it is kept only as the fallback the completeness check falls to.
     ///
-    /// The ancestry predicate is reflexive-only here (M1 has no read-side commit graph):
+    /// The ancestry predicate is reflexive-only here (no read-side commit graph):
     /// fast-forward supersession via `prevOid` still resolves, but descend-detection is
-    /// deferred to the push-side pipeline that has the object store. A single-tip ref (the
-    /// common case) resolves to [`RefState::Resolved`] correctly.
-    pub async fn read_refs(&self, repo: &RepoHandle) -> Result<Vec<(String, RefState)>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let configs = self.fetch_config_history(&repo_contract).await?;
-
-        let by_hash = crate::refs::read_all_ref_updates(self.client, &repo_contract).await?;
+    /// deferred to the push-side pipeline that has the object store.
+    pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
+        let (scope, contract) = self.readable(repo).await?;
+        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
 
         let mut out = Vec::with_capacity(by_hash.len());
         for (hash, updates) in &by_hash {
@@ -750,174 +472,132 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
-    /// Read the repo's current default branch from the newest `config` document (e.g.
-    /// `main`) — the branch `git-remote-dash` reports as the `HEAD` symref in `list`.
-    /// `None` when no `config` exists yet (a contract without an initial config).
-    pub async fn read_default_branch(&self, repo: &RepoHandle) -> Result<Option<String>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let docs = self
-            .client
-            .query_documents(
-                &repo_contract,
-                DOC_CONFIG,
-                &[],
-                &[QueryOrder::desc("$createdAt")],
-                1,
-                None,
-            )
-            .await?;
-        Ok(docs
-            .into_iter()
-            .next()
-            .and_then(|d| d.field_str("defaultBranch")))
-    }
-
-    /// Append a new `config` document that carries `backend_mode` (`0` platform, `1` ipfs,
-    /// `2` s3, `3` https, `4` mixed), preserving the current `defaultBranch`,
-    /// `protectedPatterns`, backend `uris` and `archived` flag from the newest config (config
-    /// is append-only newest-wins, §2.2). MAINTAIN-gated (the owner holds MAINTAIN via
-    /// `baseSupply`). Returns the new config document id. This is the `dg repo backend set`
-    /// write path.
-    pub async fn set_backend_mode(&self, repo: &RepoHandle, backend_mode: u8) -> Result<String> {
-        self.set_backend(repo, backend_mode, None).await
-    }
-
-    /// [`Self::set_backend_mode`], optionally replacing the advertised read `uris` (the
-    /// public read bases of a storage policy — `dg storage advertise`). `None` keeps the
-    /// newest config's URIs.
-    pub async fn set_backend(
+    /// The newest `config` document in `scope`, if any.
+    async fn newest_config(
         &self,
-        repo: &RepoHandle,
-        backend_mode: u8,
-        new_uris: Option<&[String]>,
-    ) -> Result<String> {
-        let replacement = match new_uris {
-            Some(list) => {
-                let json = serde_json::to_string(list)
-                    .map_err(|e| Error::Config(format!("serializing backend uris: {e}")))?;
-                if json.len() > BACKEND_URIS_MAX_LEN {
-                    return Err(Error::Config(format!(
-                        "advertised URIs are {} bytes of JSON; config.backend.uris holds \
-                         {BACKEND_URIS_MAX_LEN}",
-                        json.len()
-                    )));
-                }
-                Some(json)
-            }
-            None => None,
-        };
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let newest = self
+        scope: &DocScope,
+        contract: &LoadedContract,
+    ) -> Result<Option<FetchedDocument>> {
+        Ok(self
             .client
             .query_documents(
-                &repo_contract,
+                contract,
                 DOC_CONFIG,
-                &[],
+                &scope.filters([]),
                 &[QueryOrder::desc("$createdAt")],
                 1,
                 None,
             )
             .await?
             .into_iter()
-            .next();
+            .next())
+    }
 
+    /// The repo's current default branch from the newest `config` (e.g. `main`) — the
+    /// branch `git-remote-dash` reports as the `HEAD` symref. `None` when there is none.
+    pub async fn read_default_branch(&self, repo: &RepoRef) -> Result<Option<String>> {
+        let (scope, contract) = self.readable(repo).await?;
+        Ok(self
+            .newest_config(&scope, &contract)
+            .await?
+            .and_then(|d| d.field_str("defaultBranch")))
+    }
+
+    /// Append a `config` carrying `backend_mode`, optionally replacing the advertised read
+    /// `uris` (the public read bases of a storage policy — `dg storage advertise`; `None`
+    /// keeps the newest config's). Default branch, protected patterns and the archived
+    /// flag carry over (config is append-only, newest wins). Maintainer-gated.
+    pub async fn set_backend(
+        &self,
+        repo: &RepoRef,
+        backend_mode: u8,
+        new_uris: Option<&[String]>,
+    ) -> Result<String> {
+        if let Some(list) = new_uris {
+            if !BACKEND_URIS_V2.fits(list) {
+                return Err(Error::Config(format!(
+                    "config.backend.uris holds at most {} URLs of at most {} bytes each",
+                    BACKEND_URIS_V2.max_items.unwrap_or_default(),
+                    BACKEND_URIS_V2.max_item_len.unwrap_or_default()
+                )));
+            }
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let newest = self.newest_config(&scope, &contract).await?;
         let default_branch = newest
             .as_ref()
             .and_then(|d| d.field_str("defaultBranch"))
             .unwrap_or_else(|| "main".to_string());
-        let protected_patterns = newest
+        let patterns = newest
             .as_ref()
-            .and_then(|d| d.field_str("protectedPatterns"))
-            .unwrap_or_else(|| "[]".to_string());
+            .map(|d| scope::doc_text_list(d, "protectedPatterns"))
+            .unwrap_or_default();
         let archived = newest.as_ref().is_some_and(|d| d.field_bool("archived"));
-        let uris = replacement.unwrap_or_else(|| {
-            match newest.as_ref().and_then(|d| d.fields.get("backend")) {
-                Some(FieldValue::Object(backend)) => backend
-                    .get("uris")
-                    .and_then(FieldValue::as_str)
-                    .unwrap_or("[]")
-                    .to_string(),
-                _ => "[]".to_string(),
-            }
-        });
+        let uris = match new_uris {
+            Some(list) => list.to_vec(),
+            None => newest.as_ref().map(scope::backend_uris).unwrap_or_default(),
+        };
 
-        let mut props = BTreeMap::new();
-        props.insert(
-            "defaultBranch".to_string(),
-            FieldValue::text(default_branch),
-        );
-        props.insert(
-            "protectedPatterns".to_string(),
-            FieldValue::text(protected_patterns),
-        );
         let mut backend = BTreeMap::new();
         backend.insert(
             "mode".to_string(),
             FieldValue::integer(u64::from(backend_mode)),
         );
-        backend.insert("uris".to_string(), FieldValue::text(uris));
-        props.insert("backend".to_string(), FieldValue::Object(backend));
-        props.insert("archived".to_string(), FieldValue::boolean(archived));
-
+        if !uris.is_empty() {
+            backend.insert("uris".to_string(), FieldValue::text_list(uris));
+        }
+        let mut props = scope.props([
+            ("defaultBranch", FieldValue::text(default_branch)),
+            ("backend", FieldValue::Object(backend)),
+            ("archived", FieldValue::boolean(archived)),
+        ]);
+        if !patterns.is_empty() {
+            props.insert("protectedPatterns".into(), FieldValue::text_list(patterns));
+        }
         self.doc_engine()?
-            .create_document(&repo_contract, DOC_CONFIG, props)
+            .create_document(&contract, DOC_CONFIG, props)
             .await
     }
 
-    /// Write a `packManifest` document (WRITE-gated). Returns the manifest document id.
+    /// Write a `packManifest` (member-gated). Returns the manifest document id.
     pub async fn write_pack_manifest(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         manifest: &PackManifestInput,
     ) -> Result<String> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let mut props = BTreeMap::new();
-        props.insert(
-            "packHash".to_string(),
-            FieldValue::bytes32(manifest.pack_hash),
-        );
-        props.insert("kind".to_string(), FieldValue::integer(manifest.kind));
-        props.insert(
-            "sizeBytes".to_string(),
-            FieldValue::integer(manifest.size_bytes),
-        );
-        props.insert(
-            "objectCount".to_string(),
-            FieldValue::integer(manifest.object_count),
-        );
-        props.insert(
-            "chunkCount".to_string(),
-            FieldValue::integer(manifest.chunk_count),
-        );
-        props.insert("storage".to_string(), FieldValue::integer(manifest.storage));
-        props.insert(
-            "offsetIndexParts".to_string(),
-            FieldValue::integer(manifest.offset_index_parts),
-        );
+        let (scope, contract) = self.writable(repo).await?;
+        let mut props = scope.props([
+            ("packHash", FieldValue::bytes32(manifest.pack_hash)),
+            ("kind", FieldValue::integer(manifest.kind)),
+            ("sizeBytes", FieldValue::integer(manifest.size_bytes)),
+            ("objectCount", FieldValue::integer(manifest.object_count)),
+            ("chunkCount", FieldValue::integer(manifest.chunk_count)),
+            ("storage", FieldValue::integer(manifest.storage)),
+            (
+                "offsetIndexParts",
+                FieldValue::integer(manifest.offset_index_parts),
+            ),
+        ]);
         if !manifest.uris.is_empty() {
-            let json = serde_json::to_string(&manifest.uris)
-                .map_err(|e| Error::Config(format!("serializing manifest uris: {e}")))?;
-            props.insert("uris".to_string(), FieldValue::text(json));
-        }
-        // `tips` / `supersedes` are packed byteArrays (concatenated fixed-width entries),
-        // not JSON strings (data-contracts §2.3: byteArray fields, unlike `uris`).
-        if !manifest.tips.is_empty() {
-            let mut packed = Vec::new();
-            for oid in &manifest.tips {
-                packed.extend_from_slice(oid);
+            if !MANIFEST_URIS_V2.fits(&manifest.uris) {
+                return Err(Error::Config(
+                    "packManifest.uris holds at most 8 URIs of at most 300 bytes each".into(),
+                ));
             }
-            props.insert("tips".to_string(), FieldValue::bytes(packed));
+            props.insert("uris".into(), FieldValue::text_list(manifest.uris.clone()));
+        }
+        // `tips` / `supersedes` are packed byteArrays (concatenated fixed-width entries).
+        if !manifest.tips.is_empty() {
+            props.insert("tips".into(), FieldValue::bytes(manifest.tips.concat()));
         }
         if !manifest.supersedes.is_empty() {
-            let mut packed = Vec::with_capacity(manifest.supersedes.len() * 32);
-            for hash in &manifest.supersedes {
-                packed.extend_from_slice(hash);
-            }
-            props.insert("supersedes".to_string(), FieldValue::bytes(packed));
+            props.insert(
+                "supersedes".into(),
+                FieldValue::bytes(manifest.supersedes.concat()),
+            );
         }
-
         self.doc_engine()?
-            .create_document(&repo_contract, DOC_PACK_MANIFEST, props)
+            .create_document(&contract, DOC_PACK_MANIFEST, props)
             .await
     }
 
@@ -927,86 +607,79 @@ impl<'a> RepoService<'a> {
     /// downloads the union of every live kind-0 pack, and each push stores an *incremental*
     /// pack. Drop the oldest manifests — which is what a capped newest-first read does once
     /// a repo passes one page — and the initial import pack, holding the root objects and
-    /// the delta bases everything else is built against, falls out of the set. The clone
-    /// then fails to index rather than failing to be current. `repack` reads the same list,
-    /// so a truncated read would consolidate over an incomplete input and then delete the
-    /// chunks it superseded.
-    ///
-    pub async fn read_pack_manifests(&self, repo: &RepoHandle) -> Result<Vec<PackManifestInfo>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+    /// the delta bases everything else is built against, falls out of the set.
+    pub async fn read_pack_manifests(&self, repo: &RepoRef) -> Result<Vec<PackManifestInfo>> {
+        let (scope, contract) = self.readable(repo).await?;
         let docs = self
             .client
             .query_all_documents(
-                &repo_contract,
+                &contract,
                 DOC_PACK_MANIFEST,
-                &[],
+                &scope.filters([]),
                 &[QueryOrder::desc("$createdAt")],
             )
             .await?;
-
         docs.iter().map(manifest_info).collect()
     }
 
-    /// Read the `packManifest` for `pack_hash`, if one exists (the index is unique).
-    pub async fn read_pack_manifest(
+    /// Every manifest of `pack_hash` (on v2 each uploader may hold a copy; on v1 the index
+    /// is unique, so at most one).
+    pub async fn read_pack_copies(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         pack_hash: [u8; 32],
-    ) -> Result<Option<PackManifestInfo>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+    ) -> Result<Vec<PackManifestInfo>> {
+        let (scope, contract) = self.readable(repo).await?;
         let docs = self
             .client
-            .query_documents(
-                &repo_contract,
+            .query_all_documents(
+                &contract,
                 DOC_PACK_MANIFEST,
-                &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
+                &scope.filters([QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))]),
                 &[],
-                1,
-                None,
             )
             .await?;
-        docs.first().map(manifest_info).transpose()
+        docs.iter().map(manifest_info).collect()
     }
 
-    /// Store pack `bytes` as pipelined `chunk` documents via [`PlatformBackend`], returning
-    /// the `platform://…` locator(s) the manifest should record.
+    /// Store pack `bytes` as pipelined `chunk` documents, returning the `platform://…`
+    /// locator the manifest records.
     pub async fn put_pack(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         bytes: &[u8],
         meta: &PackMeta,
     ) -> Result<Vec<Uri>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
-        let backend = PlatformBackend::new(&engine, &repo_contract);
-        backend.put(bytes, meta).await
+        PlatformBackend::new(&engine, &contract, &scope, self.identity.id())
+            .put(bytes, meta)
+            .await
     }
 
     /// Store pack `bytes` as `chunk` documents **resumably**: a [`PushJournal`] records the
     /// chunk seqs already confirmed and is checkpointed through `store` after each one, so an
-    /// interrupted push (kill -9 mid-upload) resumes by skipping the already-uploaded chunks
-    /// — total fees ≈ a single push (PRD 02 §A resumable-push acceptance). Idempotent even
+    /// interrupted push resumes by skipping the already-uploaded chunks. Idempotent even
     /// without a journal: a re-broadcast chunk that already landed collides on the unique
-    /// `(packHash, seq)` index → [`crate::platform::BroadcastOutcome::AlreadyExists`], never a
-    /// second charge. Returns the `platform://…` locator the manifest records.
+    /// chunk index → [`crate::platform::BroadcastOutcome::AlreadyExists`], never a second
+    /// charge. Returns the `platform://…` locator the manifest records.
     pub async fn put_pack_resumable(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         bytes: &[u8],
         meta: &PackMeta,
         journal: &mut PushJournal,
         store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
-        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PLATFORM_SCHEME};
+        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE};
 
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
         let pack_hash = meta.pack_hash_bytes()?;
 
         // Test affordance, compiled only with `--features test-hooks`: abort after
         // uploading N fresh chunks to simulate a `kill -9` mid-push, so the resume path can
-        // be exercised deterministically end-to-end. The journal is already checkpointed
-        // for every chunk written before the abort.
+        // be exercised deterministically end-to-end.
         #[cfg(feature = "test-hooks")]
         let kill_after: Option<usize> = std::env::var("DASH_FORGE_KILL_AFTER_CHUNK")
             .ok()
@@ -1017,12 +690,11 @@ impl<'a> RepoService<'a> {
 
         for (seq, props) in chunk_documents(bytes, pack_hash) {
             if journal.has(seq) {
-                // Confirmed by a prior (interrupted) attempt — skip, do not re-pay.
                 tracing::debug!(seq, "chunk already journaled; skipping");
                 continue;
             }
             let prepared = engine
-                .create_landed(&repo_contract, CHUNK_DOC_TYPE, props)
+                .create_landed(&contract, CHUNK_DOC_TYPE, scope.scoped(props))
                 .await?;
             journal.record(&WriteIntent::for_prepared(seq, &prepared));
             store.checkpoint(journal)?;
@@ -1035,118 +707,141 @@ impl<'a> RepoService<'a> {
                 )));
             }
         }
-
-        Ok(vec![Uri(format!(
-            "{PLATFORM_SCHEME}://{}/{}",
-            repo_contract.id(),
-            meta.pack_hash
-        ))])
+        Ok(vec![Uri(
+            scope.locator(&self.identity.id(), &meta.pack_hash)
+        )])
     }
 
-    /// Read pack bytes back from `chunk` documents via [`PlatformBackend`] (optionally a
-    /// byte range), reassembled by the pure `crate::pack::join`.
-    pub async fn get_pack(
+    /// The uploader → current role map the v2 pack reader rule ranks copies by. Empty on
+    /// v1 (a v1 pack has exactly one copy).
+    pub async fn copy_roles(&self, repo: &RepoRef) -> Result<RoleMap> {
+        if repo.is_v1() {
+            return Ok(RoleMap::new());
+        }
+        let members = crate::members::MemberReader::new(self.client)
+            .list(repo)
+            .await?;
+        let oracle = crate::members::oracle(&members);
+        Ok(members
+            .iter()
+            .filter_map(|m| {
+                oracle
+                    .current_role(&m.identity_id)
+                    .map(|r| (m.identity_id.clone(), r))
+            })
+            .collect())
+    }
+
+    /// Fetch a stored artifact's bytes with the user's read configuration (storage.toml
+    /// gateways and S3 profiles). See [`Self::fetch_artifact_from`].
+    pub async fn fetch_artifact(
         &self,
-        repo: &RepoHandle,
-        uri: &Uri,
-        range: Option<ByteRange>,
+        repo: &RepoRef,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
     ) -> Result<Vec<u8>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        self.get_pack_from(&repo_contract, uri, range).await
-    }
-
-    /// [`Self::get_pack`] against an already-fetched repo contract, for callers reading many
-    /// packs (a fetch downloads every stored pack) that should not re-fetch and re-verify
-    /// the same contract once per pack.
-    pub async fn get_pack_from(
-        &self,
-        repo_contract: &LoadedContract,
-        uri: &Uri,
-        range: Option<ByteRange>,
-    ) -> Result<Vec<u8>> {
-        let engine = self.doc_engine()?;
-        let backend = PlatformBackend::new(&engine, repo_contract);
-        backend.get(uri, range).await
-    }
-
-    /// Fetch (and register with the proof verifier) the repo's contract once, for use with
-    /// [`Self::get_pack_from`].
-    pub async fn repo_contract(&self, repo: &RepoHandle) -> Result<LoadedContract> {
-        self.client.fetch_contract(&repo.repo_contract_id).await
-    }
-
-    /// Delete a document by id from an arbitrary contract (used for teardown — chunks /
-    /// manifests / the registry listing refund; the contract and non-deletable audit docs
-    /// are permanent).
-    pub async fn delete_document(
-        &self,
-        contract_id: &str,
-        document_type: &str,
-        document_id: &str,
-    ) -> Result<()> {
-        let contract = self.client.fetch_contract(contract_id).await?;
-        self.doc_engine()?
-            .delete_document(&contract, document_type, document_id)
+        let contract = self.repo_contract(repo).await?;
+        self.fetch_artifact_from(repo, &contract, manifest, reader)
             .await
     }
 
-    /// Delete every `chunk` document for a pack (WRITE-gated refund), returning the count
-    /// removed.
-    pub async fn delete_chunks(&self, repo: &RepoHandle, pack_hash: [u8; 32]) -> Result<usize> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let engine = self.doc_engine()?;
-        let mut removed = 0;
-        loop {
-            let page = self
-                .client
-                .query_documents(
-                    &repo_contract,
-                    DOC_CHUNK,
-                    &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
-                    &[QueryOrder::asc("seq")],
-                    100,
-                    None,
-                )
-                .await?;
-            if page.is_empty() {
-                break;
+    /// Fetch one manifest's artifact, SHA-256-verified against it.
+    ///
+    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
+    /// list (cheap, and needs no Platform queries). The Platform `chunk` copy is the last
+    /// resort — used when no external copy verifies, or when the manifest records none. On
+    /// v2 that copy is the chunks *this manifest's uploader* wrote.
+    pub async fn fetch_artifact_from(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let expected = hex::encode(manifest.pack_hash);
+        let has_chunks = manifest.storage == 0;
+        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+        if reader.has_candidates(&manifest.uris) {
+            // With chunks to fall back on, the external copies get a size-scaled budget
+            // after which no new candidate starts — dead gateways must not cost minutes per
+            // pack before the on-chain read, but a big pack streaming from a healthy mirror
+            // is not abandoned mid-transfer.
+            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            match reader
+                .fetch_verified(&manifest.uris, &expected, size, budget)
+                .await
+            {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if !has_chunks => return Err(e),
+                Err(e) => tracing::info!(
+                    pack = %expected,
+                    error = %e,
+                    "no external copy verified; reading Platform chunks"
+                ),
             }
-            for doc in &page {
-                engine
-                    .delete_document(&repo_contract, DOC_CHUNK, &doc.id)
-                    .await?;
-                removed += 1;
-            }
+        } else if !has_chunks {
+            return Err(Error::Io(format!(
+                "artifact {expected} is stored externally but its manifest records no URI this \
+                 client can read ({:?})",
+                manifest.uris
+            )));
         }
-        Ok(removed)
+        let scope = repo.scope()?;
+        let locator = Uri(scope.locator(&manifest.owner_id, &expected));
+        let engine = self.doc_engine()?;
+        let bytes = PlatformBackend::new(&engine, contract, &scope, self.identity.id())
+            .get(&locator, None)
+            .await?;
+        if hex::encode(crate::backends::sha256(&bytes)) != expected {
+            return Err(Error::Integrity);
+        }
+        Ok(bytes)
     }
 
-    /// Consolidate a repo's live packs into **one** optimized pack, publish it, and delete
-    /// the caller's own now-superseded storage for a refund (architecture §4.2 repack/GC).
-    ///
-    /// Flow (availability never dips — the new pack lands *before* anything is deleted):
-    /// 1. Resolve all refs → the reachable tip set; collect the live (non-superseded)
-    ///    kind-0 `packManifest`s.
-    /// 2. Fetch each live pack's bytes (Platform chunks or external mirror) and rebuild one
-    ///    consolidated, self-contained pack over the reachable graph
-    ///    ([`crate::pack::repack_from_packs`]) — unreachable objects are GC'd.
-    /// 3. Upload it to `target` and write a new `packManifest` with `supersedes` = every
-    ///    prior kind-0 packHash and the resolved ref tips.
-    /// 4. Delete the caller's own superseded `chunk` + `packManifest` (+ `manifestPart`)
-    ///    docs — WRITE-gated, creator-only; a frozen identity's delete fails at consensus.
-    ///    Balance is sampled around the deletes so the [`RepackReport`] carries the real
-    ///    observed refund.
-    ///
-    /// Only docs the caller **owns** are deleted (Platform enforces creator-only deletes;
-    /// this also filters client-side so a co-maintainer's packs are superseded-but-kept).
-    pub async fn repack(
+    /// Read `pack_hash` from the best copy that verifies (forge-v2 §4 reader rule):
+    /// `copies` are its manifests, tried maintainers' first, then writers', then former
+    /// members', each by `($createdAt, $id)`. Returns the bytes and the copy they came
+    /// from, or the last error when no copy verifies.
+    pub async fn fetch_best_copy<'m>(
         &self,
-        repo: &RepoHandle,
-        target: RepackTarget<'_>,
-    ) -> Result<RepackReport> {
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&'m PackManifestInfo],
+        roles: &RoleMap,
+        reader: &PackReader,
+    ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
+        let mut last = Error::NotFound;
+        for m in order_copies(copies, roles) {
+            match self.fetch_artifact_from(repo, contract, m, reader).await {
+                Ok(bytes) => return Ok((bytes, m)),
+                Err(e) => {
+                    tracing::info!(
+                        pack = %hex::encode(m.pack_hash),
+                        uploader = %m.owner_id,
+                        error = %e,
+                        "pack copy did not verify; trying the next copy"
+                    );
+                    last = e;
+                }
+            }
+        }
+        Err(last)
+    }
+
+    /// Consolidate a repo's live packs into **one** optimized pack and publish it with a
+    /// `supersedes` list. **Deletes nothing**: on forge-v2 chunks and manifests are
+    /// permanent, so the superseded packs stay readable as the fallback the reader rule
+    /// keeps (a hash proves a pack's bytes, not that it holds everything it replaces).
+    ///
+    /// Flow: resolve refs → reachable tips; fetch each live kind-0 pack (best copy);
+    /// rebuild one self-contained pack over the tips ([`crate::pack::repack_from_packs`]);
+    /// upload it to `target`; write its manifest (`supersedes` every live kind-0 pack, the
+    /// resolved tips); publish the consolidated browse index (best-effort).
+    pub async fn repack(&self, repo: &RepoRef, target: RepackTarget<'_>) -> Result<RepackReport> {
+        let (_, contract) = self.writable(repo).await?;
         let caller = self.identity.id();
 
-        // 1. Reachable tips + live kind-0 packs.
         let refs = self.read_refs(repo).await?;
         let tips = resolved_tip_oids(&refs);
         if tips.is_empty() {
@@ -1162,10 +857,20 @@ impl<'a> RepoService<'a> {
             ));
         }
 
-        // 2. Fetch every live pack and rebuild one consolidated pack over the tips.
-        let mut pack_blobs = Vec::with_capacity(live.len());
-        for m in &live {
-            pack_blobs.push(self.fetch_pack_bytes(repo, m).await?);
+        let roles = self.copy_roles(repo).await?;
+        let reader = PackReader::from_user_config();
+        let mut pack_blobs = Vec::new();
+        for (hash, copies) in group_by_hash(&live) {
+            let (bytes, _) = self
+                .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
+                .await
+                .map_err(|e| {
+                    Error::Io(format!(
+                        "repack: pack {} is unreadable: {e}",
+                        hex::encode(hash)
+                    ))
+                })?;
+            pack_blobs.push(bytes);
         }
         let tip_refs: Vec<&str> = tips.iter().map(String::as_str).collect();
         let consolidated = crate::pack::repack_from_packs(&pack_blobs, &tip_refs)?;
@@ -1174,9 +879,7 @@ impl<'a> RepoService<'a> {
         let new_pack_hash = new_meta.pack_hash_bytes()?;
         let object_count = consolidated.parsed.object_count() as u64;
 
-        // Guard: if the consolidated pack collides with a still-live pack's hash (already a
-        // single optimal pack), there is nothing to gain and the unique-index write would
-        // fail — report it cleanly instead.
+        // Already a single optimal pack: nothing to gain, and nothing to write.
         if live.iter().any(|m| m.pack_hash == new_pack_hash) {
             return Err(Error::Config(
                 "repack: the repo is already a single consolidated pack (nothing to do)".into(),
@@ -1184,88 +887,56 @@ impl<'a> RepoService<'a> {
         }
 
         let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);
-
-        // 3. Upload the consolidated pack + write its manifest.
         let stored = self
             .store_consolidated(repo, &new_bytes, &new_meta, target)
             .await?;
-        let (storage, chunk_count) = (stored.storage, stored.chunk_count);
-        let new_uris: Vec<Uri> = stored.uris.into_iter().map(Uri).collect();
+        let new_uris = stored.uris.clone();
         let (supersedes, new_manifest_id) = self
             .write_consolidated_manifest(
                 repo,
                 &manifests,
-                &caller,
                 &ConsolidatedPack {
                     pack_hash: new_pack_hash,
                     size_bytes: new_bytes.len() as u64,
                     object_count,
-                    chunk_count,
-                    storage,
-                    uris: new_uris.iter().map(|u| u.0.clone()).collect(),
+                    chunk_count: stored.chunk_count,
+                    storage: stored.storage,
+                    uris: stored.uris,
                     tips: &tips,
                 },
             )
             .await?;
-
-        // 3b. Publish the objectLocator over the consolidated pack. Best-effort — see
-        // `publish_locator_best_effort` for why a failure here is reported, not unwound.
         let locator_manifest_id = self
             .publish_locator_best_effort(repo, &consolidated.parsed, new_pack_hash, target)
             .await;
-
-        // 4. Delete the caller's own superseded storage (refund). The locators the new one
-        // supersedes are reclaimable too — but only if it actually landed, since otherwise
-        // the old index is still the live index and deleting it would leave the repo with
-        // no browse index at all. Sample balance around the deletes so the report is the
-        // *observed* on-chain refund, not an estimate.
-        let mut reclaimable = supersedes.clone();
-        if locator_manifest_id.is_some() {
-            reclaimable.extend(
-                live_locator_manifests(&manifests)
-                    .iter()
-                    .map(|m| m.pack_hash),
-            );
-        }
-        let balance_before_delete = self
+        let balance_end = self
             .client
             .get_balance(&caller)
             .await
             .unwrap_or(balance_start);
-        let (deleted_chunks, deleted_manifests, bytes_reclaimed) = self
-            .delete_superseded(repo, &manifests, &reclaimable, new_pack_hash, &caller)
-            .await;
-        let balance_after_delete = self
-            .client
-            .get_balance(&caller)
-            .await
-            .unwrap_or(balance_before_delete);
 
-        let upload_cost_credits = balance_start.saturating_sub(balance_before_delete);
-        let refund_credits = balance_after_delete.saturating_sub(balance_before_delete);
-        let net_credits = i128::from(balance_after_delete) - i128::from(balance_start);
-
+        let superseded_bytes = supersedes
+            .iter()
+            .filter_map(|h| manifests.iter().find(|m| m.pack_hash == *h))
+            .map(|m| m.size_bytes)
+            .sum();
         Ok(RepackReport {
             new_pack_hash,
             new_manifest_id,
             locator_manifest_id,
             new_pack_bytes: new_bytes.len() as u64,
             object_count,
-            new_uris: new_uris.iter().map(|u| u.0.clone()).collect(),
+            new_uris,
             superseded_count: supersedes.len(),
-            bytes_reclaimed,
-            deleted_chunks,
-            deleted_manifests,
-            upload_cost_credits,
-            refund_credits,
-            net_credits,
+            superseded_bytes,
+            cost_credits: balance_start.saturating_sub(balance_end),
         })
     }
 
     /// Store a repack's consolidated pack on `target`, returning the manifest fields.
     async fn store_consolidated(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         bytes: &[u8],
         meta: &PackMeta,
         target: RepackTarget<'_>,
@@ -1275,22 +946,12 @@ impl<'a> RepoService<'a> {
             RepackTarget::Platform => StoredArtifact {
                 storage: 0,
                 chunk_count,
-                uris: self
-                    .put_pack(repo, bytes, meta)
-                    .await?
-                    .into_iter()
-                    .map(|u| u.0)
-                    .collect(),
+                uris: uri_strings(self.put_pack(repo, bytes, meta).await?),
             },
             RepackTarget::External(backend) => StoredArtifact {
                 storage: 1,
                 chunk_count: 0,
-                uris: backend
-                    .put(bytes, meta)
-                    .await?
-                    .into_iter()
-                    .map(|u| u.0)
-                    .collect(),
+                uris: uri_strings(backend.put(bytes, meta).await?),
             },
             RepackTarget::Replicated { targets, required } => {
                 let rep = crate::storage::replicate(targets, bytes, meta, required)
@@ -1302,16 +963,14 @@ impl<'a> RepoService<'a> {
     }
 
     /// Write the `packManifest` for a repack's consolidated pack, returning the
-    /// `supersedes` list it recorded (which the delete pass reclaims from) and the new
-    /// document id.
+    /// `supersedes` list it recorded and the new document id.
     async fn write_consolidated_manifest(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         manifests: &[PackManifestInfo],
-        caller: &str,
         pack: &ConsolidatedPack<'_>,
     ) -> Result<(Vec<[u8; 32]>, String)> {
-        let supersedes = repack_supersedes(manifests, pack.pack_hash, caller);
+        let supersedes = repack_supersedes(manifests, pack.pack_hash);
         let tip_oids: Vec<Vec<u8>> = pack
             .tips
             .iter()
@@ -1329,9 +988,7 @@ impl<'a> RepoService<'a> {
                     chunk_count: pack.chunk_count,
                     storage: pack.storage,
                     // 0 = no separate `manifestPart` offset-index doc written. The browse
-                    // plane's index is the `objectLocator` published just below, not a
-                    // second format — matching the incremental-push path. Never claim a
-                    // part that was not stored.
+                    // plane's index is the `objectLocator` published alongside.
                     offset_index_parts: 0,
                     uris: pack.uris.clone(),
                     supersedes: supersedes.clone(),
@@ -1342,115 +999,56 @@ impl<'a> RepoService<'a> {
         Ok((supersedes, id))
     }
 
-    /// Delete the caller's own now-superseded storage for a repack: for each manifest the
-    /// caller owns that the new consolidated pack subsumes (every prior kind-0 pack, plus
-    /// anything explicitly in `supersedes` — which the repack extends with the index
-    /// fragments its new locator replaced, so those artifacts are reclaimed rather than
-    /// left paid-for and unreadable), remove its `chunk` + `manifestPart` + `packManifest`
-    /// docs (WRITE-gated, creator-only). Never touches the new pack or a co-maintainer's
-    /// docs. Returns `(deleted_chunks, deleted_manifests, bytes_reclaimed)`.
-    async fn delete_superseded(
-        &self,
-        repo: &RepoHandle,
-        manifests: &[PackManifestInfo],
-        supersedes: &[[u8; 32]],
-        new_pack_hash: [u8; 32],
-        caller: &str,
-    ) -> (usize, usize, u64) {
-        let mut deleted_chunks = 0usize;
-        let mut deleted_manifests = 0usize;
-        let mut bytes_reclaimed = 0u64;
-        for m in manifests {
-            if m.pack_hash == new_pack_hash || m.owner_id != caller {
-                continue; // never delete the new pack, or a co-maintainer's docs.
-            }
-            let is_superseded = m.kind == u64::from(crate::pack::KIND_GIT_PACK)
-                || supersedes.contains(&m.pack_hash);
-            if !is_superseded {
-                continue;
-            }
-            if let Ok(n) = self.delete_chunks(repo, m.pack_hash).await {
-                deleted_chunks += n;
-            }
-            deleted_chunks += self
-                .delete_manifest_parts(repo, m.pack_hash)
-                .await
-                .unwrap_or(0);
-            if self
-                .delete_document(&repo.repo_contract_id, DOC_PACK_MANIFEST, &m.document_id)
-                .await
-                .is_ok()
-            {
-                deleted_manifests += 1;
-                bytes_reclaimed += m.size_bytes;
-            }
-        }
-        (deleted_chunks, deleted_manifests, bytes_reclaimed)
-    }
-
-    /// Re-upload each pack's bytes to another backend and announce the new availability
-    /// URIs (architecture §5 reseed). **Availability-only, un-gated: anyone with a clone
-    /// can reseed** — it never deletes and never changes integrity.
+    /// Re-upload each live pack to `target` and announce the new location (`dg reseed`).
     ///
-    /// For every live kind-0 pack: fetch the bytes (verifying the manifest hash), `put`
-    /// them to `target`, and record the returned URIs. Persistence of the new URIs on
-    /// Platform depends on the contract template:
-    /// - **`packMirror` present (template v2+):** writes a `packMirror` doc per pack
-    ///   (`repoId`, `packHash`, `uris`) — the intended on-chain announcement.
-    /// - **absent (v1 template, e.g. the deployed testnet contract):** the `packManifest`
-    ///   is immutable with a unique `packHash`, so a second manifest revision cannot carry
-    ///   the URI — the reseed returns the URIs to the caller (for out-of-band pinning /
-    ///   `--json` capture) and flags `announced_on_chain = false`. `packMirror` is the
-    ///   template-v2 addition that closes this gap.
-    pub async fn reseed(
-        &self,
-        repo: &RepoHandle,
-        target: &dyn PackBackend,
-    ) -> Result<ReseedReport> {
+    /// Every pack is read from its best verifying copy and stored on `target`. On forge-v2
+    /// each uploader may record its own manifest for a pack (the unique index includes
+    /// `$ownerId`), so the new location is announced by writing the caller's own copy —
+    /// `storage` 1, the new URIs — when the caller has none yet for that pack; readers
+    /// verify it by hash like any other copy. Packs the caller already holds a manifest for
+    /// are uploaded but not re-announced (a manifest is immutable).
+    pub async fn reseed(&self, repo: &RepoRef, target: &dyn PackBackend) -> Result<ReseedReport> {
+        let (_, contract) = self.writable(repo).await?;
+        let me = self.identity.id();
         let manifests = self.read_pack_manifests(repo).await?;
         let live = live_kind0_manifests(&manifests);
-
-        let mut reseeded = Vec::new();
-        for m in &live {
-            let bytes = self.fetch_pack_bytes(repo, m).await?;
-            let meta = PackMeta {
-                pack_hash: hex::encode(m.pack_hash),
-                size: bytes.len() as u64,
+        let roles = self.copy_roles(repo).await?;
+        let reader = PackReader::from_user_config();
+        let mut report = ReseedReport::default();
+        for (hash, copies) in group_by_hash(&live) {
+            let (bytes, best) = self
+                .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
+                .await?;
+            let meta = PackMeta::for_bytes(&bytes);
+            let uris = uri_strings(target.put(&bytes, &meta).await?);
+            let announced = if copies.iter().any(|m| m.owner_id == me) {
+                false
+            } else {
+                self.write_pack_manifest(
+                    repo,
+                    &PackManifestInput {
+                        pack_hash: hash,
+                        kind: best.kind,
+                        size_bytes: best.size_bytes,
+                        object_count: best.object_count,
+                        chunk_count: 0,
+                        storage: 1,
+                        offset_index_parts: 0,
+                        uris: uris.clone(),
+                        supersedes: best.supersedes.clone(),
+                        tips: Vec::new(),
+                    },
+                )
+                .await?;
+                true
             };
-            // Verify the fetched bytes before re-announcing them (never propagate corruption).
-            if hex::encode(crate::backends::sha256(&bytes)) != meta.pack_hash {
-                return Err(Error::Integrity);
-            }
-            let uris = target.put(&bytes, &meta).await?;
-            reseeded.push((m.pack_hash, uris.iter().map(|u| u.0.clone()).collect()));
+            report.reseeded.push(Reseeded {
+                pack_hash: hash,
+                uris,
+                announced,
+            });
         }
-
-        // Announce on-chain iff the contract carries the packMirror type.
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let mut mirror_docs_written = 0usize;
-        let announced_on_chain = repo_contract.has_document_type(DOC_PACK_MIRROR);
-        if announced_on_chain {
-            let repo_id_bytes = platform::decode_identifier(&repo.repo_contract_id)?;
-            let engine = self.doc_engine()?;
-            for (pack_hash, uris) in &reseeded {
-                let mut props = BTreeMap::new();
-                props.insert("repoId".to_string(), FieldValue::identifier(repo_id_bytes));
-                props.insert("packHash".to_string(), FieldValue::bytes32(*pack_hash));
-                let json = serde_json::to_string(uris)
-                    .map_err(|e| Error::Config(format!("serializing packMirror uris: {e}")))?;
-                props.insert("uris".to_string(), FieldValue::text(json));
-                engine
-                    .create_document(&repo_contract, DOC_PACK_MIRROR, props)
-                    .await?;
-                mirror_docs_written += 1;
-            }
-        }
-
-        Ok(ReseedReport {
-            reseeded,
-            announced_on_chain,
-            mirror_docs_written,
-        })
+        Ok(report)
     }
 
     /// Restore lost external copies from a LOCAL clone (`dg reseed --from-local`).
@@ -1461,15 +1059,13 @@ impl<'a> RepoService<'a> {
     /// on `targets` (≥ `required` must confirm). Storage keys are content-addressed — S3
     /// `…/packs/<sha256>.pack`, the IPFS CID — so re-uploading through the SAME profile the
     /// pack was pushed with recreates the very URI the immutable manifest already records,
-    /// and readers find it again. Copies at new locations are announced as `packMirror`
-    /// docs when the contract has that type; on repo-v1 (no `packMirror`) they are only
-    /// returned, for the caller to print.
+    /// and readers find it again.
     ///
     /// Packs with no local copy are reported in `missing`; packs whose recorded copies
-    /// still verify are skipped unless `force`.
+    /// still verify are skipped unless `force`. Writes nothing to Platform.
     pub async fn reseed_from_local(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         git_dir: &std::path::Path,
         targets: &[&dyn StorageTarget],
         required: usize,
@@ -1516,53 +1112,14 @@ impl<'a> RepoService<'a> {
                 restored_recorded_uri: restored,
             });
         }
-
-        // Announce new locations where the contract allows it.
-        if contract.has_document_type(DOC_PACK_MIRROR) {
-            let repo_id_bytes = platform::decode_identifier(&repo.repo_contract_id)?;
-            let engine = self.doc_engine()?;
-            for r in &report.restored {
-                let fresh: Vec<&String> = r
-                    .uris
-                    .iter()
-                    .filter(|u| {
-                        !live
-                            .iter()
-                            .any(|m| m.pack_hash == r.pack_hash && m.uris.contains(u))
-                    })
-                    .collect();
-                if fresh.is_empty() {
-                    continue;
-                }
-                let mut props = BTreeMap::new();
-                props.insert("repoId".to_string(), FieldValue::identifier(repo_id_bytes));
-                props.insert("packHash".to_string(), FieldValue::bytes32(r.pack_hash));
-                let json = serde_json::to_string(&fresh)
-                    .map_err(|e| Error::Config(format!("serializing packMirror uris: {e}")))?;
-                props.insert("uris".to_string(), FieldValue::text(json));
-                engine
-                    .create_document(&contract, DOC_PACK_MIRROR, props)
-                    .await?;
-                report.mirror_docs_written += 1;
-            }
-            report.announced_on_chain = true;
-        }
         Ok(report)
     }
 
     /// Publish the consolidated browse index for a repack, reporting failure as `None`
-    /// rather than unwinding it.
-    ///
-    /// A repack is the one place the whole index can be rebuilt from scratch, and doing so
-    /// collapses however many per-push fragments have accumulated back into one artifact —
-    /// so a cold browse is a single fetch again. See [`Self::publish_locator`].
-    ///
-    /// Best-effort because by this point the repack has already landed and been paid for.
-    /// Failing the whole operation because the index could not be written would leave the
-    /// caller with a consolidated repo reported as a failure.
+    /// rather than unwinding it: the repack has already landed and been paid for.
     async fn publish_locator_best_effort(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         pack: &crate::pack::ParsedPack,
         pack_hash: [u8; 32],
         target: RepackTarget<'_>,
@@ -1583,20 +1140,12 @@ impl<'a> RepoService<'a> {
     /// Build and publish an `objectLocator` (kind 1) over the consolidated repack pack,
     /// superseding every prior locator fragment.
     ///
-    /// The locator is the browse plane's index: a fanout header plus OID-sorted fixed-width
-    /// rows, so a single-object read is the header plus one ~1/256 slice instead of a
-    /// whole-pack download. See [`crate::pack::ObjectLocator`] for the row format and for
-    /// why `pack` must be locator-quality.
-    ///
-    /// `pack_ref` is read from a FRESH manifest list rather than assumed to be 0. The
-    /// consolidated pack normally is the only live pack — it supersedes every pack the
-    /// repack saw — but a push landing between this repack's manifest read and its write
-    /// stores a pack it could not supersede, with an earlier `$createdAt`, which takes
-    /// packRef 0. Hard-coding 0 would publish an index that names the wrong pack for every
-    /// row.
+    /// `pack_ref` is read from a FRESH manifest list rather than assumed to be 0: a push
+    /// landing between this repack's manifest read and its write stores a pack it could not
+    /// supersede, with an earlier `$createdAt`, which takes packRef 0.
     async fn publish_locator(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         pack: &crate::pack::ParsedPack,
         pack_hash: [u8; 32],
         target: RepackTarget<'_>,
@@ -1626,24 +1175,16 @@ impl<'a> RepoService<'a> {
     /// Publish the browse-index fragment for a pack that a push just stored.
     ///
     /// The index is published in FRAGMENTS, one per stored pack, rather than as a single
-    /// whole-repo locator rewritten on every push. A locator row is 36 bytes per object, so
-    /// republishing the whole index on each push would charge a deposit proportional to the
-    /// repo on every push — on a 40k-object repo, ~1.4 MB of `chunk` documents to record a
-    /// one-file change. A fragment costs 36 bytes per object the push actually added, which
-    /// is the only cost that scales with what the user did. Readers merge the live
-    /// fragments ([`crate::pack::ObjectLocator::merge`]).
-    ///
-    /// Fan-out is bounded the other way by folding: once the live fragment count would
-    /// exceed [`MAX_LOCATOR_FRAGMENTS`], this fetches them, merges them with the new
-    /// fragment, and publishes ONE locator superseding the lot — so the whole-index
-    /// republish happens about once per [`MAX_LOCATOR_FRAGMENTS`] pushes instead of every
-    /// push, and a reader never faces an unbounded number of index artifacts.
+    /// whole-repo locator rewritten on every push: a fragment costs 36 bytes per object the
+    /// push actually added. Readers merge the live fragments
+    /// ([`crate::pack::ObjectLocator::merge`]). Once the live fragment count would exceed
+    /// [`MAX_LOCATOR_FRAGMENTS`], this folds them into ONE locator superseding the lot.
     ///
     /// Returns what it did, including the reasons it declined; a push has already landed by
     /// the time this runs, so nothing here is fatal to it.
     pub async fn publish_push_locator(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         pack: &crate::pack::ParsedPack,
         pack_hash: [u8; 32],
         target: RepackTarget<'_>,
@@ -1673,26 +1214,28 @@ impl<'a> RepoService<'a> {
             } => (pack_ref, live_locators),
         };
 
-        // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`, so
-        // the merge result does not actually depend on it.
+        // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`.
+        let contract = self.repo_contract(repo).await?;
+        let reader = PackReader::from_user_config();
         let mut parts = Vec::with_capacity(live_locators.len() + 1);
         for m in live_locators.iter().rev() {
-            let bytes = self.fetch_pack_bytes(repo, m).await?;
+            let bytes = self
+                .fetch_artifact_from(repo, &contract, m, &reader)
+                .await?;
             parts.push(crate::pack::ObjectLocator::parse(&bytes)?);
         }
         parts.push(crate::pack::ObjectLocator::build(pack, pack_ref)?);
         let folded = crate::pack::ObjectLocator::merge(&parts.iter().collect::<Vec<_>>());
-        // The fold is only as sound as the fragments it absorbed. A row naming a pack past
-        // the end of the live space means one of them was built over a different space than
-        // the prefix check accepted — publish nothing rather than supersede the parts with
-        // an index that addresses packs the reader cannot resolve.
+        // A row naming a pack past the end of the live space means one fragment was built
+        // over a different space — publish nothing rather than supersede the parts with an
+        // index that addresses packs the reader cannot resolve.
         if folded
             .max_pack_ref()
             .is_some_and(|r| usize::from(r) >= space_len)
         {
             return Ok(PushIndexOutcome::Skipped(
                 "a published index fragment addresses a pack outside the live pack set — \
-                 run `dg maint repack` to rebuild the index"
+                 run `dg repack` to rebuild the index"
                     .into(),
             ));
         }
@@ -1709,7 +1252,7 @@ impl<'a> RepoService<'a> {
     /// Upload a locator artifact and record its `packManifest` (kind 1).
     async fn store_locator(
         &self,
-        repo: &RepoHandle,
+        repo: &RepoRef,
         locator: &crate::pack::ObjectLocator,
         supersedes: Vec<[u8; 32]>,
         target: RepackTarget<'_>,
@@ -1717,43 +1260,15 @@ impl<'a> RepoService<'a> {
         let bytes = locator.as_bytes().to_vec();
         let meta = PackMeta::for_bytes(&bytes);
         let pack_hash = meta.pack_hash_bytes()?;
-        let chunk_count = crate::pack::split(&bytes).len() as u64;
-
         let stored = match target {
-            RepackTarget::Platform => {
-                // Roll back a partial upload (see [`PlatformChunkTarget`]): there is no
-                // journal to resume from, and chunks no manifest references are invisible
-                // to every deletion path.
-                let t = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
-                StoredArtifact {
-                    storage: 0,
-                    chunk_count,
-                    uris: t
-                        .store(&bytes, &meta)
-                        .await?
-                        .into_iter()
-                        .map(|u| u.0)
-                        .collect(),
-                }
-            }
-            RepackTarget::External(backend) => StoredArtifact {
-                storage: 1,
-                chunk_count: 0,
-                uris: backend
-                    .put(&bytes, &meta)
-                    .await?
-                    .into_iter()
-                    .map(|u| u.0)
-                    .collect(),
-            },
             RepackTarget::Replicated { targets, required } => {
                 let rep = crate::storage::replicate(targets, &bytes, &meta, required)
                     .await
                     .map_err(|e| Error::Io(format!("browse index: {e}")))?;
                 StoredArtifact::from_replication(&rep, &bytes)?
             }
+            other => self.store_consolidated(repo, &bytes, &meta, other).await?,
         };
-
         self.write_pack_manifest(
             repo,
             &PackManifestInput {
@@ -1774,175 +1289,6 @@ impl<'a> RepoService<'a> {
         .await
     }
 
-    /// Read the extra availability URIs announced via `packMirror` docs, grouped by
-    /// packHash. Empty when the contract has no `packMirror` type (v1 template) — so
-    /// `dg storage status` can fold mirror URIs into its probe set without erroring on an
-    /// older contract.
-    pub async fn read_pack_mirrors(
-        &self,
-        repo: &RepoHandle,
-    ) -> Result<Vec<([u8; 32], Vec<String>)>> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        if !repo_contract.has_document_type(DOC_PACK_MIRROR) {
-            return Ok(Vec::new());
-        }
-        // Complete: mirrors are the availability fallback set, and a capped read would drop
-        // whole packs' alternate URIs from `dg storage status`'s probe set while reporting
-        // the packs it did see as fully probed.
-        let docs = self
-            .client
-            .query_all_documents(
-                &repo_contract,
-                DOC_PACK_MIRROR,
-                &[],
-                &[QueryOrder::desc("$createdAt")],
-            )
-            .await?;
-        let mut out = Vec::new();
-        for d in &docs {
-            let Some(pack_hash) = d
-                .field_bytes("packHash")
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            else {
-                continue;
-            };
-            let uris = d
-                .field_str("uris")
-                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                .unwrap_or_default();
-            out.push((pack_hash, uris));
-        }
-        Ok(out)
-    }
-
-    /// Fetch a stored artifact's bytes with the user's read configuration (storage.toml
-    /// gateways and S3 profiles). See [`Self::fetch_artifact`].
-    async fn fetch_pack_bytes(
-        &self,
-        repo: &RepoHandle,
-        manifest: &PackManifestInfo,
-    ) -> Result<Vec<u8>> {
-        let contract = self.repo_contract(repo).await?;
-        self.fetch_manifest_pack(repo, &contract, manifest).await
-    }
-
-    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract, with the user's
-    /// read configuration. See [`Self::fetch_artifact_from`].
-    pub async fn fetch_manifest_pack(
-        &self,
-        repo: &RepoHandle,
-        repo_contract: &LoadedContract,
-        manifest: &PackManifestInfo,
-    ) -> Result<Vec<u8>> {
-        self.fetch_artifact_from(
-            repo,
-            repo_contract,
-            manifest,
-            &PackReader::from_user_config(),
-        )
-        .await
-    }
-
-    /// Fetch a stored artifact's bytes, SHA-256-verified against its manifest.
-    ///
-    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
-    /// list (cheap, and needs no Platform queries). Platform `chunk` documents are the last
-    /// resort — used when no external copy verifies, or when the manifest records none.
-    /// An external-only manifest whose copies are all gone fails with every candidate's
-    /// reason.
-    pub async fn fetch_artifact(
-        &self,
-        repo: &RepoHandle,
-        manifest: &PackManifestInfo,
-        reader: &PackReader,
-    ) -> Result<Vec<u8>> {
-        let contract = self.repo_contract(repo).await?;
-        self.fetch_artifact_from(repo, &contract, manifest, reader)
-            .await
-    }
-
-    /// [`Self::fetch_artifact`] against an already-fetched repo contract (a fetch reads
-    /// many packs and should not re-fetch the contract per pack).
-    pub async fn fetch_artifact_from(
-        &self,
-        repo: &RepoHandle,
-        repo_contract: &LoadedContract,
-        manifest: &PackManifestInfo,
-        reader: &PackReader,
-    ) -> Result<Vec<u8>> {
-        let expected = hex::encode(manifest.pack_hash);
-        let has_chunks = manifest.storage == 0;
-        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
-        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        if reader.has_candidates(&manifest.uris) {
-            // With chunks to fall back on, the external copies get a size-scaled budget
-            // after which no new candidate starts — dead gateways must not cost minutes per
-            // pack before the on-chain read, but a big pack streaming from a healthy mirror
-            // is not abandoned mid-transfer.
-            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
-            match reader
-                .fetch_verified(&manifest.uris, &expected, size, budget)
-                .await
-            {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) if !has_chunks => return Err(e),
-                Err(e) => tracing::info!(
-                    pack = %expected,
-                    error = %e,
-                    "no external copy verified; reading Platform chunks"
-                ),
-            }
-        } else if !has_chunks {
-            return Err(Error::Io(format!(
-                "artifact {expected} is stored externally but its manifest records no URI this \
-                 client can read ({:?})",
-                manifest.uris
-            )));
-        }
-        let locator = Uri(format!(
-            "{}://{}/{}",
-            crate::backends::PLATFORM_SCHEME,
-            repo.repo_contract_id,
-            expected,
-        ));
-        let bytes = self.get_pack_from(repo_contract, &locator, None).await?;
-        if hex::encode(crate::backends::sha256(&bytes)) != expected {
-            return Err(Error::Integrity);
-        }
-        Ok(bytes)
-    }
-
-    /// Delete every `manifestPart` document for a pack (WRITE-gated refund), returning the
-    /// count removed. A no-op for packs whose offset index fit in the manifest.
-    async fn delete_manifest_parts(&self, repo: &RepoHandle, pack_hash: [u8; 32]) -> Result<usize> {
-        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
-        let engine = self.doc_engine()?;
-        let mut removed = 0;
-        loop {
-            let page = self
-                .client
-                .query_documents(
-                    &repo_contract,
-                    DOC_MANIFEST_PART,
-                    &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
-                    &[QueryOrder::asc("partSeq")],
-                    100,
-                    None,
-                )
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            for doc in &page {
-                engine
-                    .delete_document(&repo_contract, DOC_MANIFEST_PART, &doc.id)
-                    .await?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
-    }
-
     // --- internal read helpers ---
 
     /// The repo's **complete** `config` history (append-only, non-deletable), as
@@ -1951,17 +1297,19 @@ impl<'a> RepoService<'a> {
     /// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
     /// UNPROTECTED, so a truncated history does not merely go stale — it silently
     /// re-admits plain `refUpdate`s on protected refs that the rules layer had correctly
-    /// rendered inert. It also has to be complete for cross-client agreement: forge-web
-    /// reads the same timeline, and if the two clients hold different slices of it they
-    /// resolve the same ref differently, which is precisely what FORGE_RULES_V1 exists to
-    /// prevent.
-    async fn fetch_config_history(&self, repo_contract: &LoadedContract) -> Result<Vec<ConfigDoc>> {
+    /// rendered inert. forge-web reads the same timeline, and the two clients must fold the
+    /// same input.
+    async fn fetch_config_history(
+        &self,
+        scope: &DocScope,
+        contract: &LoadedContract,
+    ) -> Result<Vec<ConfigDoc>> {
         let docs = self
             .client
             .query_all_documents(
-                repo_contract,
+                contract,
                 DOC_CONFIG,
-                &[],
+                &scope.filters([]),
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
@@ -1970,133 +1318,48 @@ impl<'a> RepoService<'a> {
             .map(|d| ConfigDoc {
                 id: d.id.clone(),
                 created_at: d.created_at.unwrap_or(0),
-                protected_patterns: d
-                    .field_str("protectedPatterns")
-                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                    .unwrap_or_default(),
+                protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
             })
             .collect())
     }
 }
 
-/// The initial `config` document properties (`defaultBranch`, empty protected patterns,
-/// backend mode, not archived).
-fn config_properties(default_branch: &str, backend_mode: u8) -> BTreeMap<String, FieldValue> {
-    let mut props = BTreeMap::new();
-    props.insert(
-        "defaultBranch".to_string(),
-        FieldValue::text(default_branch),
-    );
-    props.insert("protectedPatterns".to_string(), FieldValue::text("[]"));
-    let mut backend = BTreeMap::new();
-    backend.insert(
-        "mode".to_string(),
-        FieldValue::integer(u64::from(backend_mode)),
-    );
-    backend.insert("uris".to_string(), FieldValue::text("[]"));
-    props.insert("backend".to_string(), FieldValue::Object(backend));
-    props.insert("archived".to_string(), FieldValue::boolean(false));
-    props
+/// The `String`s of a list of [`Uri`]s.
+fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
+    uris.into_iter().map(|u| u.0).collect()
 }
 
-/// Rewrite a repo template's tokens for a **solo-owner** repo: every token-admin rule
-/// that points at `MainGroup` is re-pointed at `ContractOwner`, `mainControlGroup` is
-/// cleared, and the top-level `groups` object is dropped.
-///
-/// The committed repo-v1 template targets an org repo (a control group holds
-/// mint/freeze/destroy). Platform requires a group to have ≥ 2 members
-/// (`GroupHasTooFewMembersError`), which a single owner cannot satisfy — so a solo repo
-/// instantiates with the owner as the sole token authority (the S0.7-validated shape).
-/// Org repos (a multi-principal owner) are a documented follow-up that keeps the group.
-fn apply_solo_owner_token_rules(template: &mut serde_json::Value) {
-    if let Some(obj) = template.as_object_mut() {
-        obj.remove("groups");
+/// Group manifests by pack hash (every copy of one pack together), in hash order.
+pub fn group_by_hash(manifests: &[PackManifestInfo]) -> Vec<([u8; 32], Vec<&PackManifestInfo>)> {
+    let mut groups: BTreeMap<[u8; 32], Vec<&PackManifestInfo>> = BTreeMap::new();
+    for m in manifests {
+        groups.entry(m.pack_hash).or_default().push(m);
     }
-    let Some(tokens) = template.get_mut("tokens").and_then(|t| t.as_object_mut()) else {
-        return;
-    };
-    for token in tokens.values_mut() {
-        repoint_group_rules_to_owner(token);
-    }
+    groups.into_iter().collect()
 }
 
-/// Recursively replace `MainGroup` action-taker values with `ContractOwner` and null out
-/// any `mainControlGroup` reference within a token configuration.
-fn repoint_group_rules_to_owner(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, v) in map.iter_mut() {
-                if (key == "authorizedToMakeChange" || key == "adminActionTakers")
-                    && v.as_str() == Some("MainGroup")
-                {
-                    *v = serde_json::Value::String("ContractOwner".to_string());
-                } else if key == "mainControlGroup" {
-                    *v = serde_json::Value::Null;
-                } else {
-                    repoint_group_rules_to_owner(v);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                repoint_group_rules_to_owner(item);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Renumber every doc-type schema's `position` fields so each object level is
-/// contiguous 0..N (in existing position order).
-///
-/// Native rs-dpp validates that a document type's **top-level** property positions run
-/// `0..N` with no gaps (`MissingPositionsInDocumentTypePropertiesError`). The committed
-/// repo-v1 template numbers positions globally — a nested `imported`/`backend` object's
-/// children take positions in the *parent's* sequence, so the parent object then jumps
-/// past them (e.g. `comment`: top-level 0-6, then `imported` at 10), leaving a gap.
-/// Renumbering per object level makes it valid without changing field identity (fields
-/// are addressed by name, not position, in every write path).
-fn normalize_document_positions(template: &mut serde_json::Value) {
-    let Some(schemas) = template
-        .get_mut("documentSchemas")
-        .and_then(|v| v.as_object_mut())
-    else {
-        return;
-    };
-    for schema in schemas.values_mut() {
-        renumber_object_positions(schema);
-    }
-}
-
-/// Renumber one object schema's direct `properties` to contiguous 0-based positions (in
-/// current position order), recursing into nested object properties.
-fn renumber_object_positions(schema: &mut serde_json::Value) {
-    let Some(props) = schema.get_mut("properties").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    let mut order: Vec<(String, u64)> = props
+/// `copies` of one pack in the order the forge-v2 reader rule tries them
+/// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
+/// then writers, then anyone else, each by `($createdAt, $id)`.
+pub(crate) fn order_copies<'m>(
+    copies: &[&'m PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<&'m PackManifestInfo> {
+    let as_rule: Vec<PackCopy> = copies
         .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                v.get("position")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
-            )
+        .map(|m| PackCopy {
+            id: m.document_id.clone(),
+            pack_hash: hex::encode(m.pack_hash),
+            owner_role: roles.get(&m.owner_id).copied(),
+            created_at: m.created_at,
+            verified: true,
+            supersedes: Vec::new(),
         })
         .collect();
-    order.sort_by_key(|(_, pos)| *pos);
-    for (new_pos, (key, _)) in order.into_iter().enumerate() {
-        if let Some(prop) = props.get_mut(&key) {
-            if let Some(obj) = prop.as_object_mut() {
-                obj.insert(
-                    "position".to_string(),
-                    serde_json::Value::from(new_pos as u64),
-                );
-            }
-            renumber_object_positions(prop);
-        }
-    }
+    crate::rules::v2::order_pack_copies(&as_rule)
+        .into_iter()
+        .filter_map(|c| copies.iter().find(|m| m.document_id == c.id).copied())
+        .collect()
 }
 
 /// Collect the distinct hex OIDs a repo's resolved refs point at — the reachable tip set
@@ -2125,71 +1388,22 @@ fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
     out
 }
 
-/// Pack hashes a repack's consolidated manifest must list in `supersedes`.
+/// Pack hashes a repack's consolidated manifest lists in `supersedes`: every live kind-0
+/// pack except the new one, oldest first.
 ///
-/// `supersedes` is a packed byteArray capped at 1024 bytes — **32 hashes** — so this is a
-/// budget, not a dump, and what fills it is chosen by what breaks if it is left out.
-///
-/// Liveness is derived solely from the `supersedes` lists of manifests that still EXIST
-/// ([`live_kind0_manifests`]), so a hash drops out of the record the moment the only
-/// manifest naming it is deleted. Two groups therefore need slots, in this order:
-///
-/// 1. **Not the caller's, and currently superseded.** These are zombies waiting to happen:
-///    the document that supersedes such a pack is the caller's previous consolidated
-///    manifest, which the delete pass is about to remove. Drop the hash here and the pack
-///    rejoins the live set at packRef 0 — it is the oldest — silently invalidating the
-///    locator this repack publishes.
-/// 2. **Not the caller's, and live.** Platform allows creator-only deletes, so these
-///    manifests survive the repack; only this list records that the consolidated pack
-///    subsumes them.
-/// 3. **The caller's own live packs.** Their manifests are deleted moments later, which
-///    removes them from the live set by itself — but the locator is published *before* the
-///    deletes, so they must be superseded for the pack space to be right at that moment.
-///
-/// Past 32 the list is truncated in that order and the caller is warned: the repack still
-/// consolidates and still refunds, but a pack it could not name stays live, so the index it
-/// publishes will read as behind until a later repack can name it.
-fn repack_supersedes(
-    manifests: &[PackManifestInfo],
-    new_pack_hash: [u8; 32],
-    caller: &str,
-) -> Vec<[u8; 32]> {
-    /// `packManifest.supersedes` is a byteArray of at most 1024 bytes (data-contracts §2.3).
+/// `supersedes` is a packed byteArray capped at 1024 bytes — **32 hashes**. On forge-v2
+/// nothing is deleted, so a pack superseded by an earlier repack stays superseded (the
+/// manifest that says so is permanent) and needs no slot here. Past 32 the list is
+/// truncated and the caller warned: the repack still consolidates, but a pack it could not
+/// name stays live, so the browse index reads as behind until a later repack names it.
+fn repack_supersedes(manifests: &[PackManifestInfo], new_pack_hash: [u8; 32]) -> Vec<[u8; 32]> {
+    /// `packManifest.supersedes` is a byteArray of at most 1024 bytes.
     const MAX_SUPERSEDES: usize = 1024 / 32;
-
-    let live: BTreeSet<[u8; 32]> = live_kind0_manifests(manifests)
-        .iter()
-        .map(|m| m.pack_hash)
-        .collect();
-    let kind0 = |m: &&PackManifestInfo| {
-        m.kind == u64::from(crate::pack::KIND_GIT_PACK) && m.pack_hash != new_pack_hash
-    };
     let mut out: Vec<[u8; 32]> = Vec::new();
-    let push = |h: [u8; 32], out: &mut Vec<[u8; 32]>| {
-        if !out.contains(&h) {
-            out.push(h);
+    for m in locator_pack_space(manifests, None) {
+        if m.pack_hash != new_pack_hash && !out.contains(&m.pack_hash) {
+            out.push(m.pack_hash);
         }
-    };
-    for m in manifests
-        .iter()
-        .filter(kind0)
-        .filter(|m| m.owner_id != caller && !live.contains(&m.pack_hash))
-    {
-        push(m.pack_hash, &mut out);
-    }
-    for m in manifests
-        .iter()
-        .filter(kind0)
-        .filter(|m| m.owner_id != caller && live.contains(&m.pack_hash))
-    {
-        push(m.pack_hash, &mut out);
-    }
-    for m in manifests
-        .iter()
-        .filter(kind0)
-        .filter(|m| m.owner_id == caller && live.contains(&m.pack_hash))
-    {
-        push(m.pack_hash, &mut out);
     }
     if out.len() > MAX_SUPERSEDES {
         tracing::warn!(
@@ -2282,13 +1496,14 @@ fn plan_push_index(manifests: &[PackManifestInfo], pack_hash: [u8; 32]) -> PushI
 /// * *as of* — a locator only indexes packs that existed when it was built; later
 ///   incremental packs are outside its space. `None` means "as of now".
 /// * *live* — a repack consolidates several packs into one and marks the originals
-///   `supersedes`. Counting superseded packs would leave every index shifted by however many
-///   of them happen to survive, and survival is incidental: [`RepoService::repack`] deletes
-///   only the CALLER's own manifests, so in a multi-author repo some remain. Liveness is
+///   `supersedes`. Superseded manifests survive (v2 manifests are permanent; v1 repacks
+///   deleted only the caller's own), so counting them would shift every index. Liveness is
 ///   computed WITHIN the as-of bound, so a later repack cannot retroactively change what an
 ///   older locator meant.
 /// * *oldest-first by `($createdAt, $id)`* — the platform total order, not a reversed
 ///   `$createdAt desc` query, which drops the `$id` tiebreak on equal timestamps.
+/// * *one entry per pack* — on forge-v2 each uploader has its own copy of a pack; a pack's
+///   position is that of its earliest copy.
 pub fn locator_pack_space(
     manifests: &[PackManifestInfo],
     as_of: Option<u64>,
@@ -2307,19 +1522,19 @@ pub fn locator_pack_space(
             .cmp(&b.created_at)
             .then_with(|| a.document_id.cmp(&b.document_id))
     });
+    // forge-v2: several uploaders may each hold a copy of one pack. The space has one entry
+    // per pack, placed at its first copy — a later copy does not shift existing packRefs.
+    let mut seen = BTreeSet::new();
+    live.retain(|m| seen.insert(m.pack_hash));
     live
 }
 
 /// Decode a `packManifest` document.
-fn manifest_info(d: &platform::FetchedDocument) -> Result<PackManifestInfo> {
+fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
     let pack_hash = d
-        .field_bytes("packHash")
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .field_bytes32("packHash")
         .ok_or_else(|| Error::Platform("packManifest missing packHash".into()))?;
-    let uris = d
-        .field_str("uris")
-        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-        .unwrap_or_default();
+    let uris = scope::doc_text_list(d, "uris");
     // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
     let supersedes = d
         .field_bytes("supersedes")
@@ -2374,7 +1589,8 @@ fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInf
 
 /// The live (non-superseded) kind-0 git packs among `manifests`: kind-0 manifests whose
 /// `packHash` no *other* manifest lists in its `supersedes`. This is what repack
-/// consolidates and reseed re-uploads. Unordered — [`locator_pack_space`] is what puts the
+/// consolidates and reseed re-uploads. On forge-v2 a pack may appear once per uploader.
+/// Unordered — [`locator_pack_space`] is what puts the
 /// live packs in the `packRef` order a locator addresses them by.
 fn live_kind0_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
     let superseded: BTreeSet<[u8; 32]> = manifests
@@ -2408,32 +1624,14 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Normalize and validate a repo name against the registry
-/// `^[a-z0-9][a-z0-9._-]{0,62}$` pattern (lowercased first).
-fn normalize_name(name: &str) -> Result<String> {
-    let normalized = name.to_ascii_lowercase();
-    let bytes = normalized.as_bytes();
-    let valid = (1..=63).contains(&bytes.len())
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes[1..]
-            .iter()
-            .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
-    if valid {
-        Ok(normalized)
-    } else {
-        Err(Error::Config(format!(
-            "invalid repo name '{name}': must match ^[a-z0-9][a-z0-9._-]{{0,62}}$ after lowercasing"
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        current_protected_patterns, live_locator_manifests, locator_pack_space, normalize_name,
-        plan_push_index, repack_supersedes, PackManifestInfo, PushIndexPlan, MAX_LOCATOR_FRAGMENTS,
-        REPO_V1_TEMPLATE,
+        current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
+        order_copies, plan_push_index, repack_supersedes, PackManifestInfo, PushIndexPlan, RoleMap,
+        MAX_LOCATOR_FRAGMENTS,
     };
+    use crate::rules::v2::Role;
     use crate::rules::ConfigDoc;
 
     /// A manifest stub carrying only what the packRef space is derived from.
@@ -2507,17 +1705,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_name_accepts_valid_and_rejects_invalid() {
-        assert_eq!(normalize_name("MyRepo").unwrap(), "myrepo");
-        assert_eq!(normalize_name("a.b-c_1").unwrap(), "a.b-c_1");
-        assert!(normalize_name("").is_err());
-        assert!(normalize_name(".leading-dot").is_err());
-        assert!(normalize_name("has space").is_err());
-        assert!(normalize_name(&"x".repeat(64)).is_err());
-        assert!(normalize_name(&"x".repeat(63)).is_ok());
-    }
-
-    #[test]
     fn current_protected_patterns_picks_newest_config() {
         let configs = vec![
             ConfigDoc {
@@ -2538,108 +1725,6 @@ mod tests {
         assert!(current_protected_patterns(&[]).is_empty());
     }
 
-    #[test]
-    fn embedded_template_has_tokens_and_doc_types() {
-        let t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
-        assert_eq!(
-            t.get("tokens").and_then(|v| v.as_object()).unwrap().len(),
-            2
-        );
-        assert!(
-            t.get("documentSchemas")
-                .and_then(|v| v.as_object())
-                .unwrap()
-                .len()
-                >= 15
-        );
-    }
-
-    #[test]
-    fn normalize_positions_makes_top_level_contiguous() {
-        use super::normalize_document_positions;
-        let mut t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
-        normalize_document_positions(&mut t);
-
-        for (name, schema) in t.get("documentSchemas").unwrap().as_object().unwrap() {
-            let props = schema.get("properties").unwrap().as_object().unwrap();
-            let mut positions: Vec<u64> = props
-                .values()
-                .map(|p| p.get("position").unwrap().as_u64().unwrap())
-                .collect();
-            positions.sort_unstable();
-            let expected: Vec<u64> = (0..positions.len() as u64).collect();
-            assert_eq!(
-                positions, expected,
-                "top-level positions for '{name}' must be contiguous 0..N"
-            );
-            // Nested `imported`/`backend` objects also renumbered to local 0-based.
-            for prop in props.values() {
-                if let Some(nested) = prop.get("properties").and_then(|v| v.as_object()) {
-                    let mut np: Vec<u64> = nested
-                        .values()
-                        .map(|p| p.get("position").unwrap().as_u64().unwrap())
-                        .collect();
-                    np.sort_unstable();
-                    assert_eq!(np, (0..np.len() as u64).collect::<Vec<_>>());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn solo_owner_transform_drops_group_and_repoints_rules() {
-        use super::apply_solo_owner_token_rules;
-        // A synthetic *org*-shaped contract (a control group holds mint/freeze). The
-        // committed source is already solo-owner, so the transform is exercised on the
-        // org shape it exists to coerce (an older on-disk source, or a future org variant).
-        let mut t = serde_json::json!({
-            "groups": { "0": { "members": { "aaa": 1 }, "requiredPower": 1 } },
-            "tokens": {
-                "0": {
-                    "manualMintingRules": {
-                        "authorizedToMakeChange": "MainGroup",
-                        "adminActionTakers": "MainGroup"
-                    },
-                    "mainControlGroup": 0
-                }
-            }
-        });
-        assert!(serde_json::to_string(&t).unwrap().contains("MainGroup"));
-
-        apply_solo_owner_token_rules(&mut t);
-
-        // Group dropped; no MainGroup rule survives; every mainControlGroup nulled.
-        assert!(t.get("groups").is_none());
-        assert!(
-            !serde_json::to_string(&t).unwrap().contains("MainGroup"),
-            "no MainGroup rule should remain"
-        );
-        for token in t.get("tokens").unwrap().as_object().unwrap().values() {
-            assert!(token.get("mainControlGroup").unwrap().is_null());
-        }
-    }
-
-    #[test]
-    fn committed_template_is_already_solo_owner_and_transform_is_noop() {
-        use super::apply_solo_owner_token_rules;
-        // The committed source has been reconciled to the deployable solo-owner shape, so
-        // the runtime patch is an idempotent no-op safety net (see `create_repo`).
-        let mut t: serde_json::Value = serde_json::from_str(REPO_V1_TEMPLATE).unwrap();
-        assert!(t.get("groups").is_none(), "source must have no group");
-        assert!(
-            !serde_json::to_string(&t).unwrap().contains("MainGroup"),
-            "source must carry no MainGroup rule"
-        );
-        let before = t.clone();
-        apply_solo_owner_token_rules(&mut t);
-        assert_eq!(
-            t, before,
-            "transform must be a no-op on the already-solo source"
-        );
-        for token in t.get("tokens").unwrap().as_object().unwrap().values() {
-            assert!(token.get("mainControlGroup").unwrap().is_null());
-        }
-    }
     /// Shorthand: what `plan_push_index` decided, as `(pack_ref, fold)` or the skip reason.
     fn plan(manifests: &[PackManifestInfo], hash: u8) -> Result<(u16, bool, usize), String> {
         match plan_push_index(manifests, [hash; 32]) {
@@ -2733,37 +1818,68 @@ mod tests {
     }
 
     #[test]
-    fn repack_supersedes_carries_forward_a_co_maintainers_already_superseded_pack() {
-        // After repack #1, Bob's pack is superseded-but-kept and the ONLY document saying so
-        // is Alice's consolidated manifest — which repack #2 deletes as her own. If repack
-        // #2's list names only the live packs, Bob's pack loses its last superseder and
-        // rejoins the live set at packRef 0, silently invalidating the locator being
-        // published alongside it.
+    fn repack_supersedes_names_every_live_pack_but_the_new_one() {
+        // Nothing is deleted on v2: an already-superseded pack keeps its superseder and
+        // needs no slot; every live pack (anyone's) is named, oldest first.
         let mut bob = manifest("bob", 100, 0, 1);
         bob.owner_id = "bob".into();
         let mut prev = manifest("prev", 300, 0, 2);
         prev.supersedes = vec![[1u8; 32]];
-        let manifests = vec![prev, bob];
-
-        let out = repack_supersedes(&manifests, [9u8; 32], "owner");
-        assert!(
-            out.contains(&[1u8; 32]),
-            "Bob's superseded pack must stay named"
-        );
-        assert!(out.contains(&[2u8; 32]), "the live pack must be named");
+        let new = manifest("new", 400, 0, 9);
+        let out = repack_supersedes(&[new, prev, bob], [9u8; 32]);
+        assert_eq!(out, vec![[2u8; 32]]);
     }
 
     #[test]
     fn repack_supersedes_never_names_the_new_pack_and_stays_within_the_field() {
         // `supersedes` is a 1024-byte packed byteArray: 32 hashes, no more. Past that the
-        // list is truncated in priority order rather than failing the write.
+        // list is truncated rather than failing the write.
         let mut manifests = vec![manifest("new", 999, 0, 9)];
         for i in 0..40u8 {
-            manifests.push(manifest(&format!("p{i}"), 100 + u64::from(i), 0, i));
+            manifests.push(manifest(&format!("p{i}"), 100 + u64::from(i), 0, i + 10));
         }
-        let out = repack_supersedes(&manifests, [9u8; 32], "owner");
+        let out = repack_supersedes(&manifests, [9u8; 32]);
         assert_eq!(out.len(), 32);
         assert!(!out.contains(&[9u8; 32]), "must never supersede itself");
+        assert_eq!(out[0], [10u8; 32], "oldest first");
+    }
+
+    #[test]
+    fn a_second_uploaders_copy_does_not_shift_the_pack_space() {
+        // v2: carol re-uploads pack 1 after pack 2 landed. Pack 1 keeps packRef 0.
+        let mut copy = manifest("c2", 300, 0, 1);
+        copy.owner_id = "carol".into();
+        let manifests = vec![copy, manifest("p2", 200, 0, 2), manifest("p1", 100, 0, 1)];
+        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![1, 2]);
+        assert_eq!(group_by_hash(&manifests)[0].1.len(), 2);
+    }
+
+    #[test]
+    fn copies_are_tried_maintainers_then_writers_then_former_members() {
+        let mut stranger = manifest("s", 50, 0, 1);
+        stranger.owner_id = "mallory".into();
+        let mut writer = manifest("w", 200, 0, 1);
+        writer.owner_id = "bob".into();
+        let mut maint = manifest("m", 300, 0, 1);
+        maint.owner_id = "alice".into();
+        let roles: RoleMap = [
+            ("alice".to_string(), Role::Maintainer),
+            ("bob".to_string(), Role::Writer),
+        ]
+        .into_iter()
+        .collect();
+        let copies = [&stranger, &writer, &maint];
+        let order: Vec<_> = order_copies(&copies, &roles)
+            .iter()
+            .map(|m| m.document_id.clone())
+            .collect();
+        assert_eq!(order, ["m", "w", "s"]);
+        // With no membership known (v1), the order is by time.
+        let order: Vec<_> = order_copies(&copies, &RoleMap::new())
+            .iter()
+            .map(|m| m.document_id.clone())
+            .collect();
+        assert_eq!(order, ["s", "w", "m"]);
     }
 
     #[test]

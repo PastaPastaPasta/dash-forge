@@ -202,13 +202,14 @@ is_flake() { # is_flake <logfile.err>
 is_timeout() { # is_timeout <logfile.err> — the harness killed the command
   grep -q '^e2e: command timed out' "$1"
 }
-is_consensus_frozen() { # token account frozen at consensus
-  grep -qiE 'token frozen|account is frozen|IdentityTokenAccountFrozen|token account is frozen|access has been suspended' "$1"
+# forge-v2: a write from an identity with no writer/maintainer document is refused at
+# consensus with 40120 (ReferencedEntityNotFound on the `$ownerId` path).
+is_consensus_not_member() {
+  grep -qE '40120' "$1" && grep -qiE 'not a member|consensus refused|\$ownerId' "$1"
 }
-is_consensus_unauthorized() { # no/insufficient token -> unauthorized at consensus
-  grep -qiE 'not authorized|unauthorized|Unauthorized|insufficient token|token balance|UnauthorizedTokenAction|does not have|WRITE .*token|requires a WRITE' "$1"
-}
-is_consensus_reject() { is_consensus_frozen "$1" || is_consensus_unauthorized "$1"; }
+is_consensus_reject() { is_consensus_not_member "$1"; }
+# The helper's local membership pre-check (never a consensus verdict).
+is_local_precheck() { grep -qiE 'you are not a writer of .* — ask its owner' "$1"; }
 
 # --- retry ---------------------------------------------------------------------
 # Run <cmd...> (which writes its stderr to <errfile>) up to E2E_ATTEMPTS times while it
@@ -310,12 +311,26 @@ harness_init() {
 
   # Preflight: fixture files present.
   local missing=0 f
-  for f in "$ID_DEPLOYER" "$ID_COLLAB" "$ID_CONTRIB"; do
+  for f in "$ID_OWNER" "$ID_COLLAB" "$ID_CONTRIB"; do
     [[ -f "$f" ]] || { log "${C_RED}missing identity:${C_RST} $f"; missing=1; }
   done
   [[ $missing -eq 0 ]] || { log "identity fixtures missing under ${E2E_IDENTITY_DIR}"; exit 1; }
 
-  info "run-id: ${RUN_ID}   workroot: ${WORKROOT}"
+  info "run-id: ${RUN_ID}   workroot: ${WORKROOT}   network: ${DASH_FORGE_NETWORK}-${DASH_FORGE_DEVNET_NAME:-}"
+}
+
+# Create the forge-v2 repo <name> under OWNER unless it exists. Idempotent and resumable:
+# `dg repo create` finishes an interrupted create without paying twice, and re-running a
+# finished one writes nothing. Leaves its --json output at ${WORKROOT}/create-<name>.json.
+harness_ensure_repo() { # harness_ensure_repo <name>
+  local name="$1" out="${WORKROOT}/create-$1"
+  if _retry "${out}.err" _dg_read "$ID_OWNER" "${out}.json" "${out}.err" --yes --json repo create "$name" \
+      --description "Dash Forge CLI e2e fixture (reserved; see e2e/README.md)"; then
+    info "repo ${name}: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["status"], d["cost"]["dash"], "DASH")' "${out}.json" 2>/dev/null)"
+    return 0
+  fi
+  cat "${out}.err" >&2
+  return 1
 }
 
 # --- scenario finish ---------------------------------------------------------

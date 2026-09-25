@@ -12,9 +12,13 @@
 #   * no browse index is published (DASH_FORGE_NO_BROWSE_INDEX), so the web app takes the
 #     in-browser fallback clone, which fallback-browse.spec.ts exercises.
 #
-# The repo is created (repo-v1, ~1.18 tDASH, once) only if absent. Exit 0 = seeded or
-# already seeded; 1 = could not seed.
+# The fixture is a forge-v1 repo on TESTNET. v1 is read only now: the script verifies the
+# fixture and fails (it cannot reseed) when it is wrong; the fixture moves to forge-v2 with
+# the web app. Exit 0 = the fixture is as expected; 1 = it is not, or could not be read.
 SCENARIO_NAME="seed the nightly read fixture (${NIGHTLY_FIXTURE_REPO:-m1-5124})"
+# The fixture lives on testnet with the testnet pool, whatever the CLI suite targets.
+export DASH_FORGE_NETWORK=testnet DASH_FORGE_DEVNET_NAME= E2E_OWNER_ROLE=DEPLOYER
+export E2E_IDENTITY_DIR="${E2E_TESTNET_IDENTITY_DIR:-${HOME}/.config/dash-forge/test-identities}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 harness_init
 
@@ -26,13 +30,6 @@ LOG="${WORKROOT}/fixture"
 step "fixture repo ${FIX_REPO}"
 if dg_read_retry "$ID_DEPLOYER" "$LOG-view.json" "$LOG-view.err" --json repo view "$FIX_REPO"; then
   info "reusing ${FIX_REPO}"
-elif grep -qiE 'not found|no such|does not exist|unknown repo' "$LOG-view.err"; then
-  info "creating ${FIX_REPO} (one-time, ~1.18 tDASH)"
-  dg_as "$ID_DEPLOYER" --yes --json repo create "$NIGHTLY_FIXTURE_REPO" \
-    --description "Dash Forge nightly read fixture (reserved; see e2e/README.md)" \
-    >"$LOG-create.out" 2>"$LOG-create.err" || {
-    cat "$LOG-create.err" >&2; bad "could not create ${FIX_REPO}"; finish_scenario
-  }
 else
   cat "$LOG-view.err" >&2; bad "could not read ${FIX_REPO}"; finish_scenario
 fi
@@ -91,7 +88,7 @@ if [[ "$HAVE" == "$WANT" ]]; then
   fi
   finish_scenario
 fi
-info "main is ${HAVE:-absent}; force-pushing the fixture commit"
+info "main is ${HAVE:-absent}; force-pushing the fixture commit (fails: v1 is read only)"
 
 step "push the fixture (Platform storage only, no browse index)"
 # `-c` is git's command scope, which the helper ranks above any global or repo setting, so

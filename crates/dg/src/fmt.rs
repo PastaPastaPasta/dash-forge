@@ -13,10 +13,10 @@ use serde_json::{json, Value};
 /// Override with the `DASH_USD` environment variable.
 pub const FALLBACK_DASH_USD: f64 = 30.0;
 
-/// The measured repo-v1 instantiation cost, in credits, used for the *pre-write* estimate
-/// shown before `dg repo create` signs (the economics docs reconcile ~1.18 DASH). The
-/// actual measured cost is reported after the create lands.
-pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 118_000_000_000;
+/// The pre-write estimate shown before `dg repo create` signs, in credits: a forge-v2
+/// repo is three small documents (`repo`, the owner's `maintainer`, the first `config`).
+/// An upper bound; the measured cost is reported after the create lands.
+pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 200_000_000;
 
 /// The DASH/USD price to use: `DASH_USD` env override, else the offline fallback.
 pub fn dash_usd_price() -> f64 {
@@ -51,14 +51,6 @@ pub fn cost_line(credits: u64, price_usd: f64) -> String {
     let dash = credits_to_dash(credits);
     let usd = dash * price_usd;
     format!("~{} DASH ≈ ${:.2}", dash_amount(dash), usd)
-}
-
-/// A refund display (destructive-delete estimate; green in the UI), e.g.
-/// `+0.0003 DASH ≈ $0.01 refund`.
-pub fn refund_line(credits: u64, price_usd: f64) -> String {
-    let dash = credits_to_dash(credits);
-    let usd = dash * price_usd;
-    format!("+{} DASH ≈ ${:.2} refund", dash_amount(dash), usd)
 }
 
 /// The `--json` block for a cost quote (shared by `cost estimate` and the write previews).
@@ -104,16 +96,11 @@ mod tests {
     #[test]
     fn cost_line_shows_dash_primary_usd_secondary() {
         // 1 MiB storage deposit ≈ 0.283 DASH.
-        let line = cost_line(REPO_CREATE_ESTIMATE_CREDITS, 30.0);
+        let line = cost_line(118_000_000_000, 30.0);
         assert!(line.starts_with("~1.18 DASH"), "line was {line}");
         assert!(line.contains("$35.40"), "line was {line}");
-    }
-
-    #[test]
-    fn refund_line_is_positive_and_labeled() {
-        let line = refund_line(27_000_000, 30.0);
-        assert!(line.starts_with('+'));
-        assert!(line.ends_with("refund"));
+        // A forge-v2 repo create is quoted well under a cent of a DASH.
+        const { assert!(REPO_CREATE_ESTIMATE_CREDITS < forge_core::cost::CREDITS_PER_DASH / 100) };
     }
 
     #[test]

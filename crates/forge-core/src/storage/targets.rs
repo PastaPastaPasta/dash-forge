@@ -37,6 +37,51 @@ pub struct Replica {
     pub platform: bool,
 }
 
+/// What a manifest's `uris` field can hold. v1 stores the list as one JSON string of at
+/// most `max_json_len` bytes; v2 stores a typed array of at most `max_items` strings of at
+/// most `max_item_len` bytes each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UriBudget {
+    /// The JSON-encoded length limit (v1), if any.
+    pub max_json_len: Option<usize>,
+    /// The item-count limit (v2), if any.
+    pub max_items: Option<usize>,
+    /// The per-item length limit (v2), if any.
+    pub max_item_len: Option<usize>,
+}
+
+impl UriBudget {
+    /// A v1 JSON-string field of `max_json_len` bytes.
+    pub const fn json(max_json_len: usize) -> Self {
+        Self {
+            max_json_len: Some(max_json_len),
+            max_items: None,
+            max_item_len: None,
+        }
+    }
+
+    /// A v2 typed string array.
+    pub const fn array(max_items: usize, max_item_len: usize) -> Self {
+        Self {
+            max_json_len: None,
+            max_items: Some(max_items),
+            max_item_len: Some(max_item_len),
+        }
+    }
+
+    /// Whether `uris` fits.
+    pub fn fits(&self, uris: &[String]) -> bool {
+        let json_ok = self
+            .max_json_len
+            .is_none_or(|max| serde_json::to_string(uris).map_or(usize::MAX, |s| s.len()) <= max);
+        let count_ok = self.max_items.is_none_or(|max| uris.len() <= max);
+        let items_ok = self
+            .max_item_len
+            .is_none_or(|max| uris.iter().all(|u| u.len() <= max));
+        json_ok && count_ok && items_ok
+    }
+}
+
 /// A target that did not confirm, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetFailure {
@@ -87,13 +132,11 @@ impl Replication {
         groups.concat()
     }
 
-    /// The URI list as the manifest's `uris` JSON, trimmed to fit `max_json_len`: private
-    /// `s3://` locators are dropped first (readers without that profile cannot use them),
-    /// then an error — never a silently truncated or empty list.
-    pub fn manifest_uris(&self, max_json_len: usize) -> Result<Vec<String>> {
-        let fits = |v: &Vec<String>| {
-            serde_json::to_string(v).map_or(usize::MAX, |s| s.len()) <= max_json_len
-        };
+    /// The URI list for a manifest's `uris`, trimmed to fit `budget`: private `s3://`
+    /// locators are dropped first (readers without that profile cannot use them), then an
+    /// error — never a silently truncated or empty list.
+    pub fn manifest_uris(&self, budget: UriBudget) -> Result<Vec<String>> {
+        let fits = |v: &Vec<String>| budget.fits(v);
         let mut uris = self.uris();
         if uris.is_empty() {
             return Err(Error::Config(
@@ -108,10 +151,11 @@ impl Replication {
         if fits(&uris) && !uris.is_empty() {
             return Ok(uris);
         }
-        Err(Error::Config(format!(
-            "the confirmed copies' URIs do not fit the manifest's {max_json_len}-byte uris field; \
-             use shorter public URLs or fewer targets"
-        )))
+        Err(Error::Config(
+            "the confirmed copies' URIs do not fit the manifest's uris field; use shorter \
+             public URLs or fewer targets"
+                .into(),
+        ))
     }
 }
 
@@ -516,7 +560,7 @@ pub(crate) mod tests {
             }],
             failures: vec![],
         };
-        assert!(rep.manifest_uris(2600).is_err());
+        assert!(rep.manifest_uris(UriBudget::json(2600)).is_err());
     }
 
     #[tokio::test]
@@ -605,11 +649,19 @@ pub(crate) mod tests {
             }],
             failures: vec![],
         };
-        assert_eq!(rep.manifest_uris(2600).unwrap().len(), 2);
-        let trimmed = rep.manifest_uris(60).unwrap();
+        assert_eq!(rep.manifest_uris(UriBudget::json(2600)).unwrap().len(), 2);
+        let trimmed = rep.manifest_uris(UriBudget::json(60)).unwrap();
         assert_eq!(trimmed.len(), 1);
         assert!(trimmed[0].starts_with("https://"));
-        assert!(rep.manifest_uris(10).is_err());
+        assert!(rep.manifest_uris(UriBudget::json(10)).is_err());
+        // v2: a typed array bounded per item and in count.
+        assert_eq!(
+            rep.manifest_uris(UriBudget::array(8, 300)).unwrap().len(),
+            2
+        );
+        let trimmed = rep.manifest_uris(UriBudget::array(1, 300)).unwrap();
+        assert!(trimmed[0].starts_with("https://"));
+        assert!(rep.manifest_uris(UriBudget::array(8, 10)).is_err());
     }
 
     /// An in-memory backend whose reads can be made to lie (`lie`), or whose first stored

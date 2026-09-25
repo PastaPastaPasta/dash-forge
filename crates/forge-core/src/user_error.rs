@@ -89,6 +89,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::SUSPENDED, "write access suspended"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
+    (codes::READ_ONLY, "v1 repository is read only"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -153,6 +154,8 @@ pub mod codes {
     pub const ALREADY_EXISTS: &str = "E603";
     /// Any other consensus rejection.
     pub const REJECTED: &str = "E604";
+    /// A write to a forge-v1 repository, which is read only.
+    pub const READ_ONLY: &str = "E605";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.
@@ -530,6 +533,23 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             ),
         ),
         CoreError::TokenFrozen => suspended(ctx, &format!("40702 {core}")),
+        CoreError::NotAMember(detail) => not_a_writer(ctx, detail),
+        CoreError::V1ReadOnly { repo } => UserError::new(
+            codes::READ_ONLY,
+            ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
+        )
+        .cause("forge-v1 repositories (one contract each) can still be cloned and viewed, but no longer written")
+        .fix("create a forge-v2 repository (`dg repo create <name>`) and push there")
+        .note("`dg migrate` (moving a v1 repo to forge-v2) is coming soon"),
+        CoreError::V2NotDeployed { network } => UserError::new(
+            codes::NOT_DEPLOYED,
+            ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),
+        )
+        .cause(format!(
+            "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
+        ))
+        .fix("use a network where it is: `--network devnet --devnet-name moutai`")
+        .note("existing v1 repositories on this network stay readable"),
         CoreError::Unauthorized => not_a_writer(ctx, &format!("40700/40701 {core}")),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
         CoreError::IncompleteRead {

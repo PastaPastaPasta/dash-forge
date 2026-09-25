@@ -6,6 +6,7 @@
 SCENARIO_NAME="01 round-trip (⭐)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+[[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 BR="e2e/${RUN_ID}/roundtrip"
 TAG="e2e-${RUN_ID}-rt"

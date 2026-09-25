@@ -113,7 +113,7 @@ pub enum Command {
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
-    /// Repack and reclaim storage (delete superseded docs → refund).
+    /// Consolidate a repo's packs into one superseding pack (deletes nothing on Platform).
     Repack {
         /// The repository (`owner/name`).
         repo: Option<String>,
@@ -187,16 +187,22 @@ pub enum AuthCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// Instantiate a repo contract, listing and token setup.
+    /// Create a forge-v2 repository (repo + your maintainer membership + initial config).
     Create {
-        /// Repository name.
+        /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case is folded).
         name: String,
         /// Storage backend policy.
         #[arg(long, value_enum, default_value = "platform")]
         storage: StorageArg,
-        /// Listing description.
+        /// Description.
         #[arg(long, default_value = "")]
         description: String,
+        /// Display name (defaults to none; the slug is shown).
+        #[arg(long, default_value = "")]
+        display_name: String,
+        /// Default branch.
+        #[arg(long, default_value = "main")]
+        default_branch: String,
     },
     /// Print the `git clone` command for a repo (`owner/name`).
     Clone {
@@ -218,11 +224,6 @@ pub enum RepoCommand {
         /// The owner identity id (base58); defaults to the signing identity.
         #[arg(long)]
         owner: Option<String>,
-    },
-    /// Delete a repo's deletable storage (chunks + manifests → refund).
-    Delete {
-        /// The repository (`owner/name`), or just `name` for the signing identity.
-        repo: String,
     },
     /// Backend configuration.
     #[command(subcommand)]
@@ -433,47 +434,49 @@ pub enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Grant access (mint a WRITE/MAINTAIN token).
+    /// Add a member (the repo owner creates a writer/maintainer document).
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to grant.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Suspend a collaborator (freeze tokens).
+    /// Not supported on forge-v2 (remove revokes access immediately).
+    #[command(hide = true)]
     Suspend {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to suspend.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Unsuspend a collaborator (thaw frozen tokens).
+    /// Not supported on forge-v2 (add restores access).
+    #[command(hide = true)]
     Unsuspend {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to unsuspend.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Remove a collaborator (freeze + destroy).
+    /// Remove a member (the owner deletes their document; their next push is refused).
     Remove {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to revoke.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// List collaborators (token-balance query).
+    /// List members.
     List {
         /// The repository (`owner/name`).
         repo: String,
@@ -713,19 +716,23 @@ impl VerdictArg {
     }
 }
 
-/// A collaborator role.
+/// A member role.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RoleArg {
-    Write,
-    Maintain,
+    /// Push, upload (a `writer` document).
+    #[value(alias = "write")]
+    Writer,
+    /// Also protected refs, config, releases (a `maintainer` document).
+    #[value(alias = "maintain")]
+    Maintainer,
 }
 
 impl RoleArg {
-    /// The forge-core role.
-    pub fn to_core(self) -> forge_core::tokens::Role {
+    /// The forge-v2 role.
+    pub fn to_core(self) -> forge_core::rules::v2::Role {
         match self {
-            RoleArg::Write => forge_core::tokens::Role::Write,
-            RoleArg::Maintain => forge_core::tokens::Role::Maintain,
+            RoleArg::Writer => forge_core::rules::v2::Role::Writer,
+            RoleArg::Maintainer => forge_core::rules::v2::Role::Maintainer,
         }
     }
 }
@@ -924,6 +931,7 @@ mod tests {
                 name,
                 storage,
                 description,
+                ..
             }) => {
                 assert_eq!(name, "my-repo");
                 assert_eq!(storage.mode(), 4);
@@ -959,7 +967,7 @@ mod tests {
             Command::Collab(CollabCommand::Add { repo, member, role }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
-                assert!(matches!(role, RoleArg::Maintain));
+                assert!(matches!(role, RoleArg::Maintainer));
             }
             _ => panic!("expected collab add"),
         }
@@ -972,7 +980,7 @@ mod tests {
             Command::Collab(CollabCommand::Unsuspend { repo, member, role }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
-                assert!(matches!(role, RoleArg::Write)); // default role
+                assert!(matches!(role, RoleArg::Writer)); // default role
             }
             _ => panic!("expected collab unsuspend"),
         }

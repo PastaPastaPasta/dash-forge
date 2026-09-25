@@ -41,20 +41,17 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
-use dash_sdk::dpp::identity::{KeyType, PartialIdentity, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::serialization::{PlatformDeserializableUntrusted, PlatformSerializable};
 use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBatchTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
-use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::DataContractCreateTransitionMethodsV0;
-use dash_sdk::dpp::state_transition::data_contract_create_transition::DataContractCreateTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::calculate_token_id;
@@ -67,10 +64,6 @@ use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOp
 use dash_sdk::platform::contract_groups::ContractGroupMembershipsForContract;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::tokens::builders::destroy::TokenDestroyFrozenFundsTransitionBuilder;
-use dash_sdk::platform::tokens::builders::freeze::TokenFreezeTransitionBuilder;
-use dash_sdk::platform::tokens::builders::mint::TokenMintTransitionBuilder;
-use dash_sdk::platform::tokens::builders::unfreeze::TokenUnfreezeTransitionBuilder;
 use dash_sdk::platform::tokens::identity_token_balances::IdentitiesTokenBalancesQuery;
 use dash_sdk::platform::tokens::token_info::IdentitiesTokenInfosQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
@@ -395,25 +388,6 @@ impl PlatformClient {
         Ok(self.fetch_identity(identity_id).await?.balance())
     }
 
-    /// The identity's current nonce (the value contract-create id derivation uses),
-    /// fetched without bumping — for diagnostics / orphan-contract recovery.
-    pub async fn identity_nonce(&self, identity_id: &str) -> Result<u64> {
-        let id = parse_id(identity_id, "identity id")?;
-        self.sdk
-            .get_identity_nonce(id, false, None)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching identity nonce: {e}")))
-    }
-
-    /// Derive the deterministic contract id `hash(ownerId || nonce)` for a given owner +
-    /// identity nonce — the same id [`PlatformClient::contract_create`] produces, exposed
-    /// so a create whose follow-on writes failed can locate its (already paid-for) orphan
-    /// contract without re-creating it.
-    pub fn derive_contract_id(&self, owner_id: &str, nonce: u64) -> Result<String> {
-        let owner = parse_id(owner_id, "owner id")?;
-        Ok(DataContract::generate_data_contract_id_v0(owner, nonce).to_string(Encoding::Base58))
-    }
-
     /// The identity-contract nonce, DIP-30 masked to the low 40 bits.
     ///
     /// This reads the *current* nonce (no bump) for reporting/diagnostics; the write
@@ -442,6 +416,20 @@ impl PlatformClient {
         document_type: &str,
         document_id: &str,
     ) -> Result<bool> {
+        Ok(self
+            .fetch_document(contract, document_type, document_id)
+            .await?
+            .is_some())
+    }
+
+    /// The document of `document_type` with base58 `document_id` in `contract`, or `None`
+    /// when it provably does not exist (proof-verified single-document fetch).
+    pub async fn fetch_document(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+    ) -> Result<Option<FetchedDocument>> {
         let doc_id = parse_id(document_id, "document id")?;
         let query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
@@ -451,7 +439,7 @@ impl PlatformClient {
         })
         .await
         .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
-        Ok(found.is_some())
+        Ok(found.as_ref().map(FetchedDocument::from_document))
     }
 
     /// Query **one page** of `document_type` in `contract`, applying `filters` (AND-ed
@@ -620,275 +608,18 @@ impl PlatformClient {
         Ok(documents)
     }
 
-    /// Create a data contract (WITH tokens) from a JSON template, signing with `key`
-    /// (must be a **CRITICAL** AUTHENTICATION key — token-bearing contracts are rejected
-    /// for HIGH, spike S0.7).
-    ///
-    /// The contract id is derived from `owner` + a freshly bumped identity nonce
-    /// (`hash(ownerId || nonce)`); the same nonce is baked into the create transition, so
-    /// the id is deterministic and known before broadcast. `template` must contain
-    /// `documentSchemas` and (optionally) `tokens` / `keywords` / `description`; any `id`,
-    /// `ownerId` or `version` in it are ignored and re-synthesized here.
-    ///
-    /// ## Native rs-dpp accepts tokens from JSON
-    ///
-    /// Unlike the wasm `DataContract` constructor (which needs `TokenConfiguration`
-    /// instances and drove the S0.7 `DataContract.fromJSON` workaround), native
-    /// [`DataContract::from_json`] deserializes a plain-JSON `tokens` map directly — the
-    /// full repo-v1 template (2 tokens + 15 doc types) round-trips with no per-token
-    /// object construction.
-    ///
-    /// Returns `(contractId, cost_credits)` where `cost_credits` is the identity balance
-    /// delta across the broadcast (the measured DataContractCreate cost).
-    pub async fn contract_create(
-        &self,
-        template: &serde_json::Value,
-        owner: &LoadedIdentity,
-        key: &IdentityKey,
-    ) -> Result<(String, u64)> {
-        let signer = signer_from_key(key)?;
-        // Token-bearing contract create requires a CRITICAL auth key (S0.7).
-        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
-        let owner_id = owner.0.id();
-
-        // One nonce fetch, bumped, reused for both id-derivation and the transition —
-        // `new_from_data_contract` re-derives the id from (owner, nonce) internally, so
-        // any double-bump would desync the id from the signed nonce.
-        let nonce = self
-            .sdk
-            .get_identity_nonce(owner_id, true, None)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching identity nonce: {e}")))?;
-        let contract_id = DataContract::generate_data_contract_id_v0(owner_id, nonce);
-
-        let schemas = template
-            .get("documentSchemas")
-            .ok_or_else(|| Error::Config("contract template missing 'documentSchemas'".into()))?;
-        let mut full = serde_json::json!({
-            "$formatVersion": "1",
-            "id": contract_id.to_string(Encoding::Base58),
-            "ownerId": owner_id.to_string(Encoding::Base58),
-            "version": 1,
-            "documentSchemas": schemas,
-        });
-        let obj = full.as_object_mut().expect("json object");
-        for k in ["tokens", "keywords", "description", "groups"] {
-            if let Some(v) = template.get(k) {
-                obj.insert(k.to_string(), v.clone());
-            }
-        }
-
-        let contract = DataContract::from_json(full, true, self.sdk.version())
-            .map_err(|e| Error::Platform(format!("deserializing data contract JSON: {e}")))?;
-
-        let key_id = signing_key.id();
-        let partial_identity = PartialIdentity {
-            id: owner_id,
-            loaded_public_keys: BTreeMap::from([(key_id, signing_key)]),
-            balance: None,
-            revision: None,
-            not_found_public_keys: std::collections::BTreeSet::new(),
-        };
-
-        let state_transition = DataContractCreateTransition::new_from_data_contract(
-            contract,
-            nonce,
-            &partial_identity,
-            key_id,
-            &signer,
-            self.sdk.version(),
-            None,
-        )
-        .await
-        .map_err(|e| Error::Platform(format!("signing contract-create transition: {e}")))?;
-
-        let balance_before = owner.balance();
-        // The contract id is deterministic (`hash(ownerId || nonce)`) and the nonce is
-        // baked into the signed transition, so a broadcast that errors *ambiguously* — a
-        // transient reset that makes the SDK re-broadcast and hit its own cached tx
-        // ("AlreadyExists"), a wait timeout after the tx landed — has NOT necessarily
-        // failed. Retrying with a fresh nonce would mint (and pay ~1 DASH for) a SECOND
-        // contract, orphaning the first. So on any broadcast error, verify by fetching the
-        // derived id before surfacing an error: if the contract landed, this is success.
-        match state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(&self.sdk, None)
-            .await
-        {
-            Ok(result) => {
-                // Register the freshly created contract with the context provider so
-                // subsequent proof-verified writes/reads against it resolve (see field
-                // docs on `context_provider`).
-                if let StateTransitionProofResult::VerifiedDataContract(created) = &result {
-                    self.context_provider.add_known_contract(created.clone());
-                }
-            }
-            Err(e) => match DataContract::fetch(&self.sdk, contract_id).await {
-                Ok(Some(existing)) => {
-                    // The create actually landed — idempotent success, not a double-pay.
-                    self.context_provider.add_known_contract(existing);
-                    tracing::warn!(
-                        error = %e,
-                        contract_id = %contract_id.to_string(Encoding::Base58),
-                        "contract-create broadcast errored but the contract is on-chain; treating as success (idempotent — no second create)"
-                    );
-                }
-                _ => {
-                    return Err(Error::Platform(format!(
-                        "broadcasting contract create: {e}"
-                    )))
-                }
-            },
-        }
-
-        let balance_after = self
-            .fetch_identity(&owner_id.to_string(Encoding::Base58))
-            .await?
-            .balance();
-        let cost = balance_before.saturating_sub(balance_after);
-
-        Ok((contract_id.to_string(Encoding::Base58), cost))
-    }
-
-    // === Token administration (collaborator ACL) =========================
+    // === Token reads (the v1 collaborator ACL, read-only) ==================
     //
-    // Token mint/freeze/unfreeze/destroy are the on-chain ACL: minting the WRITE
-    // (position 0) or MAINTAIN (position 1) token to an identity grants it, freezing
-    // suspends it (a frozen identity cannot spend the token → every gated create/delete
-    // fails at consensus, S0.7), and destroying the frozen balance revokes it.
-    //
-    // All four require a **CRITICAL** AUTHENTICATION key (S0.7: HIGH is rejected for
-    // token admin). They are signed by the token authority — for a solo-owner repo the
-    // `ContractOwner`, i.e. the repo owner identity, which holds the mint/freeze/destroy
-    // authority via the solo-owner token rules.
-    //
-    // The **keepsHistory mint() return-value bug** (S0.7): on a history-keeping token the
-    // wasm SDK's result parser throws `'platformVersion' string value ''` *after* the
-    // transition already landed at consensus. The native rs-sdk `token_*` helpers here
-    // parse the `VerifiedTokenActionWithDocument` proof correctly, so the bug does not
-    // fire — but [`finish_token_op`] still treats that exact string as "landed; verify via
-    // query" defensively, and the [`crate::tokens`] service always re-reads the balance /
-    // frozen status after every op rather than trusting the return value.
+    // forge-v1 repositories granted access with two tokens per repo contract (WRITE at
+    // position 0, MAINTAIN at position 1). v1 is read-only now: these reads remain so a v1
+    // repo's collaborators and token history still render, but nothing mints, freezes or
+    // destroys any more. forge-v2 membership is documents (`crate::members`).
 
     /// The base58 token id for `position` (0 = WRITE, 1 = MAINTAIN) of `contract`,
     /// derived as `hash("dash_token" || contractId || position)` (rs-dpp `calculate_token_id`).
     pub fn token_id(&self, contract: &LoadedContract, position: u16) -> String {
         let raw = calculate_token_id(&contract.0.id().to_buffer(), position);
         Identifier::from(raw).to_string(Encoding::Base58)
-    }
-
-    /// Mint `amount` of the token at `position` to `recipient` (base58) — a **grant**.
-    /// Signs with the owner's CRITICAL key. Verify success via a balance query (the mint
-    /// return value is not trusted — see the module note).
-    pub async fn token_mint(
-        &self,
-        contract: &LoadedContract,
-        owner: &LoadedIdentity,
-        key: &IdentityKey,
-        position: u16,
-        amount: u64,
-        recipient: &str,
-    ) -> Result<()> {
-        let signer = signer_from_key(key)?;
-        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
-        let recipient_id = parse_id(recipient, "recipient id")?;
-        let builder = TokenMintTransitionBuilder::new(
-            Arc::clone(&contract.0),
-            position,
-            owner.0.id(),
-            amount,
-        )
-        .issued_to_identity_id(recipient_id)
-        .with_public_note("dash-forge grant".to_string());
-        let outcome = self
-            .sdk
-            .token_mint(builder, &signing_key, &signer)
-            .await
-            .map(|_| ());
-        finish_token_op("mint", outcome)
-    }
-
-    /// Freeze the token at `position` for `target` (base58) — a **suspend**. A frozen
-    /// identity keeps its balance but cannot spend it, so every gated action fails.
-    pub async fn token_freeze(
-        &self,
-        contract: &LoadedContract,
-        owner: &LoadedIdentity,
-        key: &IdentityKey,
-        position: u16,
-        target: &str,
-    ) -> Result<()> {
-        let signer = signer_from_key(key)?;
-        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
-        let target_id = parse_id(target, "target id")?;
-        let builder = TokenFreezeTransitionBuilder::new(
-            Arc::clone(&contract.0),
-            position,
-            owner.0.id(),
-            target_id,
-        )
-        .with_public_note("dash-forge suspend".to_string());
-        let outcome = self
-            .sdk
-            .token_freeze(builder, &signing_key, &signer)
-            .await
-            .map(|_| ());
-        finish_token_op("freeze", outcome)
-    }
-
-    /// Unfreeze the token at `position` for `target` (base58) — lift a suspension.
-    pub async fn token_unfreeze(
-        &self,
-        contract: &LoadedContract,
-        owner: &LoadedIdentity,
-        key: &IdentityKey,
-        position: u16,
-        target: &str,
-    ) -> Result<()> {
-        let signer = signer_from_key(key)?;
-        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
-        let target_id = parse_id(target, "target id")?;
-        let builder = TokenUnfreezeTransitionBuilder::new(
-            Arc::clone(&contract.0),
-            position,
-            owner.0.id(),
-            target_id,
-        )
-        .with_public_note("dash-forge unsuspend".to_string());
-        let outcome = self
-            .sdk
-            .token_unfreeze_identity(builder, &signing_key, &signer)
-            .await
-            .map(|_| ());
-        finish_token_op("unfreeze", outcome)
-    }
-
-    /// Destroy the **frozen** balance of the token at `position` held by `target` (base58)
-    /// — a **revoke**. The identity must already be frozen; its balance is zeroed and
-    /// removed from supply, so it is no longer an on-chain collaborator.
-    pub async fn token_destroy_frozen(
-        &self,
-        contract: &LoadedContract,
-        owner: &LoadedIdentity,
-        key: &IdentityKey,
-        position: u16,
-        target: &str,
-    ) -> Result<()> {
-        let signer = signer_from_key(key)?;
-        let signing_key = select_key_at_level(&owner.0, &signer, SecurityLevel::CRITICAL)?;
-        let target_id = parse_id(target, "target id")?;
-        let builder = TokenDestroyFrozenFundsTransitionBuilder::new(
-            Arc::clone(&contract.0),
-            position,
-            owner.0.id(),
-            target_id,
-        )
-        .with_public_note("dash-forge revoke".to_string());
-        let outcome = self
-            .sdk
-            .token_destroy_frozen_funds(builder, &signing_key, &signer)
-            .await
-            .map(|_| ());
-        finish_token_op("destroy_frozen", outcome)
     }
 
     /// The token balances (`identity → amount`, absent = 0) of `token_id_b58` across
@@ -1129,6 +860,12 @@ impl FetchedDocument {
     /// The raw bytes of a `byteArray` / identifier field, if present and byte-shaped.
     pub fn field_bytes(&self, name: &str) -> Option<Vec<u8>> {
         self.fields.get(name).and_then(FieldValue::as_bytes)
+    }
+
+    /// A 32-byte field (an identifier or a hash), if present and exactly 32 bytes.
+    pub fn field_bytes32(&self, name: &str) -> Option<[u8; 32]> {
+        self.field_bytes(name)
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
     }
 
     /// A `byteArray` field as lowercase hex (the form `crate::rules` oids/hashes use).
@@ -1533,26 +1270,58 @@ impl<'a> WriteEngine<'a> {
         document_type: &str,
         properties: BTreeMap<String, FieldValue>,
     ) -> Result<PreparedWrite> {
+        self.create_journaled(contract, document_type, properties, |_| Ok(()))
+            .await
+    }
+
+    /// A create whose signed bytes are handed to `persist` BEFORE the first broadcast, so a
+    /// caller that dies mid-broadcast can later [`Self::replay`] the identical transition
+    /// instead of signing a second, different write (the resumable repo-create session).
+    ///
+    /// A refusal for a stale protocol version (nothing landed) re-prepares once, persisting
+    /// the replacement before broadcasting it, as [`Self::create_landed`] does.
+    pub async fn create_journaled(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
+    ) -> Result<PreparedWrite> {
         let prepared = self
             .prepare_create(contract, document_type, properties.clone())
             .await?;
+        persist(&prepared)?;
         match self.execute(&prepared).await {
             Ok(_) => Ok(prepared),
             Err(Error::StaleProtocolVersion(reason)) => {
                 let version = self.client.refresh_protocol_version().await?;
-                tracing::warn!(
-                    %reason,
-                    version,
-                    "document id was derived at a stale protocol version; re-preparing once"
-                );
+                tracing::warn!(%reason, version, "stale protocol version; re-preparing once");
                 let prepared = self
                     .prepare_create(contract, document_type, properties)
                     .await?;
+                persist(&prepared)?;
                 self.execute(&prepared).await?;
                 Ok(prepared)
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Re-broadcast a write captured earlier by [`Self::create_journaled`]. The identical
+    /// signed bytes land at most once: a transition that already landed reports
+    /// [`BroadcastOutcome::AlreadyExists`].
+    pub async fn replay(
+        &self,
+        document_type: &str,
+        intent: &WriteIntent,
+    ) -> Result<BroadcastOutcome> {
+        self.execute(&PreparedWrite {
+            document_id: intent.document_id.clone(),
+            document_type: document_type.to_string(),
+            op: intent.operation,
+            signed: intent.transition.clone(),
+        })
+        .await
     }
 
     /// Convenience: prepare + execute a document delete.
@@ -1601,6 +1370,9 @@ pub enum FieldValue {
     Bool(bool),
     /// A nested object field (e.g. `config.backend`), keyed by property name.
     Object(BTreeMap<String, FieldValue>),
+    /// A typed array of non-byte items (forge-v2 `uris`, `protectedPatterns`, `topics`:
+    /// arrays of strings). Byte arrays stay [`FieldValue::Bytes`].
+    List(Vec<FieldValue>),
 }
 
 impl FieldValue {
@@ -1657,6 +1429,29 @@ impl FieldValue {
         }
     }
 
+    /// A string list: the items of a [`FieldValue::List`] of `Text`. An empty array reads
+    /// back as empty bytes (the item type is not on the wire), so that is an empty list too.
+    pub fn as_text_list(&self) -> Option<Vec<String>> {
+        match self {
+            FieldValue::List(items) => items
+                .iter()
+                .map(|i| i.as_str().map(str::to_string))
+                .collect(),
+            FieldValue::Bytes(b) if b.is_empty() => Some(Vec::new()),
+            _ => None,
+        }
+    }
+
+    /// A typed string-array field.
+    pub fn text_list<S: Into<String>>(items: impl IntoIterator<Item = S>) -> Self {
+        FieldValue::List(
+            items
+                .into_iter()
+                .map(|s| FieldValue::Text(s.into()))
+                .collect(),
+        )
+    }
+
     /// The string of a `Text` field, if this is one.
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -1688,6 +1483,9 @@ impl FieldValue {
                     .map(|(k, v)| (Value::Text(k), v.into_value()))
                     .collect(),
             ),
+            FieldValue::List(items) => {
+                Value::Array(items.into_iter().map(FieldValue::into_value).collect())
+            }
         }
     }
 
@@ -1711,17 +1509,25 @@ impl FieldValue {
             Value::I32(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
             Value::U16(n) => FieldValue::Integer(u64::from(*n)),
             Value::U8(n) => FieldValue::Integer(u64::from(*n)),
-            Value::Array(items) => {
-                // A byteArray that came back as an array of U8 → repack to bytes.
-                let mut bytes = Vec::with_capacity(items.len());
-                for item in items {
-                    match item {
-                        Value::U8(b) => bytes.push(*b),
-                        _ => return None,
-                    }
-                }
-                FieldValue::Bytes(bytes)
+            // A byteArray that came back as an array of U8 → repack to bytes. Anything else
+            // is a typed array (forge-v2 string lists).
+            Value::Array(items) if items.iter().all(|i| matches!(i, Value::U8(_))) => {
+                FieldValue::Bytes(
+                    items
+                        .iter()
+                        .filter_map(|i| match i {
+                            Value::U8(b) => Some(*b),
+                            _ => None,
+                        })
+                        .collect(),
+                )
             }
+            Value::Array(items) => FieldValue::List(
+                items
+                    .iter()
+                    .map(FieldValue::from_value)
+                    .collect::<Option<Vec<_>>>()?,
+            ),
             Value::Map(entries) => {
                 let mut map = BTreeMap::new();
                 for (k, v) in entries {
@@ -1961,30 +1767,6 @@ fn token_payment_for(cost: Option<DocumentActionTokenCost>) -> Option<TokenPayme
     })
 }
 
-/// Select the identity's on-chain ECDSA_SECP256K1 AUTHENTICATION key at exactly
-/// `level` that the signer can sign with — used for token-bearing contract create,
-/// which requires CRITICAL (spike S0.7).
-fn select_key_at_level(
-    identity: &Identity,
-    signer: &SingleKeySigner,
-    level: SecurityLevel,
-) -> Result<IdentityPublicKey> {
-    for public_key in identity.public_keys().values() {
-        if public_key.is_disabled() || !signer.can_sign_with(public_key) {
-            continue;
-        }
-        if public_key.purpose() == Purpose::AUTHENTICATION
-            && public_key.key_type() == KeyType::ECDSA_SECP256K1
-            && public_key.security_level() == level
-        {
-            return Ok(public_key.clone());
-        }
-    }
-    Err(Error::Config(format!(
-        "no usable {level:?} AUTHENTICATION key on the identity matches the keystore key"
-    )))
-}
-
 /// Select the identity's on-chain AUTHENTICATION key that (a) the signer can sign with
 /// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
 /// levels document create/delete accept (spike S0.7).
@@ -2019,43 +1801,6 @@ enum WriteFailure {
     Retryable,
     /// A terminal failure surfaced as a crate error.
     Fatal(Error),
-}
-
-/// The exact wasm-SDK keepsHistory result-parse error (S0.7). Native rs-sdk parses the
-/// token-action proof correctly, so this should never fire on this path; matched as a
-/// defensive net so that, if it ever did, a transition that already landed at consensus
-/// is treated as success (the [`crate::tokens`] service re-verifies via query regardless).
-const TOKEN_HISTORY_PARSE_BUG: &str = "'platformVersion' string value ''";
-
-/// Finish a token admin op: map `Ok` to success, translate a frozen / unauthorized
-/// consensus rejection into the typed crate error, swallow the keepsHistory parse bug as
-/// "landed", and surface anything else as a platform error. Token ops are NOT blindly
-/// re-broadcast (a second mint would double-mint) — ambiguity is resolved by the caller's
-/// post-op query, not a retry.
-fn finish_token_op(label: &str, outcome: std::result::Result<(), dash_sdk::Error>) -> Result<()> {
-    match outcome {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            if e.to_string().contains(TOKEN_HISTORY_PARSE_BUG) {
-                tracing::warn!(
-                    op = label,
-                    error = %e,
-                    "token op landed at consensus; SDK result-parse hit the keepsHistory bug (verify via query)"
-                );
-                return Ok(());
-            }
-            if let Some(ConsensusError::StateError(state_error)) = consensus_error_of(&e) {
-                match state_error {
-                    StateError::IdentityTokenAccountFrozenError(_) => {
-                        return Err(Error::TokenFrozen)
-                    }
-                    StateError::UnauthorizedTokenActionError(_) => return Err(Error::Unauthorized),
-                    _ => {}
-                }
-            }
-            Err(Error::Platform(format!("token {label} failed: {e}")))
-        }
-    }
 }
 
 /// Pull the consensus error out of whichever SDK error variant carries it (a broadcast
@@ -2125,6 +1870,13 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             // 40701: not authorized for this token action.
             StateError::UnauthorizedTokenActionError(_) => {
                 return WriteFailure::Fatal(Error::Unauthorized)
+            }
+            // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
+            // membership document for the writer (forge-v2: never granted, or revoked).
+            StateError::ReferencedEntityNotFoundError(err) if err.path() == "$ownerId" => {
+                return WriteFailure::Fatal(Error::NotAMember(format!(
+                    "consensus refused {document_type} (40120: {err})"
+                )))
             }
             _ => {}
         }

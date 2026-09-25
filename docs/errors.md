@@ -170,13 +170,13 @@ Outside a push (collaborator admin, releases, repo config) the headline says you
 
 The helper checks this before building or paying for anything and refuses early with the same advice.
 
-Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> --role write`), or push to a repository of your own and open a pull request (`dg pr create`).
+Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> --role writer`), or push to a repository of your own.
 
 ## E602
 
-**Write access suspended.** Your WRITE or MAINTAIN token on this repository is frozen (consensus 40702): a maintainer suspended your access.
+**Write access suspended.** Your WRITE or MAINTAIN token on a v1 repository is frozen (consensus 40702). v1 repositories are read only now, so this only appears for a write attempted against one. forge-v2 has no suspend: removing a member revokes access at once (E601).
 
-Fix: ask a maintainer to run `dg collab unsuspend <owner>/<repo> <your identity id>`.
+Fix: push to a forge-v2 repository instead.
 
 ## E603
 
@@ -189,6 +189,12 @@ Fix: pick another name. Issue and PR numbers are retried automatically, so this 
 **Rejected by Platform.** Consensus refused the state transition for a reason not listed above. This includes 40120 on any path other than `$ownerId`: a document, contract or identity the write refers to does not exist (the headline names the path). The `cause:` line carries Platform's message, which names the rule.
 
 Fix: if the message does not explain it, [open an issue](https://github.com/PastaPastaPasta/dash-forge/issues) with it.
+
+## E605
+
+**v1 repository is read only.** The repository is a forge-v1 repository (one data contract per repo). v1 repositories can still be cloned, fetched and viewed, but nothing writes to them any more. The refusal happens before anything is signed.
+
+Fix: create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there. `dg migrate`, which moves a v1 repository to forge-v2, is coming soon.
 
 ## E701
 

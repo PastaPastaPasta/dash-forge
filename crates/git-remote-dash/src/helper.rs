@@ -2,11 +2,15 @@
 //! `list` / `fetch` / `push` operations against `forge-core`'s [`RepoService`].
 //!
 //! Data flow (architecture §6):
-//! - **list** → `resolve_repo` → `read_refs` (proof-verified, folded by `FORGE_RULES_V1`) →
-//!   `<oid> <ref>` lines + the `HEAD` symref from the repo's default branch.
-//! - **fetch** → collect `packManifest`s (kind 0) → `get_pack` each (SHA-256-verified) →
-//!   `git index-pack` into the local odb. A `--filter` partial clone re-packs the download
-//!   through a scratch repo and writes the `.promisor` marker (S0.9).
+//! - **resolve** → `dash://owner/name` is a forge-v2 `repo` (else a v1 registry listing,
+//!   read only); `dash://<id>` a v2 repo id or a v1 repo contract id
+//!   (`forge_core::resolve`).
+//! - **list** → `read_refs` (proof-verified, folded by the ref rules) → `<oid> <ref>` lines
+//!   + the `HEAD` symref from the repo's default branch.
+//! - **fetch** → every kind-0 pack's copies → the first copy that verifies, in the
+//!   `FORGE_RULES_V2` order (maintainers' copies first) → `git index-pack` into the local
+//!   odb. A `--filter` partial clone re-packs the download through a scratch repo and
+//!   writes the `.promisor` marker (S0.9).
 //! - **push** → fast-forward check vs remote refs → `build_pack` (thin + `--fix-thin` =
 //!   self-contained) → the repo's storage policy (`dash.storage` / `dash.replicas`, see
 //!   [`crate::policy`]) → cost guard → replicate the pack to every target in parallel,
@@ -14,25 +18,27 @@
 //!   `write_pack_manifest` (every confirmed URI + the SHA-256) → `write_ref_update`
 //!   (prevOid recorded; non-FF refused without `+`) → post-push ref re-read for a
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
-//!   met and the manifest has landed.
+//!   met and the manifest has landed. A v1 repository refuses every push (read only).
 
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
+use forge_core::members::MemberReader;
 use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{
-    PackManifestInput, PlatformChunkTarget, RepackTarget, RepoHandle, RepoService, StoredArtifact,
+    group_by_hash, PackManifestInput, PlatformChunkTarget, RepackTarget, RepoService,
+    StoredArtifact,
 };
-use forge_core::rules::{Holdings, RefState, TokenRecord};
+use forge_core::rules::RefState;
+use forge_core::scope::RepoRef;
 use forge_core::storage::{
     human_bytes, replicate, ExternalTarget, Observed, PackReader, Replica, Replication,
     StorageTarget, StoreOutcome,
 };
-use forge_core::tokens::TokenService;
 use forge_core::user_error::{codes, dash, UserError, NOTE_PLATFORM_CHUNKS_JOURNALED};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -89,7 +95,7 @@ struct Conn {
     client: PlatformClient,
     identity: LoadedIdentity,
     bridge: BridgeIdentity,
-    repo: RepoHandle,
+    repo: RepoRef,
 }
 
 /// The remote helper, holding parsed config and a lazily-established connection.
@@ -146,23 +152,21 @@ impl Helper {
                 .fetch_identity(&bridge.identity_id)
                 .await
                 .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
-            let repo = {
-                let svc = RepoService::new(&client, &identity, &bridge);
-                match &self.url {
-                    DashUrl::Named { owner, repo } => svc
-                        .resolve_repo(owner, repo)
+            let repo = match &self.url {
+                DashUrl::Named { owner, repo } => {
+                    forge_core::resolve::resolve_named(&client, owner, repo)
                         .await
-                        .with_context(|| format!("resolving repo {owner}/{repo}"))?,
-                    // Contract-addressed: no registry lookup, the contract carries its owner.
-                    DashUrl::Contract { contract_id } => svc
-                        .resolve_repo_by_contract(contract_id)
-                        .await
-                        .with_context(|| format!("resolving repo contract {contract_id}"))?,
+                        .with_context(|| format!("resolving repo {owner}/{repo}"))?
                 }
+                DashUrl::Id { id } => forge_core::resolve::resolve_id(&client, id)
+                    .await
+                    .with_context(|| format!("resolving repo {id}"))?,
             };
+            repo.require_readable()?;
             tracing::info!(
-                repo_contract = %repo.repo_contract_id,
-                owner = %repo.owner_id,
+                repo = %repo.id(),
+                generation = repo.generation(),
+                owner = %repo.owner_id(),
                 "resolved dash:// repo"
             );
             self.conn = Some(Conn {
@@ -258,16 +262,22 @@ impl Helper {
         // Each pack comes from the first of its recorded copies that hash-verifies —
         // external URIs raced with the configured IPFS gateways — with Platform chunks as
         // the last resort.
+        //
+        // forge-v2: each uploader may hold its own copy of a pack. A pack is read from the
+        // first copy that verifies, maintainers' copies first (FORGE_RULES_V2 reader rule).
         let svc = &svc;
         let repo = &conn.repo;
         let contract = &svc.repo_contract(repo).await?;
         let reader = &PackReader::from_user_config();
-        let fetched: Vec<Option<Vec<u8>>> = stream::iter(git_packs.iter().map(|m| async move {
-            let hash = hex::encode(m.pack_hash);
-            let got = svc.fetch_artifact_from(repo, contract, m, reader).await;
+        let roles = &svc.copy_roles(repo).await?;
+        let packs = group_by_hash(&git_packs);
+        let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let hash = hex::encode(h);
+            let got = svc.fetch_best_copy(repo, contract, copies, roles, reader).await;
+            let on_chain = copies.iter().any(|m| m.storage == 0);
             let bytes = match got {
-                Ok(bytes) => bytes,
-                Err(e) if m.storage == 0 => {
+                Ok((bytes, _)) => bytes,
+                Err(e) if on_chain => {
                     return Err(anyhow::Error::from(e).context(format!("downloading pack {hash}")));
                 }
                 // An external-only pack whose copies are down, rate-limited or absent is
@@ -278,7 +288,7 @@ impl Helper {
                 // candidate is bounded (size-scaled deadline + idle timeout), so this
                 // cannot hang.
                 Err(e) => {
-                    tracing::warn!(pack = %hash, mirrors = ?m.uris, error = %e, "external pack unobtainable; skipping it");
+                    tracing::warn!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; skipping it");
                     return Ok(None);
                 }
             };
@@ -341,26 +351,22 @@ impl Helper {
         } else {
             None
         };
-        let contract_url = match &self.url {
-            DashUrl::Contract { contract_id } => Some(contract_id.clone()),
-            DashUrl::Named { .. } => None,
-        };
         let conn = self.ensure_conn().await?;
-        // How the repo is named in fixes the user may paste into `dg`: `owner/name` when
-        // the registry knows it, else the contract id (which `dg` also accepts).
-        let repo_label = contract_url
-            .unwrap_or_else(|| format!("{}/{}", conn.repo.owner_id, conn.repo.normalized_name));
+        // v1 repositories are read only: refuse before building or paying for anything.
+        conn.repo.require_v2()?;
+        // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
+        let repo_label = conn.repo.display();
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
         let remote_refs = svc.read_refs(&conn.repo).await?;
 
-        // Fail fast when this identity holds no spendable token on the repo. The ACL itself
-        // is enforced at consensus — `refUpdate`, `chunk` and `packManifest` all carry a
-        // WRITE token cost, so an unauthorized push cannot land regardless. But without this
-        // check the helper builds a pack and broadcasts chunk state transitions that
-        // consensus rejects one at a time, burning processing fees and surfacing a raw
-        // platform error. That error is the first thing a would-be contributor sees, and it
-        // teaches them nothing; this is the moment to point them at the PR flow instead.
+        // Fail fast when this identity is not a member. Consensus is the authority —
+        // `refUpdate`, `chunk` and `packManifest` are all `ownerRefersTo`-gated on a
+        // `maintainer`/`writer` document, so a non-member's push cannot land regardless
+        // (40120). But without this check the helper builds a pack and broadcasts chunk
+        // transitions that consensus rejects, surfacing a raw platform error. That error is
+        // the first thing a would-be contributor sees, and it teaches them nothing; this is
+        // the moment to point them at `dg collab` or a fork instead.
         //
         // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
         // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
@@ -402,6 +408,7 @@ impl Helper {
                 policy: push_policy,
                 progress,
                 dry_run,
+                identity: conn.identity.id(),
             };
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
@@ -474,12 +481,8 @@ impl Helper {
             Some(c) if c > 0 => Charge::Measured(c),
             _ => Charge::Estimated(est_credits),
         };
-        let (text, event) = progress::done_line(
-            charge,
-            after,
-            &conn.repo.owner_id,
-            &conn.repo.normalized_name,
-        );
+        let (text, event) =
+            progress::done_line(charge, after, conn.repo.owner_id(), conn.repo.name());
         progress.emit(&text, &event);
     }
 
@@ -603,7 +606,7 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
 /// What [`upload_push_pack`] needs from the push.
 struct PushContext<'a> {
     svc: &'a RepoService<'a>,
-    repo: &'a RepoHandle,
+    repo: &'a RepoRef,
     /// The repo as the user addressed it (`owner/name`), for the plan line.
     repo_label: String,
     /// Short names of the refs this push updates.
@@ -613,6 +616,8 @@ struct PushContext<'a> {
     progress: Progress,
     /// `--dry-run`: build the pack and print the plan, store nothing.
     dry_run: bool,
+    /// The pushing identity (base58).
+    identity: String,
 }
 
 impl PushContext<'_> {
@@ -713,15 +718,15 @@ async fn upload_push_pack(
     // An earlier push may already have recorded this exact pack (unique packHash; a
     // duplicate manifest create is treated as "already stored"). Decide BEFORE paying:
     // still readable → nothing to store; unreadable → refuse now, not after new copies.
-    if let Some(existing) = ctx
+    let copies = ctx
         .svc
-        .read_pack_manifest(ctx.repo, job.pack_hash)
+        .read_pack_copies(ctx.repo, job.pack_hash)
         .await
-        .context("checking for an existing manifest of this pack")?
-    {
+        .context("checking for an existing manifest of this pack")?;
+    if !copies.is_empty() {
         // The browse index is left alone: the earlier push published (or tried to) the
         // fragment for this pack, and a missing one is rebuilt by the next repack.
-        confirm_existing_manifest(ctx, &job, &existing).await?;
+        confirm_existing_manifest(ctx, &job, &copies).await?;
         return Ok(Some(policy::estimate_ref_updates(ctx.refs.len())));
     }
 
@@ -755,9 +760,8 @@ async fn upload_push_pack(
     } else if jpath.exists() {
         ctx.say(&format!(
             "note: an earlier interrupted push left Platform chunks for this pack that \
-             this push did not use (journal kept at {}); they hold a refundable deposit until \
-             deleted (dg repo delete / admin teardown), or re-push with dash.storage including \
-             platform to put them to use",
+             this push did not use (journal kept at {}); Platform chunks are permanent, so \
+             re-push with dash.storage including platform to put them to use",
             jpath.display()
         ));
     }
@@ -977,31 +981,43 @@ async fn record_pack(
 }
 
 /// This pack already has a manifest (an earlier push recorded it). Accept it only if at
-/// least one copy it records is readable and hash-matches; otherwise refuse — before this
+/// least one recorded copy is readable and hash-matches; otherwise refuse — before this
 /// push pays for anything — naming the dead copies and the way back.
 ///
-/// A Platform-tier (`storage = 0`) manifest written by this identity for a pack of the
+/// A Platform-tier (`storage = 0`) manifest written by THIS identity for a pack of the
 /// same size is accepted without a download: its chunks were confirmed at consensus when
 /// it was written, and a plain Platform re-push (the common "interrupted after the
-/// manifest" resume) must not re-download the whole pack to find that out.
+/// manifest" resume) must not re-download the whole pack to find that out. On forge-v2 a
+/// manifest from someone else is never taken on trust: it is read and verified, since a
+/// hostile member could post a manifest with the right hash and no bytes behind it.
 async fn confirm_existing_manifest(
     ctx: &PushContext<'_>,
     job: &PackJob<'_>,
-    existing: &forge_core::repo::PackManifestInfo,
+    copies: &[forge_core::repo::PackManifestInfo],
 ) -> Result<()> {
     let short = &job.meta.pack_hash[..12];
-    let on_chain = existing.storage == 0
-        && existing.chunk_count == u64::from(job.chunk_count)
-        && existing.size_bytes == job.bytes.len() as u64;
-    if on_chain {
+    let mine_on_chain = copies.iter().any(|m| {
+        m.storage == 0
+            && m.owner_id == ctx.identity
+            && m.chunk_count == u64::from(job.chunk_count)
+            && m.size_bytes == job.bytes.len() as u64
+    });
+    if mine_on_chain {
         ctx.say(&format!(
             "pack {short} is already stored on Platform by an earlier push; not storing it again"
         ));
         return Ok(());
     }
     let reader = PackReader::from_user_config();
-    match ctx.svc.fetch_artifact(ctx.repo, existing, &reader).await {
-        Ok(bytes) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
+    let contract = ctx.svc.repo_contract(ctx.repo).await?;
+    let roles = ctx.svc.copy_roles(ctx.repo).await?;
+    let refs: Vec<&forge_core::repo::PackManifestInfo> = copies.iter().collect();
+    match ctx
+        .svc
+        .fetch_best_copy(ctx.repo, &contract, &refs, &roles, &reader)
+        .await
+    {
+        Ok((bytes, _)) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
             ctx.say(&format!(
                 "pack {short} was already recorded by an earlier push and is still \
                  readable; not storing it again"
@@ -1013,11 +1029,17 @@ async fn confirm_existing_manifest(
                 Ok(_) => "bytes did not match".to_string(),
                 Err(e) => e.to_string(),
             };
-            let recorded = if existing.uris.is_empty() {
-                "Platform chunks".to_string()
-            } else {
-                existing.uris.join(", ")
-            };
+            let recorded = copies
+                .iter()
+                .map(|m| {
+                    if m.uris.is_empty() {
+                        format!("Platform chunks of {}", m.owner_id)
+                    } else {
+                        m.uris.join(", ")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
             Err(UserError::new(
                 codes::RECORDED_COPY_LOST,
                 format!("push refused: pack {short} is already recorded, and no recorded copy is readable"),
@@ -1199,95 +1221,41 @@ struct Denied {
     wire: &'static str,
 }
 
-/// `Some(refusal)` when the connected identity provably holds no spendable WRITE or MAINTAIN
-/// token on the repo, and so cannot land any push.
+/// `Some(refusal)` when the connected identity provably is not a member (no `writer` or
+/// `maintainer` document) of the repo, and so cannot land any push.
 ///
-/// Returns `None` — i.e. proceed — when the holding cannot be determined. The token history
-/// read is advisory: consensus is the authority, and a transient read failure must not block
-/// a push a holder is entitled to make.
+/// Returns `None` — i.e. proceed — when membership cannot be determined. The read is
+/// advisory: consensus (`ownerRefersTo`, 40120) is the authority, and a transient read
+/// failure must not block a push a member is entitled to make.
 async fn write_access_denied(conn: &Conn) -> Option<Denied> {
-    let tokens = TokenService::new(&conn.client, &conn.identity, &conn.bridge);
-    let records = tokens
-        .token_history(&conn.repo.repo_contract_id)
+    let me = conn.identity.id();
+    let members = MemberReader::new(&conn.client)
+        .roles_of(&conn.repo, &me)
         .await
         .ok()?;
-    let now = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis(),
-    )
-    .ok()?;
-    let me = conn.identity.id();
-    let holdings = forge_core::rules::holdings_as_of(&records, &me, now);
-    if holdings.any() {
+    if !members.is_empty() {
         return None;
     }
-    Some(write_denied(
-        frozen_grants(&records, &me, now),
-        &format!("{}/{}", conn.repo.owner_id, conn.repo.name),
-        &me,
-    ))
+    Some(write_denied(&conn.repo.display(), &me))
 }
 
-/// Which of `identity`'s WRITE / MAINTAIN grants are still held but frozen at `now` (a
-/// suspended collaborator), as opposed to never held. Frozen tokens are not spendable, so
-/// [`forge_core::rules::holdings_as_of`] reports both cases the same way; replaying the
-/// history with the freezes left out tells them apart without a second copy of the token
-/// state machine. Only meaningful when the real holdings are empty.
-fn frozen_grants(records: &[TokenRecord], identity: &str, now: u64) -> Holdings {
-    use forge_core::rules::TokenOp;
-    let unfrozen: Vec<TokenRecord> = records
-        .iter()
-        .filter(|r| !matches!(r.op, TokenOp::Freeze | TokenOp::Unfreeze))
-        .cloned()
-        .collect();
-    forge_core::rules::holdings_as_of(&unfrozen, identity, now)
-}
-
-/// The push refusal for an identity with no spendable token. A suspended collaborator is
-/// told which token is frozen: "no WRITE token" is false for them, and forking is not the
-/// fix.
+/// The push refusal for an identity that is not a member.
 ///
-/// Worded unlike the consensus errors ("token frozen: …", "unauthorized: …"), so a caller
-/// (the e2e suite) can tell this local refusal from a network verdict.
-fn write_denied(frozen: Holdings, repo: &str, me: &str) -> Denied {
-    let which = match (frozen.write, frozen.maintain) {
-        (true, true) => Some("WRITE and MAINTAIN tokens on this repo are"),
-        (true, false) => Some("WRITE token on this repo is"),
-        (false, true) => Some("MAINTAIN token on this repo is"),
-        (false, false) => None,
-    };
-    if let Some(which) = which {
-        return Denied {
-            error: UserError::new(
-                codes::SUSPENDED,
-                format!("push rejected: your {which} frozen"),
-            )
-            .cause("a maintainer suspended your push access, so consensus would reject this push")
-            .fix(format!(
-                "ask a maintainer to run `dg collab unsuspend {repo} {me}`"
-            ))
-            .note(NOTE_PRECHECK),
-            wire: "your token on this repo is frozen",
-        };
-    }
-    // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
-    // pusher typed into their remote URL — not the contract id.
+/// Worded unlike the consensus error (`40120`, "consensus refused"), so a caller (the e2e
+/// suite) can tell this local refusal from a network verdict.
+fn write_denied(repo: &str, me: &str) -> Denied {
     Denied {
         error: UserError::new(
             codes::NOT_A_WRITER,
             format!("push rejected: you are not a writer of {repo}"),
         )
-        .cause("no WRITE token on this repo for your identity")
+        .cause("your identity has no writer or maintainer document for this repo")
         .fix(format!(
-            "ask the owner to run `dg collab add {repo} {me} --role write`"
+            "ask the owner to run `dg collab add {repo} {me} --role writer`"
         ))
-        .fix(format!(
-            "or fork it and open a pull request: `dg repo create <name>`, push your branch there, then `dg pr create {repo} --title <t> --source-contract <your contract id> --head-oid <oid>`"
-        ))
+        .fix("or push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
         .note(NOTE_PRECHECK),
-        wire: "no WRITE token on this repo",
+        wire: "not a writer of this repo",
     }
 }
 
@@ -1305,9 +1273,9 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     // which is fine, because it is reached from `dg`, not typed by hand.
     let owner = match url {
         DashUrl::Named { owner, .. } => owner.clone(),
-        DashUrl::Contract { .. } => {
+        DashUrl::Id { .. } => {
             return Err(no_identity(
-                "a contract-addressed dash:// URL has no owner to pick a default key for",
+                "an id-addressed dash:// URL has no owner to pick a default key for",
             ))
         }
     };
@@ -1318,103 +1286,28 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frozen_grants, oid_to_bytes, resolve_network, write_denied, PushOutcome};
+    use super::{oid_to_bytes, resolve_network, write_denied, PushOutcome};
     use forge_core::network::NetworkSettings;
-    use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
-
-    fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
-        TokenRecord {
-            id: format!("r{created_at}"),
-            identity: identity.to_string(),
-            token,
-            op,
-            created_at,
-        }
-    }
 
     #[test]
-    fn frozen_grants_are_told_apart_from_no_grant() {
-        use TokenKind::{Maintain, Write};
-        let frozen = [
-            rec("me", Write, TokenOp::Mint, 1),
-            rec("me", Write, TokenOp::Freeze, 2),
-        ];
-        assert_eq!(
-            frozen_grants(&frozen, "me", 10),
-            Holdings {
-                write: true,
-                maintain: false
-            }
-        );
-        // Never granted, or granted to someone else: nothing frozen.
-        assert!(!frozen_grants(&[], "me", 10).any());
-        assert!(!frozen_grants(&frozen, "someone-else", 10).any());
-        // Revoked (destroyed) after the freeze: nothing is held any more.
-        let revoked = [
-            rec("me", Write, TokenOp::Mint, 1),
-            rec("me", Write, TokenOp::Freeze, 2),
-            rec("me", Write, TokenOp::Destroy, 3),
-        ];
-        assert!(!frozen_grants(&revoked, "me", 10).any());
-        // A suspended maintainer who never held WRITE.
-        let maint = [
-            rec("me", Maintain, TokenOp::Mint, 1),
-            rec("me", Maintain, TokenOp::Freeze, 2),
-        ];
-        assert_eq!(
-            frozen_grants(&maint, "me", 10),
-            Holdings {
-                write: false,
-                maintain: true
-            }
-        );
-    }
-
-    #[test]
-    fn a_frozen_pusher_is_not_told_to_fork() {
-        let write = Holdings {
-            write: true,
-            maintain: false,
-        };
-        let d = write_denied(write, "owner/repo", "me");
+    fn a_non_member_is_pointed_at_collab_add() {
+        let d = write_denied("owner/repo", "me");
+        assert_eq!((d.error.code, d.error.exit_code()), ("E601", 6));
         let text = d.error.render("dash: ", false);
-        assert_eq!(d.error.code, "E602");
-        assert!(
-            text.contains("WRITE token on this repo is frozen"),
-            "{text}"
-        );
-        assert!(text.contains("dg collab unsuspend owner/repo me"), "{text}");
-        assert!(!text.contains("dg pr create"), "{text}");
-        // Must not read as the consensus error, or e2e scenario 04 could not tell a local
-        // refusal from a network verdict.
-        assert!(!text.contains("token frozen"), "{text}");
-        assert!(!d.wire.contains("token frozen"));
-
-        let maintain = Holdings {
-            write: false,
-            maintain: true,
-        };
-        let text = write_denied(maintain, "owner/repo", "me")
-            .error
-            .render("", false);
-        assert!(
-            text.contains("MAINTAIN token on this repo is frozen"),
-            "{text}"
-        );
-
-        let none = write_denied(Holdings::default(), "owner/repo", "me");
-        assert_eq!((none.error.code, none.error.exit_code()), ("E601", 6));
-        assert_eq!(none.wire, "no WRITE token on this repo");
-        let text = none.error.render("dash: ", false);
         assert!(
             text.starts_with("dash: error: push rejected: you are not a writer of owner/repo"),
             "{text}"
         );
         assert!(
-            text.contains("dg collab add owner/repo me --role write"),
+            text.contains("dg collab add owner/repo me --role writer"),
             "{text}"
         );
-        assert!(text.contains("dg pr create owner/repo"), "{text}");
+        // Must not read as the consensus error, or e2e scenario 04 could not tell a local
+        // refusal from a network verdict.
+        assert!(
+            !text.contains("40120") && !text.contains("consensus refused"),
+            "{text}"
+        );
         assert!(text.lines().all(|l| l.starts_with("dash: ")), "{text}");
     }
 

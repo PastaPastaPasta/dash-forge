@@ -1,17 +1,23 @@
-//! `dg repo` — repo lifecycle: create / view / list / delete / backend set (+ clone/fork).
+//! `dg repo` — repository lifecycle: create / view / list / backend set (+ clone/fork).
+//!
+//! New repositories are forge-v2: a `repo` document plus the owner's `maintainer`
+//! membership and an initial `config` in the network's shared forge-core contract, written
+//! by one resumable session (`forge_core::create`). v1 repositories (one contract each)
+//! remain viewable and cloneable but are read only. Repositories cannot be deleted.
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::cost::prompt_delete_refund;
-use forge_core::platform::{self, FieldValue, QueryFilter, QueryOrder};
-use forge_core::repo::{CreateRepoOpts, RepoService};
+use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
+use forge_core::members::MemberReader;
+use forge_core::repo::RepoService;
+use forge_core::resolve::{list_owned, repo_slug};
 use forge_core::tokens::TokenService;
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, refund_line, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::{RepoBackendCommand, RepoCommand};
 
 /// Dispatch a `repo` subcommand.
@@ -21,76 +27,90 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             name,
             storage,
             description,
-        } => create(ctx, name, storage.mode(), storage.label(), description).await,
+            display_name,
+            default_branch,
+        } => {
+            let opts = CreateRepoOpts {
+                display_name: display_name.clone(),
+                description: description.clone(),
+                default_branch: default_branch.clone(),
+                backend_mode: storage.mode(),
+                ..CreateRepoOpts::public(name.clone())
+            };
+            create(ctx, &opts, storage.label()).await
+        }
         RepoCommand::Clone { repo } => clone(ctx, repo),
         RepoCommand::Fork { repo } => fork(ctx, repo),
         RepoCommand::View { repo } => view(ctx, repo).await,
         RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
-        RepoCommand::Delete { repo } => delete(ctx, repo).await,
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
     }
 }
 
-/// Create a repo (contract instantiate + listing + token setup). Shows the ~1.18 DASH
-/// instantiation estimate and prompts unless `--yes`, then reports the measured cost.
-async fn create(
-    ctx: &Ctx,
-    name: &str,
-    backend_mode: u8,
-    storage_label: &str,
-    description: &str,
-) -> Result<()> {
+/// Create a forge-v2 repository. Shows the estimate and prompts unless `--yes`, then reports
+/// the measured cost. Re-running a create that was interrupted finishes it without paying
+/// for any step twice; re-running one that finished changes nothing.
+async fn create(ctx: &Ctx, opts: &CreateRepoOpts, storage_label: &str) -> Result<()> {
+    let slug = repo_slug(&opts.name)?;
+    if ctx.target.v2.is_none() {
+        return Err(forge_core::Error::V2NotDeployed {
+            network: ctx.network_label(),
+        }
+        .into());
+    }
     let price = dash_usd_price();
     if !ctx.json {
         println!(
-            "Creating repo {name:?} ({storage_label} storage) — estimated cost {}",
+            "Creating {slug} on {} ({storage_label} storage)\n  repo + maintainer + config     {}",
+            ctx.network_label(),
             cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
         );
     }
-    if !ctx.confirm(&format!(
-        "Create repo {name:?}? This instantiates a contract (~{})",
-        cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
-    ))? {
+    if !ctx.confirm(&format!("Create {slug}?"))? {
         return Err(crate::errors::cancelled());
     }
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let svc = RepoService::new(&client, &identity, &bridge);
-    let opts = CreateRepoOpts {
-        default_branch: "main".to_string(),
-        backend_mode,
-        description: description.to_string(),
-        template_version: 1,
-    };
-    let result = svc.create_repo(name, &opts).await.context("create_repo")?;
-    let credits = result.repo_v1_instantiation_cost_credits;
+    let result = create_repo(&client, &identity, &bridge, opts, &default_journal_dir()?)
+        .await
+        .context("creating the repository")?;
+    let repo = &result.repo;
+    let credits = result.cost_credits;
+    let steps: serde_json::Map<_, _> = result
+        .steps
+        .iter()
+        .map(|(name, o)| ((*name).to_string(), json!(o)))
+        .collect();
 
     ctx.emit(
         json!({
-            "status": "created",
-            "repoContractId": result.handle.repo_contract_id,
-            "ownerId": result.handle.owner_id,
-            "name": result.handle.name,
-            "normalizedName": result.handle.normalized_name,
-            "listingDocumentId": result.listing_document_id,
+            "status": if result.already_existed() { "exists" } else { "created" },
+            "generation": "v2",
+            "repoId": repo.id(),
+            "ownerId": repo.owner_id(),
+            "name": repo.name(),
             "storage": storage_label,
-            "remoteUrl": format!("dash://{}/{}", result.handle.owner_id, result.handle.normalized_name),
+            "remoteUrl": repo.remote_url(),
+            "steps": steps,
+            "network": ctx.network_label(),
             "cost": cost_json(credits, price),
         }),
         || {
-            println!("Created {}/{}", result.handle.owner_id, result.handle.normalized_name);
-            println!("  contract: {}", result.handle.repo_contract_id);
-            println!(
-                "  remote:   dash://{}/{}",
-                result.handle.owner_id, result.handle.normalized_name
-            );
-            if credits == 0 {
-                println!("  cost:     0 (repo already existed — idempotent, no double-pay)");
+            if result.already_existed() {
+                println!("{} already exists; nothing was written.", repo.display());
             } else {
-                println!("  cost:     {}", cost_line(credits, price));
+                println!("✓ created  {}", repo.display());
+                for (name, o) in &result.steps {
+                    if *o == StepOutcome::Resumed {
+                        println!("  {name}: finished an interrupted create (not paid twice)");
+                    }
+                }
             }
+            println!("  repo id:  {}", repo.id());
+            println!("  remote:   {}", repo.remote_url());
+            println!("  cost:     {}", cost_line(credits, price));
         },
     );
     Ok(())
@@ -111,43 +131,50 @@ fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fork — not yet wired (needs the fork-contract + copied-refs pipeline, PRD 02 §B).
+/// Fork — not yet wired (`repo.forkOf` + copied refs; the collab PR).
 ///
-/// Fails rather than returning success. It used to print a TODO and exit 0, which made
-/// `dg repo fork X && dg pr create ...` proceed as though a fork existed, and left the
-/// contributor half of the PR flow with an entry point that silently did nothing.
+/// Fails rather than returning success, so `dg repo fork X && dg pr create ...` does not
+/// proceed as though a fork existed.
 #[allow(clippy::unnecessary_wraps)]
 fn fork(_ctx: &Ctx, repo: &str) -> Result<()> {
     Err(crate::errors::reported(
-        UserError::new(codes::NOT_IMPLEMENTED, "dg repo fork is not implemented yet")
-            .cause("forking needs the fork-contract + copied-refs pipeline (PRD 02 §B)")
-            .fix("`dg repo create <name>` — mints your own repo contract (not cheap: see `dg repo create --help`)")
-            .fix("`git push dash://<you>/<name> <branch>`")
-            .fix(format!(
-                "`dg pr create {repo} --title <t> --source-contract <contract id> --head-oid <oid>`"
-            )),
+        UserError::new(
+            codes::NOT_IMPLEMENTED,
+            "dg repo fork is not implemented yet",
+        )
+        .cause("forking needs `repo.forkOf` and copied refs (the collaboration release)")
+        .fix("`dg repo create <name>` (a forge-v2 repo costs about 0.001 DASH)")
+        .fix(format!(
+            "`git push dash://<you>/<name> <branch>`, then point reviewers of {repo} at it"
+        )),
         json!({
             "status": "not_implemented",
             "repo": repo,
-            "workaround": "dg repo create <name>, push your branch to it, then dg pr create --source-contract <its contract id>",
+            "workaround": "dg repo create <name>, then push your branch to it",
         }),
     ))
 }
 
-/// View a repo: resolved refs, default branch, pack manifests, collaborator count.
+/// View a repo: resolved refs, default branch, pack manifests, members.
 async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
 
     let svc = RepoService::new(&client, &identity, &bridge);
     let default_branch = svc.read_default_branch(&handle).await.unwrap_or(None);
     let refs = svc.read_refs(&handle).await.unwrap_or_default();
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let collaborators = TokenService::new(&client, &identity, &bridge)
-        .list_collaborators(&handle.repo_contract_id)
-        .await
-        .map_or(0, |c| c.len());
+    let members = match handle.v1_contract_id() {
+        Ok(contract) => TokenService::new(&client)
+            .list_collaborators(contract)
+            .await
+            .map_or(0, |c| c.len()),
+        Err(_) => MemberReader::new(&client)
+            .list(&handle)
+            .await
+            .map_or(0, |m| m.len()),
+    };
 
     let refs_json: Vec<_> = refs
         .iter()
@@ -159,20 +186,26 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
 
     ctx.emit(
         json!({
-            "repoContractId": handle.repo_contract_id,
-            "ownerId": handle.owner_id,
-            "name": handle.name,
-            "normalizedName": handle.normalized_name,
+            "generation": handle.generation(),
+            "repoId": handle.id(),
+            "ownerId": handle.owner_id(),
+            "name": handle.name(),
+            "readOnly": handle.is_v1(),
             "defaultBranch": default_branch,
             "refs": refs_json,
             "packCount": manifests.len(),
             "packBytes": total_bytes,
-            "collaborators": collaborators,
-            "remoteUrl": format!("dash://{}/{}", handle.owner_id, handle.normalized_name),
+            "members": members,
+            "remoteUrl": handle.remote_url(),
         }),
         || {
-            println!("{}/{}", handle.owner_id, handle.normalized_name);
-            println!("  contract:       {}", handle.repo_contract_id);
+            println!("{}", handle.display());
+            println!(
+                "  generation:     {}{}",
+                handle.generation(),
+                if handle.is_v1() { " (read only)" } else { "" }
+            );
+            println!("  id:             {}", handle.id());
             println!(
                 "  default branch: {}",
                 default_branch.clone().unwrap_or_else(|| "(none)".into())
@@ -185,11 +218,8 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
                 "  packs:          {} ({total_bytes} bytes)",
                 manifests.len()
             );
-            println!("  collaborators:  {collaborators}");
-            println!(
-                "  remote:         dash://{}/{}",
-                handle.owner_id, handle.normalized_name
-            );
+            println!("  members:        {members}");
+            println!("  remote:         {}", handle.remote_url());
         },
     );
     Ok(())
@@ -205,56 +235,34 @@ fn ref_state_short(state: &forge_core::rules::RefState) -> String {
     }
 }
 
-/// List an owner's repositories from the registry `repoListing` index.
+/// List an owner's repositories: forge-v2 repos, then v1 registry listings.
 async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     let (client, _bridge, identity) = ctx.connect_with_identity().await?;
     let owner_id = owner.map_or_else(|| identity.id(), str::to_string);
-    let owner_bytes = platform::decode_identifier(&owner_id)?;
-
-    let registry = client.fetch_registry().await?;
-    // Complete: this prints "the owner's repos", so a 101st repo silently missing from the
-    // list would be a wrong answer, not a short one.
-    let docs = client
-        .query_all_documents(
-            &registry,
-            "repoListing",
-            &[QueryFilter::eq(
-                "$ownerId",
-                FieldValue::identifier(owner_bytes),
-            )],
-            // Order by normalizedName to match the registry's `ownerName`
-            // `($ownerId, normalizedName)` compound index ($createdAt is not indexed here).
-            &[QueryOrder::asc("normalizedName")],
-        )
+    let repos = list_owned(&client, &owner_id)
         .await
-        .context("querying the registry for repoListing docs")?;
-
-    let repos: Vec<_> = docs
+        .context("listing repositories")?;
+    let rows: Vec<_> = repos
         .iter()
-        .map(|d| {
-            let repo_contract = d
-                .field_bytes("repoContractId")
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                .map(platform::encode_identifier);
+        .map(|r| {
             json!({
-                "name": d.field_str("name"),
-                "normalizedName": d.field_str("normalizedName"),
-                "repoContractId": repo_contract,
-                "description": d.field_str("description"),
-                "listingId": d.id,
+                "name": r.repo.name(),
+                "generation": r.repo.generation(),
+                "repoId": r.repo.id(),
+                "description": r.description,
             })
         })
         .collect();
-
     ctx.emit(
-        json!({ "owner": owner_id, "count": repos.len(), "repos": repos }),
+        json!({ "owner": owner_id, "count": rows.len(), "repos": rows }),
         || {
-            println!("{} repo(s) for {owner_id}:", docs.len());
-            for d in &docs {
+            println!("{} repo(s) for {owner_id}:", repos.len());
+            for r in &repos {
                 println!(
-                    "  {}  ({})",
-                    d.field_str("normalizedName").unwrap_or_default(),
-                    d.field_str("description").unwrap_or_default()
+                    "  {}  [{}]  {}",
+                    r.repo.name(),
+                    r.repo.generation(),
+                    r.description
                 );
             }
         },
@@ -262,136 +270,30 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Delete a repo's deletable storage (chunks + pack manifests → refund) and its registry
-/// listing. Shows a refund estimate and prompts unless `--yes`.
-async fn delete(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
-    let svc = RepoService::new(&client, &identity, &bridge);
-
-    let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
-    let refund = prompt_delete_refund(total_bytes);
-    let price = dash_usd_price();
-
-    if !ctx.json {
-        println!(
-            "Deleting {}/{}: {} pack(s), {total_bytes} bytes — estimated {}",
-            handle.owner_id,
-            handle.normalized_name,
-            manifests.len(),
-            refund_line(refund, price)
-        );
-    }
-    if !ctx.confirm(&format!(
-        "Delete {}/{} storage? (est. {})",
-        handle.owner_id,
-        handle.normalized_name,
-        refund_line(refund, price)
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
-
-    let mut deleted_chunks = 0usize;
-    let mut deleted_manifests = 0usize;
-    for m in &manifests {
-        if let Ok(n) = svc.delete_chunks(&handle, m.pack_hash).await {
-            deleted_chunks += n;
-        }
-        if svc
-            .delete_document(&handle.repo_contract_id, "packManifest", &m.document_id)
-            .await
-            .is_ok()
-        {
-            deleted_manifests += 1;
-        }
-    }
-
-    // Best-effort listing removal (makes the repo unresolvable, completing the delete).
-    let listing_removed = remove_listing(ctx, &client, &bridge, &identity, &handle)
-        .await
-        .unwrap_or(false);
-
-    ctx.emit(
-        json!({
-            "status": "deleted",
-            "repoContractId": handle.repo_contract_id,
-            "deletedChunks": deleted_chunks,
-            "deletedManifests": deleted_manifests,
-            "listingRemoved": listing_removed,
-            "refundEstimate": cost_json(refund, price),
-            "note": "the repo contract and its append-only audit docs are permanent by design",
-        }),
-        || {
-            println!("Deleted {deleted_chunks} chunk(s), {deleted_manifests} manifest(s).");
-            println!("Listing removed: {listing_removed}");
-            println!("Estimated refund: {}", refund_line(refund, price));
-            println!("note: the repo contract itself is permanent (Platform contracts cannot be deleted).");
-        },
-    );
-    Ok(())
-}
-
-/// Find and delete the registry `repoListing` for a repo, returning whether one was
-/// removed. Best-effort: a failure does not fail the whole delete.
-async fn remove_listing(
-    _ctx: &Ctx,
-    client: &forge_core::platform::PlatformClient,
-    bridge: &forge_core::keystore::BridgeIdentity,
-    identity: &forge_core::platform::LoadedIdentity,
-    handle: &forge_core::repo::RepoHandle,
-) -> Result<bool> {
-    let registry = client.fetch_registry().await?;
-    let owner_bytes = platform::decode_identifier(&handle.owner_id)?;
-    let docs = client
-        .query_documents(
-            &registry,
-            "repoListing",
-            &[
-                QueryFilter::eq("$ownerId", FieldValue::identifier(owner_bytes)),
-                QueryFilter::eq(
-                    "normalizedName",
-                    FieldValue::text(handle.normalized_name.clone()),
-                ),
-            ],
-            &[],
-            1,
-            None,
-        )
-        .await?;
-    let Some(listing) = docs.into_iter().next() else {
-        return Ok(false);
-    };
-    let svc = RepoService::new(client, identity, bridge);
-    svc.delete_document(&registry.id(), "repoListing", &listing.id)
-        .await?;
-    Ok(true)
-}
-
-/// Set a repo's storage backend mode (appends a new `config` doc; MAINTAIN-gated).
+/// Set a repo's storage backend mode (appends a new `config` doc; maintainer-gated).
 async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    handle.require_v2()?;
 
     if !ctx.confirm(&format!(
-        "Set backend of {}/{} to {label}? (a small config write)",
-        handle.owner_id, handle.normalized_name
+        "Set backend of {} to {label}? (a small config write)",
+        handle.display()
     ))? {
         return Err(crate::errors::cancelled());
     }
 
     let svc = RepoService::new(&client, &identity, &bridge);
     let doc_id = svc
-        .set_backend_mode(&handle, mode)
+        .set_backend(&handle, mode, None)
         .await
-        .context("set_backend_mode")?;
+        .context("writing the config")?;
 
     ctx.emit(
         json!({
             "status": "backend_set",
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "backend": label,
             "mode": mode,
             "configDocumentId": doc_id,
@@ -399,8 +301,8 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
         }),
         || {
             println!(
-                "Backend of {}/{} set to {label} (config doc {doc_id}).",
-                handle.owner_id, handle.normalized_name
+                "Backend of {} set to {label} (config doc {doc_id}).",
+                handle.display()
             );
         },
     );

@@ -2,9 +2,8 @@
 
 use anyhow::{Context as _, Result};
 
-use forge_core::keystore::BridgeIdentity;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
-use forge_core::repo::{RepoHandle, RepoService};
+use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
 /// A parsed `owner/name` (or bare `name`) repository reference.
@@ -53,9 +52,9 @@ impl RepoRef {
         self.owner.as_deref().unwrap_or(default_owner)
     }
 
-    /// The repo contract id, when the reference is a bare base58 contract id (what the
-    /// helper prints for a `dash://<contractId>` remote). Repo names are lowercase, so a
-    /// base58 id — which mixes cases — can never be mistaken for one.
+    /// The repo id, when the reference is a bare base58 id (a forge-v2 repo id or a v1
+    /// repo contract id, as `dash://<id>` takes). Repo names are lowercase, so a base58
+    /// id — which mixes cases — can never be mistaken for one.
     pub fn contract_id(&self) -> Option<&str> {
         (self.owner.is_none()
             && looks_like_identity_id(&self.name)
@@ -83,24 +82,22 @@ fn looks_like_identity_id(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
 }
 
-/// Resolve a [`RepoRef`] to a [`RepoHandle`] via the registry.
+/// Resolve a [`RepoRef`]: a bare id as a forge-v2 repo id or a v1 contract id; otherwise
+/// `owner/name` as a forge-v2 repo, falling back to a (read-only) v1 registry listing.
 pub async fn resolve(
     client: &PlatformClient,
     identity: &LoadedIdentity,
-    bridge: &BridgeIdentity,
     repo_ref: &RepoRef,
-) -> Result<RepoHandle> {
-    let svc = RepoService::new(client, identity, bridge);
-    if let Some(contract_id) = repo_ref.contract_id() {
-        return svc
-            .resolve_repo_by_contract(contract_id)
+) -> Result<Repo> {
+    if let Some(id) = repo_ref.contract_id() {
+        return forge_core::resolve::resolve_id(client, id)
             .await
-            .with_context(|| format!("resolving repo contract {contract_id}"));
+            .with_context(|| format!("resolving repo {id}"));
     }
     let owner = repo_ref.owner_or(&identity.id()).to_string();
     // `with_context`, not a flattened message: the typed forge-core error must survive for
     // the error renderer (NotFound → E102, a network failure → E701).
-    svc.resolve_repo(&owner, &repo_ref.name)
+    forge_core::resolve::resolve_named(client, &owner, &repo_ref.name)
         .await
         .with_context(|| format!("resolving {owner}/{}", repo_ref.name))
 }

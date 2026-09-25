@@ -84,7 +84,7 @@ async fn create(
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let input = PullRequestInput {
         title: title.to_string(),
@@ -97,7 +97,7 @@ async fn create(
         patch_manifest_hash: None,
     };
     let pr = svc
-        .create_pr(&handle.repo_contract_id, &input)
+        .create_pr(handle.v1_contract_id()?, &input)
         .await
         .context("create_pr")?;
 
@@ -118,10 +118,10 @@ async fn create(
 async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let prs = svc
-        .list_prs(&handle.repo_contract_id, limit, None)
+        .list_prs(handle.v1_contract_id()?, limit, None)
         .await
         .context("list_prs")?;
 
@@ -154,10 +154,10 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pw = svc
-        .pr_state(&handle.repo_contract_id, number, None)
+        .pr_state(handle.v1_contract_id()?, number, None)
         .await
         .context("pr_state")?
         .ok_or_else(|| {
@@ -172,7 +172,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     // `unwrap_or_default()` would print "no reviews" on a failed read — reintroducing the
     // exact invisibility that made reviews worth surfacing in the first place.
     let reviews_result = svc
-        .list_reviews(&handle.repo_contract_id, &pw.pr.document_id)
+        .list_reviews(handle.v1_contract_id()?, &pw.pr.document_id)
         .await;
     let reviews = reviews_result.as_deref().unwrap_or(&[]);
     let reviews_error = reviews_result.as_ref().err().map(ToString::to_string);
@@ -264,10 +264,10 @@ async fn review(
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -279,7 +279,7 @@ async fn review(
     let commit_oid = hex::decode(commit_hex).context("--commit must be hex")?;
     let doc_id = svc
         .review(
-            &handle.repo_contract_id,
+            handle.v1_contract_id()?,
             &pr.document_id,
             verdict.code(),
             &commit_oid,
@@ -314,10 +314,10 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -328,7 +328,7 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
     let oid_hex = merge_oid.unwrap_or(&pr.head_oid);
     let oid = hex::decode(oid_hex).context("--merge-oid must be hex")?;
     let event_id = svc
-        .merge_event(&handle.repo_contract_id, &pr.document_id, &oid)
+        .merge_event(handle.v1_contract_id()?, &pr.document_id, &oid)
         .await
         .context("merge_event")?;
 
@@ -336,7 +336,7 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
     // asking the same question a reader would ask is the only honest way to report the
     // outcome.
     let merged = svc
-        .pr_state(&handle.repo_contract_id, number, None)
+        .pr_state(handle.v1_contract_id()?, number, None)
         .await
         .ok()
         .flatten()
@@ -394,10 +394,10 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
 async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -507,10 +507,10 @@ fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool
 async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
