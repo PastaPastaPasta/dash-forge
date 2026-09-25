@@ -108,7 +108,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 - **Repack on the Platform tier only consolidates.** It writes a superseding pack (a new `packManifest` with `supersedes`, new chunks) and deletes nothing. Readers prefer the consolidated pack; the old one stays readable.
 - **`dg repack` / GC must change**: today they delete superseded chunks and manifests for the refund (`crates/dg`, `forge-core::pack`). On v2 those deletes are refused at consensus, so the delete step goes, and GC applies only to external storage the user controls.
 
-**Front-running.** Every pack-write unique index includes `$ownerId` (`packManifest (repoId, $ownerId, packHash)`, `manifestPart (…, partSeq)`, `chunk (…, seq)`). Without it, the first writer to claim a `(repoId, packHash)` would own that slot forever: a hostile writer could post a manifest with the right hash and wrong content, or one chunk, and block the honest upload. With it, each writer has its own slot. **Reader rule:** for a `packHash`, gather every writer's manifest (`(repoId, packHash)` index), verify the reassembled bytes against `packHash`, use the first that verifies, and try maintainers' copies before writers'. A copy that fails verification is ignored.
+**Front-running.** Every pack-write unique index includes `$ownerId` (`packManifest (repoId, $ownerId, packHash)`, `manifestPart (…, partSeq)`, `chunk (…, seq)`). Without it, the first writer to claim a `(repoId, packHash)` would own that slot forever: a hostile writer could post a manifest with the right hash and wrong content, or one chunk, and block the honest upload. With it, each writer has its own slot. **Reader rule** (`FORGE_RULES_V2`: `order_pack_copies`, `select_pack_copy`, `pack_read_order`, vectors `pack_copies__*`): for a `packHash`, gather every writer's manifest (`(repoId, packHash)` index) and try them in order: uploaders who are currently maintainers, then current writers, then everyone else (members since revoked), each group by `$createdAt` then `$id`. Read the first copy whose reassembled bytes verify against `packHash`; a copy that fails verification is ignored, and a pack with no verifying copy is unreadable. A `supersedes` list is honoured only from the copy actually read, and only when it verifies. A superseded pack is read after the others as a fallback, never dropped: a hash proves a pack's bytes, not that it holds everything it claims to replace.
 
 `release`, `label`, `webhook`, `checkRun`, `comment`, `review`, `star`, `follow` and `profile` stay deletable. Their resolution is newest-wins or per-author, so a deletion removes only the deleter's own contribution. Residual risk: a revoked maintainer can delete a release they published. Readers fall back to the next-newest release for that tag.
 
@@ -128,7 +128,7 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
 - **Encrypted fields.** `issue`, `patch`, `comment` and `review` take `enc` (a byte array, AES-256-GCM under the epoch key, including title and body) plus `epoch`, and leave the plaintext `title`/`body` empty. `refUpdate`, `protectedRefUpdate` and `config` take the same `enc`/`epoch` pair.
   - A private ref update puts `refName` inside `enc` and sets `refNameHash = HMAC-SHA256(epoch key, refName)`, so ref names cannot be recovered by dictionary. `refName` is optional for this reason.
   - `dependentRequired {enc: [epoch]}` makes consensus refuse ciphertext without an epoch.
-  - **"Plaintext or `enc`, not both, not neither" is a client rule.** `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Clients treat an `issue`/`patch` with neither `title` nor `enc`, a `comment`/`review` with neither `body` nor `enc`, or a private repo's `refUpdate` carrying a plaintext `refName`, as malformed and skip it.
+  - **"Plaintext or `enc`, not both, not neither" is a client rule** (`is_well_formed`, vectors `well_formed__*`). `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Each kind has a required plaintext field (`title` for `issue`/`patch`, `body` for `comment`/`review`, `refName` for a ref update) and optional ones (`body`, and a patch's `baseRefName`/`sourceRefName`). In a **public** repo a document is well-formed when it has no `enc` and has its required field. In a **private** repo it is well-formed when it has a non-empty `enc`, an `epoch`, and none of its plaintext fields, so a private repo's `refUpdate` carrying a plaintext `refName` is malformed. An empty string counts as absent. Clients skip a malformed document.
   - Packs are encrypted before upload (Platform chunks or external storage). Oids, sizes and timing stay visible.
 - **What a stranger can still do.** Issues and PRs are un-gated, so anyone can post plaintext into a private repo's namespace. Clients show only documents that decrypt under a key the reader holds, or that come from a member.
 
@@ -146,20 +146,35 @@ The concrete AEAD layout, key derivation and test vectors are Phase 3 work and n
 | Owner lock-out prevention (`baseSupply`) | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | unchanged, still rules |
 | Issue and PR numbering | client rule, see below |
-| PR approvals | client rule: `review` is un-gated, and only reviews by M/W holders (as of the review's `$createdAt`) count toward approval |
+| PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. A review counts only if it is on the PR's current `headOid` and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3) and unknown verdicts neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting |
 
-**Numbering (client rule, to implement).** Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
+**Numbering** (client rule, `allocate_number`, vectors `allocate_number__*`). Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
 
 1. `n` = the provable count of the repo's issues (rangeCountable `number` index).
-2. `ceiling` = `2 × n + 100`.
-3. `base` = the largest existing number ≤ `ceiling` (a range query on the `number` index, descending, limit 1), or 0.
-4. Allocate `base + 1`; if taken, probe upward to the first free number ≤ `ceiling`, then above it.
+2. `ceiling` = `min(2 × n + 100, 2³² − 1)`.
+3. `base` = the largest taken number ≤ `ceiling` (a range query on the `number` index, descending from `ceiling`, limit 1), or 0 if there is none.
+4. Claim the first number greater than `base` that is not taken. Every number in `(base, ceiling]` is free by the choice of `base`, so below the ceiling this is `base + 1`. Only when `base` equals `ceiling` can squatters sit directly above it, and the probe steps over them (an ascending query from `base + 1`).
+5. If every number from `base + 1` to 2³² − 1 is taken, there is nothing to allocate.
 
-A number above the ceiling cannot be reached without the repo actually growing to about half that many issues, so a squatter at 2³²−1 (or anywhere far ahead) is ignored. Gaps below the ceiling are simply skipped. Squatting a number just ahead of the allocator costs the squatter a document fee and the allocator one retry. Issues and PRs number independently.
+Gaps below `base` are never filled. A number above the ceiling cannot be reached until the repo grows to about half that many issues, so a squatter at 2³²−1 (or anywhere far ahead) is ignored. A squatter at exactly the ceiling is counted, and allocation continues above it. Squatting the number the allocator is about to take costs the squatter a document fee and the allocator one retry: consensus refuses the duplicate, and the next attempt sees it as `base`. Issues and PRs number independently.
 
-**Conformance.** The kind-and-role rule of §3, the numbering rule above, the pack reader rule of §4, and the repoKey reader rule of §5 are `FORGE_RULES_V2` rules. Each needs conformance vectors before a client ships on v2.
+**Repository names** (`is_valid_repo_name`, `normalize_repo_name`, vectors `repo_name__*`). A name is valid when it matches the contract's pattern `^[a-z0-9][a-z0-9._-]{0,62}$` in full; a trailing newline does not match. Clients lowercase ASCII `A`–`Z` in user input before checking, and change nothing else, so `Dash-Forge` names `dash-forge`. Other characters are not folded: `é`, or the Kelvin sign that Unicode lowercases to `k`, leaves the name invalid.
 
-**Holdings vectors.** The `holdings__*` conformance vectors (token-history reconstruction) and the as-of-authorization parts of the `fold_*` vectors no longer apply to v2 repos. They stay for reading v1 repos. New v2 vectors are membership-existence facts plus the unchanged kind rules.
+**Conformance.** `FORGE_RULES_V2` is `forge-core::rules::v2` (Rust) and `forge-web/lib/rules/v2.ts` (TypeScript). The shared vectors in `forge-contracts/vectors/` carry `"rules": "v2"`; a vector without `rules` is v1, and both harnesses dispatch on the field. The v2 rules are:
+
+| Rule | Functions | Vectors |
+|---|---|---|
+| Issue/PR fold over `event` + `authorEvent` (§3) | `fold_issue_state_v2`, `fold_pr_state_v2` | `fold_issue_v2__*`, `fold_pr_v2__*` |
+| Membership | `RoleOracle::{role_at, member_at, current_role}` | through `approvals__*` |
+| Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
+| Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
+| Approvals | `count_approvals` | `approvals__*` |
+| Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
+| Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
+
+The v2 fold takes no membership input: an `event`'s existence is its authorization. `RoleOracle` answers "was X a member at time t" from the repo's *current* `maintainer`/`writer` documents, so a revoked member (whose document was deleted) is not a member at any time, and a re-added member counts from their new document. The repoKey reader rule of §5 is Phase 3 work and has no vectors yet.
+
+**Holdings vectors.** The `holdings__*` conformance vectors (token-history reconstruction) and the v1 `fold_issue__*` / `fold_pr__*` vectors do not apply to v2 repos. They stay, unchanged, for reading v1 repos.
 
 ## 7. Measured size and cost
 
