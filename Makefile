@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -60,3 +60,34 @@ infra-down:
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
 e2e: build-rust
 	@bash e2e/cli/run.sh
+
+## devnet-identities: mint (or resume) the 9-role identity pool on a devnet,
+## funded from the devnet's faucet wallet key, then verify every identity on
+## Platform. The key is read from dash-network-configs at runtime (process
+## substitution, never copied to disk) unless FORGE_DEVNET_FUNDING_WIF is set.
+## Knobs: DEVNET (moutai), DEVNET_CONFIGS (~/workspace/dash-network-configs),
+## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
+DEVNET ?= moutai
+DEVNET_CONFIGS ?= $(HOME)/workspace/dash-network-configs
+DEVNET_IDENTITY_DIR ?= $(HOME)/.config/dash-forge/test-identities/devnet-$(DEVNET)
+DEVNET_POOL_AMOUNT ?= 5
+DEVNET_ROLE_AMOUNTS ?= DEPLOYER=50
+MINT := node tools/mint-identity/mint.mjs
+DEVNET_POOL := $(MINT) pool --network devnet --devnet-name $(DEVNET) --out "$(DEVNET_IDENTITY_DIR)" \
+	--amount $(DEVNET_POOL_AMOUNT) --role-amounts "$(DEVNET_ROLE_AMOUNTS)"
+
+tools/mint-identity/node_modules: tools/mint-identity/package.json tools/mint-identity/package-lock.json
+	cd tools/mint-identity && npm ci
+	@touch $@
+
+devnet-identities: tools/mint-identity/node_modules
+	@if [ -n "$${FORGE_DEVNET_FUNDING_WIF:-}" ]; then \
+		$(DEVNET_POOL); \
+	else \
+		$(DEVNET_POOL) --funding-key-file <(git -C "$(DEVNET_CONFIGS)" show origin/master:devnet-$(DEVNET).yml); \
+	fi
+	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"
+
+## devnet-identities-verify: check the devnet pool exists on Platform with balances and keys.
+devnet-identities-verify: tools/mint-identity/node_modules
+	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"

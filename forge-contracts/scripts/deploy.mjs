@@ -60,7 +60,9 @@ async function main() {
   log(`connecting (${network})...`);
   await sdk.connect();
 
-  const pv = EvoSDK.getLatestVersionNumber ? await EvoSDK.getLatestVersionNumber() : undefined;
+  // The protocol version the connected network negotiated, not the SDK's latest
+  // (evo-sdk 4.2 knows protocol 14 while testnet still runs 13).
+  const pv = sdk.version();
 
   // identity nonce for contract-id derivation (facade returns the masked value)
   const nextNonce = ((await sdk.identities.nonce(ownerId)) ?? 0n) + 1n;
