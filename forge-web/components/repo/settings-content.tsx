@@ -17,7 +17,7 @@ import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator } from '@/lib/repo'
 import { readCollaborators, grantCollaborator, revokeCollaborator, suspendCollaborator } from '@/lib/repo'
-import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
@@ -59,7 +59,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   }
 
   const cost = previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin)
-  const registryContractId = NETWORKS[DEFAULT_NETWORK].registryContractId
+  const registryContractId = ACTIVE_NETWORK.registryContractId
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">

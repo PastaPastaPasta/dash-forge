@@ -199,8 +199,6 @@ struct DeploymentFile {
 struct ContractRecord {
     #[serde(default)]
     contract_id: Option<String>,
-    #[serde(default)]
-    owner_id: Option<String>,
 }
 
 /// What an embedded deployment file records for one network.
@@ -210,8 +208,6 @@ pub struct Deployment {
     pub key: String,
     /// The registry contract id, or `None` when the file is a skeleton (not yet deployed).
     pub registry_contract_id: Option<String>,
-    /// The registry owner identity id.
-    pub registry_owner_id: Option<String>,
     /// DAPI addresses recorded for a devnet (normalized); empty for testnet/mainnet.
     pub dapi_addresses: Vec<String>,
     /// A quorum service URL recorded for a devnet.
@@ -222,6 +218,16 @@ impl Deployment {
     /// The repo-relative path of the file this came from.
     pub fn path(&self) -> String {
         format!("forge-contracts/deployments/{}.json", self.key)
+    }
+
+    /// The registry this file records, sourced to the file; `None` for a skeleton.
+    pub fn registry(&self) -> Option<Registry> {
+        self.registry_contract_id
+            .clone()
+            .map(|contract_id| Registry {
+                contract_id,
+                source: ContractSource::Deployment(self.path()),
+            })
     }
 }
 
@@ -240,14 +246,12 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
             "forge-contracts/deployments/{key}.json is malformed: {e}"
         ))
     })?;
-    let registry = file.registry;
     Ok(Some(Deployment {
         key: key.to_string(),
-        registry_contract_id: registry
-            .as_ref()
-            .and_then(|r| r.contract_id.clone())
+        registry_contract_id: file
+            .registry
+            .and_then(|r| r.contract_id)
             .filter(|s| !s.is_empty()),
-        registry_owner_id: registry.and_then(|r| r.owner_id).filter(|s| !s.is_empty()),
         dapi_addresses: file
             .dapi_addresses
             .iter()
@@ -302,13 +306,7 @@ impl Registry {
 /// The registry for `network` with no user override: the embedded deployment's id, or
 /// `None` when nothing is deployed there.
 pub fn deployed_registry(network: &Network) -> Result<Option<Registry>> {
-    Ok(deployment(&network.key())?.and_then(|d| {
-        let source = ContractSource::Deployment(d.path());
-        d.registry_contract_id.map(|contract_id| Registry {
-            contract_id,
-            source,
-        })
-    }))
+    Ok(deployment(&network.key())?.and_then(|d| d.registry()))
 }
 
 /// A network plus the registry resolved for it — what [`crate::platform::PlatformClient`]
@@ -373,6 +371,24 @@ pub struct NetworkSettings {
     pub registry: Option<Registry>,
 }
 
+/// The env var names, in [`NetworkSettings::from_lookup`] order.
+const ENV_KEYS: [&str; 5] = [
+    ENV_NETWORK,
+    ENV_DEVNET_NAME,
+    ENV_DAPI_ADDRESSES,
+    ENV_QUORUM_URL,
+    ENV_REGISTRY_CONTRACT_ID,
+];
+
+/// The git config keys, in [`NetworkSettings::from_lookup`] order.
+const GIT_CONFIG_KEYS: [&str; 5] = [
+    "dash.network",
+    "dash.devnetName",
+    "dash.dapiAddresses",
+    "dash.quorumUrl",
+    "dash.registryContractId",
+];
+
 /// `Some(trimmed)` for a non-empty value; an empty setting counts as unset, so
 /// `DASH_FORGE_DEVNET_NAME=` (as [`Network::env_vars`] exports for testnet) falls through.
 fn non_empty(v: Option<String>) -> Option<String> {
@@ -401,34 +417,27 @@ impl NetworkSettings {
     /// The layer read from `DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
     /// `DASH_FORGE_DAPI_ADDRESSES`, `DASH_FORGE_QUORUM_URL` and `FORGE_REGISTRY_CONTRACT_ID`.
     pub fn from_env() -> Self {
-        Self::from_lookup(|k| std::env::var(k).ok(), "env")
-    }
-
-    /// Build a layer from a key lookup — the environment, or git config via the
-    /// `dash.*` keys ([`Self::from_git_config`]).
-    fn from_lookup(get: impl Fn(&str) -> Option<String>, origin: &str) -> Self {
-        Self {
-            network: non_empty(get(ENV_NETWORK)),
-            devnet_name: non_empty(get(ENV_DEVNET_NAME)),
-            dapi_addresses: non_empty(get(ENV_DAPI_ADDRESSES)),
-            quorum_base_url: non_empty(get(ENV_QUORUM_URL)),
-            registry: non_empty(get(ENV_REGISTRY_CONTRACT_ID)).map(|id| {
-                Registry::override_from(id, format!("{origin} {ENV_REGISTRY_CONTRACT_ID}"))
-            }),
-        }
+        Self::from_lookup(|k| std::env::var(k).ok(), ENV_KEYS, "env")
     }
 
     /// The layer from git config `dash.network`, `dash.devnetName`, `dash.dapiAddresses`,
     /// `dash.quorumUrl` and `dash.registryContractId`, read through `get` (which returns
     /// the value of a git config key, if set).
     pub fn from_git_config(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self::from_lookup(get, GIT_CONFIG_KEYS, "git config")
+    }
+
+    /// Build a layer from a key lookup. `keys` names network, devnet name, DAPI list,
+    /// quorum URL and registry id in that order; `origin` labels a registry override.
+    fn from_lookup(get: impl Fn(&str) -> Option<String>, keys: [&str; 5], origin: &str) -> Self {
+        let [network, devnet_name, dapi_addresses, quorum_base_url, registry] = keys;
         Self {
-            network: non_empty(get("dash.network")),
-            devnet_name: non_empty(get("dash.devnetName")),
-            dapi_addresses: non_empty(get("dash.dapiAddresses")),
-            quorum_base_url: non_empty(get("dash.quorumUrl")),
-            registry: non_empty(get("dash.registryContractId"))
-                .map(|id| Registry::override_from(id, "git config dash.registryContractId")),
+            network: non_empty(get(network)),
+            devnet_name: non_empty(get(devnet_name)),
+            dapi_addresses: non_empty(get(dapi_addresses)),
+            quorum_base_url: non_empty(get(quorum_base_url)),
+            registry: non_empty(get(registry))
+                .map(|id| Registry::override_from(id, format!("{origin} {registry}"))),
         }
     }
 
@@ -473,9 +482,9 @@ impl NetworkSettings {
             (None, Some(_)) => "devnet",
             (None, None) => "testnet",
         };
-        let network = match kind.to_ascii_lowercase().as_str() {
-            "testnet" => Network::Testnet,
-            "mainnet" => Network::Mainnet,
+        let (network, recorded) = match kind.to_ascii_lowercase().as_str() {
+            "testnet" => (Network::Testnet, deployment("testnet")?),
+            "mainnet" => (Network::Mainnet, deployment("mainnet")?),
             "devnet" => {
                 let name = self.devnet_name.ok_or_else(|| {
                     Error::Config(
@@ -495,12 +504,13 @@ impl NetworkSettings {
                 };
                 let quorum_base_url = self
                     .quorum_base_url
-                    .or_else(|| recorded.and_then(|d| d.quorum_base_url));
-                Network::Devnet {
+                    .or_else(|| recorded.as_ref().and_then(|d| d.quorum_base_url.clone()));
+                let network = Network::Devnet {
                     name,
                     dapi_addresses,
                     quorum_base_url,
-                }
+                };
+                (network, recorded)
             }
             other => {
                 return Err(Error::Config(format!(
@@ -508,10 +518,9 @@ impl NetworkSettings {
                 )))
             }
         };
-        let registry = match self.registry {
-            Some(r) => Some(r),
-            None => deployed_registry(&network)?,
-        };
+        let registry = self
+            .registry
+            .or_else(|| recorded.as_ref().and_then(Deployment::registry));
         Ok(NetworkTarget { network, registry })
     }
 }
@@ -801,6 +810,7 @@ mod tests {
                     .find(|(n, _)| *n == k)
                     .map(|(_, v)| (*v).to_string())
             },
+            ENV_KEYS,
             "env",
         );
         assert_eq!(env.network.as_deref(), Some("devnet"));
@@ -848,6 +858,7 @@ mod tests {
         let vars = net.env_vars();
         let child = NetworkSettings::from_lookup(
             |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()),
+            ENV_KEYS,
             "env",
         )
         .resolve()

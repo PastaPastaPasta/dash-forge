@@ -212,6 +212,9 @@ export const QUORUM_KEY_ENDPOINT: Readonly<Record<Network, string>> = {
       : ''),
 }
 
+/** The config of the network this build targets. */
+export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]
+
 /** The registry id for `network`, or a {@link NotDeployedError}. */
 export function requireRegistryContractId(network: Network): string {
   const config = NETWORKS[network]

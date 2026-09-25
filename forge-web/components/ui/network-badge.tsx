@@ -9,21 +9,16 @@
  */
 
 import { AlertTriangle } from 'lucide-react'
-import { DEFAULT_NETWORK, NETWORKS, NotDeployedError, type NetworkConfig } from '@/lib/constants'
+import { ACTIVE_NETWORK, NotDeployedError, type NetworkConfig } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
-/** The active network's config (fixed at build time). */
-export function activeNetwork(): NetworkConfig {
-  return NETWORKS[DEFAULT_NETWORK]
-}
-
 /** Whether the active network has a Dash Forge registry to read from. */
-export function isRegistryDeployed(config: NetworkConfig = activeNetwork()): boolean {
+export function isRegistryDeployed(config: NetworkConfig = ACTIVE_NETWORK): boolean {
   return config.registryContractId !== null
 }
 
 export function NetworkBadge({
-  config = activeNetwork(),
+  config = ACTIVE_NETWORK,
   always = false,
   className,
 }: {
@@ -54,7 +49,7 @@ export function NetworkBadge({
 }
 
 /** Full-width state for a view that needs the registry on a network without one. */
-export function NotDeployedState({ config = activeNetwork() }: { config?: NetworkConfig }): JSX.Element {
+export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: NetworkConfig }): JSX.Element {
   return (
     <div
       role="status"
