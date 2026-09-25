@@ -2,6 +2,8 @@
 
 Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build state. Update every session.
 
+> **2026-09-24:** this log records the July build. "Complete" below means *demonstrated on testnet*, not *usable by real users*. Forward planning now lives in [docs/roadmap.md](docs/roadmap.md).
+
 **Locked decisions**: testnet-complete (mainnet = runbook only) · GitHub `PastaPastaPasta/dash-forge` (private until Stage 4) · storage e2e docker-only (MinIO/kubo/static-http; Storacha+Pinata mock-tested) · import acceptance on medium repo (dashpay/dips-scale).
 
 ## Stage 0 — Repo, toolchain, scaffold ✅ COMPLETE

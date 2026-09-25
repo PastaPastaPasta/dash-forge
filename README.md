@@ -105,6 +105,8 @@ testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
 13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
 14. [Error codes](docs/errors.md) — every `dg` / `git-remote-dash` error code, its exit code and fix.
+15. [Product roadmap](docs/roadmap.md) — verified state, owner decisions, phased plan and execution tracker.
+16. [UX/DX specification](docs/design/ux-dx-spec.md) — launch journeys, identity, storage onboarding, cost, trust, CLI conventions; its §11 P0 backlog is the launch checklist.
 
 ### Verification
 
