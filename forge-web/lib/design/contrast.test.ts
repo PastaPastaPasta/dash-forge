@@ -87,20 +87,37 @@ describe('no component renders text in the raw brand blue', () => {
     })
   }
 
-  it('uses text-dash only on icons', () => {
-    // `text-dash` not followed by a shade (`-400`) or opacity (`/`). Icons (`aria-hidden`)
-    // are non-text graphics: WCAG 1.4.11 asks 3:1 of them, which the brand value meets on
-    // every dark surface. Text must use `text-dash-600 dark:text-dash-400`.
-    const raw = /\btext-dash(?![-/\w])/
+  // Any dash-blue text class other than the AA shades: `text-dash`, and opacity variants
+  // like `text-dash/80`, which are lower contrast still.
+  const RAW = /\btext-dash(?:\/\d+)?(?![-\w/])/
+  // A lucide icon element carrying the class in its own props and marked aria-hidden: a
+  // non-text graphic, which WCAG 1.4.11 asks 3:1 of — the brand value meets that on every
+  // dark surface.
+  const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
+  // Class strings that are applied only to an icon wrapper, checked by hand.
+  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:34'])
+
+  it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']
       .flatMap((d) => sources(join(root, d)))
       .flatMap((file) =>
         readFileSync(file, 'utf8')
           .split('\n')
-          .map((line, i) => ({ file, line: i + 1, text: line }))
-          .filter(({ text }) => raw.test(text) && !text.includes('aria-hidden')),
+          .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
+          .filter(({ where, text }) => RAW.test(text.replace(ICON, '')) && !ICON_ONLY.has(where)),
       )
-      .map(({ file, line }) => `${file.slice(root.length + 1)}:${line}`)
+      .map(({ where }) => where)
     expect(offenders).toEqual([])
+  })
+
+  it('catches the regressions it exists for', () => {
+    const flagged = (line: string): boolean => RAW.test(line.replace(ICON, ''))
+    expect(flagged('<span className="text-dash">{name}</span>')).toBe(true)
+    expect(flagged('<span className="text-dash/80">{name}</span>')).toBe(true)
+    // Visible text next to an unrelated hidden icon on the same line is still text.
+    expect(flagged('<span className="text-dash">{n}</span><Wallet aria-hidden />')).toBe(true)
+    expect(flagged('<GitMerge className="h-4 w-4 text-dash" aria-hidden />')).toBe(false)
+    expect(flagged('<span className="text-dash-600 dark:text-dash-400">{n}</span>')).toBe(false)
+    expect(flagged('<span className="bg-dash/10">{n}</span>')).toBe(false)
   })
 })
