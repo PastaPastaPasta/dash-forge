@@ -80,6 +80,12 @@ export interface PullView {
   readonly sourceContractId: string
   /** The branch the PR was opened from, in the source repo, when recorded. */
   readonly sourceRefName: string | null
+  /**
+   * Whether {@link headOid} has been a tip of the base ref — the exact test the fold applies
+   * to a `merge` event naming the head, so a merge mark will count iff this is true (and the
+   * marker holds WRITE or MAINTAIN). False when the base history or head is unknown.
+   */
+  readonly headOnBase: boolean
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
@@ -310,6 +316,7 @@ export async function readPull(
     headOid,
     sourceContractId: asIdentifierString(patchDoc['sourceContractId']),
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
+    headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
     state: foldPrState(events, author, resolver, baseTip, isAncestor),
     stateComplete: true,
   }
@@ -364,6 +371,7 @@ function incompletePullView(doc: PlainDocument): PullView {
     // the event log is not, and it is what a reviewer needs to fetch the PR at all.
     sourceContractId: asIdentifierString(doc['sourceContractId']),
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
+    headOnBase: false,
     state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
   }

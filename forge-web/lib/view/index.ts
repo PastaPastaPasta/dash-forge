@@ -56,6 +56,24 @@ export {
   type FallbackProgress,
 } from './browse-fallback'
 export {
+  contentChecks,
+  NO_CONTENT_CHECKS,
+  subscribeContentChecks,
+  type ContentChecks,
+} from './content-checks'
+export {
+  connectionTrust,
+  deriveConnectionTrust,
+  deriveTrust,
+  worstOf,
+  type ConnectionTrust,
+  type TrustInputs,
+  type TrustLink,
+  type TrustReport,
+  type TrustState,
+} from './trust'
+export { pullActions, type PullActionInputs, type PullActions } from './pull-actions'
+export {
   backendInfo,
   loadRepoHome,
   type BackendInfo,

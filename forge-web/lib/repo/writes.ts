@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { NETWORKS } from '../constants'
+import { NETWORKS, type Network } from '../constants'
 import { isLegalRefName } from '../rules'
 import { decodeIdentifier } from '../auth/base58'
 import { errorMessage } from '../utils'
@@ -88,10 +88,14 @@ function isDuplicateUniqueError(e: unknown): boolean {
   return m.includes('duplicate') || m.includes('unique index') || m.includes('already exists')
 }
 
-function registryId(auth: WriteAuth): string {
-  const id = NETWORKS[auth.network].registryContractId
-  if (id === null) throw new Error(`no registry contract configured for ${auth.network}`)
+function registryIdFor(network: Network): string {
+  const id = NETWORKS[network].registryContractId
+  if (id === null) throw new Error(`no registry contract configured for ${network}`)
   return id
+}
+
+function registryId(auth: WriteAuth): string {
+  return registryIdFor(auth.network)
 }
 
 async function nextIssueNumber(sdk: EvoSDK, repo: RepoRef): Promise<number> {
@@ -300,7 +304,7 @@ export async function starRepo(
     })
   } catch (e) {
     if (isDuplicateUniqueError(e)) {
-      const existing = await findOwnRegistryDoc(sdk, auth, REGISTRY_DOC.star, 'listingId', listingId)
+      const existing = await findOwnRegistryDoc(sdk, auth.network, auth.identityId, REGISTRY_DOC.star, 'listingId', listingId)
       return {
         documentId: existing ?? '',
         confirmed: true,
@@ -318,7 +322,7 @@ export async function unstarRepo(
   listingId: string,
 ): Promise<{ deleted: boolean }> {
   const contractId = registryId(auth)
-  const existing = await findOwnRegistryDoc(sdk, auth, REGISTRY_DOC.star, 'listingId', listingId)
+  const existing = await findOwnRegistryDoc(sdk, auth.network, auth.identityId, REGISTRY_DOC.star, 'listingId', listingId)
   if (!existing) return { deleted: true }
   return deleteDocumentIdempotent(sdk, auth, {
     contractId,
@@ -344,7 +348,8 @@ export async function followIdentity(
     if (isDuplicateUniqueError(e)) {
       const existing = await findOwnRegistryDoc(
         sdk,
-        auth,
+        auth.network,
+        auth.identityId,
         REGISTRY_DOC.follow,
         'identityId',
         identityId,
@@ -366,7 +371,7 @@ export async function unfollowIdentity(
   identityId: string,
 ): Promise<{ deleted: boolean }> {
   const contractId = registryId(auth)
-  const existing = await findOwnRegistryDoc(sdk, auth, REGISTRY_DOC.follow, 'identityId', identityId)
+  const existing = await findOwnRegistryDoc(sdk, auth.network, auth.identityId, REGISTRY_DOC.follow, 'identityId', identityId)
   if (!existing) return { deleted: true }
   return deleteDocumentIdempotent(sdk, auth, {
     contractId,
@@ -376,25 +381,26 @@ export async function unfollowIdentity(
 }
 
 /**
- * Resolve the caller's own registry doc (star/follow) whose `field` equals `targetId`, via the
+ * Resolve `ownerId`'s own registry doc (star/follow) whose `field` equals `targetId`, via the
  * `$ownerId` index (filtered client-side by field — the single-field owner query matches the
  * deployed registry index, mirroring forge-core `find_own`).
  */
 async function findOwnRegistryDoc(
   sdk: EvoSDK,
-  auth: WriteAuth,
+  network: Network,
+  ownerId: string,
   documentType: string,
   field: string,
   targetId: string,
 ): Promise<string | null> {
-  const contractId = registryId(auth)
+  const contractId = registryIdFor(network)
   // Complete, matching forge-core `find_own`: this backs un-star / un-follow, and a user
   // past 100 stars could otherwise not remove an older one — while the call still reported
   // success, since "not found" and "not looked at" are indistinguishable here.
   const documents = await queryAllDocuments(sdk, {
     dataContractId: contractId,
     documentTypeName: documentType,
-    where: [['$ownerId', '==', auth.identityId]],
+    where: [['$ownerId', '==', ownerId]],
     orderBy: [['$ownerId', 'asc'], ['$createdAt', 'desc']],
   })
   for (const doc of documents) {
@@ -406,6 +412,29 @@ async function findOwnRegistryDoc(
     }
   }
   return null
+}
+
+/**
+ * Whether `identityId` has starred `listingId` — the viewer's initial star state. Throws on a
+ * read failure: a star button that silently read "not starred" would offer the wrong action.
+ */
+export async function hasStarred(
+  sdk: EvoSDK,
+  network: Network,
+  identityId: string,
+  listingId: string,
+): Promise<boolean> {
+  return (await findOwnRegistryDoc(sdk, network, identityId, REGISTRY_DOC.star, 'listingId', listingId)) !== null
+}
+
+/** Whether `identityId` follows `targetId` — the viewer's initial follow state. Throws on failure. */
+export async function isFollowing(
+  sdk: EvoSDK,
+  network: Network,
+  identityId: string,
+  targetId: string,
+): Promise<boolean> {
+  return (await findOwnRegistryDoc(sdk, network, identityId, REGISTRY_DOC.follow, 'identityId', targetId)) !== null
 }
 
 // ---------------------------------------------------------------------------

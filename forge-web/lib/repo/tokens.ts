@@ -28,7 +28,14 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Decode, base58Encode } from '../auth/base58'
 import { TOKEN_HISTORY_CONTRACT_ID, type Network } from '../constants'
-import { AuthzResolver, type TokenKind, type TokenOp, type TokenRecord } from '../rules'
+import {
+  AuthzResolver,
+  holdingsAsOf,
+  type Holdings,
+  type TokenKind,
+  type TokenOp,
+  type TokenRecord,
+} from '../rules'
 import { base64ToBytes, queryAllDocuments } from '../sdk'
 import { repoTokenIds } from './collab'
 import type { RepoRef } from './contract'
@@ -180,12 +187,17 @@ export async function readTokenHistory(
   }
 }
 
-// Grants change rarely, but every issues/pulls page needs the resolver — cache it per
+// Grants change rarely, but every issues/pulls page needs the resolver — cache the history per
 // contract. A failed reconstruction returns [] (degraded author-only folds); a SUCCESSFUL
 // run always contains at least the two synthetic genesis records, so a short history marks
 // a failure and is evicted immediately rather than pinning the degraded resolver for the TTL.
 const AUTHZ_TTL_MS = 5 * 60_000
-const authzCache = new Map<string, { at: number; promise: Promise<AuthzResolver> }>()
+const authzCache = new Map<string, { at: number; promise: Promise<TokenRecord[]> }>()
+
+/** Fewer records than the two synthetic genesis mints means the history read failed. */
+function historyComplete(records: readonly TokenRecord[]): boolean {
+  return records.length >= 2
+}
 
 function authzKey(network: Network, contractId: string): string {
   return `${network}:${contractId}`
@@ -196,6 +208,32 @@ export function invalidateAuthz(contractId: string): void {
   for (const key of authzCache.keys()) {
     if (key.endsWith(`:${contractId}`)) authzCache.delete(key)
   }
+}
+
+/** {@link readTokenHistory} through the per-contract session cache (failures not cached). */
+function tokenHistoryCached(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  network: Network,
+): Promise<TokenRecord[]> {
+  const key = authzKey(network, repo.contractId)
+  const hit = authzCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < AUTHZ_TTL_MS) return hit.promise
+  const promise: Promise<TokenRecord[]> = readTokenHistory(sdk, repo, network).then(
+    (records) => {
+      if (!historyComplete(records) && authzCache.get(key)?.promise === promise) {
+        authzCache.delete(key)
+      }
+      return records
+    },
+  )
+  // readTokenHistory never rejects today, but a rejected entry must not be pinned for the
+  // TTL — evict it like every other session cache does.
+  promise.catch(() => {
+    if (authzCache.get(key)?.promise === promise) authzCache.delete(key)
+  })
+  authzCache.set(key, { at: Date.now(), promise })
+  return promise
 }
 
 /**
@@ -209,22 +247,29 @@ export async function resolveAuthz(
   repo: RepoRef,
   network: Network = 'testnet',
 ): Promise<AuthzResolver> {
-  const key = authzKey(network, repo.contractId)
-  const hit = authzCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < AUTHZ_TTL_MS) return hit.promise
-  const promise: Promise<AuthzResolver> = readTokenHistory(sdk, repo, network).then(
-    (records) => {
-      if (records.length < 2 && authzCache.get(key)?.promise === promise) {
-        authzCache.delete(key)
-      }
-      return new AuthzResolver(records)
-    },
-  )
-  // readTokenHistory never rejects today, but a rejected entry must not be pinned for the
-  // TTL — evict it like every other session cache does.
-  promise.catch(() => {
-    if (authzCache.get(key)?.promise === promise) authzCache.delete(key)
-  })
-  authzCache.set(key, { at: Date.now(), promise })
-  return promise
+  return new AuthzResolver(await tokenHistoryCached(sdk, repo, network))
+}
+
+/**
+ * An identity's current WRITE / MAINTAIN holdings, or `null` when the token history could not
+ * be read — "unknown" must stay distinguishable from "holds nothing", or a read failure would
+ * silently strip a maintainer's controls (or, inverted, grant a stranger's).
+ */
+export function currentHoldings(
+  records: readonly TokenRecord[],
+  identity: string,
+): Holdings | null {
+  if (!historyComplete(records)) return null
+  // As of "now": every record so far counts, which is what an event signed now is judged by.
+  return holdingsAsOf(records, identity, Number.MAX_SAFE_INTEGER)
+}
+
+/** {@link currentHoldings} for `identity`, read through the shared history cache. */
+export async function readViewerHoldings(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  identity: string,
+  network: Network = 'testnet',
+): Promise<Holdings | null> {
+  return currentHoldings(await tokenHistoryCached(sdk, repo, network), identity)
 }

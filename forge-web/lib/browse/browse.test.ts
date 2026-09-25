@@ -218,4 +218,39 @@ describe('browse-plane reader', () => {
     await reader.readObject(blobOid)
     expect(source.fetches()).toBeGreaterThan(after)
   })
+
+  it('reports each fresh read to onObject: verified on a match, failed on a mismatch', async () => {
+    const content = new TextEncoder().encode('observe me\n')
+    const blobOid = gitOidHex('blob', content)
+    const stored = concat(objHeader(T_BLOB, content.length), zlibSync(content))
+    const row = { offset: PACK_HEADER_LEN, length: stored.length, span: stored.length, depth: 0 }
+    const verdicts: string[] = []
+
+    const good = new BrowseReader(
+      ObjectLocator.parse(buildLocator([{ oidHex: blobOid, ...row }])),
+      packSourceFor(packFrame(stored)),
+      { onObject: (v) => verdicts.push(v) },
+    )
+    await good.readObject(blobOid)
+    await good.readObject(blobOid) // memo hit: already reported
+    expect(verdicts).toEqual(['verified'])
+
+    // A locator that files these bytes under a different id: the hash check must refuse it.
+    const wrongOid = 'ff'.repeat(20)
+    const lying = new BrowseReader(
+      ObjectLocator.parse(buildLocator([{ oidHex: wrongOid, ...row }])),
+      packSourceFor(packFrame(stored)),
+      { onObject: (v) => verdicts.push(v) },
+    )
+    await expect(lying.readObject(wrongOid)).rejects.toThrow(/oid mismatch/)
+    expect(verdicts).toEqual(['verified', 'failed'])
+
+    const unchecked = new BrowseReader(
+      ObjectLocator.parse(buildLocator([{ oidHex: blobOid, ...row }])),
+      packSourceFor(packFrame(stored)),
+      { verify: false, onObject: (v) => verdicts.push(v) },
+    )
+    await unchecked.readObject(blobOid)
+    expect(verdicts).toEqual(['verified', 'failed', 'unchecked'])
+  })
 })

@@ -35,10 +35,21 @@ class EvoSdkService {
   private initPromise: Promise<void> | null = null
   private config: EvoSdkConfig | null = null
   private ready = false
+  private trusted = false
 
   /** Whether the SDK is connected and its contracts are preloaded. */
   get isReady(): boolean {
     return this.ready
+  }
+
+  /**
+   * Whether the live connection proof-checks its reads. A trusted connect prefetches the
+   * quorum keys and verifies every plain `.query()` against them (design-freeze-2 #5); any
+   * other connection would return node answers unchecked. The trust panel derives its
+   * "proofs" state from this rather than assuming it.
+   */
+  get isTrusted(): boolean {
+    return this.ready && this.trusted
   }
 
   /**
@@ -81,6 +92,9 @@ class EvoSdkService {
         ? EvoSDK.mainnetTrusted(options)
         : EvoSDK.testnetTrusted(options)
     await this.sdk.connect()
+    // Both constructors above are the *Trusted variants — record it so the UI reports what
+    // this connection does rather than what the app intends.
+    this.trusted = true
     // Pin the DPP version so read normalization (`toJSON`) matches the connected network.
     try {
       const version = (this.sdk as unknown as { version(): number }).version()
@@ -133,6 +147,7 @@ class EvoSdkService {
   cleanup(): void {
     this.sdk = null
     this.ready = false
+    this.trusted = false
     this.config = null
     this.initPromise = null
   }
