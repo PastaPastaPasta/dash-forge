@@ -1,0 +1,14 @@
+{
+  "name": "public_issue_without_title",
+  "description": "A public issue needs a title.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "issue",
+      "body": "steps"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

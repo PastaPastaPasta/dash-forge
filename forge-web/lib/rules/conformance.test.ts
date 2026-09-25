@@ -1,11 +1,13 @@
 /**
  * THE PARITY PROOF — for the pure rules.
  *
- * Loads every `forge-contracts/vectors/*.json` and asserts this TypeScript port of
- * FORGE_RULES_V1 produces the vector's `expected` — the exact same suite the Rust
- * reference runs at the bottom of `crates/forge-core/src/rules.rs`. If this is green,
- * the two clients agree on ref resolution, protected-pattern matching, issue/PR folds,
- * token holdings, ref naming, and flatIndex staleness overlay.
+ * Loads every `forge-contracts/vectors/*.json` and asserts this TypeScript port produces the
+ * vector's `expected` — the exact same suite the Rust reference runs at the bottom of
+ * `crates/forge-core/src/rules.rs`. A vector's `rules` field picks the rule set: absent or
+ * `"v1"` is FORGE_RULES_V1, `"v2"` is FORGE_RULES_V2 (`./v2`). If this is green, the two
+ * clients agree on ref resolution, protected-pattern matching, issue/PR folds (v1 and v2),
+ * token holdings, ref naming, flatIndex staleness overlay, and the v2 numbering, pack-copy,
+ * approval, well-formedness and repo-name rules.
  *
  * SCOPE, stated precisely because it has been over-read: every vector hands the pure
  * functions a ready-made input array, so this suite proves the two ports FOLD identically
@@ -30,6 +32,7 @@ import {
   matchesProtected,
   overlayTree,
   resolveRef,
+  v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import type {
@@ -45,6 +48,7 @@ interface Vector {
   readonly name: string
   readonly description: string
   readonly case: string
+  readonly rules?: 'v1' | 'v2'
   readonly input: unknown
   readonly expected: unknown
 }
@@ -168,16 +172,120 @@ function runCase(v: Vector): void {
   }
 }
 
-describe('FORGE_RULES_V1 conformance vectors', () => {
+/**
+ * Refuse input keys the case does not read, as the Rust harness does (`deny_unknown_fields`),
+ * so a vector cannot carry a field (e.g. v1's `tokenRecords`) that the rules silently ignore.
+ */
+function onlyKeys(v: Vector, allowed: readonly string[]): void {
+  const extra = Object.keys(v.input as object).filter((k) => !allowed.includes(k))
+  expect(extra, `vector ${v.name}: unknown input keys`).toEqual([])
+}
+
+function runCaseV2(v: Vector): void {
+  switch (v.case) {
+    case 'fold_issue': {
+      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor'])
+      const inp = v.input as V2FoldInput
+      expect(v2.foldIssueStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor)).toEqual(
+        v.expected,
+      )
+      break
+    }
+    case 'fold_pr': {
+      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry'])
+      const inp = v.input as V2FoldInput & { readonly baseTip?: string | null; readonly ancestry?: Pairs }
+      const got = v2.foldPrStateV2(
+        inp.events ?? [],
+        inp.authorEvents ?? [],
+        inp.targetAuthor,
+        inp.baseTip ?? undefined,
+        ancestryFromPairs(inp.ancestry ?? []),
+      )
+      expect(got).toEqual(v.expected)
+      break
+    }
+    case 'allocate_number': {
+      onlyKeys(v, ['count', 'takenNumbersDesc'])
+      const inp = v.input as { readonly count: number; readonly takenNumbersDesc: readonly number[] }
+      expect(v2.allocateNumber(inp.count, inp.takenNumbersDesc)).toEqual(v.expected)
+      break
+    }
+    case 'pack_copies': {
+      onlyKeys(v, ['copies'])
+      const { copies } = v.input as { readonly copies: readonly v2.PackCopy[] }
+      const want = v.expected as {
+        readonly order?: readonly string[]
+        readonly selected?: string | null
+        readonly readOrder?: readonly v2.PackPick[]
+      }
+      expect(Object.keys(want).filter((k) => !['order', 'selected', 'readOrder'].includes(k))).toEqual([])
+      expect(Object.keys(want).length).toBeGreaterThan(0)
+      if (want.order !== undefined) {
+        expect(v2.orderPackCopies(copies).map((c) => c.id)).toEqual(want.order)
+      }
+      if (want.selected !== undefined) {
+        expect(v2.selectPackCopy(copies)?.id ?? null).toEqual(want.selected)
+      }
+      if (want.readOrder !== undefined) {
+        expect(v2.packReadOrder(copies)).toEqual(want.readOrder)
+      }
+      break
+    }
+    case 'approvals': {
+      onlyKeys(v, ['reviews', 'memberships', 'headOid'])
+      const inp = v.input as {
+        readonly reviews: readonly v2.Review[]
+        readonly memberships: readonly v2.Membership[]
+        readonly headOid: string
+      }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      expect(v2.countApprovals(inp.reviews, oracle, inp.headOid)).toEqual(v.expected)
+      break
+    }
+    case 'well_formed': {
+      onlyKeys(v, ['doc', 'visibility'])
+      const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }
+      expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
+      break
+    }
+    case 'repo_name': {
+      onlyKeys(v, ['name'])
+      const { name } = v.input as { readonly name: string }
+      expect({ valid: v2.isValidRepoName(name), normalized: v2.normalizeRepoName(name) }).toEqual(
+        v.expected,
+      )
+      break
+    }
+    default:
+      throw new Error(`unknown v2 vector case: ${v.case}`)
+  }
+}
+
+interface V2FoldInput {
+  readonly events?: readonly Event[]
+  readonly authorEvents?: readonly Event[]
+  readonly targetAuthor: string
+}
+
+describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
+  const v1 = vectors.filter((v) => (v.rules ?? 'v1') === 'v1')
+  const v2Vectors = vectors.filter((v) => v.rules === 'v2')
 
   it('loads the full vector corpus', () => {
-    expect(vectors.length).toBeGreaterThanOrEqual(20)
+    expect(v1.length).toBeGreaterThanOrEqual(70)
+    expect(v2Vectors.length).toBeGreaterThanOrEqual(40)
+    expect(v1.length + v2Vectors.length).toBe(vectors.length)
   })
 
-  for (const v of vectors) {
-    it(`${v.case} :: ${v.name}`, () => {
+  for (const v of v1) {
+    it(`v1 ${v.case} :: ${v.name}`, () => {
       runCase(v)
+    })
+  }
+  for (const v of v2Vectors) {
+    it(`v2 ${v.case} :: ${v.name}`, () => {
+      runCaseV2(v)
     })
   }
 })

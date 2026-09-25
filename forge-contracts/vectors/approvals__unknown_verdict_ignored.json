@@ -1,0 +1,38 @@
+{
+  "name": "unknown_verdict_ignored",
+  "description": "An unknown verdict code neither approves nor clears.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 9,
+        "commitOid": "head0000",
+        "createdAt": 200
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": [
+      "maint"
+    ]
+  }
+}

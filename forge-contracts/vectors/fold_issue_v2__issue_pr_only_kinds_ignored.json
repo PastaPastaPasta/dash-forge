@@ -1,0 +1,44 @@
+{
+  "name": "issue_pr_only_kinds_ignored",
+  "description": "PR-only kinds (merge, retarget, draft, ready) do nothing to an issue.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "draft",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 110
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 120
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

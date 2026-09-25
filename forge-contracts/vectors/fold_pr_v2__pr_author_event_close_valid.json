@@ -1,0 +1,31 @@
+{
+  "name": "pr_author_event_close_valid",
+  "description": "The PR author's authorEvent close applies.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

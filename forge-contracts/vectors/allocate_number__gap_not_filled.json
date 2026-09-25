@@ -1,0 +1,15 @@
+{
+  "name": "gap_not_filled",
+  "description": "A gap below the largest in-ceiling number is never filled: 1, 2, 7 taken (ceiling 106), allocate 8.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 3,
+    "takenNumbersDesc": [
+      7,
+      2,
+      1
+    ]
+  },
+  "expected": 8
+}

@@ -1,0 +1,13 @@
+{
+  "name": "slash",
+  "description": "A slash is invalid (names are one path segment).",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "owner/repo"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

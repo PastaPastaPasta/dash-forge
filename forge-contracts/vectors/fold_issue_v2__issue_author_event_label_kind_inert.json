@@ -1,0 +1,35 @@
+{
+  "name": "issue_author_event_label_kind_inert",
+  "description": "An authorEvent whose kind is not close or reopen cannot exist on chain (kind is 1..=2); handed one anyway, the fold ignores it.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "alice",
+        "value": "wontfix",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "a2",
+        "targetId": "T",
+        "kind": "assign",
+        "actor": "alice",
+        "value": "alice",
+        "oid": null,
+        "createdAt": 110
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

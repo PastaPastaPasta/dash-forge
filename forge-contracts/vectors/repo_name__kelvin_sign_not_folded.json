@@ -1,0 +1,13 @@
+{
+  "name": "kelvin_sign_not_folded",
+  "description": "Only ASCII A-Z are lowercased: the Kelvin sign (U+212A) is not folded to k.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "Kelvin"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "issue_event_by_since_revoked_member_valid",
+  "description": "A member's close stays valid after their membership document is deleted: v2 folds take no membership input, because an event's existence is its authorization.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "exmaint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

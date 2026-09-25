@@ -1,0 +1,28 @@
+{
+  "name": "issue_member_label_valid",
+  "description": "A member's label event applies. Its existence proves consensus admitted a maintainer or writer.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [
+      "bug"
+    ],
+    "assignees": []
+  }
+}

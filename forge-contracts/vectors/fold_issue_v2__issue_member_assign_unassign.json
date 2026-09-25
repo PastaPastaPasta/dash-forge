@@ -1,0 +1,46 @@
+{
+  "name": "issue_member_assign_unassign",
+  "description": "Assign and unassign events from members apply in (createdAt, id) order.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "unassign",
+        "actor": "maint",
+        "value": "bob",
+        "oid": null,
+        "createdAt": 300
+      },
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "assign",
+        "actor": "maint",
+        "value": "bob",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "assign",
+        "actor": "writer",
+        "value": "carol",
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": [
+      "carol"
+    ]
+  }
+}

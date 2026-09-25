@@ -1,0 +1,16 @@
+{
+  "name": "public_patch_plaintext",
+  "description": "A public patch with a title and ref names is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/fix"
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

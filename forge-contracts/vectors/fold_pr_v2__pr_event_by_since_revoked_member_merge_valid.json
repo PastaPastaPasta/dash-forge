@@ -1,0 +1,36 @@
+{
+  "name": "pr_event_by_since_revoked_member_merge_valid",
+  "description": "A merge by a member whose document was deleted later stays valid: the event's existence is its authorization.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "exwriter",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

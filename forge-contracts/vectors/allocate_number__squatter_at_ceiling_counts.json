@@ -1,0 +1,16 @@
+{
+  "name": "squatter_at_ceiling_counts",
+  "description": "A squatter exactly at the ceiling (108) is within it: base 108, allocate 109.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      108,
+      3,
+      2,
+      1
+    ]
+  },
+  "expected": 109
+}

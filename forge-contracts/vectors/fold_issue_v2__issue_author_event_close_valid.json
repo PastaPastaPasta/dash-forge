@@ -1,0 +1,26 @@
+{
+  "name": "issue_author_event_close_valid",
+  "description": "The author's authorEvent close applies.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

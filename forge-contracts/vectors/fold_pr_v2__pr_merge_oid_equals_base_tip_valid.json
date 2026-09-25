@@ -1,0 +1,31 @@
+{
+  "name": "pr_merge_oid_equals_base_tip_valid",
+  "description": "A merge oid equal to the base tip is reachable (reflexive).",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "T",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

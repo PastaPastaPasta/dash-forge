@@ -1,0 +1,45 @@
+{
+  "name": "pr_unreachable_merge_then_reachable_merge",
+  "description": "An inert merge is skipped; a later reachable merge by another member merges.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "X",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "writer",
+        "value": null,
+        "oid": "M",
+        "createdAt": 200
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

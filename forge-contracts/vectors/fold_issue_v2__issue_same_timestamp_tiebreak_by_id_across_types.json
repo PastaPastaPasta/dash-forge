@@ -1,0 +1,36 @@
+{
+  "name": "issue_same_timestamp_tiebreak_by_id_across_types",
+  "description": "An event and an authorEvent at the same createdAt are ordered by id: a1 (reopen) before e2 (close), so the issue ends closed.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

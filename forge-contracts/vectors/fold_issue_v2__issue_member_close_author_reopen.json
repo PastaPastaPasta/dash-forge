@@ -1,0 +1,45 @@
+{
+  "name": "issue_member_close_author_reopen",
+  "description": "Both document types fold as one log: a member closes, the author reopens, a member closes again.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "writer",
+        "value": null,
+        "oid": null,
+        "createdAt": 300
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

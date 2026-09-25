@@ -26,3 +26,6 @@ export { AuthzResolver, holdingsAny, holdingsAsOf } from './holdings'
 export { displayRefName, resolveRef } from './resolveRef'
 export { foldIssueState, foldPrState } from './fold'
 export { overlayTree } from './overlay'
+// FORGE_RULES_V2 (forge-v2 shared-contract repositories)
+export * as v2 from './v2'
+export { FORGE_RULES_V2 } from './v2'

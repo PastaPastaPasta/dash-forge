@@ -1,0 +1,13 @@
+{
+  "name": "simple",
+  "description": "A lowercase slug is valid and normalizes to itself.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "dash-forge"
+  },
+  "expected": {
+    "valid": true,
+    "normalized": "dash-forge"
+  }
+}

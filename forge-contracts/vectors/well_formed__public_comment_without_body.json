@@ -1,0 +1,13 @@
+{
+  "name": "public_comment_without_body",
+  "description": "A public comment needs a body.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "comment"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

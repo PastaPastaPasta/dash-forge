@@ -1,0 +1,11 @@
+{
+  "name": "empty",
+  "description": "A repo with no issues allocates #1.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 0,
+    "takenNumbersDesc": []
+  },
+  "expected": 1
+}

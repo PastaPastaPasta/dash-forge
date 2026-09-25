@@ -1,0 +1,48 @@
+{
+  "name": "supersedes_only_from_selected_copy",
+  "description": "Only the selected copy's supersedes counts: P2's maintainer copy (selected) supersedes nothing, so a writer copy's claim on P1 is ignored.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "c1",
+        "packHash": "P1",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "m2",
+        "packHash": "P2",
+        "ownerRole": "maintainer",
+        "createdAt": 30,
+        "verified": true
+      },
+      {
+        "id": "w2",
+        "packHash": "P2",
+        "ownerRole": "writer",
+        "createdAt": 20,
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "readOrder": [
+      {
+        "packHash": "P1",
+        "copyId": "c1",
+        "superseded": false
+      },
+      {
+        "packHash": "P2",
+        "copyId": "m2",
+        "superseded": false
+      }
+    ]
+  }
+}

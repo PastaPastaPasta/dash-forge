@@ -1,0 +1,26 @@
+{
+  "name": "issue_author_event_by_non_author_inert",
+  "description": "An authorEvent whose writer is not the target's author is ignored (consensus would refuse it; defense in depth).",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "mallory",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}
