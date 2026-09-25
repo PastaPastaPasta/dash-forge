@@ -79,7 +79,10 @@ fn main() -> Result<()> {
     let entries: Vec<Entry> = paths
         .into_iter()
         .enumerate()
-        .map(|(i, path)| Entry { path, registers_group: i == 0 })
+        .map(|(i, path)| Entry {
+            path,
+            registers_group: i == 0,
+        })
         .collect();
 
     let pv = PlatformVersion::get(PROTOCOL_VERSION)
@@ -108,12 +111,24 @@ fn main() -> Result<()> {
             .unwrap_or("contract")
             .to_string();
         println!("== {name} ({})", entry.path.display());
-        match validate_one(entry, &name, nonce, owner, group_id, &known, &placeholders, pv, limit)
-        {
+        match validate_one(
+            entry,
+            &name,
+            nonce,
+            owner,
+            group_id,
+            &known,
+            &placeholders,
+            pv,
+            limit,
+        ) {
             Ok(contract) => {
-                placeholders.insert(placeholder_for(&name), contract.id().to_string(
-                    dpp::platform_value::string_encoding::Encoding::Base58,
-                ));
+                placeholders.insert(
+                    placeholder_for(&name),
+                    contract
+                        .id()
+                        .to_string(dpp::platform_value::string_encoding::Encoding::Base58),
+                );
                 known.push(contract);
             }
             Err(e) => {
@@ -159,16 +174,17 @@ fn validate_one(
     let mut json: Json = serde_json::from_str(&text).context("parsing JSON")?;
 
     let contract_id = DataContract::generate_data_contract_id_v0(owner, nonce);
-    json["id"] = Json::String(contract_id.to_string(
-        dpp::platform_value::string_encoding::Encoding::Base58,
-    ));
-    json["ownerId"] = Json::String(owner.to_string(
-        dpp::platform_value::string_encoding::Encoding::Base58,
-    ));
+    json["id"] =
+        Json::String(contract_id.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
+    json["ownerId"] =
+        Json::String(owner.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
 
     // (2) full structural validation, as the node's action transform runs it
     let contract = DataContract::from_json(json, true, pv).map_err(|e| anyhow!("{e}"))?;
-    println!("   parse (full validation, protocol {}): ok", pv.protocol_version);
+    println!(
+        "   parse (full validation, protocol {}): ok",
+        pv.protocol_version
+    );
 
     let types = contract.document_types();
     for (type_name, document_type) in types {
@@ -185,8 +201,9 @@ fn validate_one(
     }
 
     // (3) + (6) the create transition, v1 with the contract group
-    let serialization: DataContractInSerializationFormat =
-        (&contract).try_into_platform_versioned(pv).map_err(|e| anyhow!("{e}"))?;
+    let serialization: DataContractInSerializationFormat = (&contract)
+        .try_into_platform_versioned(pv)
+        .map_err(|e| anyhow!("{e}"))?;
     let memberships = vec![ContractGroupMembership {
         contract_group_id: group_id,
         member: ContractGroupMember::Contract,
@@ -225,7 +242,10 @@ fn validate_one(
     for (doc_type, props) in &samples {
         if !check(doc_type, props)? {
             let value: dpp::platform_value::Value = props.clone().into();
-            let errors = contract.validate_document_properties(doc_type, value, pv).map_err(|e| anyhow!("{e}"))?.errors;
+            let errors = contract
+                .validate_document_properties(doc_type, value, pv)
+                .map_err(|e| anyhow!("{e}"))?
+                .errors;
             bail!("sample {doc_type} rejected: {errors:?}");
         }
     }
@@ -334,7 +354,11 @@ fn basic_structure(
 /// before it, which a node would fetch from state. The parser under full validation leaves the
 /// referenced-side checks of a same-contract leaf's permanence (40122 / 40131) and every
 /// `propertyAgreement` pair to this step, so it runs on every leaf, not only foreign ones.
-fn registration_references(contract: &DataContract, known: &[DataContract], pv: &PlatformVersion) -> Result<(usize, usize)> {
+fn registration_references(
+    contract: &DataContract,
+    known: &[DataContract],
+    pv: &PlatformVersion,
+) -> Result<(usize, usize)> {
     let (mut local, mut foreign) = (0, 0);
     for (type_name, document_type) in contract.document_types() {
         let dt = document_type.as_ref();
@@ -370,8 +394,24 @@ fn registration_references(contract: &DataContract, known: &[DataContract], pv: 
                 };
                 let referenced = referenced_contract
                     .document_type_optional_for_name(decl.document_type_name)
-                    .ok_or_else(|| anyhow!("{at}: {target_id} has no document type {} (40121)", decl.document_type_name))?;
-                check_leaf(contract, dt, reference_property, referenced_contract, referenced, leaf, &decl, target_id != contract.id(), &at, pv)?;
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "{at}: {target_id} has no document type {} (40121)",
+                            decl.document_type_name
+                        )
+                    })?;
+                check_leaf(
+                    contract,
+                    dt,
+                    reference_property,
+                    referenced_contract,
+                    referenced,
+                    leaf,
+                    &decl,
+                    target_id != contract.id(),
+                    &at,
+                    pv,
+                )?;
             }
         }
     }
@@ -391,13 +431,19 @@ fn check_leaf(
     at: &str,
     pv: &PlatformVersion,
 ) -> Result<()> {
-    let deletable =
-        referenced.documents_can_be_deleted() || referenced.documents_can_be_deleted_by_moderators();
+    let deletable = referenced.documents_can_be_deleted()
+        || referenced.documents_can_be_deleted_by_moderators();
     if decl.permanent && deletable {
-        bail!("{at}: permanentDocument names deletable type {} (40122)", decl.document_type_name);
+        bail!(
+            "{at}: permanentDocument names deletable type {} (40122)",
+            decl.document_type_name
+        );
     }
     if !decl.permanent && !deletable {
-        bail!("{at}: deletableDocument names non-deletable type {} (40131)", decl.document_type_name);
+        bail!(
+            "{at}: deletableDocument names non-deletable type {} (40131)",
+            decl.document_type_name
+        );
     }
     // the parse already ran the referenced side of same-contract lookups and lists
     if is_foreign {
@@ -414,32 +460,49 @@ fn check_leaf(
     }
     let writer = DocumentPropertyType::Identifier;
     for (referring, referenced_prop) in decl.property_agreement {
-        let invalid = |why: &str| anyhow!("{at}: agreement {referring} = {referenced_prop} invalid (40126): {why}");
+        let invalid = |why: &str| {
+            anyhow!("{at}: agreement {referring} = {referenced_prop} invalid (40126): {why}")
+        };
         if Some(referring.as_str()) == reference_property {
-            return Err(invalid("the referring property cannot be the reference property itself"));
+            return Err(invalid(
+                "the referring property cannot be the reference property itself",
+            ));
         }
         let referring_type = if referring.starts_with('$') {
             if !is_referring_system_agreement_property(referring) {
-                return Err(invalid("the referring side must be a schema property or $ownerId"));
+                return Err(invalid(
+                    "the referring side must be a schema property or $ownerId",
+                ));
             }
             &writer
         } else {
             &declaring
                 .flattened_properties()
                 .get(referring)
-                .ok_or_else(|| invalid("the declaring type does not define the referring property"))?
+                .ok_or_else(|| {
+                    invalid("the declaring type does not define the referring property")
+                })?
                 .property_type
         };
         if referenced_prop.starts_with('$') {
             if !is_referenced_system_agreement_property(referenced_prop) {
-                return Err(invalid("only $ownerId, $creatorId and $id may be agreed with"));
+                return Err(invalid(
+                    "only $ownerId, $creatorId and $id may be agreed with",
+                ));
             }
-            if !matches!(referring_type, DocumentPropertyType::Identifier | DocumentPropertyType::IdentifierWithReference(_)) {
+            if !matches!(
+                referring_type,
+                DocumentPropertyType::Identifier | DocumentPropertyType::IdentifierWithReference(_)
+            ) {
                 return Err(invalid("the referring property must be an identifier"));
             }
             if referenced_prop == "$creatorId"
                 && !referenced
-                    .should_use_creator_id(referenced_contract.system_version_type(), referenced_contract.config().version(), pv)
+                    .should_use_creator_id(
+                        referenced_contract.system_version_type(),
+                        referenced_contract.config().version(),
+                        pv,
+                    )
                     .map_err(|e| anyhow!("{e}"))?
             {
                 return Err(invalid("the referenced type does not record $creatorId"));
@@ -449,13 +512,19 @@ fn check_leaf(
         let theirs = referenced
             .flattened_properties()
             .get(referenced_prop)
-            .ok_or_else(|| invalid("the referenced type does not define the referenced property"))?;
+            .ok_or_else(|| {
+                invalid("the referenced type does not define the referenced property")
+            })?;
         if is_transient(referenced, referenced_prop) {
             return Err(invalid("the referenced property is transient"));
         }
-        if matches!(referring_type, DocumentPropertyType::Object(_) | DocumentPropertyType::TypedArray(_))
-            || matches!(theirs.property_type, DocumentPropertyType::Object(_) | DocumentPropertyType::TypedArray(_))
-        {
+        if matches!(
+            referring_type,
+            DocumentPropertyType::Object(_) | DocumentPropertyType::TypedArray(_)
+        ) || matches!(
+            theirs.property_type,
+            DocumentPropertyType::Object(_) | DocumentPropertyType::TypedArray(_)
+        ) {
             return Err(invalid("agreement properties must be single plain values"));
         }
         if referring_type.value_kind() != theirs.property_type.value_kind() {
@@ -471,31 +540,100 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
     let bytes = |b: u8, n: usize| Json::Array(vec![Json::from(b); n]);
     match contract {
         "forge-core" => vec![
-            ("repo", serde_json::json!({ "name": "dash-forge", "description": "git on Dash Platform", "defaultBranch": "main", "visibility": "public", "topics": ["git", "dash"] })),
-            ("repo", serde_json::json!({ "name": "secret.repo_1", "visibility": "private", "forkOf": id(3) })),
-            ("maintainer", serde_json::json!({ "repoId": id(1), "memberId": id(2) })),
-            ("writer", serde_json::json!({ "repoId": id(1), "memberId": id(2) })),
-            ("refUpdate", serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20), "prevOid": bytes(2, 20) })),
-            ("protectedRefUpdate", serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 32), "force": true })),
-            ("config", serde_json::json!({ "repoId": id(1), "defaultBranch": "main", "protectedPatterns": ["refs/heads/main", "refs/tags/**"], "backend": { "mode": 2, "uris": ["s3://bucket/prefix"] }, "archived": false })),
-            ("packManifest", serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "kind": 0, "sizeBytes": 1234, "objectCount": 10, "chunkCount": 1, "storage": 0, "uris": [], "tips": bytes(1, 20), "offsetIndexParts": 0 })),
-            ("manifestPart", serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "partSeq": 0, "entries": bytes(5, 100) })),
-            ("chunk", serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4900), "d1": bytes(6, 4900) })),
-            ("release", serde_json::json!({ "repoId": id(1), "tagName": "v1.0.0", "name": "One", "notes": "notes", "yanked": false, "assets": "[]" })),
-            ("label", serde_json::json!({ "repoId": id(1), "name": "bug", "color": "#d73a4a", "description": "Something is broken" })),
-            ("repoKey", serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 64) })),
+            (
+                "repo",
+                serde_json::json!({ "name": "dash-forge", "description": "git on Dash Platform", "defaultBranch": "main", "visibility": "public", "topics": ["git", "dash"] }),
+            ),
+            (
+                "repo",
+                serde_json::json!({ "name": "secret.repo_1", "visibility": "private", "forkOf": id(3) }),
+            ),
+            (
+                "maintainer",
+                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
+            ),
+            (
+                "writer",
+                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
+            ),
+            (
+                "refUpdate",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20), "prevOid": bytes(2, 20) }),
+            ),
+            (
+                "protectedRefUpdate",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 32), "force": true }),
+            ),
+            (
+                "config",
+                serde_json::json!({ "repoId": id(1), "defaultBranch": "main", "protectedPatterns": ["refs/heads/main", "refs/tags/**"], "backend": { "mode": 2, "uris": ["s3://bucket/prefix"] }, "archived": false }),
+            ),
+            (
+                "packManifest",
+                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "kind": 0, "sizeBytes": 1234, "objectCount": 10, "chunkCount": 1, "storage": 0, "uris": [], "tips": bytes(1, 20), "offsetIndexParts": 0 }),
+            ),
+            (
+                "manifestPart",
+                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "partSeq": 0, "entries": bytes(5, 100) }),
+            ),
+            (
+                "chunk",
+                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4900), "d1": bytes(6, 4900) }),
+            ),
+            (
+                "release",
+                serde_json::json!({ "repoId": id(1), "tagName": "v1.0.0", "name": "One", "notes": "notes", "yanked": false, "assets": "[]" }),
+            ),
+            (
+                "label",
+                serde_json::json!({ "repoId": id(1), "name": "bug", "color": "#d73a4a", "description": "Something is broken" }),
+            ),
+            (
+                "repoKey",
+                serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 64) }),
+            ),
         ],
         "forge-collab" => vec![
-            ("issue", serde_json::json!({ "repoId": id(1), "number": 1, "title": "It breaks", "body": "Steps…" })),
-            ("issue", serde_json::json!({ "repoId": id(1), "number": 2, "enc": bytes(1, 64), "epoch": 0 })),
-            ("issue", serde_json::json!({ "repoId": id(1), "number": 3, "title": "imported", "imported": { "author": "octocat", "createdAt": 1, "url": "https://github.com/o/r/issues/3" } })),
-            ("patch", serde_json::json!({ "repoId": id(1), "number": 1, "title": "Fix", "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "sourceRefNameHash": bytes(8, 32), "sourceRefName": "refs/heads/fix", "headOid": bytes(1, 20), "patchManifestHash": bytes(4, 32) })),
-            ("comment", serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "LGTM", "commitOid": bytes(1, 20), "path": "src/main.rs", "line": 10, "side": 1 })),
-            ("review", serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "body": "ok" })),
-            ("event", serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 3, "oid": bytes(1, 20) })),
-            ("checkRun", serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci/test", "status": "completed", "conclusion": "success", "detailsUrl": "https://ci.example/1", "summary": "12 passed" })),
-            ("webhook", serde_json::json!({ "repoId": id(1), "hookId": bytes(3, 32), "url": "https://relay.example/hook", "events": ["push", "issue"], "relayIdentityId": id(6), "relayKeyId": 4, "senderKeyId": 4, "secret": bytes(2, 48), "disabled": false })),
-            ("profile", serde_json::json!({ "displayName": "pasta", "bio": "hi", "links": ["https://dash.org"] })),
+            (
+                "issue",
+                serde_json::json!({ "repoId": id(1), "number": 1, "title": "It breaks", "body": "Steps…" }),
+            ),
+            (
+                "issue",
+                serde_json::json!({ "repoId": id(1), "number": 2, "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "issue",
+                serde_json::json!({ "repoId": id(1), "number": 3, "title": "imported", "imported": { "author": "octocat", "createdAt": 1, "url": "https://github.com/o/r/issues/3" } }),
+            ),
+            (
+                "patch",
+                serde_json::json!({ "repoId": id(1), "number": 1, "title": "Fix", "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "sourceRefNameHash": bytes(8, 32), "sourceRefName": "refs/heads/fix", "headOid": bytes(1, 20), "patchManifestHash": bytes(4, 32) }),
+            ),
+            (
+                "comment",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "LGTM", "commitOid": bytes(1, 20), "path": "src/main.rs", "line": 10, "side": 1 }),
+            ),
+            (
+                "review",
+                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "body": "ok" }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 3, "oid": bytes(1, 20) }),
+            ),
+            (
+                "checkRun",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci/test", "status": "completed", "conclusion": "success", "detailsUrl": "https://ci.example/1", "summary": "12 passed" }),
+            ),
+            (
+                "webhook",
+                serde_json::json!({ "repoId": id(1), "hookId": bytes(3, 32), "url": "https://relay.example/hook", "events": ["push", "issue"], "relayIdentityId": id(6), "relayKeyId": 4, "senderKeyId": 4, "secret": bytes(2, 48), "disabled": false }),
+            ),
+            (
+                "profile",
+                serde_json::json!({ "displayName": "pasta", "bio": "hi", "links": ["https://dash.org"] }),
+            ),
             ("star", serde_json::json!({ "repoId": id(1) })),
             ("follow", serde_json::json!({ "identityId": id(2) })),
         ],
@@ -511,22 +649,78 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
     let wide = "\u{1F600}".repeat(1300);
     match contract {
         "forge-core" => vec![
-            ("repo", "uppercase name", serde_json::json!({ "name": "Dash", "visibility": "public" })),
-            ("repo", "name over 63", serde_json::json!({ "name": "a".repeat(64), "visibility": "public" })),
-            ("repo", "unknown visibility", serde_json::json!({ "name": "x", "visibility": "internal" })),
-            ("maintainer", "short member id", serde_json::json!({ "repoId": id(1), "memberId": bytes(2, 31) })),
-            ("refUpdate", "missing repoId", serde_json::json!({ "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20) })),
-            ("refUpdate", "enc without epoch", serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20), "enc": bytes(1, 64) })),
-            ("chunk", "d0 over 4900", serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4901) })),
-            ("repoKey", "wrapped under 32", serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 16) })),
+            (
+                "repo",
+                "uppercase name",
+                serde_json::json!({ "name": "Dash", "visibility": "public" }),
+            ),
+            (
+                "repo",
+                "name over 63",
+                serde_json::json!({ "name": "a".repeat(64), "visibility": "public" }),
+            ),
+            (
+                "repo",
+                "unknown visibility",
+                serde_json::json!({ "name": "x", "visibility": "internal" }),
+            ),
+            (
+                "maintainer",
+                "short member id",
+                serde_json::json!({ "repoId": id(1), "memberId": bytes(2, 31) }),
+            ),
+            (
+                "refUpdate",
+                "missing repoId",
+                serde_json::json!({ "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20) }),
+            ),
+            (
+                "refUpdate",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20), "enc": bytes(1, 64) }),
+            ),
+            (
+                "chunk",
+                "d0 over 4900",
+                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4901) }),
+            ),
+            (
+                "repoKey",
+                "wrapped under 32",
+                serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 16) }),
+            ),
         ],
         "forge-collab" => vec![
-            ("issue", "number 0", serde_json::json!({ "repoId": id(1), "number": 0, "title": "t" })),
-            ("issue", "body over maxBytes", serde_json::json!({ "repoId": id(1), "number": 1, "title": "t", "body": wide })),
-            ("issue", "enc without epoch", serde_json::json!({ "repoId": id(1), "number": 1, "enc": bytes(1, 64) })),
-            ("event", "missing targetNumber", serde_json::json!({ "repoId": id(1), "targetId": id(5), "kind": 1 })),
-            ("checkRun", "unknown status", serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "done" })),
-            ("star", "extra property", serde_json::json!({ "repoId": id(1), "note": "x" })),
+            (
+                "issue",
+                "number 0",
+                serde_json::json!({ "repoId": id(1), "number": 0, "title": "t" }),
+            ),
+            (
+                "issue",
+                "body over maxBytes",
+                serde_json::json!({ "repoId": id(1), "number": 1, "title": "t", "body": wide }),
+            ),
+            (
+                "issue",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "number": 1, "enc": bytes(1, 64) }),
+            ),
+            (
+                "event",
+                "missing targetNumber",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "kind": 1 }),
+            ),
+            (
+                "checkRun",
+                "unknown status",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "done" }),
+            ),
+            (
+                "star",
+                "extra property",
+                serde_json::json!({ "repoId": id(1), "note": "x" }),
+            ),
         ],
         _ => vec![],
     }
