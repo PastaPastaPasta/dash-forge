@@ -99,6 +99,17 @@ impl LocalRepo {
         }
     }
 
+    /// `git config --get <key>` for the repo being pushed/fetched (inheriting `GIT_DIR`, so
+    /// repo-local, global and `-c` values all apply). `None` when unset.
+    pub fn config_get(key: &str) -> Option<String> {
+        if key.starts_with('-') || key.chars().any(char::is_control) {
+            return None;
+        }
+        let out = run_git(&["config", "--get", key], None, false, None).ok()?;
+        let s = String::from_utf8_lossy(&out).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+
     /// Whether object `oid` is present in the local odb.
     pub fn object_exists(oid: &str) -> bool {
         if ensure_safe_rev(oid).is_err() {
