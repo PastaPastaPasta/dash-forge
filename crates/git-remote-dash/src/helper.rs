@@ -376,10 +376,11 @@ impl Helper {
             // is written, so no ref can point at history the policy did not store. A dry
             // run builds the pack and prints the plan, then stops.
             upload_push_pack(&ctx, &want_tips, &remote_refs).await?;
-            // Test affordance (like DASH_FORGE_KILL_AFTER_CHUNK): stop after the manifest
-            // landed and before any ref is written — the state a push interrupted between
-            // the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise the
-            // re-push-of-an-already-recorded-pack path.
+            // Test affordance, compiled only with `--features test-hooks`: stop after the
+            // manifest landed and before any ref is written — the state a push interrupted
+            // between the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise
+            // the re-push-of-an-already-recorded-pack path.
+            #[cfg(feature = "test-hooks")]
             if !dry_run && std::env::var_os("DASH_FORGE_FAIL_BEFORE_REFS").is_some() {
                 bail!("simulated interruption after the manifest, before the refs (DASH_FORGE_FAIL_BEFORE_REFS)");
             }
@@ -611,8 +612,35 @@ async fn upload_push_pack(
     let externals = external_targets(ctx)?;
     policy::enforce(estimate.total(), ctx.policy).map_err(|why| anyhow!(why))?;
 
+    // An earlier push may already have recorded this exact pack (unique packHash; a
+    // duplicate manifest create is treated as "already stored"). Decide BEFORE paying:
+    // still readable → nothing to store; unreadable → refuse now, not after new copies.
+    if let Some(existing) = ctx
+        .svc
+        .read_pack_manifest(ctx.repo, job.pack_hash)
+        .await
+        .context("checking for an existing manifest of this pack")?
+    {
+        // The browse index is left alone: the earlier push published (or tried to) the
+        // fragment for this pack, and a missing one is rebuilt by the next repack.
+        return confirm_existing_manifest(ctx, &job, &existing).await;
+    }
+
     let jpath = crate::journal::journal_path(ctx.git_dir, &job.meta.pack_hash);
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    // Keep this clone's copy of an externally stored pack (.git/dash/packs/<sha256>.pack)
+    // BEFORE the manifest names it: if every external copy is later lost — or this push
+    // dies between the manifest and the refs — `dg reseed --from-local` can restore the
+    // exact bytes. A Platform copy needs no local backup (chunks are on-chain).
+    if !replication.has_platform() {
+        if let Err(e) = forge_core::storage::local::keep_pushed_pack(
+            ctx.git_dir,
+            &job.meta.pack_hash,
+            job.bytes,
+        ) {
+            tracing::warn!(error = %e, "could not keep a local copy of the pushed pack");
+        }
+    }
     record_pack(ctx, &job, &replication).await?;
 
     // Push fully landed (copies + manifest). The chunk journal is the only record of
@@ -791,18 +819,6 @@ async fn record_pack(
     }
     let stored = StoredArtifact::from_replication(replication, job.bytes)
         .context("recording the confirmed copies")?;
-    // The manifest's `packHash` is unique and a duplicate create is treated as "already
-    // stored" (idempotent resume). That is only true if the EXISTING manifest's copies are
-    // still readable: a re-push of the same pack under a different policy must not leave
-    // refs pointing at a manifest whose storage is gone while the new copies go unrecorded.
-    if let Some(existing) = ctx
-        .svc
-        .read_pack_manifest(ctx.repo, job.pack_hash)
-        .await
-        .context("checking for an existing manifest of this pack")?
-    {
-        return confirm_existing_manifest(ctx, job, &existing, &stored.uris).await;
-    }
     ctx.svc
         .write_pack_manifest(
             ctx.repo,
@@ -837,37 +853,36 @@ async fn record_pack(
     Ok(())
 }
 
-/// This pack already has a manifest (an earlier push stored it). Accept it only if at least
-/// one copy it records is readable and hash-matches; otherwise refuse, naming both the dead
-/// copies and the ones this push just confirmed, so the user can restore or reseed.
+/// This pack already has a manifest (an earlier push recorded it). Accept it only if at
+/// least one copy it records is readable and hash-matches; otherwise refuse — before this
+/// push pays for anything — naming the dead copies and the way back.
+///
+/// A Platform-tier (`storage = 0`) manifest written by this identity for a pack of the
+/// same size is accepted without a download: its chunks were confirmed at consensus when
+/// it was written, and a plain Platform re-push (the common "interrupted after the
+/// manifest" resume) must not re-download the whole pack to find that out.
 async fn confirm_existing_manifest(
     ctx: &PushContext<'_>,
     job: &PackJob<'_>,
     existing: &forge_core::repo::PackManifestInfo,
-    new_uris: &[String],
 ) -> Result<()> {
+    let short = &job.meta.pack_hash[..12];
+    let on_chain = existing.storage == 0
+        && existing.chunk_count == u64::from(job.chunk_count)
+        && existing.size_bytes == job.bytes.len() as u64;
+    if on_chain {
+        ctx.say(&format!(
+            "dash: pack {short} is already stored on Platform by an earlier push; not storing it again"
+        ));
+        return Ok(());
+    }
     let reader = PackReader::from_user_config();
     match ctx.svc.fetch_artifact(ctx.repo, existing, &reader).await {
         Ok(bytes) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
-            let unrecorded: Vec<&String> = new_uris
-                .iter()
-                .filter(|u| !existing.uris.contains(u))
-                .collect();
             ctx.say(&format!(
-                "dash: pack {} was already recorded by an earlier push and is still readable",
-                &job.meta.pack_hash[..12]
+                "dash: pack {short} was already recorded by an earlier push and is still \
+                 readable; not storing it again"
             ));
-            if !unrecorded.is_empty() {
-                ctx.say(&format!(
-                    "dash: note: this push's new copies are not in that manifest: {} — announce \
-                     them with `dg reseed` (packMirror) if you want readers to use them",
-                    unrecorded
-                        .iter()
-                        .map(|u| u.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
             Ok(())
         }
         other => {
@@ -881,15 +896,11 @@ async fn confirm_existing_manifest(
                 existing.uris.join(", ")
             };
             bail!(
-                "pack {} already recorded at {recorded}, none reachable ({why}); restore that \
-                 storage or run `dg reseed`. This push confirmed new copies at {} — record \
-                 them with `dg reseed` (packMirror) once the pack is readable. No ref was updated.",
-                job.meta.pack_hash,
-                if new_uris.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    new_uris.join(", ")
-                }
+                "pack {} already recorded at {recorded}, none reachable ({why}). Restore that \
+                 storage, or re-upload the pack from this clone with `dg reseed --from-local \
+                 <owner>/<repo>` (run inside this repository), then push again. Nothing was \
+                 stored and no ref was updated.",
+                job.meta.pack_hash
             )
         }
     }

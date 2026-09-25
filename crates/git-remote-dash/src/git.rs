@@ -103,15 +103,11 @@ impl LocalRepo {
     /// `GIT_DIR`, so repo-local, global and `-c` values all apply): `(scope, value)` where
     /// scope is `local`,
     /// `worktree`, `global`, `system` or `command` (`-c`). `None` when unset.
+    ///
+    /// On a git without `--show-scope` (< 2.26) the value is still read, via plain
+    /// `--get` (see [`forge_core::storage::policy::git_config_scoped`]) — never dropped.
     pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
-        if key.starts_with('-') || key.chars().any(char::is_control) {
-            return None;
-        }
-        let out = run_git(&["config", "--show-scope", "--get", key], None, false, None).ok()?;
-        let line = String::from_utf8_lossy(&out).trim_end().to_string();
-        let (scope, value) = line.split_once('\t')?;
-        let value = value.trim().to_string();
-        (!value.is_empty()).then(|| (scope.to_string(), value))
+        forge_core::storage::policy::git_config_scoped(key)
     }
 
     /// Whether object `oid` is present in the local odb.
