@@ -48,7 +48,7 @@ use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{KeyType, PartialIdentity, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
+use dash_sdk::dpp::serialization::{PlatformDeserializableUntrusted, PlatformSerializable};
 use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBatchTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
 use dash_sdk::dpp::state_transition::data_contract_create_transition::methods::DataContractCreateTransitionMethodsV0;
@@ -62,6 +62,7 @@ use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCo
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
+use dash_sdk::platform::contract_groups::ContractGroupMembershipsForContract;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::tokens::builders::destroy::TokenDestroyFrozenFundsTransitionBuilder;
 use dash_sdk::platform::tokens::builders::freeze::TokenFreezeTransitionBuilder;
@@ -312,6 +313,45 @@ impl PlatformClient {
         self.fetch_contract(&id).await
     }
 
+    /// The Platform protocol version the SDK currently encodes and verifies with.
+    ///
+    /// The SDK starts at its per-network floor (13 for testnet/mainnet, 14 for a devnet)
+    /// and ratchets upward only from the metadata of a *proof-verified* response, so this
+    /// is the network's real version only after at least one proved query has succeeded.
+    /// Call [`Self::refresh_protocol_version`] first when nothing has been fetched yet.
+    pub fn protocol_version(&self) -> u32 {
+        self.sdk.protocol_version_number()
+    }
+
+    /// Issue a proved query so the SDK learns the network's protocol version, and return
+    /// it. A failed refresh keeps the highest proof-verified version seen so far.
+    pub async fn refresh_protocol_version(&self) -> Result<u32> {
+        self.sdk
+            .refresh_protocol_version()
+            .await
+            .map_err(|e| Error::Platform(format!("refreshing the protocol version: {e}")))
+    }
+
+    /// The base58 ids of the contract groups `contract_id` belongs to as a whole
+    /// (proof-verified `getContractGroupsForContract`, protocol 14+). Empty when it belongs
+    /// to none. Memberships through individual document types or tokens are not included.
+    pub async fn contract_groups_of(&self, contract_id: &str) -> Result<Vec<String>> {
+        let id = parse_id(contract_id, "contract id")?;
+        let memberships = retry_transient_read("fetch contract groups", || {
+            ContractGroupMembershipsForContract::fetch(&self.sdk, id)
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("fetching the groups of {contract_id}: {e}")))?;
+        Ok(memberships
+            .map(|m| {
+                m.contract
+                    .iter()
+                    .map(|g| g.to_string(Encoding::Base58))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// The underlying SDK handle. Kept crate-visible so [`WriteEngine`] can drive it
     /// without re-exporting SDK types across the crate boundary.
     pub(crate) fn sdk(&self) -> &Sdk {
@@ -497,20 +537,31 @@ impl PlatformClient {
         filters: &[QueryFilter],
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
+        // Page a descending read in ascending order and reverse it (see
+        // [`ascending_equivalent`]): the rs-sdk 4.2 verifier rejects the proof a protocol-13
+        // node returns for a descending page that starts after a cursor, so every read past
+        // the first 100 rows would fail on testnet.
+        let ascending = ascending_equivalent(filters, order);
+        let order = ascending.as_deref().unwrap_or(order);
         // `async move` so the future owns the cursor String; returning a future that
         // borrows the closure's parameter would not outlive the call.
-        page_to_exhaustion(document_type, |start_after: Option<String>| async move {
-            self.query_documents(
-                contract,
-                document_type,
-                filters,
-                order,
-                PAGE_SIZE,
-                start_after.as_deref(),
-            )
-            .await
-        })
-        .await
+        let mut documents =
+            page_to_exhaustion(document_type, |start_after: Option<String>| async move {
+                self.query_documents(
+                    contract,
+                    document_type,
+                    filters,
+                    order,
+                    PAGE_SIZE,
+                    start_after.as_deref(),
+                )
+                .await
+            })
+            .await?;
+        if ascending.is_some() {
+            documents.reverse();
+        }
+        Ok(documents)
     }
 
     /// Create a data contract (WITH tokens) from a JSON template, signing with `key`
@@ -1184,15 +1235,35 @@ impl<'a> WriteEngine<'a> {
         let mut rng = StdRng::from_entropy();
         let entropy: [u8; 32] = rng.gen();
 
-        // The create transition takes the document's id verbatim (entropy is stored
-        // alongside), so compute and set it from the same entropy we bake in — the id
-        // is then known up front and stays consistent with the signed bytes.
-        let document_id = Document::generate_document_id_v0(
+        // Fetch the nonce ONCE (bump_first = true) and bake it into the signature. We do
+        // NOT re-fetch on retry — that would bump the nonce and (with fresh entropy) mint
+        // a new document id, i.e. a duplicate write. The SDK's NonceCache handles DIP-30
+        // internally, so this value is used as-is.
+        let nonce = self
+            .client
+            .sdk()
+            .get_identity_contract_nonce(self.owner_id, contract.id(), true, None)
+            .await
+            .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
+
+        // One version for both the id and the transition. The SDK learned it from the
+        // proved reads above (contract, identity, nonce); read it once so a ratchet between
+        // the two uses cannot make them disagree.
+        let platform_version = self.client.sdk().version();
+
+        // The id the transition will carry, known before broadcast. From protocol 14 it
+        // commits to the identity-contract nonce as well as the entropy (protocol 13 and
+        // earlier: entropy only), and the create transition re-derives it the same way —
+        // so it must come from the same entropy, nonce and version we sign with.
+        let document_id = Document::generate_document_id(
             &contract.id(),
             &self.owner_id,
             document_type,
             entropy.as_slice(),
-        );
+            nonce,
+            platform_version,
+        )
+        .map_err(|e| Error::Platform(format!("deriving the document id: {e}")))?;
 
         let document = Document::V0(DocumentV0 {
             id: document_id,
@@ -1209,22 +1280,13 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            // Assigned by Drive on create; not part of the client-built document.
+            contract_version: None,
         });
 
         let doc_type_ref = contract
             .document_type_for_name(document_type)
             .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
-
-        // Fetch the nonce ONCE (bump_first = true) and bake it into the signature. We do
-        // NOT re-fetch on retry — that would bump the nonce and (with fresh entropy) mint
-        // a new document id, i.e. a duplicate write. The SDK's NonceCache handles DIP-30
-        // internally, so this value is used as-is.
-        let nonce = self
-            .client
-            .sdk()
-            .get_identity_contract_nonce(self.owner_id, contract.id(), true, None)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
 
         // For a token-gated create the transition must carry payment info matching the
         // doc type's declared `tokenCost.create` (else consensus rejects with "Required
@@ -1240,7 +1302,7 @@ impl<'a> WriteEngine<'a> {
             0,
             token_payment,
             &self.signer,
-            self.client.sdk().version(),
+            platform_version,
             None,
         )
         .await
@@ -1281,6 +1343,8 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            // Assigned by Drive on create; not part of the client-built document.
+            contract_version: None,
         });
 
         let doc_type_ref = contract
@@ -1331,15 +1395,23 @@ impl<'a> WriteEngine<'a> {
         // Deserialize the SAME signed bytes we captured at prepare time. Every broadcast
         // in the loop below re-sends these exact bytes (identical nonce, entropy and
         // signature), so a retry can only ever make the write land once.
-        let state_transition = StateTransition::deserialize_from_bytes(&prepared.signed.bytes)
-            .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
+        let state_transition =
+            StateTransition::deserialize_from_bytes_untrusted(&prepared.signed.bytes)
+                .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
         let sdk = self.client.sdk();
 
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
+            // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
+            // outcome whose proof only authenticates the resulting state, and that is every
+            // document of an `indexOnly` type (protocol 14; forge-v2's `star` / `follow`): the
+            // entry carries no id, entropy or nonce to bind one transition to it. This accepts
+            // execution-proved outcomes too, so nothing weakens for the other types, and for a
+            // sign-once write "the proven state holds it" is exactly the success condition — a
+            // duplicate of the same signed bytes is rejected on its nonce, not proved again.
             match state_transition
-                .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(sdk, None)
                 .await
             {
                 Ok(_proof) => return Ok(BroadcastOutcome::Applied),
@@ -1588,6 +1660,40 @@ pub fn decode_identifier(base58: &str) -> Result<[u8; 32]> {
 
 /// Rows per page. Drive's default and maximum are both 100.
 const PAGE_SIZE: u32 = 100;
+
+/// The all-ascending order whose traversal, reversed, is exactly `order`'s traversal — or
+/// `None` when `order` is already ascending or has no such equivalent.
+///
+/// A complete read ([`PlatformClient::query_all_documents`]) pages with a `start_after`
+/// cursor. The grovedb verifier in rs-sdk 4.2 checks that every proof op matches the walk
+/// direction. Protocol-13 nodes (testnet today) answer a descending page after a cursor
+/// with a proof that fails that check. That page is only needed when a read passes one page,
+/// so it surfaced as `packManifest` reads failing on a repo with 101 manifests. Ascending
+/// pages verify, and Drive's descending walk is the exact reverse of its ascending walk,
+/// so an ascending read reversed returns the same rows in the same order.
+///
+/// Reversing the whole result also reverses any clause that was already ascending. That is
+/// only harmless when an equality filter pins that clause's field to one value, so any
+/// other mixed order returns `None` and is read as requested.
+fn ascending_equivalent(filters: &[QueryFilter], order: &[QueryOrder]) -> Option<Vec<QueryOrder>> {
+    if order.iter().all(|o| o.ascending) {
+        return None;
+    }
+    let pinned = |field: &str| {
+        filters
+            .iter()
+            .any(|f| f.op == QueryOp::Eq && f.field == field)
+    };
+    if order.iter().any(|o| o.ascending && !pinned(&o.field)) {
+        return None;
+    }
+    Some(
+        order
+            .iter()
+            .map(|o| QueryOrder::asc(o.field.clone()))
+            .collect(),
+    )
+}
 
 /// Hard safety cap on total rounds, matching forge-web's `queryAllDocuments`.
 /// 1000 pages x 100 rows = 100k documents.
@@ -2076,13 +2182,49 @@ impl PushJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_transient_node_error, page_to_exhaustion, retry_with_backoff, FetchedDocument,
-        JournalStore, PushJournal, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
-        MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
+        ascending_equivalent, is_transient_node_error, page_to_exhaustion, retry_with_backoff,
+        FetchedDocument, FieldValue, JournalStore, PushJournal, QueryFilter, QueryOrder,
+        SignedTransition, WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK,
+        PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    fn fields(order: &[QueryOrder]) -> Vec<(String, bool)> {
+        order
+            .iter()
+            .map(|o| (o.field.clone(), o.ascending))
+            .collect()
+    }
+
+    #[test]
+    fn a_descending_complete_read_is_paged_ascending() {
+        let asc = ascending_equivalent(&[], &[QueryOrder::desc("$createdAt")]).unwrap();
+        assert_eq!(fields(&asc), [("$createdAt".to_string(), true)]);
+    }
+
+    #[test]
+    fn an_ascending_read_is_left_alone() {
+        assert!(ascending_equivalent(&[], &[QueryOrder::asc("$createdAt")]).is_none());
+        assert!(ascending_equivalent(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn a_mixed_order_flips_only_when_the_ascending_prefix_is_pinned() {
+        let order = [QueryOrder::asc("kind"), QueryOrder::desc("$createdAt")];
+        // `kind` pinned by an equality filter: reversing it is a no-op, so the read flips.
+        let pinned = [QueryFilter::eq("kind", FieldValue::integer(1))];
+        let asc = ascending_equivalent(&pinned, &order).unwrap();
+        assert_eq!(
+            fields(&asc),
+            [("kind".to_string(), true), ("$createdAt".to_string(), true)]
+        );
+        // Unpinned (or only range-filtered): reversing would reorder `kind`, so it stays.
+        assert!(ascending_equivalent(&[], &order).is_none());
+        let ranged = [QueryFilter::gt("kind", FieldValue::integer(1))];
+        assert!(ascending_equivalent(&ranged, &order).is_none());
+    }
 
     fn doc(i: usize) -> FetchedDocument {
         FetchedDocument {
