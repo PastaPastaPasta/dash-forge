@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod errors;
 mod fmt;
 mod issue;
 mod maint;
@@ -27,7 +28,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
 use config::Config;
-use context::{report_error, Ctx};
+use context::Ctx;
+use forge_core::user_error::{codes, ErrorContext, UserError};
 
 /// Dash Forge command-line interface.
 #[derive(Debug, Parser)]
@@ -153,8 +155,13 @@ pub enum Command {
         /// The GitHub repository URL.
         url: String,
     },
-    /// Diagnose local environment and configuration.
-    Doctor,
+    /// Diagnose the identity, network, contracts, storage, git config and toolchain.
+    Doctor {
+        /// Apply the safe automatic fixes (create config directories with 0700, set missing
+        /// git config keys in this repository). Never anything that spends credits.
+        #[arg(long)]
+        fix: bool,
+    },
     /// Print a shell completion script to stdout.
     ///
     /// bash: `dg completions bash > ~/.local/share/bash-completion/completions/dg`
@@ -732,8 +739,10 @@ fn main() {
         )
         .init();
 
-    let cli = Cli::parse();
-    let json = cli.json;
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => exit_on_parse_error(&e),
+    };
 
     // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
     // so a broken config or an undeployed network cannot stop a shell from loading them.
@@ -754,18 +763,47 @@ fn main() {
         return;
     }
 
-    match run(&cli) {
-        Ok(()) => {}
-        Err(err) => {
-            report_error(json, &err);
-            std::process::exit(1);
-        }
+    let (goal, repo) = errors::context_for(&cli.command);
+    let err_ctx = ErrorContext {
+        goal,
+        repo,
+        ..ErrorContext::default()
+    };
+    if let Err(err) = run(&cli) {
+        std::process::exit(errors::report(cli.json, &err, &err_ctx));
     }
 }
 
 /// Write the `shell` completion script for `dg` to `out`.
 fn print_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
     clap_complete::generate(shell, &mut Cli::command(), "dg", out);
+}
+/// A command line clap rejected: `--help`/`--version` print and exit 0 as usual; a usage
+/// error exits 2 (E201), as `{"error": …}` on stdout when `--json` was asked for.
+fn exit_on_parse_error(e: &clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    let wants_json = std::env::args().any(|a| a == "--json");
+    if !wants_json
+        || matches!(
+            e.kind(),
+            ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        )
+    {
+        e.exit();
+    }
+    let text = e.to_string();
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("invalid arguments")
+        .trim_start_matches("error: ");
+    let u = UserError::new(codes::USAGE, "invalid arguments")
+        .cause(first)
+        .fix("see `dg --help` or `dg <command> --help`");
+    errors::print_json(&u.to_json());
+    std::process::exit(u.exit_code());
 }
 
 /// Build the tokio runtime and dispatch the parsed command.
@@ -814,7 +852,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo, to, profile, ..
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import { url } => maint::import(ctx, url),
-        Command::Doctor => doctor::run(ctx).await,
+        Command::Doctor { fix } => doctor::run(ctx, *fix).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
 }
@@ -975,6 +1013,27 @@ mod tests {
         // `completion` (gh's spelling, spec §7.6) is an alias.
         let cli = Cli::parse_from(["dg", "completion", "zsh"]);
         assert!(matches!(cli.command, Command::Completions { .. }));
+    }
+
+    /// The form the helper and error fixes print must parse as intended: `--from-local`
+    /// takes an optional GIT_DIR, so the repo has to come before it.
+    #[test]
+    fn the_printed_reseed_command_parses() {
+        let id = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+        for repo in [format!("{id}/project"), id.to_string()] {
+            let cli = Cli::parse_from(["dg", "reseed", repo.as_str(), "--from-local"]);
+            match cli.command {
+                Command::Reseed {
+                    repo: Some(r),
+                    from_local: Some(dir),
+                    ..
+                } => {
+                    assert_eq!(r, repo);
+                    assert_eq!(dir, PathBuf::from(".git"));
+                }
+                other => panic!("unexpected parse {other:?}"),
+            }
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::fmt;
 use crate::backends::cid::cid_v1_raw_leaves;
 use crate::backends::{sha256, ByteRange, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
+use crate::user_error::one_line;
 
 /// Packs up to this size are verified by a full re-download + SHA-256. Larger ones by a
 /// size check plus byte-exact comparison of the head and tail windows (the store already
@@ -166,6 +167,58 @@ pub trait StorageTarget: Send + Sync {
     async fn store(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>>;
 }
 
+/// How one target's store went, reported by [`Observed`] as soon as it finishes.
+pub struct StoreOutcome<'a> {
+    /// The target's profile name.
+    pub target: &'a str,
+    /// Whether it is the on-chain tier.
+    pub platform: bool,
+    /// Wall time of the store (upload + verification).
+    pub elapsed: std::time::Duration,
+    /// The recorded URIs, or the failure.
+    pub result: std::result::Result<&'a [Uri], &'a Error>,
+}
+
+/// A [`StorageTarget`] that reports each store's outcome the moment it completes, so a
+/// caller can print one progress line per target while the others are still uploading.
+pub struct Observed<'a> {
+    inner: &'a dyn StorageTarget,
+    on_done: &'a (dyn Fn(&StoreOutcome<'_>) + Send + Sync),
+}
+
+impl<'a> Observed<'a> {
+    /// Wrap `inner`, calling `on_done` after every `store`.
+    pub fn new(
+        inner: &'a dyn StorageTarget,
+        on_done: &'a (dyn Fn(&StoreOutcome<'_>) + Send + Sync),
+    ) -> Self {
+        Self { inner, on_done }
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageTarget for Observed<'_> {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn is_platform(&self) -> bool {
+        self.inner.is_platform()
+    }
+
+    async fn store(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+        let started = std::time::Instant::now();
+        let res = self.inner.store(bytes, meta).await;
+        (self.on_done)(&StoreOutcome {
+            target: self.inner.name(),
+            platform: self.inner.is_platform(),
+            elapsed: started.elapsed(),
+            result: res.as_deref(),
+        });
+        res
+    }
+}
+
 /// Store `bytes` on `targets`, requiring `required` verified confirmations.
 ///
 /// External targets run in parallel. Platform targets run afterwards, and only if the
@@ -246,10 +299,6 @@ pub async fn replicate(
             skipped,
         })
     }
-}
-
-fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// An external (S3 / IPFS) target: `put` through its backend, then re-read and verify.

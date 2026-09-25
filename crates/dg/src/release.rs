@@ -42,7 +42,7 @@ async fn create(
 ) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!("Create release {tag:?}? (a MAINTAIN-gated write)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
@@ -119,13 +119,23 @@ async fn download(
     let release = releases
         .into_iter()
         .find(|r| r.tag_name == tag)
-        .ok_or_else(|| anyhow::anyhow!("release {tag:?} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("release {tag:?} not found in {repo}"),
+                format!("`dg release list {repo}` lists its releases"),
+            )
+        })?;
 
     let asset = match asset_name {
         Some(n) => release.assets.into_iter().find(|a| a.name == n),
         None => release.assets.into_iter().next(),
     }
-    .ok_or_else(|| anyhow::anyhow!("no matching asset in release {tag:?}"))?;
+    .ok_or_else(|| {
+        crate::errors::not_found(
+            format!("no matching asset in release {tag:?}"),
+            "omit --asset to download the first asset, or check the name with `dg release list`",
+        )
+    })?;
 
     if asset.uris.is_empty() {
         bail!(

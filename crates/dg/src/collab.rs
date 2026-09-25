@@ -1,6 +1,6 @@
 //! `dg collab` — collaborator (token) management: add / suspend / remove / list.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::tokens::TokenService;
@@ -27,7 +27,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
     if !ctx.confirm(&format!(
         "Grant {role:?} to {member} on {repo}? (mints a token)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
@@ -48,7 +48,7 @@ async fn suspend(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<(
     if !ctx.confirm(&format!(
         "Suspend {role:?} for {member}? (freezes the token)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
@@ -69,7 +69,7 @@ async fn unsuspend(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result
     if !ctx.confirm(&format!(
         "Unsuspend {role:?} for {member}? (thaws the token)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
@@ -90,7 +90,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     if !ctx.confirm(&format!(
         "Remove {member} ({role:?})? This FREEZES then DESTROYS their frozen balance"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
