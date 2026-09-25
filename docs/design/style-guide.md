@@ -19,17 +19,22 @@ colors: {
     50:'#fafaf9',100:'#f5f5f4',200:'#e7e5e4',300:'#d6d3d1',400:'#a8a29e',
     500:'#78716c',600:'#57534e',700:'#44403c',750:'#3a3835',800:'#292524',850:'#211e1c',900:'#1c1917',950:'#0f0d0c'
   },
-  verify: '#16a34a',   // proof/hash verified
+  verify: {            // proof/hash verified
+    DEFAULT:'#16a34a', // icons, borders, tints
+    700:'#15803d'      // solid fill behind white text
+  },
   caution:'#d97706',   // degraded availability
   danger: '#dc2626',   // force-push, delete, failed verification
   dash: {              // Dash brand blue — reserved for identity/credits/network UI only
     DEFAULT:'#008de4', // fills, tints, icons
     400:'#4aaef0',     // TEXT on dark surfaces
-    600:'#006bb0'      // TEXT on light surfaces
+    600:'#006bb0',     // TEXT on light surfaces
+    700:'#005a94'      // solid fill behind white text
   }
 }
 ```
 - **Dash-blue text is `text-dash-600 dark:text-dash-400`**, never plain `text-dash`: the brand value is under WCAG AA's 4.5:1 as text on every surface in both themes (4.28:1 on `anvil-800`). `forge-web/lib/design/contrast.test.ts` pins the ratios and fails on a raw `text-dash` that is not an icon.
+- **White text sits on `-700` fills**: `bg-dash-700`, `bg-verify-700`, `bg-forge-700`. The base `dash` (3.54:1) and `verify` (3.3:1) values fail AA behind white; the same test fails any `text-white` class string whose background is one of them.
 - **Dark mode is the primary theme** (class-based, `next-themes`); light mode fully supported. Backgrounds: `anvil-950/900/850` layered surfaces (dark), `anvil-50/white` (light).
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
 

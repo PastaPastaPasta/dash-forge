@@ -14,11 +14,23 @@ import tailwindConfig from '@/tailwind.config.js'
 
 // The config's JSDoc type makes every theme key optional and possibly a function; this
 // config is a plain object literal, so read it as one.
-const { anvil, dash } = (
+const colors = (
   tailwindConfig as unknown as {
-    theme: { extend: { colors: Record<'anvil' | 'dash', Record<string, string>> } }
+    theme: { extend: { colors: Record<string, string | Record<string, string>> } }
   }
 ).theme.extend.colors
+const anvil = colors['anvil'] as Record<string, string>
+const dash = colors['dash'] as Record<string, string>
+
+/** A Tailwind color class suffix (`dash-700`, `verify`, `anvil-500`) to its hex, if known. */
+function tokenHex(token: string): string | undefined {
+  if (token === 'white') return '#ffffff'
+  const m = /^([a-z]+)(?:-(\d+))?$/.exec(token)
+  if (m === null) return undefined
+  const entry = colors[m[1] as string]
+  if (typeof entry === 'string') return m[2] === undefined ? entry : undefined
+  return entry?.[m[2] ?? 'DEFAULT']
+}
 
 type Rgb = [number, number, number]
 
@@ -119,5 +131,66 @@ describe('no component renders text in the raw brand blue', () => {
     expect(flagged('<GitMerge className="h-4 w-4 text-dash" aria-hidden />')).toBe(false)
     expect(flagged('<span className="text-dash-600 dark:text-dash-400">{n}</span>')).toBe(false)
     expect(flagged('<span className="bg-dash/10">{n}</span>')).toBe(false)
+  })
+})
+
+describe('white text on solid fills meets WCAG AA', () => {
+  const root = resolve(__dirname, '../..')
+
+  function sources(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) return sources(p)
+      return /\.tsx$/.test(e.name) ? [p] : []
+    })
+  }
+
+  // A solid `bg-<token>` class (not a `/10` tint, not a `hover:` / `dark:` variant).
+  const SOLID_BG = /(?<![:\w-])bg-([a-z]+(?:-\d+)?)(?![-\w/])/g
+
+  /**
+   * Every solid background that can sit behind `text-white`: backgrounds on the same line as
+   * the class, and — for a badge whose background is computed (`${status.bg}`) — every `bg:`
+   * value the file assigns.
+   */
+  function whiteTextBackgrounds(text: string): { token: string; line: number }[] {
+    const lines = text.split('\n')
+    const out: { token: string; line: number }[] = []
+    const computed = /text-white[^\n]*\$\{[\w.]*\bbg\}/.test(text)
+    lines.forEach((l, i) => {
+      const isBgValue = computed && /\bbg:\s*/.test(l)
+      if (!l.includes('text-white') && !isBgValue) return
+      for (const m of l.matchAll(SOLID_BG)) out.push({ token: m[1] as string, line: i + 1 })
+    })
+    return out
+  }
+
+  it('checks the Merged / Open / Closed / Draft badges and every other white-text fill', () => {
+    const failures: string[] = []
+    let checked = 0
+    for (const file of ['app', 'components'].flatMap((d) => sources(join(root, d)))) {
+      for (const { token, line } of whiteTextBackgrounds(readFileSync(file, 'utf8'))) {
+        const hex = tokenHex(token)
+        if (hex === undefined) continue
+        checked += 1
+        const ratio = contrast(rgb('#ffffff'), rgb(hex))
+        if (ratio < AA_TEXT) {
+          failures.push(`${file.slice(root.length + 1)}:${line} bg-${token} ${ratio.toFixed(2)}:1`)
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(6)
+    expect(failures).toEqual([])
+  })
+
+  it('catches the regressions it exists for', () => {
+    const tokens = (src: string): string[] => whiteTextBackgrounds(src).map((b) => b.token)
+    // The Merged badge before the fix: brand blue behind white is 3.54:1.
+    const merged = "const s = { bg: 'bg-dash' }\n<span className={`text-white ${s.bg}`}>"
+    expect(tokens(merged)).toEqual(['dash'])
+    expect(contrast(rgb('#ffffff'), rgb(tokenHex('dash') as string))).toBeLessThan(AA_TEXT)
+    expect(contrast(rgb('#ffffff'), rgb(tokenHex('verify') as string))).toBeLessThan(AA_TEXT)
+    expect(tokens('<b className="text-white bg-forge-700 hover:bg-forge-600">')).toEqual(['forge-700'])
+    expect(tokens('<b className="text-anvil-700 bg-dash/10">')).toEqual([])
   })
 })
