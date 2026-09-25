@@ -33,6 +33,7 @@ import {
 } from '../repo'
 import { base64ToBytes, hexToBase64, queryDocumentsWithProof } from '../sdk'
 import { DOC } from '../repo'
+import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
 
 /**
  * Platform's per-query document cap. A document query returns at most this many rows, so any
@@ -235,11 +236,15 @@ async function fetchPlatformRange(
   return out
 }
 
-/** Fetch a contiguous range of an external artifact via HTTP Range. */
+/**
+ * Fetch a contiguous range of an external artifact via HTTP Range. `onServed` is told which
+ * URI answered, so the trust panel can name the host bytes actually came from.
+ */
 async function fetchExternalRange(
   uris: readonly string[],
   start: number,
   end: number,
+  onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
   let lastErr: unknown
   for (const uri of uris) {
@@ -247,6 +252,7 @@ async function fetchExternalRange(
       const resp = await fetch(uri, { headers: { Range: `bytes=${start}-${end - 1}` } })
       if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
       const buf = new Uint8Array(await resp.arrayBuffer())
+      onServed?.(uri)
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
@@ -256,16 +262,27 @@ async function fetchExternalRange(
   throw new Error(`no external URI served the range: ${String(lastErr)}`)
 }
 
+/** Record in the repo's content-check ledger where an artifact's bytes came from. */
+function noteSource(repo: RepoRef, uri?: string): void {
+  noteContentCheck(repo.contractId, {
+    source: uri === undefined ? 'platform' : externalSourceName(uri),
+  })
+}
+
 /** A {@link RangeFetch} over one artifact (platform chunks or external URIs). */
 export function artifactRangeFetch(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
 ): RangeFetch {
-  return (start: number, end: number) =>
-    manifest.storage === 0
-      ? fetchPlatformRange(sdk, repo.contractId, manifest.packHash, start, end)
-      : fetchExternalRange(manifest.uris, start, end)
+  return async (start: number, end: number) => {
+    if (manifest.storage !== 0) {
+      return fetchExternalRange(manifest.uris, start, end, (uri) => noteSource(repo, uri))
+    }
+    const bytes = await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, start, end)
+    noteSource(repo)
+    return bytes
+  }
 }
 
 /**
@@ -307,7 +324,7 @@ export async function loadArtifactBytesProgress(
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await fetchExternalRange(manifest.uris, 0, total)
+    const bytes = await fetchExternalRange(manifest.uris, 0, total, (uri) => noteSource(repo, uri))
     if (bytes.length !== total) throw new Error('external artifact length mismatch')
     onProgress?.(total, total)
     return bytes
@@ -318,6 +335,7 @@ export async function loadArtifactBytesProgress(
     out.set(await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, at, end), at)
     onProgress?.(end, total)
   }
+  noteSource(repo)
   return out
 }
 
@@ -539,7 +557,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
-  const reader = new BrowseReader(locator, packs)
+  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repo.contractId) })
   return { kind: 'ready', context: { locator, packs, reader } }
 }
 

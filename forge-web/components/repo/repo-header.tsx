@@ -46,7 +46,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
 
       {home.config?.archived ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution">
-          <Archive className="h-3.5 w-3.5" aria-hidden /> This repo is archived — read-only.
+          <Archive className="h-3.5 w-3.5" aria-hidden /> The owner has marked this repo archived.
         </div>
       ) : null}
 

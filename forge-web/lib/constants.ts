@@ -45,6 +45,17 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = {
   },
 }
 
+/**
+ * Where a trusted evo-sdk connection fetches the quorum public keys every proof is checked
+ * against — the web app's trust anchor (S0.3, roadmap D-C). These mirror the defaults compiled
+ * into evo-sdk's `testnetTrusted()` / `mainnetTrusted()`; they are what the trust panel
+ * discloses, so they must name the endpoint the SDK actually uses.
+ */
+export const QUORUM_KEY_ENDPOINT: Readonly<Record<Network, string>> = {
+  testnet: 'https://quorums.testnet.networks.dash.org',
+  mainnet: 'https://quorums.mainnet.networks.dash.org',
+}
+
 /** The deployed registry contract owner (DCG/DAO identity) — for listing-authenticity checks. */
 export const TESTNET_REGISTRY_OWNER = '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB'
 

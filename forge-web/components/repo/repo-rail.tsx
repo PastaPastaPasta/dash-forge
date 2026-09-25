@@ -4,46 +4,60 @@
  * RepoRail — the 296px right rail (style guide layout): the assay/trust panel, the clone box,
  * and repo metadata (default branch, branches/tags, storage source). The trust panel is the
  * ever-present signature element on every repo view.
+ *
+ * The panel's states are derived from what this session actually checked: whether the SDK
+ * connection proof-verifies reads, the folded state of the attested ref, and the browse
+ * plane's content-check ledger for this repo (which updates live as the page reads objects).
  */
 
+import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { GitBranch, Star, Tag } from 'lucide-react'
-import { isLive, type RepoHome } from '@/lib/view'
-import type { Source } from '@/components/ui/verification-chip'
-import { TrustPanel, type TrustChain } from '@/components/ui/trust-panel'
+import {
+  connectionTrust,
+  contentChecks,
+  deriveTrust,
+  isLive,
+  NO_CONTENT_CHECKS,
+  subscribeContentChecks,
+  tipOidOf,
+  type RepoHome,
+  type SelectedRef,
+} from '@/lib/view'
+import { useSdk } from '@/hooks/use-sdk'
+import { TrustPanel } from '@/components/ui/trust-panel'
 import { CloneBox } from '@/components/repo/clone-box'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-
-function sourceOf(kind: string): Source {
-  if (kind === 'ipfs' || kind === 's3' || kind === 'https') return kind
-  return 'platform'
-}
 
 export function RepoRail({
   home,
   addr,
-  chainOverride,
+  selected,
 }: {
   home: RepoHome
   addr: RepoAddress
-  /** A page (blob/commit) can supply concrete tip/pack serials for the assay. */
-  chainOverride?: Partial<TrustChain>
+  /** The ref the page is showing — the assay attests its tip. */
+  selected: SelectedRef
 }): JSX.Element {
-  const defaultTip = home.branches.find((b) => b.refName === `refs/heads/${home.defaultBranch}`)
-  const tipOid = defaultTip?.state.state === 'resolved' ? defaultTip.state.oid : undefined
+  const { ready, trusted, network } = useSdk()
+  const contractId = home.repo.contractId
+  const checks = useSyncExternalStore(
+    subscribeContentChecks,
+    () => contentChecks(contractId),
+    () => NO_CONTENT_CHECKS,
+  )
 
-  const chain: TrustChain = {
-    refs: 'verified',
-    packs: 'verified',
-    source: sourceOf(home.backend.kind),
-    contractId: home.repo.contractId,
-    tipOid,
-    ...chainOverride,
-  }
+  const report = deriveTrust({
+    network,
+    connection: connectionTrust(ready, trusted),
+    tip: selected.ref?.state ?? 'missing',
+    checks,
+    configuredBackend: home.backend.label,
+  })
 
   return (
     <aside className="space-y-4">
-      <TrustPanel chain={chain} />
+      <TrustPanel report={report} contractId={contractId} tipOid={tipOidOf(selected.ref) ?? undefined} />
       <CloneBox home={home} addr={addr} />
 
       <div className="rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-750 dark:bg-anvil-900">
@@ -72,7 +86,7 @@ export function RepoRail({
           label="Stars"
           href={repoHref('/repo/stargazers', addr)}
         >
-          {home.starCount}
+          {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
         </Row>
       </div>
     </aside>

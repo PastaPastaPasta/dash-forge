@@ -7,8 +7,8 @@
  *
  * Read-only. The web app lists PRs and shows their timelines, including reviews posted from
  * the CLI; it cannot yet OPEN a PR (that needs a pushed head branch and a `patch` write path)
- * or record a review verdict. Its "merge" appends a merge event, which is not a git merge —
- * see PullContent.
+ * or record a review verdict. Its "Mark as merged" appends a merge event, which is not a git
+ * merge — see PullContent.
  */
 
 import { useMemo, useState } from 'react'
@@ -77,7 +77,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <EmptyState
           icon={GitPullRequest}
           title="No pull requests"
-          body="Open a PR by pushing a head branch with the helper, then propose it here."
+          body="Push a head branch with the git-remote-dash helper, then open a PR with dg pr create."
         />
       ) : (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">

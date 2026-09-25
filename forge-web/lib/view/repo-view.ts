@@ -58,7 +58,8 @@ export interface RepoHome {
   readonly defaultBranch: string
   readonly branches: readonly ResolvedRef[]
   readonly tags: readonly ResolvedRef[]
-  readonly starCount: number
+  /** `null` when the count read failed — rendered as unknown, never as a false 0. */
+  readonly starCount: number | null
   readonly backend: BackendInfo
 }
 
@@ -84,7 +85,7 @@ export async function loadRepoHome(
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
     listingId
-      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => 0)
+      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => null)
       : Promise.resolve(0),
   ])
 

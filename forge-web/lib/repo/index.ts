@@ -55,8 +55,10 @@ export {
   type PackManifest,
 } from './packs'
 export {
+  currentHoldings,
   invalidateAuthz,
   readTokenHistory,
+  readViewerHoldings,
   resolveAuthz,
 } from './tokens'
 export {
@@ -98,6 +100,8 @@ export {
   createRepo,
   followIdentity,
   grantCollaborator,
+  hasStarred,
+  isFollowing,
   labelTarget,
   normalizeRepoName,
   pushRefUpdate,

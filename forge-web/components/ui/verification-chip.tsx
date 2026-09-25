@@ -1,52 +1,54 @@
-import { Check, ShieldCheck } from 'lucide-react'
+import { ShieldAlert, ShieldCheck, ShieldEllipsis, ShieldHalf, ShieldX } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { TrustState } from '@/lib/view'
 
 /**
- * Verification chip — signature element (style guide §A). Every repo view carries a
- * compact chip row: `refs ✓ proof · packs ✓ sha256 · src: platform|ipfs|s3`.
- * Semantic colors are meaningful: verify green = cryptographically verified,
- * caution amber = availability risk, danger red = failed verification.
- * Clicking (wired later) opens the trust panel explaining the verification chain.
+ * Verification chip — signature element (style guide §A). A compact chip row stating what
+ * was checked: `proofs ✓ · content ✓ 12 objects · src platform`. Semantic colors are
+ * meaningful: verify green = the check ran and passed, caution amber = partial or not
+ * checked, danger red = the check failed, neutral = nothing checked yet. Callers pass states
+ * derived from checks that actually ran (`deriveTrust`), never a constant.
  */
 
-export type VerifyState = 'verified' | 'degraded' | 'failed'
-export type Source = 'platform' | 'ipfs' | 's3' | 'https'
-
-const STATE_CLASS: Readonly<Record<VerifyState, string>> = {
-  verified: 'text-verify',
-  degraded: 'text-caution',
-  failed: 'text-danger',
+/** Label, color and icon for each trust state — shared with the trust panel. */
+export const TRUST_META: Readonly<
+  Record<TrustState, { label: string; klass: string; Icon: typeof ShieldCheck }>
+> = {
+  verified: { label: 'verified', klass: 'text-verify', Icon: ShieldCheck },
+  partial: { label: 'partial', klass: 'text-caution', Icon: ShieldHalf },
+  unverified: { label: 'unverified', klass: 'text-caution', Icon: ShieldAlert },
+  pending: { label: 'pending', klass: 'text-anvil-500 dark:text-anvil-400', Icon: ShieldEllipsis },
+  failed: { label: 'failed', klass: 'text-danger', Icon: ShieldX },
 }
 
-interface SegmentProps {
-  label: string
-  detail: string
-  state: VerifyState
+export interface ChipSegment {
+  readonly label: string
+  readonly state: TrustState
+  /** Short text after the icon; defaults to the state's label. */
+  readonly detail?: string
 }
 
-function Segment({ label, detail, state }: SegmentProps): JSX.Element {
+function Segment({ label, state, detail }: ChipSegment): JSX.Element {
+  const meta = TRUST_META[state]
   return (
     <span className="inline-flex items-center gap-1">
       <span className="text-anvil-500 dark:text-anvil-400">{label}</span>
-      <Check className={cn('h-3 w-3', STATE_CLASS[state])} aria-hidden />
-      <span className={cn('font-mono', STATE_CLASS[state])}>{detail}</span>
+      <meta.Icon className={cn('h-3 w-3', meta.klass)} aria-hidden />
+      <span className={cn('font-mono', meta.klass)}>{detail ?? meta.label}</span>
     </span>
   )
 }
 
-export interface VerificationChipProps {
-  refs?: VerifyState
-  packs?: VerifyState
-  source?: Source
-  className?: string
-}
-
 export function VerificationChip({
-  refs = 'verified',
-  packs = 'verified',
-  source = 'platform',
+  segments,
+  source,
   className,
-}: VerificationChipProps): JSX.Element {
+}: {
+  segments: readonly ChipSegment[]
+  /** Where bytes came from, when any were read. */
+  source?: string
+  className?: string
+}): JSX.Element {
   return (
     <div
       className={cn(
@@ -57,26 +59,29 @@ export function VerificationChip({
       role="group"
       aria-label="Verification status"
     >
-      <ShieldCheck className="h-3.5 w-3.5 text-verify" aria-hidden />
-      <Segment label="refs" detail="proof" state={refs} />
-      <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>
-        ·
-      </span>
-      <Segment label="packs" detail="sha256" state={packs} />
-      <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>
-        ·
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <span className="text-anvil-500 dark:text-anvil-400">src</span>
-        <span
-          className={cn(
-            'rounded px-1 font-mono',
-            'bg-anvil-200 text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200',
-          )}
-        >
-          {source}
+      {segments.map((s, i) => (
+        <span key={s.label} className="inline-flex items-center gap-2">
+          {i > 0 ? (
+            <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>
+              ·
+            </span>
+          ) : null}
+          <Segment {...s} />
         </span>
-      </span>
+      ))}
+      {source ? (
+        <>
+          <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="text-anvil-500 dark:text-anvil-400">src</span>
+            <span className="rounded bg-anvil-200 px-1 font-mono text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
+              {source}
+            </span>
+          </span>
+        </>
+      ) : null}
     </div>
   )
 }

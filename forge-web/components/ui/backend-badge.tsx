@@ -21,7 +21,7 @@ export function BackendBadge({
         'border-anvil-200 bg-anvil-100 text-anvil-600 dark:border-anvil-750 dark:bg-anvil-800 dark:text-anvil-300',
         className,
       )}
-      title={`Storage backend: ${backend.label}`}
+      title={`Configured storage backend: ${backend.label}. Readers follow each pack's own manifest, wherever it points.`}
     >
       <span aria-hidden>{backend.glyph}</span>
       <span className="font-mono">{backend.label}</span>

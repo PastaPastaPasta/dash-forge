@@ -40,4 +40,9 @@ export {
   type GitObject,
   type GitObjType,
 } from './pack'
-export { BrowseReader, type BrowseReaderOptions, type PackSource } from './reader'
+export {
+  BrowseReader,
+  type BrowseReaderOptions,
+  type ObjectVerdict,
+  type PackSource,
+} from './reader'
