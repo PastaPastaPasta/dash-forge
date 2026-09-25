@@ -168,7 +168,17 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.11 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. This estimate still needs confirming on moutai.
+Total one-time registration fees are **1.11 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
+
+**Measured on devnet moutai (2026-09-25)**, as the deployer's balance change:
+
+| | forge-core | forge-collab |
+|---|---|---|
+| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.515157 DASH (51,515,695,120 credits) |
+| of which the registration fee | 0.60 | 0.51 |
+| storage + processing | 0.0057 | 0.0052 |
+
+Together that is **1.120868 DASH**.
 
 ## 8. Deploying
 
@@ -183,7 +193,11 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 - forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
 - Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
-- The dry run against moutai (2026-09-25) confirmed protocol 14 and drive 4.2.0-beta.4 there. The contracts are not registered yet: no deployer identity exists on moutai.
+- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) on 2026-09-25 by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled:
+  - forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1)
+  - forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2)
+  - contract group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o` (`dash-forge`)
+  - A rerun found both on chain and broadcast nothing.
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
