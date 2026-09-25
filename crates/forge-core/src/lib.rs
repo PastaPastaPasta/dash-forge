@@ -8,6 +8,8 @@
 //!   `WriteEngine` document create/delete lifecycle + idempotent-retry journal types.
 //! - [`repo`] — `RepoService`: the repo-lifecycle API (`create_repo` / `resolve_repo` /
 //!   ref + pack-manifest + chunk read/write) `git-remote-dash` calls.
+//! - [`refs`] — complete ref-update reads (keyset scan + completeness fallback) shared by
+//!   ref listing and PR base-tip resolution.
 //! - [`tokens`] — `TokenService`: the collaborator ACL (grant/suspend/revoke = token
 //!   mint/freeze/destroy; balances = the on-chain collaborator list).
 //! - [`collab`] — issue / PR / review / release / label services + the registry social
@@ -32,6 +34,7 @@ pub mod keystore;
 pub mod network;
 pub mod pack;
 pub mod platform;
+pub mod refs;
 pub mod repo;
 pub mod rules;
 pub mod storage;

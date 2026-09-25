@@ -1,13 +1,26 @@
 /**
  * Ref reads — branch/tag enumeration + tip resolution (data-contracts §2.3, §4).
  *
- * Small repos (update set ≤ one query page per type) load everything in two parallel
- * queries and resolve locally. Larger repos enumerate via **skip-scan**
- * (`refNameHash > last limit 1` hops) across both the `refUpdate` and `protectedRefUpdate`
- * types — O(distinct refs), not O(total pushes). Tip resolution folds a ref's full update
- * history (both types, with the `protected` flag set per source) through
- * {@link resolveRef}, honoring as-of protected-pattern config.
+ * Every ref's complete update history comes from a **keyset scan** over the `refState` index
+ * (`refNameHash, $createdAt`): pages of `refNameHash > last`, 100 rows each, with no
+ * `startAfter` cursor. Every ref on a full page except the last is complete; the next page
+ * starts after the last complete ref. A ref that fills a page by itself is read on its own
+ * (an equality query, single-branch) and the scan moves past it. Cost: ⌈updates/100⌉
+ * queries per type plus one per such ref. Parity: forge-core `refs::read_all_ref_updates`.
  *
+ * WHY NO CURSOR: paging `refState` with `startAfter` loses rows on testnet (protocol 13) —
+ * 32 of 229 updates on the nightly repo. Drive's v0 lowering applies the cursor document's
+ * lower-level bounds to every sibling `refNameHash` branch, not only the cursor's own, so a
+ * page omits rows from later refs and can come back short (the only end-of-data signal a
+ * pager has). Same family as dashpay/platform#4396; the orderBy-only shape is still unfixed
+ * there. A range where-clause carries no cursor document, so nothing leaks.
+ *
+ * COMPLETENESS CHECK: every non-null `prevOid` a pusher records is some earlier update's
+ * `newOid` in the same ref. A dangling one means a row is missing, and the reader then falls
+ * back to every update in `$createdAt` (`reflog`) order, unioned in by `$id`.
+ *
+ * Tip resolution folds a ref's full update history (both types, with the `protected` flag
+ * set per source) through {@link resolveRef}, honoring as-of protected-pattern config.
  * Divergence resolution that turns on real commit ancestry (a merge superseding both racing
  * heads) needs a commit-graph predicate from the browse plane; callers may pass one via
  * `isAncestor`. Without it, linear/fast-forward/force/delete cases still resolve correctly
@@ -18,13 +31,20 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   displayRefName,
+  isNullOid,
   resolveRef,
   type ConfigDoc,
   type IsAncestor,
   type RefState,
   type RefUpdate,
 } from '../rules'
-import { base64ToHex, queryAllDocuments, queryDocumentsWithProof, skipScanDistinct } from '../sdk'
+import {
+  base64ToHex,
+  IncompleteReadError,
+  queryAllDocuments,
+  queryDocumentsWithProof,
+  type PlainDocument,
+} from '../sdk'
 import { DOC, toRefUpdate, type RepoRef } from './contract'
 import { readConfigHistory } from './config'
 
@@ -32,6 +52,15 @@ const NO_ANCESTRY: IsAncestor = () => false
 
 /** One query page — also the Platform per-query document cap. */
 const PAGE = 100
+
+/** Backstop against a node that never lets the scan finish (each round passes ≥ 1 ref). */
+const MAX_KEYSET_ROUNDS = 100_000
+
+/** Both ref-update types, each with the `protected` flag its updates carry into the fold. */
+const REF_UPDATE_TYPES: readonly (readonly [string, boolean])[] = [
+  [DOC.refUpdate, false],
+  [DOC.protectedRefUpdate, true],
+]
 
 /** A resolved ref for list views. */
 export interface ResolvedRef {
@@ -43,21 +72,153 @@ export interface ResolvedRef {
   readonly state: RefState
 }
 
-/** Enumerate the distinct `refNameHash` values across both ref document types (base64). */
-export async function enumerateRefHashes(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
-  const [plain, protectedHashes] = await Promise.all([
-    skipScanDistinct(sdk, {
+/** The row's `refNameHash` as lowercase hex — hex order is byte order; base64 order is not. */
+function refHashHexOf(doc: PlainDocument, documentTypeName: string): string {
+  const raw = doc['refNameHash']
+  let hex = ''
+  try {
+    hex = typeof raw === 'string' ? base64ToHex(raw) : ''
+  } catch {
+    /* reported below */
+  }
+  if (hex.length !== 64) {
+    // A row that cannot be attributed to a ref would make the answer wrong, not partial.
+    throw new Error(`${documentTypeName} ${String(doc['$id'])} has no 32-byte refNameHash`)
+  }
+  return hex
+}
+
+/** One ref's updates of one type (an equality read — single-branch, so cursor-safe). */
+function readOneRef(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documentTypeName: string,
+  refNameHashB64: string,
+): Promise<PlainDocument[]> {
+  return queryAllDocuments(sdk, {
+    dataContractId: repo.contractId,
+    documentTypeName,
+    where: [['refNameHash', '==', refNameHashB64]],
+    orderBy: [['$createdAt', 'asc']],
+  })
+}
+
+/**
+ * Page one type by key (see the module doc). Returns the rows and whether every page came
+ * back ordered and within its bound — one that did not says the node ignored the query.
+ */
+async function keysetScan(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documentTypeName: string,
+): Promise<{ rows: PlainDocument[]; ordered: boolean }> {
+  const rows: PlainDocument[] = []
+  let ordered = true
+  let after = null as { hex: string; b64: string } | null
+  for (let round = 0; round < MAX_KEYSET_ROUNDS; round++) {
+    const floorHex = after?.hex
+    const { documents: page } = await queryDocumentsWithProof(sdk, {
       dataContractId: repo.contractId,
-      documentTypeName: DOC.refUpdate,
-      keyField: 'refNameHash',
+      documentTypeName,
+      where: after === null ? [] : [['refNameHash', '>', after.b64]],
+      orderBy: [
+        ['refNameHash', 'asc'],
+        ['$createdAt', 'asc'],
+      ],
+      limit: PAGE,
+    })
+    const hashes = page.map((d) => refHashHexOf(d, documentTypeName))
+    ordered &&=
+      hashes.every((h, i) => i === 0 || (hashes[i - 1] as string) <= h) &&
+      (floorHex === undefined || hashes.every((h) => h > floorHex))
+
+    if (page.length < PAGE) {
+      rows.push(...page)
+      return { rows, ordered }
+    }
+    const last = hashes[hashes.length - 1] as string
+    const cut = hashes.indexOf(last)
+    if (cut === 0) {
+      // One ref filled the page: read it on its own, then move past it.
+      const b64 = (page[0] as PlainDocument)['refNameHash'] as string
+      rows.push(...(await readOneRef(sdk, repo, documentTypeName, b64)))
+      after = { hex: last, b64 }
+    } else {
+      // Every ref before the last is whole; the last may be cut off and is re-read next page.
+      const prev = page[cut - 1] as PlainDocument
+      after = { hex: hashes[cut - 1] as string, b64: prev['refNameHash'] as string }
+      rows.push(...page.slice(0, cut))
+    }
+  }
+  throw new IncompleteReadError(
+    documentTypeName,
+    rows.length,
+    `the ref keyset scan did not finish in ${MAX_KEYSET_ROUNDS} rounds`,
+  )
+}
+
+/**
+ * Whether some update's non-null `prevOid` is no update's `newOid` in the same ref — a parent
+ * that should have been read and was not. Parity: forge-core `refs::has_missing_parent`.
+ */
+export function hasMissingParent(updates: readonly RefUpdate[]): boolean {
+  const tips = new Set(updates.map((u) => u.newOid))
+  return updates.some((u) => u.prevOid !== undefined && !isNullOid(u.prevOid) && !tips.has(u.prevOid))
+}
+
+interface TypeScan {
+  readonly type: string
+  readonly isProtected: boolean
+  readonly rows: PlainDocument[]
+}
+
+/** Group rows per ref: plain before protected, each in read order (the fold re-sorts). */
+function groupByRef(scans: readonly TypeScan[]): Map<string, RefUpdate[]> {
+  const byHash = new Map<string, RefUpdate[]>()
+  for (const { type, isProtected, rows } of scans) {
+    for (const doc of rows) {
+      const hex = refHashHexOf(doc, type)
+      const update = toRefUpdate(doc, isProtected)
+      const group = byHash.get(hex)
+      if (group === undefined) byHash.set(hex, [update])
+      else group.push(update)
+    }
+  }
+  return byHash
+}
+
+/**
+ * Every ref's complete update history, keyed by `refNameHash` hex. Keyset scan per type, then
+ * the `prevOid` completeness check; on a gap (or an out-of-order page) every update is re-read
+ * in `reflog` order and unioned in by `$id`.
+ */
+export async function readAllRefUpdates(
+  sdk: EvoSDK,
+  repo: RepoRef,
+): Promise<Map<string, RefUpdate[]>> {
+  const scanned = await Promise.all(
+    REF_UPDATE_TYPES.map(async ([type, isProtected]) => ({
+      type,
+      isProtected,
+      ...(await keysetScan(sdk, repo, type)),
+    })),
+  )
+  const grouped = groupByRef(scanned)
+  const consistent = scanned.every((s) => s.ordered)
+  if (consistent && ![...grouped.values()].some(hasMissingParent)) return grouped
+
+  const repaired = await Promise.all(
+    scanned.map(async (s): Promise<TypeScan> => {
+      const seen = new Set(s.rows.map((d) => String(d['$id'])))
+      const full = await queryAllDocuments(sdk, {
+        dataContractId: repo.contractId,
+        documentTypeName: s.type,
+        orderBy: [['$createdAt', 'asc']],
+      })
+      return { ...s, rows: [...s.rows, ...full.filter((d) => !seen.has(String(d['$id'])))] }
     }),
-    skipScanDistinct(sdk, {
-      dataContractId: repo.contractId,
-      documentTypeName: DOC.protectedRefUpdate,
-      keyField: 'refNameHash',
-    }),
-  ])
-  return [...new Set([...plain, ...protectedHashes])]
+  )
+  return groupByRef(repaired)
 }
 
 /**
@@ -67,7 +228,7 @@ export async function enumerateRefHashes(sdk: EvoSDK, repo: RepoRef): Promise<st
  * page pins a branch at its 100th push — the tip stops advancing and every later commit
  * becomes unreachable through the UI. It also feeds {@link historicalTipsPredicate}, where
  * a truncated tip set makes a genuinely merged PR fold as still-open. Parity: forge-core
- * `base_ref_tips` pages here too.
+ * `refs::read_ref_history` (behind `base_ref_tips`).
  */
 export async function readRefUpdates(
   sdk: EvoSDK,
@@ -75,18 +236,8 @@ export async function readRefUpdates(
   refNameHashB64: string,
 ): Promise<RefUpdate[]> {
   const [plain, prot] = await Promise.all([
-    queryAllDocuments(sdk, {
-      dataContractId: repo.contractId,
-      documentTypeName: DOC.refUpdate,
-      where: [['refNameHash', '==', refNameHashB64]],
-      orderBy: [['$createdAt', 'asc']],
-    }),
-    queryAllDocuments(sdk, {
-      dataContractId: repo.contractId,
-      documentTypeName: DOC.protectedRefUpdate,
-      where: [['refNameHash', '==', refNameHashB64]],
-      orderBy: [['$createdAt', 'asc']],
-    }),
+    readOneRef(sdk, repo, DOC.refUpdate, refNameHashB64),
+    readOneRef(sdk, repo, DOC.protectedRefUpdate, refNameHashB64),
   ])
   return [
     ...plain.map((d) => toRefUpdate(d, false)),
@@ -140,51 +291,10 @@ export async function resolveRefByHash(
 }
 
 /**
- * Fast path: fetch ONE page of each ref-update type ordered by the `refState` index
- * (`refNameHash asc, $createdAt asc`). A short page (< {@link PAGE}) proves the type's
- * update set is complete, so the per-ref histories can be grouped locally with zero further
- * queries. Returns null when either type overflows the page — callers fall back to skip-scan.
- *
- * This matters because skip-scan costs one sequential round-trip per distinct ref (~450ms
- * each on testnet — measured 8s for 18 refs), while a small repo's ENTIRE update set fits
- * in two parallel queries (~0.5s).
- */
-async function readAllRefUpdatesOnePage(
-  sdk: EvoSDK,
-  repo: RepoRef,
-): Promise<Map<string, RefUpdate[]> | null> {
-  const pageOf = (documentTypeName: string): ReturnType<typeof queryDocumentsWithProof> =>
-    queryDocumentsWithProof(sdk, {
-      dataContractId: repo.contractId,
-      documentTypeName,
-      orderBy: [
-        ['refNameHash', 'asc'],
-        ['$createdAt', 'asc'],
-      ],
-      limit: PAGE,
-    })
-  const [plain, prot] = await Promise.all([pageOf(DOC.refUpdate), pageOf(DOC.protectedRefUpdate)])
-  if (plain.documents.length >= PAGE || prot.documents.length >= PAGE) return null
-
-  // Group per ref, plain updates before protected — the same per-ref order
-  // readRefUpdates produces (each source is already `$createdAt asc`).
-  const byHash = new Map<string, RefUpdate[]>()
-  const add = (update: RefUpdate): void => {
-    const group = byHash.get(update.refNameHash)
-    if (group === undefined) byHash.set(update.refNameHash, [update])
-    else group.push(update)
-  }
-  for (const doc of plain.documents) add(toRefUpdate(doc, false))
-  for (const doc of prot.documents) add(toRefUpdate(doc, true))
-  return byHash
-}
-
-/**
- * Read every ref of a repo. Small repos (whole update set ≤ one query page per type) resolve
- * from two parallel queries; larger repos fall back to skip-scan enumeration + per-ref
- * resolution (parallelized). Fetches the config history once and reuses it across refs —
- * or accepts the caller's in-flight fetch (`configHistoryPromise`) so a composed read like
- * `loadRepoHome` issues only ONE config query total.
+ * Read every ref of a repo: {@link readAllRefUpdates}, each ref folded locally. Fetches the
+ * config history once and reuses it across refs — or accepts the caller's in-flight fetch
+ * (`configHistoryPromise`) so a composed read like `loadRepoHome` issues only ONE config
+ * query total.
  */
 export async function readRefs(
   sdk: EvoSDK,
@@ -192,23 +302,15 @@ export async function readRefs(
   isAncestor: IsAncestor = NO_ANCESTRY,
   configHistoryPromise?: Promise<readonly ConfigDoc[]>,
 ): Promise<ResolvedRef[]> {
-  const [complete, configHistory] = await Promise.all([
-    readAllRefUpdatesOnePage(sdk, repo),
+  const [byHash, configHistory] = await Promise.all([
+    readAllRefUpdates(sdk, repo),
     configHistoryPromise ?? readConfigHistory(sdk, repo),
   ])
-  if (complete !== null) {
-    return [...complete]
-      .map(([refNameHashHex, updates]) =>
-        toResolvedRef(updates, configHistory, refNameHashHex, isAncestor),
-      )
-      .filter((r): r is ResolvedRef => r !== null)
-  }
-
-  const hashes = await enumerateRefHashes(sdk, repo)
-  const resolved = await Promise.all(
-    hashes.map((h) => resolveRefByHash(sdk, repo, h, configHistory, isAncestor)),
-  )
-  return resolved.filter((r): r is ResolvedRef => r !== null)
+  return [...byHash]
+    .map(([refNameHashHex, updates]) =>
+      toResolvedRef(updates, configHistory, refNameHashHex, isAncestor),
+    )
+    .filter((r): r is ResolvedRef => r !== null)
 }
 
 /** Filter helper: only `refs/heads/*` branches. */

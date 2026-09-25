@@ -38,7 +38,8 @@ export {
 } from './config'
 export {
   branchesOf,
-  enumerateRefHashes,
+  hasMissingParent,
+  readAllRefUpdates,
   readRefUpdates,
   readRefs,
   resolveRefByHash,

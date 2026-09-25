@@ -1,7 +1,10 @@
 /**
- * readRefs paths: the one-page fast path (small repos resolve from two parallel queries,
- * grouped locally) and the skip-scan fallback (a full page means the update set may be
- * incomplete, so enumeration must go back through `> last limit 1` hops + per-ref reads).
+ * readRefs: the keyset scan over the `refState` index, against a mock Drive that serves
+ * `refNameHash > x` pages exactly and reproduces the protocol-13 cursor bug for `startAfter`
+ * (the cursor's `$id` bound leaks into every later `refNameHash` branch). The reader must
+ * never send a cursor on that multi-branch query, must read a page-filling ref on its own,
+ * and must fall back to the reflog read when a `prevOid` has no parent in what came back.
+ * Parity: forge-core `refs::tests`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -9,9 +12,9 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
-import { bytesToBase64 } from '../sdk'
+import { base64ToHex, bytesToBase64 } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { readRefs } from './refs'
+import { hasMissingParent, readRefs } from './refs'
 
 const REPO: RepoRef = { contractId: 'contract', ownerId: 'owner' }
 
@@ -20,36 +23,32 @@ function refHashBytes(seed: number): Uint8Array {
   return sha256(new TextEncoder().encode(`refs/heads/ref-${seed}`))
 }
 
-function hashB64(seed: number): string {
-  return bytesToBase64(refHashBytes(seed))
-}
-
 function refHashHex(seed: number): string {
   return bytesToHex(refHashBytes(seed))
 }
 
-function hashHex(seed: number): string {
-  return Array.from({ length: 32 }, () => seed.toString(16).padStart(2, '0')).join('')
+function oidHex(seed: number): string {
+  return Array.from({ length: 20 }, () => seed.toString(16).padStart(2, '0')).join('')
 }
 
-let nextId = 0
-function updateDoc(
-  hashSeed: number,
-  oidSeed: number,
-  createdAt: number,
-  prevOidSeed: number | null = null,
-): Record<string, unknown> {
-  nextId += 1
+type Doc = Record<string, unknown>
+
+/** A refUpdate row; `$createdAt` is absent, as on the deployed repo-v1 type. */
+function updateDoc(id: string, refSeed: number, newSeed: number, prevSeed = 0): Doc {
   return {
-    $id: `doc-${nextId}`,
+    $id: id,
     $ownerId: 'pusher',
-    $createdAt: createdAt,
-    refNameHash: hashB64(hashSeed),
-    refName: `refs/heads/ref-${hashSeed}`,
-    prevOid: prevOidSeed === null ? null : bytesToBase64(new Uint8Array(32).fill(prevOidSeed)),
-    newOid: bytesToBase64(new Uint8Array(32).fill(oidSeed)),
+    refNameHash: bytesToBase64(refHashBytes(refSeed)),
+    refName: `refs/heads/ref-${refSeed}`,
+    prevOid: prevSeed === 0 ? null : bytesToBase64(new Uint8Array(20).fill(prevSeed)),
+    newOid: bytesToBase64(new Uint8Array(20).fill(newSeed)),
     force: false,
   }
+}
+
+/** A ref with `n` linear updates 1 → 2 → … → n. */
+function chain(refSeed: number, n: number, nextId: () => string): Doc[] {
+  return Array.from({ length: n }, (_, k) => updateDoc(nextId(), refSeed, k + 1, k))
 }
 
 interface QueryLike {
@@ -57,92 +56,168 @@ interface QueryLike {
   where?: readonly (readonly [string, string, unknown])[]
   orderBy?: readonly (readonly [string, string])[]
   limit?: number
+  startAfter?: string
 }
 
-/** Mock SDK whose `documents.query` is routed through `dispatch`; records every query. */
-function mockSdk(
-  dispatch: (q: QueryLike) => Record<string, unknown>[],
-  seen: QueryLike[],
-): EvoSDK {
-  return {
+const hexOf = (d: Doc): string => base64ToHex(d['refNameHash'] as string)
+
+/**
+ * In-memory Drive for `refUpdate` (protected is empty). Rows are kept in `refState` order
+ * (`refNameHash`, then `$id` — `$createdAt` being absent). `dropOnKeyset` removes one `$id`
+ * from keyset pages only, standing in for a node answering a correct query incompletely.
+ */
+function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string } = {}) {
+  const sorted = [...rows].sort((a, b) =>
+    hexOf(a) < hexOf(b) ? -1 : hexOf(a) > hexOf(b) ? 1 : String(a['$id']) < String(b['$id']) ? -1 : 1,
+  )
+  const seen: QueryLike[] = []
+  const page = (docs: Doc[], q: QueryLike): Doc[] => {
+    let from = 0
+    if (q.startAfter !== undefined) {
+      const cursor = docs.find((d) => d['$id'] === q.startAfter) as Doc
+      from = docs.indexOf(cursor) + 1
+      // The protocol-13 lowering: the cursor's `$id` bound applies in sibling branches too.
+      if (q.orderBy?.[0]?.[0] === 'refNameHash') {
+        docs = docs.filter(
+          (d, i) => i < from || hexOf(d) === hexOf(cursor) || String(d['$id']) > String(cursor['$id']),
+        )
+        from = docs.indexOf(cursor) + 1
+      }
+    }
+    return docs.slice(from, from + (q.limit ?? 100))
+  }
+  const sdk = {
     documents: {
       query: (q: QueryLike): Promise<Map<string, unknown>> => {
         seen.push(q)
-        const docs = dispatch(q)
-        return Promise.resolve(new Map(docs.map((d) => [String(d['$id']), d])))
+        let out: Doc[] = []
+        if (q.documentTypeName === DOC.config) out = [{ $id: 'cfg', $createdAt: 1 }]
+        else if (q.documentTypeName === DOC.refUpdate) {
+          const where = q.where ?? []
+          const gt = where.find((w) => w[1] === '>')
+          const eq = where.find((w) => w[1] === '==')
+          let docs = sorted
+          if (gt) docs = docs.filter((d) => hexOf(d) > base64ToHex(gt[2] as string))
+          if (eq) docs = docs.filter((d) => hexOf(d) === base64ToHex(eq[2] as string))
+          if (gt && opts.dropOnKeyset) docs = docs.filter((d) => d['$id'] !== opts.dropOnKeyset)
+          if (!gt && !eq && q.orderBy?.[0]?.[0] === 'refNameHash' && opts.dropOnKeyset) {
+            docs = docs.filter((d) => d['$id'] !== opts.dropOnKeyset)
+          }
+          if (q.orderBy?.[0]?.[0] === '$createdAt') {
+            docs = [...docs].sort((a, b) => (String(a['$id']) < String(b['$id']) ? -1 : 1))
+          }
+          out = page(docs, q)
+        }
+        return Promise.resolve(new Map(out.map((d) => [String(d['$id']), d])))
       },
     },
   } as unknown as EvoSDK
+  return { sdk, seen, sorted }
 }
 
-const isFastPathPage = (q: QueryLike): boolean => q.orderBy?.length === 2 && q.limit === 100
-const isSkipScanHop = (q: QueryLike): boolean => q.limit === 1 && q.orderBy?.length === 1
+/** 60 refs × 1..4 updates, `$id`s running against hash order (the nightly repo's shape). */
+function nightlyLike(): Doc[] {
+  let n = 1000
+  const nextId = (): string => `id${String(n--).padStart(6, '0')}`
+  return Array.from({ length: 60 }, (_, r) => chain(r + 1, 1 + ((r + 1) % 4), nextId)).flat()
+}
 
-describe('readRefs fast path (whole update set in one page per type)', () => {
-  it('resolves every ref from the two page queries with no skip-scan hops', async () => {
-    const seen: QueryLike[] = []
-    const sdk = mockSdk((q) => {
-      if (q.documentTypeName === DOC.config) return [{ $id: 'cfg', $createdAt: 1 }]
-      if (!isFastPathPage(q)) throw new Error(`unexpected query: ${JSON.stringify(q)}`)
-      if (q.documentTypeName === DOC.refUpdate) {
-        return [updateDoc(1, 0xaa, 10), updateDoc(1, 0xbb, 20, 0xaa), updateDoc(2, 0xcc, 15)]
-      }
-      return [] // protectedRefUpdate: none
-    }, seen)
+const isKeysetPage = (q: QueryLike): boolean =>
+  q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === 'refNameHash'
 
-    const refs = await readRefs(sdk, REPO)
-
-    const byName = new Map(refs.map((r) => [r.refName, r]))
-    expect([...byName.keys()].sort()).toEqual(['refs/heads/ref-1', 'refs/heads/ref-2'])
-    const ref1 = byName.get('refs/heads/ref-1')
-    expect(ref1?.refNameHash).toBe(refHashHex(1))
-    expect(ref1?.state).toMatchObject({ state: 'resolved', oid: hashHex(0xbb) })
-    expect(byName.get('refs/heads/ref-2')?.state).toMatchObject({
-      state: 'resolved',
-      oid: hashHex(0xcc),
-    })
-    expect(seen.some(isSkipScanHop)).toBe(false)
-  })
-
-  it('merges protected updates into the same ref group', async () => {
-    const sdk = mockSdk((q) => {
-      if (q.documentTypeName === DOC.config) return [{ $id: 'cfg', $createdAt: 1 }]
-      if (q.documentTypeName === DOC.refUpdate) return [updateDoc(1, 0xaa, 10)]
-      return [updateDoc(1, 0xdd, 30, 0xaa)] // protectedRefUpdate, newer, supersedes 0xaa
-    }, [])
-
-    const refs = await readRefs(sdk, REPO)
-
-    expect(refs).toHaveLength(1)
-    expect(refs[0]?.state).toMatchObject({ state: 'resolved', oid: hashHex(0xdd) })
+describe('the mock reproduces the protocol-13 cursor drop', () => {
+  it('loses rows when refState is paged with startAfter', async () => {
+    const { sdk, sorted } = mockDrive(nightlyLike())
+    const got: Doc[] = []
+    let startAfter: string | undefined
+    for (;;) {
+      const res = (await (sdk as unknown as { documents: { query: (q: QueryLike) => Promise<Map<string, Doc>> } }).documents.query({
+        documentTypeName: DOC.refUpdate,
+        orderBy: [
+          ['refNameHash', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+        limit: 100,
+        startAfter,
+      }))
+      const page = [...res.values()]
+      got.push(...page)
+      if (page.length < 100) break
+      startAfter = String(page[page.length - 1]?.['$id'])
+    }
+    expect(sorted.length).toBeGreaterThan(100)
+    expect(got.length).toBeLessThan(sorted.length)
   })
 })
 
-describe('readRefs skip-scan fallback (a full page = possibly incomplete)', () => {
-  it('falls back to enumeration + per-ref reads when the page overflows', async () => {
-    // 100 refUpdate docs on one ref — the page is full, so the fast path must not trust it.
-    const fullPage = Array.from({ length: 100 }, (_, i) => updateDoc(1, 0xaa, 10 + i))
-    const seen: QueryLike[] = []
-    const sdk = mockSdk((q) => {
-      if (q.documentTypeName === DOC.config) return [{ $id: 'cfg', $createdAt: 1 }]
-      if (isFastPathPage(q)) return q.documentTypeName === DOC.refUpdate ? fullPage : []
-      if (isSkipScanHop(q)) {
-        if (q.documentTypeName !== DOC.refUpdate) return []
-        // hop 1: no where → first hash; hop 2: > hash(1) → done
-        return q.where?.length ? [] : [fullPage[0] as Record<string, unknown>]
-      }
-      // per-ref history read (`refNameHash ==`, `$createdAt asc`)
-      if (q.where?.[0]?.[1] === '==' && q.documentTypeName === DOC.refUpdate) {
-        return [updateDoc(1, 0xee, 500)]
-      }
-      return []
-    }, seen)
-
+describe('readRefs keyset scan', () => {
+  it('reads every update with range pages and never a cursor on the multi-branch query', async () => {
+    const { sdk, seen } = mockDrive(nightlyLike())
     const refs = await readRefs(sdk, REPO)
 
-    expect(refs).toHaveLength(1)
-    expect(refs[0]?.refNameHash).toBe(refHashHex(1))
-    expect(refs[0]?.state).toMatchObject({ state: 'resolved', oid: hashHex(0xee) })
-    expect(seen.some(isSkipScanHop)).toBe(true)
+    expect(refs).toHaveLength(60)
+    for (let r = 1; r <= 60; r++) {
+      const ref = refs.find((x) => x.refNameHash === refHashHex(r))
+      expect(ref?.state).toMatchObject({ state: 'resolved', oid: oidHex(1 + (r % 4)) })
+    }
+    const pages = seen.filter(isKeysetPage)
+    expect(pages.every((q) => q.startAfter === undefined)).toBe(true)
+    expect(pages.length).toBeLessThanOrEqual(3)
+    // A consistent scan never falls back to the reflog read.
+    expect(seen.some((q) => q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === '$createdAt' && !q.where?.length)).toBe(false)
+  })
+
+  it('reads a page-filling ref on its own, then moves past it', async () => {
+    let n = 0
+    const nextId = (): string => `id${String(n++).padStart(6, '0')}`
+    const rows = [...chain(5, 3, nextId), ...chain(7, 150, nextId), ...chain(9, 2, nextId)]
+    const { sdk, seen } = mockDrive(rows)
+    const refs = await readRefs(sdk, REPO)
+
+    expect(refs.find((r) => r.refNameHash === refHashHex(7))?.state).toMatchObject({
+      state: 'resolved',
+      oid: oidHex(150),
+    })
+    expect(refs).toHaveLength(3)
+    const eqReads = seen.filter((q) => q.where?.some((w) => w[1] === '==') && q.documentTypeName === DOC.refUpdate)
+    expect(eqReads.map((q) => base64ToHex(q.where?.[0]?.[2] as string))).toContain(refHashHex(7))
+  })
+
+  it('falls back to the reflog read when a prevOid has no parent, and unions without duplicates', async () => {
+    const rows = nightlyLike()
+    // Ref 2 has 3 updates; hide its middle one from keyset pages.
+    const victim = rows.find(
+      (d) => hexOf(d) === refHashHex(2) && base64ToHex(d['newOid'] as string) === oidHex(2),
+    )?.['$id'] as string
+    const { sdk, seen } = mockDrive(rows, { dropOnKeyset: victim })
+    const refs = await readRefs(sdk, REPO)
+
+    expect(seen.some((q) => q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === '$createdAt' && !q.where?.length)).toBe(true)
+    expect(refs.find((r) => r.refNameHash === refHashHex(2))?.state).toMatchObject({
+      state: 'resolved',
+      oid: oidHex(3),
+    })
+    expect(refs).toHaveLength(60)
+  })
+})
+
+describe('hasMissingParent', () => {
+  const u = (prevOid: string, newOid: string) => ({
+    id: newOid,
+    refNameHash: 'h',
+    refName: 'refs/heads/x',
+    prevOid,
+    newOid,
+    force: false,
+    protected: false,
+    author: 'a',
+    createdAt: 0,
+  })
+  it('accepts a linked chain, a create and a delete', () => {
+    expect(hasMissingParent([u('', 'aa'), u('aa', 'bb')])).toBe(false)
+    expect(hasMissingParent([u('0000', 'aa'), u('aa', '0000')])).toBe(false)
+  })
+  it('flags a prevOid no update produced', () => {
+    expect(hasMissingParent([u('', 'aa'), u('cc', 'dd')])).toBe(true)
   })
 })
