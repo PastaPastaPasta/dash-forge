@@ -14,7 +14,13 @@ import { Author } from '@/components/author'
 import { V1Badge } from '@/components/ui/v1-badge'
 
 export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
-  const href = repoHref('/repo', { owner: repo.ownerId, name: repo.slug })
+  // A v1 card pins its contract, so a forge-v2 repo with the same owner and name cannot
+  // shadow it on a network that has both.
+  const href = repoHref('/repo', {
+    owner: repo.ownerId,
+    name: repo.slug,
+    ...(repo.contractId ? { contractId: repo.contractId } : {}),
+  })
   return (
     <div className="group rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
@@ -49,9 +55,9 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
           </span>
         ) : null}
         {typeof repo.issues === 'number' ? (
-          <span className="inline-flex items-center gap-1" title="Issues (provable count)">
+          <span className="inline-flex items-center gap-1" title="Issues ever opened, open or closed (provable count)">
             <CircleDot className="h-3 w-3" aria-hidden /> {repo.issues}
-            <span className="sr-only">issues</span>
+            <span className="sr-only">issues in total</span>
           </span>
         ) : null}
       </div>

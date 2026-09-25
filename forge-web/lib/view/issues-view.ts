@@ -91,6 +91,8 @@ async function docByNumber(
     sdk,
     repoSource(repo).repoQuery(DOC[type], {
       where: [['number', '==', number]],
+      // v1 keeps the query shape it always sent; forge-v2's unique (repoId, number) needs none.
+      ...(repo.kind === 'v1' ? { orderBy: [['number', 'desc']] as const } : {}),
       limit: 1,
     }),
   )

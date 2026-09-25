@@ -88,9 +88,10 @@ export async function loadRepoHome(
 
   const readStars = (): Promise<number | null> => {
     if (repo.kind === 'v2') return readV2StarCount(sdk, repo.forge, repo.repoId).catch(() => null)
+    // Stars live on the registry listing; a repo addressed without one has an unknown count.
     return listingId
       ? readStarCount(sdk, listingId, { network: params.network }).catch(() => null)
-      : Promise.resolve(0)
+      : Promise.resolve(null)
   }
 
   // One config query serves both the current config and the history readRefs folds with.

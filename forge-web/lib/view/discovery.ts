@@ -21,6 +21,7 @@ import {
   DOC,
   REGISTRY_DOC,
   V2_DOC,
+  asIdentifierString,
   readMemberRepoIds,
   toV2RepoDoc,
   type RepoListing,
@@ -43,6 +44,8 @@ export interface DiscoveredRepo {
   readonly slug: string
   readonly description: string
   readonly createdAt: number
+  /** v1 only: the repo contract (links pin it with `?contract=`). */
+  readonly contractId?: string
   /** forge-v2 only. */
   readonly visibility?: 'public' | 'private'
   /** forge-v2: provable counts, or null when not read. */
@@ -59,6 +62,7 @@ function fromListing(d: PlainDocument): DiscoveredRepo {
     ownerId: asString(d['$ownerId']),
     name: asString(d['name']) || asString(d['normalizedName']),
     slug: asString(d['normalizedName']) || asString(d['name']),
+    contractId: asIdentifierString(d['repoContractId']),
     description: asString(d['description']),
     createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
   }
@@ -87,6 +91,10 @@ interface CompositeFacadeLike {
   documents: { composite(q: unknown): Promise<CompositeResultLike> }
 }
 
+/**
+ * A repo's count from a verified `counts` sub-result. The composite reports a value with no
+ * documents as absent, so a missing id is 0; a missing sub-result is unknown (null).
+ */
 function countOf(counts: Map<string, bigint> | undefined, id: string): number | null {
   if (counts === undefined) return null
   const v = counts.get(id)

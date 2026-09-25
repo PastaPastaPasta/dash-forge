@@ -56,6 +56,7 @@ import {
   type V2RepoRef,
 } from './contract'
 import { readRefUpdates } from './refs'
+import { readRoleOracle } from './members'
 import { repoSource } from './source'
 import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
@@ -64,6 +65,19 @@ import { base64ToHex } from '../sdk'
 export function emptyAuthz(): AuthzResolver {
   return new AuthzResolver([])
 }
+
+/** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
+function titleOf(doc: PlainDocument): string {
+  const title = str(doc, 'title')
+  if (title !== '') return title
+  return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
+}
+
+/**
+ * A list page: the rows, and how many newer documents were skipped as not well-formed (or,
+ * in a private repo, as a stranger's ciphertext) — shown as "N hidden", never silently.
+ */
+export type Listed<T> = T[] & { readonly hidden: number }
 
 /** An issue with its folded state. */
 export interface IssueView {
@@ -357,7 +371,7 @@ export async function readIssue(
   return {
     id,
     number: num(issueDoc, 'number'),
-    title: str(issueDoc, 'title'),
+    title: titleOf(issueDoc),
     body: str(issueDoc, 'body'),
     author,
     createdAt: num(issueDoc, '$createdAt'),
@@ -366,24 +380,58 @@ export async function readIssue(
   }
 }
 
+/** Pages a list read may take to fill `limit` shown rows past hidden ones. */
+const LIST_MAX_PAGES = 5
+
 /**
- * The newest `limit` issues or patches of a repo, `$createdAt` descending, without the ones
- * that are not well-formed for the repo's visibility (forge-v2; v1 has no such rule).
+ * The newest `limit` issues or patches of a repo, `$createdAt` descending, and how many were
+ * skipped on the way. forge-v2 skips documents that are not well-formed for the repo's
+ * visibility (`forge-v2.md` §5), and in a private repo also ciphertext from non-members: this
+ * client decrypts nothing yet, and §5 shows a stranger's ciphertext to no one. Skipped rows do
+ * not shorten the page: the read continues (newest-first, by a `$createdAt <` bound, so no
+ * cursor) until `limit` rows are found, the list ends, or {@link LIST_MAX_PAGES} pages.
  */
 async function newestTargets(
   sdk: EvoSDK,
   repo: RepoRef,
   type: 'issue' | 'patch',
   limit: number,
-): Promise<PlainDocument[]> {
-  const { documents } = await queryDocumentsWithProof(
-    sdk,
-    repoSource(repo).repoQuery(DOC[type], {
-      orderBy: [['$createdAt', 'desc']],
-      limit,
-    }),
-  )
-  return documents.filter((d) => wellFormed(repo, type, d))
+): Promise<{ documents: PlainDocument[]; hidden: number }> {
+  const oracle = repo.kind === 'v2' && repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
+  const shown = (d: PlainDocument): boolean => {
+    if (!wellFormed(repo, type, d)) return false
+    // Private: only members' ciphertext is shown (as encrypted); strangers' is hidden.
+    return oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null
+  }
+  const out: PlainDocument[] = []
+  const seen = new Set<string>()
+  let hidden = 0
+  let before: number | null = null
+  for (let page = 0; page < LIST_MAX_PAGES && out.length < limit; page++) {
+    const { documents } = await queryDocumentsWithProof(
+      sdk,
+      repoSource(repo).repoQuery(DOC[type], {
+        // `<=`, not `<`: rows sharing the boundary's timestamp may not all have fit the page.
+        ...(before === null ? {} : { where: [['$createdAt', '<=', before]] }),
+        orderBy: [['$createdAt', 'desc']],
+        limit,
+      }),
+    )
+    for (const d of documents) {
+      if (out.length >= limit) break
+      const id = str(d, '$id')
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (shown(d)) out.push(d)
+      else hidden++
+    }
+    // v1 has no hidden rows, so one page answers; a short page is the end of the list.
+    if (repo.kind === 'v1' || documents.length < limit) break
+    const oldest = documents[documents.length - 1]?.['$createdAt']
+    if (typeof oldest !== 'number' || oldest === before) break
+    before = oldest
+  }
+  return { documents: out, hidden }
 }
 
 /**
@@ -422,16 +470,17 @@ export async function listIssues(
   repo: RepoRef,
   authz?: AuthzResolver,
   limit = 50,
-): Promise<IssueView[]> {
+): Promise<Listed<IssueView>> {
   const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
-  const documents = await newestTargets(sdk, repo, 'issue', limit)
-  return foldRows(
+  const { documents, hidden } = await newestTargets(sdk, repo, 'issue', limit)
+  const rows = await foldRows(
     sdk,
     repo,
     documents,
     (doc, log) => readIssue(sdk, repo, doc, resolver, log),
     incompleteIssueView,
   )
+  return Object.assign(rows, { hidden })
 }
 
 /** An issue row whose event log could not be read completely: identity only, no folded state. */
@@ -439,7 +488,7 @@ function incompleteIssueView(doc: PlainDocument): IssueView {
   return {
     id: str(doc, '$id'),
     number: num(doc, 'number'),
-    title: str(doc, 'title'),
+    title: titleOf(doc),
     body: str(doc, 'body'),
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
@@ -545,7 +594,7 @@ export async function readPull(
   return {
     id,
     number: num(patchDoc, 'number'),
-    title: str(patchDoc, 'title'),
+    title: titleOf(patchDoc),
     body: str(patchDoc, 'body'),
     author,
     createdAt,
@@ -568,16 +617,17 @@ export async function listPulls(
   repo: RepoRef,
   authz?: AuthzResolver,
   limit = 50,
-): Promise<PullView[]> {
+): Promise<Listed<PullView>> {
   const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
-  const documents = await newestTargets(sdk, repo, 'patch', limit)
-  return foldRows(
+  const { documents, hidden } = await newestTargets(sdk, repo, 'patch', limit)
+  const rows = await foldRows(
     sdk,
     repo,
     documents,
     (doc, log) => readPull(sdk, repo, doc, resolver, log),
     (doc) => incompletePullView(repo, doc),
   )
+  return Object.assign(rows, { hidden })
 }
 
 /** A PR row whose event log could not be read completely: identity only, no folded state. */
@@ -594,7 +644,7 @@ function incompletePullView(repo: RepoRef, doc: PlainDocument): PullView {
   return {
     id: str(doc, '$id'),
     number: num(doc, 'number'),
-    title: str(doc, 'title'),
+    title: titleOf(doc),
     body: str(doc, 'body'),
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),

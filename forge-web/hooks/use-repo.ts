@@ -88,7 +88,7 @@ function peekRepoHome(network: Network, addr: RepoAddress): { value: RepoHome | 
 
 export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const { sdk, ready, error: sdkError, network } = useSdk()
-  const enabled = ready && sdk !== null && addr.owner !== '' && addr.name !== ''
+  const enabled = ready && sdk !== null && addr.owner !== '' && (addr.name !== '' || !!addr.repoId)
   const key = homeCacheKey(network, addr)
   const state = useAsync<RepoHome | null>(
     () => loadRepoHomeCached(sdk!, network, addr),

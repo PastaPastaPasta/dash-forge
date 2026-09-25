@@ -24,7 +24,6 @@ import {
   FlatIndex,
   ObjectLocator,
   type PackSource,
-  type RangeFetch,
 } from '../browse'
 import {
   CHUNK_QUERY_MAX,
@@ -588,7 +587,7 @@ function noteSource(repo: RepoRef, uri?: string): void {
   })
 }
 
-/** A {@link RangeFetch} over one artifact (platform chunks or external URIs). */
+/** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
   repo: RepoRef,

@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import type { IssueView } from '@/lib/repo'
+import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
 import { previewDocumentCreate } from '@/lib/sdk'
 import { timeAgo } from '@/lib/view'
@@ -25,6 +25,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { V2WritesNote } from '@/components/repo/v2-writes-note'
+import { HiddenNote } from '@/components/repo/hidden-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
 import { cn, errorMessage } from '@/lib/utils'
@@ -36,7 +37,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [filter, setFilter] = useState<Filter>('open')
   const [composing, setComposing] = useState(false)
 
-  const { data, loading, error, reload } = useAsync<IssueView[]>(
+  const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
     () => listIssues(sdk!, home.repo, undefined, 100),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
@@ -123,6 +124,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           ))}
         </div>
       )}
+
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} />
 
       <ComposeIssueDialog
         open={composing}

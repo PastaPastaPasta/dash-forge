@@ -117,12 +117,17 @@ export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<Con
  * `resolveRef` considers in force. forge-core `read_default_branch` makes the same trade.
  */
 export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
+  // forge-v2 skips a malformed config (`forge-v2.md` §5), so read a few to find the newest
+  // well-formed one; v1 has no such rule and one row answers.
   const { documents } = await queryDocumentsWithProof(
     sdk,
-    repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'desc']], limit: 1 }),
+    repoSource(repo).repoQuery(DOC.config, {
+      orderBy: [['$createdAt', 'desc']],
+      limit: repo.kind === 'v1' ? 1 : 10,
+    }),
   )
-  const doc = documents[0]
-  return doc === undefined || !wellFormed(repo, 'config', doc) ? null : toRepoConfig(doc)
+  const doc = documents.find((d) => wellFormed(repo, 'config', d))
+  return doc === undefined ? null : toRepoConfig(doc)
 }
 
 /** Convenience: the default branch name (falls back to `main`). */

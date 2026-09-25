@@ -129,26 +129,32 @@ function isIdentifier(s: string): boolean {
   }
 }
 
-const ownerCache = new Map<string, Promise<string | null>>()
+const ownerCache = new Map<string, { at: number; promise: Promise<string | null> }>()
+/** How long a DPNS miss is believed (a name registered meanwhile resolves after it). */
+const OWNER_MISS_TTL_MS = 5 * 60_000
 
 /**
  * The identity an owner segment names: an identity id as is, else a DPNS name resolved
  * through the SDK (`alice` and `alice.dash` both work). Null when the name does not resolve.
- * Cached per session; a failed lookup is not.
+ * A hit is cached for the session, a miss for {@link OWNER_MISS_TTL_MS}, a failure not at all.
  */
 export function resolveOwner(sdk: EvoSDK, owner: string): Promise<string | null> {
   if (isIdentifier(owner)) return Promise.resolve(owner)
   const name = owner.toLowerCase().replace(/^@/, '')
   const full = name.includes('.') ? name : `${name}.dash`
   const hit = ownerCache.get(full)
-  if (hit !== undefined) return hit
+  if (hit !== undefined) return hit.promise
   const promise = (sdk as unknown as DpnsFacadeLike).dpns
     .resolveName(full)
     .then((id) => (id ? asIdentifierString(id) || null : null))
-  ownerCache.set(full, promise)
-  promise.catch(() => {
-    if (ownerCache.get(full) === promise) ownerCache.delete(full)
-  })
+  const entry = { at: Date.now(), promise }
+  ownerCache.set(full, entry)
+  const evict = (): void => {
+    if (ownerCache.get(full) === entry) ownerCache.delete(full)
+  }
+  promise.then((id) => {
+    if (id === null) setTimeout(evict, OWNER_MISS_TTL_MS)
+  }, evict)
   return promise
 }
 
@@ -301,7 +307,8 @@ export async function resolveAnyRepoWith(
   if (params.contractId) {
     const repo = await resolveRepoByContractId(sdk, params.contractId)
     if (repo === null || repo.ownerId !== ownerId) return null
-    return { repo: { ...repo, name: params.name }, listing: null }
+    // No listing names it: show the contract id, never a name the URL supplied.
+    return { repo: { ...repo, name: params.contractId }, listing: null }
   }
 
   if (forge !== null) {

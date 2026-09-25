@@ -15,7 +15,8 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { GitPullRequest, GitMerge, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import type { PullView } from '@/lib/repo'
+import type { Listed, PullView } from '@/lib/repo'
+import { HiddenNote } from '@/components/repo/hidden-note'
 import { listPulls, repoContractIds, repoKey } from '@/lib/repo'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -40,7 +41,7 @@ function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: str
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
-  const { data, loading, error, reload } = useAsync<PullView[]>(
+  const { data, loading, error, reload } = useAsync<Listed<PullView>>(
     () => listPulls(sdk!, home.repo, undefined, 100),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
@@ -104,6 +105,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           })}
         </div>
       )}
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} />
     </div>
   )
 }

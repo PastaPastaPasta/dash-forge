@@ -33,7 +33,7 @@ export function RepoScaffold({
 }): JSX.Element {
   const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
 
-  if (!addr.owner || !addr.name) {
+  if (!addr.owner || (!addr.name && !addr.repoId)) {
     return (
       <AppShell wide>
         <EmptyState

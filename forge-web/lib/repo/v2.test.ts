@@ -13,12 +13,14 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
+import { base58Decode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { loadIssueThread, loadPullThread } from '../view/issues-view'
 import {
   holdingsOfRole,
   invalidateMembers,
+  invalidateRepoFeed,
   listIssues,
   listPulls,
   readConfigBundle,
@@ -46,6 +48,7 @@ const STRANGER = 'A15PpcywDNf4KdQ5rmAqcYUHPJddahyXR33in5PsCE7j'
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
 const OTHER_REPO = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
 const HEAD = 'ab'.repeat(20)
+const REPO_ISSUE2 = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
 
 const V2: V2RepoRef = {
   kind: 'v2',
@@ -66,6 +69,8 @@ function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown
       return v === value
     case 'in':
       return Array.isArray(value) && value.includes(v)
+    case '<=':
+      return (v as number) <= (value as number)
     case '>':
       return typeof v === 'string' && typeof value === 'string' ? v > value : (v as number) > (value as number)
     default:
@@ -307,6 +312,42 @@ describe('forge-v2 issue and PR folds', () => {
     expect(eventReads).toHaveLength(2)
     // …and no token-history reads either.
     expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB')).toBe(false)
+  })
+
+  it('groups the feed by target even when the SDK returns targetId as base64', async () => {
+    // An identifier byteArray can serialize as base64; the feed must still key it by the
+    // target's base58 $id, or every row folds an empty log (all open) with no error.
+    const store = fixture()
+    const ids = { issue2: REPO_ISSUE2 }
+    store.COLLAB!.issue = store.COLLAB!.issue!.map((d) => (d['$id'] === 'issue2' ? { ...d, $id: ids.issue2 } : d))
+    store.COLLAB!.authorEvent = [
+      doc({
+        $ownerId: AUTHOR,
+        repoId: REPO,
+        targetId: bytesToBase64(base58Decode(ids.issue2)),
+        targetNumber: 2,
+        kind: 1,
+      }),
+    ]
+    invalidateRepoFeed(V2)
+    const issues = await listIssues(mockSdk(store), V2)
+    expect(issues.find((i) => i.number === 2)?.state.open).toBe(false)
+    invalidateRepoFeed(V2)
+  })
+
+  it('pages past hidden rows to fill the page and reports how many it hid', async () => {
+    const store = fixture()
+    // Five newer malformed issues (ciphertext in a public repo) ahead of the real ones.
+    for (let n = 10; n < 15; n++) {
+      store.COLLAB!.issue!.push(
+        doc({ $id: `spam${n}`, $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
+      )
+    }
+    invalidateRepoFeed(V2)
+    const issues = await listIssues(mockSdk(store), V2, undefined, 3)
+    expect(issues.map((i) => i.number).sort()).toEqual([1, 2, 3])
+    expect(issues.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
+    invalidateRepoFeed(V2)
   })
 
   it('folds a merge by a member whose oid is the base tip', async () => {
