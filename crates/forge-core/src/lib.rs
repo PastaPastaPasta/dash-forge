@@ -12,6 +12,8 @@
 //!   graph (stars / follows), folding state through [`rules`].
 //! - [`pack`] — chunk geometry and the pure split/join chunker.
 //! - [`backends`] — the `PackBackend` trait (`platform | ipfs | s3 | https`).
+//! - [`storage`] — bring-your-own storage: user profiles, a repo's replication policy,
+//!   the push-side `StorageTarget` fan-out, and the gateway-racing reader.
 //! - [`rules`] — `FORGE_RULES_V1`: ref resolution, event folds, protected-pattern matching.
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
@@ -29,6 +31,7 @@ pub mod pack;
 pub mod platform;
 pub mod repo;
 pub mod rules;
+pub mod storage;
 pub mod tokens;
 
 pub use error::{Error, Result};

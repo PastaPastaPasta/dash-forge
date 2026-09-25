@@ -21,11 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backends::ipfs::IpfsConfig;
-use crate::backends::{
-    BackendRegistry, ByteRange, HttpsBackend, IpfsBackend, PackBackend, PackMeta, PlatformBackend,
-    Uri,
-};
+use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
@@ -33,6 +29,7 @@ use crate::platform::{
     PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::{self, ConfigDoc, RefState, RefUpdate};
+use crate::storage::{PackReader, Replication, StorageTarget};
 
 /// The repo-v1 contract template (2 tokens + 15 doc types), embedded at build time.
 ///
@@ -189,6 +186,140 @@ pub enum RepackTarget<'a> {
     /// hash-verifiable at its URIs; the on-chain refund still comes from deleting the
     /// superseded platform chunks.
     External(&'a dyn PackBackend),
+    /// A storage policy's targets, requiring `required` verified confirmations
+    /// ([`crate::storage::replicate`]). This is what a `git push` writes through.
+    Replicated {
+        /// The targets (external and/or [`PlatformChunkTarget`]).
+        targets: &'a [&'a dyn StorageTarget],
+        /// Confirmations required before the manifest may be written.
+        required: usize,
+    },
+}
+
+/// The maximum length of the `packManifest.uris` JSON string (repo-v1 schema).
+pub const MANIFEST_URIS_MAX_LEN: usize = 2600;
+
+/// The maximum length of the `config.backend.uris` JSON string (repo-v1 schema).
+pub const BACKEND_URIS_MAX_LEN: usize = 1300;
+
+/// How a manifest records an artifact stored through [`RepackTarget::Replicated`]:
+/// `storage` 0 when an on-chain copy exists (Platform-reading clients, including today's
+/// web app, read the chunks; every other copy is still listed in `uris` for CLI readers to
+/// race), `storage` 1 when only external copies exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredArtifact {
+    /// `packManifest.storage`.
+    pub storage: u64,
+    /// `packManifest.chunkCount` — 0 unless an on-chain copy was written.
+    pub chunk_count: u64,
+    /// `packManifest.uris`.
+    pub uris: Vec<String>,
+}
+
+impl StoredArtifact {
+    /// Derive the manifest fields from a successful replication of `bytes`.
+    pub fn from_replication(rep: &Replication, bytes: &[u8]) -> Result<Self> {
+        let platform = rep.has_platform();
+        Ok(Self {
+            storage: u64::from(!platform),
+            chunk_count: if platform {
+                crate::pack::split(bytes).len() as u64
+            } else {
+                0
+            },
+            uris: rep.manifest_uris(MANIFEST_URIS_MAX_LEN)?,
+        })
+    }
+}
+
+/// The Platform `chunk`-document tier as a [`StorageTarget`].
+///
+/// This is the contract-model-specific end of the push seam: everything that knows chunks
+/// are documents in a repo-v1 contract lives here, so a new contract generation replaces
+/// this type and leaves the replication engine and the helper alone.
+///
+/// With a journal it uploads resumably (an interrupted push resumes without re-paying for
+/// confirmed chunks); without one it rolls back a partial upload, because chunks no
+/// manifest references are invisible to every deletion path and their deposit would be
+/// stranded. Chunk writes are consensus-confirmed one by one, which is this tier's upload
+/// verification — no re-read is needed.
+pub struct PlatformChunkTarget<'s> {
+    svc: &'s RepoService<'s>,
+    repo: &'s RepoHandle,
+    name: String,
+    journal: Option<(std::sync::Mutex<PushJournal>, &'s (dyn JournalStore + Sync))>,
+}
+
+impl<'s> PlatformChunkTarget<'s> {
+    /// A target writing `repo`'s chunks through `svc`, rolling back partial uploads.
+    pub fn new(svc: &'s RepoService<'s>, repo: &'s RepoHandle, name: impl Into<String>) -> Self {
+        Self {
+            svc,
+            repo,
+            name: name.into(),
+            journal: None,
+        }
+    }
+
+    /// A resumable target: confirmed chunks are checkpointed through `store`.
+    pub fn resumable(
+        svc: &'s RepoService<'s>,
+        repo: &'s RepoHandle,
+        name: impl Into<String>,
+        journal: PushJournal,
+        store: &'s (dyn JournalStore + Sync),
+    ) -> Self {
+        Self {
+            svc,
+            repo,
+            name: name.into(),
+            journal: Some((std::sync::Mutex::new(journal), store)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl StorageTarget for PlatformChunkTarget<'_> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_platform(&self) -> bool {
+        true
+    }
+
+    async fn store(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+        if let Some((journal, store)) = &self.journal {
+            // Take the journal out for the upload (a std lock must not be held across an
+            // await) and put the checkpointed state back either way.
+            let poisoned = || Error::Io("push journal lock poisoned".into());
+            let mut j = std::mem::take(&mut *journal.lock().map_err(|_| poisoned())?);
+            let res = self
+                .svc
+                .put_pack_resumable(self.repo, bytes, meta, &mut j, *store)
+                .await;
+            *journal.lock().map_err(|_| poisoned())? = j;
+            return res;
+        }
+        let pack_hash = meta.pack_hash_bytes()?;
+        match self.svc.put_pack(self.repo, bytes, meta).await {
+            Ok(u) => Ok(u),
+            Err(e) => {
+                match self.svc.delete_chunks(self.repo, pack_hash).await {
+                    Ok(n) => {
+                        tracing::debug!(reclaimed_chunks = n, "rolled back a partial chunk upload");
+                    }
+                    Err(cleanup) => tracing::warn!(
+                        error = %cleanup,
+                        pack_hash = %meta.pack_hash,
+                        "could not roll back a partial chunk upload; its deposit is stranded \
+                         until the repo is deleted"
+                    ),
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 /// What [`RepoService::publish_push_locator`] did to the browse index.
@@ -626,6 +757,33 @@ impl<'a> RepoService<'a> {
     /// `baseSupply`). Returns the new config document id. This is the `dg repo backend set`
     /// write path.
     pub async fn set_backend_mode(&self, repo: &RepoHandle, backend_mode: u8) -> Result<String> {
+        self.set_backend(repo, backend_mode, None).await
+    }
+
+    /// [`Self::set_backend_mode`], optionally replacing the advertised read `uris` (the
+    /// public read bases of a storage policy — `dg storage advertise`). `None` keeps the
+    /// newest config's URIs.
+    pub async fn set_backend(
+        &self,
+        repo: &RepoHandle,
+        backend_mode: u8,
+        new_uris: Option<&[String]>,
+    ) -> Result<String> {
+        let replacement = match new_uris {
+            Some(list) => {
+                let json = serde_json::to_string(list)
+                    .map_err(|e| Error::Config(format!("serializing backend uris: {e}")))?;
+                if json.len() > BACKEND_URIS_MAX_LEN {
+                    return Err(Error::Config(format!(
+                        "advertised URIs are {} bytes of JSON; config.backend.uris holds \
+                         {BACKEND_URIS_MAX_LEN}",
+                        json.len()
+                    )));
+                }
+                Some(json)
+            }
+            None => None,
+        };
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
         let newest = self
             .client
@@ -650,14 +808,16 @@ impl<'a> RepoService<'a> {
             .and_then(|d| d.field_str("protectedPatterns"))
             .unwrap_or_else(|| "[]".to_string());
         let archived = newest.as_ref().is_some_and(|d| d.field_bool("archived"));
-        let uris = match newest.as_ref().and_then(|d| d.fields.get("backend")) {
-            Some(FieldValue::Object(backend)) => backend
-                .get("uris")
-                .and_then(FieldValue::as_str)
-                .unwrap_or("[]")
-                .to_string(),
-            _ => "[]".to_string(),
-        };
+        let uris = replacement.unwrap_or_else(|| {
+            match newest.as_ref().and_then(|d| d.fields.get("backend")) {
+                Some(FieldValue::Object(backend)) => backend
+                    .get("uris")
+                    .and_then(FieldValue::as_str)
+                    .unwrap_or("[]")
+                    .to_string(),
+                _ => "[]".to_string(),
+            }
+        });
 
         let mut props = BTreeMap::new();
         props.insert(
@@ -832,7 +992,7 @@ impl<'a> RepoService<'a> {
         bytes: &[u8],
         meta: &PackMeta,
         journal: &mut PushJournal,
-        store: &dyn JournalStore,
+        store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
         use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PLATFORM_SCHEME};
 
@@ -1008,7 +1168,6 @@ impl<'a> RepoService<'a> {
         let new_meta = PackMeta::for_bytes(&new_bytes);
         let new_pack_hash = new_meta.pack_hash_bytes()?;
         let object_count = consolidated.parsed.object_count() as u64;
-        let chunk_count = crate::pack::split(&new_bytes).len() as u64;
 
         // Guard: if the consolidated pack collides with a still-live pack's hash (already a
         // single optimal pack), there is nothing to gain and the unique-index write would
@@ -1022,10 +1181,11 @@ impl<'a> RepoService<'a> {
         let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);
 
         // 3. Upload the consolidated pack + write its manifest.
-        let (storage, new_uris) = match target {
-            RepackTarget::Platform => (0u64, self.put_pack(repo, &new_bytes, &new_meta).await?),
-            RepackTarget::External(backend) => (1u64, backend.put(&new_bytes, &new_meta).await?),
-        };
+        let stored = self
+            .store_consolidated(repo, &new_bytes, &new_meta, target)
+            .await?;
+        let (storage, chunk_count) = (stored.storage, stored.chunk_count);
+        let new_uris: Vec<Uri> = stored.uris.into_iter().map(Uri).collect();
         let (supersedes, new_manifest_id) = self
             .write_consolidated_manifest(
                 repo,
@@ -1094,6 +1254,45 @@ impl<'a> RepoService<'a> {
             upload_cost_credits,
             refund_credits,
             net_credits,
+        })
+    }
+
+    /// Store a repack's consolidated pack on `target`, returning the manifest fields.
+    async fn store_consolidated(
+        &self,
+        repo: &RepoHandle,
+        bytes: &[u8],
+        meta: &PackMeta,
+        target: RepackTarget<'_>,
+    ) -> Result<StoredArtifact> {
+        let chunk_count = crate::pack::split(bytes).len() as u64;
+        Ok(match target {
+            RepackTarget::Platform => StoredArtifact {
+                storage: 0,
+                chunk_count,
+                uris: self
+                    .put_pack(repo, bytes, meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::External(backend) => StoredArtifact {
+                storage: 1,
+                chunk_count: 0,
+                uris: backend
+                    .put(bytes, meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::Replicated { targets, required } => {
+                let rep = crate::storage::replicate(targets, bytes, meta, required)
+                    .await
+                    .map_err(|e| Error::Io(e.to_string()))?;
+                StoredArtifact::from_replication(&rep, bytes)?
+            }
         })
     }
 
@@ -1418,34 +1617,39 @@ impl<'a> RepoService<'a> {
         let pack_hash = meta.pack_hash_bytes()?;
         let chunk_count = crate::pack::split(&bytes).len() as u64;
 
-        let (storage, uris) = match target {
+        let stored = match target {
             RepackTarget::Platform => {
-                // Roll back a partial upload. Unlike the push pack there is no journal to
-                // resume from, and every deletion path (`delete_superseded`, `dg repo
-                // delete`, admin teardown) finds chunks by walking MANIFESTS — so chunks
-                // left behind by a failed upload, which no manifest will ever reference,
-                // are invisible to all of them and their deposit is stranded for good.
-                match self.put_pack(repo, &bytes, &meta).await {
-                    Ok(u) => (0u64, u),
-                    Err(e) => {
-                        let hash = hex::encode(pack_hash);
-                        match self.delete_chunks(repo, pack_hash).await {
-                            Ok(n) => tracing::debug!(
-                                reclaimed_chunks = n,
-                                "rolled back a partial browse-index upload"
-                            ),
-                            Err(cleanup) => tracing::warn!(
-                                error = %cleanup,
-                                pack_hash = %hash,
-                                "could not roll back a partial browse-index upload; its \
-                                 chunk deposit is stranded until the repo is deleted"
-                            ),
-                        }
-                        return Err(e);
-                    }
+                // Roll back a partial upload (see [`PlatformChunkTarget`]): there is no
+                // journal to resume from, and chunks no manifest references are invisible
+                // to every deletion path.
+                let t = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
+                StoredArtifact {
+                    storage: 0,
+                    chunk_count,
+                    uris: t
+                        .store(&bytes, &meta)
+                        .await?
+                        .into_iter()
+                        .map(|u| u.0)
+                        .collect(),
                 }
             }
-            RepackTarget::External(backend) => (1u64, backend.put(&bytes, &meta).await?),
+            RepackTarget::External(backend) => StoredArtifact {
+                storage: 1,
+                chunk_count: 0,
+                uris: backend
+                    .put(&bytes, &meta)
+                    .await?
+                    .into_iter()
+                    .map(|u| u.0)
+                    .collect(),
+            },
+            RepackTarget::Replicated { targets, required } => {
+                let rep = crate::storage::replicate(targets, &bytes, &meta, required)
+                    .await
+                    .map_err(|e| Error::Io(format!("browse index: {e}")))?;
+                StoredArtifact::from_replication(&rep, &bytes)?
+            }
         };
 
         self.write_pack_manifest(
@@ -1455,12 +1659,12 @@ impl<'a> RepoService<'a> {
                 kind: u64::from(crate::pack::KIND_OBJECT_LOCATOR),
                 size_bytes: bytes.len() as u64,
                 object_count: locator.object_count() as u64,
-                chunk_count,
-                storage,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
                 // No separate `manifestPart` offset-index doc is written for the locator
                 // itself; never claim a part that was not stored.
                 offset_index_parts: 0,
-                uris: uris.iter().map(|u| u.0.clone()).collect(),
+                uris: stored.uris,
                 supersedes,
                 tips: Vec::new(),
             },
@@ -1509,8 +1713,8 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
-    /// Fetch a stored pack's bytes: Platform `chunk` docs for a platform-tier manifest, or
-    /// the reader-side backend registry over the manifest's external mirror URIs.
+    /// Fetch a stored artifact's bytes with the user's read configuration (storage.toml
+    /// gateways and S3 profiles). See [`Self::fetch_artifact`].
     async fn fetch_pack_bytes(
         &self,
         repo: &RepoHandle,
@@ -1520,36 +1724,75 @@ impl<'a> RepoService<'a> {
         self.fetch_manifest_pack(repo, &contract, manifest).await
     }
 
-    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract. A platform-tier
-    /// manifest is read from its `chunk` docs; an external-tier one races its mirror URIs
-    /// (hash-verified) — its URIs are `ipfs://` / `https://`, which the platform backend
-    /// cannot read, so the tier decides the path, never the first URI.
+    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract, with the user's
+    /// read configuration. See [`Self::fetch_artifact_from`].
     pub async fn fetch_manifest_pack(
         &self,
         repo: &RepoHandle,
         repo_contract: &LoadedContract,
         manifest: &PackManifestInfo,
     ) -> Result<Vec<u8>> {
-        if manifest.storage == 0 {
-            let locator = Uri(format!(
-                "{}://{}/{}",
-                crate::backends::PLATFORM_SCHEME,
-                repo.repo_contract_id,
-                hex::encode(manifest.pack_hash),
-            ));
-            return self.get_pack_from(repo_contract, &locator, None).await;
-        }
-        // External tier: race the mirror URIs, hash-verified.
-        let mut registry = BackendRegistry::new();
-        registry.register(Box::new(HttpsBackend::new()));
-        registry.register(Box::new(IpfsBackend::new(IpfsConfig {
-            api: None,
-            gateway: "https://ipfs.io".to_string(),
-        })));
-        let uris: Vec<Uri> = manifest.uris.iter().map(|u| Uri(u.clone())).collect();
-        registry
-            .get_verified(&uris, &hex::encode(manifest.pack_hash))
+        self.fetch_artifact_from(repo, repo_contract, manifest, &PackReader::from_user_config())
             .await
+    }
+
+    /// Fetch a stored artifact's bytes, SHA-256-verified against its manifest.
+    ///
+    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
+    /// list (cheap, and needs no Platform queries). Platform `chunk` documents are the last
+    /// resort — used when no external copy verifies, or when the manifest records none.
+    /// An external-only manifest whose copies are all gone fails with every candidate's
+    /// reason.
+    pub async fn fetch_artifact(
+        &self,
+        repo: &RepoHandle,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let contract = self.repo_contract(repo).await?;
+        self.fetch_artifact_from(repo, &contract, manifest, reader)
+            .await
+    }
+
+    /// [`Self::fetch_artifact`] against an already-fetched repo contract (a fetch reads
+    /// many packs and should not re-fetch the contract per pack).
+    pub async fn fetch_artifact_from(
+        &self,
+        repo: &RepoHandle,
+        repo_contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let expected = hex::encode(manifest.pack_hash);
+        let has_chunks = manifest.storage == 0;
+        if reader.has_candidates(&manifest.uris) {
+            match reader.fetch_verified(&manifest.uris, &expected).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if !has_chunks => return Err(e),
+                Err(e) => tracing::info!(
+                    pack = %expected,
+                    error = %e,
+                    "no external copy verified; reading Platform chunks"
+                ),
+            }
+        } else if !has_chunks {
+            return Err(Error::Io(format!(
+                "artifact {expected} is stored externally but its manifest records no URI this \
+                 client can read ({:?})",
+                manifest.uris
+            )));
+        }
+        let locator = Uri(format!(
+            "{}://{}/{}",
+            crate::backends::PLATFORM_SCHEME,
+            repo.repo_contract_id,
+            expected,
+        ));
+        let bytes = self.get_pack_from(repo_contract, &locator, None).await?;
+        if hex::encode(crate::backends::sha256(&bytes)) != expected {
+            return Err(Error::Integrity);
+        }
+        Ok(bytes)
     }
 
     /// Delete every `manifestPart` document for a pack (WRITE-gated refund), returning the
