@@ -1,0 +1,6 @@
+{"status":"error","network":"testnet","source":"alice/project",
+ "repo":{"owner":"","name":"","id":null,"url":"","created":false},
+ "counts":{"refs":0,"packs":0,"packBytes":0,"issues":0,"prs":0,"comments":0,"reviews":0,"events":0,"releases":0,"labels":0},
+ "estimateCredits":0,"spentCredits":0,"creditsPerDash":100000000000,"balanceCredits":null,
+ "key":{"id":null,"budgetCredits":null,"remainingCredits":null,"expiresAt":null},
+ "warnings":[],"error":"GitHub API: 404 Not Found (alice/project)"}

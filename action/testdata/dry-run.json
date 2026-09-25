@@ -1,0 +1,6 @@
+{"status":"dry_run","network":"mainnet","source":"alice/project",
+ "repo":{"owner":"8hJmcHWTowner","name":"project","id":null,"url":"dash://8hJmcHWTowner/project","created":false},
+ "counts":{"refs":12,"packs":1,"packBytes":524288,"issues":40,"prs":9,"comments":120,"reviews":3,"events":30,"releases":2,"labels":8},
+ "estimateCredits":4200000000,"spentCredits":0,"creditsPerDash":100000000000,"balanceCredits":null,
+ "key":{"id":1,"budgetCredits":null,"remainingCredits":null,"expiresAt":null},
+ "warnings":[]}

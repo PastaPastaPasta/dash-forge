@@ -1,0 +1,206 @@
+# Dash Forge GitHub Mirror Action: mirrors a GitHub repository (code, issues, PRs,
+# releases, labels) into a Dash Forge repository with forge-import. See action/README.md.
+#
+# `version` below is the Dash Forge release this action version pins. It is defined once,
+# as the input's default; bump it together with the action when cutting a release.
+name: Dash Forge mirror
+description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
+author: PastaPastaPasta
+branding:
+  icon: git-branch
+  color: blue
+
+inputs:
+  repo:
+    description: "Destination Forge repository: dash://<owner>/<name>, <owner>/<name>, or a bare name (the signer's own; created if missing)."
+    required: true
+  network:
+    description: "mainnet, testnet or devnet."
+    default: mainnet
+  devnet-name:
+    description: "Devnet name (required when network is devnet), e.g. moutai."
+    default: ""
+  sync:
+    description: "Comma list of code,issues,prs,releases,labels."
+    default: code,releases
+  storage-kind:
+    description: "Where pack bytes go: platform, s3 or ipfs-pinning."
+    default: platform
+  s3-endpoint:
+    description: "s3: API endpoint (https://<account>.r2.cloudflarestorage.com)."
+    default: ""
+  s3-region:
+    description: "s3: SigV4 region (R2: auto)."
+    default: ""
+  s3-bucket:
+    description: "s3: bucket name."
+    default: ""
+  s3-public-url:
+    description: "s3: public read origin readers use (r2.dev, custom domain, CDN)."
+    default: ""
+  s3-prefix:
+    description: "s3: key prefix inside the bucket."
+    default: ""
+  pinning-endpoint:
+    description: "ipfs-pinning: Pinning Service API base URL."
+    default: ""
+  ipfs-api:
+    description: "ipfs-pinning: kubo RPC API the job runs (a service container, for example)."
+    default: http://127.0.0.1:5001
+  replicas:
+    description: "Storage confirmations a push needs (s3 / ipfs-pinning)."
+    default: "1"
+  cost-cap:
+    description: "Hard cap in DASH for one run. The run is refused before writing if the estimate is above it, and stops if spending reaches it."
+    default: "0.05"
+  dry-run:
+    description: "true: enumerate, diff and estimate; write nothing."
+    default: "false"
+  github-repo:
+    description: "GitHub repository to mirror (owner/repo)."
+    default: ${{ github.repository }}
+  version:
+    description: "Dash Forge release to install (the release this action version pins)."
+    default: "0.1.0"
+  install:
+    description: "false: use dg, git-remote-dash and forge-import already on PATH."
+    default: "true"
+  state-cache:
+    description: "Keep the incremental sync state in actions/cache (speed only; correctness does not depend on it)."
+    default: "true"
+
+outputs:
+  status:
+    description: "ok, dry_run, cap_exceeded or error."
+    value: ${{ steps.summary.outputs.status }}
+  spent-dash:
+    description: "DASH charged by this run."
+    value: ${{ steps.summary.outputs.spent-dash }}
+  summary-json:
+    description: "Path of forge-import's run summary JSON."
+    value: ${{ steps.paths.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      id: validate
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_NETWORK: ${{ inputs.network }}
+        INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
+        INPUT_SYNC: ${{ inputs.sync }}
+        INPUT_STORAGE_KIND: ${{ inputs.storage-kind }}
+        INPUT_S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        INPUT_S3_REGION: ${{ inputs.s3-region }}
+        INPUT_S3_BUCKET: ${{ inputs.s3-bucket }}
+        INPUT_S3_PUBLIC_URL: ${{ inputs.s3-public-url }}
+        INPUT_S3_PREFIX: ${{ inputs.s3-prefix }}
+        INPUT_PINNING_ENDPOINT: ${{ inputs.pinning-endpoint }}
+        INPUT_IPFS_API: ${{ inputs.ipfs-api }}
+        INPUT_REPLICAS: ${{ inputs.replicas }}
+        INPUT_COST_CAP: ${{ inputs.cost-cap }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_STATE_CACHE: ${{ inputs.state-cache }}
+      run: bash "$GITHUB_ACTION_PATH/validate.sh"
+
+    - name: Paths
+      id: paths
+      shell: bash
+      env:
+        DIR: ${{ runner.temp }}/forge-mirror
+      run: |
+        mkdir -p "$DIR"
+        {
+          echo "dir=$DIR"
+          echo "bin=$DIR/bin"
+          echo "summary=$DIR/summary.json"
+          echo "state=$DIR/state/state.json"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Install Dash Forge ${{ inputs.version }}
+      if: inputs.install == 'true'
+      shell: bash
+      env:
+        DASH_FORGE_VERSION: ${{ inputs.version }}
+        DASH_FORGE_INSTALL_DIR: ${{ steps.paths.outputs.bin }}
+        DASH_FORGE_BINARIES: dg git-remote-dash forge-import
+        DASH_FORGE_ATTESTATION: auto
+        GH_TOKEN: ${{ github.token }}
+      # install.sh ships with this action (same ref): it checks the archive's sha256
+      # against SHA256SUMS and, with gh logged in, the build provenance attestation.
+      run: sh "$GITHUB_ACTION_PATH/../install.sh"
+
+    - name: Restore sync state
+      if: inputs.state-cache == 'true'
+      # '@' cannot occur in a validated input, so the restore prefix matches only this
+      # network + destination + source.
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/forge-mirror/state
+        key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@
+
+    - name: Mirror
+      id: mirror
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_NETWORK: ${{ inputs.network }}
+        INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
+        INPUT_SYNC: ${{ inputs.sync }}
+        INPUT_STORAGE_KIND: ${{ inputs.storage-kind }}
+        INPUT_S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        INPUT_S3_REGION: ${{ inputs.s3-region }}
+        INPUT_S3_BUCKET: ${{ inputs.s3-bucket }}
+        INPUT_S3_PUBLIC_URL: ${{ inputs.s3-public-url }}
+        INPUT_S3_PREFIX: ${{ inputs.s3-prefix }}
+        INPUT_PINNING_ENDPOINT: ${{ inputs.pinning-endpoint }}
+        INPUT_IPFS_API: ${{ inputs.ipfs-api }}
+        INPUT_REPLICAS: ${{ inputs.replicas }}
+        INPUT_COST_CAP: ${{ inputs.cost-cap }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
+        FORGE_BIN_DIR: ${{ inputs.install == 'true' && steps.paths.outputs.bin || '' }}
+        FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
+        FORGE_STATE: ${{ steps.paths.outputs.state }}
+        FORGE_WORK_DIR: ${{ steps.paths.outputs.dir }}/git
+        FORGE_KEY_FILE: ${{ steps.paths.outputs.dir }}/identity.json
+        FORGE_STORAGE_CONFIG: ${{ steps.paths.outputs.dir }}/storage.toml
+        FORGE_FALLBACK_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/mirror.sh"
+
+    - name: Summary
+      id: summary
+      if: always() && steps.paths.outcome == 'success'
+      shell: bash
+      env:
+        SUMMARY_JSON: ${{ steps.paths.outputs.summary }}
+      run: bash "$GITHUB_ACTION_PATH/summary.sh" "$SUMMARY_JSON"
+
+    - name: Check for sync state
+      id: state
+      if: always() && inputs.state-cache == 'true'
+      shell: bash
+      env:
+        STATE: ${{ steps.paths.outputs.state }}
+      run: if [ -s "$STATE" ]; then echo "exists=true" >>"$GITHUB_OUTPUT"; fi
+
+    - name: Save sync state
+      if: always() && steps.state.outputs.exists == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/forge-mirror/state
+        key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Remove the key file and storage profile
+      if: always() && steps.paths.outcome == 'success'
+      shell: bash
+      env:
+        DIR: ${{ steps.paths.outputs.dir }}
+      run: rm -f "$DIR/identity.json" "$DIR/storage.toml"
