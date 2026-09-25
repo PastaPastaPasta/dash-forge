@@ -47,11 +47,12 @@ References into forge-core carry `contractId`. The schema file holds the placeho
 
 | Type | Gate (create) | Mutable | Deletable | Notes |
 |---|---|---|---|---|
-| `issue` | anyone (fees are the spam floor) | yes, history kept; `repoId`, `number` immutable | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `event` uses); `repoId` → permanent `repo` |
+| `issue` | anyone (fees are the spam floor) | yes, history kept; `repoId`, `number` immutable | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `authorEvent` uses); `repoId` → permanent `repo` |
 | `patch` (PR) | anyone | yes, history kept; `repoId`, `number`, `sourceRepoId` immutable | **no** | as `issue`, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRepoId` |
 | `comment` | anyone | yes; `repoId`, `targetId` immutable | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable |
 | `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; clients count approvals only from M/W holders (§6) |
-| `event` | M or W, **or the author of the target issue or PR** | no | **no** | §3 |
+| `event` | M or W | no | **no** | every kind (close, reopen, merge, label, assign, retarget, draft, ready); §3 |
+| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind` is 1 (close) or 2 (reopen) only, enforced by the schema; §3 |
 | `checkRun` | M or W | yes (status progression); `repoId`, `headOid`, `name` immutable | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs |
 | `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
 | `profile` | anyone | yes | yes | one per identity |
@@ -62,28 +63,34 @@ Shared shapes (`id`, `oid`, `h32`, `refName`, `body`, `enc`, …) are in `schema
 
 ## 3. Events, and what "authorization survives revocation" means
 
-`event` (close, reopen, merge, label, assign, retarget, draft, ready) is gated by one `ownerRefersTo` expression with four operands, the protocol maximum:
+Issue and PR state changes are two document types, one per kind of authority, so a reader always knows which gate admitted a document:
 
-1. a `maintainer` for `repoId` (deletable lookup into forge-core),
-2. a `writer` for `repoId`,
-3. the author of the target issue: the lookup `author($ownerId = writer, repoId, number = targetNumber)` on `issue`, with `propertyAgreement {"targetId": "$id"}`, so the issue found must be the one the event targets,
-4. the same for `patch`.
+- **`event`** (close, reopen, merge, label, assign, retarget, draft, ready) is gated by `ownerRefersTo anyOf` with two operands:
+  1. a `maintainer` for `repoId` (deletable lookup `byRepoMember` into forge-core),
+  2. a `writer` for `repoId`.
+- **`authorEvent`** (close, reopen) is gated by `ownerRefersTo anyOf` with two operands:
+  1. the author of the target issue: the lookup `author($ownerId = writer, repoId, number = targetNumber)` on `issue`, with `propertyAgreement {"targetId": "$id"}`, so the issue found must be the one the document targets,
+  2. the same for `patch`.
 
-`targetId` itself must be an `issue` or `patch` whose `repoId` and `number` equal the event's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4.
+  Its `kind` is an integer with `minimum 1, maximum 2`, so consensus refuses an author's merge, label or any other kind outright. It carries no `value` or `oid`.
 
-Operands 3 and 4 are `permanentDocument` lookups, so `issue` and `patch` must be non-deletable (registration rejects a permanent lookup into a deletable type with 40122). That is why issues and PRs can no longer be deleted for a refund.
+For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `number` equal the document's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4. Both are indexed `(targetId, $createdAt)`; `event` also has the repo feed `(repoId, $createdAt)`.
 
-Events are immutable and non-deletable, and the gate is judged at creation. **An event's existence therefore proves its writer was authorized at its block time.** Revoking a maintainer later does not invalidate their past events, and nothing has to be reconstructed from token history.
+`authorEvent`'s operands are `permanentDocument` lookups, so `issue` and `patch` must be non-deletable (registration rejects a permanent lookup into a deletable type with 40122). That is why issues and PRs can no longer be deleted for a refund.
 
-**Kinds are authorized by kind and role, client-side.** Consensus admits an event from any of the four operands, whatever its `kind`. The fold (`forge-core::rules::actor_authorized`, `FORGE_RULES_V1`, and the `fold_issue__*` / `fold_pr__*` conformance vectors) then decides per kind:
+**Why two types.** The first registration gated a single `event` type by all four operands. A reader then could not tell which operand admitted a given event: a maintainer who also authored the PR, and was later revoked, left merges that might have been admitted by the author path, where merge is not allowed. The split removes the question. Protocol 14 freezes `ownerRefersTo` on update (removing an `anyOf` operand is an incompatible schema change; `tools/contract-validate --previous` reports it), so the split shipped as a new forge-collab registration (§8), not an update.
 
-| kind | who may apply it |
-|---|---|
-| close, reopen | M, W, or the target's author |
-| merge | M or W, and `oid` reachable from the base tip |
-| label+, label−, assign, unassign, retarget, draft, ready | M or W |
+Both types are immutable and non-deletable, and the gate is judged at creation. **A document's existence therefore proves its writer was authorized at its block time**: an `event` proves the writer held a `maintainer` or `writer` document for the repo then, and an `authorEvent` proves the writer was the target's author. Revoking a maintainer later does not invalidate their past events, and nothing has to be reconstructed from membership history.
 
-An author's `label` or `merge` event exists on chain but is inert. For v2, "M or W" means a `maintainer`/`writer` document for the repo existed when the event was created. The gate already proves that for operands 1 and 2, so a client can tell which operand held by looking the membership up as of the event's `$createdAt` (membership docs carry `$createdAt`; a deleted one is found in the reader's cache or the operand is assumed to be the author path).
+**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2`, `forge-web/lib/rules/v2`).** The fold applies:
+
+| kind | from `event` (any M/W at write time) | from `authorEvent` |
+|---|---|---|
+| close, reopen | yes | yes |
+| merge | yes, if `oid` is reachable from the base tip (the v1 predicate) | never (consensus refuses the kind) |
+| label+, label−, assign, unassign, retarget, draft, ready | yes | never |
+
+An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway. Events of both types are merged into one log and ordered by `($createdAt, $id)`, the v1 order, and a merged PR cannot be reopened, as in v1.
 
 ## 4. Non-deletable audit types
 
@@ -92,7 +99,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 - `refUpdate`, `protectedRefUpdate`: otherwise the author of a tip could delete it and silently rewind the branch;
 - `config`: as-of protection evaluation needs every historical config;
 - `packManifest`, `manifestPart`: otherwise a revoked writer could delete the index of packs other people's refs point into;
-- `event`, `issue`, `patch`, `repo`: see §3, and `repo` is the target of every `permanentDocument` reference;
+- `event`, `authorEvent`, `issue`, `patch`, `repo`: see §3, and `repo` is the target of every `permanentDocument` reference;
 - `chunk`: the pack bytes themselves (owner decision 2026-09-25: an unbreakable repo outweighs the refund);
 - `repoKey`: past epochs must stay readable to past members.
 
@@ -134,7 +141,7 @@ The concrete AEAD layout, key derivation and test vectors are Phase 3 work and n
 | Push authorization: WRITE token spend | consensus: `ownerRefersTo` M or W |
 | Protected refs: MAINTAIN spend on `protectedRefUpdate` | consensus: M gate. **Routing stays a rule**: consensus cannot read `protectedPatterns`, so a plain `refUpdate` naming a protected ref still exists and is inert by the as-of config rule |
 | Revocation: freeze (+ destroy) | delete the `maintainer`/`writer` document; the next write is refused (40120) |
-| Event actor authorization, reconstructed as-of from token history | consensus at create time (§3). **Kind rules stay**: an author may only close or reopen their own target, and `merge` needs M or W plus `oid` reachable from the base tip. Consensus admits any kind from an author, so the fold still ignores an author's `label`/`merge` |
+| Event actor authorization, reconstructed as-of from token history | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability stays a rule**: `merge` needs `oid` reachable from the base tip |
 | Listing authenticity (listing owner == repo contract owner) | gone: `repo` is the listing |
 | Owner lock-out prevention (`baseSupply`) | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | unchanged, still rules |
@@ -160,25 +167,25 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Document types / indexes | 12 / 26 | 10 / 21 |
-| Serialized contract | 11,761 B | 11,208 B |
-| Signed `DataContractCreate` v1 | **11,924 B** | **11,314 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 55.2% |
-| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.51 DASH** |
+| Document types / indexes | 12 / 26 | 11 / 22 |
+| Serialized contract | 11,761 B | 11,981 B |
+| Signed `DataContractCreate` v1 | **11,924 B** | **12,087 B** |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 59.0% |
+| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.54 DASH** |
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.11 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
+Total one-time registration fees are **1.14 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
 
 **Measured on devnet moutai (2026-09-25)**, as the deployer's balance change:
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.515157 DASH (51,515,695,120 credits) |
-| of which the registration fee | 0.60 | 0.51 |
-| storage + processing | 0.0057 | 0.0052 |
+| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.545473 DASH (54,547,323,690 credits) |
+| of which the registration fee | 0.60 | 0.54 |
+| storage + processing | 0.0057 | 0.0055 |
 
-Together that is **1.120868 DASH**.
+Together that is **1.151184 DASH**. The first forge-collab registration (the single four-operand `event`, superseded, §8) cost a further 0.515157 DASH (51,515,695,120 credits).
 
 ## 8. Deploying
 
@@ -187,24 +194,29 @@ Together that is **1.120868 DASH**.
 node forge-contracts/scripts/deploy-v2.mjs --self-test
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --dry-run
+# re-register forge-collab alone (new id) against the recorded forge-core and group:
+node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
+     --network devnet --devnet-name moutai --only collab --force-new [--dry-run]
 ```
 
 - forge-core's create transition registers the contract group (`dash-forge`) and enrols forge-core as a whole contract.
 - forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
-- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy.
+- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy unless told to.
+- `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab even though one is recorded: the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
 - **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) on 2026-09-25 by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled:
   - forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1)
-  - forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2)
+  - forge-collab `6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W` (nonce 3), with the `event`/`authorEvent` split of §3, registered with `--only collab --force-new`
   - contract group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o` (`dash-forge`)
-  - A rerun found both on chain and broadcast nothing.
+  - superseded: forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2), the first registration, whose `event` took all four operands. It stays on chain and in the group; clients do not read it. The split could not be an update: `tools/contract-validate … forge-collab.json --previous <that schema>` reports `validate_update` refusing the removal of `event`'s `ownerRefersTo` operands (adding `authorEvent` alone would have been accepted).
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
 
 ## 9. Rules that changed from the brief
 
-- **The event author path is a lookup on a second unique index.** A permanent lookup needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `event` carries `targetNumber` so the lookup key can be assembled. The id reference `targetId` is tied to it with `{"targetId": "$id"}`.
+- **The author path is a lookup on a second unique index.** A permanent lookup needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `authorEvent` (and `event`, for the target agreement) carries `targetNumber` so the lookup key can be assembled. The id reference `targetId` is tied to it with `{"targetId": "$id"}`.
 - **`documentsKeepHistory` only on `issue` and `patch`.** Platform refuses history on a deletable type (the storage layer cannot delete such documents). `comment` stays deletable, so it has no history.
 - **`repoKey` recipients are not required to be members**; see §5.
+- **Author events are their own type** (`authorEvent`, kind close/reopen only) rather than a third and fourth operand of `event`'s gate; see §3.
 - **Stars and follows are `indexOnly`** with a `$createdAt`-free proof index. "Who starred, newest first" is no longer ordered by time; star and follower counts and "did I star this" are O(1).

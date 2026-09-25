@@ -1,7 +1,11 @@
 //! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14.
 //!
 //!   cargo run --manifest-path tools/contract-validate/Cargo.toml -- \
-//!       forge-contracts/contracts/forge-core.json forge-contracts/contracts/forge-collab.json
+//!       forge-contracts/contracts/forge-core.json forge-contracts/contracts/forge-collab.json \
+//!       [--previous <the forge-collab.json that is registered>]
+//!
+//! `--previous <file>` after a contract also reports whether a `DataContractUpdate` from that
+//! (registered) schema to this one passes rs-dpp's `validate_update` under protocol 14.
 //!
 //! For each contract, in order, this:
 //!   1. derives the contract id the deploy script will get (placeholder owner, nonce 1) and, for
@@ -28,11 +32,12 @@
 //! registered, signer owns or administers the group a membership names).
 
 use anyhow::{anyhow, bail, Context, Result};
+use dpp::block::block_info::BlockInfo;
 use dpp::contract_group::{
     generate_contract_group_id, ContractGroupMember, ContractGroupMembership,
     ContractGroupRegistration,
 };
-use dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dpp::data_contract::document_type::accessors::{DocumentTypeV0Getters, DocumentTypeV2Getters};
@@ -43,6 +48,7 @@ use dpp::data_contract::document_type::{
 };
 use dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dpp::data_contract::validate_document::DataContractDocumentValidationMethodsV0;
+use dpp::data_contract::validate_update::DataContractUpdateValidationMethodsV0;
 use dpp::data_contract::DataContract;
 use dpp::identifier::Identifier;
 use dpp::serialization::PlatformSerializable;
@@ -69,21 +75,32 @@ const CREDITS_PER_DASH: f64 = 100_000_000_000.0;
 struct Entry {
     path: PathBuf,
     registers_group: bool,
+    /// `--previous <file>` after a contract: the schema registered before, to report whether a
+    /// DataContractUpdate from it to this one passes the protocol's update rules.
+    previous: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
-    let paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
-    if paths.is_empty() {
-        bail!("usage: contract-validate <forge-core.json> [<forge-collab.json> ...]");
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--previous" {
+            let previous = args.next().context("--previous needs a file")?;
+            let last = entries
+                .last_mut()
+                .context("--previous must follow the contract it applies to")?;
+            last.previous = Some(PathBuf::from(previous));
+            continue;
+        }
+        entries.push(Entry {
+            path: PathBuf::from(arg),
+            registers_group: entries.is_empty(),
+            previous: None,
+        });
     }
-    let entries: Vec<Entry> = paths
-        .into_iter()
-        .enumerate()
-        .map(|(i, path)| Entry {
-            path,
-            registers_group: i == 0,
-        })
-        .collect();
+    if entries.is_empty() {
+        bail!("usage: contract-validate <forge-core.json> [<forge-collab.json> [--previous <registered-forge-collab.json>] ...]");
+    }
 
     let pv = PlatformVersion::get(PROTOCOL_VERSION)
         .map_err(|e| anyhow!("protocol version {PROTOCOL_VERSION}: {e}"))?;
@@ -162,29 +179,38 @@ fn validate_one(
     pv: &PlatformVersion,
     limit: u64,
 ) -> Result<DataContract> {
-    let raw = std::fs::read_to_string(&entry.path)
-        .with_context(|| format!("reading {}", entry.path.display()))?;
-    let mut text = raw.clone();
-    for (placeholder, id) in placeholders {
-        text = text.replace(placeholder, id);
-    }
-    if let Some(unresolved) = ["_CONTRACT_ID\""].iter().find(|p| text.contains(*p)) {
-        bail!("an id placeholder (…{unresolved}) is left unresolved: list the contract it names first");
-    }
-    let mut json: Json = serde_json::from_str(&text).context("parsing JSON")?;
-
-    let contract_id = DataContract::generate_data_contract_id_v0(owner, nonce);
-    json["id"] =
-        Json::String(contract_id.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
-    json["ownerId"] =
-        Json::String(owner.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
-
     // (2) full structural validation, as the node's action transform runs it
-    let contract = DataContract::from_json(json, true, pv).map_err(|e| anyhow!("{e}"))?;
+    let contract = load_contract(&entry.path, nonce, owner, placeholders, pv)?;
     println!(
         "   parse (full validation, protocol {}): ok",
         pv.protocol_version
     );
+
+    // (2b) optional: would a DataContractUpdate from the previously registered schema to this
+    // one pass the protocol's update rules? Informational, not a failure: the answer decides
+    // between updating the registered contract in place and registering a new one.
+    if let Some(previous) = &entry.previous {
+        let old = load_contract(previous, nonce, owner, placeholders, pv)?;
+        let mut updated = contract.clone();
+        updated.set_version(2);
+        let result = old
+            .validate_update(&updated, &BlockInfo::default(), pv)
+            .map_err(|e| anyhow!("{e}"))?;
+        if result.is_valid() {
+            println!(
+                "   update from {}: ALLOWED (DataContractUpdate v1 -> v2)",
+                previous.display()
+            );
+        } else {
+            println!(
+                "   update from {}: REFUSED by validate_update:",
+                previous.display()
+            );
+            for error in &result.errors {
+                println!("     - {error}");
+            }
+        }
+    }
 
     let types = contract.document_types();
     for (type_name, document_type) in types {
@@ -309,6 +335,33 @@ fn validate_one(
         bail!("create transition exceeds max_state_transition_size");
     }
     Ok(contract)
+}
+
+/// Read a contract file, substitute the ids of earlier contracts for their placeholders, give it
+/// the id the deploy script derives (placeholder owner, `nonce`) and parse it with full validation.
+fn load_contract(
+    path: &std::path::Path,
+    nonce: u64,
+    owner: Identifier,
+    placeholders: &BTreeMap<String, String>,
+    pv: &PlatformVersion,
+) -> Result<DataContract> {
+    let mut text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    for (placeholder, id) in placeholders {
+        text = text.replace(placeholder, id);
+    }
+    if let Some(unresolved) = ["_CONTRACT_ID\""].iter().find(|p| text.contains(*p)) {
+        bail!("an id placeholder (…{unresolved}) is left unresolved: list the contract it names first");
+    }
+    let mut json: Json = serde_json::from_str(&text).context("parsing JSON")?;
+
+    let contract_id = DataContract::generate_data_contract_id_v0(owner, nonce);
+    json["id"] =
+        Json::String(contract_id.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
+    json["ownerId"] =
+        Json::String(owner.to_string(dpp::platform_value::string_encoding::Encoding::Base58));
+    DataContract::from_json(json, true, pv).map_err(|e| anyhow!("{e}"))
 }
 
 /// The create transition's unpaid structure rules that depend on the transition alone
@@ -726,6 +779,14 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
                 serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 3, "oid": bytes(1, 20) }),
             ),
             (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 1 }),
+            ),
+            (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 2 }),
+            ),
+            (
                 "checkRun",
                 serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci/test", "status": "completed", "conclusion": "success", "detailsUrl": "https://ci.example/1", "summary": "12 passed" }),
             ),
@@ -813,6 +874,21 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 "event",
                 "missing targetNumber",
                 serde_json::json!({ "repoId": id(1), "targetId": id(5), "kind": 1 }),
+            ),
+            (
+                "authorEvent",
+                "merge kind (only close/reopen)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 3 }),
+            ),
+            (
+                "authorEvent",
+                "kind 0",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 0 }),
+            ),
+            (
+                "authorEvent",
+                "label value (no payload fields)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 1, "value": "bug" }),
             ),
             (
                 "checkRun",

@@ -567,36 +567,6 @@
                 "memberId": "."
               }
             }
-          },
-          {
-            "type": "permanentDocument",
-            "documentType": "issue",
-            "lookup": {
-              "index": "author",
-              "keys": {
-                "$ownerId": ".",
-                "repoId": "repoId",
-                "number": "targetNumber"
-              }
-            },
-            "propertyAgreement": {
-              "targetId": "$id"
-            }
-          },
-          {
-            "type": "permanentDocument",
-            "documentType": "patch",
-            "lookup": {
-              "index": "author",
-              "keys": {
-                "$ownerId": ".",
-                "repoId": "repoId",
-                "number": "targetNumber"
-              }
-            },
-            "propertyAgreement": {
-              "targetId": "$id"
-            }
           }
         ]
       },
@@ -671,6 +641,110 @@
           "properties": [
             {
               "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "authorEvent": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "permanentDocument",
+            "documentType": "issue",
+            "lookup": {
+              "index": "author",
+              "keys": {
+                "$ownerId": ".",
+                "repoId": "repoId",
+                "number": "targetNumber"
+              }
+            },
+            "propertyAgreement": {
+              "targetId": "$id"
+            }
+          },
+          {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "lookup": {
+              "index": "author",
+              "keys": {
+                "$ownerId": ".",
+                "repoId": "repoId",
+                "number": "targetNumber"
+              }
+            },
+            "propertyAgreement": {
+              "targetId": "$id"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 3
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
             },
             {
               "$createdAt": "asc"
