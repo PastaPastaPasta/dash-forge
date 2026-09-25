@@ -16,7 +16,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.92, which the pinned Platform packages require |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v4.2.0-beta.4) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
@@ -78,7 +78,7 @@ declared in the root `Cargo.toml` as **git dependencies pinned to an immutable u
 tag**, and `Cargo.lock` records the exact commit:
 
 ```toml
-dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8", default-features = false }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false }
 ```
 
 This is deliberate. They used to be path dependencies on a sibling `../platform` checkout,
@@ -128,6 +128,33 @@ Two things matter here:
 
 The patch stays active until you remove it. Confirm which source is in use with
 `cargo tree -p dash-sdk`, which prints the resolved source for the package.
+
+### Protocol versions (SDK v4.2)
+
+The pinned SDK (`v4.2.0-beta.4` in Rust, `@dashevo/evo-sdk@4.2.0-beta.4` in forge-web) speaks
+protocol 13 (testnet, mainnet) and protocol 14 (devnets such as moutai). Neither client pins
+a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
+devnet) and raises it from the metadata of the first **proof-verified** response. So
+`Sdk::version()` / `sdk.version()` gives the network's version only after a proved query
+has succeeded. `dg doctor` issues one and then prints the protocol version.
+
+Protocol 14 changes three things that a client has to handle:
+
+- **Document ids.** A new document's id commits to the identity-contract nonce of its
+  create transition as well as the entropy. Both clients derive the id with
+  `Document::generate_document_id(.., nonce, version)` (forge-web:
+  `Document.generateId(.., nonce, version)`) at the version they sign with, so the id they
+  report before broadcast is the one that lands, on either protocol.
+- **`indexOnly` document types** (forge-v2's `star` / `follow`). Their proofs only
+  authenticate the resulting state, so forge-core waits with
+  `broadcast_and_wait_for_affected_state`; the strict wait rejects them. Deleting one is a
+  separate transition kind that carries the document's values, not just its id.
+  `WriteEngine::prepare_delete` does not build that transition yet.
+- **Serialization.** evo-sdk 4.2 `toJSON` returns identifier-typed byteArray fields
+  (`repoContractId`) as base58, where 4.0 returned base64. Also,
+  `new Document({ properties })` now turns a `Uint8Array` into an integer array, which
+  Drive rejects. forge-web's `documentForCreate` builds documents through
+  `Document.fromObject`, which keeps bytes as bytes.
 
 ## Networks
 
