@@ -258,11 +258,10 @@ main() {
     fi
 
     tmp=$(mktemp -d 2>/dev/null || mktemp -d -t dash-forge-install)
-    # Staged copies in INSTALL_DIR are renamed into place; any left by an interrupted run
-    # are removed on exit (a renamed one no longer exists, so rm -f skips it).
-    STAGED=""
-    # shellcheck disable=SC2064,SC2086 # expand $tmp now; $STAGED is split on purpose, later
-    trap "rm -rf '$tmp'; rm -f \$STAGED" EXIT
+    # `staged` is the one copy in INSTALL_DIR not yet renamed into place (at most one at a
+    # time); an interrupted run removes it on exit.
+    staged=""
+    trap 'rm -rf "$tmp"; [ -z "$staged" ] || rm -f "$staged"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
@@ -336,10 +335,10 @@ $(case "$target" in *-linux-gnu) printf '%s' "An older glibc is the usual cause:
         # Copy to a fresh temp name, then rename over the old binary: atomic, and safe for
         # a binary that is running right now.
         staged=$(mktemp "$INSTALL_DIR/.$bin.XXXXXX") || die "cannot create a file in $INSTALL_DIR"
-        STAGED="$STAGED $staged"
         cp "$dir/$bin" "$staged"
         chmod 755 "$staged"
         mv -f "$staged" "$INSTALL_DIR/$bin"
+        staged=""
         say "Installed $INSTALL_DIR/$bin"
     done
 

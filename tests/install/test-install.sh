@@ -196,5 +196,17 @@ else
     not_ok "installs only the requested binary and leaves no staged files"
 fi
 
+# 12. An install dir with spaces and glob characters, next to decoy files its pieces name.
+spaced="$work/My Tools [x]/bin"
+mkdir -p "$work/My Tools [x]"
+: > "$work/My"
+: > "$work/x"
+if run_install "$spaced" && [ -x "$spaced/dg" ] && [ -e "$work/My" ] && [ -e "$work/x" ] &&
+    [ -z "$(find "$spaced" -name '.*' -type f)" ]; then
+    ok "handles an install dir with spaces and glob characters"
+else
+    not_ok "handles an install dir with spaces and glob characters"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
