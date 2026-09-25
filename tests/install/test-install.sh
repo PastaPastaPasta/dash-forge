@@ -164,10 +164,36 @@ done
 if ! env -i PATH="$nogh" HOME="$work/home" DASH_FORGE_RELEASE_BASE_URL="file://$work/releases" \
     DASH_FORGE_TARGET="$TARGET" DASH_FORGE_INSTALL_DIR="$work/p9" DASH_FORGE_ATTESTATION=require \
     sh "$installer" > "$work/out" 2>&1 &&
-    grep -q 'needs the GitHub CLI' "$work/out" && [ ! -e "$work/p9/dg" ]; then
+    grep -q 'needs a recent GitHub CLI' "$work/out" && [ ! -e "$work/p9/dg" ]; then
     ok "DASH_FORGE_ATTESTATION=require fails closed without gh"
 else
     not_ok "DASH_FORGE_ATTESTATION=require fails closed without gh"
+fi
+
+# 10. A new dg that does not start never replaces a working one.
+make_release 0.3.0
+broken="$work/stage/dash-forge-0.3.0-$TARGET"
+printf '#!/bin/sh\nexit 127\n' > "$broken/dg"
+tar -czf "$work/releases/download/v0.3.0/dash-forge-0.3.0-$TARGET.tar.gz" -C "$work/stage" "dash-forge-0.3.0-$TARGET"
+printf '%s  %s\n' "$(sha256 "$work/releases/download/v0.3.0/dash-forge-0.3.0-$TARGET.tar.gz")" \
+    "dash-forge-0.3.0-$TARGET.tar.gz" > "$work/releases/download/v0.3.0/SHA256SUMS"
+if ! run_install "$work/p1" DASH_FORGE_VERSION=0.3.0 &&
+    grep -q 'left alone' "$work/out" &&
+    "$work/p1/dg" --version | grep -q '^dg 0.2.0 ' &&
+    "$work/p1/git-remote-dash" --version | grep -q ' 0.2.0 '; then
+    ok "keeps a working install when the new dg does not run"
+else
+    not_ok "keeps a working install when the new dg does not run"
+fi
+
+# 11. Installing only the helper never reports (or runs) a stale dg already in the dir.
+if run_install "$work/p1" DASH_FORGE_VERSION=0.1.0 DASH_FORGE_BINARIES=git-remote-dash &&
+    "$work/p1/git-remote-dash" --version | grep -q ' 0.1.0 ' &&
+    ! grep -q '^dg 0.2.0' "$work/out" &&
+    [ -z "$(find "$work/p1" -name '.*' -type f)" ]; then
+    ok "installs only the requested binary and leaves no staged files"
+else
+    not_ok "installs only the requested binary and leaves no staged files"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

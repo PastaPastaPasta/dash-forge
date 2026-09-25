@@ -52,12 +52,26 @@ have() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Linux libc: musl if the musl loader exists or ldd says so, glibc otherwise.
+# Linux libc: glibc if the system reports one (a glibc distribution may still have the musl
+# package, and with it /lib/ld-musl-*, installed); otherwise musl if its loader exists.
 is_musl() {
+    if getconf GNU_LIBC_VERSION >/dev/null 2>&1 || ldd --version 2>&1 | grep -qiE 'glibc|gnu libc'; then
+        return 1
+    fi
     for loader in /lib/ld-musl-*; do
         [ -e "$loader" ] && return 0
     done
     ldd --version 2>&1 | grep -qi musl
+}
+
+# glibc older than the gnu builds need (2.35: they are built on Ubuntu 22.04)?
+old_glibc() {
+    v=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{ print $2 }')
+    [ -n "$v" ] || return 1
+    major=${v%%.*}
+    minor=${v#*.}
+    minor=${minor%%.*}
+    [ "$major" -lt 2 ] 2>/dev/null || { [ "$major" -eq 2 ] && [ "$minor" -lt 35 ]; } 2>/dev/null
 }
 
 detect_target() {
@@ -72,6 +86,10 @@ detect_target() {
         Linux)
             if is_musl; then
                 [ "$arch" = x86_64 ] || die "no prebuilt binaries for $arch musl Linux; build from source: $DOCS_URL"
+                printf '%s\n' "x86_64-unknown-linux-musl"
+            elif old_glibc; then
+                # The static build runs anywhere; the gnu build would not start.
+                [ "$arch" = x86_64 ] || die "the $arch Linux build needs glibc 2.35 or newer; build from source: $DOCS_URL"
                 printf '%s\n' "x86_64-unknown-linux-musl"
             else
                 printf '%s\n' "${arch}-unknown-linux-gnu"
@@ -91,8 +109,10 @@ detect_target() {
     esac
 }
 
-# download <url> <file>: https:// (or file:// for mirrors/tests) only, never plain http,
-# and redirects may only go to https.
+# download <url> <file>: https:// (or file:// for tests) only, never plain http. With curl,
+# redirects may only go to https and TLS is at least 1.2. wget (GNU or BusyBox, for systems
+# without curl) is used as-is: it cannot refuse a redirect to http, which is one more reason
+# the checksum and attestation checks below exist.
 download() {
     case "$1" in
         https://*) proto='=https' ;;
@@ -103,7 +123,7 @@ download() {
         curl --proto "$proto" --proto-redir '=https' --tlsv1.2 --fail --silent --show-error \
             --location --retry 3 --output "$2" "$1"
     elif have wget && [ "$proto" = '=https' ]; then
-        wget --https-only --quiet --output-document="$2" "$1"
+        wget -q -O "$2" "$1"
     else
         die "need curl (or wget, for https) to download release files"
     fi
@@ -147,13 +167,23 @@ verify_attestation() {
         auto | require) ;;
         *) die "DASH_FORGE_ATTESTATION must be auto, require or skip (got '$mode')" ;;
     esac
-    if [ "$mode" = auto ] && [ "$BASE_URL" != "$DEFAULT_BASE_URL" ]; then
-        say "Skipping the provenance attestation check: files come from $BASE_URL, not GitHub Releases."
-        return 0
-    fi
-    if ! have gh || ! gh auth status >/dev/null 2>&1; then
-        [ "$mode" = require ] && die "DASH_FORGE_ATTESTATION=require needs the GitHub CLI (gh), installed and logged in"
-        say "Checksum verified. To also check build provenance, install the GitHub CLI and run:"
+    # An attestation binds the file's digest, not where it was downloaded from, so it is
+    # checked for mirrors too. Only a local file:// release (tests) skips it in auto mode.
+    case "$BASE_URL" in
+        file://*)
+            if [ "$mode" = auto ]; then
+                say "Skipping the provenance attestation check for a local file:// release."
+                return 0
+            fi
+            ;;
+    esac
+    # Usable gh: installed, logged in to github.com, and new enough for the flags below.
+    if ! have gh || ! gh auth status --hostname github.com >/dev/null 2>&1 ||
+        ! gh attestation verify --help 2>&1 | grep -q -- '--source-ref'; then
+        [ "$mode" = require ] && die "DASH_FORGE_ATTESTATION=require needs a recent GitHub CLI (gh), logged in to github.com"
+        say "Not checked: build provenance. Without the GitHub CLI, the checksum above only shows the"
+        say "download is intact and matches SHA256SUMS from the same place; authenticity rests on TLS"
+        say "to $BASE_URL. To check provenance, install gh (https://cli.github.com), log in, and run:"
         say "  gh attestation verify $(basename "$archive") --repo $REPO"
         return 0
     fi
@@ -228,8 +258,11 @@ main() {
     fi
 
     tmp=$(mktemp -d 2>/dev/null || mktemp -d -t dash-forge-install)
-    # shellcheck disable=SC2064 # expand $tmp now: it is fixed for the rest of the run
-    trap "rm -rf '$tmp'" EXIT
+    # Staged copies in INSTALL_DIR are renamed into place; any left by an interrupted run
+    # are removed on exit (a renamed one no longer exists, so rm -f skips it).
+    STAGED=""
+    # shellcheck disable=SC2064,SC2086 # expand $tmp now; $STAGED is split on purpose, later
+    trap "rm -rf '$tmp'; rm -f \$STAGED" EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
@@ -272,21 +305,41 @@ Refusing to install. The file may be corrupt or tampered with; nothing was insta
     dir="$tmp/x/dash-forge-$version-$target"
     [ -d "$dir" ] || die "$asset does not contain dash-forge-$version-$target/"
 
+    # Check everything before replacing anything, so a failure cannot leave a mix of old and
+    # new binaries behind.
+    installs_dg=false
+    for bin in $binaries; do
+        case "$bin" in
+            dg) installs_dg=true ;;
+            git-remote-dash | forge-relay | forge-import) ;;
+            *) die "unknown binary '$bin' in DASH_FORGE_BINARIES" ;;
+        esac
+        [ -f "$dir/$bin" ] || die "$asset does not contain $bin"
+    done
     if ! mkdir -p "$INSTALL_DIR" 2>/dev/null || [ ! -w "$INSTALL_DIR" ]; then
         die "cannot write to $INSTALL_DIR. Pick a directory you own with DASH_FORGE_INSTALL_DIR=... \
 (this script never uses sudo; if you want a system-wide install, run it with sudo yourself)"
     fi
 
+    # Does the new dg start here? Checked from the temp dir, before a working install is
+    # replaced. (If the temp dir is mounted noexec this cannot be told apart from a binary
+    # that does not run, so it is a warning below, not an error.)
+    dg_version=""
+    if dg_version=$("$dir/dg" --version 2>/dev/null); then
+        :
+    elif [ -x "$INSTALL_DIR/dg" ] && "$INSTALL_DIR/dg" --version >/dev/null 2>&1; then
+        die "the downloaded dg does not run on this system, so the working dg in $INSTALL_DIR was left alone. \
+$(case "$target" in *-linux-gnu) printf '%s' "An older glibc is the usual cause: try DASH_FORGE_TARGET=x86_64-unknown-linux-musl." ;; esac)"
+    fi
+
     for bin in $binaries; do
-        case "$bin" in
-            dg | git-remote-dash | forge-relay | forge-import) ;;
-            *) die "unknown binary '$bin' in DASH_FORGE_BINARIES" ;;
-        esac
-        [ -f "$dir/$bin" ] || die "$asset does not contain $bin"
-        # Copy then rename: replacing a running binary in place can crash it.
-        cp "$dir/$bin" "$INSTALL_DIR/.$bin.tmp.$$"
-        chmod 755 "$INSTALL_DIR/.$bin.tmp.$$"
-        mv -f "$INSTALL_DIR/.$bin.tmp.$$" "$INSTALL_DIR/$bin"
+        # Copy to a fresh temp name, then rename over the old binary: atomic, and safe for
+        # a binary that is running right now.
+        staged=$(mktemp "$INSTALL_DIR/.$bin.XXXXXX") || die "cannot create a file in $INSTALL_DIR"
+        STAGED="$STAGED $staged"
+        cp "$dir/$bin" "$staged"
+        chmod 755 "$staged"
+        mv -f "$staged" "$INSTALL_DIR/$bin"
         say "Installed $INSTALL_DIR/$bin"
     done
 
@@ -294,15 +347,12 @@ Refusing to install. The file may be corrupt or tampered with; nothing was insta
         install_completions "$dir/completions"
     fi
 
-    if [ -x "$INSTALL_DIR/dg" ]; then
-        if dg_version=$("$INSTALL_DIR/dg" --version 2>/dev/null); then
+    if [ "$installs_dg" = true ]; then
+        if [ -n "$dg_version" ]; then
             say ""
             say "$dg_version"
         else
-            warn "$INSTALL_DIR/dg does not run on this system."
-            case "$target" in
-                *-linux-gnu) warn "an older glibc is the usual cause; try DASH_FORGE_TARGET=x86_64-unknown-linux-musl (static)" ;;
-            esac
+            warn "could not run the new dg to check it (a noexec temp dir, or it does not run here); try: $INSTALL_DIR/dg --version"
         fi
         found=$(command -v dg 2>/dev/null || true)
         if [ -n "$found" ] && [ "$found" != "$INSTALL_DIR/dg" ]; then
@@ -315,7 +365,7 @@ Refusing to install. The file may be corrupt or tampered with; nothing was insta
     say ""
     say "Next steps:"
     say "  dg doctor                     check git, git-remote-dash, network and identity"
-    if [ -x "$INSTALL_DIR/dg" ] && "$INSTALL_DIR/dg" auth --help 2>/dev/null | grep -Eq '^ +new( |$)'; then
+    if [ -n "$dg_version" ] && "$dir/dg" auth --help 2>/dev/null | grep -Eq '^ +new( |$)'; then
         say "  dg auth new                   create or import the identity dg signs with"
     else
         say "  dg auth login --identity F    import the identity dg signs with"

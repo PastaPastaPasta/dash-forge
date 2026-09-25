@@ -89,13 +89,18 @@ fn check_dg() -> Check {
 /// `git-remote-dash` on PATH (git needs it for every `dash://` URL) and built from the same
 /// version as this `dg`: the two share forge-core's wire formats and contract ids.
 fn check_helper() -> Check {
-    let output = Command::new("git-remote-dash").arg("--version").output();
-    helper_check(output.ok().map(|o| {
-        (
+    match Command::new("git-remote-dash").arg("--version").output() {
+        Ok(o) => helper_check(Some((
             o.status.success(),
             String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        )
-    }))
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => helper_check(None),
+        Err(e) => Check {
+            name: "helper",
+            ok: false,
+            detail: format!("could not run git-remote-dash --version: {e}"),
+        },
+    }
 }
 
 /// [`check_helper`]'s verdict for a `(succeeded, stdout)` run, or `None` when it did not run.

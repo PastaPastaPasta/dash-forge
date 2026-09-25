@@ -31,11 +31,17 @@ on:
         description: Build and package only; do not attest or publish a release
         type: boolean
         default: true
+  # A dry run on every PR that could break a release-only leg (musl, Windows, macOS), so it
+  # fails at review time rather than at tag time.
   pull_request:
     paths:
       - '.github/workflows/release.yml'
       - 'install.sh'
       - 'build-support/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
@@ -62,6 +68,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # History for the "is this commit on master" check below.
+          fetch-depth: 0
           persist-credentials: false
       - name: Resolve the version and whether to publish
         id: v
@@ -97,6 +105,14 @@ jobs:
           else
             # Dry run from a branch: name the archives after the crate version + commit.
             version="${crate_version}-dev.$(git rev-parse --short=12 HEAD)"
+          fi
+
+          # Only reviewed code is published: the tagged commit must be on master. (A tag on
+          # a side branch would otherwise be built, attested and published by that branch's
+          # own copy of this workflow, and would verify.)
+          if [ "$publish" = true ] && ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::${REF_NAME} (${GITHUB_SHA}) is not on master; tag a commit on master"
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
@@ -221,12 +237,14 @@ jobs:
           rustc --version
           protoc --version
 
+      # Dry runs only. A published binary is compiled from scratch, from the tagged source
+      # alone, so no object built in another run can end up inside an attested release.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.plan.outputs.publish != 'true'
         with:
           key: release-${{ matrix.target }}
-          # A publishing build only restores (tag refs can read the default branch's caches,
-          # never another branch's) and never saves, so a release cannot seed a cache.
-          save-if: ${{ needs.plan.outputs.publish != 'true' }}
+          # Save from master only, so PR dry runs do not evict rust.yml's caches.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # On Linux, OpenSSL (pulled in via the Platform SDK's reqwest default features) is
       # compiled in statically, so the binaries do not depend on the host's libssl version.
@@ -254,10 +272,21 @@ jobs:
               *) echo "::error::$bin --version does not name ${GITHUB_SHA:0:12} ${TARGET}: $out"; exit 1 ;;
             esac
           done
-          if [ "$TARGET" = x86_64-unknown-linux-musl ]; then
-            file "$dir/dg"
-            file "$dir/dg" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::musl dg is not statically linked"; exit 1; }
-          fi
+          case "$TARGET" in
+            *-linux-musl)
+              file "$dir/dg"
+              file "$dir/dg" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::musl dg is not statically linked"; exit 1; }
+              ;;
+            *-linux-gnu)
+              # vendored-openssl must have taken effect: no dynamic libssl/libcrypto.
+              for bin in dg git-remote-dash forge-relay forge-import; do
+                if readelf -d "$dir/$bin" | grep -E 'NEEDED.*lib(ssl|crypto)'; then
+                  echo "::error::$bin links the system OpenSSL dynamically"; exit 1
+                fi
+              done
+              readelf -d "$dir/dg" | grep NEEDED
+              ;;
+          esac
 
       - name: Package
         id: pkg
@@ -310,7 +339,7 @@ jobs:
   # Runs install.sh end to end against the real archives: the checksum path, the target
   # detection on each OS, and that the installed binaries start.
   install-check:
-    name: install.sh (${{ matrix.os }})
+    name: install.sh (${{ matrix.os }}${{ matrix.target && format(', {0}', matrix.target) || '' }})
     needs: [plan, build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -411,6 +440,8 @@ jobs:
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Gate for publishing. Its protection (required reviewers, a `v*` deployment tag rule)
+    # is repository configuration, not code — see docs/INSTALL.md "Cutting a release".
     environment: release
     permissions:
       contents: write # create the GitHub Release and upload its assets
@@ -463,7 +494,7 @@ jobs:
           ## Install
 
           \`\`\`sh
-          curl -fsSL https://raw.githubusercontent.com/${GH_REPO}/${TAG}/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/${GH_REPO}/${TAG}/install.sh | DASH_FORGE_VERSION=${VERSION} sh
           \`\`\`
 
           or \`cargo binstall --git https://github.com/${GH_REPO} dg git-remote-dash\`, or
@@ -479,7 +510,10 @@ jobs:
           [docs/INSTALL.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/INSTALL.md#macos-gatekeeper).
           EOF
           # Draft first, upload, then publish: the release never appears with missing assets.
-          gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
-            --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
-          gh release upload "$TAG" dist/dash-forge-* dist/SHA256SUMS
+          # Idempotent, so a failed run can simply be re-run: reuse an existing draft.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
+              --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
+          fi
+          gh release upload "$TAG" dist/dash-forge-* dist/SHA256SUMS --clobber
           gh release edit "$TAG" --draft=false
