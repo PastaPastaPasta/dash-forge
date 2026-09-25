@@ -28,6 +28,9 @@
 // WASM chunk never enters the initial bundle (it is pulled on the first write / login).
 import type { EvoSDK, StateTransition, TokenPaymentInfo } from '@dashevo/evo-sdk'
 
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 
@@ -73,6 +76,7 @@ interface SdkFacades {
   identities: IdentitiesFacadeLike
   documents: DocumentsFacadeLike
   stateTransitions: StateTransitionsFacadeLike
+  epoch: { current(): Promise<unknown> }
 }
 
 function facades(sdk: EvoSDK): SdkFacades {
@@ -198,14 +202,17 @@ export function previewCredits(credits: number): CostPreview {
 }
 
 // ---------------------------------------------------------------------------
-// Signed-ST idempotency cache (localStorage; keyed by deterministic document id)
+// Signed-ST idempotency cache (localStorage; keyed by the logical write)
 // ---------------------------------------------------------------------------
 
-const ST_CACHE_PREFIX = 'forge:pending-st:'
+const ST_CACHE_PREFIX = 'forge:pending-st:v2:'
 const ST_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 interface CachedST {
+  /** The signed state transition, base64. */
   data: string
+  /** The document id that transition creates. */
+  documentId: string
   cachedAt: number
 }
 
@@ -221,34 +228,65 @@ function base64ToBytes(b64: string): Uint8Array {
   return out
 }
 
-function savePendingST(documentId: string, bytes: Uint8Array): void {
+/** A JSON form of write data with sorted keys and bytes as hex, so equal writes key equally. */
+function canonical(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) }
+  if (typeof value === 'bigint') return { $bigint: value.toString() }
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    return Object.fromEntries(
+      Object.keys(obj)
+        .sort()
+        .map((k) => [k, canonical(obj[k])]),
+    )
+  }
+  return value
+}
+
+/**
+ * The cache key of a logical write: the same owner writing the same data of the same type to
+ * the same contract. It does not depend on the (random) entropy or the nonce, so retrying a
+ * timed-out write finds the transition the first attempt signed.
+ */
+export function pendingWriteKey(
+  ownerId: string,
+  contractId: string,
+  documentType: string,
+  data: Record<string, unknown>,
+): string {
+  const text = JSON.stringify([ownerId, contractId, documentType, canonical(data)])
+  return ST_CACHE_PREFIX + bytesToHex(sha256(new TextEncoder().encode(text)))
+}
+
+function savePendingST(key: string, documentId: string, bytes: Uint8Array): void {
   if (typeof window === 'undefined') return
   try {
-    const entry: CachedST = { data: bytesToBase64(bytes), cachedAt: Date.now() }
-    window.localStorage.setItem(ST_CACHE_PREFIX + documentId, JSON.stringify(entry))
+    const entry: CachedST = { data: bytesToBase64(bytes), documentId, cachedAt: Date.now() }
+    window.localStorage.setItem(key, JSON.stringify(entry))
   } catch {
     // Non-fatal — retry safety is best-effort; the write still broadcasts.
   }
 }
-function loadPendingST(documentId: string): Uint8Array | null {
+function loadPendingST(key: string): { bytes: Uint8Array; documentId: string } | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(ST_CACHE_PREFIX + documentId)
+    const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedST
-    if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS) {
-      window.localStorage.removeItem(ST_CACHE_PREFIX + documentId)
+    if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS || !parsed.documentId) {
+      window.localStorage.removeItem(key)
       return null
     }
-    return base64ToBytes(parsed.data)
+    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId }
   } catch {
     return null
   }
 }
-function clearPendingST(documentId: string): void {
+function clearPendingST(key: string): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.removeItem(ST_CACHE_PREFIX + documentId)
+    window.localStorage.removeItem(key)
   } catch {
     // Ignore.
   }
@@ -373,10 +411,56 @@ async function pollForDocument(
 }
 
 /**
+ * Build the `Document` a create transition carries, with byte fields kept as bytes.
+ *
+ * evo-sdk 4.2's `new Document({ properties })` (and the `properties` setter) converts the
+ * properties through JSON, which turns every `Uint8Array` into an array of integers — Drive
+ * then rejects the write with "not an array of bytes" for any byteArray field (`listingId`,
+ * `refNameHash`, `newOid`, ...). `Document.fromObject` converts a `Uint8Array` to bytes, which
+ * is what 4.0's constructor did: the signed transition is byte-identical to 4.0's for every
+ * top-level field. So the system fields come from a property-less constructor call and the
+ * content is merged in through `fromObject`.
+ */
+export function documentForCreate(
+  DocumentClass: typeof import('@dashevo/evo-sdk').Document,
+  params: {
+    readonly data: Record<string, unknown>
+    readonly documentType: string
+    readonly contractId: string
+    readonly ownerId: string
+    readonly documentId: string
+    readonly entropy: Uint8Array
+    readonly platformVersion: number
+  },
+): import('@dashevo/evo-sdk').Document {
+  const base = new DocumentClass({
+    properties: {},
+    documentTypeName: params.documentType,
+    dataContractId: params.contractId,
+    ownerId: params.ownerId,
+    revision: 1n,
+    id: params.documentId,
+    entropy: params.entropy,
+  })
+  const object = { ...base.toObject(), ...params.data }
+  return DocumentClass.fromObject(
+    object as Parameters<typeof DocumentClass.fromObject>[0],
+    params.platformVersion,
+  )
+}
+
+/**
  * Create a document with idempotent retry. Builds + signs a broadcast-only state transition,
- * caches the signed bytes keyed by the deterministic document id, broadcasts, and polls for
- * confirmation. A cached ST from a prior timed-out attempt is re-broadcast verbatim; an
- * already-processed error, or the doc appearing on a poll, resolves as success.
+ * caches the signed bytes keyed by the logical write ({@link pendingWriteKey}: owner, contract,
+ * type and data), broadcasts, and polls for confirmation. A retry of the same write while a
+ * cached transition is pending re-broadcasts those exact bytes (same nonce and id, so it can
+ * land at most once) instead of signing a second document. An already-processed error, or the
+ * doc appearing on a poll, resolves as success.
+ *
+ * If the network refuses the create because its id was derived at a stale protocol version
+ * (a 13 -> 14 upgrade under an open tab), the version is re-read with a proved query and the
+ * write is prepared once more. The refused transition never executed, so this cannot
+ * double-post.
  *
  * `requiredLevel` defaults to HIGH (document ops accept a HIGH-or-CRITICAL key).
  */
@@ -401,6 +485,30 @@ export async function createDocumentIdempotent(
 
   const wif = auth.getSigningKeyWif()
   const ownerId = auth.identityId
+  const cacheKey = pendingWriteKey(ownerId, contractId, documentType, data)
+
+  // A previous attempt at this same write timed out: finish it, never sign a second one.
+  const cached = loadPendingST(cacheKey)
+  if (cached) {
+    const { documentId } = cached
+    if (!(await documentExists(sdk, contractId, documentType, documentId))) {
+      const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
+      try {
+        await facades(sdk).stateTransitions.broadcastStateTransition(
+          StateTransitionClass.fromBytes(cached.bytes),
+        )
+      } catch (e) {
+        // Already processed / nonce consumed: the poll below decides whether it landed.
+        if (!isAlreadyExistsError(e)) throw e
+      }
+    }
+    const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, confirmTimeoutMs)
+    // One re-broadcast per cached transition. If it still has not landed (its nonce was
+    // overtaken, say), drop it so the next attempt signs afresh rather than re-polling a
+    // write that cannot land until the entry expires.
+    clearPendingST(cacheKey)
+    return { documentId, confirmed, cost }
+  }
 
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
@@ -411,6 +519,64 @@ export async function createDocumentIdempotent(
     )
   }
 
+  const build = () =>
+    signCreate(sdk, { ownerId, contractId, documentType, data, gate, wif, publicKey: signing.publicKey })
+
+  let signed = await build()
+  savePendingST(cacheKey, signed.documentId, signed.bytes)
+  try {
+    await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
+  } catch (e) {
+    if (isAlreadyExistsError(e)) {
+      const confirmed = await pollForDocument(sdk, contractId, documentType, signed.documentId, 5_000)
+      clearPendingST(cacheKey)
+      return { documentId: signed.documentId, confirmed, cost }
+    }
+    if (!isStaleDocumentIdError(e)) {
+      clearPendingST(cacheKey)
+      throw e
+    }
+    // Refused at basic validation (nothing landed): learn the network's version from a
+    // proved read and prepare the write once more.
+    await facades(sdk).epoch.current()
+    signed = await build()
+    savePendingST(cacheKey, signed.documentId, signed.bytes)
+    try {
+      await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
+    } catch (e2) {
+      if (!isAlreadyExistsError(e2)) {
+        clearPendingST(cacheKey)
+        throw e2
+      }
+    }
+  }
+
+  const { documentId } = signed
+  const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, confirmTimeoutMs)
+  if (confirmed) clearPendingST(cacheKey)
+  return { documentId, confirmed, cost }
+}
+
+/** Consensus refused a create because its id was derived at another protocol version. */
+export function isStaleDocumentIdError(e: unknown): boolean {
+  const m = errorMessage(e).toLowerCase()
+  return m.includes('invalid document transition id') || m.includes('10405')
+}
+
+/** Build and sign one document-create transition (fresh entropy and nonce). */
+async function signCreate(
+  sdk: EvoSDK,
+  p: {
+    readonly ownerId: string
+    readonly contractId: string
+    readonly documentType: string
+    readonly data: Record<string, unknown>
+    readonly gate: TokenGate | undefined
+    readonly wif: string
+    readonly publicKey: unknown
+  },
+): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string }> {
+  const { ownerId, contractId, documentType, data, gate } = p
   const {
     Document,
     DocumentCreateTransition,
@@ -420,28 +586,27 @@ export async function createDocumentIdempotent(
     TokenPaymentInfo,
   } = await import('@dashevo/evo-sdk')
 
-  // Deterministic document id from generated entropy — the idempotency anchor.
+  // The nonce is fetched once and used for both the id and the transition. From protocol 14
+  // the document id commits to it (protocol 13: entropy only), and the create transition
+  // re-derives the id at the version it is given — so the id, the `Document` and the
+  // transition all use this nonce and one version: the SDK's latest learned one. Every proved
+  // response raises it, but it can be stale (the nonce may come from a cache). Drive refuses
+  // a stale-version id and the caller retries; it is never silently misreported.
+  const nonce = await nextContractNonce(sdk, ownerId, contractId)
+  const platformVersion = sdk.version()
+
   const entropy = crypto.getRandomValues(new Uint8Array(32))
-  const idBytes = Document.generateId(documentType, ownerId, contractId, entropy)
+  const idBytes = Document.generateId(documentType, ownerId, contractId, entropy, nonce, platformVersion)
   const documentId = base58Encode(idBytes)
 
-  // Re-broadcast a cached ST from a previous timed-out attempt (same nonce → no double post).
-  const cached = loadPendingST(documentId)
-  if (cached) {
-    if (await documentExists(sdk, contractId, documentType, documentId)) {
-      clearPendingST(documentId)
-      return { documentId, confirmed: true, cost }
-    }
-  }
-
-  const document = new Document({
-    properties: data,
-    documentTypeName: documentType,
-    dataContractId: contractId,
+  const document = documentForCreate(Document, {
+    data,
+    documentType,
+    contractId,
     ownerId,
-    revision: 1n,
-    id: documentId,
+    documentId,
     entropy,
+    platformVersion,
   })
 
   let tokenPaymentInfo: TokenPaymentInfo | undefined
@@ -452,36 +617,27 @@ export async function createDocumentIdempotent(
     })
   }
 
-  const nonce = await nextContractNonce(sdk, ownerId, contractId)
+  // `platformVersion` is load-bearing: without it the transition re-derives the id at the
+  // SDK's latest compiled version (14), which on a protocol-13 network is an id Drive does not
+  // recompute, and the create is rejected.
   const createTransition = new DocumentCreateTransition({
     document,
     identityContractNonce: nonce,
+    platformVersion,
     ...(tokenPaymentInfo ? { tokenPaymentInfo } : {}),
   })
+  if (document.id.toBase58() !== documentId) {
+    throw new Error(
+      `document id drifted while building the create transition (${documentId}); ` +
+        'refusing to broadcast a write whose id the idempotency cache does not know',
+    )
+  }
   const batched = new BatchedTransition(createTransition.toDocumentTransition())
   const batch = BatchTransition.fromBatchedTransitions([batched], ownerId, 0)
   const st = batch.toStateTransition()
   st.setIdentityContractNonce(nonce)
-
-  const privateKey = PrivateKey.fromWIF(wif)
-  st.sign(privateKey, signing.publicKey as Parameters<StateTransition['sign']>[1])
-
-  savePendingST(documentId, st.toBytes())
-
-  try {
-    await facades(sdk).stateTransitions.broadcastStateTransition(st)
-  } catch (e) {
-    if (isAlreadyExistsError(e)) {
-      const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, 5_000)
-      clearPendingST(documentId)
-      return { documentId, confirmed, cost }
-    }
-    throw e
-  }
-
-  const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, confirmTimeoutMs)
-  if (confirmed) clearPendingST(documentId)
-  return { documentId, confirmed, cost }
+  st.sign(PrivateKey.fromWIF(p.wif), p.publicKey as Parameters<StateTransition['sign']>[1])
+  return { st, bytes: st.toBytes(), documentId }
 }
 
 /**

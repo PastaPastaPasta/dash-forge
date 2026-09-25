@@ -1,3 +1,9 @@
 allowBuilds:
   esbuild: true
   unrs-resolver: true
+# TODO(sdk-4.2-final): the 4.2.0-beta.4 pin (package.json) is newer than pnpm's minimum release
+# age, so it is exempted here. Move to @dashevo/evo-sdk 4.2.0 final (in lockstep with the Rust
+# PLATFORM_TAG in ../Cargo.toml) and drop these two entries.
+minimumReleaseAgeExclude:
+  - '@dashevo/evo-sdk@4.2.0-beta.4'
+  - '@dashevo/wasm-sdk@4.2.0-beta.4'

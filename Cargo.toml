@@ -13,7 +13,7 @@ version = "0.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PastaPastaPasta/dash-forge"
-rust-version = "1.92"
+rust-version = "1.98"
 
 # Shared dependency versions. Individual crates opt in with `<dep>.workspace = true`.
 #
@@ -45,16 +45,18 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 #
 # Bumping the tag: change PLATFORM_TAG below in ALL FIVE entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
-# PLATFORM_TAG = v3.1.0-dev.8
+# PLATFORM_TAG = v4.2.0-beta.4
+# TODO(sdk-4.2-final): a pre-release tag, pinned for protocol 14 (forge-v2 on devnets). Move
+# to v4.2.0 when it is tagged, in lockstep with forge-web's @dashevo/evo-sdk pin.
 #
 # mocks/offline-testing are dropped (default-features = false) so only the live network
 # client is built. `dapi-grpc` with the `client` feature is pulled in directly to keep the
 # network transport + TLS stubs compiled after dropping the SDK's default feature set.
-dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8", default-features = false }
-dapi-grpc = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8", default-features = false, features = ["core", "platform", "client"] }
-drive-proof-verifier = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8", default-features = false }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8" }
-simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v3.1.0-dev.8" }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false }
+dapi-grpc = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false, features = ["core", "platform", "client"] }
+drive-proof-verifier = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4" }
+simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4" }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which
 # promotes every `warn` below to a hard error. Kept pragmatic: `all` + a selected

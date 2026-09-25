@@ -1021,9 +1021,8 @@ impl<'a> RepoService<'a> {
                 continue;
             }
             let prepared = engine
-                .prepare_create(&repo_contract, CHUNK_DOC_TYPE, props)
+                .create_landed(&repo_contract, CHUNK_DOC_TYPE, props)
                 .await?;
-            engine.execute(&prepared).await?;
             journal.record(&WriteIntent::for_prepared(seq, &prepared));
             store.checkpoint(journal)?;
 
