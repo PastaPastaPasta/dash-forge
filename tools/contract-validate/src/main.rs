@@ -227,8 +227,10 @@ fn validate_one(
     println!("   create-transition basic structure (v2 rules): ok");
 
     // (4) the registration-time reference validation, against state held in memory
-    let (local, foreign) = registration_references(&contract, known, pv)?;
-    println!("   registration reference checks: {local} same-contract + {foreign} cross-contract leaves, ok");
+    let (local, foreign, keys) = registration_references(&contract, known, pv)?;
+    println!(
+        "   registration reference checks: {local} same-contract + {foreign} cross-contract document leaves, {keys} key references, ok"
+    );
 
     // (5) sample documents: every good one accepted, every bad one refused
     let check = |doc_type: &str, props: &Json| -> Result<bool> {
@@ -268,6 +270,18 @@ fn validate_one(
             .map_err(|e| anyhow!("{e}"))?
             .len()
     };
+    // Round-trip the serialization format through a full-validation parse: the node builds the
+    // contract it stores from the transition's DataContractInSerializationFormat this way
+    {
+        let format: DataContractInSerializationFormat = (&contract)
+            .try_into_platform_versioned(pv)
+            .map_err(|e| anyhow!("{e}"))?;
+        let reparsed = DataContract::try_from_platform_versioned(format, true, &mut vec![], pv)
+            .map_err(|e| anyhow!("serialized form does not re-parse with full validation: {e}"))?;
+        if reparsed != contract {
+            bail!("serialized form re-parses to a different contract");
+        }
+    }
     let st: StateTransition = transition.into();
     let st_bytes = st.serialize_to_bytes().map_err(|e| anyhow!("{e}"))?;
     // Round-trip through the node's untrusted decoder, which enforces the protocol gates
@@ -358,8 +372,8 @@ fn registration_references(
     contract: &DataContract,
     known: &[DataContract],
     pv: &PlatformVersion,
-) -> Result<(usize, usize)> {
-    let (mut local, mut foreign) = (0, 0);
+) -> Result<(usize, usize, usize)> {
+    let (mut local, mut foreign, mut keys) = (0, 0, 0);
     for (type_name, document_type) in contract.document_types() {
         let dt = document_type.as_ref();
         for (holder, reference) in dt.reference_declarations() {
@@ -369,18 +383,30 @@ fn registration_references(
             };
             let target = match reference {
                 PropertyReference::Value(t) | PropertyReference::Elements { target: t, .. } => t,
-                // key id references are checked by the parser and by the key-id arm of the
-                // node's validator, which reads only the declaring type
-                PropertyReference::KeyId(_) => continue,
+                PropertyReference::KeyId(key_ref) => {
+                    check_key_id_reference(contract, dt, holder.path(), key_ref, pv)
+                        .map_err(|e| anyhow!("{type_name}.{}: {e} (40125)", holder.path()))?;
+                    keys += 1;
+                    continue;
+                }
             };
             for (leaf_path, leaf) in target.leaves_with_paths() {
-                let Some(decl) = leaf.as_any_document_reference() else {
-                    continue;
-                };
                 let at = if leaf_path.is_empty() {
                     format!("{type_name}.{}", holder.path())
                 } else {
                     format!("{type_name}.{}.{leaf_path}", holder.path())
+                };
+                if let DocumentPropertyReferenceTarget::IdentityPublicKey {
+                    key_id_property, ..
+                } = leaf
+                {
+                    check_identity_key_leaf(dt, reference_property, key_id_property)
+                        .map_err(|e| anyhow!("{at}: {e} (40125)"))?;
+                    keys += 1;
+                    continue;
+                }
+                let Some(decl) = leaf.as_any_document_reference() else {
+                    continue;
                 };
                 let target_id = decl.contract_id.unwrap_or(contract.id());
                 let referenced_contract = if target_id == contract.id() {
@@ -415,7 +441,84 @@ fn registration_references(
             }
         }
     }
-    Ok((local, foreign))
+    Ok((local, foreign, keys))
+}
+
+/// The identityPublicKey arm of drive-abci `validate_reference_target_declaration_v0`: the key
+/// id property named by `keyIdProperty` exists, is an integer, carries no key reference of its
+/// own, and is not stored while the identity property carrying the reference is transient.
+fn check_identity_key_leaf(
+    dt: DocumentTypeRef,
+    reference_property: Option<&str>,
+    key_id_property: &str,
+) -> Result<()> {
+    let Some(key_property) = dt.flattened_properties().get(key_id_property) else {
+        bail!("key id property {key_id_property} is not defined");
+    };
+    if !key_property.property_type.is_integer() {
+        bail!("key id property {key_id_property} must be an integer");
+    }
+    if matches!(
+        key_property.property_type,
+        DocumentPropertyType::KeyIdWithReference(_)
+    ) {
+        bail!("key id property {key_id_property} carries its own identityPublicKey reference");
+    }
+    if let Some(identity_path) = reference_property {
+        if is_transient(dt, identity_path) && !is_transient(dt, key_id_property) {
+            bail!("the key id is stored but its identity property is transient");
+        }
+    }
+    Ok(())
+}
+
+/// The KeyId arm of drive-abci `validate_data_contract_references_v0`: a key id reference that
+/// names its identity by `$creatorId` needs a type recording creator ids, and one that names a
+/// property needs an identifier property without a key reference of its own, not transient
+/// while the key id is stored.
+fn check_key_id_reference(
+    contract: &DataContract,
+    dt: DocumentTypeRef,
+    key_id_path: &str,
+    key_ref: &dpp::data_contract::document_type::KeyIdReference,
+    pv: &PlatformVersion,
+) -> Result<()> {
+    use dpp::data_contract::document_type::KeyReferenceIdentityProperty as Who;
+    match &key_ref.identity_property {
+        Who::OwnerId => Ok(()),
+        Who::CreatorId => {
+            let records = dt
+                .should_use_creator_id(
+                    contract.system_version_type(),
+                    contract.config().version(),
+                    pv,
+                )
+                .map_err(|e| anyhow!("{e}"))?;
+            if !records {
+                bail!("identityProperty $creatorId needs a type that records creator ids");
+            }
+            Ok(())
+        }
+        Who::Property(identity_path) => {
+            let Some(identity) = dt.flattened_properties().get(identity_path) else {
+                bail!("identity property {identity_path} is not defined");
+            };
+            match &identity.property_type {
+                DocumentPropertyType::IdentifierWithReference(
+                    DocumentPropertyReferenceTarget::IdentityPublicKey { .. },
+                ) => bail!(
+                    "identity property {identity_path} carries its own identityPublicKey reference"
+                ),
+                DocumentPropertyType::Identifier
+                | DocumentPropertyType::IdentifierWithReference(_) => {}
+                _ => bail!("identity property {identity_path} must be an identifier"),
+            }
+            if is_transient(dt, identity_path) && !is_transient(dt, key_id_path) {
+                bail!("the key id is stored but identity property {identity_path} is transient");
+            }
+            Ok(())
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

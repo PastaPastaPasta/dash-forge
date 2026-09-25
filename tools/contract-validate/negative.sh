@@ -10,7 +10,8 @@ contracts="$here/../../forge-contracts/contracts"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-cargo build -q --manifest-path "$here/Cargo.toml"
+# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.4's rust-toolchain.toml)
+cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/debug/contract-validate"
 
 fails=0
@@ -42,6 +43,9 @@ expect_reject cross-missing-type collab '.documentSchemas.star.properties.repoId
 expect_reject cross-deletable-on-permanent collab '.documentSchemas.issue.properties.repoId.refersTo.type = "deletableDocument"'
 expect_reject issue-deletable-under-event-lookup collab '.documentSchemas.issue.canBeDeleted = true | del(.documentSchemas.issue.documentsKeepHistory)'
 expect_reject agreement-kind-mismatch collab '.documentSchemas.event.properties.targetId.refersTo.anyOf[0].propertyAgreement.targetNumber = "title"'
+expect_reject key-id-not-integer core '.documentSchemas.repoKey.properties.recipientKeyId = {"type":"string","maxLength":10,"position":3}'
+expect_reject key-ref-on-identity-with-own-key collab '.documentSchemas.webhook.properties.senderKeyId.refersTo.identityProperty = "relayIdentityId"'
+expect_reject membership-non-deletable core '.documentSchemas.maintainer.canBeDeleted = false'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"
