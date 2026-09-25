@@ -140,6 +140,40 @@ describe('index → serialize → BrowseReader round trip', () => {
     }
   })
 
+  it('keeps a duplicated object\'s row in EVERY pack that stores it', async () => {
+    // A push whose `have` set was incomplete re-packs history an earlier pack already
+    // holds, so the same blob lands in two live packs — and the later pack's OFS deltas
+    // are relative to ITS copy. Indexing one row per OID drops that copy's address, and
+    // since every synthesized row carries SPAN_SENTINEL the per-base walk is the only read
+    // path there is: the delta becomes unreadable with `base object at pack 1 offset N not
+    // in locator`.
+    const base = new TextEncoder().encode('shared history line that both packs carry\n')
+    const target = new TextEncoder().encode('shared history line that both packs carrX\n')
+    const baseStored = concat(objHeader(T_BLOB, base.length), zlibSync(base))
+    const pack0 = packFrame(baseStored)
+
+    // Pack 1 re-sends the same blob, then an OFS_DELTA against ITS OWN copy of it.
+    const delta = copyInsertDelta(base.length, target.length, 40, new TextEncoder().encode('X\n'))
+    const deltaStored = concat(
+      objHeader(T_OFS_DELTA, delta.length),
+      ofsBase(baseStored.length),
+      zlibSync(delta),
+    )
+    const pack1 = packFrame(baseStored, deltaStored)
+
+    const objects = await indexPacks([pack0, pack1])
+    const baseOid = gitOidHex('blob', base)
+    expect(objects.filter((o) => o.oidHex === baseOid).map((o) => o.packRef)).toEqual([0, 1])
+
+    const locator = ObjectLocator.parse(serializeLocator(objects))
+    // Lookup still answers with the lowest packRef, so nothing about the shared object moves.
+    expect(locator.lookup(hexToBytes(baseOid))).toMatchObject({ packRef: 0 })
+    // ...and pack 1's delta resolves, which is what the dropped row used to break.
+    const reader = new BrowseReader(locator, memoryPackSource([pack0, pack1]))
+    const obj = await reader.readObject(gitOidHex('blob', target))
+    expect(Array.from(obj.bytes)).toEqual(Array.from(target))
+  })
+
   it('resolves OFS bases per pack when offsets collide across packs', async () => {
     // Both packs put their base blob at offset 12 and an OFS_DELTA right after — the
     // collision that a bare-offset index mis-resolved (offsets repeat across packs).

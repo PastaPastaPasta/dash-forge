@@ -9,15 +9,21 @@ Forge stores **git packfiles**, not loose blobs, at every layer (push transport,
 1. **Delta compression** — similar objects (successive versions of a file, similar trees) stored as diffs against a base.
 2. **zlib deflate** — every object/delta individually compressed.
 
-Typical source repos pack to **20–35% of checkout size**; pushes are *thin packs on the wire* (deltas against objects the remote already has), completed via `index-pack --fix-thin` before storage so stored packs are self-contained. An incremental push therefore costs the compressed change **plus its direct delta-base objects** (duplicated until the next repack reclaims them) — a premium that keeps every stored pack independently readable. **S0.5 measured this fix-thin premium at 0.9–4.4% for typical pushes** (rising to ~17% for a 100-commit batch); it is fully reclaimed at the next repack.
+Typical source repos pack to **20–35% of checkout size**. A push stores the compressed change as one self-contained pack: `git pack-objects --revs --delta-base-offset` over `want ^have`, with every delta base inside the pack.
+
+> **Corrected (was: store the `index-pack --fix-thin` pack; "0.9–4.4% premium").** The stored pack must be **locator-quality**, not merely self-contained: `--fix-thin` appends the materialized delta bases at the END of the pack, after the deltas that reference them, leaving `REF_DELTA` and non-contiguous objects that the `objectLocator` must refuse. A pack in that shape can be stored but never browsed without a whole-repo client-side clone — which is what every repo the shipped tooling produced was stuck with.
+>
+> Re-emitting the same object set non-thin fixes the order for **0.995–1.000** of the completed pack's size, so the index is essentially free. What is NOT free either way is the choice of object set, and neither option dominates: packing the delta non-thin avoids materializing any base, but forfeits the cheap deltas against what the remote already has. Stored bytes ÷ the old completed pack — **1.000** first push, **0.849 / 0.879 / 0.882** for 1 / 5 / 20 sequential commits of this repo, but **1.373** for one push of 20 branch tips off a shared base. So `build_pack` builds both candidates and stores the smaller.
+>
+> The published "0.9–4.4% premium" (S0.5 §1) is `(fixed − thin) / thin` — a ratio against the thin pack, which is never stored. On that spike's 2.85 GiB corpus the thin baseline is 0.16–5.3 MB against only 2–234 materialized bases, so the appended bytes read small; the same formula on this repo's pushes is 150–440%. It was never a measurement of the completed pack against the alternative that would otherwise be stored.
 
 Additional levers on top:
 
 | Lever | Gain | When |
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
-| Per-pack offset index | *mandatory* for git packs (~30 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
-| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; churn burn ~1.5% per republish; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
+| Per-push browse-index fragment | *mandatory* for git packs (36 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
+| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; the locator is published as per-push fragments and folded every 16, so a push pays for its own objects rather than republishing the whole index; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)
@@ -79,8 +85,8 @@ Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes
 ## 6. Fee-minimization checklist (encoded in defaults)
 
 1. External or mixed backend for anything bulky (the biggest lever by 100×).
-2. Thin packs always; max-effort compression at repack.
-3. Fill chunks to ~14.4 KiB. The per-pack offset index is mandatory (tiny — it indexes only the push's own objects — and it's the only random-access path to objects newer than the last repack).
+2. Store the smaller of the two locator-quality push-pack candidates (`build_pack`); max-effort compression at repack.
+3. Fill chunks to ~14.4 KiB. Each push also publishes its **browse-index fragment** — a locator over just that pack, 36 B per object the push added. It is the only random-access path to objects newer than the last repack, and it replaces the `manifestPart` per-pack offset index the design originally called for: same role, but it is the same artifact and the same reader as the repack-time index, rather than a second format. Nothing writes a `manifestPart`, so `packManifest.offsetIndexParts` is 0 on every kind.
 4. Repack regularly — refunds fund future pushes; surface reclaimable credits in `dg cost audit`.
 5. Keep social docs lean (5 KiB body cap already enforces this); `documentsKeepHistory` means every edit re-deposits the doc — the UI shows edit cost like any write.
 6. Cost engine displays deposit vs burn separately (DASH primary), so users learn that most of a platform push is a *recoverable deposit*, not a fee.

@@ -79,6 +79,7 @@ pub async fn repack(ctx: &Ctx, repo: Option<&str>, backend: Option<Backend>) -> 
             "repoContractId": handle.repo_contract_id,
             "newPackHash": hex::encode(report.new_pack_hash),
             "newManifestId": report.new_manifest_id,
+            "locatorManifestId": report.locator_manifest_id,
             "newPackBytes": report.new_pack_bytes,
             "objectCount": report.object_count,
             "newUris": report.new_uris,
@@ -98,6 +99,15 @@ pub async fn repack(ctx: &Ctx, repo: Option<&str>, backend: Option<Backend>) -> 
             );
             println!("  new pack:        {}", hex::encode(report.new_pack_hash));
             println!("  superseded:      {} pack(s)", report.superseded_count);
+            // The locator is what makes the repo browsable without downloading every pack,
+            // so say plainly whether it landed rather than leaving it to be inferred.
+            match &report.locator_manifest_id {
+                Some(id) => println!("  browse index:    published ({id})"),
+                None => println!(
+                    "  browse index:    NOT published — browsing falls back to downloading \
+                     every pack; re-run repack to retry"
+                ),
+            }
             println!(
                 "  deleted:         {} chunk(s), {} manifest(s) ({} bytes reclaimed)",
                 report.deleted_chunks, report.deleted_manifests, report.bytes_reclaimed

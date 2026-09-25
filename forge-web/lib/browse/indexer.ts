@@ -166,7 +166,14 @@ export async function indexPacks(
   const memo = new Map<ScanRecord, Resolved>()
   const byOid = new Map<string, Resolved>()
   const out: IndexedObject[] = []
-  const seenOid = new Set<string>()
+  // Keyed by (packRef, oid), NOT by oid. An object routinely sits in more than one live
+  // pack, and each copy's row is the only record of THAT pack's address for it. The reader
+  // resolves an OFS_DELTA base by (packRef, offset) through `buildOffsetIndex`, and the
+  // base of an object in pack N is always in pack N — so dropping pack N's row because
+  // pack 0 also carried the object makes every delta in pack N that uses it unreadable.
+  // Every row here carries SPAN_SENTINEL, so that walk is the ONLY read path this locator
+  // offers. Parity: forge-core `pack::ObjectLocator::merge`.
+  const seenSite = new Set<string>()
   let sinceYield = 0
 
   // Resolve a record's full chain, or return null when blocked on a REF base whose
@@ -194,8 +201,9 @@ export async function indexPacks(
     memo.set(rec, res)
     const oidHex = gitOidHex(res.obj.type, res.obj.bytes)
     byOid.set(oidHex, res)
-    if (!seenOid.has(oidHex)) {
-      seenOid.add(oidHex)
+    const site = `${packRef}:${oidHex}`
+    if (!seenSite.has(site)) {
+      seenSite.add(site)
       out.push({ oidHex, packRef, offset: rec.offset, length: rec.length, deltaDepth: res.depth })
     }
     return res
@@ -228,7 +236,12 @@ export async function indexPacks(
  * doc) and the true chain depth clamped to u8.
  */
 export function serializeLocator(objects: readonly IndexedObject[]): Uint8Array {
-  const sorted = [...objects].sort((a, b) => (a.oidHex < b.oidHex ? -1 : a.oidHex > b.oidHex ? 1 : 0))
+  // Sorted by (oid, packRef), the order `ObjectLocator` requires: an OID can have one row
+  // per pack that stores it, and `lookup` finds the lowest-packRef row by walking back to
+  // the first of the adjacent group.
+  const sorted = [...objects].sort((a, b) =>
+    a.oidHex < b.oidHex ? -1 : a.oidHex > b.oidHex ? 1 : a.packRef - b.packRef,
+  )
   const bytes = new Uint8Array(FANOUT_LEN + sorted.length * LOCATOR_ROW_LEN)
   const view = new DataView(bytes.buffer)
 
