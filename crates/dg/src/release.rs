@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-use forge_core::backends::ipfs::IpfsConfig;
-use forge_core::backends::{BackendRegistry, HttpsBackend, IpfsBackend, Uri};
 use forge_core::collab::{ReleaseInput, ReleaseService};
+use forge_core::storage::PackReader;
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
@@ -135,16 +134,10 @@ async fn download(
         );
     }
 
-    let mut registry = BackendRegistry::new();
-    registry.register(Box::new(HttpsBackend::new()));
-    registry.register(Box::new(IpfsBackend::new(IpfsConfig {
-        api: None,
-        gateway: "https://ipfs.io".to_string(),
-    })));
-
-    let uris: Vec<Uri> = asset.uris.iter().map(|u| Uri(u.clone())).collect();
-    let bytes = registry
-        .get_verified(&uris, &asset.sha256)
+    // Race the recorded URIs with the configured IPFS gateway list (storage.toml, else the
+    // shared defaults), accepting only bytes that hash to the release's sha256.
+    let bytes = PackReader::from_user_config()
+        .fetch_verified(&asset.uris, &asset.sha256.to_ascii_lowercase())
         .await
         .context("downloading + verifying asset")?;
 
