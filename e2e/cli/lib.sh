@@ -94,31 +94,83 @@ harness_find_binaries() {
 }
 
 # --- timeout wrapper ---------------------------------------------------------
+# EVERY network command a scenario runs goes through _tmo, so one hang costs at most
+# E2E_TIMEOUT seconds instead of the CI job's whole budget. timeout(1) signals its whole
+# process group, so the TERM reaches git's children too (`git` → `git fetch` →
+# `git-remote-dash`: the tree the 07 hang left behind), and `-k` follows it with a KILL
+# for anything that ignores TERM.
+# Exit 124 = timed out, 137 = killed after ignoring TERM; git_dash records either as a
+# timeout line in the command's .err, which is_flake treats as a flake.
 : "${E2E_TIMEOUT:=200}"
-_tmo() { # _tmo <cmd...>  — wrap in `timeout` if available
-  if command -v timeout >/dev/null 2>&1; then timeout "${E2E_TIMEOUT}" "$@"; else "$@"; fi
+# Flake retries (git_dash_retry / dg_read_retry): attempts, and the base pause in seconds
+# (attempt N waits N × pause, so 20 s then 40 s by default).
+: "${E2E_ATTEMPTS:=3}"
+: "${E2E_RETRY_PAUSE:=20}"
+_tmo_for() { # _tmo_for <seconds> <cmd...>
+  local secs="$1" t; shift
+  t="$(command -v timeout || command -v gtimeout || true)"
+  if [[ -z "$t" ]]; then
+    log "${C_RED}fatal:${C_RST} no timeout(1) on PATH; refusing to run unbounded network commands"
+    return 125
+  fi
+  "$t" -k 15 "$secs" "$@"
 }
+_tmo() { _tmo_for "${E2E_TIMEOUT}" "$@"; } # _tmo <cmd...>: one network command
 
 # --- signing-key shims -------------------------------------------------------
 # Run dg as a given identity. Quiets rs-sdk transport chatter to stderr log.
 dg_as() { # dg_as <identity_file> <dg args...>
   local id="$1"; shift
-  DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-error}" _tmo "${DG}" "$@"
+  DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-error}" NO_COLOR=1 _tmo "${DG}" "$@"
+}
+
+# A READ-ONLY dg command as a given identity, retried on a flake like git_dash_retry.
+# stdout -> <out>, stderr -> <err>. Never use this for a write: a dg write is not
+# guaranteed idempotent to re-run (a second `collab add` mints again).
+dg_read_retry() { # dg_read_retry <identity_file> <out> <err> <dg args...>
+  local id="$1" out="$2" err="$3"; shift 3
+  local attempt=1 rc
+  while :; do
+    dg_as "$id" "$@" >"$out" 2>"$err"; rc=$?
+    [[ $rc -eq 124 || $rc -eq 137 ]] && printf 'e2e: command timed out after %ss\n' "${E2E_TIMEOUT}" >>"$err"
+    [[ $rc -ne 0 ]] && is_flake "$err" || return $rc
+    [[ $attempt -lt $E2E_ATTEMPTS ]] || return $rc
+    info "dg read flaked on attempt ${attempt}/${E2E_ATTEMPTS}; retrying"
+    sleep $((E2E_RETRY_PAUSE * attempt))
+    attempt=$((attempt + 1))
+  done
 }
 
 # git push/clone/ls-remote over dash:// as a given identity, stderr -> logfile.
 # Usage: git_dash <identity_file> <logfile> <git args...>
+# NO_COLOR keeps the helper's tracing lines free of ANSI codes so the classifiers below can
+# recognize (and ignore) them.
 git_dash() {
   local id="$1" logf="$2"; shift 2
-  DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-warn}" \
+  DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-warn}" NO_COLOR=1 \
     _tmo git "$@" >"${logf}.out" 2>"${logf}.err"
+  local rc=$?
+  [[ $rc -eq 124 || $rc -eq 137 ]] && printf 'e2e: command timed out after %ss\n' "${E2E_TIMEOUT}" >>"${logf}.err"
+  return $rc
 }
 
 # --- error classification ----------------------------------------------------
 # A transport/timeout/islock flake should SKIP, not FAIL. A consensus/token
 # rejection is a genuine, expected outcome for the ACL scenarios.
+#
+# The helper logs every DAPI node it bans or retries at WARN, even when the request then
+# succeeds on another node — so a push that was genuinely REJECTED usually has "transport
+# error" WARN lines above its real error. Classifying those as a flake turned real verdicts
+# into SKIPs (02 and 04 every night since 2026-09-21). is_flake therefore reads only the
+# lines that are NOT helper log records: git's own output and the helper's final error.
+_final_errors() { # _final_errors <logfile.err> — stderr minus tracing records
+  sed -E $'s/\x1b\\[[0-9;]*m//g' "$1" \
+    | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +(TRACE|DEBUG|INFO|WARN) '
+}
+# A proof that fails to verify is a node serving a bad or stale proof, not an answer (the
+# SDK retries it on another node too): 06 FAILed on exactly that on 2026-09-17.
 is_flake() { # is_flake <logfile.err>
-  grep -qiE 'connection reset|unavailable|timed out|timeout|deadline|transport error|Connection refused|dns error|no route|temporarily' "$1"
+  _final_errors "$1" | grep -qiE 'connection reset|unavailable|timed out|timeout|deadline|transport error|Connection refused|dns error|no route|temporarily|no available addresses|proof verification error'
 }
 is_consensus_frozen() { # token account frozen at consensus
   grep -qiE 'token frozen|account is frozen|IdentityTokenAccountFrozen|token account is frozen|access has been suspended' "$1"
@@ -128,17 +180,33 @@ is_consensus_unauthorized() { # no/insufficient token -> unauthorized at consens
 }
 is_consensus_reject() { is_consensus_frozen "$1" || is_consensus_unauthorized "$1"; }
 
-# --- broadcast retry ---------------------------------------------------------
-# Retry a git-over-dash operation once if the first attempt looks like a flake.
+# --- flake retry -------------------------------------------------------------
+# Retry a git-over-dash operation while it fails on a flake, up to E2E_ATTEMPTS attempts
+# with a growing pause between them. The pause matters: the SDK bans a failing DAPI node
+# for about a minute, so an immediate retry mostly re-meets the nodes that just failed.
+# A failure that is NOT a flake (a rejection, a verdict) returns at once — so this is also
+# the right wrapper for pushes that are expected to be rejected: it retries until the
+# push reaches consensus and gets an answer, and a flake only survives as a SKIP when
+# every attempt flaked. Pushes are idempotent to retry (resume journal + re-broadcast of
+# identical signed bytes), and a rejected push writes nothing.
 # Returns the final exit code; leaves the last attempt's logs at <logfile>.{out,err}.
 git_dash_retry() { # git_dash_retry <identity_file> <logfile> <git args...>
   local id="$1" logf="$2"; shift 2
-  git_dash "$id" "$logf" "$@"; local rc=$?
-  if [[ $rc -ne 0 ]] && is_flake "${logf}.err"; then
-    info "flaky broadcast (rc=$rc); retrying once…"
-    sleep 3
+  local attempt=1 rc
+  while :; do
     git_dash "$id" "$logf" "$@"; rc=$?
-  fi
+    [[ $rc -ne 0 ]] && is_flake "${logf}.err" || return $rc
+    [[ $attempt -lt $E2E_ATTEMPTS ]] || break
+    info "flake on attempt ${attempt}/${E2E_ATTEMPTS} (rc=$rc): $(_final_errors "${logf}.err" | grep -iE 'error|fatal|timed out' | tail -1 | cut -c1-160)"
+    cp "${logf}.err" "${logf}.attempt${attempt}.err" 2>/dev/null || true
+    # A killed clone can leave its destination behind, and git refuses to clone into a
+    # non-empty directory — which is how 07's retry used to FAIL instead of retrying.
+    local dest="${!#}"
+    [[ " $* " == *" clone "* && -n "${WORKROOT:-}" && "$dest" == "${WORKROOT}/"* ]] && rm -rf "$dest"
+    sleep $((E2E_RETRY_PAUSE * attempt))
+    attempt=$((attempt + 1))
+  done
+  info "still flaking after ${E2E_ATTEMPTS} attempts"
   return $rc
 }
 
@@ -156,14 +224,20 @@ cleanup_refs() {
   step "cleanup: deleting registered test refs (DEPLOYER)"
   local scratch="${WORKROOT}/cleanup-repo"
   rm -rf "$scratch"; git init -q "$scratch" 2>/dev/null
+  # One push deletes every registered ref: each separate push re-reads the whole ref set
+  # and pays its own round-trips, which made cleanup take 7-17 minutes a night. A
+  # deletion of an already-absent ref is a no-op, so a partial failure is harmless.
+  local refspecs=()
   local ref
-  # Batch deletes into one push where possible; simplest is one-by-one, tolerant.
-  sort -u "${WORKROOT}/cleanup-refs.txt" | while read -r ref; do
-    [[ -n "$ref" ]] || continue
-    info "delete ${ref}"
-    git_dash "$ID_DEPLOYER" "${WORKROOT}/cleanup-${RANDOM}" \
-      -C "$scratch" push "$E2E_REMOTE" ":${ref}" || true
-  done
+  while read -r ref; do
+    [[ -n "$ref" ]] && refspecs+=(":${ref}")
+  done < <(sort -u "${WORKROOT}/cleanup-refs.txt")
+  if [[ ${#refspecs[@]} -gt 0 ]]; then
+    info "delete ${#refspecs[@]} ref(s): ${refspecs[*]}"
+    git_dash_retry "$ID_DEPLOYER" "${WORKROOT}/cleanup" \
+      -C "$scratch" push "$E2E_REMOTE" "${refspecs[@]}" \
+      || info "cleanup push failed (rc=$?); stale e2e refs may remain on the test repo"
+  fi
   rm -f "${WORKROOT}/cleanup-refs.txt"
 }
 

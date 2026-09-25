@@ -12,7 +12,7 @@ SRC="${WORKROOT}/s05-src"
 LOG="${WORKROOT}/s05"
 
 step "sanity: confirm CONTRIB holds no WRITE token"
-if dg_as "$ID_DEPLOYER" --json collab list "$REPO" >"$LOG-list.json" 2>"$LOG-list.err"; then
+if dg_read_retry "$ID_DEPLOYER" "$LOG-list.json" "$LOG-list.err" --json collab list "$REPO"; then
   HASW="$(python3 - "$IDID_CONTRIB" "$LOG-list.json" <<'PY'
 import json,sys
 me=sys.argv[1]
@@ -33,7 +33,9 @@ fi
 step "CONTRIB attempts a push (expect CONSENSUS rejection)"
 seed_tiny_repo "$SRC" "$BR" >/dev/null
 register_ref "refs/heads/${BR}"
-if git_dash "$ID_CONTRIB" "$LOG-push" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
+# As in 04: bypass the helper's local no-token pre-check so the push reaches consensus,
+# and retry on a flake so the scenario reaches a verdict.
+if DASH_FORGE_SKIP_WRITE_PRECHECK=1 git_dash_retry "$ID_CONTRIB" "$LOG-push" -C "$SRC" push "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
   bad "CONTRIB's push was ACCEPTED without a WRITE token — the write path is NOT gated"
   finish_scenario
 fi
@@ -43,7 +45,11 @@ cat "$LOG-push.err" >&2
 echo "-------------------------------------------" >&2
 
 if is_flake "$LOG-push.err" && ! is_consensus_reject "$LOG-push.err"; then
-  skip_scenario "push failed on a transport flake — inconclusive; retry"
+  skip_scenario "push flaked on transport on every attempt (${E2E_ATTEMPTS}) — inconclusive"
+fi
+if grep -qiE 'no WRITE token on this repo|WRITE token on this repo is frozen' "$LOG-push.err"; then
+  bad "push was refused by the helper's local pre-check, not at consensus (DASH_FORGE_SKIP_WRITE_PRECHECK not honored?)"
+  finish_scenario
 fi
 if grep -qiE 'insufficient credits|InsufficientCredits' "$LOG-push.err" && ! is_consensus_reject "$LOG-push.err"; then
   skip_scenario "CONTRIB lacks the credits to even submit the state transition (fund + retry)"

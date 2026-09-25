@@ -27,7 +27,7 @@ LOG="${WORKROOT}/s06"
 step "select a target branch (reuse scenario 1's, else seed our own)"
 RT="e2e/${RUN_ID}/roundtrip"
 BR=""
-git_dash "$ID_DEPLOYER" "$LOG-lsrt" ls-remote "$E2E_REMOTE" "refs/heads/${RT}" || true
+git_dash_retry "$ID_DEPLOYER" "$LOG-lsrt" ls-remote "$E2E_REMOTE" "refs/heads/${RT}" || true
 if grep -q "refs/heads/${RT}" "$LOG-lsrt.out" 2>/dev/null; then
   BR="$RT"; info "reusing scenario 1 branch: ${BR}"
 else
@@ -44,9 +44,18 @@ else
 fi
 
 step "RAW read #1: on-chain refUpdate documents (git-remote-dash --dump-refs)"
-if ! DASH_FORGE_KEY="$ID_DEPLOYER" RUST_LOG=error _tmo "${BIN_DIR}/git-remote-dash" --dump-refs "$OWNER" "$RNAME" >"$LOG-dump.out" 2>"$LOG-dump.err"; then
+dump_ok=0
+for attempt in $(seq 1 "$E2E_ATTEMPTS"); do
+  if DASH_FORGE_KEY="$ID_DEPLOYER" RUST_LOG=error NO_COLOR=1 \
+      _tmo "${BIN_DIR}/git-remote-dash" --dump-refs "$OWNER" "$RNAME" >"$LOG-dump.out" 2>"$LOG-dump.err"; then
+    dump_ok=1; break
+  fi
+  is_flake "$LOG-dump.err" || break
+  [[ $attempt -lt $E2E_ATTEMPTS ]] && { info "raw read flaked (attempt ${attempt}); retrying"; sleep $((E2E_RETRY_PAUSE * attempt)); }
+done
+if [[ $dump_ok -ne 1 ]]; then
   cat "$LOG-dump.err" >&2 || true
-  is_flake "$LOG-dump.err" && skip_scenario "raw refUpdate read failed (transport flake)"
+  is_flake "$LOG-dump.err" && skip_scenario "raw refUpdate read flaked on every attempt (${E2E_ATTEMPTS})"
   bad "--dump-refs failed"; finish_scenario
 fi
 # Fold the refUpdate chain for BR: sort by createdAt, require each prev == prior new,
@@ -83,7 +92,7 @@ check "ref chain folds to a valid tip (no chain break)" \
 check "raw tip is a 40-hex oid" bash -c "[[ '$RAW_TIP' =~ ^[0-9a-f]{40}$ ]]"
 
 step "RAW read #2: on-chain packManifest documents (dg storage status --json)"
-if ! dg_as "$ID_DEPLOYER" --json storage status "$REPO" >"$LOG-store.json" 2>"$LOG-store.err"; then
+if ! dg_read_retry "$ID_DEPLOYER" "$LOG-store.json" "$LOG-store.err" --json storage status "$REPO"; then
   cat "$LOG-store.err" >&2 || true
   is_flake "$LOG-store.err" && skip_scenario "raw manifest read failed (transport flake)"
   bad "storage status failed"; finish_scenario
