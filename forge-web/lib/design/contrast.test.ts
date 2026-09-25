@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import tailwindConfig from '@/tailwind.config.js'
+import { avatarFill, hslToRgb, whiteContrast } from './avatar'
 
 /**
  * WCAG 2 AA contrast for the design tokens, checked without a browser.
@@ -134,6 +135,22 @@ describe('no component renders text in the raw brand blue', () => {
   })
 })
 
+describe('identity-pill avatar fills keep the white initial at AA', () => {
+  it('holds for every hue', () => {
+    for (let hue = 0; hue < 360; hue++) {
+      const m = /hsl\((\d+) (\d+)% (\d+)%\)/.exec(avatarFill(hue))
+      expect(m).not.toBeNull()
+      const rgbFill = hslToRgb(Number(m?.[1]), Number(m?.[2]) / 100, Number(m?.[3]) / 100)
+      expect(whiteContrast(rgbFill), `hue ${hue}`).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+  })
+
+  it('the old fixed fill failed where the report said', () => {
+    // hsl(60 45% 45%) — the yellow-green the review measured at 2.58:1.
+    expect(whiteContrast(hslToRgb(60, 0.45, 0.45))).toBeLessThan(AA_TEXT)
+  })
+})
+
 describe('white text on solid fills meets WCAG AA', () => {
   const root = resolve(__dirname, '../..')
 
@@ -145,8 +162,11 @@ describe('white text on solid fills meets WCAG AA', () => {
     })
   }
 
-  // A solid `bg-<token>` class (not a `/10` tint, not a `hover:` / `dark:` variant).
-  const SOLID_BG = /(?<![:\w-])bg-([a-z]+(?:-\d+)?)(?![-\w/])/g
+  // Every `bg-…` class, including `hover:` / `dark:` / `focus:` variants (a hover fill sits
+  // behind the same white text), arbitrary values and `/NN` tints. The token captured is
+  // what follows `bg-`; anything this test cannot resolve to a solid colour FAILS, so a new
+  // shape of fill cannot slip past it unchecked.
+  const SOLID_BG = /(?<![\w-])(?:[a-z-]+:)*bg-([a-z]+(?:-\d+)?(?:\/\d+)?|\[[^\]]+\])(?![-\w])/g
 
   /**
    * Every solid background that can sit behind `text-white`: backgrounds on the same line as
@@ -201,7 +221,12 @@ describe('white text on solid fills meets WCAG AA', () => {
     for (const file of ['app', 'components'].flatMap((d) => sources(join(root, d)))) {
       for (const { token, line } of whiteTextBackgrounds(readFileSync(file, 'utf8'))) {
         const hex = tokenHex(token)
-        if (hex === undefined) continue
+        if (hex === undefined) {
+          // Not a token from this config (a Tailwind default like `green-600`, an arbitrary
+          // `[#…]`, a `/NN` tint): this test cannot vouch for it, so it is a failure, not a pass.
+          failures.push(`${file.slice(root.length + 1)}:${line} bg-${token} (unknown to the contrast test)`)
+          continue
+        }
         checked += 1
         const ratio = contrast(rgb('#ffffff'), rgb(hex))
         if (ratio < AA_TEXT) {
@@ -220,7 +245,10 @@ describe('white text on solid fills meets WCAG AA', () => {
     expect(tokens(merged)).toEqual(['dash'])
     expect(contrast(rgb('#ffffff'), rgb(tokenHex('dash') as string))).toBeLessThan(AA_TEXT)
     expect(contrast(rgb('#ffffff'), rgb(tokenHex('verify') as string))).toBeLessThan(AA_TEXT)
-    expect(tokens('<b className="text-white bg-forge-700 hover:bg-forge-600">')).toEqual(['forge-700'])
+    // The hover fill sits behind the same white text, so it is checked too.
+    expect(tokens('<b className="text-white bg-forge-700 hover:bg-forge-600">')).toEqual(['forge-700', 'forge-600'])
+    expect(tokens('<b className="text-white bg-[#123456] dark:bg-green-600">')).toEqual(['[#123456]', 'green-600'])
+    expect(tokenHex('green-600')).toBeUndefined() // → reported as unknown, not skipped
     // text-white and the fill on different lines of one class expression.
     expect(tokens('<b\n  className={cn(\n    \'rounded text-white\',\n    \'bg-dash\',\n  )}\n>')).toEqual(['dash'])
     expect(tokens('<b className="px-2\n  text-white\n  bg-verify">')).toEqual(['verify'])

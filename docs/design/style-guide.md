@@ -34,7 +34,7 @@ colors: {
 }
 ```
 - **Dash-blue text is `text-dash-600 dark:text-dash-400`**, never plain `text-dash`: the brand value is under WCAG AA's 4.5:1 as text on every surface in both themes (4.28:1 on `anvil-800`). `forge-web/lib/design/contrast.test.ts` pins the ratios and fails on a raw `text-dash` that is not an icon.
-- **White text sits on `-700` fills**: `bg-dash-700`, `bg-verify-700`, `bg-forge-700`. The base `dash` (3.54:1) and `verify` (3.3:1) values fail AA behind white; the same test fails any `text-white` class string whose background is one of them.
+- **White text sits on `-700` fills**: `bg-dash-700`, `bg-verify-700`, `bg-forge-700`, and a hover darkens (`hover:bg-forge-800`) rather than brightens. The base `dash` (3.54:1) and `verify` (3.3:1) values and `forge-600` (3.56:1) fail AA behind white. The same test checks every `bg-*` (hover:/dark: variants included) behind `text-white`, and fails on any fill it cannot resolve. The identity pill's avatar fill is darkened per hue until its white initial clears 4.5:1 (`lib/design/avatar.ts`).
 - **Dark mode is the primary theme** (class-based, `next-themes`); light mode fully supported. Backgrounds: `anvil-950/900/850` layered surfaces (dark), `anvil-50/white` (light).
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
 
