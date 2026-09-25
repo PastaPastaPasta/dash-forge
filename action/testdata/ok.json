@@ -1,0 +1,6 @@
+{"status":"ok","network":"devnet-moutai","source":"alice/project",
+ "repo":{"owner":"8hJmcHWTowner","name":"project","id":"Repo1","url":"dash://8hJmcHWTowner/project","created":true},
+ "counts":{"refs":3,"packs":2,"packBytes":3145728,"issues":4,"prs":1,"comments":7,"reviews":2,"events":5,"releases":1,"labels":6},
+ "estimateCredits":2600000000,"spentCredits":2500000000,"creditsPerDash":100000000000,"balanceCredits":40000000000,
+ "key":{"id":3,"budgetCredits":50000000000,"remainingCredits":45000000000,"expiresAt":4102444800000},
+ "warnings":["release v1.0 asset app.tar.gz has no digest; recorded by URL only"]}

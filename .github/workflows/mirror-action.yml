@@ -1,0 +1,170 @@
+name: Mirror Action
+
+# Tests the GitHub Mirror Action in action/.
+#   * static: actionlint, shellcheck and action/test.sh (offline). Every trigger.
+#   * live:   mirrors PastaPastaPasta/dash-faucet into the moutai OWNER fixture's
+#             `mirror-ci-dash-faucet` repo (e2e/README.md reserves it), then runs the
+#             action again and requires that second run to write nothing and spend 0.
+#             Not on pull requests: it needs the funded fixture identity.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 1"
+  pull_request:
+    paths:
+      - action/**
+      - install.sh
+      - .github/workflows/mirror-action.yml
+  push:
+    branches: [master]
+    paths:
+      - action/**
+      - install.sh
+      - crates/forge-import/**
+      - .github/workflows/mirror-action.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-action-${{ github.event_name == 'pull_request' && github.ref || 'live' }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    name: actionlint, shellcheck, action/test.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSLo /tmp/actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+      - name: actionlint
+        run: /tmp/actionlint -color .github/workflows/mirror-action.yml
+      - name: shellcheck
+        run: shellcheck action/*.sh
+      - name: action/test.sh
+        run: bash action/test.sh
+
+  # A separate probe job so the live job's CONCLUSION is literally `skipped` when the
+  # fixture identity is absent (see testnet-nightly.yml for why that matters).
+  fixtures:
+    name: fixture identity configured?
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - name: Probe
+        id: probe
+        env:
+          FORGE_MOUTAI_IDENTITY_OWNER: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+        run: |
+          if [ -n "$FORGE_MOUTAI_IDENTITY_OWNER" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "### Live mirror test skipped: missing secret \`FORGE_MOUTAI_IDENTITY_OWNER\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Mirror Action live test skipped::missing secret FORGE_MOUTAI_IDENTITY_OWNER"
+          fi
+
+  live:
+    name: live mirror (devnet moutai)
+    needs: [static, fixtures]
+    if: needs.fixtures.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Pinned modern protoc: Ubuntu's 3.21 breaks the tenderdash proto build
+      # (testnet-nightly.yml has the details).
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mirror-action
+
+      # No release is published yet, so the action runs with install: 'false' on binaries
+      # built from this commit.
+      - name: Build forge-import, git-remote-dash, dg
+        timeout-minutes: 30
+        run: |
+          cargo build --locked -p forge-import -p git-remote-dash -p dg
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: Mirror (first run)
+        id: first
+        uses: ./action
+        with:
+          repo: mirror-ci-dash-faucet
+          github-repo: PastaPastaPasta/dash-faucet
+          network: devnet
+          devnet-name: moutai
+          sync: code,issues,prs,releases,labels
+          storage-kind: platform
+          cost-cap: '0.25'
+          install: 'false'
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Drop the incremental state so the second run re-examines everything: idempotency
+      # must come from the chain (content-addressed packs, gh# markers), not the state file.
+      - name: Forget the sync state
+        env:
+          STATE_DIR: ${{ runner.temp }}/forge-mirror/state
+        run: rm -rf "$STATE_DIR"
+
+      - name: Mirror (second run, must be a no-op)
+        id: second
+        uses: ./action
+        with:
+          repo: mirror-ci-dash-faucet
+          github-repo: PastaPastaPasta/dash-faucet
+          network: devnet
+          devnet-name: moutai
+          sync: code,issues,prs,releases,labels
+          storage-kind: platform
+          cost-cap: '0.25'
+          install: 'false'
+          state-cache: 'false'
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert the second run was idempotent
+        env:
+          FIRST_STATUS: ${{ steps.first.outputs.status }}
+          STATUS: ${{ steps.second.outputs.status }}
+          SPENT: ${{ steps.second.outputs.spent-dash }}
+          SUMMARY: ${{ steps.second.outputs.summary-json }}
+        run: |
+          echo "first run: $FIRST_STATUS; second run: $STATUS, spent $SPENT DASH"
+          jq . "$SUMMARY"
+          [ "$FIRST_STATUS" = ok ] || { echo "::error::first run status is '$FIRST_STATUS'"; exit 1; }
+          [ "$STATUS" = ok ] || { echo "::error::second run status is '$STATUS'"; exit 1; }
+          if ! jq -e '.spentCredits == 0 and ([.counts[]] | all(. == 0))' "$SUMMARY" >/dev/null; then
+            echo "::error title=Mirror not idempotent::the second run wrote something: $(jq -c '{spentCredits, counts}' "$SUMMARY")"
+            exit 1
+          fi
