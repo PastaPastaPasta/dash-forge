@@ -144,11 +144,20 @@ dg_as() { # dg_as <identity_file> <dg args...>
 # A READ-ONLY dg command as a given identity, retried like git_dash_retry.
 # stdout -> <out>, stderr -> <err>. Never use this for a write: a dg write is not
 # guaranteed idempotent to re-run (a second `collab add` mints again).
+#
+# With `--json`, dg reports its error as a JSON object on STDOUT, not stderr. On failure
+# that output is appended to <err> too, so is_flake / _retry see the real error instead
+# of an empty stderr (which made every flake read as "not a flake": no retry, then a FAIL).
 dg_read_retry() { # dg_read_retry <identity_file> <out> <err> <dg args...>
   local err="$3"
   _retry "$err" _dg_read "$@"
 }
-_dg_read() { local id="$1" out="$2" err="$3"; shift 3; dg_as "$id" "$@" >"$out" 2>"$err"; }
+_dg_read() {
+  local id="$1" out="$2" err="$3" rc; shift 3
+  dg_as "$id" "$@" >"$out" 2>"$err"; rc=$?
+  [[ $rc -ne 0 ]] && cat "$out" >>"$err" 2>/dev/null
+  return $rc
+}
 
 # git push/clone/ls-remote over dash:// as a given identity, stderr -> logfile.
 # Usage: git_dash <identity_file> <logfile> <git args...>
@@ -174,11 +183,16 @@ git_dash() {
 # into SKIPs (02 and 04 every night since 2026-09-21). is_flake therefore reads only the
 # lines that are NOT helper log records: git's own output and the helper's final error.
 #
+# ERROR records are excluded too: the SDK logs `request failed error=NoAvailableAddresses…`
+# at ERROR for a request it then hands back to forge-core, whose own retry may succeed on a
+# fresh rotation. The binaries' final error never goes through tracing (git-remote-dash
+# returns it from main, dg prints `error: …` or a JSON object), so nothing is lost.
+#
 # The harness's own timeout marker is excluded as well: a timeout is retried (see _retry),
 # but a command that times out on every attempt is a hang, not testnet weather.
 _final_errors() { # _final_errors <logfile.err> — stderr minus tracing records
   sed -E $'s/\x1b\\[[0-9;]*m//g' "$1" \
-    | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +(TRACE|DEBUG|INFO|WARN) |^e2e: command timed out'
+    | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z +(TRACE|DEBUG|INFO|WARN|ERROR) |^e2e: command timed out'
 }
 # A proof that fails to verify is a node serving a bad or stale proof, not an answer (the
 # SDK retries it on another node too): 06 FAILed on exactly that on 2026-09-17.
