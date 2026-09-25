@@ -19,6 +19,7 @@ import {
   IncompleteReadError,
   queryAllDocuments,
   skipScanDistinct,
+  tieProbeAllowed,
 } from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
@@ -176,12 +177,18 @@ describe('ref history across a page boundary', () => {
 
     // The query SHAPE, not just the row count: the filter must be carried on every page,
     // and page 2 must resume from the last `$id` of page 1 rather than re-reading page 1.
+    // Between them sits the boundary-tie read (`$createdAt ==` the last row's), which the
+    // tie-safe pager issues after every full page of a `(prefix, $createdAt)` read.
     const refQueries = seen.filter((q) => q.documentTypeName === DOC.refUpdate)
-    expect(refQueries).toHaveLength(2)
+    expect(refQueries).toHaveLength(3)
     expect(refQueries[0]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
     expect(refQueries[0]?.startAfter).toBeUndefined()
-    expect(refQueries[1]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
-    expect(refQueries[1]?.startAfter).toBe(`u-${String(PAGE - 1).padStart(4, '0')}`)
+    expect(refQueries[1]?.where).toEqual([
+      ['refNameHash', '==', REF_HASH_B64],
+      ['$createdAt', '==', expect.any(Number)],
+    ])
+    expect(refQueries[2]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
+    expect(refQueries[2]?.startAfter).toBe(`u-${String(PAGE - 1).padStart(4, '0')}`)
   })
 
   it('resolves the tip to the newest push, not the last one on page 1', async () => {
@@ -396,6 +403,87 @@ describe('pack manifests across a page boundary', () => {
     expect(
       seen.filter((q) => q.startAfter !== undefined && q.orderBy?.some(([, d]) => d === 'desc')),
     ).toEqual([])
+  })
+})
+
+describe('same-block ties at a page boundary (protocol 13)', () => {
+  /**
+   * PROTOCOL-13 cursor semantics: `startAfter` excludes every row whose `$createdAt` is <=
+   * the cursor's, so rows sharing the cursor's timestamp but sorting after it are skipped —
+   * the real Drive behaviour. An `==` on `$createdAt` is served normally.
+   */
+  function protocol13Sdk(rows: Record<string, unknown>[]): EvoSDK {
+    return {
+      documents: {
+        query: (q: QueryLike): Promise<Map<string, unknown>> => {
+          let out = [...rows]
+          for (const [field, op, value] of q.where ?? []) {
+            if (op === '==') out = out.filter((d) => d[field] === value)
+          }
+          if (q.startAfter !== undefined) {
+            const t = rows.find((d) => d['$id'] === q.startAfter)?.['$createdAt'] as number
+            out = out.filter((d) => (d['$createdAt'] as number) > t)
+          }
+          out = out.slice(0, Math.min(q.limit ?? PAGE, PAGE))
+          return Promise.resolve(new Map(out.map((d) => [String(d['$id']), d])))
+        },
+      },
+    } as unknown as EvoSDK
+  }
+
+  /** 99 rows at distinct times, then `tied` rows in one block, then one more row. */
+  function straddlingTie(tied: number): Record<string, unknown>[] {
+    const rows: Record<string, unknown>[] = Array.from({ length: 99 }, (_, i) => ({
+      $id: `r-${String(i).padStart(4, '0')}`,
+      $createdAt: i,
+    }))
+    for (let i = 99; i < 99 + tied; i++) {
+      rows.push({ $id: `r-${String(i).padStart(4, '0')}`, $createdAt: 1_000 })
+    }
+    rows.push({ $id: `r-${String(99 + tied).padStart(4, '0')}`, $createdAt: 2_000 })
+    return rows
+  }
+
+  const q = { dataContractId: 'c', documentTypeName: 'repoListing', orderBy: [['$createdAt', 'asc']] as const }
+
+  it('recovers the rows the cursor alone would skip, once each and in order', async () => {
+    const rows = straddlingTie(3)
+    // The mock reproduces the gap: without the tie read, the two tied rows after row 100
+    // are lost (paging a range-filtered read skips the probe).
+    const lossy = await queryAllDocuments(protocol13Sdk(rows), {
+      ...q,
+      where: [['$createdAt', '>', -1]] as never,
+    })
+    expect(lossy).toHaveLength(rows.length - 2)
+
+    const read = await queryAllDocuments(protocol13Sdk(rows), q)
+    expect(read.map((d) => d['$id'])).toEqual(rows.map((d) => d['$id']))
+  })
+
+  it('refuses a boundary tie of a full page rather than guessing', async () => {
+    await expect(queryAllDocuments(protocol13Sdk(straddlingTie(PAGE)), q)).rejects.toThrow(
+      IncompleteReadError,
+    )
+  })
+
+  it('probes only where $createdAt ends the index', () => {
+    const base = { dataContractId: 'c', documentTypeName: 'x' }
+    expect(tieProbeAllowed({ ...base, orderBy: [['$createdAt', 'asc']] })).toBe(true)
+    expect(
+      tieProbeAllowed({
+        ...base,
+        where: [['$ownerId', '==', 'me']],
+        orderBy: [
+          ['$ownerId', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+      }),
+    ).toBe(true)
+    expect(tieProbeAllowed({ ...base, orderBy: [['seq', 'asc']] })).toBe(false)
+    expect(tieProbeAllowed({ ...base, orderBy: [['$createdAt', 'desc']] })).toBe(false)
+    expect(
+      tieProbeAllowed({ ...base, where: [['kind', '>', 1]], orderBy: [['$createdAt', 'asc']] }),
+    ).toBe(false)
   })
 })
 

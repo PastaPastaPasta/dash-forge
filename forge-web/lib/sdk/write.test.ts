@@ -16,6 +16,8 @@ import {
   REPO_CREATE_GATES,
   createGateFor,
   creditsToDash,
+  isStaleDocumentIdError,
+  pendingWriteKey,
   previewDocumentCreate,
 } from './write'
 import {
@@ -298,5 +300,34 @@ describe('repo name normalization', () => {
     expect(() => normalizeRepoName('')).toThrow()
     expect(() => normalizeRepoName('-lead')).toThrow()
     expect(() => normalizeRepoName('has space')).toThrow()
+  })
+})
+
+describe('pending-write cache key', () => {
+  const data = { listingId: new Uint8Array(32).fill(7), n: 1, nested: { b: 'x', a: 2n } }
+  it('keys the logical write, not the attempt (stable across retries)', () => {
+    const a = pendingWriteKey('owner', 'contract', 'star', data)
+    const b = pendingWriteKey('owner', 'contract', 'star', {
+      nested: { a: 2n, b: 'x' },
+      n: 1,
+      listingId: new Uint8Array(32).fill(7),
+    })
+    expect(a).toBe(b)
+  })
+  it('separates different writes', () => {
+    const a = pendingWriteKey('owner', 'contract', 'star', data)
+    expect(pendingWriteKey('other', 'contract', 'star', data)).not.toBe(a)
+    expect(pendingWriteKey('owner', 'contract', 'follow', data)).not.toBe(a)
+    expect(
+      pendingWriteKey('owner', 'contract', 'star', { ...data, listingId: new Uint8Array(32).fill(8) }),
+    ).not.toBe(a)
+  })
+})
+
+describe('stale document id classification', () => {
+  it('recognizes the consensus refusal of an id derived at another protocol version', () => {
+    expect(isStaleDocumentIdError(new Error('Invalid document transition id abc, expected def'))).toBe(true)
+    expect(isStaleDocumentIdError({ message: 'consensus error 10405' })).toBe(true)
+    expect(isStaleDocumentIdError(new Error('document already present'))).toBe(false)
   })
 })
