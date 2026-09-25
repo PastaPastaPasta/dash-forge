@@ -47,7 +47,7 @@ echo "-------------------------------------------" >&2
 if is_flake "$LOG-push.err" && ! is_consensus_reject "$LOG-push.err"; then
   skip_scenario "push flaked on transport on every attempt (${E2E_ATTEMPTS}) — inconclusive"
 fi
-if grep -qiE 'no WRITE token on this repo|WRITE token on this repo is frozen' "$LOG-push.err"; then
+if grep -qiE 'no WRITE token on this repo|tokens? on this repo (is|are) frozen' "$LOG-push.err"; then
   bad "push was refused by the helper's local pre-check, not at consensus (DASH_FORGE_SKIP_WRITE_PRECHECK not honored?)"
   finish_scenario
 fi

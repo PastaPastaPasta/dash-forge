@@ -44,16 +44,11 @@ else
 fi
 
 step "RAW read #1: on-chain refUpdate documents (git-remote-dash --dump-refs)"
-dump_ok=0
-for attempt in $(seq 1 "$E2E_ATTEMPTS"); do
-  if DASH_FORGE_KEY="$ID_DEPLOYER" RUST_LOG=error NO_COLOR=1 \
-      _tmo "${BIN_DIR}/git-remote-dash" --dump-refs "$OWNER" "$RNAME" >"$LOG-dump.out" 2>"$LOG-dump.err"; then
-    dump_ok=1; break
-  fi
-  is_flake "$LOG-dump.err" || break
-  [[ $attempt -lt $E2E_ATTEMPTS ]] && { info "raw read flaked (attempt ${attempt}); retrying"; sleep $((E2E_RETRY_PAUSE * attempt)); }
-done
-if [[ $dump_ok -ne 1 ]]; then
+dump_refs() {
+  DASH_FORGE_KEY="$ID_DEPLOYER" RUST_LOG=error NO_COLOR=1 \
+    _tmo "${BIN_DIR}/git-remote-dash" --dump-refs "$OWNER" "$RNAME" >"$LOG-dump.out" 2>"$LOG-dump.err"
+}
+if ! _retry "$LOG-dump.err" dump_refs; then
   cat "$LOG-dump.err" >&2 || true
   is_flake "$LOG-dump.err" && skip_scenario "raw refUpdate read flaked on every attempt (${E2E_ATTEMPTS})"
   bad "--dump-refs failed"; finish_scenario

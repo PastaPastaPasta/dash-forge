@@ -58,13 +58,31 @@ printf '%srepo: %s%s\n' "${C_DIM}" "${E2E_REMOTE}" "${C_RST}" >&2
 
 # Every command inside a scenario is already bounded by E2E_TIMEOUT. On top of that each
 # scenario is bounded (a scenario is a dozen commands plus retries), and the whole suite
-# has a budget: a scenario never gets more time than the budget has left, and once it is
-# spent the remaining scenarios are recorded as not run. So the matrix, the cleanup and
-# the exit code always happen, inside the CI step's own timeout, however slow testnet is.
+# has a budget, cleanup included: a scenario never gets more time than the budget has
+# left, and once it is spent the remaining scenarios are recorded as not run. So the
+# matrix, the cleanup and the exit code always happen inside the CI step's timeout,
+# however slow testnet is.
 : "${E2E_SCENARIO_TIMEOUT:=900}"
 : "${E2E_SUITE_BUDGET:=2400}"
 SUITE_START=$SECONDS
-CLEANUP_RESERVE=240
+CLEANUP_RESERVE=420  # cleanup: ls-remote + one batched delete push, E2E_TIMEOUT each
+
+# Killing a scenario does not kill the command it was running: each command's timeout(1)
+# is its own process group. Record every command's group and reap them all after a
+# scenario ends, so an overrunning push cannot keep writing while the next scenario — or
+# cleanup — runs.
+export E2E_PGID_FILE="${WORKROOT}/command-pgids"
+: >"$E2E_PGID_FILE"
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || { log "${C_RED}fatal:${C_RST} no timeout(1) on PATH"; exit 1; }
+reap_commands() {
+  local pgid
+  [[ -f "$E2E_PGID_FILE" ]] || return 0
+  while read -r pgid; do
+    kill -KILL -- "-${pgid}" 2>/dev/null || true
+  done <"$E2E_PGID_FILE"
+  : >"$E2E_PGID_FILE"
+}
 
 for s in "${SCENARIOS[@]}"; do
   NAMES+=("$s")
@@ -78,8 +96,9 @@ for s in "${SCENARIOS[@]}"; do
   script="${HARNESS_DIR}/scenarios/${s}.sh"
   printf '\n%s┌─ scenario %s ─────────────────────────────────%s\n' "${C_DIM}" "$s" "${C_RST}" >&2
   started=$SECONDS
-  _tmo_for "$limit" bash "$script"
+  "$TIMEOUT_BIN" -k 15 "$limit" bash "$script"
   rc=$?
+  reap_commands
   info "scenario ${s}: rc=${rc} in $((SECONDS - started))s"
   case $rc in
     0) RESULTS+=("PASS"); PASSED=$((PASSED+1));;
@@ -91,9 +110,11 @@ for s in "${SCENARIOS[@]}"; do
   esac
 done
 
-# Suite-level cleanup of every registered remote test ref (best effort).
+# Suite-level cleanup of every registered remote test ref (best effort), bounded by what
+# the budget reserved for it: at most one attempt per ref batch, E2E_TIMEOUT each.
 if [[ "${E2E_NO_CLEANUP:-0}" != "1" ]]; then
-  cleanup_refs
+  E2E_ATTEMPTS=1 cleanup_refs
+  reap_commands
 else
   info "E2E_NO_CLEANUP=1 — leaving test refs on the remote"
 fi

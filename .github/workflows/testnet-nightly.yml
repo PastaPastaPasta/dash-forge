@@ -113,7 +113,8 @@ jobs:
     needs: fixtures
     if: needs.fixtures.outputs.present == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # checkout + protoc + toolchain + cache (~3 min), build (≤30), suite (≤45).
+    timeout-minutes: 85
     env:
       ID_DEPLOYER_JSON: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
       ID_COLLAB_JSON: ${{ secrets.FORGE_TEST_IDENTITY_COLLAB }}
@@ -150,22 +151,28 @@ jobs:
           printf '%s' "$ID_FROZEN_JSON"   > "$dir/FROZEN.identity.json"
           chmod 600 "$dir"/*.identity.json
 
+      # Built in its own step so a slow (cache-miss) build cannot eat into the suite's time
+      # budget below; run.sh picks the binaries up from target/debug.
+      - name: Build CLI binaries
+        timeout-minutes: 30
+        run: cargo build --locked -p dg -p git-remote-dash
+
       # run.sh exits non-zero if any scenario FAILs, or if more than E2E_MAX_SKIPS scenarios
       # SKIP (a SKIP means a check flaked on every one of its retries). Every command is
-      # bounded by E2E_TIMEOUT, every scenario by E2E_SCENARIO_TIMEOUT and the suite by
-      # E2E_SUITE_BUDGET (40 min), so a hang costs one scenario and the matrix is always
-      # written. The step timeout leaves room for the build `make e2e` runs first. The
-      # matrix goes to stderr, so capture it, put it in the step summary, and still warn
-      # loudly when nothing actually ran.
+      # bounded by E2E_TIMEOUT, every scenario by E2E_SCENARIO_TIMEOUT and the suite,
+      # cleanup included, by E2E_SUITE_BUDGET (40 min), so a hang costs one scenario and the
+      # matrix is always written; the step timeout is only a backstop. The matrix goes to
+      # stderr, so capture it, put it in the step summary, and still warn loudly when
+      # nothing actually ran.
       - name: CLI e2e suite
-        timeout-minutes: 52
+        timeout-minutes: 45
         run: |
           # GH Actions runs this under `bash -e`, so the pipeline's failure must be caught
           # with `|| rc=$?` — otherwise the step exits before writing the summary, which is
           # precisely the run whose output matters most.
           set -o pipefail
           rc=0
-          make e2e 2>&1 | tee /tmp/e2e.log || rc=$?
+          bash e2e/cli/run.sh 2>&1 | tee /tmp/e2e.log || rc=$?
           {
             echo "### CLI e2e result"
             echo
