@@ -177,10 +177,12 @@ jobs:
           mkdir -p "$tmp"
           curl --proto '=https' --tlsv1.2 -fsSLo "$tmp/protoc.zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ASSET}.zip"
+          # Hash stdin: given a Windows path with backslashes, sha256sum escapes the output
+          # line and prefixes the digest with `\`.
           if command -v sha256sum >/dev/null; then
-            actual=$(sha256sum "$tmp/protoc.zip" | cut -d' ' -f1)
+            actual=$(sha256sum < "$tmp/protoc.zip" | cut -d' ' -f1)
           else
-            actual=$(shasum -a 256 "$tmp/protoc.zip" | cut -d' ' -f1)
+            actual=$(shasum -a 256 < "$tmp/protoc.zip" | cut -d' ' -f1)
           fi
           [ "$actual" = "$PROTOC_SHA256" ] || { echo "::error::protoc zip sha256 $actual != pinned $PROTOC_SHA256"; exit 1; }
           if command -v unzip >/dev/null; then
@@ -271,12 +273,15 @@ jobs:
             7z a -tzip -bso0 -bsp0 "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
           else
             archive="${name}.tar.gz"
-            # GNU tar (Linux): sorted entries, no runner uid/gid. bsdtar (macOS): its default.
-            flags=()
-            if tar --version | grep -q 'GNU tar'; then
-              flags=(--sort=name --owner=0 --group=0 --numeric-owner)
+            # GNU tar (Linux): sorted entries, no runner uid/gid. bsdtar (macOS): uid/gid 0.
+            # (No bash arrays: an empty "${a[@]}" is an unbound-variable error under
+            # `set -u` in macOS's bash 3.2.)
+            if tar --version 2>/dev/null | grep 'GNU tar' >/dev/null; then
+              tar --sort=name --owner=0 --group=0 --numeric-owner \
+                -czf "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
+            else
+              tar --uid 0 --gid 0 -czf "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
             fi
-            tar "${flags[@]}" -czf "${GITHUB_WORKSPACE}/dist/${archive}" "$name"
           fi
           cd "$GITHUB_WORKSPACE"
           ls -l dist/
@@ -441,8 +446,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          prerelease=()
-          case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
           cat > "${RUNNER_TEMP}/notes.md" <<EOF
           ## Install
 
@@ -463,7 +468,7 @@ jobs:
           [docs/INSTALL.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/INSTALL.md#macos-gatekeeper).
           EOF
           # Draft first, upload, then publish: the release never appears with missing assets.
-          gh release create "$TAG" --verify-tag --draft "${prerelease[@]}" \
+          gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
             --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
           gh release upload "$TAG" dist/dash-forge-* dist/SHA256SUMS
           gh release edit "$TAG" --draft=false

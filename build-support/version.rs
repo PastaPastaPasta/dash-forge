@@ -33,10 +33,17 @@ fn main() {
     let sha = match std::env::var("DASH_FORGE_BUILD_SHA") {
         Ok(s) if !s.trim().is_empty() => s.trim().chars().take(12).collect(),
         _ => {
-            // Rerun when HEAD moves: logs/HEAD is appended on every commit, checkout and
-            // reset; HEAD itself covers a repo whose reflog is disabled. `--git-path`
-            // resolves both correctly inside a linked worktree.
-            for p in ["HEAD", "logs/HEAD"] {
+            // Rerun when HEAD moves. HEAD changes on checkout; the branch it names (loose
+            // or in packed-refs) changes on commit/reset even with the reflog disabled;
+            // logs/HEAD is appended on all of these. `--git-path` resolves each correctly
+            // inside a linked worktree (packed-refs lives in the common dir).
+            let branch = git(&manifest_dir, &["symbolic-ref", "-q", "HEAD"]);
+            let watched = ["HEAD", "logs/HEAD", "packed-refs"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(branch);
+            for p in watched {
+                let p = p.as_str();
                 if let Some(rel) = git(&manifest_dir, &["rev-parse", "--git-path", p]) {
                     let path = manifest_dir.join(rel);
                     if path.exists() {
