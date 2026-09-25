@@ -1562,7 +1562,6 @@ impl FieldValue {
     }
 }
 
-/// Parse a base58 Platform id, mapping failures to a config error.
 /// Parse `https://host:port` DAPI URLs into the SDK's address list.
 fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
     addresses
@@ -1574,6 +1573,7 @@ fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
         .collect()
 }
 
+/// Parse a base58 Platform id, mapping failures to a config error.
 fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     Identifier::from_string(s, Encoding::Base58)
         .map_err(|e| Error::Config(format!("invalid {what} (expected base58): {e}")))

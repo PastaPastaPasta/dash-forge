@@ -193,8 +193,11 @@ state instead of querying.
 
 To add a network, commit its deployment file: `deploy.mjs` writes `mainnet.json`, and a new
 devnet gets `devnet-<name>.json`. Then add a matching import to
-`forge-web/lib/deployments.ts`. `devnet-moutai.json` is a skeleton with DAPI addresses and a
-null registry until the PV14 contracts are registered there.
+`forge-web/lib/deployments.ts`. `devnet-moutai.json` records moutai's DAPI addresses and,
+under `v2`, the forge-v2 contracts `deploy-v2.mjs` registered there. It has no v1 `registry`.
+Deployment resolution exposes the `v2` ids (forge-core `NetworkTarget::v2`, forge-web
+`NETWORKS[n].v2`) once both contracts are `registered`, but no client operation reads them
+yet, so moutai reports "not deployed" until the clients move to forge-v2.
 
 ## Checks
 

@@ -192,6 +192,9 @@ struct DeploymentFile {
     quorum_base_url: Option<String>,
     #[serde(default)]
     registry: Option<ContractRecord>,
+    /// The forge-v2 record `deploy-v2.mjs` read-modify-writes (`forge-contracts/scripts`).
+    #[serde(default)]
+    v2: Option<V2Record>,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +202,54 @@ struct DeploymentFile {
 struct ContractRecord {
     #[serde(default)]
     contract_id: Option<String>,
+    /// `registered` once confirmed; `broadcasting` while a deploy is in flight (v2 only).
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct V2Record {
+    #[serde(default)]
+    forge_core: Option<ContractRecord>,
+    #[serde(default)]
+    forge_collab: Option<ContractRecord>,
+    #[serde(default)]
+    contract_group_id: Option<String>,
+}
+
+impl ContractRecord {
+    /// The id of a confirmed v2 registration; `None` for a missing or in-flight one.
+    fn registered_id(&self) -> Option<String> {
+        if self.status.as_deref() != Some("registered") {
+            return None;
+        }
+        self.contract_id.clone().filter(|s| !s.is_empty())
+    }
+}
+
+impl V2Record {
+    /// Every forge-v2 id, or `None` unless both contracts are registered and the group is
+    /// recorded — a half-finished deploy is not a usable deployment.
+    fn ids(&self) -> Option<ForgeIds> {
+        Some(ForgeIds {
+            core: self.forge_core.as_ref()?.registered_id()?,
+            collab: self.forge_collab.as_ref()?.registered_id()?,
+            group: self.contract_group_id.clone().filter(|s| !s.is_empty())?,
+        })
+    }
+}
+
+/// The forge-v2 contracts registered on a network (base58 ids), from the deployment file's
+/// `v2` record. See `docs/contracts/forge-v2.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeIds {
+    /// The forge-core contract (repos, refs, packs).
+    pub core: String,
+    /// The forge-collab contract (issues, PRs, reviews, social graph).
+    pub collab: String,
+    /// The contract group both contracts belong to.
+    pub group: String,
 }
 
 /// What an embedded deployment file records for one network.
@@ -212,6 +263,8 @@ pub struct Deployment {
     pub dapi_addresses: Vec<String>,
     /// A quorum service URL recorded for a devnet.
     pub quorum_base_url: Option<String>,
+    /// The forge-v2 contracts, or `None` when none are fully registered here.
+    pub v2: Option<ForgeIds>,
 }
 
 impl Deployment {
@@ -258,6 +311,7 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
             .map(|a| normalize_dapi_address(a))
             .collect::<Result<_>>()?,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
+        v2: file.v2.as_ref().and_then(V2Record::ids),
     }))
 }
 
@@ -318,17 +372,25 @@ pub struct NetworkTarget {
     /// The registry, or `None` when no registry is deployed on `network` and no override
     /// was given (registry operations then fail with [`Error::NotDeployed`]).
     pub registry: Option<Registry>,
+    /// The forge-v2 contracts the embedded deployment records for `network`, if registered.
+    pub v2: Option<ForgeIds>,
 }
 
 impl NetworkTarget {
     /// `network` with the registry from `FORGE_REGISTRY_CONTRACT_ID` if set, else the
     /// embedded deployment.
     pub fn for_network(network: Network) -> Result<Self> {
+        let recorded = deployment(&network.key())?;
         let registry = match NetworkSettings::from_env().registry {
             Some(r) => Some(r),
-            None => deployed_registry(&network)?,
+            None => recorded.as_ref().and_then(Deployment::registry),
         };
-        Ok(Self { network, registry })
+        let v2 = recorded.and_then(|d| d.v2);
+        Ok(Self {
+            network,
+            registry,
+            v2,
+        })
     }
 
     /// The registry, or the actionable "not deployed here" error.
@@ -521,7 +583,12 @@ impl NetworkSettings {
         let registry = self
             .registry
             .or_else(|| recorded.as_ref().and_then(Deployment::registry));
-        Ok(NetworkTarget { network, registry })
+        let v2 = recorded.and_then(|d| d.v2);
+        Ok(NetworkTarget {
+            network,
+            registry,
+            v2,
+        })
     }
 }
 
@@ -585,6 +652,68 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("docs/mainnet-runbook.md"), "{err}");
+    }
+
+    #[test]
+    fn moutai_exposes_its_forge_v2_ids_from_the_deployment_file() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/deployments/devnet-moutai.json"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let on_disk = |p: &str| v.pointer(p).unwrap().as_str().unwrap().to_string();
+        let expected = ForgeIds {
+            core: on_disk("/v2/forgeCore/contractId"),
+            collab: on_disk("/v2/forgeCollab/contractId"),
+            group: on_disk("/v2/contractGroupId"),
+        };
+
+        let d = deployment("devnet-moutai").unwrap().unwrap();
+        assert_eq!(d.v2.as_ref(), Some(&expected));
+        let t = NetworkSettings {
+            devnet_name: Some("moutai".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.v2, Some(expected.clone()));
+        assert_eq!(
+            NetworkTarget::for_network(t.network.clone()).unwrap().v2,
+            Some(expected)
+        );
+        // Testnet has no forge-v2 record yet.
+        assert_eq!(NetworkSettings::default().resolve().unwrap().v2, None);
+    }
+
+    #[test]
+    fn a_partial_v2_record_is_not_a_deployment() {
+        let parse = |json: &str| {
+            serde_json::from_str::<DeploymentFile>(json)
+                .unwrap()
+                .v2
+                .and_then(|r| r.ids())
+        };
+        let full = r#"{"v2":{"forgeCore":{"contractId":"C","status":"registered"},
+            "forgeCollab":{"contractId":"L","status":"registered"},"contractGroupId":"G"}}"#;
+        assert_eq!(
+            parse(full),
+            Some(ForgeIds {
+                core: "C".into(),
+                collab: "L".into(),
+                group: "G".into()
+            })
+        );
+        // In flight, missing a contract, or missing the group: no ids.
+        assert_eq!(parse(&full.replacen("registered", "broadcasting", 1)), None);
+        assert_eq!(
+            parse(
+                r#"{"v2":{"forgeCore":{"contractId":"C","status":"registered"},"contractGroupId":"G"}}"#
+            ),
+            None
+        );
+        assert_eq!(parse(&full.replace(r#","contractGroupId":"G""#, "")), None);
+        assert_eq!(parse("{}"), None);
     }
 
     #[test]

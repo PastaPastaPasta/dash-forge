@@ -11,7 +11,7 @@
  * `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`.
  */
 
-import { DEPLOYMENTS, type DeploymentFile } from './deployments'
+import { DEPLOYMENTS, forgeV2Ids, type DeploymentFile, type ForgeIds } from './deployments'
 
 // ---------------------------------------------------------------------------
 // Network
@@ -58,6 +58,8 @@ export interface NetworkConfig {
   readonly registrySource: string | null
   /** DPNS system contract id — supplies human-readable identity names. */
   readonly dpnsContractId: string
+  /** The forge-v2 contracts registered here (`deployments/<key>.json` `v2`), else null. */
+  readonly v2: ForgeIds | null
 }
 
 /** Build-time network selection (`NEXT_PUBLIC_*`, inlined by Next at build). */
@@ -163,6 +165,7 @@ export function resolveNetworks(
             ? `forge-contracts/deployments/${key}.json`
             : null,
       dpnsContractId: DPNS_CONTRACT_ID,
+      v2: forgeV2Ids(file),
     }
   }
 

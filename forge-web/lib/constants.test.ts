@@ -19,7 +19,7 @@ import {
   requireRegistryContractId,
   resolveNetworks,
 } from './constants'
-import { DEPLOYMENTS } from './deployments'
+import { DEPLOYMENTS, forgeV2Ids } from './deployments'
 import { identityFileMatchesNetwork } from './auth/identity-file'
 
 const DEPLOYMENTS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'deployments')
@@ -67,6 +67,17 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toHaveLength(10)
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.84:1443')
     expect(networks.devnet.registryContractId).toBeNull()
+  })
+
+  it('exposes the forge-v2 ids devnet-moutai.json records, and none for testnet', () => {
+    const file = JSON.parse(readFileSync(resolve(DEPLOYMENTS_DIR, 'devnet-moutai.json'), 'utf8'))
+    const { networks } = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS)
+    expect(networks.devnet.v2).toEqual({
+      core: file.v2.forgeCore.contractId,
+      collab: file.v2.forgeCollab.contractId,
+      group: file.v2.contractGroupId,
+    })
+    expect(networks.testnet.v2).toBeNull()
   })
 
   it('treats a devnet name alone as devnet', () => {
@@ -127,6 +138,25 @@ describe('parseDapiAddresses', () => {
     expect(parseDapiAddresses('http://1.2.3.4:3000/')).toEqual(['http://1.2.3.4:3000'])
     expect(parseDapiAddresses(',, ,')).toEqual([])
     expect(() => parseDapiAddresses('https://host/path')).toThrow(/invalid DAPI address/)
+  })
+})
+
+describe('forgeV2Ids', () => {
+  const full = {
+    v2: {
+      forgeCore: { contractId: 'C', status: 'registered' },
+      forgeCollab: { contractId: 'L', status: 'registered' },
+      contractGroupId: 'G',
+    },
+  }
+
+  it('needs both contracts registered and the group recorded', () => {
+    expect(forgeV2Ids(full)).toEqual({ core: 'C', collab: 'L', group: 'G' })
+    expect(forgeV2Ids({ v2: { ...full.v2, forgeCollab: { contractId: 'L', status: 'broadcasting' } } })).toBeNull()
+    expect(forgeV2Ids({ v2: { ...full.v2, forgeCore: undefined } })).toBeNull()
+    expect(forgeV2Ids({ v2: { ...full.v2, contractGroupId: '' } })).toBeNull()
+    expect(forgeV2Ids({})).toBeNull()
+    expect(forgeV2Ids(undefined)).toBeNull()
   })
 })
 
