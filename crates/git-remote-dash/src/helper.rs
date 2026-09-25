@@ -436,17 +436,25 @@ impl Helper {
         const MAX_ATTEMPTS: usize = 6;
         let conn = self.conn.as_ref().expect("connected before finalize");
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
-        let expected: Vec<(&str, &str)> = planned
+        // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
+        // that has not applied the delete yet would otherwise make a landed delete read as
+        // "did not take effect" (the nightly's 03 scenario hit exactly that).
+        let expected: Vec<(&str, Option<&str>)> = planned
             .iter()
             .filter(|p| p.reject.is_none())
-            .filter_map(|p| p.new_oid.as_deref().map(|oid| (p.spec.dst.as_str(), oid)))
+            .map(|p| (p.spec.dst.as_str(), p.new_oid.as_deref()))
             .collect();
 
         let mut last = svc.read_refs(&conn.repo).await?;
         for attempt in 1..=MAX_ATTEMPTS {
-            let converged = expected.iter().all(|(dst, oid)| {
-                matches!(last.iter().find(|(n, _)| n == dst),
-                    Some((_, RefState::Resolved { oid: got, .. })) if got == oid)
+            let converged = expected.iter().all(|(dst, want)| {
+                let state = last.iter().find(|(n, _)| n == dst).map(|(_, s)| s);
+                match want {
+                    Some(oid) => {
+                        matches!(state, Some(RefState::Resolved { oid: got, .. }) if got == oid)
+                    }
+                    None => matches!(state, None | Some(RefState::Unborn)),
+                }
             });
             if converged || expected.is_empty() {
                 break;
