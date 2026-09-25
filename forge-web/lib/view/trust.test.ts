@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { QUORUM_KEY_ENDPOINT } from '../constants'
+import { NETWORKS, QUORUM_KEY_ENDPOINT } from '../constants'
 import type { RefState } from '../rules'
 import { NO_CONTENT_CHECKS, type ContentChecks } from './content-checks'
 import { connectionTrust, deriveConnectionTrust, deriveTrust, worstOf, type TrustInputs } from './trust'
@@ -139,6 +139,12 @@ describe('trust-anchor disclosure', () => {
       expect(r.proofs.detail).toContain(new URL(QUORUM_KEY_ENDPOINT[network]).host)
     }
     expect(deriveTrust(inputs({ network: 'mainnet' })).proofs.detail).not.toContain('testnet')
+  })
+
+  it('names the network by its key in copy', () => {
+    expect(deriveTrust(inputs({ network: 'testnet' })).networkLabel).toBe('testnet')
+    // Unnamed in this (testnet) build's resolution; a devnet build would read `devnet-<name>`.
+    expect(deriveConnectionTrust('devnet', 'connecting').detail).toContain(NETWORKS.devnet.key)
   })
 
   it('the landing-page connection link follows the same rules', () => {

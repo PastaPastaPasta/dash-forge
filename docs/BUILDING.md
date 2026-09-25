@@ -168,11 +168,13 @@ more rules apply to every tool:
   `--network mainnet`.
 
 A devnet's quorum keys come from `https://quorums.<name>.networks.dash.org`. Override the
-URL with `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl`. The devnet's DAPI addresses
-are taken from the first of these that is set:
+URL with `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl` (forge-web:
+`NEXT_PUBLIC_QUORUM_URL` at build time), or with `quorumBaseUrl` in the deployment file. The
+devnet's DAPI addresses are taken from the first of these that is set:
 
 1. the flag, config or env setting;
-2. `dapiAddresses` in `deployments/devnet-<name>.json`;
+2. `dapiAddresses` in `deployments/devnet-<name>.json`, else the `v2.devnet.addresses` that
+   `deploy-v2.mjs` recorded there;
 3. discovery through the quorum service's `/masternodes` endpoint.
 
 Each address is `host`, `host:port` or `https://host:port`. The port defaults to 1443.

@@ -28,7 +28,17 @@ export interface DeploymentFile {
     readonly forgeCore?: ContractRecord
     readonly forgeCollab?: ContractRecord
     readonly contractGroupId?: string
+    /** The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used. */
+    readonly devnet?: { readonly addresses?: readonly string[] }
   }
+}
+
+/**
+ * A file's recorded DAPI addresses: top-level `dapiAddresses`, else the ones `deploy-v2.mjs`
+ * recorded under `v2.devnet.addresses` (parity with forge-core `network::deployment`).
+ */
+export function recordedDapiAddresses(file: DeploymentFile | undefined): readonly string[] {
+  return file?.dapiAddresses ?? file?.v2?.devnet?.addresses ?? []
 }
 
 /** The forge-v2 contracts registered on a network (base58 ids). */

@@ -8,10 +8,16 @@
  * CI runs both suites on every vector change. Per-network contract ids are never written here:
  * they come from `forge-contracts/deployments/*.json` (see `./deployments`), selected by the
  * build-time `NEXT_PUBLIC_NETWORK` / `NEXT_PUBLIC_DEVNET_NAME` / `NEXT_PUBLIC_DAPI_ADDRESSES` /
- * `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`.
+ * `NEXT_PUBLIC_QUORUM_URL` / `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`.
  */
 
-import { DEPLOYMENTS, forgeV2Ids, type DeploymentFile, type ForgeIds } from './deployments'
+import {
+  DEPLOYMENTS,
+  forgeV2Ids,
+  recordedDapiAddresses,
+  type DeploymentFile,
+  type ForgeIds,
+} from './deployments'
 
 // ---------------------------------------------------------------------------
 // Network
@@ -67,6 +73,8 @@ export interface NetworkEnv {
   readonly network?: string
   readonly devnetName?: string
   readonly dapiAddresses?: string
+  /** Devnet quorum service URL (`NEXT_PUBLIC_QUORUM_URL`; parity with `DASH_FORGE_QUORUM_URL`). */
+  readonly quorumBaseUrl?: string
   readonly registryContractId?: string
 }
 
@@ -148,6 +156,7 @@ export function resolveNetworks(
     const override = isActive ? nonEmpty(env.registryContractId) : null
     const deployed = nonEmpty(file?.registry?.contractId)
     const envAddresses = isActive ? nonEmpty(env.dapiAddresses) : null
+    const envQuorum = isActive ? nonEmpty(env.quorumBaseUrl) : null
     return {
       network,
       devnetName: name,
@@ -155,8 +164,8 @@ export function resolveNetworks(
       dapiAddresses:
         envAddresses !== null
           ? parseDapiAddresses(envAddresses)
-          : parseDapiAddresses((file?.dapiAddresses ?? []).join(',')),
-      quorumBaseUrl: nonEmpty(file?.quorumBaseUrl),
+          : parseDapiAddresses(recordedDapiAddresses(file).join(',')),
+      quorumBaseUrl: envQuorum ?? nonEmpty(file?.quorumBaseUrl),
       registryContractId: override ?? deployed,
       registrySource:
         override !== null
@@ -185,6 +194,7 @@ const RESOLVED = resolveNetworks(
     network: process.env.NEXT_PUBLIC_NETWORK,
     devnetName: process.env.NEXT_PUBLIC_DEVNET_NAME,
     dapiAddresses: process.env.NEXT_PUBLIC_DAPI_ADDRESSES,
+    quorumBaseUrl: process.env.NEXT_PUBLIC_QUORUM_URL,
     registryContractId: process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID,
   },
   DEPLOYMENTS,
@@ -200,19 +210,27 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = RESOLVED.netwo
  * Where a trusted evo-sdk connection fetches the quorum public keys every proof is checked
  * against — the web app's trust anchor (S0.3, roadmap D-C). Testnet and mainnet mirror the
  * defaults compiled into evo-sdk's `testnetTrusted()` / `mainnetTrusted()`; a devnet uses its
- * deployment's `quorumBaseUrl`, else `quorums.<name>.networks.dash.org` — what `service.ts`
- * hands the SDK (parity with forge-core `Network::quorum_base_url`). The trust panel discloses
- * these, so they must name the endpoint the SDK actually uses. Empty for a devnet this build
- * does not target.
+ * configured `quorumBaseUrl` (`NEXT_PUBLIC_QUORUM_URL`, else the deployment file), else
+ * `quorums.<name>.networks.dash.org` — what `service.ts` hands the SDK (parity with forge-core
+ * `Network::quorum_base_url`). The trust panel discloses this, so it must name the endpoint
+ * the SDK actually uses. `''` for a devnet config with no name (one this build does not target).
  */
+export function quorumEndpoint(config: NetworkConfig): string {
+  switch (config.network) {
+    case 'testnet':
+    case 'mainnet':
+      return `https://quorums.${config.network}.networks.dash.org`
+    case 'devnet':
+      if (config.quorumBaseUrl !== null) return config.quorumBaseUrl
+      return config.devnetName !== null ? `https://quorums.${config.devnetName}.networks.dash.org` : ''
+  }
+}
+
+/** {@link quorumEndpoint} for each network as this build resolved it. */
 export const QUORUM_KEY_ENDPOINT: Readonly<Record<Network, string>> = {
-  testnet: 'https://quorums.testnet.networks.dash.org',
-  mainnet: 'https://quorums.mainnet.networks.dash.org',
-  devnet:
-    NETWORKS.devnet.quorumBaseUrl ??
-    (NETWORKS.devnet.devnetName !== null
-      ? `https://quorums.${NETWORKS.devnet.devnetName}.networks.dash.org`
-      : ''),
+  testnet: quorumEndpoint(NETWORKS.testnet),
+  mainnet: quorumEndpoint(NETWORKS.mainnet),
+  devnet: quorumEndpoint(NETWORKS.devnet),
 }
 
 /** The config of the network this build targets. */

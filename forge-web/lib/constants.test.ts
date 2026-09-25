@@ -16,10 +16,11 @@ import {
   NETWORKS,
   NotDeployedError,
   parseDapiAddresses,
+  quorumEndpoint,
   requireRegistryContractId,
   resolveNetworks,
 } from './constants'
-import { DEPLOYMENTS, forgeV2Ids } from './deployments'
+import { DEPLOYMENTS, forgeV2Ids, recordedDapiAddresses } from './deployments'
 import { identityFileMatchesNetwork } from './auth/identity-file'
 
 const DEPLOYMENTS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'deployments')
@@ -56,7 +57,7 @@ describe('resolveNetworks', () => {
     expect(networks.mainnet.registryContractId).not.toBe(networks.testnet.registryContractId)
   })
 
-  it('resolves a named devnet from its deployment skeleton (no registry yet)', () => {
+  it('resolves a named devnet from its deployment file (no v1 registry)', () => {
     const { active, networks } = resolveNetworks(
       { network: 'devnet', devnetName: 'moutai' },
       DEPLOYMENTS,
@@ -138,6 +139,37 @@ describe('parseDapiAddresses', () => {
     expect(parseDapiAddresses('http://1.2.3.4:3000/')).toEqual(['http://1.2.3.4:3000'])
     expect(parseDapiAddresses(',, ,')).toEqual([])
     expect(() => parseDapiAddresses('https://host/path')).toThrow(/invalid DAPI address/)
+  })
+})
+
+describe('quorumEndpoint', () => {
+  it('names the endpoint the SDK is given, for every network kind', () => {
+    const { networks } = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS)
+    expect(quorumEndpoint(networks.testnet)).toBe('https://quorums.testnet.networks.dash.org')
+    expect(quorumEndpoint(networks.mainnet)).toBe('https://quorums.mainnet.networks.dash.org')
+    expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.moutai.networks.dash.org')
+    // A non-devnet build still resolves an (unnamed) devnet config, which has no endpoint.
+    expect(quorumEndpoint(resolveNetworks({}, DEPLOYMENTS).networks.devnet)).toBe('')
+  })
+
+  it('honors NEXT_PUBLIC_QUORUM_URL on the active devnet only', () => {
+    const env = { devnetName: 'moutai', quorumBaseUrl: 'https://quorums.example.org' }
+    const { networks } = resolveNetworks(env, DEPLOYMENTS)
+    expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.example.org')
+    expect(quorumEndpoint(networks.testnet)).toBe('https://quorums.testnet.networks.dash.org')
+  })
+})
+
+describe('recordedDapiAddresses', () => {
+  const v2 = { devnet: { addresses: ['https://10.0.0.9:1443'] } }
+
+  it('falls back to v2.devnet.addresses only when the top-level list is absent', () => {
+    expect(recordedDapiAddresses({ v2 })).toEqual(['https://10.0.0.9:1443'])
+    expect(recordedDapiAddresses({ dapiAddresses: ['https://10.0.0.1:1443'], v2 })).toEqual([
+      'https://10.0.0.1:1443',
+    ])
+    expect(recordedDapiAddresses({ dapiAddresses: [], v2 })).toEqual([])
+    expect(recordedDapiAddresses(undefined)).toEqual([])
   })
 })
 

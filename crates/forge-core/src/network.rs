@@ -186,8 +186,9 @@ fn normalize_dapi_address(raw: &str) -> Result<String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeploymentFile {
+    /// Absent (not merely empty) falls back to `v2.devnet.addresses`.
     #[serde(default)]
-    dapi_addresses: Vec<String>,
+    dapi_addresses: Option<Vec<String>>,
     #[serde(default)]
     quorum_base_url: Option<String>,
     #[serde(default)]
@@ -216,6 +217,31 @@ struct V2Record {
     forge_collab: Option<ContractRecord>,
     #[serde(default)]
     contract_group_id: Option<String>,
+    /// The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used.
+    #[serde(default)]
+    devnet: Option<V2Devnet>,
+}
+
+#[derive(Deserialize)]
+struct V2Devnet {
+    #[serde(default)]
+    addresses: Option<Vec<String>>,
+}
+
+impl DeploymentFile {
+    /// Top-level `dapiAddresses`, else `v2.devnet.addresses` (parity with forge-web
+    /// `recordedDapiAddresses`).
+    fn recorded_dapi_addresses(&self) -> &[String] {
+        self.dapi_addresses
+            .as_deref()
+            .or_else(|| {
+                self.v2
+                    .as_ref()
+                    .and_then(|v2| v2.devnet.as_ref())
+                    .and_then(|d| d.addresses.as_deref())
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl ContractRecord {
@@ -257,7 +283,7 @@ pub struct ForgeIds {
 pub struct Deployment {
     /// The deployment key (`testnet`, `devnet-moutai`).
     pub key: String,
-    /// The registry contract id, or `None` when the file is a skeleton (not yet deployed).
+    /// The registry contract id, or `None` when the file records none (not deployed here).
     pub registry_contract_id: Option<String>,
     /// DAPI addresses recorded for a devnet (normalized); empty for testnet/mainnet.
     pub dapi_addresses: Vec<String>,
@@ -273,7 +299,7 @@ impl Deployment {
         format!("forge-contracts/deployments/{}.json", self.key)
     }
 
-    /// The registry this file records, sourced to the file; `None` for a skeleton.
+    /// The registry this file records, sourced to the file; `None` when it records none.
     pub fn registry(&self) -> Option<Registry> {
         self.registry_contract_id
             .clone()
@@ -299,17 +325,18 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
             "forge-contracts/deployments/{key}.json is malformed: {e}"
         ))
     })?;
+    let dapi_addresses = file
+        .recorded_dapi_addresses()
+        .iter()
+        .map(|a| normalize_dapi_address(a))
+        .collect::<Result<_>>()?;
     Ok(Some(Deployment {
         key: key.to_string(),
         registry_contract_id: file
             .registry
             .and_then(|r| r.contract_id)
             .filter(|s| !s.is_empty()),
-        dapi_addresses: file
-            .dapi_addresses
-            .iter()
-            .map(|a| normalize_dapi_address(a))
-            .collect::<Result<_>>()?,
+        dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
         v2: file.v2.as_ref().and_then(V2Record::ids),
     }))
@@ -687,6 +714,30 @@ mod tests {
     }
 
     #[test]
+    fn dapi_addresses_fall_back_to_the_v2_devnet_record() {
+        let addrs = |json: &str| {
+            serde_json::from_str::<DeploymentFile>(json)
+                .unwrap()
+                .recorded_dapi_addresses()
+                .to_vec()
+        };
+        let v2 = r#""v2":{"devnet":{"name":"x","addresses":["https://10.0.0.9:1443"]}}"#;
+        assert_eq!(
+            addrs(&format!("{{{v2}}}")),
+            vec!["https://10.0.0.9:1443".to_string()]
+        );
+        // A top-level list, even an empty one, is authoritative.
+        assert_eq!(
+            addrs(&format!(
+                r#"{{"dapiAddresses":["https://10.0.0.1:1443"],{v2}}}"#
+            )),
+            vec!["https://10.0.0.1:1443".to_string()]
+        );
+        assert!(addrs(&format!(r#"{{"dapiAddresses":[],{v2}}}"#)).is_empty());
+        assert!(addrs("{}").is_empty());
+    }
+
+    #[test]
     fn a_partial_v2_record_is_not_a_deployment() {
         let parse = |json: &str| {
             serde_json::from_str::<DeploymentFile>(json)
@@ -717,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn moutai_resolves_addresses_from_its_skeleton_and_has_no_registry() {
+    fn moutai_resolves_addresses_from_its_deployment_and_has_no_registry() {
         let t = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("moutai".into()),
