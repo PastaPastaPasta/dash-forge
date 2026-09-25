@@ -146,6 +146,11 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 ### Later
 Organizations (multi-member admin sets, key custody guide), template versioning, audit-log compaction, large files through pointers to the user's bucket, SHA-256 repos, optional user-run indexer for global search.
 
+### Execution tracker (updated 2026-09-25)
+Landed on master: PR #4 browse index · #5 devnet moutai tooling · #6 honest UI · #7 forge-v2 contracts (registered on moutai) · #8 PR/commit diffs · #9 FORGE_RULES_V2 + authorEvent · #10 nightly green (CLI 7/7) · #11 per-network config · #12 bring-your-own storage on push.
+In flight: SDK 4.2 bump (PR A) → forge-v2 data plane (C) → collab (D) → relay/import/migrate (G); web v2 reads (E) → writes (F); nightly follow-ups.
+Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
+
 ## 7. Launch criteria (what "real users would want it" means)
 
 Public beta ships when all of these hold on **mainnet**:
