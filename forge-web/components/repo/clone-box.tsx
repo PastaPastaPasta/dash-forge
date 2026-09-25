@@ -12,6 +12,7 @@ import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Oid } from '@/components/ui/oid'
 import type { RepoAddress } from '@/hooks/use-query-param'
+import { repoKey } from '@/lib/repo'
 
 export function CloneBox({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const remote = `dash://${addr.owner}/${addr.name}`
@@ -45,8 +46,8 @@ export function CloneBox({ home, addr }: { home: RepoHome; addr: RepoAddress }):
           </button>
         </div>
         <p className="mt-2 text-[12px] leading-snug text-anvil-500 dark:text-anvil-400">
-          Push and pull with the <span className="font-mono">git-remote-dash</span> helper. Contract{' '}
-          <Oid value={home.repo.contractId} chars={8} />
+          Push and pull with the <span className="font-mono">git-remote-dash</span> helper.{' '}
+          {home.repo.kind === 'v1' ? 'Contract' : 'Repo'} <Oid value={repoKey(home.repo)} chars={8} />
         </p>
       </div>
     </div>

@@ -2,14 +2,11 @@
 //!
 //! * `dash://<owner>/<repo>` — the human form. `owner` is a base58 Dash identity id (a DPNS
 //!   label is a later addition, resolved upstream of this parser); a trailing `.git` on the
-//!   repo name is stripped. Resolved through the registry's `(ownerId, normalizedName)`
-//!   index.
-//! * `dash://<contractId>` — contract-addressed, a single segment. The registry indexes
-//!   name-to-contract but nothing indexes contract-to-name, so a repo referenced only by
-//!   contract id — which is how a pull request points at the repo holding its head commit
-//!   (`patch.sourceContractId`) — would otherwise be unaddressable. The contract carries
-//!   its own owner, so this form needs no registry lookup at all, and it also works for a
-//!   repo whose listing is missing.
+//!   repo name is stripped. Resolved as a forge-v2 `repo` by `(owner, name)`, falling back to
+//!   the v1 registry listing (read-only repositories).
+//! * `dash://<id>` — a single segment: a forge-v2 `repo` document id, or a v1 repo contract
+//!   id (both are tried, v2 first; see `forge_core::resolve::resolve_id`). This is how a
+//!   pull request points at the repo holding its head commit.
 //!
 //! The two are unambiguous: the human form always has a `/`.
 
@@ -21,18 +18,28 @@ pub const SCHEME: &str = "dash";
 /// A parsed `dash://` remote URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DashUrl {
-    /// `dash://<owner>/<repo>` — resolved through the registry.
+    /// `dash://<owner>/<repo>`.
     Named {
-        /// The repository owner (base58 identity id for M1).
+        /// The repository owner (base58 identity id).
         owner: String,
         /// The repository name (any trailing `.git` removed).
         repo: String,
     },
-    /// `dash://<contractId>` — resolved directly from the contract.
-    Contract {
-        /// Base58 repo contract id.
-        contract_id: String,
+    /// `dash://<id>` — a forge-v2 repo id or a v1 repo contract id.
+    Id {
+        /// The base58 id.
+        id: String,
     },
+}
+
+impl std::fmt::Display for DashUrl {
+    /// `owner/repo`, or the id — how the push plan line names the repo.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DashUrl::Named { owner, repo } => write!(f, "{owner}/{repo}"),
+            DashUrl::Id { id } => f.write_str(id),
+        }
+    }
 }
 
 impl DashUrl {
@@ -43,20 +50,17 @@ impl DashUrl {
             .ok_or_else(|| anyhow::anyhow!("not a {SCHEME}:// URL: {url:?}"))?;
 
         let Some((owner, repo_seg)) = rest.split_once('/') else {
-            // Single segment: contract-addressed. Require it to LOOK like a contract id
-            // rather than accepting any single word — otherwise `dash://alice` (a
-            // forgotten repo name, previously a clear error) would parse here and fail
-            // much later with a confusing "contract not found".
-            let contract_id = rest.strip_suffix(".git").unwrap_or(rest);
-            if !looks_like_contract_id(contract_id) {
+            // Single segment: id-addressed. Require it to LOOK like an id rather than
+            // accepting any single word — otherwise `dash://alice` (a forgotten repo name)
+            // would parse here and fail much later with a confusing "not found".
+            let id = rest.strip_suffix(".git").unwrap_or(rest);
+            if !looks_like_id(id) {
                 bail!(
                     "{SCHEME}:// URL is missing a repo name: {url:?} \
-                     (expected dash://<owner>/<repo>, or dash://<contractId> with a base58 contract id)"
+                     (expected dash://<owner>/<repo>, or dash://<id> with a base58 repo id)"
                 );
             }
-            return Ok(Self::Contract {
-                contract_id: contract_id.to_string(),
-            });
+            return Ok(Self::Id { id: id.to_string() });
         };
 
         if owner.is_empty() {
@@ -81,10 +85,10 @@ impl DashUrl {
     }
 }
 
-/// Whether `s` is plausibly a base58 32-byte id (a contract id or an identity id): 40-44
-/// characters from the base58 alphabet, which excludes `0`, `O`, `I` and `l`. Mirrors the
-/// same heuristic `dg`'s `RepoRef` uses to tell an identity id from a DPNS label.
-fn looks_like_contract_id(s: &str) -> bool {
+/// Whether `s` is plausibly a base58 32-byte id: 40-44 characters from the base58
+/// alphabet, which excludes `0`, `O`, `I` and `l`. Mirrors the heuristic `dg`'s repo
+/// references use to tell an identity id from a DPNS label.
+fn looks_like_id(s: &str) -> bool {
     (40..=44).contains(&s.len())
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
@@ -92,15 +96,15 @@ fn looks_like_contract_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_contract_id, DashUrl};
+    use super::{looks_like_id, DashUrl};
 
     const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
-    const CONTRACT: &str = "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX";
+    const REPO_ID: &str = "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX";
 
     fn named(u: &DashUrl) -> (&str, &str) {
         match u {
             DashUrl::Named { owner, repo } => (owner, repo),
-            DashUrl::Contract { .. } => panic!("expected a named URL"),
+            DashUrl::Id { .. } => panic!("expected a named URL"),
         }
     }
 
@@ -117,20 +121,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_contract_addressed() {
-        let u = DashUrl::parse(&format!("dash://{CONTRACT}")).unwrap();
+    fn keeps_the_name_as_typed_for_resolution_to_normalize() {
+        // Case folding is the resolver's job (rules::v2::normalize_repo_name), so a remote
+        // added as `Dash-Forge` resolves to `dash-forge` there, not here.
+        let u = DashUrl::parse(&format!("dash://{ID}/Dash-Forge")).unwrap();
+        assert_eq!(named(&u), (ID, "Dash-Forge"));
+    }
+
+    #[test]
+    fn parses_id_addressed() {
+        let u = DashUrl::parse(&format!("dash://{REPO_ID}")).unwrap();
         assert_eq!(
             u,
-            DashUrl::Contract {
-                contract_id: CONTRACT.to_string()
+            DashUrl::Id {
+                id: REPO_ID.to_string()
             }
         );
         // `.git` is stripped here too, so a remote added with either spelling resolves.
-        let u = DashUrl::parse(&format!("dash://{CONTRACT}.git")).unwrap();
+        let u = DashUrl::parse(&format!("dash://{REPO_ID}.git")).unwrap();
         assert_eq!(
             u,
-            DashUrl::Contract {
-                contract_id: CONTRACT.to_string()
+            DashUrl::Id {
+                id: REPO_ID.to_string()
             }
         );
     }
@@ -144,8 +156,8 @@ mod tests {
     #[test]
     fn rejects_missing_components() {
         assert!(DashUrl::parse("dash://").is_err());
-        // A single segment that is not a plausible contract id is still a missing repo
-        // name, not a contract-addressed URL — the contract form must not swallow typos.
+        // A single segment that is not a plausible id is still a missing repo name, not an
+        // id-addressed URL — the id form must not swallow typos.
         assert!(DashUrl::parse("dash://alice").is_err());
         assert!(DashUrl::parse("dash://alice/").is_err());
         assert!(DashUrl::parse("dash:///project").is_err());
@@ -157,12 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn contract_id_shape() {
-        assert!(looks_like_contract_id(CONTRACT));
-        assert!(looks_like_contract_id(ID));
-        assert!(!looks_like_contract_id("alice"));
+    fn id_shape() {
+        assert!(looks_like_id(REPO_ID));
+        assert!(looks_like_id(ID));
+        assert!(!looks_like_id("alice"));
         // Base58 excludes these four characters, so a string containing one is not an id.
-        assert!(!looks_like_contract_id(&"0".repeat(44)));
-        assert!(!looks_like_contract_id(&"a".repeat(45)));
+        assert!(!looks_like_id(&"0".repeat(44)));
+        assert!(!looks_like_id(&"a".repeat(45)));
     }
 }

@@ -6,7 +6,11 @@ import {
   collectPageErrors,
   waitForRepoResolved,
   readErrorBanner,
+  ON_TESTNET,
 } from './helpers'
+
+// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
+test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
 
 /**
  * Logged-out read-path scenarios (no keys required). These exercise the deployed foundry
@@ -90,7 +94,7 @@ test.describe('logged-out read paths', () => {
 
     const openClosed = page.getByText(/\bOpen\b|\bClosed\b/i).first()
     const emptyState = page.getByText(/no (open )?issues/i).first()
-    await expect(openClosed.or(emptyState).or(readErrorBanner(page))).toBeVisible({
+    await expect(openClosed.or(emptyState).or(readErrorBanner(page)).first()).toBeVisible({
       timeout: 30_000,
     })
     await shot(page, '03-issues')
@@ -101,7 +105,7 @@ test.describe('logged-out read paths', () => {
           'rejects with a wasm-bindgen error). Open/closed issue folding could not be asserted.',
       )
     }
-    await expect(openClosed.or(emptyState)).toBeVisible()
+    await expect(openClosed.or(emptyState).first()).toBeVisible()
   })
 
   test('4. tree browse reaches an honest terminal state (best-effort)', async ({ page }) => {

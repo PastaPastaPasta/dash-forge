@@ -4,9 +4,10 @@
  * PullDiff — the PR's "Files changed": its head against the merge base with the base branch.
  *
  * Two repos are involved. The base history is read from the repo being viewed; the head is
- * read from the contract it was pushed to (the patch's `sourceContractId`, usually the
- * contributor's own repo). Each is resolved through the same browse states as any other view
- * — published index, else the in-browser fallback clone — and reads prefer their own side's
+ * read from the repo it was pushed to (the patch's source pointer — v1 `sourceContractId`,
+ * forge-v2 `sourceRepoId` — usually the contributor's own repo or fork). Each is resolved
+ * through the same browse states as any other view — published index, else the in-browser
+ * fallback clone — and reads prefer their own side's
  * repo while falling back to the other, since objects are content-addressed and verified.
  *
  * When a side cannot be loaded the comparison is still attempted from the other one (a merged
@@ -17,14 +18,58 @@
 import { useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
-import type { PullView, RepoRef } from '@/lib/repo'
+import { readV2RepoById, repoKey, v2RefOf, type PullView, type RepoRef } from '@/lib/repo'
 import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
 import { DiffView } from '@/components/repo/diff-view'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { Spinner } from '@/components/ui/states'
+
+/**
+ * The PR's source repo when it is not the base repo. v1: the source contract — browse reads
+ * are keyed by contract alone, and the owner is the PR author, who pushed it. forge-v2: the
+ * `repo` document `sourceRepoId` names (a fork, in the same forge contracts), read so its
+ * owner and visibility are real; null while loading or when it cannot be found.
+ */
+type SourceRepo =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'found'; readonly repo: RepoRef }
+  /** The v2 `sourceRepoId` names no readable repo: the diff reads the base repo alone. */
+  | { readonly kind: 'missing'; readonly message: string; readonly retry?: () => void }
+
+function useSourceRepo(base: RepoRef, sourceId: string | null, author: string): SourceRepo {
+  const { sdk, ready } = useSdk()
+  const v1Source = useMemo<RepoRef | null>(
+    () =>
+      base.kind === 'v1' && sourceId !== null
+        ? { kind: 'v1', contractId: sourceId, ownerId: author, name: '' }
+        : null,
+    [base.kind, sourceId, author],
+  )
+  const forge = base.kind === 'v2' ? base.forge : null
+  const v2Source = useAsync<RepoRef | null>(
+    async () => {
+      const doc = await readV2RepoById(sdk!, forge!, sourceId!)
+      return doc === null ? null : v2RefOf(forge!, doc)
+    },
+    [ready, forge?.core ?? '', sourceId ?? ''],
+    { enabled: ready && sdk !== null && forge !== null && sourceId !== null },
+  )
+  if (sourceId === null) return { kind: 'none' }
+  if (base.kind === 'v1') return v1Source === null ? { kind: 'none' } : { kind: 'found', repo: v1Source }
+  if (v2Source.error) {
+    return { kind: 'missing', message: `The source repo could not be read (${v2Source.error}).`, retry: v2Source.reload }
+  }
+  if (v2Source.data) return { kind: 'found', repo: v2Source.data }
+  if (v2Source.settled && !v2Source.loading) {
+    return { kind: 'missing', message: `The source repo ${sourceId.slice(0, 8)}… this PR names does not exist.` }
+  }
+  return { kind: 'loading' }
+}
 
 /** Link to the archived upstream PR's own diff, for an imported PR from GitHub. */
 function originalDiffUrl(value: string): string | null {
@@ -131,23 +176,30 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   const baseTipOid = tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid)
   const baseOidAtOpen = retargeted ? '' : pull.baseOidAtOpen
   // An empty source pointer only comes from a malformed document; the base repo is then the
-  // only place the head could be. Browse reads are keyed by contract alone — the owner is
-  // carried for the type and is the PR author, who pushed the source repo.
-  const sourceContractId = pull.sourceContractId || baseRepo.contractId
-  const crossRepo = sourceContractId !== baseRepo.contractId
-  const sourceRepo = useMemo<RepoRef | null>(
-    () => (crossRepo ? { contractId: sourceContractId, ownerId: pull.author } : null),
-    [crossRepo, sourceContractId, pull.author],
-  )
+  // only place the head could be.
+  const baseKey = repoKey(baseRepo)
+  const sourceKey = pull.sourceId || baseKey
+  const crossRepo = sourceKey !== baseKey
+  const source = useSourceRepo(baseRepo, crossRepo ? sourceKey : null, pull.author)
 
   const baseState = useBrowseReader(baseRepo)
-  const sourceState = useBrowseReader(sourceRepo)
-  const headState = crossRepo ? sourceState : baseState
+  const sourceState = useBrowseReader(source.kind === 'found' ? source.repo : null)
+  // A source that does not resolve falls back to the base repo's reader (as a v1 PR does when
+  // its source is unreadable), with a visible note, instead of waiting forever.
+  const sourceMissing = source.kind === 'missing'
+  const headState = crossRepo && !sourceMissing ? sourceState : baseState
 
   const baseReader = baseState.kind === 'ready' ? baseState.reader : null
   const headReader = headState.kind === 'ready' ? headState.reader : null
   const baseProblem = sideProblem(baseState, 'base repo')
-  const headProblem = crossRepo ? sideProblem(sourceState, 'source repo') : null
+  const headProblem = !crossRepo
+    ? null
+    : source.kind === 'missing'
+      ? {
+          message: `${source.message} The diff reads from the base repo only.`,
+          ...(source.retry ? { action: { label: 'Retry source repo', run: source.retry } } : {}),
+        }
+      : sideProblem(sourceState, 'source repo')
   const problems = [baseProblem, headProblem].filter((p): p is SideProblem => p !== null)
 
   // Each side reads its own repo when it can, else the other one.
@@ -174,8 +226,8 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
         imported: pull.imported,
       }),
     [
-      baseRepo.contractId,
-      sourceContractId,
+      baseKey,
+      sourceKey,
       sidesKey,
       baseTipOid,
       baseOidAtOpen,
@@ -250,7 +302,7 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
               href={original}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex h-7 items-center rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-600"
+              className="inline-flex h-7 items-center rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800"
             >
               View original diff
             </a>

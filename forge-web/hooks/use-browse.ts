@@ -14,14 +14,14 @@
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { loadBrowseContextCached, peekBrowseState, type BrowseState } from '@/lib/view'
-import type { RepoRef } from '@/lib/repo'
+import { repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 
 export function useBrowse(repo: RepoRef | null): AsyncState<BrowseState> {
-  const { sdk, ready } = useSdk(repo ? [repo.contractId] : [])
+  const { sdk, ready } = useSdk(repoContractIds(repo))
   const enabled = ready && sdk !== null && repo !== null
   return useAsync<BrowseState>(
     () => loadBrowseContextCached(sdk!, repo!),
-    [ready, repo?.contractId ?? ''],
-    { enabled, initial: () => (repo === null ? undefined : peekBrowseState(repo.contractId)) },
+    [ready, repo === null ? '' : repoKey(repo)],
+    { enabled, initial: () => (repo === null ? undefined : peekBrowseState(repoKey(repo))) },
   )
 }

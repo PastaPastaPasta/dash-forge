@@ -1,0 +1,89 @@
+{
+  "name": "all_copies_failed_pack_dropped",
+  "description": "Every copy of P2 failed verification: P2 is left out, and P3 takes the next packRef.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": true
+      },
+      {
+        "id": "b",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": false
+      },
+      {
+        "id": "c",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 25,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer",
+        "verified": false
+      },
+      {
+        "id": "d",
+        "packHash": "P3",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "P3",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 30,
+        "id": "d"
+      },
+      "copies": [
+        "d"
+      ],
+      "superseded": false
+    }
+  ]
+}

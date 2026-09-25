@@ -8,6 +8,8 @@
 //!   `WriteEngine` document create/delete lifecycle + idempotent-retry journal types.
 //! - [`repo`] — `RepoService`: the repo-lifecycle API (`create_repo` / `resolve_repo` /
 //!   ref + pack-manifest + chunk read/write) `git-remote-dash` calls.
+//! - [`refs`] — complete ref-update reads (keyset scan + completeness fallback) shared by
+//!   ref listing and PR base-tip resolution.
 //! - [`tokens`] — `TokenService`: the collaborator ACL (grant/suspend/revoke = token
 //!   mint/freeze/destroy; balances = the on-chain collaborator list).
 //! - [`collab`] — issue / PR / review / release / label services + the registry social
@@ -20,6 +22,8 @@
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
+//! - [`user_error`] — [`user_error::UserError`]: stable code + cause + fix, the exit-code
+//!   table, and the mapping from [`Error`] / SDK messages that `dg` and the helper render.
 //!
 //! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
 //! is touched in exactly one module); every other module is synchronous and SDK-free.
@@ -27,14 +31,22 @@
 pub mod backends;
 pub mod collab;
 pub mod cost;
+pub mod create;
 pub mod error;
 pub mod keystore;
+pub mod members;
 pub mod network;
 pub mod pack;
 pub mod platform;
+pub mod private;
+pub mod refs;
 pub mod repo;
+pub mod resolve;
 pub mod rules;
+pub mod scope;
 pub mod storage;
 pub mod tokens;
+pub mod user_error;
 
 pub use error::{Error, Result};
+pub use user_error::UserError;

@@ -5,6 +5,7 @@
 SCENARIO_NAME="03 ref delete"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+[[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 BR="e2e/${RUN_ID}/deleteme"
 SRC="${WORKROOT}/s03-src"

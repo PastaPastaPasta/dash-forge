@@ -41,16 +41,20 @@ Secrets are **never** written to `storage.toml`, to the chain, or to logs. `stor
 A push works like this:
 
 1. The helper builds the pack exactly as before.
-2. It prints what goes where, and what Platform will charge:
-   `dash: pack 1.2 MiB → r2-main, kubo (need 2 of 2); Platform: manifest + refs only, est. 0.000373 DASH`
-3. It uploads to every target **in parallel**. The object keys are content-addressed (`packs/<sha256>.pack`, or the CID for IPFS), so a re-push is idempotent.
+2. It prints what is pushed and where it goes, before anything is paid for:
+   ```
+   dash: alice/project ← main (8f3e2a1, 312 objects, 1.2 MiB)
+   dash: storage      → r2-main, kubo (need 2 of 2) · Platform stores manifest + refs only
+   ```
+3. It uploads to every target **in parallel**. The object keys are content-addressed (`packs/<sha256>.pack`, or the CID for IPFS), so a re-push is idempotent. Each target gets a line as soon as its copy is stored and verified (`dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s`), or a `✗` line naming the failure.
 4. It **verifies each copy by reading it back**. Packs up to 16 MiB get a full GET plus SHA-256. Larger packs get a size check plus byte-exact head and tail ranges. The store also verified the whole body on upload (S3 checks `x-amz-content-sha256`; IPFS checks that kubo's CID matches a local re-derivation).
-5. If fewer than `dash.replicas` targets confirm, **the push fails before anything is written to Platform**: no manifest, no ref. The error names each failing target.
-6. Otherwise it writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets. If an earlier push already recorded this exact pack, the helper first checks that at least one copy that manifest records is readable and hash-matches. If none is, it refuses to update any ref.
+5. If fewer than `dash.replicas` targets confirm, **the push fails before anything is written to Platform**: no manifest, no ref. The error ([E502](../errors.md#e502)) names each failing target.
+6. Otherwise it prints what Platform writes (`dash: platform     manifest 2 · refUpdate 1     est 0.000373 DASH`), writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets. If an earlier push already recorded this exact pack, the helper first checks that at least one copy that manifest records is readable and hash-matches. If none is, it refuses to update any ref ([E507](../errors.md#e507)).
+7. It ends with what Platform charged, measured as the identity's balance change (`≈`), or the estimate when the balance has not moved yet: `dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/repo?owner=…&name=…`. With `-q` this line and its balance read are skipped.
 
-`git push --dry-run` builds the pack and always prints the plan line, then stops.
+`git push --dry-run` builds the pack, prints the plan, target and Platform-estimate lines, then stops. With `GIT_DASH_JSON=1` each line is a JSON event instead (`{"event":"plan",…}`).
 
-Use `git push -v` (or anything louder than `-q`) to see the helper's `dash:` lines.
+`git push -q` silences the progress lines; errors are always printed.
 
 ---
 
@@ -306,7 +310,7 @@ Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs tha
 
 | Symptom | Cause / fix |
 |---|---|
-| `storage policy not met: 1 of 2 required target(s) confirmed; <name>: …` | A target failed. Nothing was written to Platform. Fix the target and push again (confirmed copies are content-addressed and not re-uploaded), lower `dash.replicas`, or set `dash.platformFallback=true`. |
+| `push failed: storage policy not met (1 of 2 targets confirmed) [E502]` | A target failed; the `cause:` line names it. Nothing was written to Platform. Run `dg storage test <name>` and push again (confirmed copies are content-addressed and not re-uploaded), lower `dash.replicas`, or set `dash.platformFallback=true`. |
 | `S3 PUT … 403 (access denied — check the credentials, the region, …)` | Wrong key or secret, wrong `--region` (R2 needs `auto`), or the key cannot write this bucket. |
 | `S3 … 301/307 (redirected …)` | The bucket is in a different region, or needs virtual-hosted addressing (`--virtual-hosted`). |
 | `secret env:X is not set` | Export the variable in the environment that runs `git` and `dg`, or switch to a `keychain:` reference. |

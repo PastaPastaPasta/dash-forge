@@ -112,6 +112,16 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 
 **Front-running.** Every pack-write unique index includes `$ownerId` (`packManifest (repoId, $ownerId, packHash)`, `manifestPart (…, partSeq)`, `chunk (…, seq)`). Without it, the first writer to claim a `(repoId, packHash)` would own that slot forever: a hostile writer could post a manifest with the right hash and wrong content, or one chunk, and block the honest upload. With it, each writer has its own slot. **Reader rule** (`FORGE_RULES_V2`: `order_pack_copies`, `select_pack_copy`, `pack_read_order`, vectors `pack_copies__*`): for a `packHash`, gather every writer's manifest (`(repoId, packHash)` index) and try them in order: uploaders who are currently maintainers, then current writers, then everyone else (members since revoked), each group by `$createdAt` then `$id`. Read the first copy whose reassembled bytes verify against `packHash`; a copy that fails verification is ignored, and a pack with no verifying copy is unreadable. A `supersedes` list is honoured only from the copy actually read, and only when it verifies. A superseded pack is read after the others as a fallback, never dropped: a hash proves a pack's bytes, not that it holds everything it claims to replace.
 
+**The pack list** (`FORGE_RULES_V2`: `v2_pack_list`, vectors `v2_pack_list__*`). A locator's `packRef` indexes "the repo's pack list", which must be derived identically by every reader and writer. With several copies per pack it is:
+
+1. Take every `packManifest` of the repo (all kinds). An older locator bounds the set **as of** its own `($createdAt, $id)`, inclusive.
+2. Group the copies by `packHash`. Rank each group like the reader rule (maintainers, writers, everyone else; then `($createdAt, $id)`), drop copies whose bytes failed verification, and call the first remaining copy the **representative**. A hash with no remaining copy is not in the list. The pack's `kind` and metadata (`sizeBytes`, `objectCount`, `chunkCount`, `supersedes`) are the representative's; copies claiming another `kind` are dropped, so a stranger's copy cannot re-label a pack.
+3. A pack's position is its **first upload**: the earliest `($createdAt, $id)` among all copies of the hash, failed and other-kind ones included. A later or higher-ranked copy never moves a pack.
+4. `packRef` is the pack's index, by first upload, **among the packs of its kind**: kind-0 git packs are numbered 0..n regardless of interleaved kind-1 index fragments.
+5. A pack is superseded when another listed pack's representative names it in `supersedes` **and that representative verified**; an unchecked claim supersedes nothing. Superseded packs keep their `packRef` (positions never shift); readers skip them only when fetching whole packs, and read them as a fallback.
+
+The function is kind-agnostic: callers pass every copy and select a kind from its output (the locator space is the kind-0 packs). It is not the v1 rule: v1 drops superseded packs from the packRef space (live kind-0 packs, oldest first), while v2 keeps them in place. The two agree only when nothing is superseded. v2 manifests are permanent, and a position that never moves means no locator ever needs renumbering; locators of v1 repositories keep the v1 rule.
+
 `release`, `label`, `webhook`, `checkRun`, `comment`, `review`, `star`, `follow` and `profile` stay deletable. Their resolution is newest-wins or per-author, so a deletion removes only the deleter's own contribution. Residual risk: a revoked maintainer can delete a release they published. Readers fall back to the next-newest release for that tag.
 
 The contracts are **not readonly**, so the owner identity can still update them, within the protocol 14 update rules: indexes, `refersTo`/`ownerRefersTo`, `immutable` and `encryptedFor` are all frozen on update, so an update can add optional properties and new document types but cannot loosen an existing gate. **Readonly cannot be switched on later**: a config update to `readonly: true` is refused (`validate_update` v0, "contract can not be changed to readonly"). To make the final mainnet contracts readonly, set `config.readonly` in the JSON when registering them (§8).
@@ -170,6 +180,7 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Membership | `RoleOracle::{role_at, member_at, current_role}` | through `approvals__*` |
 | Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
 | Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
+| Pack list / `packRef` space (§4) | `v2_pack_list` | `v2_pack_list__*` |
 | Approvals | `count_approvals` | `approvals__*` |
 | Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |

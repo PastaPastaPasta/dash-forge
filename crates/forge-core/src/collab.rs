@@ -42,8 +42,6 @@ const DOC_EVENT: &str = "event";
 const DOC_REVIEW: &str = "review";
 const DOC_LABEL: &str = "label";
 const DOC_RELEASE: &str = "release";
-const DOC_REF_UPDATE: &str = "refUpdate";
-const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
 // Registry-contract document types.
 const DOC_STAR: &str = "star";
 const DOC_FOLLOW: &str = "follow";
@@ -518,7 +516,7 @@ impl<'a> IssueService<'a> {
 
     /// Build the as-of-time authorization resolver from the repo's token history.
     async fn authz(&self, repo_contract_id: &str) -> Result<AuthzResolver> {
-        let records = TokenService::new(self.client, self.identity, self.bridge)
+        let records = TokenService::new(self.client)
             .token_history(repo_contract_id)
             .await?;
         Ok(AuthzResolver::new(records))
@@ -907,7 +905,7 @@ impl<'a> PullRequestService<'a> {
         };
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let events = fetch_events(self.client, &contract, &pr.document_id).await?;
-        let records = TokenService::new(self.client, self.identity, self.bridge)
+        let records = TokenService::new(self.client)
             .token_history(repo_contract_id)
             .await?;
         let authz = AuthzResolver::new(records);
@@ -926,46 +924,36 @@ impl<'a> PullRequestService<'a> {
     }
 
     /// Collect every oid that was ever a tip of `base_ref_name` (the monotonic merge-
-    /// reachability set) plus the newest such tip. Walks the full `refUpdate` +
-    /// `protectedRefUpdate` history for the ref (paginated), taking every non-null `newOid`.
+    /// reachability set) plus the newest such tip. Walks the ref's full `refUpdate` +
+    /// `protectedRefUpdate` history — [`crate::refs::read_ref_history`], an equality read on
+    /// one `refNameHash`, so its cost is this ref's pushes, not the repo's — taking every
+    /// non-null `newOid`.
     async fn base_ref_tips(
         &self,
         contract: &LoadedContract,
         base_ref_name: &str,
     ) -> Result<(std::collections::BTreeSet<String>, Option<String>)> {
         let ref_name_hash = sha256(base_ref_name.as_bytes());
+        // Issues and PRs still live in v1 repo contracts: the contract is the whole scope.
+        let scope = crate::scope::DocScope {
+            contract_id: contract.id(),
+            repo_id: None,
+        };
+        let updates =
+            crate::refs::read_ref_history(self.client, contract, &scope, ref_name_hash).await?;
         let mut tips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut newest: Option<(u64, String, String)> = None; // (created_at, id, oid)
-        for doc_type in [DOC_REF_UPDATE, DOC_PROTECTED_REF_UPDATE] {
-            let docs = self
-                .client
-                .query_all_documents(
-                    contract,
-                    doc_type,
-                    &[QueryFilter::eq(
-                        "refNameHash",
-                        FieldValue::bytes32(ref_name_hash),
-                    )],
-                    &[QueryOrder::asc("$createdAt")],
-                )
-                .await?;
-            for d in &docs {
-                let Some(oid) = d.field_hex("newOid") else {
-                    continue;
-                };
-                if oid.is_empty() || oid.bytes().all(|b| b == b'0') {
-                    continue; // null oid = ref deletion, never a reachable tip
-                }
-                tips.insert(oid.clone());
-                let created_at = d.created_at.unwrap_or(0);
-                let candidate = (created_at, d.id.clone(), oid);
-                let better = match &newest {
-                    None => true,
-                    Some(n) => (n.0, &n.1) < (candidate.0, &candidate.1),
-                };
-                if better {
-                    newest = Some(candidate);
-                }
+        for u in updates {
+            if u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0') {
+                continue; // null oid = ref deletion, never a reachable tip
+            }
+            tips.insert(u.new_oid.clone());
+            let better = match &newest {
+                None => true,
+                Some(n) => (n.0, &n.1) < (u.created_at, &u.id),
+            };
+            if better {
+                newest = Some((u.created_at, u.id, u.new_oid));
             }
         }
         Ok((tips, newest.map(|(_, _, oid)| oid)))
@@ -1085,13 +1073,11 @@ fn pr_from_doc(d: &platform::FetchedDocument) -> PullRequest {
         // `sourceContractId` / `sourceListingId` are identifier byteArrays; base58 is the
         // form every Platform contract/document API takes.
         source_contract_id: d
-            .field_bytes("sourceContractId")
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .field_bytes32("sourceContractId")
             .map(platform::encode_identifier)
             .unwrap_or_default(),
         source_listing_id: d
-            .field_bytes("sourceListingId")
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .field_bytes32("sourceListingId")
             .map(platform::encode_identifier),
         source_ref_name: d.field_str("sourceRefName"),
         patch_manifest_hash: d.field_hex("patchManifestHash"),

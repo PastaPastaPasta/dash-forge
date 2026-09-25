@@ -222,6 +222,116 @@ export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
 }
 
 // ---------------------------------------------------------------------------
+// The pack list (packRef space)
+// ---------------------------------------------------------------------------
+
+/** A document's position in the platform total order: `($createdAt, $id)`. */
+export interface CopyKey {
+  readonly createdAt: number
+  readonly id: string
+}
+
+/** One `packManifest` document of a repository, flattened for {@link v2PackList}. */
+export interface PackCopyRow {
+  readonly id: string
+  readonly packHash: string
+  /** 0 git pack, 1 objectLocator, 2 flatIndex. */
+  readonly kind: number
+  readonly createdAt: number
+  /** The uploader's current role; null/absent for anyone else. */
+  readonly ownerRole?: Role | null
+  readonly sizeBytes?: number
+  readonly objectCount?: number
+  readonly chunkCount?: number
+  readonly supersedes?: readonly string[]
+  /** true: hash-checked OK; false: failed; absent: not checked. */
+  readonly verified?: boolean | null
+}
+
+/** One pack of {@link v2PackList}. */
+export interface V2Pack {
+  /** The pack's position among the packs of its `kind` (a locator's `packRef`). */
+  readonly packRef: number
+  readonly packHash: string
+  readonly kind: number
+  readonly sizeBytes: number
+  readonly objectCount: number
+  readonly chunkCount: number
+  readonly supersedes: readonly string[]
+  /** The earliest `($createdAt, $id)` among every copy of the hash. */
+  readonly first: CopyKey
+  /** Usable copies in reader order; the representative first. */
+  readonly copies: readonly string[]
+  readonly superseded: boolean
+}
+
+/**
+ * Every pack of a repository with its `packRef`, from all its `packManifest` copies
+ * (forge-v2.md §4; the Rust `v2_pack_list`; vectors `v2_pack_list__*`). Kind-agnostic:
+ * pass every copy and select a kind from the output.
+ *
+ * `asOf` (inclusive) drops later copies. Per hash, copies are ranked like
+ * {@link orderPackCopies}; failed copies are dropped and the first remaining one is the
+ * representative (a hash with none is left out), whose kind and metadata are the pack's;
+ * copies of another kind leave `copies`. `first` is the earliest key among ALL the hash's
+ * copies; `packRef` is the index by `first` among packs of the same kind. A pack is
+ * superseded only by a listed pack whose representative verified (`true`).
+ * Output order: kind, then packRef.
+ */
+export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null): V2Pack[] {
+  const groups = new Map<string, PackCopyRow[]>()
+  for (const c of copies) {
+    if (asOf && compareKey(c, asOf) > 0) continue
+    const g = groups.get(c.packHash)
+    if (g) g.push(c)
+    else groups.set(c.packHash, [c])
+  }
+  const packs: { pack: Omit<V2Pack, 'packRef' | 'superseded'>; verified: boolean }[] = []
+  for (const hash of [...groups.keys()].sort(compareStrings)) {
+    const group = groups.get(hash) as PackCopyRow[]
+    const firstCopy = [...group].sort(compareKey)[0] as PackCopyRow
+    const ranked = [...group].sort(
+      (a, b) => roleRank(a.ownerRole) - roleRank(b.ownerRole) || compareKey(a, b),
+    )
+    const usable = ranked.filter((c) => c.verified !== false)
+    const rep = usable[0]
+    if (!rep) continue
+    packs.push({
+      pack: {
+        packHash: hash,
+        kind: rep.kind,
+        sizeBytes: rep.sizeBytes ?? 0,
+        objectCount: rep.objectCount ?? 0,
+        chunkCount: rep.chunkCount ?? 0,
+        supersedes: [...(rep.supersedes ?? [])],
+        first: { createdAt: firstCopy.createdAt, id: firstCopy.id },
+        copies: usable.filter((c) => c.kind === rep.kind).map((c) => c.id),
+      },
+      verified: rep.verified === true,
+    })
+  }
+  const superseded = new Set<string>()
+  for (const { pack, verified } of packs) {
+    if (!verified) continue
+    for (const s of pack.supersedes) if (s !== pack.packHash) superseded.add(s)
+  }
+  const sorted = packs
+    .map((p) => p.pack)
+    .sort((a, b) => a.kind - b.kind || compareKey(a.first, b.first))
+  const out: V2Pack[] = []
+  let kind: number | null = null
+  let index = 0
+  for (const p of sorted) {
+    if (p.kind !== kind) {
+      kind = p.kind
+      index = 0
+    }
+    out.push({ packRef: index++, ...p, superseded: superseded.has(p.packHash) })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // Approvals
 // ---------------------------------------------------------------------------
 

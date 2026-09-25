@@ -18,6 +18,7 @@ import {
   type DeploymentFile,
   type ForgeIds,
 } from './deployments'
+import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
 
 // ---------------------------------------------------------------------------
 // Network
@@ -232,6 +233,15 @@ export const QUORUM_KEY_ENDPOINT: Readonly<Record<Network, string>> = {
   mainnet: quorumEndpoint(NETWORKS.mainnet),
   devnet: quorumEndpoint(NETWORKS.devnet),
 }
+
+/**
+ * Public IPFS gateways an `ipfs://<cid>` pack URI is fetched through, in order, after
+ * whatever `http(s)` mirrors the manifest itself records — the list every client shares
+ * (`forge-contracts/config/storage-defaults.json`, which forge-core embeds). Byte sources
+ * only: every external pack is sha256-checked against its proof-read manifest, so a gateway
+ * that lies or is down costs a retry, never integrity.
+ */
+export const IPFS_GATEWAYS: readonly string[] = storageDefaults.ipfsGateways
 
 /** The config of the network this build targets. */
 export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]

@@ -67,8 +67,10 @@ export {
   loadFlatIndex,
   orderGitPacks,
   peekBrowseState,
+  PackUnavailableError,
   type BrowseContext,
   type BrowseState,
+  type UnavailablePack,
 } from './browse-source'
 export {
   cachedFallback,
@@ -93,7 +95,7 @@ export {
   type TrustReport,
   type TrustState,
 } from './trust'
-export { pullActions, type PullActionInputs, type PullActions } from './pull-actions'
+export { aclName, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,
   loadRepoHome,
@@ -138,6 +140,7 @@ export {
   readThread,
   type CommentView,
   type IssueThread,
+  type PullApprovals,
   type PullThread,
   type TimelineItem,
 } from './issues-view'

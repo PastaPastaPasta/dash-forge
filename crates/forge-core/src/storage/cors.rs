@@ -125,6 +125,41 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
     r
 }
 
+/// The CORS preflight alone, for a ranged GET of `url` from the web app's origin: `Ok` when
+/// a browser may send it. Read-only and object-agnostic (a preflight does not need the
+/// object to exist), so `dg doctor` can run it without uploading a probe; `dg storage test`
+/// does the full check.
+pub async fn probe_preflight(client: &Client, url: &str) -> Result<(), String> {
+    let resp = client
+        .request(Method::OPTIONS, url)
+        .header("origin", PROBE_ORIGIN)
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "range")
+        .send()
+        .await
+        .map_err(|e| format!("OPTIONS {url} failed: {e}"))?;
+    let h = resp.headers();
+    let origin = h
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if !resp.status().is_success() || !(origin == "*" || origin == PROBE_ORIGIN) {
+        return Err(format!(
+            "the CORS preflight from {PROBE_ORIGIN} was refused (status {}{})",
+            resp.status(),
+            if origin.is_empty() {
+                ", no Access-Control-Allow-Origin".to_string()
+            } else {
+                format!(", Access-Control-Allow-Origin {origin:?}")
+            }
+        ));
+    }
+    if !header_list_contains(h.get("access-control-allow-headers"), "range") {
+        return Err("the CORS preflight does not allow the `Range` request header".into());
+    }
+    Ok(())
+}
+
 /// Which provider an S3 endpoint belongs to, for tailored fix instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {

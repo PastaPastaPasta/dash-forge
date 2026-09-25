@@ -97,6 +97,24 @@ describe('pullActions — close / reopen', () => {
   })
 })
 
+describe('pullActions — forge-v2 membership', () => {
+  // On forge-v2 "holdings" come from membership documents (`holdingsOfRole`), so the same gate
+  // applies; only the wording says members rather than token holders.
+  it('offers merge to a maintainer or writer and names members when withholding it', () => {
+    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, model: 'v2' }).canMarkMerged).toBe(true)
+    const stranger = pullActions({ pull: pull(), viewer: STRANGER, holdings: NONE, model: 'v2' })
+    expect(stranger.canMarkMerged).toBe(false)
+    expect(stranger.mergeHint).toMatch(/maintainers and writers/)
+    const unknown = pullActions({ pull: pull(), viewer: WRITER, holdings: null, model: 'v2' })
+    expect(unknown.mergeHint).toMatch(/members/)
+    expect(unknown.mergeHint).not.toMatch(/token/)
+  })
+
+  it('lets the author close their own PR (an authorEvent) without membership', () => {
+    expect(pullActions({ pull: pull(), viewer: AUTHOR, holdings: NONE, model: 'v2' }).canCloseReopen).toBe(true)
+  })
+})
+
 describe('pullActions agrees with the fold', () => {
   const records: TokenRecord[] = [{ identity: WRITER, token: 'write', op: 'mint', createdAt: 0 }]
   const authz = new AuthzResolver(records)

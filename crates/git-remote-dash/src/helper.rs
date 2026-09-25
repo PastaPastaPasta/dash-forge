@@ -2,11 +2,15 @@
 //! `list` / `fetch` / `push` operations against `forge-core`'s [`RepoService`].
 //!
 //! Data flow (architecture §6):
-//! - **list** → `resolve_repo` → `read_refs` (proof-verified, folded by `FORGE_RULES_V1`) →
-//!   `<oid> <ref>` lines + the `HEAD` symref from the repo's default branch.
-//! - **fetch** → collect `packManifest`s (kind 0) → `get_pack` each (SHA-256-verified) →
-//!   `git index-pack` into the local odb. A `--filter` partial clone re-packs the download
-//!   through a scratch repo and writes the `.promisor` marker (S0.9).
+//! - **resolve** → `dash://owner/name` is a forge-v2 `repo` (else a v1 registry listing,
+//!   read only); `dash://<id>` a v2 repo id or a v1 repo contract id
+//!   (`forge_core::resolve`).
+//! - **list** → `read_refs` (proof-verified, folded by the ref rules) → `<oid> <ref>` lines
+//!   + the `HEAD` symref from the repo's default branch.
+//! - **fetch** → every kind-0 pack's copies → the first copy that verifies, in the
+//!   `FORGE_RULES_V2` order (maintainers' copies first) → `git index-pack` into the local
+//!   odb. A `--filter` partial clone re-packs the download through a scratch repo and
+//!   writes the `.promisor` marker (S0.9).
 //! - **push** → fast-forward check vs remote refs → `build_pack` (thin + `--fix-thin` =
 //!   self-contained) → the repo's storage policy (`dash.storage` / `dash.replicas`, see
 //!   [`crate::policy`]) → cost guard → replicate the pack to every target in parallel,
@@ -14,30 +18,35 @@
 //!   `write_pack_manifest` (every confirmed URI + the SHA-256) → `write_ref_update`
 //!   (prevOid recorded; non-FF refused without `+`) → post-push ref re-read for a
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
-//!   met and the manifest has landed.
+//!   met and the manifest has landed. A v1 repository refuses every push (read only).
 
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
+use forge_core::members::MemberReader;
 use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{
-    PackManifestInput, PlatformChunkTarget, RepackTarget, RepoHandle, RepoService, StoredArtifact,
+    group_by_hash, PackManifestInput, PlatformChunkTarget, RepackTarget, RepoService,
+    StoredArtifact,
 };
-use forge_core::rules::{Holdings, RefState, TokenRecord};
+use forge_core::rules::RefState;
+use forge_core::scope::RepoRef;
 use forge_core::storage::{
-    human_bytes, replicate, ExternalTarget, PackReader, Replica, Replication, StorageTarget,
+    human_bytes, replicate, ExternalTarget, Observed, PackReader, Replica, Replication,
+    StorageTarget, StoreOutcome,
 };
-use forge_core::tokens::TokenService;
+use forge_core::user_error::{codes, dash, UserError, NOTE_PLATFORM_CHUNKS_JOURNALED};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 
 use crate::git::{LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
+use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
 use crate::url::DashUrl;
 
 /// Packs downloaded concurrently by a fetch — the same window the platform backend
@@ -86,7 +95,7 @@ struct Conn {
     client: PlatformClient,
     identity: LoadedIdentity,
     bridge: BridgeIdentity,
-    repo: RepoHandle,
+    repo: RepoRef,
 }
 
 /// The remote helper, holding parsed config and a lazily-established connection.
@@ -122,6 +131,12 @@ impl Helper {
     /// Establish (once) the Platform connection and resolve the repo.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
+            if std::env::var_os("DASH_FORGE_KEY").is_none() && !self.key_path.exists() {
+                return Err(no_identity(format!(
+                    "DASH_FORGE_KEY is not set and {} does not exist",
+                    self.key_path.display()
+                )));
+            }
             let bridge = BridgeIdentity::load_from_file(&self.key_path).with_context(|| {
                 format!(
                     "loading identity from {} (set DASH_FORGE_KEY)",
@@ -137,23 +152,21 @@ impl Helper {
                 .fetch_identity(&bridge.identity_id)
                 .await
                 .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
-            let repo = {
-                let svc = RepoService::new(&client, &identity, &bridge);
-                match &self.url {
-                    DashUrl::Named { owner, repo } => svc
-                        .resolve_repo(owner, repo)
+            let repo = match &self.url {
+                DashUrl::Named { owner, repo } => {
+                    forge_core::resolve::resolve_named(&client, owner, repo)
                         .await
-                        .with_context(|| format!("resolving repo {owner}/{repo}"))?,
-                    // Contract-addressed: no registry lookup, the contract carries its owner.
-                    DashUrl::Contract { contract_id } => svc
-                        .resolve_repo_by_contract(contract_id)
-                        .await
-                        .with_context(|| format!("resolving repo contract {contract_id}"))?,
+                        .with_context(|| format!("resolving repo {owner}/{repo}"))?
                 }
+                DashUrl::Id { id } => forge_core::resolve::resolve_id(&client, id)
+                    .await
+                    .with_context(|| format!("resolving repo {id}"))?,
             };
+            repo.require_readable()?;
             tracing::info!(
-                repo_contract = %repo.repo_contract_id,
-                owner = %repo.owner_id,
+                repo = %repo.id(),
+                generation = repo.generation(),
+                owner = %repo.owner_id(),
                 "resolved dash:// repo"
             );
             self.conn = Some(Conn {
@@ -249,16 +262,33 @@ impl Helper {
         // Each pack comes from the first of its recorded copies that hash-verifies —
         // external URIs raced with the configured IPFS gateways — with Platform chunks as
         // the last resort.
+        //
+        // forge-v2: each uploader may hold its own copy of a pack. A pack is read from the
+        // first copy that verifies, maintainers' copies first (FORGE_RULES_V2 reader rule).
         let svc = &svc;
         let repo = &conn.repo;
         let contract = &svc.repo_contract(repo).await?;
         let reader = &PackReader::from_user_config();
-        let fetched: Vec<Option<Vec<u8>>> = stream::iter(git_packs.iter().map(|m| async move {
-            let hash = hex::encode(m.pack_hash);
-            let got = svc.fetch_artifact_from(repo, contract, m, reader).await;
+        // Membership only ranks copies; if it cannot be read, fall back to time order
+        // rather than failing the clone (every copy is still hash-verified).
+        let roles = &svc.copy_roles(repo).await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the member list; trying pack copies in time order");
+            forge_core::repo::RoleMap::new()
+        });
+        let packs = group_by_hash(&git_packs);
+        let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let hash = hex::encode(h);
+            let got = svc.fetch_best_copy(repo, contract, copies, roles, reader).await;
+            // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
+            // anyone who was a writer can post a manifest, so a stranger's chunkless
+            // `storage = 0` copy must not turn an unreadable pack into a failed clone (git's
+            // connectivity check still fails the fetch if a wanted object was in it).
+            let on_chain = copies.iter().any(|m| {
+                m.storage == 0 && (repo.is_v1() || roles.contains_key(&m.owner_id))
+            });
             let bytes = match got {
-                Ok(bytes) => bytes,
-                Err(e) if m.storage == 0 => {
+                Ok((bytes, _)) => bytes,
+                Err(e) if on_chain => {
                     return Err(anyhow::Error::from(e).context(format!("downloading pack {hash}")));
                 }
                 // An external-only pack whose copies are down, rate-limited or absent is
@@ -269,7 +299,7 @@ impl Helper {
                 // candidate is bounded (size-scaled deadline + idle timeout), so this
                 // cannot hang.
                 Err(e) => {
-                    tracing::warn!(pack = %hash, mirrors = ?m.uris, error = %e, "external pack unobtainable; skipping it");
+                    tracing::warn!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; skipping it");
                     return Ok(None);
                 }
             };
@@ -333,30 +363,41 @@ impl Helper {
             None
         };
         let conn = self.ensure_conn().await?;
+        // v1 repositories are read only: refuse before building or paying for anything.
+        conn.repo.require_v2()?;
+        // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
+        let repo_label = conn.repo.display();
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
 
         let remote_refs = svc.read_refs(&conn.repo).await?;
 
-        // Fail fast when this identity holds no spendable token on the repo. The ACL itself
-        // is enforced at consensus — `refUpdate`, `chunk` and `packManifest` all carry a
-        // WRITE token cost, so an unauthorized push cannot land regardless. But without this
-        // check the helper builds a pack and broadcasts chunk state transitions that
-        // consensus rejects one at a time, burning processing fees and surfacing a raw
-        // platform error. That error is the first thing a would-be contributor sees, and it
-        // teaches them nothing; this is the moment to point them at the PR flow instead.
+        // Fail fast when this identity is not a member. Consensus is the authority —
+        // `refUpdate`, `chunk` and `packManifest` are all `ownerRefersTo`-gated on a
+        // `maintainer`/`writer` document, so a non-member's push cannot land regardless
+        // (40120). But without this check the helper builds a pack and broadcasts chunk
+        // transitions that consensus rejects, surfacing a raw platform error. That error is
+        // the first thing a would-be contributor sees, and it teaches them nothing; this is
+        // the moment to point them at `dg collab` or a fork instead.
         //
         // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
         // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
-        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) && !skip_write_precheck() {
-            if let Some(reason) = write_access_denied(conn).await {
-                return Ok(specs
-                    .iter()
-                    .map(|s| PushOutcome::Error(s.dst.clone(), reason.clone()))
-                    .collect());
+        let mut refused = Vec::new();
+        let kept;
+        let specs = if !dry_run && !specs.is_empty() && !skip_write_precheck() {
+            (refused, kept) = precheck(conn, &svc, specs).await;
+            if kept.is_empty() {
+                return Ok(refused);
             }
-        }
+            &kept[..]
+        } else {
+            specs
+        };
 
         let planned = plan_pushes(specs, &remote_refs);
+        let progress = Progress::new(options.verbosity);
+        let balance_before = conn.identity.balance();
+        let mut est_credits =
+            policy::estimate_ref_updates(planned.iter().filter(|p| p.reject.is_none()).count());
 
         // Build + upload one pack covering all accepted, non-delete updates.
         let want_tips: Vec<String> = planned
@@ -365,21 +406,28 @@ impl Helper {
             .filter_map(|p| p.new_oid.clone())
             .collect();
         if let (false, Some(push_policy)) = (want_tips.is_empty(), push_policy.as_ref()) {
-            let ref_count = planned.iter().filter(|p| p.reject.is_none()).count();
             let ctx = PushContext {
                 svc: &svc,
                 repo: &conn.repo,
+                repo_label,
+                refs: planned
+                    .iter()
+                    .filter(|p| p.reject.is_none())
+                    .map(|p| progress::short_ref(&p.spec.dst))
+                    .collect(),
                 git_dir: &git_dir,
                 policy: push_policy,
-                ref_count,
-                verbose: options.verbosity >= 1,
+                progress,
                 dry_run,
+                identity: conn.identity.id(),
             };
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
             // is written, so no ref can point at history the policy did not store. A dry
             // run builds the pack and prints the plan, then stops.
-            upload_push_pack(&ctx, &want_tips, &remote_refs).await?;
+            if let Some(est) = upload_push_pack(&ctx, &want_tips, &remote_refs).await? {
+                est_credits = est;
+            }
             // Test affordance, compiled only with `--features test-hooks`: stop after the
             // manifest landed and before any ref is written — the state a push interrupted
             // between the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise
@@ -424,7 +472,30 @@ impl Helper {
         } else {
             self.read_refs_until_converged(&planned).await?
         };
-        Ok(finalize_outcomes(planned, &final_refs, dry_run))
+        let outcomes = finalize_outcomes(planned, &final_refs, dry_run);
+        if progress.enabled && !dry_run && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_)))
+        {
+            self.report_done(progress, balance_before, est_credits)
+                .await;
+        }
+        refused.extend(outcomes);
+        Ok(refused)
+    }
+
+    /// The summary line with actuals: the balance change is what this push cost (≈: other
+    /// spends by the same identity in the same seconds would be counted too). A balance
+    /// that has not moved yet (read-after-write lag) is reported as the estimate, not as a
+    /// free push. Only called when progress is shown, so a quiet push skips the read.
+    async fn report_done(&self, progress: Progress, balance_before: u64, est_credits: u64) {
+        let conn = self.conn.as_ref().expect("connected");
+        let after = conn.client.get_balance(&conn.identity.id()).await.ok();
+        let charge = match after.map(|a| balance_before.saturating_sub(a)) {
+            Some(c) if c > 0 => Charge::Measured(c),
+            _ => Charge::Estimated(est_credits),
+        };
+        let (text, event) =
+            progress::done_line(charge, after, conn.repo.owner_id(), conn.repo.name());
+        progress.emit(&text, &event);
     }
 
     /// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its
@@ -436,17 +507,25 @@ impl Helper {
         const MAX_ATTEMPTS: usize = 6;
         let conn = self.conn.as_ref().expect("connected before finalize");
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
-        let expected: Vec<(&str, &str)> = planned
+        // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
+        // that has not applied the delete yet would otherwise make a landed delete read as
+        // "did not take effect" (the nightly's 03 scenario hit exactly that).
+        let expected: Vec<(&str, Option<&str>)> = planned
             .iter()
             .filter(|p| p.reject.is_none())
-            .filter_map(|p| p.new_oid.as_deref().map(|oid| (p.spec.dst.as_str(), oid)))
+            .map(|p| (p.spec.dst.as_str(), p.new_oid.as_deref()))
             .collect();
 
         let mut last = svc.read_refs(&conn.repo).await?;
         for attempt in 1..=MAX_ATTEMPTS {
-            let converged = expected.iter().all(|(dst, oid)| {
-                matches!(last.iter().find(|(n, _)| n == dst),
-                    Some((_, RefState::Resolved { oid: got, .. })) if got == oid)
+            let converged = expected.iter().all(|(dst, want)| {
+                let state = last.iter().find(|(n, _)| n == dst).map(|(_, s)| s);
+                match want {
+                    Some(oid) => {
+                        matches!(state, Some(RefState::Resolved { oid: got, .. }) if got == oid)
+                    }
+                    None => matches!(state, None | Some(RefState::Unborn)),
+                }
             });
             if converged || expected.is_empty() {
                 break;
@@ -539,21 +618,24 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
 /// What [`upload_push_pack`] needs from the push.
 struct PushContext<'a> {
     svc: &'a RepoService<'a>,
-    repo: &'a RepoHandle,
+    repo: &'a RepoRef,
+    /// The repo as the user addressed it (`owner/name`), for the plan line.
+    repo_label: String,
+    /// Short names of the refs this push updates.
+    refs: Vec<String>,
     git_dir: &'a std::path::Path,
     policy: &'a PushPolicy,
-    ref_count: usize,
-    verbose: bool,
+    progress: Progress,
     /// `--dry-run`: build the pack and print the plan, store nothing.
     dry_run: bool,
+    /// The pushing identity (base58).
+    identity: String,
 }
 
 impl PushContext<'_> {
-    /// A status line for the user (git shows the helper's stderr).
+    /// A status line for the user (git shows the helper's stderr, `dash: `-prefixed).
     fn say(&self, line: &str) {
-        if self.verbose {
-            eprintln!("{line}");
-        }
+        self.progress.note(line);
     }
 }
 
@@ -564,11 +646,13 @@ const URIS_JSON_PER_TARGET: u64 = 180;
 /// thin-pack bases), store it according to the repo's storage policy, and record the
 /// `packManifest`. Returns only once the policy's N copies are confirmed and the manifest
 /// has landed; every failure before that is an error, and the caller writes no refs.
+/// `Some(credits)`: the on-chain estimate for what this push stored (the summary line's
+/// fallback when the balance has not moved yet).
 async fn upload_push_pack(
     ctx: &PushContext<'_>,
     want_tips: &[String],
     remote_refs: &[(String, RefState)],
-) -> Result<()> {
+) -> Result<Option<u64>> {
     let have_bases: Vec<String> = remote_refs
         .iter()
         .filter_map(|(_, s)| tip_oid(s))
@@ -586,9 +670,23 @@ async fn upload_push_pack(
     // packRef no index row can ever reference: browse coverage is proved from rows, so the
     // repo would read as index-behind until someone paid for a repack. The `refUpdate` the
     // caller actually wanted still lands; only the empty pack is skipped.
+    // Plan: what is pushed. A dry run always shows it (seeing it is the point of asking).
+    let progress = Progress {
+        enabled: ctx.progress.enabled || ctx.dry_run,
+        ..ctx.progress
+    };
+    let (text, event) = progress::plan_line(&PlanFacts {
+        repo: &ctx.repo_label,
+        refs: &ctx.refs,
+        tip: want_tips.first().map_or("", String::as_str),
+        objects: pack.parsed.object_count() as u64,
+        bytes: pack.bytes.len() as u64,
+    });
+    progress.emit(&text, &event);
+
     if pack.parsed.object_count() == 0 {
         tracing::info!("push adds no new objects; skipping pack upload and browse index");
-        return Ok(());
+        return Ok(None);
     }
 
     let job = PackJob::new(&pack.bytes, pack.parsed.object_count() as u64)?;
@@ -604,34 +702,49 @@ async fn upload_push_pack(
 
     // What goes where, and what it costs, BEFORE anything is paid for.
     let estimate = job.estimate(ctx, resolved.platform);
-    let plan = policy::plan_line(resolved, job.bytes.len() as u64, &estimate);
+    let (text, event) = progress::targets_line(resolved, estimate.total());
+    progress.emit(&text, &event);
+    let platform_writes = |est: &policy::PushEstimate, stores_pack: bool| {
+        progress::platform_line(&PlatformWrites {
+            chunks: if stores_pack { job.chunk_count } else { 0 },
+            manifests: 2,
+            ref_updates: ctx.refs.len(),
+            est_credits: est.total(),
+        })
+    };
     if ctx.dry_run {
-        // A dry run always shows the plan (it is the point of asking), then stops.
-        eprintln!("{plan} (dry run: nothing stored)");
-        return Ok(());
+        let (text, event) = platform_writes(&estimate, resolved.platform);
+        progress.emit(&format!("{text} (dry run: nothing stored)"), &event);
+        return Ok(None);
     }
-    ctx.say(&plan);
     // Resolve every secret BEFORE asking the user to pay: a missing env var must fail
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
-    policy::enforce(estimate.total(), ctx.policy).map_err(|why| anyhow!(why))?;
+    policy::enforce(
+        estimate.total(),
+        ctx.policy,
+        resolved.platform,
+        policy::NOTE_NOTHING_STORED,
+    )?;
 
-    // An earlier push may already have recorded this exact pack (unique packHash; a
-    // duplicate manifest create is treated as "already stored"). Decide BEFORE paying:
-    // still readable → nothing to store; unreadable → refuse now, not after new copies.
-    if let Some(existing) = ctx
-        .svc
-        .read_pack_manifest(ctx.repo, job.pack_hash)
-        .await
-        .context("checking for an existing manifest of this pack")?
-    {
+    // An earlier push may already have recorded this exact pack. Decide BEFORE paying.
+    if already_recorded(ctx, &job).await? {
         // The browse index is left alone: the earlier push published (or tried to) the
         // fragment for this pack, and a missing one is rebuilt by the next repack.
-        return confirm_existing_manifest(ctx, &job, &existing).await;
+        return Ok(Some(policy::estimate_ref_updates(ctx.refs.len())));
     }
 
-    let jpath = crate::journal::journal_path(ctx.git_dir, &job.meta.pack_hash);
+    let jpath = crate::journal::journal_path(
+        ctx.git_dir,
+        ctx.repo.id(),
+        &ctx.identity,
+        &job.meta.pack_hash,
+    );
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    let stored_on_platform = replication.has_platform();
+    let actual_estimate = job.estimate(ctx, stored_on_platform);
+    let (text, event) = platform_writes(&actual_estimate, stored_on_platform);
+    progress.emit(&text, &event);
     // Keep this clone's copy of an externally stored pack (.git/dash/packs/<sha256>.pack)
     // BEFORE the manifest names it: if every external copy is later lost — or this push
     // dies between the manifest and the refs — `dg reseed --from-local` can restore the
@@ -655,15 +768,14 @@ async fn upload_push_pack(
         let _ = std::fs::remove_file(&jpath);
     } else if jpath.exists() {
         ctx.say(&format!(
-            "dash: note: an earlier interrupted push left Platform chunks for this pack that \
-             this push did not use (journal kept at {}); they hold a refundable deposit until \
-             deleted (dg repo delete / admin teardown), or re-push with dash.storage including \
-             platform to put them to use",
+            "note: an earlier interrupted push left Platform chunks for this pack that \
+             this push did not use (journal kept at {}); Platform chunks are permanent, so \
+             re-push with dash.storage including platform to put them to use",
             jpath.display()
         ));
     }
     publish_browse_index(ctx, &pack.parsed, job.pack_hash, &replication, &externals).await;
-    Ok(())
+    Ok(Some(actual_estimate.total()))
 }
 
 /// The pack being pushed, with the facts every storage step needs.
@@ -696,7 +808,7 @@ impl<'a> PackJob<'a> {
         policy::estimate_push(
             self.bytes.len() as u64,
             self.object_count,
-            ctx.ref_count,
+            ctx.refs.len(),
             URIS_JSON_PER_TARGET * ctx.policy.resolved.external.len() as u64,
             platform_bytes,
         )
@@ -747,17 +859,27 @@ async fn store_pack(
         )
     };
     let chain = resolved.platform.then(platform_target);
-    let mut targets: Vec<&dyn StorageTarget> =
-        externals.iter().map(|t| t as &dyn StorageTarget).collect();
-    if let Some(c) = &chain {
-        targets.push(c);
-    }
+    // One progress line per target, printed the moment it is stored and verified.
+    let progress = ctx.progress;
+    let bytes_len = job.bytes.len() as u64;
+    let report = move |o: &StoreOutcome<'_>| {
+        let (text, event) = progress::target_line(o, bytes_len);
+        progress.emit(&text, &event);
+    };
+    let observed: Vec<Observed<'_>> = externals
+        .iter()
+        .map(|t| t as &dyn StorageTarget)
+        .chain(chain.iter().map(|c| c as &dyn StorageTarget))
+        .map(|t| Observed::new(t, &report))
+        .collect();
+    let targets: Vec<&dyn StorageTarget> =
+        observed.iter().map(|t| t as &dyn StorageTarget).collect();
 
     // No policy (Platform only): keep the pre-policy behaviour exactly — the chunk
     // upload's own typed error (TokenFrozen, Unauthorized, InsufficientCredits, …) under
     // the familiar context, with no policy/fallback advice that cannot apply.
     if let (true, 1, Some(chain)) = (resolved.external.is_empty(), resolved.total(), &chain) {
-        let uris = chain
+        let uris = Observed::new(chain, &report)
             .store(job.bytes, &job.meta)
             .await
             .context("uploading pack chunks")?;
@@ -776,30 +898,40 @@ async fn store_pack(
         Err(err) => err,
     };
     if !resolved.platform_fallback {
-        bail!(
-            "{err}. No packManifest and no ref was written. Fix the failing target(s) and push \
-             again (uploads are content-addressed, so confirmed copies are not re-uploaded), \
-             lower dash.replicas, or set dash.platformFallback=true"
-        );
+        return Err(UserError::storage_policy_not_met(&err, "push failed", false).into());
     }
 
     // The external copies could not meet N: keep what did confirm, and add the on-chain
     // copy the user opted into as the fallback (costed and guarded like any paid write).
-    ctx.say(&format!("dash: {err}"));
+    ctx.say(&err.to_string());
     let fallback_cost = job.estimate(ctx, true);
     ctx.say(&format!(
-        "dash: dash.platformFallback: storing the pack on Platform instead, est. {} DASH",
-        policy::dash(fallback_cost.total())
+        "dash.platformFallback: storing the pack on Platform instead, est. {} DASH",
+        dash(fallback_cost.total())
     ));
-    policy::enforce(fallback_cost.total(), ctx.policy).map_err(|why| anyhow!(why))?;
+    policy::enforce(
+        fallback_cost.total(),
+        ctx.policy,
+        true,
+        policy::NOTE_NOTHING_PAID_ON_PLATFORM,
+    )?;
     let fallback = platform_target();
+    let fallback = Observed::new(&fallback, &report);
     let chain_rep = replicate(&[&fallback as &dyn StorageTarget], job.bytes, &job.meta, 1)
         .await
         .map_err(|e| {
-            anyhow!(
-                "{err}; Platform fallback failed too: {e}. No ref was updated; push again to \
-                 resume (confirmed chunks are journaled)"
-            )
+            let mut u = UserError::storage_policy_not_met(&err, "push failed", true)
+                .note(NOTE_PLATFORM_CHUNKS_JOURNALED);
+            u.cause = Some(format!(
+                "{}; platform (dash.platformFallback): {}",
+                u.cause.unwrap_or_default(),
+                e.failures
+                    .iter()
+                    .map(|f| f.reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+            anyhow::Error::from(u)
         })?;
     let mut replicas = err.confirmed;
     replicas.extend(chain_rep.replicas);
@@ -817,7 +949,7 @@ async fn record_pack(
 ) -> Result<()> {
     for f in &replication.failures {
         ctx.say(&format!(
-            "dash: warning: {} did not confirm: {}",
+            "warning: {} did not confirm: {}",
             f.target, f.reason
         ));
     }
@@ -848,7 +980,7 @@ async fn record_pack(
         .map(|r| r.target.as_str())
         .collect();
     ctx.say(&format!(
-        "dash: pack {} ({}) stored on {} ({} verified)",
+        "pack {} ({}) stored on {} ({} verified)",
         &job.meta.pack_hash[..12],
         human_bytes(job.bytes.len() as u64),
         confirmed.join(", "),
@@ -857,34 +989,74 @@ async fn record_pack(
     Ok(())
 }
 
+/// Whether this pack is already recorded and readable, so the push stores nothing. `false`
+/// when no manifest names it, or when none is readable and none is this identity's: forge-v2
+/// gives every uploader its own manifest slot (the pack indexes include `$ownerId`) so that
+/// nobody's dead or hostile copy can block an honest upload, and this push stores its own.
+/// This identity's own unreadable copy cannot be replaced (its slot is taken), so that case
+/// refuses, pointing at `dg reseed --from-local`.
+async fn already_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<bool> {
+    let copies = ctx
+        .svc
+        .read_pack_copies(ctx.repo, job.pack_hash)
+        .await
+        .context("checking for an existing manifest of this pack")?;
+    if copies.is_empty() {
+        return Ok(false);
+    }
+    match confirm_existing_manifest(ctx, job, &copies).await {
+        Ok(()) => Ok(true),
+        Err(e) if !copies.iter().any(|m| m.owner_id == ctx.identity) => {
+            ctx.say(&format!(
+                "no recorded copy of pack {} is readable ({e:#}); storing this push's own copy",
+                &job.meta.pack_hash[..12]
+            ));
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// This pack already has a manifest (an earlier push recorded it). Accept it only if at
-/// least one copy it records is readable and hash-matches; otherwise refuse — before this
+/// least one recorded copy is readable and hash-matches; otherwise refuse — before this
 /// push pays for anything — naming the dead copies and the way back.
 ///
-/// A Platform-tier (`storage = 0`) manifest written by this identity for a pack of the
+/// A Platform-tier (`storage = 0`) manifest written by THIS identity for a pack of the
 /// same size is accepted without a download: its chunks were confirmed at consensus when
 /// it was written, and a plain Platform re-push (the common "interrupted after the
-/// manifest" resume) must not re-download the whole pack to find that out.
+/// manifest" resume) must not re-download the whole pack to find that out. On forge-v2 a
+/// manifest from someone else is never taken on trust: it is read and verified, since a
+/// hostile member could post a manifest with the right hash and no bytes behind it.
 async fn confirm_existing_manifest(
     ctx: &PushContext<'_>,
     job: &PackJob<'_>,
-    existing: &forge_core::repo::PackManifestInfo,
+    copies: &[forge_core::repo::PackManifestInfo],
 ) -> Result<()> {
     let short = &job.meta.pack_hash[..12];
-    let on_chain = existing.storage == 0
-        && existing.chunk_count == u64::from(job.chunk_count)
-        && existing.size_bytes == job.bytes.len() as u64;
-    if on_chain {
+    let mine_on_chain = copies.iter().any(|m| {
+        m.storage == 0
+            && m.owner_id == ctx.identity
+            && m.chunk_count == u64::from(job.chunk_count)
+            && m.size_bytes == job.bytes.len() as u64
+    });
+    if mine_on_chain {
         ctx.say(&format!(
-            "dash: pack {short} is already stored on Platform by an earlier push; not storing it again"
+            "pack {short} is already stored on Platform by an earlier push; not storing it again"
         ));
         return Ok(());
     }
     let reader = PackReader::from_user_config();
-    match ctx.svc.fetch_artifact(ctx.repo, existing, &reader).await {
-        Ok(bytes) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
+    let contract = ctx.svc.repo_contract(ctx.repo).await?;
+    let roles = ctx.svc.copy_roles(ctx.repo).await?;
+    let refs: Vec<&forge_core::repo::PackManifestInfo> = copies.iter().collect();
+    match ctx
+        .svc
+        .fetch_best_copy(ctx.repo, &contract, &refs, &roles, &reader)
+        .await
+    {
+        Ok((bytes, _)) if PackMeta::for_bytes(&bytes).pack_hash == job.meta.pack_hash => {
             ctx.say(&format!(
-                "dash: pack {short} was already recorded by an earlier push and is still \
+                "pack {short} was already recorded by an earlier push and is still \
                  readable; not storing it again"
             ));
             Ok(())
@@ -894,18 +1066,29 @@ async fn confirm_existing_manifest(
                 Ok(_) => "bytes did not match".to_string(),
                 Err(e) => e.to_string(),
             };
-            let recorded = if existing.uris.is_empty() {
-                "Platform chunks".to_string()
-            } else {
-                existing.uris.join(", ")
-            };
-            bail!(
-                "pack {} already recorded at {recorded}, none reachable ({why}). Restore that \
-                 storage, or re-upload the pack from this clone with `dg reseed --from-local \
-                 <owner>/<repo>` (run inside this repository), then push again. Nothing was \
-                 stored and no ref was updated.",
-                job.meta.pack_hash
+            let recorded = copies
+                .iter()
+                .map(|m| {
+                    if m.uris.is_empty() {
+                        format!("Platform chunks of {}", m.owner_id)
+                    } else {
+                        m.uris.join(", ")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(UserError::new(
+                codes::RECORDED_COPY_LOST,
+                format!("push refused: pack {short} is already recorded, and no recorded copy is readable"),
             )
+            .cause(format!("pack {} already recorded at {recorded}: {why}", job.meta.pack_hash))
+            .fix(format!(
+                "re-upload it from this clone: `dg reseed {} --from-local` (run inside this repository), then push again",
+                ctx.repo_label
+            ))
+            .fix("or restore that storage, then push again")
+            .note("nothing was stored and no ref was updated")
+            .into())
         }
     }
 }
@@ -923,6 +1106,16 @@ async fn publish_browse_index(
     replication: &Replication,
     externals: &[ExternalTarget],
 ) {
+    // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose: the nightly's read fixture
+    // (e2e/cli/seed-read-fixture.sh) must stay unindexed so the web app's fallback clone is
+    // what the browser specs exercise.
+    if matches!(
+        std::env::var("DASH_FORGE_NO_BROWSE_INDEX").as_deref(),
+        Ok("1" | "true")
+    ) {
+        tracing::info!("DASH_FORGE_NO_BROWSE_INDEX set; not publishing a browse-index fragment");
+        return;
+    }
     let chain = replication.has_platform().then(|| {
         PlatformChunkTarget::new(ctx.svc, ctx.repo, forge_core::storage::PLATFORM_PROFILE)
     });
@@ -960,7 +1153,7 @@ async fn publish_browse_index(
         }
         Err(e) => {
             ctx.say(&format!(
-                "dash: warning: the push landed but its browse-index fragment could not be \
+                "warning: the push landed but its browse-index fragment could not be \
                  published ({e}); browsing uses the fallback path until the next push or repack"
             ));
         }
@@ -1047,79 +1240,131 @@ fn skip_write_precheck() -> bool {
     )
 }
 
-/// `Some(reason)` when the connected identity provably holds no spendable WRITE or MAINTAIN
-/// token on the repo, and so cannot land any push.
+/// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
+/// and the specs still to push. A non-member is refused everything; a writer only the
+/// protected refs.
+async fn precheck(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    specs: &[PushSpec],
+) -> (Vec<PushOutcome>, Vec<PushSpec>) {
+    let Some(denied) = write_access_denied(conn, svc, specs).await else {
+        return (Vec::new(), specs.to_vec());
+    };
+    // The block says why and what to do; git's own `! [remote rejected]` lines (from the
+    // per-ref reason) make the push fail.
+    denied.error.eprint("dash: ");
+    let (refused, allowed): (Vec<PushSpec>, Vec<PushSpec>) = specs
+        .iter()
+        .cloned()
+        .partition(|s| denied.refs.is_empty() || denied.refs.contains(&s.dst));
+    let refused = refused
+        .into_iter()
+        .map(|s| PushOutcome::Error(s.dst, denied.wire.to_string()))
+        .collect();
+    (refused, allowed)
+}
+
+/// The note on a push the helper refused before doing anything.
+const NOTE_PRECHECK: &str = "checked before building or paying for anything: nothing was stored";
+
+/// E301 — no identity file to sign with.
+fn no_identity(why: impl Into<String>) -> anyhow::Error {
+    UserError::new(codes::NO_IDENTITY, "no identity configured")
+        .cause(why)
+        .fix("export DASH_FORGE_KEY=<identity file> (the bridge identity export) in the shell you run git in")
+        .into()
+}
+
+/// The helper's own refusal of a push it can prove would be rejected: the block printed to
+/// stderr, and the short per-ref reason git shows in `! [remote rejected] … (<reason>)`.
+struct Denied {
+    error: UserError,
+    wire: &'static str,
+    /// The refs refused; empty means the whole push.
+    refs: Vec<String>,
+}
+
+/// `Some(refusal)` when the connected identity provably is not a member (no `writer` or
+/// `maintainer` document) of the repo, and so cannot land any push.
 ///
-/// Returns `None` — i.e. proceed — when the holding cannot be determined. The token history
-/// read is advisory: consensus is the authority, and a transient read failure must not block
-/// a push a holder is entitled to make.
-async fn write_access_denied(conn: &Conn) -> Option<String> {
-    let tokens = TokenService::new(&conn.client, &conn.identity, &conn.bridge);
-    let records = tokens
-        .token_history(&conn.repo.repo_contract_id)
+/// Returns `None` — i.e. proceed — when membership cannot be determined. The read is
+/// advisory: consensus (`ownerRefersTo`, 40120) is the authority, and a transient read
+/// failure must not block a push a member is entitled to make.
+async fn write_access_denied(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    specs: &[PushSpec],
+) -> Option<Denied> {
+    let me = conn.identity.id();
+    let members = MemberReader::new(&conn.client)
+        .roles_of(&conn.repo, &me)
         .await
         .ok()?;
-    let now = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_millis(),
-    )
-    .ok()?;
-    let me = conn.identity.id();
-    let holdings = forge_core::rules::holdings_as_of(&records, &me, now);
-    if holdings.any() {
+    if members.is_empty() {
+        return Some(write_denied(&conn.repo.display(), &me));
+    }
+    // A writer (not a maintainer) cannot update a protected ref: its `protectedRefUpdate`
+    // is maintainer-only at consensus. Refuse before the pack is stored and paid for.
+    if members
+        .iter()
+        .any(|m| m.role == forge_core::rules::v2::Role::Maintainer)
+    {
         return None;
     }
-    Some(write_denied_reason(
-        frozen_grants(&records, &me, now),
-        &conn.repo.owner_id,
-        &conn.repo.name,
-    ))
-}
-
-/// Which of `identity`'s WRITE / MAINTAIN grants are still held but frozen at `now` (a
-/// suspended collaborator), as opposed to never held. Frozen tokens are not spendable, so
-/// [`forge_core::rules::holdings_as_of`] reports both cases the same way; replaying the
-/// history with the freezes left out tells them apart without a second copy of the token
-/// state machine. Only meaningful when the real holdings are empty.
-fn frozen_grants(records: &[TokenRecord], identity: &str, now: u64) -> Holdings {
-    use forge_core::rules::TokenOp;
-    let unfrozen: Vec<TokenRecord> = records
+    let patterns = svc.protected_patterns(&conn.repo).await.ok()?;
+    // Deletes too: a delete of a protected ref is a `protectedRefUpdate`.
+    let protected: Vec<&str> = specs
         .iter()
-        .filter(|r| !matches!(r.op, TokenOp::Freeze | TokenOp::Unfreeze))
-        .cloned()
+        .map(|s| s.dst.as_str())
+        .filter(|d| forge_core::rules::matches_protected(d, &patterns))
         .collect();
-    forge_core::rules::holdings_as_of(&unfrozen, identity, now)
+    if protected.is_empty() {
+        return None;
+    }
+    Some(protected_denied(&conn.repo.display(), &me, &protected))
 }
 
-/// The push refusal for an identity with no spendable token. A suspended collaborator is
-/// told which token is frozen: "no WRITE token" is false for them, and forking is not the
-/// fix.
-fn write_denied_reason(frozen: Holdings, owner_id: &str, name: &str) -> String {
-    // Worded unlike the consensus error ("token frozen: this identity's write access has
-    // been suspended"), so a caller can tell this local refusal from a network verdict.
-    let which = match (frozen.write, frozen.maintain) {
-        (true, true) => Some("WRITE and MAINTAIN tokens on this repo are"),
-        (true, false) => Some("WRITE token on this repo is"),
-        (false, true) => Some("MAINTAIN token on this repo is"),
-        (false, false) => None,
-    };
-    if let Some(which) = which {
-        return format!(
-            "your {which} frozen: a maintainer suspended your push access, so consensus \
-             would reject this push. Ask a maintainer to unfreeze it."
-        );
+/// The push refusal for a writer updating a protected ref.
+fn protected_denied(repo: &str, me: &str, refs: &[&str]) -> Denied {
+    Denied {
+        error: UserError::new(
+            codes::NOT_A_WRITER,
+            format!(
+                "push rejected: only maintainers of {repo} can update {}",
+                refs.join(", ")
+            ),
+        )
+        .cause("the ref matches the repo's protected patterns, and you are a writer")
+        .fix(format!(
+            "ask the owner to run `dg collab add {repo} {me} --role maintainer`"
+        ))
+        .fix("or push to a branch that is not protected")
+        .note(NOTE_PRECHECK),
+        wire: "protected ref: maintainers only",
+        refs: refs.iter().map(|r| (*r).to_string()).collect(),
     }
-    // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
-    // pusher typed into their remote URL — not the contract id, which is not an address
-    // `dg` accepts here.
-    format!(
-        "no WRITE token on this repo — you cannot push to it. Fork it and open a pull \
-         request instead: `dg repo create <name>`, push your branch there, then \
-         `dg pr create {owner_id}/{name} --title <t> --source-contract <your contract id> \
-         --head-oid <oid>`"
-    )
+}
+
+/// The push refusal for an identity that is not a member.
+///
+/// Worded unlike the consensus error (`40120`, "consensus refused"), so a caller (the e2e
+/// suite) can tell this local refusal from a network verdict.
+fn write_denied(repo: &str, me: &str) -> Denied {
+    Denied {
+        error: UserError::new(
+            codes::NOT_A_WRITER,
+            format!("push rejected: you are not a writer of {repo}"),
+        )
+        .cause("your identity has no writer or maintainer document for this repo")
+        .fix(format!(
+            "ask the owner to run `dg collab add {repo} {me} --role writer`"
+        ))
+        .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
+        .note(NOTE_PRECHECK),
+        wire: "not a writer of this repo",
+        refs: Vec::new(),
+    }
 }
 
 /// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
@@ -1130,17 +1375,16 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("neither DASH_FORGE_KEY nor HOME is set; cannot locate identity"))?;
+        .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor HOME is set"))?;
     // The per-owner default only makes sense for the named form. A contract-addressed URL
     // names no owner (that is the point), so it requires an explicit DASH_FORGE_KEY —
     // which is fine, because it is reached from `dg`, not typed by hand.
     let owner = match url {
         DashUrl::Named { owner, .. } => owner.clone(),
-        DashUrl::Contract { .. } => {
-            bail!(
-                "a contract-addressed dash:// URL has no owner to pick a default key for; \
-                 set DASH_FORGE_KEY to the identity JSON to use"
-            )
+        DashUrl::Id { .. } => {
+            return Err(no_identity(
+                "an id-addressed dash:// URL has no owner to pick a default key for",
+            ))
         }
     };
     Ok(home
@@ -1150,87 +1394,42 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frozen_grants, oid_to_bytes, resolve_network, write_denied_reason, PushOutcome};
+    use super::{oid_to_bytes, protected_denied, resolve_network, write_denied, PushOutcome};
     use forge_core::network::NetworkSettings;
-    use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
-
-    fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
-        TokenRecord {
-            id: format!("r{created_at}"),
-            identity: identity.to_string(),
-            token,
-            op,
-            created_at,
-        }
-    }
 
     #[test]
-    fn frozen_grants_are_told_apart_from_no_grant() {
-        use TokenKind::{Maintain, Write};
-        let frozen = [
-            rec("me", Write, TokenOp::Mint, 1),
-            rec("me", Write, TokenOp::Freeze, 2),
-        ];
-        assert_eq!(
-            frozen_grants(&frozen, "me", 10),
-            Holdings {
-                write: true,
-                maintain: false
-            }
-        );
-        // Never granted, or granted to someone else: nothing frozen.
-        assert!(!frozen_grants(&[], "me", 10).any());
-        assert!(!frozen_grants(&frozen, "someone-else", 10).any());
-        // Revoked (destroyed) after the freeze: nothing is held any more.
-        let revoked = [
-            rec("me", Write, TokenOp::Mint, 1),
-            rec("me", Write, TokenOp::Freeze, 2),
-            rec("me", Write, TokenOp::Destroy, 3),
-        ];
-        assert!(!frozen_grants(&revoked, "me", 10).any());
-        // A suspended maintainer who never held WRITE.
-        let maint = [
-            rec("me", Maintain, TokenOp::Mint, 1),
-            rec("me", Maintain, TokenOp::Freeze, 2),
-        ];
-        assert_eq!(
-            frozen_grants(&maint, "me", 10),
-            Holdings {
-                write: false,
-                maintain: true
-            }
-        );
-    }
-
-    #[test]
-    fn a_frozen_pusher_is_not_told_to_fork() {
-        let write = Holdings {
-            write: true,
-            maintain: false,
-        };
-        let frozen = write_denied_reason(write, "owner", "repo");
+    fn a_writer_on_a_protected_ref_is_told_it_needs_maintainer() {
+        let d = protected_denied("owner/repo", "me", &["refs/heads/main"]);
+        let text = d.error.render("dash: ", false);
         assert!(
-            frozen.contains("WRITE token on this repo is frozen"),
-            "{frozen}"
+            text.contains("only maintainers of owner/repo can update refs/heads/main"),
+            "{text}"
         );
-        assert!(!frozen.contains("dg pr create"), "{frozen}");
+        assert!(text.contains("--role maintainer"), "{text}");
+        // Local refusal, not a consensus verdict.
+        assert!(text.contains("checked before building or paying"), "{text}");
+    }
+
+    #[test]
+    fn a_non_member_is_pointed_at_collab_add() {
+        let d = write_denied("owner/repo", "me");
+        assert_eq!((d.error.code, d.error.exit_code()), ("E601", 6));
+        let text = d.error.render("dash: ", false);
+        assert!(
+            text.starts_with("dash: error: push rejected: you are not a writer of owner/repo"),
+            "{text}"
+        );
+        assert!(
+            text.contains("dg collab add owner/repo me --role writer"),
+            "{text}"
+        );
         // Must not read as the consensus error, or e2e scenario 04 could not tell a local
         // refusal from a network verdict.
-        assert!(!frozen.contains("token frozen"), "{frozen}");
-
-        let maintain = Holdings {
-            write: false,
-            maintain: true,
-        };
-        let frozen = write_denied_reason(maintain, "owner", "repo");
         assert!(
-            frozen.contains("MAINTAIN token on this repo is frozen"),
-            "{frozen}"
+            !text.contains("40120") && !text.contains("consensus refused"),
+            "{text}"
         );
-
-        let none = write_denied_reason(Holdings::default(), "owner", "repo");
-        assert!(none.starts_with("no WRITE token"), "{none}");
-        assert!(none.contains("dg pr create owner/repo"), "{none}");
+        assert!(text.lines().all(|l| l.starts_with("dash: ")), "{text}");
     }
 
     fn git_devnet() -> NetworkSettings {

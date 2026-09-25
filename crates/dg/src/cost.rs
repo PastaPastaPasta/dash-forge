@@ -3,12 +3,12 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::cost::{estimate, prompt_delete_refund};
+use forge_core::cost::estimate;
 use forge_core::repo::RepoService;
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, refund_line, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::{Backend, CostCommand};
 
 /// Dispatch a `cost` subcommand.
@@ -51,13 +51,13 @@ fn estimate_cmd(
             "burnCredits": est.burn,
             "totalCredits": est.total(),
             "cost": cost_json(est.total(), price),
-            "refundableDeposit": cost_json(est.deposit, price),
+            "storageDeposit": cost_json(est.deposit, price),
         }),
         || {
             println!("Estimate for {bytes} bytes ({backend_label} tier):");
             println!("  total:      {}", cost_line(est.total(), price));
-            println!("  refundable: {} (storage deposit, reclaimable on delete)", cost_line(est.deposit, price));
-            println!("  burned:     {} (non-refundable processing)", cost_line(est.burn, price));
+            println!("  storage:    {} (deposit; Platform packs are permanent, not refunded)", cost_line(est.deposit, price));
+            println!("  processing: {}", cost_line(est.burn, price));
             if !matches!(backend, None | Some(Backend::Platform)) {
                 println!("  note: external backends store pack bytes off-chain — only the manifest + refs are billed on-chain.");
             }
@@ -104,33 +104,31 @@ async fn audit(ctx: &Ctx, repo: Option<&str>) -> Result<()> {
     // Live storage tally for a repo.
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
     let deposit_locked: u64 = est_deposit(total_bytes);
-    let refund = prompt_delete_refund(total_bytes);
 
     ctx.emit(
         json!({
             "mode": "repo_storage_tally",
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
+            "generation": handle.generation(),
             "packCount": manifests.len(),
             "packBytes": total_bytes,
             "depositLocked": cost_json(deposit_locked, price),
-            "promptRefund": cost_json(refund, price),
         }),
         || {
-            println!(
-                "Storage tally for {}/{}:",
-                handle.owner_id, handle.normalized_name
-            );
+            println!("Storage tally for {}:", handle.display());
             println!(
                 "  packs:           {} ({total_bytes} bytes)",
                 manifests.len()
             );
             println!("  deposit locked:  {}", cost_line(deposit_locked, price));
-            println!("  prompt refund:   {}", refund_line(refund, price));
+            if !handle.is_v1() {
+                println!("  (forge-v2 packs are permanent: the deposit is not refundable)");
+            }
         },
     );
     Ok(())

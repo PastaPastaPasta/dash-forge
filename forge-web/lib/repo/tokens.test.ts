@@ -13,7 +13,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
 import { AuthzResolver, foldIssueState, type Event } from '../rules'
-import type { RepoRef } from './contract'
+import type { V1RepoRef } from './contract'
 import {
   currentHoldings,
   invalidateAuthz,
@@ -34,7 +34,7 @@ const MAINTAINER = id(50)
 const OUTSIDER = id(120)
 const AUTHOR = id(200)
 
-const REPO: RepoRef = { contractId: id(9), ownerId: OWNER }
+const REPO: V1RepoRef = { kind: 'v1', contractId: id(9), ownerId: OWNER, name: '' }
 
 // Token ids the mock returns for positions 0 (write) / 1 (maintain).
 const WRITE_TOKEN = id(70)
@@ -175,7 +175,7 @@ describe('resolveAuthz caching', () => {
   }
 
   it('caches a successful resolver per contract; invalidateAuthz drops it', async () => {
-    const repo: RepoRef = { contractId: id(30), ownerId: OWNER }
+    const repo: V1RepoRef = { kind: 'v1', contractId: id(30), ownerId: OWNER, name: '' }
     const { sdk, queries } = counting(
       mockSdk({ mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] } }),
     )
@@ -194,7 +194,7 @@ describe('resolveAuthz caching', () => {
   })
 
   it('does not cache a failed (degraded) reconstruction', async () => {
-    const repo: RepoRef = { contractId: id(31), ownerId: OWNER }
+    const repo: V1RepoRef = { kind: 'v1', contractId: id(31), ownerId: OWNER, name: '' }
     let calculateCalls = 0
     const sdk = {
       tokens: {
@@ -219,7 +219,7 @@ describe('resolveAuthz caching', () => {
 
 describe('viewer holdings (the PR/issue control gate)', () => {
   it('reads the owner, a granted maintainer, and a stranger correctly', async () => {
-    const repo: RepoRef = { contractId: id(40), ownerId: OWNER }
+    const repo: V1RepoRef = { kind: 'v1', contractId: id(40), ownerId: OWNER, name: '' }
     const sdk = mockSdk({ mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] } })
 
     expect(await readViewerHoldings(sdk, repo, OWNER)).toEqual({ write: true, maintain: true })
@@ -229,7 +229,7 @@ describe('viewer holdings (the PR/issue control gate)', () => {
   })
 
   it('sees a freeze: a suspended maintainer holds nothing spendable', async () => {
-    const repo: RepoRef = { contractId: id(41), ownerId: OWNER }
+    const repo: V1RepoRef = { kind: 'v1', contractId: id(41), ownerId: OWNER, name: '' }
     const sdk = mockSdk({
       mints: { [MAINTAIN_TOKEN]: [{ $id: 'm1', $createdAt: 100, recipientId: MAINTAINER }] },
       freezes: { [MAINTAIN_TOKEN]: [{ $id: 'f1', $createdAt: 200, frozenIdentityId: MAINTAINER }] },

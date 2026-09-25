@@ -15,7 +15,7 @@
 
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::collab::{PullRequestInput, PullRequestService};
@@ -81,10 +81,10 @@ async fn create(
     let repo_ref = RepoRef::parse(repo)?;
     let head_oid = hex::decode(head_oid_hex).context("--head-oid must be hex")?;
     if !ctx.confirm(&format!("Open PR {title:?}? (a small ungated write)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let input = PullRequestInput {
         title: title.to_string(),
@@ -97,7 +97,7 @@ async fn create(
         patch_manifest_hash: None,
     };
     let pr = svc
-        .create_pr(&handle.repo_contract_id, &input)
+        .create_pr(handle.v1_contract_id()?, &input)
         .await
         .context("create_pr")?;
 
@@ -118,10 +118,10 @@ async fn create(
 async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let prs = svc
-        .list_prs(&handle.repo_contract_id, limit, None)
+        .list_prs(handle.v1_contract_id()?, limit, None)
         .await
         .context("list_prs")?;
 
@@ -154,20 +154,25 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pw = svc
-        .pr_state(&handle.repo_contract_id, number, None)
+        .pr_state(handle.v1_contract_id()?, number, None)
         .await
         .context("pr_state")?
-        .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("pull request #{number} not found in {repo}"),
+                format!("`dg pr list {repo}` lists its pull requests"),
+            )
+        })?;
     // Reviews were write-only: `dg pr review` created documents nothing ever read back, so
     // a requested change was invisible to the contributor it was addressed to.
     // Distinguish "no reviews" from "could not read the reviews". Collapsing the two with
     // `unwrap_or_default()` would print "no reviews" on a failed read — reintroducing the
     // exact invisibility that made reviews worth surfacing in the first place.
     let reviews_result = svc
-        .list_reviews(&handle.repo_contract_id, &pw.pr.document_id)
+        .list_reviews(handle.v1_contract_id()?, &pw.pr.document_id)
         .await;
     let reviews = reviews_result.as_deref().unwrap_or(&[]);
     let reviews_error = reviews_result.as_ref().err().map(ToString::to_string);
@@ -256,20 +261,25 @@ async fn review(
     if !ctx.confirm(&format!(
         "Post {verdict:?} review on PR #{number}? (a small ungated write)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("pull request #{number} not found in {repo}"),
+                format!("`dg pr list {repo}` lists its pull requests"),
+            )
+        })?;
     let commit_hex = commit.unwrap_or(&pr.head_oid);
     let commit_oid = hex::decode(commit_hex).context("--commit must be hex")?;
     let doc_id = svc
         .review(
-            &handle.repo_contract_id,
+            handle.v1_contract_id()?,
             &pr.document_id,
             verdict.code(),
             &commit_oid,
@@ -301,19 +311,24 @@ async fn review(
 async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!("Merge PR #{number}? (posts a merge event)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("pull request #{number} not found in {repo}"),
+                format!("`dg pr list {repo}` lists its pull requests"),
+            )
+        })?;
     let oid_hex = merge_oid.unwrap_or(&pr.head_oid);
     let oid = hex::decode(oid_hex).context("--merge-oid must be hex")?;
     let event_id = svc
-        .merge_event(&handle.repo_contract_id, &pr.document_id, &oid)
+        .merge_event(handle.v1_contract_id()?, &pr.document_id, &oid)
         .await
         .context("merge_event")?;
 
@@ -321,7 +336,7 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
     // asking the same question a reader would ask is the only honest way to report the
     // outcome.
     let merged = svc
-        .pr_state(&handle.repo_contract_id, number, None)
+        .pr_state(handle.v1_contract_id()?, number, None)
         .await
         .ok()
         .flatten()
@@ -379,12 +394,17 @@ async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> R
 async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("pull request #{number} not found in {repo}"),
+                format!("`dg pr list {repo}` lists its pull requests"),
+            )
+        })?;
 
     let branch = format!("pr/{number}");
     let mut fetched = false;
@@ -487,12 +507,17 @@ fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool
 async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = PullRequestService::new(&client, &identity, &bridge);
     let pr = svc
-        .get_pr(&handle.repo_contract_id, number)
+        .get_pr(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("PR #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("pull request #{number} not found in {repo}"),
+                format!("`dg pr list {repo}` lists its pull requests"),
+            )
+        })?;
 
     if !git_object_present(&pr.head_oid) {
         fetch_pr_head(ctx, &pr)?;

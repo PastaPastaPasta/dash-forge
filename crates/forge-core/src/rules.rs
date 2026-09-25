@@ -110,7 +110,7 @@ impl Ancestry {
 // ===========================================================================
 
 /// A single append-only `refUpdate` / `protectedRefUpdate` document, flattened to the
-/// fields resolution needs. Callers fetch these (via the §2.3 skip-scan + §3
+/// fields resolution needs. Callers fetch these (via the §2.3 keyset scan, `crate::refs`, + §3
 /// completeness fallback) and hand the slice in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1489,6 +1489,14 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct V2PackListInput {
+        copies: Vec<v2::PackCopyRow>,
+        #[serde(default)]
+        as_of: Option<v2::CopyKey>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ApprovalsInput {
         reviews: Vec<v2::Review>,
         memberships: Vec<v2::Membership>,
@@ -1616,6 +1624,11 @@ mod tests {
                         "vector `{ctx}` readOrder"
                     );
                 }
+            }
+            "v2_pack_list" => {
+                let inp: V2PackListInput = input(v);
+                let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
+                assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
             "approvals" => {
                 let inp: ApprovalsInput = input(v);

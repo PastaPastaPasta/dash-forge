@@ -42,10 +42,10 @@ async fn create(
 ) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!("Create release {tag:?}? (a MAINTAIN-gated write)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
     let input = ReleaseInput {
         tag_name: tag.to_string(),
@@ -55,7 +55,7 @@ async fn create(
         assets: Vec::new(),
     };
     let doc_id = svc
-        .create_release(&handle.repo_contract_id, &input)
+        .create_release(handle.v1_contract_id()?, &input)
         .await
         .context("create_release")?;
 
@@ -69,10 +69,10 @@ async fn create(
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
     let releases = svc
-        .list_releases(&handle.repo_contract_id)
+        .list_releases(handle.v1_contract_id()?)
         .await
         .context("list_releases")?;
 
@@ -113,19 +113,29 @@ async fn download(
 ) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
-    let releases = svc.list_releases(&handle.repo_contract_id).await?;
+    let releases = svc.list_releases(handle.v1_contract_id()?).await?;
     let release = releases
         .into_iter()
         .find(|r| r.tag_name == tag)
-        .ok_or_else(|| anyhow::anyhow!("release {tag:?} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("release {tag:?} not found in {repo}"),
+                format!("`dg release list {repo}` lists its releases"),
+            )
+        })?;
 
     let asset = match asset_name {
         Some(n) => release.assets.into_iter().find(|a| a.name == n),
         None => release.assets.into_iter().next(),
     }
-    .ok_or_else(|| anyhow::anyhow!("no matching asset in release {tag:?}"))?;
+    .ok_or_else(|| {
+        crate::errors::not_found(
+            format!("no matching asset in release {tag:?}"),
+            "omit --asset to download the first asset, or check the name with `dg release list`",
+        )
+    })?;
 
     if asset.uris.is_empty() {
         bail!(

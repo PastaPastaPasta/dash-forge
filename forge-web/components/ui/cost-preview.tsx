@@ -39,7 +39,7 @@ export function CostPreview({
         {refund ? '+' : '~'}
         {formatDash(cost.dash)} DASH
       </span>
-      <span className="font-mono text-anvil-400 dark:text-anvil-500">≈ {dashToUsd(cost.dash)}</span>
+      <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {dashToUsd(cost.dash)}</span>
       {token ? (
         <span className="ml-auto inline-flex items-center gap-1 rounded bg-forge-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-forge-600 dark:text-forge-400">
           + {cost.tokenAmount} {token} token

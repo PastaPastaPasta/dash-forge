@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
-import type { PackManifest, RepoRef } from '@/lib/repo'
+import { repoContractIds, repoKey, type PackManifest, type RepoRef } from '@/lib/repo'
 import { errorMessage } from '@/lib/utils'
 import {
   cachedFallback,
@@ -36,7 +36,7 @@ export function useFallbackBrowse(
   repo: RepoRef | null,
   livePacks: readonly PackManifest[] | null,
 ): FallbackBrowse {
-  const { sdk } = useSdk(repo ? [repo.contractId] : [])
+  const { sdk } = useSdk(repoContractIds(repo))
   const [status, setStatus] = useState<FallbackBrowse['status']>('idle')
   const [progress, setProgress] = useState<FallbackProgress | null>(null)
   const [context, setContext] = useState<BrowseContext | null>(null)
@@ -79,7 +79,7 @@ export function useFallbackBrowse(
   useEffect(() => {
     if (repo === null) return
     if (livePacks === null || livePacks.length === 0) return
-    const cached = cachedFallback(repo.contractId, livePacks)
+    const cached = cachedFallback(repoKey(repo), livePacks)
     if (cached !== null) {
       settle(cached)
       return
@@ -109,8 +109,8 @@ export function useFallbackBrowse(
     return () => {
       cancelled = true
     }
-    // livePacks identity tracks its load; contractId scopes the cache probe.
-  }, [repo?.contractId ?? '', sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
+    // livePacks identity tracks its load; the repo key scopes the cache probe.
+  }, [repo === null ? '' : repoKey(repo), sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { status, progress, context, error, start }
 }

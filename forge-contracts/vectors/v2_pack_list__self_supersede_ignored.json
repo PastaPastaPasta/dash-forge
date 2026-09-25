@@ -1,0 +1,45 @@
+{
+  "name": "self_supersede_ignored",
+  "description": "A verified pack listing its own hash in supersedes does not supersede itself.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [
+        "P1"
+      ],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": false
+    }
+  ]
+}

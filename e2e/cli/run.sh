@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # run.sh — Dash Forge CLI end-to-end suite driver.
 #
-# Runs every scenario against LIVE testnet, reusing the DEPLOYER-owned m1 repo
-# (config.sh). Prints a PASS/FAIL/SKIP matrix and exits non-zero if ANY scenario
+# Runs every scenario against LIVE devnet moutai (forge-v2), on the suite's reserved
+# OWNER-owned repo (config.sh; created on the first run). Scenario 08 reads a v1 repo on
+# testnet. Prints a PASS/FAIL/SKIP matrix and exits non-zero if ANY scenario
 # FAILs. A scenario SKIPs only when a check flaked on every retry; one SKIP is reported
 # but tolerated, more than E2E_MAX_SKIPS fails the run.
 #
@@ -29,14 +30,18 @@ harness_init
 export RUN_ID WORKROOT BIN_DIR PATH DG
 export HARNESS_SHARED=1
 
+# The shared forge-v2 test repo: created (resumably, ~0.001 DASH) on the first run.
+harness_ensure_repo "$E2E_REPO_NAME" || { log "${C_RED}fatal:${C_RST} could not create/resolve ${E2E_REMOTE}"; exit 1; }
+
 SCENARIOS=(
   "01-round-trip"
   "02-non-ff"
   "03-ref-delete"
-  "04-frozen-push"
-  "05-no-token-push"
+  "04-revoked-writer-push"
+  "05-non-member-push"
   "06-third-party-verify"
   "07-depth-and-filter"
+  "08-v1-read-compat"
 )
 
 # Optional subset filter (match by leading number or substring).

@@ -29,12 +29,13 @@ export function AppHeader(): JSX.Element {
     e.preventDefault()
     const q = query.trim()
     if (!q) return
-    // Accept "owner/name" jump; otherwise treat as an owner profile lookup.
+    // Accept "owner/name" jump (owner: identity id or DPNS name); otherwise treat it as an
+    // owner profile lookup (`alice`, `@alice`, or an identity id).
     if (q.includes('/')) {
       const [owner, name] = q.split('/')
       router.push(`/repo?owner=${encodeURIComponent(owner ?? '')}&name=${encodeURIComponent(name ?? '')}`)
     } else {
-      router.push(`/u?name=${encodeURIComponent(q)}`)
+      router.push(`/u?name=${encodeURIComponent(q.replace(/^@/, ''))}`)
     }
   }
 

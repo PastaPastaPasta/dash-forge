@@ -13,9 +13,9 @@ use forge_core::pack::split;
 
 use crate::github::{GhIssue, GhLabel, GhMilestone, GhPull, GhRelease, RepoMeta};
 
-/// Measured repo-v1 instantiation cost, in credits (~1.18 DASH, EXECUTION.md economics).
-/// Only charged when the migration creates a fresh destination repo.
-pub const REPO_V1_CREATE_CREDITS: u64 = 118_000_000_000;
+/// A forge-v2 repo create (`repo` + owner `maintainer` + first `config`), in credits: an
+/// upper bound on three small documents. Charged when the migration creates the repo.
+pub const REPO_CREATE_CREDITS: u64 = 200_000_000;
 
 /// Serialized system-field + CBOR-map overhead added to each document's property bytes
 /// (`$id`, `$ownerId`, `$revision`, `$createdAt`, `$updatedAt`, type tag, map framing).
@@ -137,6 +137,24 @@ impl Plan {
         self.ref_count = ref_count;
     }
 
+    /// Whether any collaboration artifact (issue, PR, release, label, milestone) is planned.
+    pub fn has_collab(&self) -> bool {
+        !(self.issues.is_empty()
+            && self.pulls.is_empty()
+            && self.releases.is_empty()
+            && self.labels.is_empty()
+            && self.milestones.is_empty())
+    }
+
+    /// Drop every collaboration artifact from the plan (a git-only import).
+    pub fn drop_collab(&mut self) {
+        self.issues.clear();
+        self.pulls.clear();
+        self.releases.clear();
+        self.labels.clear();
+        self.milestones.clear();
+    }
+
     /// Total projected comment volume across issues + PRs (from GitHub's per-item counter).
     pub fn projected_comments(&self) -> u64 {
         self.issues.iter().map(|i| i.comments).sum::<u64>()
@@ -147,12 +165,10 @@ impl Plan {
     pub fn cost(&self, skip: SkipFlags) -> Vec<ClassCost> {
         let mut out = Vec::new();
         if self.creates_repo {
-            // The instantiation cost is measured, not per-byte — a single deposit-heavy line
-            // (dominated by count-tree + token storage).
             out.push(ClassCost {
                 label: "repo-create",
                 count: 1,
-                deposit: REPO_V1_CREATE_CREDITS,
+                deposit: REPO_CREATE_CREDITS,
                 burn: 0,
             });
         }
@@ -404,6 +420,6 @@ mod tests {
         let costs = plan.cost(SkipFlags::default());
         let rc = costs.iter().find(|c| c.label == "repo-create").unwrap();
         assert_eq!(rc.count, 1);
-        assert_eq!(rc.deposit, super::REPO_V1_CREATE_CREDITS);
+        assert_eq!(rc.deposit, super::REPO_CREATE_CREDITS);
     }
 }

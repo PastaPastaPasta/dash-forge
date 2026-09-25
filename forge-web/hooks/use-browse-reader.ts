@@ -14,7 +14,7 @@ import { useBrowse } from '@/hooks/use-browse'
 import { AUTO_LOAD_MAX_BYTES, useFallbackBrowse } from '@/hooks/use-fallback-browse'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoRef } from '@/lib/repo'
-import { formatBytes, type FallbackProgress } from '@/lib/view'
+import { formatBytes, type FallbackProgress, type UnavailablePack } from '@/lib/view'
 
 export type BrowseReaderState =
   | { readonly kind: 'loading'; readonly label: string }
@@ -24,6 +24,8 @@ export type BrowseReaderState =
       /** Served from an in-browser clone because the published index is missing or behind. */
       readonly local: boolean
       readonly behind: boolean
+      /** Live external packs the in-browser clone could not fetch (empty: nothing skipped). */
+      readonly unavailable: readonly UnavailablePack[]
     }
   | { readonly kind: 'error'; readonly title?: string; readonly message: string; readonly retry: () => void }
   | { readonly kind: 'no-packs' }
@@ -50,13 +52,19 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
   if (error) return { kind: 'error', message: error, retry: reload }
   if (data === null || data.kind === 'no-packs') return { kind: 'no-packs' }
   if (data.kind === 'ready') {
-    return { kind: 'ready', reader: data.context.reader, local: false, behind: false }
+    return { kind: 'ready', reader: data.context.reader, local: false, behind: false, unavailable: [] }
   }
 
   // No usable published index — the in-browser fallback clone takes over.
   const behind = data.reason === 'index-behind'
   if (fallback.status === 'ready' && fallback.context !== null) {
-    return { kind: 'ready', reader: fallback.context.reader, local: true, behind }
+    return {
+      kind: 'ready',
+      reader: fallback.context.reader,
+      local: true,
+      behind,
+      unavailable: fallback.context.unavailable ?? [],
+    }
   }
   if (fallback.status === 'error') {
     return {

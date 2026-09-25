@@ -12,7 +12,7 @@
  *     orderBy-traversal order, so one hot key starves all siblings (measured 9/9 starved).
  *     So a multi-key read is done per key, in parallel, not as one `in` batch.
  *
- * Plus **skip-scan** ref enumeration ({@link skipScanDistinct}): `> lastKey` orderBy key
+ * Plus **skip-scan** distinct-key enumeration ({@link skipScanDistinct}, used for pushers): `> lastKey` orderBy key
  * `limit 1` hops to the next distinct key — O(log n) per distinct ref, not O(total pushes).
  */
 

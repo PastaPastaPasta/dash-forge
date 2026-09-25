@@ -35,8 +35,13 @@ import {
  * to a concrete pack (external URI via Range, or platform chunks reassembled by seq).
  */
 export interface PackSource {
-  /** Return pack `packRef` bytes `[start, end)`. */
-  fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array>
+  /**
+   * Return pack `packRef` bytes `[start, end)`, from copy `copy` (default 0) when the pack
+   * has several (forge-v2: one per writer, `forge-v2.md` §4).
+   */
+  fetchRange(packRef: number, start: number, end: number, copy?: number): Promise<Uint8Array>
+  /** How many copies pack `packRef` has (default 1). */
+  copyCount?(packRef: number): number
 }
 
 /** What happened to one reconstructed object's hash check. */
@@ -50,6 +55,11 @@ export interface BrowseReaderOptions {
    * read). This is how the UI learns what was actually checked rather than assuming it.
    */
   readonly onObject?: (verdict: ObjectVerdict) => void
+  /**
+   * The error for an OID the locator does not index. Defaults to `object not in locator`; a
+   * reader built over an incomplete pack set supplies one that names what is missing.
+   */
+  readonly missingObject?: (oidHex: string) => Error
 }
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
@@ -94,6 +104,12 @@ export class BrowseReader {
   private readonly objectsByOid = new ObjectLru()
   /** Decoded-entry memo keyed `(packRef, offset)` — where repeated delta-base work lands. */
   private readonly objectsByAddr = new ObjectLru()
+  /**
+   * The copy each pack is read from (forge-v2 packs have one per writer). Starts at the
+   * top-ranked copy and moves on only when an object read through it fails to reconstruct or
+   * to hash to its oid; the copy that served a verified object is kept.
+   */
+  private readonly copyOf = new Map<number, number>()
 
   constructor(
     private readonly locator: ObjectLocator,
@@ -117,31 +133,99 @@ export class BrowseReader {
     if (cached !== undefined) return cached
 
     const entry = this.locate(oidHex)
-    if (entry === null) throw new Error(`object not in locator: ${oidHex}`)
-
-    const obj = singleReadAdvised(entry)
-      ? await this.readSpan(entry)
-      : await this.decodeEntry(entry)
-
-    if (this.opts.verify !== false) {
-      const got = gitOidHex(obj.type, obj.bytes)
-      if (got !== oidKey) {
-        this.opts.onObject?.('failed')
-        throw new Error(`oid mismatch: wanted ${oidHex}, reconstructed ${got}`)
-      }
-      this.opts.onObject?.('verified')
-    } else {
-      this.opts.onObject?.('unchecked')
+    if (entry === null) {
+      throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
     }
+
+    const obj = await this.readVerified(entry, oidKey)
     this.objectsByOid.set(oidKey, obj)
     return obj
+  }
+
+  /**
+   * Reconstruct `entry` and check its oid, trying the pack's copies in order: a copy whose
+   * bytes do not reconstruct the object (a hostile or corrupt writer copy) is skipped for the
+   * next one (`forge-v2.md` §4 "read the first copy that verifies"). A single-copy pack
+   * behaves exactly as before.
+   */
+  private async readVerified(entry: LocatorEntry, oidKey: string): Promise<GitObject> {
+    const copies = this.packs.copyCount?.(entry.packRef) ?? 1
+    const start = this.copyOf.get(entry.packRef) ?? 0
+    let lastErr: unknown
+    for (let i = 0; i < copies; i++) {
+      const copy = (start + i) % copies
+      let obj: GitObject
+      try {
+        obj = i === 0 ? await this.reconstruct(entry) : await this.reconstructFrom(entry, copy)
+      } catch (e) {
+        lastErr = e
+        continue
+      }
+      if (this.opts.verify === false) {
+        this.opts.onObject?.('unchecked')
+        return obj
+      }
+      const got = gitOidHex(obj.type, obj.bytes)
+      if (got === oidKey) {
+        this.copyOf.set(entry.packRef, copy)
+        this.opts.onObject?.('verified')
+        return obj
+      }
+      lastErr = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
+    }
+    this.opts.onObject?.('failed')
+    throw lastErr
+  }
+
+  /** The default path: memoized decode through the pack's current copy. */
+  private reconstruct(entry: LocatorEntry): Promise<GitObject> {
+    return singleReadAdvised(entry) ? this.readSpan(entry) : this.decodeEntry(entry)
+  }
+
+  /**
+   * Reconstruct `entry` from one specific copy of its pack, without the address memo (whose
+   * entries came from another copy). REF_DELTA bases are other objects and go through
+   * {@link readObject}, which verifies them on their own.
+   */
+  private async reconstructFrom(entry: LocatorEntry, copy: number): Promise<GitObject> {
+    if (singleReadAdvised(entry)) {
+      const end = entry.offset + entry.length
+      const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
+      return reconstructFromSpan(entry, slice)
+    }
+    const walk = async (e: LocatorEntry): Promise<GitObject> => {
+      const self = await this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
+      const h = parseObjHeader(self, 0)
+      switch (h.type) {
+        case PACK_TYPE.COMMIT:
+        case PACK_TYPE.TREE:
+        case PACK_TYPE.BLOB:
+        case PACK_TYPE.TAG:
+          return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size) }
+        case PACK_TYPE.OFS_DELTA: {
+          const [rel, dpos] = parseOfsBase(self, h.after)
+          if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
+          const baseEntry = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
+          if (baseEntry === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
+          const base = await walk(baseEntry)
+          return { type: base.type, bytes: applyDelta(base.bytes, inflateZlib(self, dpos, h.size)) }
+        }
+        case PACK_TYPE.REF_DELTA: {
+          const base = await this.readObject(bytesToHex(self.subarray(h.after, h.after + 20)))
+          return { type: base.type, bytes: applyDelta(base.bytes, inflateZlib(self, h.after + 20, h.size)) }
+        }
+        default:
+          throw new Error(`unknown pack object type ${h.type}`)
+      }
+    }
+    return walk(entry)
   }
 
   /** Single contiguous span read (blob path): one ranged fetch, then reconstruct. */
   private async readSpan(entry: LocatorEntry): Promise<GitObject> {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
-    const slice = await this.packs.fetchRange(entry.packRef, start, end)
+    const slice = await this.packs.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
     return reconstructFromSpan(entry, slice)
   }
 
@@ -151,7 +235,9 @@ export class BrowseReader {
    * index, REF by OID), and apply. Avoids the single-span over-fetch (root tree 212×).
    */
   private async decodeEntry(entry: LocatorEntry): Promise<GitObject> {
-    const addrKey = offsetKey(entry.packRef, entry.offset)
+    // Keyed by the copy too: bytes decoded from one writer's copy must not stand in for
+    // another's once a bad copy has been skipped.
+    const addrKey = `${offsetKey(entry.packRef, entry.offset)}:${this.copyOf.get(entry.packRef) ?? 0}`
     const cached = this.objectsByAddr.get(addrKey)
     if (cached !== undefined) return cached
     const obj = await this.decodeEntryUncached(entry)
@@ -161,7 +247,7 @@ export class BrowseReader {
 
   private async decodeEntryUncached(entry: LocatorEntry): Promise<GitObject> {
     const packRef = entry.packRef
-    const self = await this.packs.fetchRange(packRef, entry.offset, entry.offset + entry.length)
+    const self = await this.packs.fetchRange(packRef, entry.offset, entry.offset + entry.length, this.copyOf.get(packRef))
     const h = parseObjHeader(self, 0)
 
     switch (h.type) {

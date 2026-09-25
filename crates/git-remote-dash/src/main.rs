@@ -14,8 +14,12 @@
 //! - `push`        → build a self-contained pack, store it per the repo's storage policy
 //!   (`dash.storage` / `dash.replicas`), write the manifest, then the ref updates.
 //!
-//! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--teardown`,
-//! `--balance`) used to provision/inspect repos outside the git protocol.
+//! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--dump-refs`,
+//! `--balance`, `--version`) used to provision/inspect repos outside the git protocol.
+//!
+//! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of
+//! [`forge_core::user_error`] on stderr (git shows it verbatim), and the process exits with
+//! the code's class digit — always non-zero, so git reports the operation as failed.
 //!
 //! The network comes from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` /
 //! `DASH_FORGE_DAPI_ADDRESSES`, else git config `dash.network` / `dash.devnetName` /
@@ -28,11 +32,13 @@ mod helper;
 mod journal;
 mod options;
 mod policy;
+mod progress;
 mod url;
 
 use std::io::{self, BufRead, Write};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+use forge_core::user_error::{self, codes, ErrorContext, UserError};
 use tokio::runtime::Runtime;
 
 use helper::{Helper, PushSpec, Want};
@@ -44,7 +50,55 @@ use url::DashUrl;
 /// `connect`/`stateless-connect` are deliberately absent (S0.9: connect-less helper).
 const CAPABILITIES: &str = "fetch\npush\noption\n\n";
 
-fn main() -> Result<()> {
+fn main() {
+    let mut goal = Goal::default();
+    if let Err(err) = run(&mut goal) {
+        let ctx = ErrorContext {
+            goal: Some(goal.lead),
+            rejected: goal.rejected,
+            repo: goal.repo.as_deref(),
+            retry_is_idempotent: goal.idempotent,
+        };
+        let u = user_error::classify(err.chain(), &ctx);
+        u.eprint("dash: ");
+        std::process::exit(u.exit_code());
+    }
+}
+
+/// What the helper was doing when it failed: the headline lead and the repo.
+struct Goal {
+    lead: &'static str,
+    rejected: Option<&'static str>,
+    repo: Option<String>,
+    idempotent: bool,
+}
+
+impl Default for Goal {
+    fn default() -> Self {
+        Self {
+            lead: "git-remote-dash failed",
+            rejected: None,
+            repo: None,
+            idempotent: false,
+        }
+    }
+}
+
+impl Goal {
+    /// Record what git asked for. Fetches and pushes are both safe to re-run.
+    fn set(&mut self, pushing: bool, opts: &OptionState) {
+        self.idempotent = true;
+        (self.lead, self.rejected) = if pushing {
+            ("push failed", Some("push rejected"))
+        } else if opts.cloning {
+            ("clone failed", None)
+        } else {
+            ("fetch failed", None)
+        };
+    }
+}
+
+fn run(goal: &mut Goal) -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .with_env_filter(
@@ -72,11 +126,17 @@ fn main() -> Result<()> {
 
     // Remote-helper mode: git passes `<remote-name> <url>`. When a bare URL is used
     // (`git clone dash://…` with no named remote), both args are the URL.
-    let url_arg = args
-        .get(2)
-        .or_else(|| args.get(1))
-        .ok_or_else(|| anyhow::anyhow!("usage: git-remote-dash <remote-name> <url>"))?;
-    let dash_url = DashUrl::parse(url_arg).context("parsing dash:// URL")?;
+    let url_arg = args.get(2).or_else(|| args.get(1)).ok_or_else(|| {
+        UserError::new(codes::USAGE, "git-remote-dash is run by git, not by hand")
+            .cause("usage: git-remote-dash <remote-name> <url>")
+            .fix("use it through git: `git clone dash://<owner>/<repo>`")
+    })?;
+    let dash_url = DashUrl::parse(url_arg).map_err(|e| {
+        UserError::new(codes::INVALID_REPO_REF, "invalid dash:// URL")
+            .cause(e.to_string())
+            .fix("use dash://<owner identity id>/<repo>, or dash://<contract id>")
+    })?;
+    goal.repo = Some(dash_url.to_string());
 
     // git invokes the helper with a *relative* `GIT_DIR=.git` and cwd = the worktree.
     // We shell out to `git -C <other-dir> …` (in forge-core's pack builder and in scratch
@@ -95,7 +155,7 @@ fn main() -> Result<()> {
     let mut helper = Helper::new(dash_url, remote_name)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock())
+    protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock(), goal)
 }
 
 /// `git-remote-dash <version> (<sha> <target>)` — the same shape as `dg --version`.
@@ -155,6 +215,7 @@ fn protocol_loop<R: BufRead, W: Write>(
     helper: &mut Helper,
     reader: R,
     mut writer: W,
+    goal: &mut Goal,
 ) -> Result<()> {
     let mut opts = OptionState::default();
     let mut lines = reader.lines();
@@ -176,6 +237,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                 writer.flush()?;
             }
             "list" => {
+                goal.set(line.contains("for-push"), &opts);
                 fail_if_shallow(&opts)?;
                 let out = rt.block_on(helper.list()).context("list refs")?;
                 for l in &out {
@@ -185,6 +247,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                 writer.flush()?;
             }
             "fetch" => {
+                goal.set(false, &opts);
                 fail_if_shallow(&opts)?;
                 let mut wants = Vec::new();
                 if let Some(w) = parse_fetch_line(&line) {
@@ -206,6 +269,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                 writer.flush()?;
             }
             "push" => {
+                goal.set(true, &opts);
                 let mut specs = Vec::new();
                 if let Some(s) = parse_push_line(&line) {
                     specs.push(s);
@@ -243,14 +307,24 @@ fn protocol_loop<R: BufRead, W: Write>(
 /// letting git silently produce a full clone (S0.9).
 fn fail_if_shallow(opts: &OptionState) -> Result<()> {
     if let Some(msg) = &opts.fatal {
-        bail!("{msg}");
+        return Err(UserError::new(
+            codes::UNSUPPORTED,
+            "shallow clone is not supported by dash://",
+        )
+        .cause(msg.as_str())
+        .fix("use a partial clone instead: `git clone --filter=blob:none dash://…`")
+        .into());
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_fetch_line, parse_push_line, version_line, CAPABILITIES};
+    use super::{
+        fail_if_shallow, parse_fetch_line, parse_push_line, version_line, ErrorContext,
+        CAPABILITIES,
+    };
+    use crate::options::{handle_option, OptionState};
 
     #[test]
     fn version_line_names_version_commit_and_target() {
@@ -264,6 +338,19 @@ mod tests {
             v.ends_with(concat!(" ", env!("DASH_FORGE_TARGET"), ")")),
             "{v}"
         );
+    }
+
+    #[test]
+    fn shallow_fails_with_its_own_code_and_the_e2e_wording() {
+        let mut opts = OptionState::default();
+        handle_option(&mut opts, "depth 1");
+        let err = fail_if_shallow(&opts).unwrap_err();
+        let u = forge_core::user_error::classify(err.chain(), &ErrorContext::default());
+        assert_eq!((u.code, u.exit_code()), ("E205", 2));
+        // e2e 07 recognizes the refusal by these words.
+        let text = u.render("dash: ", false);
+        assert!(text.contains("shallow clone"), "{text}");
+        assert!(text.contains("--filter=blob:none"), "{text}");
     }
 
     #[test]

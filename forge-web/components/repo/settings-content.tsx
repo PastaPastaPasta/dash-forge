@@ -15,8 +15,16 @@
 import { useState } from 'react'
 import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import type { Collaborator } from '@/lib/repo'
-import { readCollaborators, grantCollaborator, revokeCollaborator, suspendCollaborator } from '@/lib/repo'
+import type { Collaborator, V1RepoRef, V2RepoRef } from '@/lib/repo'
+import {
+  grantCollaborator,
+  readCollaborators,
+  readMembershipsCached,
+  revokeCollaborator,
+  suspendCollaborator,
+} from '@/lib/repo'
+import type { Membership } from '@/lib/rules/v2'
+import { V2WritesNote } from '@/components/repo/v2-writes-note'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
@@ -35,13 +43,18 @@ type Role = 'write' | 'maintain'
 type Action = { kind: 'grant' | 'suspend' | 'revoke'; member: string; role: Role }
 
 export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.contractId])
+  if (home.repo.kind === 'v2') return <V2Settings home={home} repo={home.repo} />
+  return <V1Settings home={home} repo={home.repo} />
+}
+
+function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.Element {
+  const { sdk, ready } = useSdk([repo.contractId])
   const { identity, signer } = useAuth()
-  const isOwner = identity === home.repo.ownerId
+  const isOwner = identity === repo.ownerId
 
   const collabs = useAsync<Collaborator[]>(
-    () => readCollaborators(sdk!, home.repo),
-    [ready, home.repo.contractId],
+    () => readCollaborators(sdk!, repo),
+    [ready, repo.contractId],
     { enabled: ready && sdk !== null },
   )
 
@@ -52,9 +65,9 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   const runAction = async (): Promise<void> => {
     if (!sdk || !signer || !action) return
     const maintain = action.role === 'maintain'
-    if (action.kind === 'grant') await grantCollaborator(sdk, signer, home.repo, action.member, maintain)
-    else if (action.kind === 'suspend') await suspendCollaborator(sdk, signer, home.repo, action.member, maintain)
-    else await revokeCollaborator(sdk, signer, home.repo, action.member, maintain)
+    if (action.kind === 'grant') await grantCollaborator(sdk, signer, repo, action.member, maintain)
+    else if (action.kind === 'suspend') await suspendCollaborator(sdk, signer, repo, action.member, maintain)
+    else await revokeCollaborator(sdk, signer, repo, action.member, maintain)
     collabs.reload()
   }
 
@@ -65,18 +78,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
     <div className="mx-auto max-w-2xl space-y-8">
       {/* Backend */}
       <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
-        <div className="flex items-center gap-3">
-          <BackendBadge backend={home.backend} />
-          {home.backend.uris.length > 0 ? (
-            <ul className="min-w-0 flex-1 space-y-0.5">
-              {home.backend.uris.map((u) => (
-                <li key={u} className="truncate font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{u}</li>
-              ))}
-            </ul>
-          ) : (
-            <span className="text-dense text-anvil-500 dark:text-anvil-400">Readers follow manifest URIs; no explicit backend URIs set.</span>
-          )}
-        </div>
+        <StorageBackend backend={home.backend} emptyText="Readers follow manifest URIs; no explicit backend URIs set." />
         <p className="mt-2 text-[12px] text-anvil-400">
           Change it with <span className="font-mono">dg repo backend set</span> (an owner-signed config write). It records a preference: git push currently stores packs on Platform whatever it says, and <span className="font-mono">dg repack</span> / <span className="font-mono">dg reseed</span> move them.
         </p>
@@ -166,7 +168,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo contract">
-            <Oid value={home.repo.contractId} chars={12} label="repo contract id" />
+            <Oid value={repo.contractId} chars={12} label="repo contract id" />
           </DetailRow>
           <DetailRow label="Owner identity">
             <Oid value={home.repo.ownerId} chars={12} label="owner identity id" />
@@ -211,6 +213,105 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   )
 }
 
+/**
+ * forge-v2 settings: the repo's members (its current `maintainer` / `writer` documents — the
+ * ACL consensus enforces), and the ids a CLI or SDK user needs. Adding and removing members
+ * from the browser comes with forge-v2 writes.
+ */
+function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.Element {
+  const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const members = useAsync<Membership[]>(
+    () => readMembershipsCached(sdk!, repo, network),
+    [ready, repo.repoId, network],
+    { enabled: ready && sdk !== null },
+  )
+  const memberRows = members.data ?? []
+  return (
+    <div className="mx-auto max-w-2xl space-y-8">
+      <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
+      </Section>
+
+      <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        {members.loading ? (
+          <LoadingBlock label="Reading members" />
+        ) : members.error ? (
+          <ErrorState message={members.error} onRetry={members.reload} />
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+            {memberRows.length === 0 ? (
+              <div className="px-4 py-6 text-center text-dense text-anvil-500 dark:text-anvil-400">
+                No maintainers or writers. Nobody can push to this repo.
+              </div>
+            ) : (
+              memberRows.map((m) => (
+                <div
+                  key={`${m.role}:${m.identity}`}
+                  className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
+                >
+                  <Author identityId={m.identity} link={false} />
+                  <RoleTag role={m.role === 'maintainer' ? 'MAINTAINER' : 'WRITER'} />
+                  {m.identity === repo.ownerId ? (
+                    <span className="text-[12px] text-anvil-400">owner</span>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-[12px] text-anvil-400">
+          Members are the repo&apos;s maintainer and writer documents. Consensus checks them on
+          every push, ref update and state event; removing one revokes it.
+        </p>
+        <V2WritesNote />
+      </Section>
+
+      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+          <DetailRow label="Repo id">
+            <Oid value={repo.repoId} chars={12} label="repo document id" />
+          </DetailRow>
+          <DetailRow label="Owner identity">
+            <Oid value={repo.ownerId} chars={12} label="owner identity id" />
+          </DetailRow>
+          <DetailRow label="forge-core">
+            <Oid value={repo.forge.core} chars={12} label="forge-core contract id" />
+          </DetailRow>
+          <DetailRow label="forge-collab">
+            <Oid value={repo.forge.collab} chars={12} label="forge-collab contract id" />
+          </DetailRow>
+          <DetailRow label="Network">
+            <NetworkBadge always />
+          </DetailRow>
+        </dl>
+        <p className="mt-2 text-[12px] text-anvil-400">
+          A forge-v2 repo is a <span className="font-mono">repo</span> document in the shared
+          forge-core contract; everything else about it is keyed by the repo id. Click an id to
+          copy it.
+        </p>
+      </Section>
+    </div>
+  )
+}
+
+/** The configured backend badge and its URIs (or `emptyText` when it names none). */
+function StorageBackend({ backend, emptyText }: { backend: RepoHome['backend']; emptyText: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-3">
+      <BackendBadge backend={backend} />
+      {backend.uris.length > 0 ? (
+        <ul className="min-w-0 flex-1 space-y-0.5">
+          {backend.uris.map((u) => (
+            <li key={u} className="truncate font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{u}</li>
+          ))}
+        </ul>
+      ) : (
+        <span className="text-dense text-anvil-500 dark:text-anvil-400">{emptyText}</span>
+      )}
+    </div>
+  )
+}
+
 function Section({
   title,
   icon,
@@ -244,7 +345,7 @@ function NotSet(): JSX.Element {
   return <span className="text-dense text-anvil-400">—</span>
 }
 
-function RoleTag({ role }: { role: 'WRITE' | 'MAINTAIN' }): JSX.Element {
+function RoleTag({ role }: { role: string }): JSX.Element {
   return (
     <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-600 dark:text-forge-400">
       {role}

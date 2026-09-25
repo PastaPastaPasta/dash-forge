@@ -21,7 +21,8 @@ use anyhow::{anyhow, bail, Result};
 use forge_core::cost::estimate;
 use forge_core::repo::credits_to_dash;
 use forge_core::storage::policy::pick_scoped;
-use forge_core::storage::{human_bytes, ResolvedPolicy, StoragePolicy, StorageProfiles};
+use forge_core::storage::{ResolvedPolicy, StoragePolicy, StorageProfiles};
+use forge_core::user_error::{codes, dash, UserError};
 
 use crate::git::LocalRepo;
 
@@ -158,7 +159,7 @@ pub fn estimate_push(
     platform_bytes: bool,
 ) -> PushEstimate {
     let manifest = estimate(MANIFEST_BASE_BYTES + uris_json_len).total();
-    let refs = estimate(REF_UPDATE_BYTES).total() * ref_count as u64;
+    let refs = estimate_ref_updates(ref_count);
     let locator_len = LOCATOR_HEADER_BYTES + LOCATOR_ROW_BYTES * object_count;
     PushEstimate {
         metadata_credits: manifest * 2 + refs,
@@ -170,52 +171,18 @@ pub fn estimate_push(
     }
 }
 
-/// Format a DASH amount with enough precision for small pushes.
-pub fn dash(credits: u64) -> String {
-    let d = credits_to_dash(credits);
-    if d == 0.0 {
-        "0".into()
-    } else if d < 0.001 {
-        format!("{d:.6}")
-    } else {
-        format!("{d:.4}")
-    }
+/// The on-chain estimate for `n` ref updates alone (a push that stores no pack).
+pub fn estimate_ref_updates(n: usize) -> u64 {
+    estimate(REF_UPDATE_BYTES).total() * n as u64
 }
 
-/// The one-line "what goes where" summary printed before a push pays for anything.
-pub fn plan_line(policy: &ResolvedPolicy, pack_bytes: u64, est: &PushEstimate) -> String {
-    let external: Vec<String> = policy.external.iter().map(|(n, _)| n.clone()).collect();
-    let size = human_bytes(pack_bytes);
-    let destination = if external.is_empty() {
-        "Platform chunks".to_string()
-    } else if policy.platform {
-        format!("{}, platform", external.join(", "))
-    } else {
-        external.join(", ")
-    };
-    let need = if policy.total() > 1 {
-        format!(" (need {} of {})", policy.replicas, policy.total())
-    } else {
-        String::new()
-    };
-    let chain = if policy.platform {
-        format!(
-            "Platform: pack + manifest + refs, est. {} DASH",
-            dash(est.total())
-        )
-    } else {
-        format!(
-            "Platform: manifest + refs only, est. {} DASH{}",
-            dash(est.metadata_credits),
-            if policy.platform_fallback {
-                " (Platform fallback armed)"
-            } else {
-                ""
-            }
-        )
-    };
-    format!("dash: pack {size} → {destination}{need}; {chain}")
-}
+/// The cost-guard refusal note when nothing at all has been stored yet.
+pub const NOTE_NOTHING_STORED: &str = "nothing was stored or paid for";
+
+/// The note when the guard stops the Platform fallback: the external copies that confirmed
+/// are already stored (and kept), but Platform was not paid.
+pub const NOTE_NOTHING_PAID_ON_PLATFORM: &str =
+    "nothing was paid for on Platform; the copies your storage confirmed are kept";
 
 /// What the cost guard decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,7 +191,7 @@ pub enum Guard {
     Proceed,
     /// Ask the user on the terminal.
     Ask(String),
-    /// Refuse, with the message git should show.
+    /// Refuse: no terminal to ask on. Carries the cause (one line).
     Refuse(String),
 }
 
@@ -245,20 +212,25 @@ pub fn guard(
     if !must_ask {
         return Guard::Proceed;
     }
-    let question = match threshold_dash {
-        Some(t) if over => format!(
-            "This push costs about {} DASH, above dash.costWarnThreshold ({t}).",
-            dash(credits)
-        ),
-        _ => format!("This push costs about {} DASH.", dash(credits)),
-    };
     if have_tty {
-        Guard::Ask(question)
+        Guard::Ask(match threshold_dash {
+            Some(t) if over => format!(
+                "This push costs about {} DASH, above dash.costWarnThreshold ({t}).",
+                dash(credits)
+            ),
+            _ => format!("This push costs about {} DASH.", dash(credits)),
+        })
     } else {
-        Guard::Refuse(format!(
-            "{question} No terminal to confirm on — re-run with `git -c dash.confirm=never push …`, \
-             or raise dash.costWarnThreshold"
-        ))
+        Guard::Refuse(match threshold_dash {
+            Some(t) if over => format!(
+                "this push would cost ~{} DASH, above dash.costWarnThreshold ({t})",
+                dash(credits)
+            ),
+            _ => format!(
+                "this push would cost ~{} DASH and dash.confirm = always",
+                dash(credits)
+            ),
+        })
     }
 }
 
@@ -288,8 +260,17 @@ pub fn have_tty() -> bool {
         .is_ok()
 }
 
-/// Run the guard end to end: `Ok(())` to proceed, `Err(reason)` (one line) to refuse.
-pub fn enforce(credits: u64, policy: &PushPolicy) -> std::result::Result<(), String> {
+/// Run the guard end to end: `Ok(())` to proceed, the user-facing refusal otherwise.
+/// `platform_bytes`: whether this push stores the pack itself on Platform (the expensive
+/// case, where adding your own storage is the fix).
+// A refusal happens at most once per push; boxing it buys nothing.
+#[allow(clippy::result_large_err)]
+pub fn enforce(
+    credits: u64,
+    policy: &PushPolicy,
+    platform_bytes: bool,
+    note: &'static str,
+) -> std::result::Result<(), UserError> {
     // Only look for a terminal when the guard could actually ask (no /dev/tty open on a
     // push that has no threshold and `dash.confirm` auto/never).
     let could_ask = match policy.confirm {
@@ -300,29 +281,43 @@ pub fn enforce(credits: u64, policy: &PushPolicy) -> std::result::Result<(), Str
     let tty = could_ask && have_tty();
     match guard(credits, policy.cost_warn_threshold, policy.confirm, tty) {
         Guard::Proceed => Ok(()),
-        Guard::Refuse(msg) => Err(msg),
+        Guard::Refuse(cause) => Err(refusal(&cause, platform_bytes).note(note)),
         Guard::Ask(q) => match ask_on_tty(&q) {
             Ok(true) => Ok(()),
-            Ok(false) => Err("push cancelled at the cost confirmation".into()),
-            Err(e) => Err(format!(
-                "{q} Could not confirm on the terminal ({e}); set dash.confirm=never to skip"
-            )),
+            Ok(false) => Err(UserError::new(
+                codes::CANCELLED,
+                "push cancelled at the cost confirmation",
+            )
+            .note(note)),
+            Err(e) => Err(UserError::new(
+                codes::CONFIRMATION_REQUIRED,
+                "push stopped: could not confirm its cost",
+            )
+            .cause(format!(
+                "{q} Reading the answer on the terminal failed: {e}"
+            ))
+            .fix("run `git -c dash.confirm=never push …` to accept the price")
+            .note(note)),
         },
     }
+}
+
+/// E801: the cost guard needed a yes and had no terminal to ask on (spec §7.3 example 3).
+pub fn refusal(cause: &str, platform_bytes: bool) -> UserError {
+    let u = UserError::new(codes::COST_GUARD, "push stopped by the cost guard")
+        .cause(format!("{cause}; no terminal to confirm on"));
+    let u = if platform_bytes {
+        u.fix("add storage (`dg storage add`, then `dg storage use`) so packs go to your bucket, or run `git -c dash.confirm=never push` to accept the price")
+    } else {
+        u.fix("run `git -c dash.confirm=never push` to accept the price")
+    };
+    u.fix("or raise `git config dash.costWarnThreshold` (DASH)")
+        .note(NOTE_NOTHING_STORED)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn policy(storage: Option<&str>, profiles: &str) -> ResolvedPolicy {
-        StoragePolicy::from_git_values(storage, None, None)
-            .unwrap()
-            .resolve(&StorageProfiles::parse(profiles).unwrap())
-            .unwrap()
-    }
-
-    const PROFILES: &str = "[profiles.r2-main]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\nbucket = \"b\"\n[profiles.kubo]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n";
 
     #[test]
     fn external_policy_bills_metadata_only() {
@@ -336,30 +331,6 @@ mod tests {
         // ~1.2 MiB of chunks is ~0.35 DASH (0.283 DASH/MiB deposit + burn).
         let d = credits_to_dash(chain.total());
         assert!((0.3..0.45).contains(&d), "{d}");
-    }
-
-    #[test]
-    fn plan_line_says_what_goes_where() {
-        let p = policy(Some("r2-main,kubo"), PROFILES);
-        let est = estimate_push(1_258_291, 300, 1, 300, false);
-        let line = plan_line(&p, 1_258_291, &est);
-        assert!(
-            line.starts_with("dash: pack 1.2 MiB → r2-main, kubo (need 2 of 2)"),
-            "{line}"
-        );
-        assert!(
-            line.contains("Platform: manifest + refs only, est. 0.00"),
-            "{line}"
-        );
-
-        let p = policy(None, PROFILES);
-        let est = estimate_push(4096, 3, 1, 0, true);
-        let line = plan_line(&p, 4096, &est);
-        assert!(
-            line.starts_with("dash: pack 4.0 KiB → Platform chunks;"),
-            "{line}"
-        );
-        assert!(line.contains("pack + manifest + refs"), "{line}");
     }
 
     #[test]
@@ -381,14 +352,23 @@ mod tests {
             Guard::Ask(_)
         ));
         // Over, no terminal → refuse with the fix.
-        let Guard::Refuse(msg) = guard(one_dash, Some(0.1), ConfirmMode::Auto, false) else {
+        let Guard::Refuse(cause) = guard(one_dash, Some(0.1), ConfirmMode::Auto, false) else {
             panic!("expected refuse");
         };
         assert!(
-            msg.contains("dash.confirm=never") && msg.contains("costWarnThreshold"),
-            "{msg}"
+            cause.contains("above dash.costWarnThreshold (0.1)"),
+            "{cause}"
         );
-        assert!(!msg.contains('\n'));
+        let u = refusal(&cause, true);
+        assert_eq!((u.code, u.exit_code()), ("E801", 8));
+        let text = u.render("dash: ", false);
+        assert!(
+            text.contains("dash.confirm=never") && text.contains("costWarnThreshold"),
+            "{text}"
+        );
+        assert!(text.contains("no terminal to confirm on"), "{text}");
+        assert!(text.contains("dg storage add"), "{text}");
+        assert!(!refusal(&cause, false).fix[0].contains("dg storage add"));
         // never → proceed regardless; always → ask even when cheap.
         assert_eq!(
             guard(one_dash, Some(0.1), ConfirmMode::Never, false),

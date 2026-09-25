@@ -13,6 +13,7 @@
 use std::process::Command as Process;
 
 use anyhow::{bail, Context, Result};
+use forge_core::user_error::{codes, UserError};
 use serde_json::json;
 
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
@@ -85,7 +86,9 @@ fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
     ];
     let reject = |flags: &[(&str, bool)], kind: &str| -> Result<()> {
         if let Some((f, _)) = flags.iter().find(|(_, set)| *set) {
-            bail!("--{f} does not apply to a {kind} profile");
+            return Err(crate::errors::usage(format!(
+                "--{f} does not apply to a {kind} profile"
+            )));
         }
         Ok(())
     };
@@ -150,10 +153,10 @@ fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
 
 fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     if !valid_profile_name(&args.name) {
-        bail!(
+        return Err(crate::errors::usage(format!(
             "profile name {:?} must be letters, digits, '-', '_' or '.'",
             args.name
-        );
+        )));
     }
     let profile = profile_from_args(args)?;
     let path = StorageProfiles::default_path()?;
@@ -265,7 +268,10 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let mut profiles = StorageProfiles::load_from(&path)?;
     if profiles.profiles.remove(name).is_none() {
-        bail!("no storage profile {name:?} in {}", path.display());
+        return Err(crate::errors::not_found(
+            format!("no storage profile {name:?} in {}", path.display()),
+            "`dg storage list` lists the profiles",
+        ));
     }
     profiles.save_to(&path)?;
     ctx.emit(json!({ "status": "removed", "profile": name }), || {
@@ -390,15 +396,17 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
     }
 
     let ok = r.ok();
-    ctx.emit(
-        json!({
-            "profile": name,
-            "kind": profile.kind(),
-            "ok": ok,
-            "steps": r.steps.iter().map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail})).collect::<Vec<_>>(),
-            "fixes": r.fixes,
-        }),
-        || {
+    let body = json!({
+        "profile": name,
+        "kind": profile.kind(),
+        "ok": ok,
+        "steps": r.steps.iter().map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail})).collect::<Vec<_>>(),
+        "fixes": r.fixes,
+    });
+    if ctx.json && !ok {
+        // Printed once, with the error block, by the renderer.
+    } else {
+        ctx.emit(body.clone(), || {
             println!("Testing storage profile {name:?} ({}):", profile.kind());
             for s in &r.steps {
                 let mark = if s.ok { " OK " } else { "FAIL" };
@@ -408,17 +416,32 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
                 println!("\nFix:\n{f}");
             }
             if ok {
-                println!("\nAll checks passed — run `dg storage use <profiles>` in a repo to push here.");
+                println!(
+                    "\nAll checks passed — run `dg storage use <profiles>` in a repo to push here."
+                );
             } else {
                 println!("\nSome checks failed (see above).");
             }
-        },
-    );
-    if ok {
-        Ok(())
-    } else {
-        bail!("storage profile {name:?} failed its checks")
+        });
     }
+    if ok {
+        return Ok(());
+    }
+    let failed: Vec<&str> = r.steps.iter().filter(|s| !s.ok).map(|s| s.name).collect();
+    let mut err = UserError::new(
+        codes::STORAGE_TEST,
+        format!("storage profile {name:?} failed its checks"),
+    )
+    .cause(format!("failing: {}", failed.join(", ")))
+    .fix(format!(
+        "fix what the failing rows name (a CORS fix is printed above), then `dg storage test {name}`"
+    ));
+    if failed == ["browser CORS"] {
+        err = err.note(
+            "git push and clone work without CORS; only the web app cannot read this storage",
+        );
+    }
+    Err(crate::errors::reported(err, body))
 }
 
 async fn test_s3(p: &S3Profile, http: &reqwest::Client, r: &mut Report) {
@@ -672,11 +695,11 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
     if !ctx.confirm(&format!(
         "Advertise storage mode {mode} with read URLs {uris:?} on {repo}? (a small config write)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let doc = svc
         .set_backend(&handle, mode, Some(&uris))
@@ -700,29 +723,24 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
 async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    // Fold in any extra availability URIs announced via `packMirror` docs (anyone can
-    // reseed → announce). Empty on a v1-template contract that lacks the packMirror type.
-    let mirrors = svc.read_pack_mirrors(&handle).await.unwrap_or_default();
+    let scope = handle.scope()?;
     let reader = PackReader::from_user_config();
     let https = forge_core::backends::HttpsBackend::with_client(forge_core::storage::http_client());
 
     let mut packs = Vec::new();
     for m in &manifests {
-        // The manifest's own URIs plus any packMirror-announced URIs for this pack.
+        // Each manifest is one uploader's copy (on v2 a pack may have several).
         let mut uris: Vec<String> = m.uris.clone();
-        for (mirror_hash, mirror_uris) in &mirrors {
-            if *mirror_hash == m.pack_hash {
-                uris.extend(mirror_uris.iter().cloned());
-            }
-        }
         uris.sort();
         uris.dedup();
-        let rows = probe_rows(m, &uris, &handle.repo_contract_id, &reader, &https).await;
+        let locator = scope.locator(&m.owner_id, &hex::encode(m.pack_hash));
+        let rows = probe_rows(m, &uris, &locator, &reader, &https).await;
         packs.push(json!({
             "packHash": hex::encode(m.pack_hash),
+            "uploader": m.owner_id,
             "kind": m.kind,
             "sizeBytes": m.size_bytes,
             "chunkCount": m.chunk_count,
@@ -733,16 +751,13 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 
     ctx.emit(
         json!({
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "packCount": manifests.len(),
             "ipfsGateways": reader.gateways(),
             "packs": packs,
         }),
         || {
-            println!(
-                "Storage status for {}/{}:",
-                handle.owner_id, handle.normalized_name
-            );
+            println!("Storage status for {}:", handle.display());
             if manifests.is_empty() {
                 println!("  (no packs)");
             }
@@ -775,7 +790,7 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 async fn probe_rows(
     m: &forge_core::repo::PackManifestInfo,
     uris: &[String],
-    contract_id: &str,
+    platform_locator: &str,
     reader: &PackReader,
     https: &forge_core::backends::HttpsBackend,
 ) -> Vec<serde_json::Value> {
@@ -799,7 +814,7 @@ async fn probe_rows(
     // Platform tier (storage == 0) means the bytes are on-chain chunk docs.
     if m.storage == 0 || m.uris.is_empty() {
         rows.push(json!({
-            "uri": format!("platform://{contract_id}/{}", hex::encode(m.pack_hash)),
+            "uri": platform_locator,
             "scheme": "platform",
             "ok": m.chunk_count > 0,
             "detail": "on-chain chunk documents",

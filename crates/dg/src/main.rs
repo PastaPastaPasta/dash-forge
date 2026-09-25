@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod errors;
 mod fmt;
 mod issue;
 mod maint;
@@ -27,7 +28,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
 use config::Config;
-use context::{report_error, Ctx};
+use context::Ctx;
+use forge_core::user_error::{codes, ErrorContext, UserError};
 
 /// Dash Forge command-line interface.
 #[derive(Debug, Parser)]
@@ -111,7 +113,7 @@ pub enum Command {
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
-    /// Repack and reclaim storage (delete superseded docs → refund).
+    /// Consolidate a repo's packs into one superseding pack (deletes nothing on Platform).
     Repack {
         /// The repository (`owner/name`).
         repo: Option<String>,
@@ -153,8 +155,13 @@ pub enum Command {
         /// The GitHub repository URL.
         url: String,
     },
-    /// Diagnose local environment and configuration.
-    Doctor,
+    /// Diagnose the identity, network, contracts, storage, git config and toolchain.
+    Doctor {
+        /// Apply the safe automatic fixes (create config directories with 0700, set missing
+        /// git config keys in this repository). Never anything that spends credits.
+        #[arg(long)]
+        fix: bool,
+    },
     /// Print a shell completion script to stdout.
     ///
     /// bash: `dg completions bash > ~/.local/share/bash-completion/completions/dg`
@@ -180,16 +187,22 @@ pub enum AuthCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// Instantiate a repo contract, listing and token setup.
+    /// Create a forge-v2 repository (repo + your maintainer membership + initial config).
     Create {
-        /// Repository name.
+        /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case is folded).
         name: String,
         /// Storage backend policy.
         #[arg(long, value_enum, default_value = "platform")]
         storage: StorageArg,
-        /// Listing description.
+        /// Description.
         #[arg(long, default_value = "")]
         description: String,
+        /// Display name (defaults to none; the slug is shown).
+        #[arg(long, default_value = "")]
+        display_name: String,
+        /// Default branch.
+        #[arg(long, default_value = "main")]
+        default_branch: String,
     },
     /// Print the `git clone` command for a repo (`owner/name`).
     Clone {
@@ -211,11 +224,6 @@ pub enum RepoCommand {
         /// The owner identity id (base58); defaults to the signing identity.
         #[arg(long)]
         owner: Option<String>,
-    },
-    /// Delete a repo's deletable storage (chunks + manifests → refund).
-    Delete {
-        /// The repository (`owner/name`), or just `name` for the signing identity.
-        repo: String,
     },
     /// Backend configuration.
     #[command(subcommand)]
@@ -426,47 +434,49 @@ pub enum ReleaseCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Grant access (mint a WRITE/MAINTAIN token).
+    /// Add a member (the repo owner creates a writer/maintainer document).
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to grant.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Suspend a collaborator (freeze tokens).
+    /// Not supported on forge-v2 (remove revokes access immediately).
+    #[command(hide = true)]
     Suspend {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to suspend.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Unsuspend a collaborator (thaw frozen tokens).
+    /// Not supported on forge-v2 (add restores access).
+    #[command(hide = true)]
     Unsuspend {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to unsuspend.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Remove a collaborator (freeze + destroy).
+    /// Remove a member (the owner deletes their document; their next push is refused).
     Remove {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator identity id (base58).
         member: String,
         /// The role to revoke.
-        #[arg(long, value_enum, default_value = "write")]
+        #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// List collaborators (token-balance query).
+    /// List members.
     List {
         /// The repository (`owner/name`).
         repo: String,
@@ -706,19 +716,23 @@ impl VerdictArg {
     }
 }
 
-/// A collaborator role.
+/// A member role.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RoleArg {
-    Write,
-    Maintain,
+    /// Push, upload (a `writer` document).
+    #[value(alias = "write")]
+    Writer,
+    /// Also protected refs, config, releases (a `maintainer` document).
+    #[value(alias = "maintain")]
+    Maintainer,
 }
 
 impl RoleArg {
-    /// The forge-core role.
-    pub fn to_core(self) -> forge_core::tokens::Role {
+    /// The forge-v2 role.
+    pub fn to_core(self) -> forge_core::rules::v2::Role {
         match self {
-            RoleArg::Write => forge_core::tokens::Role::Write,
-            RoleArg::Maintain => forge_core::tokens::Role::Maintain,
+            RoleArg::Writer => forge_core::rules::v2::Role::Writer,
+            RoleArg::Maintainer => forge_core::rules::v2::Role::Maintainer,
         }
     }
 }
@@ -732,8 +746,10 @@ fn main() {
         )
         .init();
 
-    let cli = Cli::parse();
-    let json = cli.json;
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => exit_on_parse_error(&e),
+    };
 
     // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
     // so a broken config or an undeployed network cannot stop a shell from loading them.
@@ -754,18 +770,47 @@ fn main() {
         return;
     }
 
-    match run(&cli) {
-        Ok(()) => {}
-        Err(err) => {
-            report_error(json, &err);
-            std::process::exit(1);
-        }
+    let (goal, repo) = errors::context_for(&cli.command);
+    let err_ctx = ErrorContext {
+        goal,
+        repo,
+        ..ErrorContext::default()
+    };
+    if let Err(err) = run(&cli) {
+        std::process::exit(errors::report(cli.json, &err, &err_ctx));
     }
 }
 
 /// Write the `shell` completion script for `dg` to `out`.
 fn print_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
     clap_complete::generate(shell, &mut Cli::command(), "dg", out);
+}
+/// A command line clap rejected: `--help`/`--version` print and exit 0 as usual; a usage
+/// error exits 2 (E201), as `{"error": …}` on stdout when `--json` was asked for.
+fn exit_on_parse_error(e: &clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    let wants_json = std::env::args().any(|a| a == "--json");
+    if !wants_json
+        || matches!(
+            e.kind(),
+            ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        )
+    {
+        e.exit();
+    }
+    let text = e.to_string();
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("invalid arguments")
+        .trim_start_matches("error: ");
+    let u = UserError::new(codes::USAGE, "invalid arguments")
+        .cause(first)
+        .fix("see `dg --help` or `dg <command> --help`");
+    errors::print_json(&u.to_json());
+    std::process::exit(u.exit_code());
 }
 
 /// Build the tokio runtime and dispatch the parsed command.
@@ -814,7 +859,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo, to, profile, ..
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import { url } => maint::import(ctx, url),
-        Command::Doctor => doctor::run(ctx).await,
+        Command::Doctor { fix } => doctor::run(ctx, *fix).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
 }
@@ -886,6 +931,7 @@ mod tests {
                 name,
                 storage,
                 description,
+                ..
             }) => {
                 assert_eq!(name, "my-repo");
                 assert_eq!(storage.mode(), 4);
@@ -921,7 +967,7 @@ mod tests {
             Command::Collab(CollabCommand::Add { repo, member, role }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
-                assert!(matches!(role, RoleArg::Maintain));
+                assert!(matches!(role, RoleArg::Maintainer));
             }
             _ => panic!("expected collab add"),
         }
@@ -934,7 +980,7 @@ mod tests {
             Command::Collab(CollabCommand::Unsuspend { repo, member, role }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
-                assert!(matches!(role, RoleArg::Write)); // default role
+                assert!(matches!(role, RoleArg::Writer)); // default role
             }
             _ => panic!("expected collab unsuspend"),
         }
@@ -975,6 +1021,27 @@ mod tests {
         // `completion` (gh's spelling, spec §7.6) is an alias.
         let cli = Cli::parse_from(["dg", "completion", "zsh"]);
         assert!(matches!(cli.command, Command::Completions { .. }));
+    }
+
+    /// The form the helper and error fixes print must parse as intended: `--from-local`
+    /// takes an optional GIT_DIR, so the repo has to come before it.
+    #[test]
+    fn the_printed_reseed_command_parses() {
+        let id = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+        for repo in [format!("{id}/project"), id.to_string()] {
+            let cli = Cli::parse_from(["dg", "reseed", repo.as_str(), "--from-local"]);
+            match cli.command {
+                Command::Reseed {
+                    repo: Some(r),
+                    from_local: Some(dir),
+                    ..
+                } => {
+                    assert_eq!(r, repo);
+                    assert_eq!(dir, PathBuf::from(".git"));
+                }
+                other => panic!("unexpected parse {other:?}"),
+            }
+        }
     }
 
     #[test]

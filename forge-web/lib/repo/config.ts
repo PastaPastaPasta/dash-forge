@@ -10,7 +10,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { compareKey, type ConfigDoc } from '../rules'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, parseJsonList, type RepoRef } from './contract'
+import { DOC, parseJsonList, wellFormed, type RepoRef } from './contract'
+import { repoSource } from './source'
 
 /** The current repo config surface most views need. */
 export interface RepoConfig {
@@ -72,11 +73,12 @@ export interface ConfigBundle {
  * scans for a maximum), but ascending is the same order forge-core returns.
  */
 export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<ConfigBundle> {
-  const documents = await queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.config,
-    orderBy: [['$createdAt', 'asc']],
-  })
+  const documents = (
+    await queryAllDocuments(
+      sdk,
+      repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }),
+    )
+  ).filter((d) => wellFormed(repo, 'config', d))
   // Do NOT take the wire order's last row as "newest". Drive orders the terminal
   // document-id subtree by the RAW 32 bytes of `$id`, while `configAsOf` — the rule that
   // decides which config is in force — tie-breaks on the base58 `$id` STRING. For two
@@ -115,13 +117,16 @@ export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<Con
  * `resolveRef` considers in force. forge-core `read_default_branch` makes the same trade.
  */
 export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.config,
-    orderBy: [['$createdAt', 'desc']],
-    limit: 1,
-  })
-  const doc = documents[0]
+  // forge-v2 skips a malformed config (`forge-v2.md` §5), so read a few to find the newest
+  // well-formed one; v1 has no such rule and one row answers.
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(DOC.config, {
+      orderBy: [['$createdAt', 'desc']],
+      limit: repo.kind === 'v1' ? 1 : 10,
+    }),
+  )
+  const doc = documents.find((d) => wellFormed(repo, 'config', d))
   return doc === undefined ? null : toRepoConfig(doc)
 }
 

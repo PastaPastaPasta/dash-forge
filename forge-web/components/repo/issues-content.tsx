@@ -10,8 +10,8 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import type { IssueView } from '@/lib/repo'
-import { createIssue, listIssues } from '@/lib/repo'
+import type { IssueView, Listed } from '@/lib/repo'
+import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
 import { previewDocumentCreate } from '@/lib/sdk'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -24,6 +24,8 @@ import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { V2WritesNote } from '@/components/repo/v2-writes-note'
+import { HiddenNote } from '@/components/repo/hidden-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
 import { cn, errorMessage } from '@/lib/utils'
@@ -31,13 +33,13 @@ import { cn, errorMessage } from '@/lib/utils'
 type Filter = 'open' | 'closed' | 'all'
 
 export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.contractId])
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const [composing, setComposing] = useState(false)
 
-  const { data, loading, error, reload } = useAsync<IssueView[]>(
+  const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
     () => listIssues(sdk!, home.repo, undefined, 100),
-    [ready, home.repo.contractId],
+    [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )
 
@@ -123,6 +125,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         </div>
       )}
 
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} />
+
       <ComposeIssueDialog
         open={composing}
         onClose={() => setComposing(false)}
@@ -161,7 +165,7 @@ function ComposeIssueDialog({
   onCreated: () => void
   addr: RepoAddress
 }): JSX.Element {
-  const { sdk } = useSdk([repo.contractId])
+  const { sdk } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const [title, setTitle] = useState('')
@@ -176,7 +180,7 @@ function ComposeIssueDialog({
       openLogin()
       return
     }
-    if (!sdk || title.trim() === '') return
+    if (!sdk || repo.kind !== 'v1' || title.trim() === '') return
     setPending(true)
     setError(null)
     try {
@@ -201,7 +205,7 @@ function ComposeIssueDialog({
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant="primary" onClick={submit} loading={pending} disabled={title.trim() === ''}>
+          <Button variant="primary" onClick={submit} loading={pending} disabled={title.trim() === '' || repo.kind !== 'v1'}>
             {identity ? 'Submit issue' : 'Sign in to submit'}
           </Button>
         </>
@@ -215,6 +219,7 @@ function ComposeIssueDialog({
           <Textarea id="issue-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened, and how to reproduce it." className="min-h-[140px]" />
         </Field>
         <CostPreview cost={cost} />
+        {repo.kind !== 'v1' ? <V2WritesNote /> : null}
         {error ? (
           <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{error}</div>
         ) : null}

@@ -15,31 +15,33 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
+import { CHUNK_PAYLOAD_MAX, IPFS_GATEWAYS, PACK_KIND } from '../constants'
 import {
   BrowseReader,
   FlatIndex,
   ObjectLocator,
   type PackSource,
-  type RangeFetch,
 } from '../browse'
 import {
+  CHUNK_QUERY_MAX,
+  isV2Copies,
+  readV2PackCopies,
+  v2PacksOfKind,
+  type AsOf,
   liveGitPackManifests,
   liveLocatorManifests,
   readNewestManifestOfKind,
-  readPackManifests,
+  readRepoPackManifests,
+  repoKey,
+  repoSource,
   type PackManifest,
   type RepoRef,
 } from '../repo'
-import { base64ToBytes, hexToBase64, queryDocumentsWithProof } from '../sdk'
-import { DOC } from '../repo'
+import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
-
-/**
- * Platform's per-query document cap. A document query returns at most this many rows, so any
- * read spanning more than this must be split — see {@link queryChunkBatch}.
- */
-const CHUNK_QUERY_MAX = 100
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -124,10 +126,11 @@ export function clearChunkCache(): void {
 /** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
 async function queryChunkBatch(
   sdk: EvoSDK,
-  contractId: string,
-  packHashHex: string,
+  repo: RepoRef,
+  manifest: PackManifest,
   seqs: readonly number[],
 ): Promise<Map<number, Uint8Array>> {
+  const source = repoSource(repo)
   // One query returns at most CHUNK_QUERY_MAX rows, so a request spanning more seqs than
   // that is split into several parallel queries rather than silently coming back short.
   // Without this split a single range spanning more than 100 chunks could never load, which
@@ -151,19 +154,10 @@ async function queryChunkBatch(
       const i = next++
       const batch = batches[i]
       if (batch === undefined) return
-      const { documents } = await queryDocumentsWithProof(sdk, {
-        dataContractId: contractId,
-        documentTypeName: DOC.chunk,
-        where: [
-          ['packHash', '==', hexToBase64(packHashHex)],
-          ['seq', 'in', batch],
-        ],
-        orderBy: [
-          ['packHash', 'asc'],
-          ['seq', 'asc'],
-        ],
-        limit: CHUNK_QUERY_MAX,
-      })
+      const { documents } = await queryDocumentsWithProof(
+        sdk,
+        source.chunkQuery(manifest.packHash, manifest.uploader, batch),
+      )
       for (const doc of documents) {
         const raw = doc['seq']
         const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
@@ -188,16 +182,22 @@ async function queryChunkBatch(
  * always resolved from the row actually returned (its real length), never assumed full.
  *
  * Chunk payloads are served through the session LRU: only the seqs absent from the cache
- * are queried (one batch — the `(packHash, seq)` index is unique per key, so no
+ * are queried (one batch — the chunk index, `(packHash, seq)` on v1 and
+ * `(repoId, $ownerId, packHash, seq)` on forge-v2, is unique per key, so no
  * `in`-starvation fallback is needed), and every fetched chunk is cached for later ranges.
  */
 async function fetchPlatformRange(
   sdk: EvoSDK,
-  contractId: string,
-  packHashHex: string,
+  repo: RepoRef,
+  manifest: PackManifest,
   start: number,
   end: number,
 ): Promise<Uint8Array> {
+  const packHashHex = manifest.packHash
+  // Keyed by repo and uploader, not the pack hash alone: on forge-v2 every writer has its own
+  // copy of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for
+  // an honest one — nor one repo's for another's.
+  const cachePrefix = `${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
   const firstSeq = Math.floor(start / CHUNK_PAYLOAD_MAX)
   const lastSeq = Math.floor((end - 1) / CHUNK_PAYLOAD_MAX)
   const seqs: number[] = []
@@ -206,12 +206,12 @@ async function fetchPlatformRange(
   const held = new Map<number, Promise<Uint8Array>>()
   const missing: number[] = []
   for (const seq of seqs) {
-    const hit = chunkCacheGet(`${packHashHex}:${seq}`)
+    const hit = chunkCacheGet(`${cachePrefix}:${seq}`)
     if (hit !== undefined) held.set(seq, hit)
     else missing.push(seq)
   }
   if (missing.length > 0) {
-    const batch = queryChunkBatch(sdk, contractId, packHashHex, missing)
+    const batch = queryChunkBatch(sdk, repo, manifest, missing)
     for (const seq of missing) {
       const promise = batch.then((bySeq) => {
         const payload = bySeq.get(seq)
@@ -220,7 +220,7 @@ async function fetchPlatformRange(
         }
         return payload
       })
-      chunkCacheSet(`${packHashHex}:${seq}`, promise)
+      chunkCacheSet(`${cachePrefix}:${seq}`, promise)
       held.set(seq, promise)
     }
   }
@@ -236,52 +236,390 @@ async function fetchPlatformRange(
   return out
 }
 
+// ---------------------------------------------------------------------------
+// External (storage 1) artifacts
+// ---------------------------------------------------------------------------
+
 /**
- * Fetch a contiguous range of an external artifact via HTTP Range. `onServed` is told which
- * URI answered, so the trust panel can name the host bytes actually came from.
+ * Budget for one request to one external mirror. The mirror may be a dead host (a manifest
+ * written by a push to someone's local MinIO) or a public gateway searching the IPFS network
+ * for a CID nobody pins; neither may hold a browse hostage.
+ */
+const EXTERNAL_FETCH_TIMEOUT_MS = 15_000
+
+/**
+ * An external artifact that no mirror served authentically. Carries what a view needs to
+ * say *which* pack is missing and *where* it was looked for.
+ */
+export class PackUnavailableError extends Error {
+  constructor(
+    readonly packHash: string,
+    /** Hosts actually tried (empty: the manifest records no browser-fetchable mirror). */
+    readonly hosts: readonly string[],
+    /** Whether some mirror answered with bytes that failed the sha256 check. */
+    readonly corrupt: boolean,
+    reason: string,
+  ) {
+    super(
+      `pack ${packHash.slice(0, 12)}… could not be fetched from its storage (${
+        hosts.length > 0 ? hosts.join(', ') : 'no browser-fetchable mirror recorded'
+      }): ${reason}`,
+    )
+    this.name = 'PackUnavailableError'
+  }
+}
+
+/**
+ * The HTTP(S) URLs an external artifact can be fetched from, in order: the manifest's own
+ * `http(s)` mirrors, then each `ipfs://<cid>` through every gateway in `gateways`. Schemes a
+ * browser cannot fetch (`s3://`, `platform://`) are skipped — an `s3://` locator always
+ * travels with the bucket's public `https` URL, which is listed separately.
+ */
+export function externalFetchUrls(
+  uris: readonly string[],
+  gateways: readonly string[] = IPFS_GATEWAYS,
+): string[] {
+  const out: string[] = []
+  for (const uri of uris) {
+    if (/^https?:\/\//i.test(uri)) out.push(uri)
+    const ipfs = /^ipfs:\/\/(.+)$/i.exec(uri)
+    if (ipfs !== null) {
+      for (const gw of gateways) out.push(`${gw.replace(/\/+$/, '')}/ipfs/${ipfs[1]}`)
+    }
+  }
+  return [...new Set(out)]
+}
+
+/** Requests in flight per origin. Every external pack starts at once; one host must not be
+ * hit with all of them (nor hold the browser's per-host connection pool hostage). */
+const PER_ORIGIN_CONCURRENCY = 4
+
+/** How many of an artifact's URLs are raced at once (an `ipfs://` fans out per gateway). */
+const MIRROR_RACE_WIDTH = 3
+
+/** Why a URL failed: a timeout is worth one more sequential try, anything else is not. */
+class FetchFailure extends Error {
+  constructor(
+    message: string,
+    readonly timedOut: boolean,
+  ) {
+    super(message)
+  }
+}
+
+/** A tiny per-origin semaphore. */
+const originSlots = new Map<string, { active: number; waiting: (() => void)[] }>()
+
+async function withOriginSlot<T>(url: string, run: () => Promise<T>): Promise<T> {
+  let origin: string
+  try {
+    origin = new URL(url).origin
+  } catch {
+    origin = url
+  }
+  let slot = originSlots.get(origin)
+  if (slot === undefined) {
+    slot = { active: 0, waiting: [] }
+    originSlots.set(origin, slot)
+  }
+  const s = slot
+  if (s.active >= PER_ORIGIN_CONCURRENCY) await new Promise<void>((resolve) => s.waiting.push(resolve))
+  s.active += 1
+  try {
+    return await run()
+  } finally {
+    s.active -= 1
+    s.waiting.shift()?.()
+  }
+}
+
+/**
+ * URLs that failed this session for a reason other than a timeout (connection refused, 404,
+ * wrong bytes). A later pack naming the same mirror skips them rather than paying for the
+ * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
+ */
+const deadUrls = new Set<string>()
+
+/** Test hook: forget the dead-URL list and the per-origin queues. */
+export function resetExternalFetchState(): void {
+  deadUrls.clear()
+  originSlots.clear()
+}
+
+/**
+ * GET `url` and read the whole body. Two deadlines, both {@link EXTERNAL_FETCH_TIMEOUT_MS}:
+ * one for the response to begin (a dead or silent host), then an IDLE deadline re-armed on
+ * every chunk, started only once the response has begun — a slow mirror streaming a large
+ * pack is fine, a stalled one is not. A whole-body deadline would make every pack larger
+ * than bandwidth × deadline permanently "unavailable" from healthy mirrors. The per-origin
+ * queue wait is not counted against either. A 206 is accepted alongside 2xx.
+ */
+async function fetchBody(
+  url: string,
+  init: RequestInit = {},
+  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number } = {},
+): Promise<Uint8Array> {
+  return withOriginSlot(url, async () => {
+    if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
+    const controller = new AbortController()
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const arm = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, EXTERNAL_FETCH_TIMEOUT_MS)
+    }
+    const onCancel = (): void => controller.abort()
+    opts.cancel?.addEventListener('abort', onCancel)
+    arm() // the response must begin within the deadline
+    try {
+      const resp = await fetch(url, { ...init, signal: controller.signal })
+      if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false)
+      if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
+      const reader = resp.body.getReader()
+      const parts: Uint8Array[] = []
+      let total = 0
+      for (;;) {
+        arm() // idle deadline: re-armed per chunk once the body is streaming
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.length
+        // A mirror streaming more than the manifest says cannot be serving this pack.
+        if (opts.maxBytes !== undefined && total > opts.maxBytes) {
+          controller.abort()
+          throw new FetchFailure('served more bytes than the manifest records', false)
+        }
+        parts.push(value)
+      }
+      const out = new Uint8Array(total)
+      let at = 0
+      for (const p of parts) {
+        out.set(p, at)
+        at += p.length
+      }
+      return out
+    } catch (e) {
+      if (timedOut) throw new FetchFailure(`no data for ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`, true)
+      if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
+      if (e instanceof FetchFailure) throw e
+      throw new FetchFailure(e instanceof Error ? e.message : String(e), false)
+    } finally {
+      clearTimeout(timer)
+      opts.cancel?.removeEventListener('abort', onCancel)
+    }
+  })
+}
+
+function hostsOf(urls: readonly string[]): string[] {
+  return [...new Set(urls.map(externalSourceName))]
+}
+
+/**
+ * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
+ * mirror in turn. `onServed` is told which URL answered, so the trust panel can name the host
+ * bytes actually came from. A range cannot be hashed on its own: the reader re-hashes every
+ * object it reconstructs from it.
  */
 async function fetchExternalRange(
-  uris: readonly string[],
+  manifest: PackManifest,
   start: number,
   end: number,
   onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
-  let lastErr: unknown
-  for (const uri of uris) {
+  const urls = externalFetchUrls(manifest.uris)
+  let lastErr: unknown = 'no browser-fetchable mirror'
+  for (const url of urls.filter((u) => !deadUrls.has(u))) {
     try {
-      const resp = await fetch(uri, { headers: { Range: `bytes=${start}-${end - 1}` } })
-      if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
-      const buf = new Uint8Array(await resp.arrayBuffer())
-      onServed?.(uri)
+      const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
+      onServed?.(url)
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
+      if (e instanceof FetchFailure && !e.timedOut) deadUrls.add(url)
       lastErr = e
     }
   }
-  throw new Error(`no external URI served the range: ${String(lastErr)}`)
+  throw new PackUnavailableError(manifest.packHash, hostsOf(urls), false, errorText(lastErr))
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Fetch a whole external artifact; the first body whose size and sha256 match the
+ * proof-read manifest wins. Mirrors are availability, never authority: one answering with
+ * other bytes is treated as down and flagged `corrupt` (reported distinctly — it is a
+ * misbehaving host, not an outage).
+ *
+ * The URLs are raced {@link MIRROR_RACE_WIDTH} at a time (skipping this session's dead URLs),
+ * and the losers are cancelled as soon as one wins. URLs that only timed out get ONE more
+ * sequential try each before the pack is declared unavailable: a gateway resolving a cold
+ * CID is often slow once and fast after. `cancel` aborts everything (the clone gave up).
+ */
+async function fetchExternalWhole(
+  manifest: PackManifest,
+  onServed?: (uri: string) => void,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
+  const urls = externalFetchUrls(manifest.uris)
+  const want = manifest.packHash.toLowerCase()
+  const live = urls.filter((u) => !deadUrls.has(u))
+  if (live.length === 0) {
+    throw new PackUnavailableError(
+      manifest.packHash,
+      hostsOf(urls),
+      false,
+      urls.length === 0 ? 'nothing to try' : 'every mirror already failed this session',
+    )
+  }
+  let corrupt = false
+  const reasons: string[] = []
+  const timedOut: string[] = []
+  // Cancels the losing mirrors once one has served the pack (or the whole clone gave up):
+  // an ipfs:// URI fans out to one request per gateway, and each would otherwise download
+  // (and hold) the whole pack.
+  const winner = new AbortController()
+  const onCancel = (): void => winner.abort()
+  cancel?.addEventListener('abort', onCancel)
+  if (cancel?.aborted) winner.abort()
+
+  const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
+    try {
+      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
+      if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
+        corrupt = true
+        throw new FetchFailure('served bytes that do not match the manifest sha256', false)
+      }
+      return { url, bytes }
+    } catch (e) {
+      if (!winner.signal.aborted) {
+        reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
+        if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
+        else deadUrls.add(url)
+      }
+      throw e
+    }
+  }
+
+  try {
+    const got = (await raceBounded(live, MIRROR_RACE_WIDTH, attempt, winner.signal)) ??
+      (await firstSequential(timedOut, attempt, winner.signal))
+    if (got !== null) {
+      winner.abort()
+      onServed?.(got.url)
+      return got.bytes
+    }
+    if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
+    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasons.join('; '))
+  } finally {
+    cancel?.removeEventListener('abort', onCancel)
+  }
+}
+
+/**
+ * Run `attempt` over `items` with at most `width` in flight; resolve with the first success,
+ * or null once every item has failed (or `stop` fired).
+ */
+function raceBounded<T, R>(
+  items: readonly T[],
+  width: number,
+  attempt: (item: T) => Promise<R>,
+  stop: AbortSignal,
+): Promise<R | null> {
+  return new Promise((resolve) => {
+    let next = 0
+    let running = 0
+    let settled = false
+    const launch = (): void => {
+      while (!settled && !stop.aborted && running < width && next < items.length) {
+        const item = items[next++] as T
+        running += 1
+        attempt(item).then(
+          (r) => {
+            if (!settled) {
+              settled = true
+              resolve(r)
+            }
+          },
+          () => {
+            running -= 1
+            if (settled) return
+            if ((next >= items.length || stop.aborted) && running === 0) {
+              settled = true
+              resolve(null)
+            } else launch()
+          },
+        )
+      }
+      if (!settled && running === 0) {
+        settled = true
+        resolve(null)
+      }
+    }
+    launch()
+  })
+}
+
+/** Try `items` one at a time; the first success, or null. */
+async function firstSequential<T, R>(
+  items: readonly T[],
+  attempt: (item: T) => Promise<R>,
+  stop: AbortSignal,
+): Promise<R | null> {
+  for (const item of [...items]) {
+    if (stop.aborted) return null
+    try {
+      return await attempt(item)
+    } catch {
+      /* next */
+    }
+  }
+  return null
 }
 
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
 function noteSource(repo: RepoRef, uri?: string): void {
-  noteContentCheck(repo.contractId, {
+  noteContentCheck(repoKey(repo), {
     source: uri === undefined ? 'platform' : externalSourceName(uri),
   })
 }
 
-/** A {@link RangeFetch} over one artifact (platform chunks or external URIs). */
+/** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
-): RangeFetch {
-  return async (start: number, end: number) => {
-    if (manifest.storage !== 0) {
-      return fetchExternalRange(manifest.uris, start, end, (uri) => noteSource(repo, uri))
+): (start: number, end: number, copy?: number) => Promise<Uint8Array> {
+  const readCopy = async (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => {
+    if (copy.storage !== 0) {
+      return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
     }
-    const bytes = await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, start, end)
+    const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
     noteSource(repo)
     return bytes
+  }
+  return async (start: number, end: number, copy?: number) => {
+    // forge-v2: a range cannot be hashed on its own. The reader re-hashes every object it
+    // builds from one and asks for a specific `copy` when the current one fails it; without
+    // one, a copy that cannot serve the range at all falls through to the next in order.
+    const copies = manifest.copies ?? [manifest]
+    if (copy !== undefined) {
+      const chosen = copies[copy]
+      if (chosen === undefined) throw new Error(`pack ${manifest.packHash.slice(0, 12)}… has no copy ${copy}`)
+      return readCopy(chosen, start, end)
+    }
+    let lastErr: unknown
+    for (const c of copies) {
+      try {
+        return await readCopy(c, start, end)
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    throw lastErr
   }
 }
 
@@ -311,28 +649,63 @@ const DOWNLOAD_WINDOW = CHUNK_QUERY_MAX * CHUNK_PAYLOAD_MAX
 /**
  * Load a whole artifact with download progress — the fallback-clone path for full git
  * packs, which can exceed the single-query chunk window. Platform storage downloads in
- * `DOWNLOAD_WINDOW` strides; external storage fetches the body whole (progress reported
- * only at completion).
+ * `DOWNLOAD_WINDOW` strides; external storage races its mirrors for the whole body, which
+ * must match the manifest's size and sha256 (progress reported only at completion), and
+ * throws {@link PackUnavailableError} when none does.
  */
 export async function loadArtifactBytesProgress(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
+  if (manifest.copies === undefined) return loadOneCopy(sdk, repo, manifest, onProgress, cancel)
+  // forge-v2: every writer may hold a copy of a pack. Read them in `orderPackCopies` order
+  // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
+  // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
+  // pack no copy serves is unreadable.
+  const failures: unknown[] = []
+  for (const copy of manifest.copies) {
+    try {
+      const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
+      if (bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()) return bytes
+      failures.push(new Error(`copy ${copy.documentId.slice(0, 8)}… does not hash to the pack`))
+    } catch (e) {
+      failures.push(e)
+    }
+  }
+  // One copy: its own error. Every copy external and unserved: the fallback clone's
+  // "unavailable" case, which it reports rather than failing the clone on.
+  if (failures.length === 1) throw failures[0]
+  const last = failures[failures.length - 1]
+  if (last instanceof PackUnavailableError && failures.every((f) => f instanceof PackUnavailableError)) {
+    throw last
+  }
+  throw new Error(
+    `no copy of pack ${manifest.packHash.slice(0, 12)}… could be read and verified: ${failures.map(errorText).join('; ')}`,
+  )
+}
+
+async function loadOneCopy(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
 ): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await fetchExternalRange(manifest.uris, 0, total, (uri) => noteSource(repo, uri))
-    if (bytes.length !== total) throw new Error('external artifact length mismatch')
+    const bytes = await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
     onProgress?.(total, total)
     return bytes
   }
   const out = new Uint8Array(total)
   for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
-    out.set(await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, at, end), at)
+    out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
     onProgress?.(end, total)
   }
   noteSource(repo)
@@ -394,10 +767,25 @@ export function orderGitPacks(
  */
 export function locatorPackSpace(
   manifests: readonly PackManifest[],
-  asOf?: number,
+  asOf?: AsOf,
 ): PackManifest[] {
-  const bounded = asOf === undefined ? manifests : manifests.filter((m) => m.createdAt <= asOf)
+  // forge-v2: the v2 pack list's kind-0 packs (`forge-v2.md` §4), superseded ones included
+  // and in place — a locator's packRefs index every git pack listed as of it.
+  if (isV2Copies(manifests)) return v2PacksOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
+  const bound = typeof asOf === 'object' ? asOf.createdAt : asOf
+  const bounded = bound === undefined ? manifests : manifests.filter((m) => m.createdAt <= bound)
   return orderGitPacks(liveGitPackManifests(bounded))
+}
+
+/**
+ * The live index fragments (objectLocators), newest first: v1 per `liveLocatorManifests`;
+ * forge-v2 from the v2 pack list's kind-1 packs, those a verified pack supersedes left out.
+ */
+function locatorFragments(manifests: readonly PackManifest[]): PackManifest[] {
+  if (!isV2Copies(manifests)) return liveLocatorManifests(manifests)
+  return v2PacksOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
+    .filter((p) => !p.superseded)
+    .reverse()
 }
 
 /**
@@ -412,16 +800,27 @@ export function buildPackSource(
   sdk: EvoSDK,
   repo: RepoRef,
   manifests: readonly PackManifest[],
-  asOf?: number,
+  asOf?: AsOf,
 ): PackSource {
   const ordered = locatorPackSpace(manifests, asOf)
   return {
-    async fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array> {
+    async fetchRange(packRef: number, start: number, end: number, copy?: number): Promise<Uint8Array> {
       const manifest = ordered[packRef]
       if (!manifest) throw new Error(`packRef ${packRef} out of range (${ordered.length} packs)`)
-      return artifactRangeFetch(sdk, repo, manifest)(start, end)
+      return artifactRangeFetch(sdk, repo, manifest)(start, end, copy)
     },
+    copyCount: (packRef: number) => ordered[packRef]?.copies?.length ?? 1,
   }
+}
+
+/** A live pack the browser could not obtain from its external storage. */
+export interface UnavailablePack {
+  readonly packHash: string
+  /** Hosts tried (empty: the manifest records no browser-fetchable mirror). */
+  readonly hosts: readonly string[]
+  readonly reason: string
+  /** Some mirror served bytes that failed the sha256 check — a misbehaving host, not an outage. */
+  readonly corrupt: boolean
 }
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */
@@ -429,6 +828,11 @@ export interface BrowseContext {
   readonly locator: ObjectLocator
   readonly packs: PackSource
   readonly reader: BrowseReader
+  /**
+   * External packs the in-browser clone skipped because no mirror served them. Objects only
+   * those packs hold are absent from this context; empty/absent means nothing was skipped.
+   */
+  readonly unavailable?: readonly UnavailablePack[]
 }
 
 /**
@@ -437,7 +841,14 @@ export interface BrowseContext {
  */
 export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatIndex | null> {
   // Index lookup (`kind ==`, `$createdAt desc`, limit 1) — independent of manifest volume.
-  const flatManifest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
+  const newest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
+  if (!newest) return null
+  // forge-v2: any writer can post a kind-2 manifest, so read the pack's copies in order and
+  // accept only bytes that hash to `packHash` (loadArtifactBytes checks each copy).
+  const flatManifest =
+    repo.kind === 'v2'
+      ? await readV2PackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
+      : newest
   if (!flatManifest) return null
   const bytes = await loadArtifactBytes(sdk, repo, flatManifest)
   return FlatIndex.parse(bytes)
@@ -490,7 +901,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // queries pairs a post-repack index with a pre-repack pack list, and `packRef` then
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door.
-  const manifests = await readPackManifests(sdk, repo)
+  const manifests = await readRepoPackManifests(sdk, repo)
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
@@ -501,7 +912,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
     totalSizeBytes,
   })
 
-  const fragments = liveLocatorManifests(manifests)
+  const fragments = locatorFragments(manifests)
   if (fragments.length === 0) return behind('no-index')
 
   // Every fragment must index a PREFIX of the current pack space, or the `packRef`s merged
@@ -510,7 +921,11 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // consolidated, so the only way to fail is a fragment published concurrently with a
   // repack. Checked from the manifest list alone, before any bytes are fetched.
   for (const f of fragments) {
-    const asOf = locatorPackSpace(manifests, f.createdAt)
+    // v1: as of the fragment's `$createdAt`; forge-v2: as of its first upload `(createdAt, id)`.
+    const asOf = locatorPackSpace(
+      manifests,
+      isV2Copies(manifests) ? { createdAt: f.createdAt, id: f.documentId } : f.createdAt,
+    )
     if (asOf.length > livePacks.length) return behind('index-behind')
     if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
   }
@@ -557,7 +972,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
-  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repo.contractId) })
+  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repoKey(repo)) })
   return { kind: 'ready', context: { locator, packs, reader } }
 }
 
@@ -566,7 +981,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
 // ---------------------------------------------------------------------------
 
 /**
- * One browse context per contract for the session (the locator-path analog of the
+ * One browse context per repo (`repoKey`) for the session (the locator-path analog of the
  * fallback-clone cache in `browse-fallback.ts`) — navigating between a repo's pages must
  * not re-fetch manifests, re-download the locator, or discard the reader's warm state.
  *
@@ -610,14 +1025,14 @@ function browseEntryLive(entry: BrowseCacheEntry): boolean {
   return Date.now() - entry.at < ttl
 }
 
-/** Drop a repo's cached browse context (e.g. on an explicit home reload). */
-export function invalidateBrowseContext(contractId: string): void {
-  browseCache.delete(contractId)
+/** Drop a repo's cached browse context, by `repoKey` (e.g. on an explicit home reload). */
+export function invalidateBrowseContext(key: string): void {
+  browseCache.delete(key)
 }
 
-/** The cached settled browse state for a contract, if still live — for first-paint seeding. */
-export function peekBrowseState(contractId: string): BrowseState | undefined {
-  const entry = browseCache.get(contractId)
+/** The cached settled browse state for a repo (`repoKey`), if still live — for first-paint seeding. */
+export function peekBrowseState(key: string): BrowseState | undefined {
+  const entry = browseCache.get(key)
   if (entry === undefined || !browseEntryLive(entry)) return undefined
   return entry.settled
 }
@@ -629,7 +1044,8 @@ export function peekBrowseState(contractId: string): BrowseState | undefined {
  * immediately, and a fresh resolve starts behind it so the next read sees any push since.
  */
 export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
-  const hit = browseCache.get(repo.contractId)
+  const key = repoKey(repo)
+  const hit = browseCache.get(key)
   if (hit !== undefined && browseEntryLive(hit)) {
     const stale = hit.settled !== undefined && Date.now() - hit.at >= BROWSE_REVALIDATE_MS
     if (stale && !hit.revalidating) {
@@ -639,8 +1055,8 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
         .then((state) => {
           // Only replace an entry this refresh still owns — an explicit reload may have
           // dropped it, and a newer resolve must not be clobbered by an older one.
-          if (browseCache.get(repo.contractId) !== hit) return
-          browseCache.set(repo.contractId, { at: Date.now(), promise: next, settled: state })
+          if (browseCache.get(key) !== hit) return
+          browseCache.set(key, { at: Date.now(), promise: next, settled: state })
         })
         .catch(() => {
           // Keep serving the last good state; the TTL will force a fresh resolve.
@@ -650,13 +1066,13 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
     return hit.promise
   }
   const entry: BrowseCacheEntry = { at: Date.now(), promise: loadBrowseContext(sdk, repo) }
-  browseCache.set(repo.contractId, entry)
+  browseCache.set(key, entry)
   entry.promise
     .then((state) => {
       entry.settled = state
     })
     .catch(() => {
-      if (browseCache.get(repo.contractId) === entry) browseCache.delete(repo.contractId)
+      if (browseCache.get(key) === entry) browseCache.delete(key)
     })
   return entry.promise
 }

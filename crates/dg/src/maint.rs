@@ -1,10 +1,12 @@
 //! `dg repack` / `dg reseed` / `dg import` — maintenance commands.
 //!
-//! - `repack` consolidates a repo's live packs into one optimized pack, publishes it, and
-//!   deletes the caller's own now-superseded storage → an on-chain refund
-//!   (`forge_core::repo::RepoService::repack`).
-//! - `reseed` re-uploads pack bytes to another backend for availability, announcing the
-//!   new URIs via `packMirror` docs when the contract template carries them.
+//! - `repack` consolidates a repo's live packs into one optimized pack and publishes it
+//!   with a `supersedes` list (`forge_core::repo::RepoService::repack`). It deletes
+//!   nothing on Platform — forge-v2 chunks and manifests are permanent, so there is no
+//!   refund — and the superseded packs stay readable as a fallback. Only packs on your own
+//!   external storage can be garbage-collected afterwards, by you.
+//! - `reseed` re-uploads pack bytes to another backend for availability and records the new
+//!   location as the caller's own copy of the pack.
 //! - `import` remains a thin, not-yet-wired wrapper over `forge-import` (PRD 06).
 
 use anyhow::{bail, Context, Result};
@@ -18,12 +20,11 @@ use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_line, dash_usd_price, refund_line};
+use crate::fmt::{cost_line, dash_usd_price};
 use crate::Backend;
 
-/// `dg repack <repo> [--backend]` — consolidate + reclaim storage (delete superseded docs
-/// → refund). Shows an estimated refund, prompts unless `--yes`, then reports the measured
-/// upload cost, observed refund, and net.
+/// `dg repack <repo> [--backend]` — consolidate the live packs into one superseding pack.
+/// Shows what will be consolidated, prompts unless `--yes`, then reports what it cost.
 pub async fn repack(
     ctx: &Ctx,
     repo: Option<&str>,
@@ -33,46 +34,35 @@ pub async fn repack(
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    handle.require_v2()?;
     let svc = RepoService::new(&client, &identity, &bridge);
     let price = dash_usd_price();
 
-    // Pre-flight: show what will be consolidated + a rough refund estimate (superseded
-    // bytes × the per-byte storage deposit) so the operator can weigh it before signing.
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let kind0: Vec<_> = manifests.iter().filter(|m| m.kind == 0).collect();
-    let owned_bytes: u64 = kind0
-        .iter()
-        .filter(|m| m.owner_id == identity.id())
-        .map(|m| m.size_bytes)
-        .sum();
-    let est_refund = forge_core::cost::prompt_delete_refund(owned_bytes);
-
+    let roles = svc.copy_roles(&handle).await.unwrap_or_default();
+    let space = forge_core::repo::locator_pack_space(&manifests, &roles, None);
+    let live_bytes: u64 = space.iter().map(|m| m.size_bytes).sum();
     if !ctx.json {
         println!(
-            "Repack {}/{}: {} live pack(s), {owned_bytes} caller-owned bytes",
-            handle.owner_id,
-            handle.normalized_name,
-            kind0.len()
+            "Repack {}: {} git pack(s), {live_bytes} bytes",
+            handle.display(),
+            space.len()
         );
         println!(
-            "  estimated storage refund from deleting superseded packs: {}",
-            refund_line(est_refund, price)
+            "  writes one consolidated pack + manifest; deletes nothing (Platform packs are \
+             permanent, so there is no refund). Superseded packs stay readable as a fallback."
         );
-        println!("  (repack re-uploads one consolidated pack first — availability never dips)");
     }
     if !ctx.confirm(&format!(
-        "Repack {}/{}? Consolidates packs, then deletes superseded storage (est. {})",
-        handle.owner_id,
-        handle.normalized_name,
-        refund_line(est_refund, price)
+        "Repack {}? Uploads one consolidated pack (paid like a push)",
+        handle.display()
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
-    // The consolidated pack's destination. Platform (default) is the tier the refund
-    // reclaims from; an external profile (verified upload) or legacy env-configured
-    // backend migrates cold history outward (mixed mode).
+    // The consolidated pack's destination: Platform (default), an external profile
+    // (verified upload), or a legacy env-configured backend (migrates cold history out).
     let profile_target = profile.map(external_profile_target).transpose()?;
     let external = if profile_target.is_some() {
         None
@@ -100,14 +90,14 @@ pub async fn repack(
 /// Print (or `--json`-emit) a finished repack.
 fn emit_repack_report(
     ctx: &Ctx,
-    handle: &forge_core::repo::RepoHandle,
+    handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::RepackReport,
     price: f64,
 ) {
     ctx.emit(
         json!({
             "status": "repacked",
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "newPackHash": hex::encode(report.new_pack_hash),
             "newManifestId": report.new_manifest_id,
             "locatorManifestId": report.locator_manifest_id,
@@ -115,21 +105,22 @@ fn emit_repack_report(
             "objectCount": report.object_count,
             "newUris": report.new_uris,
             "supersededCount": report.superseded_count,
-            "bytesReclaimed": report.bytes_reclaimed,
-            "deletedChunks": report.deleted_chunks,
-            "deletedManifests": report.deleted_manifests,
-            "uploadCost": cost_json_credits(report.upload_cost_credits, price),
-            "refund": cost_json_credits(report.refund_credits, price),
-            "netCredits": report.net_credits,
-            "netDash": net_credits_to_dash(report.net_credits),
+            "supersededBytes": report.superseded_bytes,
+            "deletedDocuments": 0,
+            "cost": crate::fmt::cost_json(report.cost_credits, price),
         }),
         || {
             println!(
-                "Repacked {}/{} → 1 consolidated pack ({} objects, {} bytes).",
-                handle.owner_id, handle.normalized_name, report.object_count, report.new_pack_bytes
+                "Repacked {} → 1 consolidated pack ({} objects, {} bytes).",
+                handle.display(),
+                report.object_count,
+                report.new_pack_bytes
             );
             println!("  new pack:        {}", hex::encode(report.new_pack_hash));
-            println!("  superseded:      {} pack(s)", report.superseded_count);
+            println!(
+                "  supersedes:      {} pack(s), {} bytes (kept; nothing deleted)",
+                report.superseded_count, report.superseded_bytes
+            );
             // The locator is what makes the repo browsable without downloading every pack,
             // so say plainly whether it landed rather than leaving it to be inferred.
             match &report.locator_manifest_id {
@@ -140,24 +131,9 @@ fn emit_repack_report(
                 ),
             }
             println!(
-                "  deleted:         {} chunk(s), {} manifest(s) ({} bytes reclaimed)",
-                report.deleted_chunks, report.deleted_manifests, report.bytes_reclaimed
+                "  cost:            {}",
+                cost_line(report.cost_credits, price)
             );
-            println!(
-                "  upload cost:     {}",
-                cost_line(report.upload_cost_credits, price)
-            );
-            println!(
-                "  observed refund: {}",
-                refund_line(report.refund_credits, price)
-            );
-            let net = report.net_credits;
-            let net_dash = net_credits_to_dash(net);
-            if net >= 0 {
-                println!("  net:             +{net_dash:.8} DASH reclaimed");
-            } else {
-                println!("  net:             {net_dash:.8} DASH (consolidation spend)");
-            }
         },
     );
 }
@@ -173,22 +149,25 @@ pub async fn reseed(
     let repo = repo.context("`dg reseed` needs a repository: dg reseed <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
 
     let backend = match profile {
         Some(name) => profile_backend(name)?,
         None => build_external_backend(to)?.ok_or_else(|| {
-            anyhow::anyhow!("`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3)")
+            crate::errors::usage(
+                "`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3)",
+            )
         })?,
     };
     let target_label = profile.unwrap_or_else(|| to.map_or("external", Backend::label));
 
+    handle.require_v2()?;
     if !ctx.confirm(&format!(
-        "Reseed {}/{} packs to {target_label}? (re-uploads pack bytes for availability)",
-        handle.owner_id, handle.normalized_name
+        "Reseed {} packs to {target_label}? (re-uploads pack bytes for availability)",
+        handle.display()
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     let report = svc
@@ -199,47 +178,44 @@ pub async fn reseed(
     let reseeded_json: Vec<_> = report
         .reseeded
         .iter()
-        .map(|(hash, uris)| json!({ "packHash": hex::encode(hash), "uris": uris }))
+        .map(|r| {
+            json!({
+                "packHash": hex::encode(r.pack_hash),
+                "uris": r.uris,
+                "announced": r.announced,
+            })
+        })
         .collect();
-
     ctx.emit(
         json!({
             "status": "reseeded",
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "target": target_label,
             "packs": reseeded_json,
-            "announcedOnChain": report.announced_on_chain,
-            "packMirrorDocsWritten": report.mirror_docs_written,
-            "note": if report.announced_on_chain {
-                "new URIs announced on-chain via packMirror docs"
-            } else {
-                "packMirror type absent on this contract (v1 template) — URIs returned but \
-                 not announced on-chain; packMirror is the template-v2 addition that closes this"
-            },
+            "unreadable": report.unreadable.iter().map(hex::encode).collect::<Vec<_>>(),
         }),
         || {
             println!(
-                "Reseeded {} pack(s) of {}/{} to {target_label}.",
+                "Reseeded {} pack(s) of {} to {target_label}.",
                 report.reseeded.len(),
-                handle.owner_id,
-                handle.normalized_name
+                handle.display()
             );
-            for (hash, uris) in &report.reseeded {
-                println!("  {} →", hex::encode(hash));
-                for u in uris {
+            for h in &report.unreadable {
+                println!(
+                    "  {} — no readable copy; skipped (try `dg reseed --from-local`)",
+                    hex::encode(h)
+                );
+            }
+            for r in &report.reseeded {
+                let note = if r.announced {
+                    "recorded as your copy"
+                } else {
+                    "uploaded (you already hold a manifest for this pack)"
+                };
+                println!("  {} — {note}", hex::encode(r.pack_hash));
+                for u in &r.uris {
                     println!("      {u}");
                 }
-            }
-            if report.announced_on_chain {
-                println!(
-                    "  announced on-chain: {} packMirror doc(s).",
-                    report.mirror_docs_written
-                );
-            } else {
-                println!(
-                    "  note: this contract has no packMirror type (v1 template); the URIs \
-                     above are not announced on-chain. packMirror is a template-v2 addition."
-                );
             }
         },
     );
@@ -268,23 +244,22 @@ pub async fn reseed_from_local(
         .map(|h| -> Result<[u8; 32]> {
             let raw = hex::decode(h).context("--pack must be a hex SHA-256")?;
             raw.try_into()
-                .map_err(|_| anyhow::anyhow!("--pack must be 32 bytes (64 hex chars)"))
+                .map_err(|_| crate::errors::usage("--pack must be 32 bytes (64 hex chars)"))
         })
         .transpose()?;
 
     let (targets, required, label) = reseed_targets(profile)?;
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
     if !ctx.confirm(&format!(
-        "Restore unreadable packs of {}/{} from {} to {label}? (uploads to your storage; \
-         no Platform spend unless packMirror docs are written)",
-        handle.owner_id,
-        handle.normalized_name,
+        "Restore unreadable packs of {} from {} to {label}? (uploads to your storage; no \
+         Platform spend)",
+        handle.display(),
         git_dir.display()
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let refs: Vec<&dyn StorageTarget> = targets.iter().map(|t| t as &dyn StorageTarget).collect();
     let report = svc
@@ -317,10 +292,10 @@ fn reseed_targets(profile: Option<&str>) -> Result<(Vec<ExternalTarget>, usize, 
     )?
     .resolve(&StorageProfiles::load()?)?;
     if resolved.external.is_empty() {
-        bail!(
+        return Err(crate::errors::usage(
             "this repo's storage policy has no external target to restore to; pass --profile \
-             <name> (the profile the pack was pushed with restores its recorded URI)"
-        );
+             <name> (the profile the pack was pushed with restores its recorded URI)",
+        ));
     }
     let http = forge_core::storage::http_client();
     let targets = resolved
@@ -341,7 +316,7 @@ fn reseed_targets(profile: Option<&str>) -> Result<(Vec<ExternalTarget>, usize, 
 /// Print (or `--json`-emit) a finished `dg reseed --from-local`.
 fn emit_local_reseed(
     ctx: &Ctx,
-    handle: &forge_core::repo::RepoHandle,
+    handle: &forge_core::scope::RepoRef,
     git_dir: &std::path::Path,
     label: &str,
     report: &forge_core::repo::LocalReseedReport,
@@ -361,20 +336,17 @@ fn emit_local_reseed(
     ctx.emit(
         json!({
             "status": if missing.is_empty() { "reseeded" } else { "partial" },
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "targets": label,
             "restored": restored_json,
             "healthy": report.healthy.len(),
             "missingLocally": missing,
-            "announcedOnChain": report.announced_on_chain,
-            "packMirrorDocsWritten": report.mirror_docs_written,
         }),
         || {
             println!(
-                "Restored {} pack(s) of {}/{} from {} to {label} ({} still healthy).",
+                "Restored {} pack(s) of {} from {} to {label} ({} still healthy).",
                 report.restored.len(),
-                handle.owner_id,
-                handle.normalized_name,
+                handle.display(),
                 git_dir.display(),
                 report.healthy.len()
             );
@@ -382,26 +354,11 @@ fn emit_local_reseed(
                 let state = if r.restored_recorded_uri {
                     "its recorded copy is readable again"
                 } else {
-                    "stored at NEW locations only (see below)"
+                    "stored at NEW locations only — run `dg reseed --profile <p>` to record them"
                 };
                 println!("  {} — {state}", hex::encode(r.pack_hash));
                 for u in &r.uris {
                     println!("      {u}");
-                }
-            }
-            if report.restored.iter().any(|r| !r.restored_recorded_uri) {
-                if report.announced_on_chain {
-                    println!(
-                        "  new locations announced on-chain: {} packMirror doc(s).",
-                        report.mirror_docs_written
-                    );
-                } else {
-                    println!(
-                        "  note: this repo's contract has no packMirror type, and a manifest is \
-                         immutable, so readers will not find NEW locations. Re-run with \
-                         --profile <the profile the pack was pushed with> to recreate the \
-                         recorded URI."
-                    );
                 }
             }
             for h in &missing {
@@ -418,7 +375,9 @@ fn load_external_profile(name: &str) -> Result<forge_core::storage::Profile> {
         .get(name)
         .with_context(|| format!("no storage profile {name:?} (see `dg storage list`)"))?;
     if profile.is_platform() {
-        bail!("profile {name:?} is Platform storage; omit --profile to use the platform tier");
+        return Err(crate::errors::usage(format!(
+            "profile {name:?} is Platform storage; omit --profile to use the platform tier"
+        )));
     }
     Ok(profile)
 }
@@ -471,37 +430,31 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
             Some(Box::new(S3Backend::new(S3Config::public(endpoint, bucket))))
         }
         Some(Backend::Https) => {
-            bail!("the https backend is read-only; reseed to s3/ipfs (or platform) instead")
+            return Err(crate::errors::usage(
+                "the https backend is read-only; reseed to s3/ipfs (or platform) instead",
+            ))
         }
     })
 }
 
-/// A `--json` cost block (credits → dash/usd), local alias avoiding a fmt import churn.
-fn cost_json_credits(credits: u64, price_usd: f64) -> serde_json::Value {
-    crate::fmt::cost_json(credits, price_usd)
-}
-
-/// Convert a signed net-credit delta to DASH for display (1 DASH = 1e11 credits). The
-/// magnitudes here (a repo's storage) sit far inside f64's exact-integer range.
-#[allow(clippy::cast_precision_loss)]
-fn net_credits_to_dash(net: i128) -> f64 {
-    net as f64 / 1e11
-}
-
 /// `dg import <github-url>` — thin wrapper over `forge-import` (PRD 06), not yet wired.
+///
+/// Fails (E103) rather than exiting 0, so `dg import X && …` does not proceed as if a
+/// repository had been imported.
 #[allow(clippy::unnecessary_wraps)]
-pub fn import(ctx: &Ctx, url: &str) -> Result<()> {
-    ctx.emit(
+pub fn import(_ctx: &Ctx, url: &str) -> Result<()> {
+    Err(crate::errors::reported(
+        forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::NOT_IMPLEMENTED,
+            "dg import is not wired yet",
+        )
+        .cause(format!("{url} would be delegated to forge-import (PRD 06), which has no callable entry point yet"))
+        .fix("run the forge-import binary directly (`cargo run -p forge-import -- --help`)"),
         json!({
             "status": "not_implemented",
             "command": "import",
             "url": url,
             "todo": "delegate to the forge-import crate (Forgejo-semantics mapping, PRD 06); the importer is not yet exposed as a callable entry point",
         }),
-        || {
-            eprintln!("dg import: not yet wired");
-            eprintln!("  TODO: delegate {url} to forge-import (PRD 06).");
-        },
-    );
-    Ok(())
+    ))
 }

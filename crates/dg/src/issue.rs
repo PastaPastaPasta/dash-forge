@@ -1,6 +1,6 @@
 //! `dg issue` — issue tracking (list/view/create/comment/close/reopen/label).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::collab::{IssueService, StateFilter};
@@ -39,10 +39,10 @@ fn to_filter(state: StateArg) -> StateFilter {
 async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issues = svc
-        .list_issues(&handle.repo_contract_id, to_filter(state), limit, None)
+        .list_issues(handle.v1_contract_id()?, to_filter(state), limit, None)
         .await
         .context("list_issues")?;
 
@@ -72,13 +72,18 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let iw = svc
-        .issue_state(&handle.repo_contract_id, number)
+        .issue_state(handle.v1_contract_id()?, number)
         .await
         .context("issue_state")?
-        .ok_or_else(|| anyhow::anyhow!("issue #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("issue #{number} not found in {repo}"),
+                format!("`dg issue list {repo} --state all` lists its issues"),
+            )
+        })?;
 
     ctx.emit(
         json!({
@@ -115,13 +120,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!("Create issue {title:?}? (a small ungated write)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .create_issue(&handle.repo_contract_id, title, body)
+        .create_issue(handle.v1_contract_id()?, title, body)
         .await
         .context("create_issue")?;
 
@@ -140,17 +145,22 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm("Post comment? (a small ungated write)")? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("issue #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("issue #{number} not found in {repo}"),
+                format!("`dg issue list {repo} --state all` lists its issues"),
+            )
+        })?;
     let doc_id = svc
-        .comment(&handle.repo_contract_id, &issue.document_id, body, None)
+        .comment(handle.v1_contract_id()?, &issue.document_id, body, None)
         .await
         .context("comment")?;
 
@@ -165,20 +175,25 @@ async fn close_reopen(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result
     let repo_ref = RepoRef::parse(repo)?;
     let verb = if close { "Close" } else { "Reopen" };
     if !ctx.confirm(&format!("{verb} issue #{number}? (a small ungated event)"))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("issue #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("issue #{number} not found in {repo}"),
+                format!("`dg issue list {repo} --state all` lists its issues"),
+            )
+        })?;
     let event_id = if close {
-        svc.close(&handle.repo_contract_id, &issue.document_id)
+        svc.close(handle.v1_contract_id()?, &issue.document_id)
             .await?
     } else {
-        svc.reopen(&handle.repo_contract_id, &issue.document_id)
+        svc.reopen(handle.v1_contract_id()?, &issue.document_id)
             .await?
     };
 
@@ -203,24 +218,33 @@ async fn label(
     let (kind, value) = match (add, remove) {
         (Some(l), None) => (EventKind::LabelAdd, l.to_string()),
         (None, Some(l)) => (EventKind::LabelRemove, l.to_string()),
-        _ => bail!("pass exactly one of --add <label> or --remove <label>"),
+        _ => {
+            return Err(crate::errors::usage(
+                "pass exactly one of --add <label> or --remove <label>",
+            ))
+        }
     };
     let repo_ref = RepoRef::parse(repo)?;
     if !ctx.confirm(&format!(
         "Label issue #{number} ({value})? (a small ungated event)"
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("issue #{number} not found"))?;
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("issue #{number} not found in {repo}"),
+                format!("`dg issue list {repo} --state all` lists its issues"),
+            )
+        })?;
     let event_id = svc
         .add_event(
-            &handle.repo_contract_id,
+            handle.v1_contract_id()?,
             &issue.document_id,
             kind,
             Some(&value),

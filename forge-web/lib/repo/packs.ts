@@ -12,8 +12,11 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { PACK_KIND, type PackKind } from '../constants'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, parseJsonList, type RepoRef } from './contract'
-import { base64ToBytes, base64ToHex } from '../sdk'
+import { v2PackList, type Role } from '../rules/v2'
+import { DOC, parseJsonList, str, type RepoRef, type V2RepoRef } from './contract'
+import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
+import { readRoleOracle } from './members'
+import { repoSource } from './source'
 
 /** A parsed `packManifest`. */
 export interface PackManifest {
@@ -36,6 +39,21 @@ export interface PackManifest {
   readonly createdAt: number
   /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak (data-contracts §2.3). */
   readonly documentId: string
+  /**
+   * The manifest's `$ownerId` — who uploaded this copy. On forge-v2 chunks are keyed by it
+   * (`(repoId, $ownerId, packHash, seq)`), so a chunk read must name it.
+   */
+  readonly uploader: string
+  /**
+   * forge-v2: every writer's copy of this pack, in the order a reader tries them
+   * (`orderPackCopies`: current maintainers, then writers, then everyone else; each by
+   * `($createdAt, $id)`), this manifest first. A read falls through to the next copy when one
+   * cannot be read or does not verify (`forge-v2.md` §4). Absent on v1, where `packHash` is
+   * unique.
+   */
+  readonly copies?: readonly PackManifest[]
+  /** forge-v2 raw copies: the uploader's current role (null: not a member). Absent on v1. */
+  readonly ownerRole?: Role | null
 }
 
 /**
@@ -80,11 +98,13 @@ function toManifest(doc: PlainDocument): PackManifest {
     objectCount: num('objectCount'),
     chunkCount: num('chunkCount'),
     storage: num('storage'),
+    // v1: JSON-in-string; forge-v2: a typed string array. parseJsonList reads both.
     uris: parseJsonList(doc, 'uris'),
     tips: parsePackedHashes(doc, 'tips', 20),
     supersedes: parsePackedHashes(doc, 'supersedes', 32),
     createdAt: num('$createdAt'),
-    documentId: typeof doc['$id'] === 'string' ? (doc['$id'] as string) : '',
+    documentId: str(doc, '$id'),
+    uploader: str(doc, '$ownerId'),
   }
 }
 
@@ -104,12 +124,101 @@ function toManifest(doc: PlainDocument): PackManifest {
  * not depend on manifest volume at all. Parity: forge-core `read_pack_manifests`.
  */
 export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
-  const documents = await queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.packManifest,
-    orderBy: [['$createdAt', 'desc']],
-  })
+  const documents = await queryAllDocuments(
+    sdk,
+    repoSource(repo).repoQuery(DOC.packManifest, { orderBy: [['$createdAt', 'desc']] }),
+  )
   return documents.map(toManifest)
+}
+
+/** A `(createdAt, id)` bound: v1 callers pass the locator's `$createdAt` alone. */
+export type AsOf = number | { readonly createdAt: number; readonly id: string }
+
+/**
+ * forge-v2: the pack list of one `kind` (`v2PackList`, `forge-v2.md` §4) over raw manifest
+ * copies that carry their uploader's role ({@link readRepoPackManifests}), in `packRef`
+ * order. Each entry is the representative copy's manifest, positioned at the pack's first
+ * upload (`createdAt` / `documentId` are the first upload's), with every usable copy in the
+ * order a reader tries them. Superseded packs stay in the list, in place: a hash proves a
+ * pack's bytes, not that it holds everything it claims to replace.
+ */
+export function v2PacksOfKind(
+  copies: readonly PackManifest[],
+  kind: number,
+  asOf?: AsOf,
+): (PackManifest & { readonly superseded: boolean })[] {
+  const byId = new Map(copies.map((m) => [m.documentId, m]))
+  const bound = asOf === undefined ? null : typeof asOf === 'number' ? { createdAt: asOf, id: '\uffff' } : asOf
+  const listed = v2PackList(
+    copies.map((m) => ({
+      id: m.documentId,
+      packHash: m.packHash.toLowerCase(),
+      kind: m.kind,
+      createdAt: m.createdAt,
+      ownerRole: m.ownerRole ?? null,
+      sizeBytes: m.sizeBytes,
+      objectCount: m.objectCount,
+      chunkCount: m.chunkCount,
+      supersedes: m.supersedes.map((h) => h.toLowerCase()),
+      verified: null,
+    })),
+    bound,
+  )
+  return listed
+    .filter((p) => p.kind === kind)
+    .map((p) => {
+      const ranked = p.copies.map((id) => byId.get(id) as PackManifest)
+      const rep = ranked[0] as PackManifest
+      return {
+        ...rep,
+        createdAt: p.first.createdAt,
+        documentId: p.first.id,
+        copies: ranked,
+        superseded: p.superseded,
+      }
+    })
+}
+
+/** Whether a manifest list is forge-v2 raw copies (each carries its uploader's role). */
+export function isV2Copies(manifests: readonly PackManifest[]): boolean {
+  return manifests.some((m) => m.ownerRole !== undefined)
+}
+
+/**
+ * Every pack manifest of a repo, newest first: v1 as stored; forge-v2 as raw copies, each
+ * tagged with its uploader's current role so {@link v2PacksOfKind} can rank them.
+ */
+export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
+  if (repo.kind === 'v1') return readPackManifests(sdk, repo)
+  const [manifests, oracle] = await Promise.all([
+    readPackManifests(sdk, repo),
+    readRoleOracle(sdk, repo),
+  ])
+  return manifests.map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+}
+
+/**
+ * forge-v2: every writer's copy of `packHash` (`(repoId, packHash)` index), ranked for
+ * reading, as one manifest with `copies` — or null when no copy claims `kind`. Independent of
+ * how many other packs the repo holds.
+ */
+export async function readV2PackCopies(
+  sdk: EvoSDK,
+  repo: V2RepoRef,
+  packHashHex: string,
+  kind: number,
+): Promise<PackManifest | null> {
+  const [documents, oracle] = await Promise.all([
+    queryAllDocuments(
+      sdk,
+      repoSource(repo).repoQuery(DOC.packManifest, {
+        where: [['packHash', '==', hexToBase64(packHashHex)]],
+      }),
+    ),
+    readRoleOracle(sdk, repo),
+  ])
+  const copies = documents.map(toManifest).map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+  return v2PacksOfKind(copies, kind)[0] ?? null
 }
 
 /** The newest manifest of a given kind (the current locator / flatIndex), or null. */
@@ -118,16 +227,17 @@ export async function readNewestManifestOfKind(
   repo: RepoRef,
   kind: PackKind,
 ): Promise<PackManifest | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.packManifest,
-    where: [['kind', '==', kind]],
-    orderBy: [
-      ['kind', 'asc'],
-      ['$createdAt', 'desc'],
-    ],
-    limit: 1,
-  })
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(DOC.packManifest, {
+      where: [['kind', '==', kind]],
+      orderBy: [
+        ['kind', 'asc'],
+        ['$createdAt', 'desc'],
+      ],
+      limit: 1,
+    }),
+  )
   const doc = documents[0]
   return doc === undefined ? null : toManifest(doc)
 }

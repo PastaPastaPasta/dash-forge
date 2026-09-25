@@ -59,6 +59,11 @@ describe('deriveTrust — proofs and refs', () => {
     expect(r.refs.state).toBe('verified')
   })
 
+  it('names the rules that folded the refs (v1 or forge-v2)', () => {
+    expect(deriveTrust(inputs()).refs.detail).toMatch(/FORGE_RULES_V1/)
+    expect(deriveTrust(inputs({ model: 'v2' })).refs.detail).toMatch(/FORGE_RULES_V2/)
+  })
+
   it('reports proofs and refs as unverified on a connection that does not check proofs', () => {
     const r = deriveTrust(inputs({ connection: 'untrusted' }))
     expect(r.proofs.state).toBe('unverified')
@@ -121,6 +126,25 @@ describe('deriveTrust — content hashes', () => {
     const pack = deriveTrust(inputs({ checks: checks({ packsFailed: 1 }) }))
     expect(pack.content.state).toBe('failed')
     expect(pack.content.detail).toMatch(/1 pack did not match its manifest/)
+  })
+
+  it('is partial, never verified, when a live pack could not be fetched', () => {
+    const read = deriveTrust(
+      inputs({ checks: checks({ objectsVerified: 5, packsVerified: 3, unavailablePacks: ['ab'.repeat(32)] }) }),
+    )
+    expect(read.content.state).toBe('partial')
+    expect(read.content.summary).toBe('1 pack missing')
+    expect(read.content.detail).toMatch(/1 pack could not be fetched from its storage, so some objects may be missing/)
+    expect(read.overall).toBe('partial')
+
+    // Known before any object is read, so not `pending` either.
+    const none = deriveTrust(inputs({ checks: checks({ unavailablePacks: ['ab'.repeat(32), 'cd'.repeat(32)] }) }))
+    expect(none.content.state).toBe('partial')
+    expect(none.content.summary).toBe('2 packs missing')
+
+    // A hash failure still wins.
+    const bad = deriveTrust(inputs({ checks: checks({ objectsFailed: 1, unavailablePacks: ['ab'.repeat(32)] }) }))
+    expect(bad.content.state).toBe('failed')
   })
 
   it('names every source bytes actually came from', () => {

@@ -29,7 +29,8 @@ pub use policy::{ResolvedPolicy, StoragePolicy};
 pub use profiles::{Profile, SecretRef, StorageProfiles, PLATFORM_PROFILE};
 pub use read::PackReader;
 pub use targets::{
-    replicate, ExternalTarget, Replica, Replication, ReplicationError, StorageTarget,
+    replicate, ExternalTarget, Observed, Replica, Replication, ReplicationError, StorageTarget,
+    StoreOutcome, TargetFailure, UriBudget,
 };
 
 /// The shared defaults file (also imported by forge-web).

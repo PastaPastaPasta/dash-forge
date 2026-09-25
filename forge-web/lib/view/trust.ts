@@ -61,6 +61,8 @@ export interface TrustInputs {
   readonly checks: ContentChecks
   /** The repo config's backend label — what the owner declared, not what served bytes. */
   readonly configuredBackend: string
+  /** Which rules folded the refs (v1 `FORGE_RULES_V1`, forge-v2 `FORGE_RULES_V2`). */
+  readonly model?: 'v1' | 'v2'
 }
 
 /**
@@ -127,6 +129,7 @@ function deriveProofs(network: Network, connection: ConnectionTrust, endpoint: s
 }
 
 function deriveRefs(input: TrustInputs): TrustLink {
+  const rules = input.model === 'v2' ? 'FORGE_RULES_V2' : 'FORGE_RULES_V1'
   if (input.connection === 'connecting') {
     return { state: 'pending', summary: 'pending', detail: 'Refs have not been read yet.' }
   }
@@ -135,7 +138,7 @@ function deriveRefs(input: TrustInputs): TrustLink {
       state: 'unverified',
       summary: 'unchecked',
       detail:
-        'The tip was folded from the refUpdate log by FORGE_RULES_V1, but the log itself was read without proofs.',
+        `The tip was folded from the refUpdate log by ${rules}, but the log itself was read without proofs.`,
     }
   }
   const tip = input.tip
@@ -163,13 +166,33 @@ function deriveRefs(input: TrustInputs): TrustLink {
       return {
         state: 'verified',
         summary: 'proof',
-        detail:
-          'The tip was folded by FORGE_RULES_V1 from the proof-checked, append-only refUpdate log.',
+        detail: `The tip was folded by ${rules} from the proof-checked, append-only refUpdate log.`,
       }
   }
 }
 
 function deriveContent(checks: ContentChecks): TrustLink {
+  const link = deriveReadContent(checks)
+  const missing = checks.unavailablePacks.length
+  if (missing === 0 || link.state === 'failed') return link
+  // Everything shown passed its check, but the answer is incomplete: objects only the
+  // skipped packs hold cannot be shown at all. That is at best `partial`, never `verified`
+  // — and never `pending` either, since the skip is known before any object is read.
+  const corrupt = checks.corruptMirrorPacks.length
+  const bad =
+    corrupt > 0
+      ? ` A mirror served bad data (bytes that fail the manifest sha256) for ${plural(corrupt, 'pack')}; it was refused.`
+      : ''
+  const note = `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some objects may be missing.${bad}`
+  return {
+    state: link.state === 'unverified' ? 'unverified' : 'partial',
+    summary: `${missing} ${missing === 1 ? 'pack' : 'packs'} missing`,
+    detail: `${note} ${link.detail}`,
+  }
+}
+
+/** The content link from what was read, before accounting for packs that were skipped. */
+function deriveReadContent(checks: ContentChecks): TrustLink {
   const failed = checks.objectsFailed + checks.packsFailed
   if (failed > 0) {
     const parts: string[] = []

@@ -20,6 +20,7 @@
 SCENARIO_NAME="06 third-party verification (⭐)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+[[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 OWNER="$E2E_OWNER_ID"; RNAME="$E2E_REPO_NAME"; REPO="${OWNER}/${RNAME}"
 LOG="${WORKROOT}/s06"

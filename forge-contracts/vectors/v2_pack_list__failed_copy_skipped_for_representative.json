@@ -1,0 +1,50 @@
+{
+  "name": "failed_copy_skipped_for_representative",
+  "description": "The maintainer's copy failed verification: the writer's copy represents the pack; the failed copy is not in `copies` but still sets `first`.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "m1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 999,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": false
+      },
+      {
+        "id": "w1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "m1"
+      },
+      "copies": [
+        "w1"
+      ],
+      "superseded": false
+    }
+  ]
+}

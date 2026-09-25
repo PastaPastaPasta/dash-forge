@@ -17,11 +17,12 @@ use forge_core::collab::{
     Imported, IssueService, LabelService, PullRequestInput, PullRequestService, ReleaseInput,
     ReleaseService,
 };
+use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts};
 use forge_core::keystore::BridgeIdentity;
 use forge_core::network::NetworkTarget;
 use forge_core::pack::build_pack;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
-use forge_core::repo::{credits_to_dash, CreateRepoOpts, RepoService};
+use forge_core::repo::credits_to_dash;
 use forge_core::rules::EventKind;
 
 use crate::estimate::{ClassCost, Plan, SkipFlags};
@@ -109,9 +110,22 @@ pub async fn run(cfg: &ImportConfig) -> Result<()> {
         std::process::id()
     ));
     let _clone_guard = CloneGuard(clone_dir.clone());
-    let push_git = cfg.repo_contract_id.is_none();
-    if push_git {
-        size_git_data(&gh, &clone_dir, &mut plan)?;
+    if cfg.repo_contract_id.is_some() {
+        bail!(
+            "--repo-contract names a v1 repository, and v1 repositories are read only; import \
+             into a new forge-v2 repository instead (omit --repo-contract)"
+        );
+    }
+    size_git_data(&gh, &clone_dir, &mut plan)?;
+    // Collaboration documents (issues, PRs, labels, releases) move to the forge-collab
+    // contract in a later release; until then a forge-v2 import carries the git history.
+    if plan.has_collab() {
+        println!(
+            "note: importing issues, pull requests, labels and releases into forge-v2 is not \
+             supported yet; this run imports the git history only (re-run with --resume once \
+             collaboration import lands)"
+        );
+        plan.drop_collab();
     }
     // A fresh repo is created only when no existing contract was named and none resolves.
     let mut state = ImportState::load_or_new(&cfg.resume_path, &cfg.source.slug())?;
@@ -152,28 +166,14 @@ pub async fn run(cfg: &ImportConfig) -> Result<()> {
     let balance_before = identity.balance();
 
     // 5. Resolve or create the destination repo.
-    let repo_contract_id =
-        resolve_or_create(&client, &identity, &bridge, cfg, &plan, &mut state).await?;
+    resolve_or_create(&client, &identity, &bridge, cfg, &plan, &mut state).await?;
 
-    // 6. Git data (skipped for the import-into-existing-contract path).
-    if push_git && !state.refs_pushed {
+    // 6. Git data.
+    if !state.refs_pushed {
         push_git_data(cfg, &clone_dir, &state)?;
         state.refs_pushed = true;
         state.save()?;
     }
-
-    // 7. Collaboration docs.
-    import_collab(
-        &client,
-        &identity,
-        &bridge,
-        &gh,
-        cfg,
-        &plan,
-        &repo_contract_id,
-        &mut state,
-    )
-    .await?;
 
     // 8. Report actual vs estimated.
     let after = client
@@ -191,7 +191,7 @@ fn enumerate(gh: &GithubClient, cfg: &ImportConfig) -> Result<Plan> {
     let meta = gh.repo_meta()?;
     let mut plan = Plan {
         meta,
-        creates_repo: cfg.repo_contract_id.is_none(),
+        creates_repo: true,
         ..Plan::default()
     };
 
@@ -272,9 +272,8 @@ fn ref_tips(repo: &Path) -> Result<Vec<(String, String)>> {
     Ok(tips)
 }
 
-/// Resolve the destination repo (existing contract id, or by name under the signing owner),
-/// creating a fresh repo-v1 contract when none exists. Records the outcome in `state` so a
-/// resume never re-pays the ~1.18 DASH create.
+/// Create the destination forge-v2 repo (or finish creating it: the create session is
+/// resumable and never pays for a step twice). Records the outcome in `state`.
 async fn resolve_or_create(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -282,29 +281,15 @@ async fn resolve_or_create(
     cfg: &ImportConfig,
     plan: &Plan,
     state: &mut ImportState,
-) -> Result<String> {
-    if let Some(id) = &cfg.repo_contract_id {
-        // Verify it exists / is fetchable, then import collab straight into it.
-        client
-            .fetch_contract(id)
-            .await
-            .with_context(|| format!("fetching destination contract {id}"))?;
-        state.repo_contract_id = Some(id.clone());
-        state.save()?;
-        tracing::info!(repo_contract = %id, "importing into existing repo contract");
-        return Ok(id.clone());
+) -> Result<()> {
+    if let (Some(owner), Some(name)) = (&state.owner_id, &state.repo_name) {
+        tracing::info!(%owner, %name, "resuming into repo from state");
+        return Ok(());
     }
-
-    if let Some(id) = &state.repo_contract_id {
-        tracing::info!(repo_contract = %id, "resuming into repo from state");
-        return Ok(id.clone());
-    }
-
     let name = cfg
         .repo_name
         .clone()
         .unwrap_or_else(|| cfg.source.repo.clone());
-    let svc = RepoService::new(client, identity, bridge);
     let default_branch = if plan.meta.default_branch.is_empty() {
         "main".to_string()
     } else {
@@ -323,22 +308,23 @@ async fn resolve_or_create(
         500,
     );
     let opts = CreateRepoOpts {
+        name,
+        display_name: String::new(),
+        description,
         default_branch,
         backend_mode: cfg.backend.mode(),
-        description,
-        template_version: 1,
+        visibility: forge_core::rules::v2::Visibility::Public,
     };
-    tracing::info!(%name, "creating destination repo (repo-v1 contract)");
-    let result = svc
-        .create_repo(&name, &opts)
+    tracing::info!(name = %opts.name, "creating destination repo (forge-v2)");
+    let result = create_repo(client, identity, bridge, &opts, &default_journal_dir()?)
         .await
         .context("creating destination repo")?;
-    state.repo_contract_id = Some(result.handle.repo_contract_id.clone());
-    state.owner_id = Some(result.handle.owner_id.clone());
-    state.repo_name = Some(result.handle.normalized_name.clone());
-    state.repo_created = result.repo_v1_instantiation_cost_credits > 0;
-    state.add_spend(result.repo_v1_instantiation_cost_credits)?;
-    Ok(result.handle.repo_contract_id)
+    state.repo_contract_id = Some(result.repo.id().to_string());
+    state.owner_id = Some(result.repo.owner_id().to_string());
+    state.repo_name = Some(result.repo.name().to_string());
+    state.repo_created = !result.already_existed();
+    state.add_spend(result.cost_credits)?;
+    Ok(())
 }
 
 /// Push all branches + tags through `git push dash://<owner>/<repo>` — the M1-proven helper
@@ -471,7 +457,10 @@ fn journal_idle_time(clone_dir: &Path) -> Option<std::time::Duration> {
 
 /// Import labels, milestone-derived labels, issues (+ state/label events + comments), PRs
 /// (+ state events), and releases — each resumable and provenance-stamped.
-#[allow(clippy::too_many_arguments)]
+///
+/// Addresses a v1 repo contract. Not called while collaboration documents are moving to
+/// forge-collab; kept for that migration.
+#[allow(clippy::too_many_arguments, dead_code)]
 async fn import_collab(
     client: &PlatformClient,
     identity: &LoadedIdentity,

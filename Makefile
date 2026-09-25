@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify storage-it storage-e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -54,12 +54,17 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE testnet) against the reused m1 repo.
+## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2; scenario 08 reads a
+## testnet v1 repo) against the OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
 e2e: build-rust
 	@bash e2e/cli/run.sh
+
+## e2e-fixture: seed the browser specs' read fixture (idempotent; see e2e/README.md).
+e2e-fixture: build-rust
+	@bash e2e/cli/seed-read-fixture.sh
 
 ## devnet-identities: mint (or resume) the 9-role identity pool on a devnet,
 ## funded from the devnet's faucet wallet key, then verify every identity on
@@ -106,8 +111,8 @@ storage-it: infra-up
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local MinIO + kubo and only the manifest + ref on testnet, against the dedicated
-## storage-e2e-a / storage-e2e-b repos (e2e/README.md; created once, ~1.18 tDASH each).
+## on local MinIO + kubo and only the manifest + ref on devnet moutai, against the
+## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up
 	cargo build -p dg

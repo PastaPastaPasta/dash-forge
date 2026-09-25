@@ -1,46 +1,25 @@
-//! [`TokenService`] — the on-chain collaborator ACL over a repo contract's tokens.
+//! [`TokenService`] — the collaborator list of a **forge-v1** repository, read only.
 //!
-//! A repo's two tokens **are** its access-control list (data-contracts §2.1):
+//! A v1 repo's two tokens were its access-control list: position **0 = WRITE** (push,
+//! upload), position **1 = MAINTAIN** (protected refs, releases, config). v1 is read only
+//! now, so this module only reads: [`TokenService::list_collaborators`] /
+//! [`TokenService::holdings`] (balances + frozen status) and
+//! [`TokenService::token_history`] (mint/freeze/unfreeze/destroy records with consensus
+//! `$createdAt`, fed to [`crate::rules::holdings_as_of`] for as-of-time event authorization
+//! when folding a v1 repo's issues and PRs).
 //!
-//! * position **0 = WRITE** — push / upload / CI (gates every `refUpdate` / `chunk` /
-//!   `packManifest` create + refund-delete).
-//! * position **1 = MAINTAIN** — protected refs / releases / labels / webhooks / config.
-//!
-//! Collaborator management is therefore token administration, not document writes:
-//!
-//! * [`TokenService::grant`] — **mint** `10⁹` of the token to a member (they can now
-//!   spend the gated actions).
-//! * [`TokenService::suspend`] — **freeze** the member's balance (kept, but unspendable →
-//!   every gated create *and* delete fails at consensus, S0.7).
-//! * [`TokenService::revoke`] — **freeze + destroyFrozenFunds** (balance zeroed, removed
-//!   from the collaborator set).
-//! * [`TokenService::list_collaborators`] / [`TokenService::holdings`] — read the balances
-//!   (with frozen status) back: the balances are the ACL.
-//! * [`TokenService::token_history`] — the mint/freeze/unfreeze/destroy records with
-//!   consensus `$createdAt`, fed to [`crate::rules::holdings_as_of`] for as-of-time event
-//!   authorization (§4).
-//!
-//! Every mutating op signs with the owner's **CRITICAL** key (S0.7: HIGH is rejected for
-//! token admin) and — because of the keepsHistory `mint()` return-value bug (S0.7) —
-//! **verifies success via a balance/frozen query afterwards, never the return value**.
-//! All SDK contact goes through [`crate::platform`]; this module names no rs-sdk type.
+//! forge-v2 membership is documents: see [`crate::members`].
 
 use std::collections::BTreeSet;
 
-use crate::error::{Error, Result};
-use crate::keystore::BridgeIdentity;
-use crate::platform::{self, FieldValue, LoadedIdentity, PlatformClient, QueryFilter, QueryOrder};
+use crate::error::Result;
+use crate::platform::{self, FieldValue, PlatformClient, QueryFilter, QueryOrder};
 use crate::rules::{TokenKind, TokenOp, TokenRecord};
 
 /// WRITE token position (push / upload / CI).
 pub const WRITE_POSITION: u16 = 0;
 /// MAINTAIN token position (protected refs / releases / labels / config).
 pub const MAINTAIN_POSITION: u16 = 1;
-
-/// The amount minted per grant (`10⁹`), matching the `baseSupply` the owner is
-/// auto-credited (data-contracts §2.1) — plenty for a collaborator's per-action
-/// `tokenCost` spends over the repo's lifetime.
-pub const GRANT_AMOUNT: u64 = 1_000_000_000;
 
 /// The system **TokenHistory** contract holding the `mint` / `freeze` /
 /// `unfreeze` / `destroyFrozenFunds` audit documents with consensus `$createdAt`
@@ -54,15 +33,6 @@ const TH_MINT: &str = "mint";
 const TH_FREEZE: &str = "freeze";
 const TH_UNFREEZE: &str = "unfreeze";
 const TH_DESTROY: &str = "destroyFrozenFunds";
-
-/// Max post-broadcast verify re-reads before concluding a freeze/unfreeze/destroy did not
-/// take. Platform reads are eventually consistent, so the status query *immediately* after
-/// a broadcast can still reflect the pre-write state (S0.7 read-after-write lag); the write
-/// itself has already landed, so this only bounds how long we wait for the read to catch up
-/// before reporting the real state. Mirrors `git-remote-dash`'s post-push convergence poll.
-const VERIFY_MAX_ATTEMPTS: usize = 6;
-/// Delay between verify re-reads (`VERIFY_MAX_ATTEMPTS` × this ≈ a few seconds total).
-const VERIFY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// A collaborator role, mapped to its token position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,159 +94,15 @@ pub struct Collaborator {
     pub holdings: HoldingStatus,
 }
 
-/// The token-administration service, bound to the repo **owner** identity (the token
-/// authority for a solo-owner repo) and its keys.
+/// Read access to a v1 repository's token ACL.
 pub struct TokenService<'a> {
     client: &'a PlatformClient,
-    identity: &'a LoadedIdentity,
-    bridge: &'a BridgeIdentity,
 }
 
 impl<'a> TokenService<'a> {
-    /// Bind the service to `client`, the owner `identity`, and its `bridge` key material
-    /// (the CRITICAL key is required for every mint/freeze/destroy).
-    pub fn new(
-        client: &'a PlatformClient,
-        identity: &'a LoadedIdentity,
-        bridge: &'a BridgeIdentity,
-    ) -> Self {
-        Self {
-            client,
-            identity,
-            bridge,
-        }
-    }
-
-    /// The base58 token id for `position` (0 = WRITE, 1 = MAINTAIN) of a repo contract.
-    pub async fn token_id(&self, repo_contract_id: &str, position: u16) -> Result<String> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        Ok(self.client.token_id(&contract, position))
-    }
-
-    /// **Grant** `role` to `member_id` (base58): mint `10⁹` of the role's token to it.
-    /// Idempotent — if the member already holds a positive balance, the mint is skipped
-    /// (no double-mint on retry). Verified via a balance query (S0.7 mint-return bug).
-    pub async fn grant(&self, repo_contract_id: &str, member_id: &str, role: Role) -> Result<()> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        let token = self.client.token_id(&contract, role.position());
-
-        if self.balance_of(&token, member_id).await? > 0 {
-            // Already a holder → skip the mint (no double-mint on retry). If the member is
-            // *frozen*, grant is the wrong tool — the balance is present but suspended, and
-            // minting more would not restore access; direct the caller to `unsuspend`.
-            let frozen = self.frozen_of(&token, member_id).await?;
-            if frozen {
-                tracing::warn!(
-                    member = member_id,
-                    role = ?role,
-                    "member already holds the token but is FROZEN; skipping mint — use \
-                     `unsuspend` to restore a frozen member, not `grant`"
-                );
-            } else {
-                tracing::warn!(
-                    member = member_id,
-                    role = ?role,
-                    "member already holds the token; skipping mint (idempotent)"
-                );
-            }
-            return Ok(());
-        }
-
-        let key = self.bridge.token_admin_key()?;
-        self.client
-            .token_mint(
-                &contract,
-                self.identity,
-                key,
-                role.position(),
-                GRANT_AMOUNT,
-                member_id,
-            )
-            .await?;
-
-        // Verify via query — the keepsHistory mint() return value is not trusted.
-        if self.balance_of(&token, member_id).await? == 0 {
-            return Err(Error::Platform(
-                "grant broadcast but the member's balance did not increase".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// **Suspend** `role` for `member_id`: freeze its balance. Verified via a frozen-status
-    /// query.
-    pub async fn suspend(&self, repo_contract_id: &str, member_id: &str, role: Role) -> Result<()> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        let token = self.client.token_id(&contract, role.position());
-        let key = self.bridge.token_admin_key()?;
-
-        self.client
-            .token_freeze(&contract, self.identity, key, role.position(), member_id)
-            .await?;
-
-        // Verify via a bounded poll — the freeze broadcast has landed, but the frozen-status
-        // read can lag (eventual consistency), so re-query a few times before concluding it
-        // did not take.
-        if !self.poll_frozen(&token, member_id, true).await? {
-            return Err(Error::Platform(
-                "suspend broadcast but the member's token is not frozen".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// **Unsuspend** `role` for `member_id`: lift a freeze so the member can spend again
-    /// (the inverse of [`TokenService::suspend`]). Verified via a frozen-status query.
-    pub async fn unsuspend(
-        &self,
-        repo_contract_id: &str,
-        member_id: &str,
-        role: Role,
-    ) -> Result<()> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        let token = self.client.token_id(&contract, role.position());
-        let key = self.bridge.token_admin_key()?;
-
-        self.client
-            .token_unfreeze(&contract, self.identity, key, role.position(), member_id)
-            .await?;
-
-        // Verify via a bounded poll — the unfreeze has landed, but the frozen-status read can
-        // lag (eventual consistency), so re-query a few times before concluding it did not
-        // take.
-        if self.poll_frozen(&token, member_id, false).await? {
-            return Err(Error::Platform(
-                "unsuspend broadcast but the member's token is still frozen".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// **Revoke** `role` from `member_id`: freeze (if not already) then destroy the frozen
-    /// balance. Verified by a zero-balance query.
-    pub async fn revoke(&self, repo_contract_id: &str, member_id: &str, role: Role) -> Result<()> {
-        let contract = self.client.fetch_contract(repo_contract_id).await?;
-        let token = self.client.token_id(&contract, role.position());
-        let key = self.bridge.token_admin_key()?;
-
-        // destroyFrozenFunds requires the balance to be frozen first.
-        if !self.frozen_of(&token, member_id).await? {
-            self.client
-                .token_freeze(&contract, self.identity, key, role.position(), member_id)
-                .await?;
-        }
-        self.client
-            .token_destroy_frozen(&contract, self.identity, key, role.position(), member_id)
-            .await?;
-
-        // Verify via a bounded poll — the destroy has landed, but the balance read can lag
-        // (eventual consistency), so re-query a few times before concluding it did not take.
-        if self.poll_balance_zero(&token, member_id).await? != 0 {
-            return Err(Error::Platform(
-                "revoke broadcast but the member's balance is not zero".into(),
-            ));
-        }
-        Ok(())
+    /// A reader over `client`.
+    pub fn new(client: &'a PlatformClient) -> Self {
+        Self { client }
     }
 
     /// The **on-chain collaborator list**: every identity that currently holds either
@@ -291,7 +117,7 @@ impl<'a> TokenService<'a> {
         // Candidates: everyone ever minted to (from history) + the owner (baseSupply).
         let history = self.token_history(repo_contract_id).await?;
         let mut candidates: BTreeSet<String> = history.into_iter().map(|r| r.identity).collect();
-        candidates.insert(self.identity.id());
+        candidates.insert(contract.owner_id());
         let candidates: Vec<String> = candidates.into_iter().collect();
 
         let write_bal = self
@@ -403,8 +229,7 @@ impl<'a> TokenService<'a> {
             affected.insert(owner.clone());
             for m in &mints {
                 let Some(recipient) = m
-                    .field_bytes("recipientId")
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                    .field_bytes32("recipientId")
                     .map(platform::encode_identifier)
                 else {
                     continue;
@@ -455,58 +280,6 @@ impl<'a> TokenService<'a> {
             }
         }
         Ok(records)
-    }
-
-    // --- internal query helpers ---
-
-    async fn balance_of(&self, token_id_b58: &str, identity: &str) -> Result<u64> {
-        let bal = self
-            .client
-            .token_balances(token_id_b58, &[identity.to_string()])
-            .await?;
-        Ok(bal.get(identity).copied().unwrap_or(0))
-    }
-
-    async fn frozen_of(&self, token_id_b58: &str, identity: &str) -> Result<bool> {
-        let frozen = self
-            .client
-            .token_frozen(token_id_b58, &[identity.to_string()])
-            .await?;
-        Ok(frozen.get(identity).copied().unwrap_or(false))
-    }
-
-    /// Re-read frozen status until it reaches `expected` or the retry budget is spent,
-    /// tolerating read-after-write lag. Returns the last observed value (which the caller
-    /// compares against `expected` to decide success/failure).
-    async fn poll_frozen(
-        &self,
-        token_id_b58: &str,
-        identity: &str,
-        expected: bool,
-    ) -> Result<bool> {
-        let mut frozen = self.frozen_of(token_id_b58, identity).await?;
-        for attempt in 1..=VERIFY_MAX_ATTEMPTS {
-            if frozen == expected || attempt == VERIFY_MAX_ATTEMPTS {
-                break;
-            }
-            tokio::time::sleep(VERIFY_RETRY_DELAY).await;
-            frozen = self.frozen_of(token_id_b58, identity).await?;
-        }
-        Ok(frozen)
-    }
-
-    /// Re-read balance until it reaches zero or the retry budget is spent, tolerating
-    /// read-after-write lag. Returns the last observed balance.
-    async fn poll_balance_zero(&self, token_id_b58: &str, identity: &str) -> Result<u64> {
-        let mut bal = self.balance_of(token_id_b58, identity).await?;
-        for attempt in 1..=VERIFY_MAX_ATTEMPTS {
-            if bal == 0 || attempt == VERIFY_MAX_ATTEMPTS {
-                break;
-            }
-            tokio::time::sleep(VERIFY_RETRY_DELAY).await;
-            bal = self.balance_of(token_id_b58, identity).await?;
-        }
-        Ok(bal)
     }
 }
 

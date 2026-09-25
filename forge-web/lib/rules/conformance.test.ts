@@ -192,11 +192,25 @@ const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
   ],
 }
 
-function onlyKeys(v: Vector, allowed: readonly string[]): void {
+/** `v2_pack_list` rows carry manifest metadata `pack_copies` rows do not. */
+const PACK_LIST_KEYS: Readonly<Record<string, readonly string[]>> = {
+  ...NESTED_KEYS,
+  copies: [
+    'id', 'packHash', 'kind', 'createdAt', 'ownerRole', 'sizeBytes', 'objectCount',
+    'chunkCount', 'supersedes', 'verified',
+  ],
+  asOf: ['createdAt', 'id'],
+}
+
+function onlyKeys(
+  v: Vector,
+  allowed: readonly string[],
+  nested: Readonly<Record<string, readonly string[]>> = NESTED_KEYS,
+): void {
   const input = v.input as Record<string, unknown>
   const extra = Object.keys(input).filter((k) => !allowed.includes(k))
   expect(extra, `vector ${v.name}: unknown input keys`).toEqual([])
-  for (const [key, nestedAllowed] of Object.entries(NESTED_KEYS)) {
+  for (const [key, nestedAllowed] of Object.entries(nested)) {
     const value = input[key]
     if (value === undefined || value === null) continue
     for (const [i, rec] of (Array.isArray(value) ? value : [value]).entries()) {
@@ -254,6 +268,15 @@ function runCaseV2(v: Vector): void {
       if (want.readOrder !== undefined) {
         expect(v2.packReadOrder(copies)).toEqual(want.readOrder)
       }
+      break
+    }
+    case 'v2_pack_list': {
+      onlyKeys(v, ['copies', 'asOf'], PACK_LIST_KEYS)
+      const inp = v.input as {
+        readonly copies: readonly v2.PackCopyRow[]
+        readonly asOf?: v2.CopyKey | null
+      }
+      expect(v2.v2PackList(inp.copies, inp.asOf)).toEqual(v.expected)
       break
     }
     case 'approvals': {
