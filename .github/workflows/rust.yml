@@ -14,6 +14,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'
+      # Compiled into every binary by the crates' build.rs (`--version` stamping).
+      - 'build-support/**'
       # Compiled into the binaries, not just test data: forge-core include_str!s
       # templates/repo-v1.json and embeds every deployments/*.json (build.rs), and the
       # conformance test loads vectors/.
@@ -26,6 +28,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'
+      # Compiled into every binary by the crates' build.rs (`--version` stamping).
+      - 'build-support/**'
       - 'forge-contracts/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:

@@ -29,7 +29,7 @@ use importer::{Backend, ImportConfig};
 #[derive(Debug, Parser)]
 #[command(
     name = "forge-import",
-    version,
+    version = env!("DASH_FORGE_VERSION"),
     about = "GitHub → Dash Forge importer (PRD 06)"
 )]
 struct Cli {

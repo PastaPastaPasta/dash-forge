@@ -55,6 +55,13 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // `--version` / `-V`: what `dg doctor` compares against its own version. Checked before
+    // admin mode, whose `--` prefix it shares.
+    if matches!(args.get(1).map(String::as_str), Some("--version" | "-V")) {
+        println!("{}", version_line());
+        return Ok(());
+    }
+
     // Admin mode: `git-remote-dash --create-repo <name>` etc. (outside the git protocol).
     if let Some(first) = args.get(1) {
         if first.starts_with("--") {
@@ -89,6 +96,11 @@ fn main() -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock())
+}
+
+/// `git-remote-dash <version> (<sha> <target>)` — the same shape as `dg --version`.
+fn version_line() -> String {
+    format!("git-remote-dash {}", env!("DASH_FORGE_VERSION"))
 }
 
 /// Rewrite a relative `GIT_DIR` to an absolute path (no-op when unset or already absolute).
@@ -238,7 +250,21 @@ fn fail_if_shallow(opts: &OptionState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_fetch_line, parse_push_line, CAPABILITIES};
+    use super::{parse_fetch_line, parse_push_line, version_line, CAPABILITIES};
+
+    #[test]
+    fn version_line_names_version_commit_and_target() {
+        let v = version_line();
+        assert!(
+            v.starts_with(concat!("git-remote-dash ", env!("CARGO_PKG_VERSION"), " (")),
+            "{v}"
+        );
+        assert!(v.contains(env!("DASH_FORGE_GIT_SHA")), "{v}");
+        assert!(
+            v.ends_with(concat!(" ", env!("DASH_FORGE_TARGET"), ")")),
+            "{v}"
+        );
+    }
 
     #[test]
     fn capabilities_advertise_connectless_set() {
