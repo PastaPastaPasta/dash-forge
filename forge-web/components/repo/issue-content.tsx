@@ -66,6 +66,12 @@ export function IssueContent({
   const open = issue.state.open
   const holder = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const canToggle = identity !== null && (identity === issue.author || holder)
+  // A token history that could not be read leaves a maintainer's permission unknown: say so
+  // rather than silently withholding the control (the PR page does the same for merge).
+  const toggleHint =
+    !canToggle && identity !== null && holdings.settled && holdings.data === null
+      ? "Couldn't read this repo's token history, so close/reopen permission is unknown."
+      : null
 
   const postComment = async (): Promise<void> => {
     if (!identity || !signer) {
@@ -145,6 +151,9 @@ export function IssueContent({
             </Button>
           </div>
         </div>
+        {toggleHint !== null ? (
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p>
+        ) : null}
         {commentError ? (
           <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
         ) : null}
