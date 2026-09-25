@@ -43,7 +43,7 @@ step "a push to the v1 repo is refused as read only (nothing signed)"
 git -C "$C1" -c user.email=e2e@x -c user.name=e2e -c commit.gpgsign=false commit -q --allow-empty -m "v1 push probe ${RUN_ID}"
 if testnet git_dash "$V1_TESTNET_IDENTITY" "$LOG-push" -C "$C1" push "$V1_REMOTE" "HEAD:refs/heads/e2e/${RUN_ID}/v1probe"; then
   bad "a push to a v1 repo was ACCEPTED"
-elif grep -qiE 'v1 repo \(read-only\)' "$LOG-push.err" "$LOG-push.out" 2>/dev/null; then
+elif grep -qiE 'v1 repository, which is read only|\[E605\]' "$LOG-push.err" "$LOG-push.out" 2>/dev/null; then
   ok "push refused: v1 repo is read only"
 else
   cat "$LOG-push.err" >&2

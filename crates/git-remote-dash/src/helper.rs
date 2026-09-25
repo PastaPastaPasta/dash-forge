@@ -1253,7 +1253,7 @@ fn write_denied(repo: &str, me: &str) -> Denied {
         .fix(format!(
             "ask the owner to run `dg collab add {repo} {me} --role writer`"
         ))
-        .fix("or push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
+        .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
         .note(NOTE_PRECHECK),
         wire: "not a writer of this repo",
     }

@@ -97,6 +97,7 @@ jobs:
           FORGE_MOUTAI_IDENTITY_COLLAB: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
           FORGE_MOUTAI_IDENTITY_CONTRIB: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
           FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
+          FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
         run: |
           if [ -n "$FORGE_TEST_IDENTITY_DEPLOYER" ]; then
             echo "deployer=true" >> "$GITHUB_OUTPUT"

@@ -208,8 +208,9 @@ is_consensus_not_member() {
   grep -qE '40120' "$1" && grep -qiE 'not a member|consensus refused|\$ownerId' "$1"
 }
 is_consensus_reject() { is_consensus_not_member "$1"; }
-# The helper's local membership pre-check (never a consensus verdict).
-is_local_precheck() { grep -qiE 'you are not a writer of .* — ask its owner' "$1"; }
+# The helper's local membership pre-check (never a consensus verdict): E601 with the
+# "checked before building or paying" note.
+is_local_precheck() { grep -qiE 'checked before building or paying for anything' "$1"; }
 
 # --- retry ---------------------------------------------------------------------
 # Run <cmd...> (which writes its stderr to <errfile>) up to E2E_ATTEMPTS times while it
