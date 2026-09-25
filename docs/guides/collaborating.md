@@ -123,7 +123,7 @@ dg pr create <owner>/project \
   --head-oid "$(git rev-parse HEAD)"
 ```
 
-```
+```text
 Opened PR #7: Handle empty input
 ```
 

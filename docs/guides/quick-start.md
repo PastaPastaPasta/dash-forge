@@ -11,6 +11,8 @@ You will:
 5. [Push to it](#5-push)
 6. [View it on the web](#6-view-it-on-the-web)
 
+Replace every `<…>` placeholder in the commands with your own value before running them; the shell reads a bare `<` or `>` as a redirection.
+
 Allow about 15 minutes. Most of it is the first build, or waiting for testnet to confirm your identity.
 
 > **Which network?** Testnet runs the first version of Forge ("v1": one Platform contract per repository). **forge-v2**, which makes repositories about 1,000× cheaper, has its contracts registered on **devnet moutai**. The tools cannot use them yet: client support is being built now. It comes to mainnet after Platform protocol 14 activates there. Mainnet has no Forge deployment yet. See [the network status table](../../README.md#status).

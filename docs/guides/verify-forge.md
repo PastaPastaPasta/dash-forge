@@ -121,7 +121,7 @@ If the tip from step 1 equals `git rev-parse main`, and `fsck` passes, you hold 
 
 ## The third-party verification script
 
-The CLI end-to-end suite has a scenario that does exactly the steps above, automatically: [`e2e/cli/scenarios/06-third-party-verify.sh`](../../e2e/cli/scenarios/06-third-party-verify.sh). It:
+The CLI end-to-end suite has a scenario that automates steps 1–3 above (the comparison with another source in step 4 stays manual): [`e2e/cli/scenarios/06-third-party-verify.sh`](../../e2e/cli/scenarios/06-third-party-verify.sh). It:
 
 1. reads the raw `refUpdate` documents and folds the chain to a tip, failing on a broken `prev` link;
 2. reads the raw `packManifest` documents and checks that every `packHash` is a SHA-256;

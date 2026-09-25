@@ -44,7 +44,7 @@ You need:
 forge-import alice/project --dry-run
 ```
 
-Then run it with a spending cap. The importer stops before it spends past the cap:
+Then run it with a spending cap. If the estimate is above the cap, the importer refuses to start:
 
 ```sh
 forge-import alice/project --max-spend 3 --resume ./alice-project.import.json
@@ -57,7 +57,7 @@ Useful flags (all real; see `forge-import --help`):
 | `--repo-name <name>` | Name on Forge. The default is the GitHub name. |
 | `--skip issues` / `prs` / `releases` / `comments` | Leave out a class. Repeat the flag for more than one. |
 | `--limit <n>` | Import at most `n` issues and PRs. Useful for a cheap trial run. |
-| `--max-spend <DASH>` | Hard cap. The import aborts before exceeding it. |
+| `--max-spend <DASH>` | Refuse to start when the estimate exceeds this. The check is on the up-front estimate: actual spend is not metered write by write yet, so leave some margin. |
 | `--resume <file>` | The progress file. Rerunning with the same file never duplicates a document or pays twice. |
 | `--yes` | No confirmation prompt, for CI. |
 | `--network`, `--devnet-name` | The same network flags as `dg`. |
@@ -129,6 +129,7 @@ jobs:
     env:
       FORGE_REMOTE: dash://<owner identity id>/<repo name>
       DASH_FORGE_NETWORK: testnet
+      DASH_FORGE_REF: <a dash-forge commit you have reviewed>
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -140,8 +141,9 @@ jobs:
 
       - name: Build git-remote-dash
         run: |
-          git clone --depth 1 https://github.com/PastaPastaPasta/dash-forge "$RUNNER_TEMP/dash-forge"
+          git clone https://github.com/PastaPastaPasta/dash-forge "$RUNNER_TEMP/dash-forge"
           cd "$RUNNER_TEMP/dash-forge"      # rustup installs the pinned toolchain here
+          git checkout --detach "$DASH_FORGE_REF"
           cargo install --locked --path crates/git-remote-dash
 
       - name: Push every branch and tag
@@ -158,7 +160,8 @@ jobs:
 Notes:
 
 - **Build time.** The first run builds from source, which takes several minutes. Add [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache) to reuse it. Once releases are published, the build step becomes one `install.sh` line.
-- `refs/remotes/origin/*` is used because `actions/checkout` creates only one local branch. With `fetch-depth: 0` it fetches every branch into `refs/remotes/origin/`.
+- **Pin `DASH_FORGE_REF`** to a full commit id you have reviewed. The helper you build runs with your identity file, so building whatever `master` holds on each run would hand your key to any future change there.
+- `refs/remotes/origin/*` is used because `actions/checkout` creates only one local branch. With `fetch-depth: 0` it fetches every branch into `refs/remotes/origin/`. `actions/checkout` does not create git's `origin/HEAD` pointer, so no stray `HEAD` branch is pushed.
 - `dash.confirm=never` tells the cost guard not to wait for a terminal that CI does not have. The push still prints its estimate and its actual charge in the job log.
 - **Cost cap.** The helper has no per-run cap yet (the Action will add `cost-cap`). Keep the CI identity's balance small. That balance is the cap.
 - **Bring your own storage in CI.** Add your storage profile to the job with `dg storage add … --secret-access-key env:S3_SECRET_ACCESS_KEY`, set the secret from GitHub secrets, and run `dg storage use <profile>` before the push. The job then also needs `dg`. [Bring your own storage](bring-your-own-storage.md) lists the flags for each provider.
@@ -169,10 +172,10 @@ Any machine with cron works the same way:
 
 ```sh
 # crontab -e
-*/15 * * * * cd /srv/mirror/project && git fetch --prune --prune-tags --tags origin && DASH_FORGE_KEY=/srv/mirror/ci-identity.json git -c dash.confirm=never push --prune dash://<owner>/<repo> '+refs/remotes/origin/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+*/15 * * * * cd /srv/mirror/project && git fetch --prune --prune-tags origin '+refs/heads/*:refs/mirror/heads/*' '+refs/tags/*:refs/tags/*' && DASH_FORGE_KEY=/srv/mirror/ci-identity.json git -c dash.confirm=never push --prune dash://<owner>/<repo> '+refs/mirror/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
 ```
 
-Create `/srv/mirror/project` once with `git clone https://github.com/alice/project`. `--prune-tags` makes tag deletions on GitHub reach the mirror. A clone also has `refs/remotes/origin/HEAD`, which the refspec pushes as a branch named `HEAD`. Delete it from the mirror once with `git push dash://<owner>/<repo> :refs/heads/HEAD`, or ignore it.
+Create `/srv/mirror/project` once with `git clone --bare https://github.com/alice/project /srv/mirror/project`. The fetch copies GitHub's branches into a private `refs/mirror/heads/` namespace, so git's own `origin/HEAD` pointer never reaches the mirror, and `--prune-tags` makes tag deletions on GitHub reach it too.
 
 ---
 
@@ -186,7 +189,7 @@ dg storage status <owner>/<repo>              # does every recorded copy of ever
 
 On the web: `https://forge.dashhq.org/repo?owner=<owner>&name=<repo>`.
 
-To prove that the mirror matches GitHub byte for byte, clone both and compare the tips:
+To check that a branch's history on the mirror matches GitHub, compare its tip on both:
 
 ```sh
 git clone dash://<owner>/<repo> from-forge
@@ -194,7 +197,7 @@ git -C from-forge rev-parse main
 git ls-remote https://github.com/alice/project refs/heads/main
 ```
 
-The two ids must match. Git ids are hashes of the content, so equal ids mean identical history. [Verify Forge](verify-forge.md) goes further.
+The two ids must match. A commit id is a hash over the commit and everything it reaches, so equal ids mean identical history for that branch. Repeat for other branches and tags, or compare the full `git ls-remote` output of both. [Verify Forge](verify-forge.md) goes further.
 
 ---
 

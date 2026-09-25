@@ -1,6 +1,6 @@
 # FAQ
 
-### Who hosts Dash Forge?
+## Who hosts Dash Forge?
 
 Nobody. There is no Forge server, company account or database.
 
@@ -11,7 +11,7 @@ Nobody. There is no Forge server, company account or database.
 
 The Forge project publishes code and nothing else. Anything that looks hosted is either a static file or something you run yourself.
 
-### Can my repository be taken down?
+## Can my repository be taken down?
 
 Not at the protocol level. The Forge contracts are registered **without Platform's contract moderation**, so nobody can delete your documents or ban your identity. That includes the Forge project, Dash Core Group, and the masternode operators. Ref history can't be deleted even by you, so nobody can rewind a branch.
 
@@ -21,30 +21,30 @@ What someone *can* do:
 - **GitHub, a domain registrar or Cloudflare** can take down forge.dashhq.org. The repositories are not there, so they are unaffected. See the next question.
 - **A government** can block access to Platform nodes or gateways in a country. That is a network problem, not a takedown. The data is still there, and reachable from anywhere else.
 
-### Is there any moderation?
+## Is there any moderation?
 
 Not at the protocol level. Spam and abuse cost the sender fees, which is the only floor. Clients can still choose what to show: an issue's or PR's state counts only changes made by its author or by the repository's members, and anyone can build a client that filters more. No one can delete another person's documents.
 
-### What if forge.dashhq.org disappears?
+## What if forge.dashhq.org disappears?
 
 Nothing is lost. Your repositories live on Platform and in your storage, not on the website.
 
 - `git clone dash://…`, `git push` and every `dg` command keep working. They never touch the website.
 - The web app is a static build of [`forge-web/`](../forge-web). Build it and serve it from anywhere, including IPFS: see [Run your own copy of the web app](guides/verify-forge.md#run-your-own-copy-of-the-web-app).
 
-### Do I have to trust the website, or Platform nodes?
+## Do I have to trust the website, or Platform nodes?
 
-No, with one exception. Every Platform read is checked against a proof, and every byte is checked against its hash. What you still trust is the HTTPS endpoint that supplies the validator quorum keys proofs are checked against. [Verify Forge](guides/verify-forge.md) explains it, and shows how to cross-check those keys against your own Dash node.
+Mostly not. Every Platform read is checked against a proof, and every byte is checked against its hash. Two things are still trusted. First, the HTTPS endpoint that supplies the validator quorum keys proofs are checked against. Second, the code doing the checking: the web app's checks protect you only if the JavaScript you loaded is the real app, so if you don't trust forge.dashhq.org (GitHub Pages), build the app yourself from source you have read and serve it, or use the CLI, which needs no website. [Verify Forge](guides/verify-forge.md) explains it, and shows how to cross-check those keys against your own Dash node.
 
-### Who pays for it?
+## Who pays for it?
 
 You, directly, and only for what you write. Platform fees come from your identity's credits. Storage bills come from your own provider, if you use one. Reading and cloning are free. Nobody sponsors identities. See [Costs](guides/costs.md).
 
-### How much does it cost?
+## How much does it cost?
 
 On forge-v2, creating a repository will cost about **0.001 DASH**. A push to your own bucket costs about **0.0003 DASH** today. On today's testnet (v1) a repository costs about 1.18 tDASH, which is free test money. Storing packs on Platform costs about 0.28 DASH per MiB. The full table is in [Costs](guides/costs.md).
 
-### When is it on mainnet?
+## When is it on mainnet?
 
 After **Dash Platform protocol 14** activates on mainnet. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:
 
@@ -56,13 +56,13 @@ After **Dash Platform protocol 14** activates on mainnet. forge-v2 depends on pr
 
 `dg doctor` shows which network you are on, its protocol version, and whether forge-v2 is deployed there.
 
-### Can I have private repositories?
+## Can I have private repositories?
 
 **Coming soon, in the first mainnet release.** Contents will be encrypted in the client with a per-repository key that only members hold. File, branch, issue and comment names will be encrypted too. Anyone will still be able to see that the repository exists, its size, when it changes, and how many members it has. Removing a member rotates the key for future content, but cannot take back what they could already read. The design is in [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories), and it will ship only after a separate security review.
 
 Today every repository is public.
 
-### How does this relate to GitHub?
+## How does this relate to GitHub?
 
 Forge is not a GitHub clone, and it does not need you to leave GitHub.
 
@@ -70,18 +70,18 @@ Forge is not a GitHub clone, and it does not need you to leave GitHub.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. `forge-import` copies code, issues, PRs and releases.
 - **It is not at feature parity.** No CI runner, wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server). No shallow clones: use `git clone --filter=blob:none` instead. Some PR steps are still CLI-only: see [Collaborating](guides/collaborating.md).
 
-### Can I use a username instead of the long identity id?
+## Can I use a username instead of the long identity id?
 
 Not yet. You can register a DPNS username for your identity today in the Dash bridge, but Forge does not resolve usernames yet. **Coming soon:** `dash://alice/project`, `forge.dashhq.org/alice/project`, and granting access by name.
 
-### I lost my laptop. Is my code gone?
+## I lost my laptop. Is my code gone?
 
 No. Your repositories are on Platform and in your storage. Your identity survives as long as you have its 12 words or a backup of the identity file. See [Backup and recovery](guides/identity-and-keys.md#backup-and-recovery).
 
-### I lost my 12 words and my identity file.
+## I lost my 12 words and my identity file.
 
 Then that identity is gone. Nobody can recover it, and nobody can sign as it again. Everything it published stays readable and clonable. Its repositories can no longer gain or lose members, because only the owner can change membership. On forge-v2, members it already added can keep pushing; on v1, token holders can too. To carry on under a new identity, create a new repository and push your clone to it. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
 
-### Where do I report a bug?
+## Where do I report a bug?
 
 [GitHub Issues](https://github.com/PastaPastaPasta/dash-forge/issues) for now. Every error `dg` prints has a code; [errors.md](errors.md) explains each one.

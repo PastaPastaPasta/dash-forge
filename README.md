@@ -1,6 +1,6 @@
 # Dash Forge
 
-**Git hosting that nobody can take down.** Your refs, issues, pull requests and access control live on Dash Platform, signed by your own keys. Your code lives in storage you choose. No server is trusted, and no server is needed.
+**Git hosting that nobody can take down.** Your refs, issues, pull requests and access control live on Dash Platform, signed by your own keys. Your code lives in storage you choose. No Forge server exists or is needed, and data is checked rather than trusted.
 
 - **We host nothing.** No Forge server, account or database. You bring an identity and, if you like, a bucket. The chain proves the rest.
 - **Nothing to trust.** Every read is checked against a Platform proof, and every byte against its hash. The [verification guide](docs/guides/verify-forge.md) says exactly what is checked, and the one input that is still trusted.
@@ -9,7 +9,7 @@
 
 ## Try it (testnet)
 
-Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=testnet), fund it from the bridge's testnet faucet twice (a repository costs ~1.18 tDASH; each request gives 1), and download its key backup. Then, from any git repository:
+Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=testnet), fund it from the bridge's testnet faucet twice (a repository costs ~1.18 tDASH; each request gives 1), and download its key backup. Then, from any git repository, replacing `<id>` with your identity id:
 
 ```sh
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
@@ -40,7 +40,7 @@ Prebuilt binaries and a one-line `install.sh` will come with the first tagged re
 
 | Network | Forge version | State |
 |---|---|---|
-| **Testnet** | **v1** (legacy): one contract per repository, token access control | Live. Everything in the guides works here. A repository costs ~1.18 tDASH. |
+| **Testnet** | **v1** (legacy): one contract per repository, token access control | Live. Everything in the guides that is not marked coming soon works here. A repository costs ~1.18 tDASH. |
 | **Devnet moutai** | **forge-v2**: two shared contracts, membership access control, Platform protocol 14 | Contracts registered. The CLI and web app cannot use them yet; support is landing now. A repository will cost ~0.001 DASH. |
 | **Mainnet** | — | Not deployed. forge-v2 will be registered once Platform protocol 14 activates on mainnet. |
 
