@@ -7,7 +7,9 @@
 # Usage: summary.sh <summary.json>
 # FORGE_MIRROR_NOW_MS overrides the clock (tests). Always exits 0: the import step's own
 # exit code decides whether the job fails; this step only reports.
-set -euo pipefail
+set -Eeuo pipefail
+# A rendering bug or an unexpected summary shape must not fail a job whose import worked.
+trap 'printf "::warning title=Forge mirror::could not render the run summary (line %s)\n" "$LINENO"; exit 0' ERR
 
 json=${1:?usage: summary.sh <summary.json>}
 md=${GITHUB_STEP_SUMMARY:-/dev/stdout}
@@ -40,11 +42,14 @@ if ! jq -e 'type == "object"' "$json" >/dev/null 2>&1; then
     exit 0
 fi
 
-# A non-negative integer field (floored), or $2 when absent/not a number.
+# A non-negative integer field (floored), or $2 when absent, not a number, or too large
+# for exact shell arithmetic (> 2^53, e.g. a u64::MAX "never" sentinel).
 num() {
-    jq -r --arg d "$2" "($1) as \$v | if (\$v | type) == \"number\" and \$v >= 0 then \$v | floor | tostring else \$d end" "$json"
+    jq -r --arg d "$2" "(try ($1) catch null) as \$v
+        | if (\$v | type) == \"number\" and \$v >= 0 and \$v < 9007199254740992
+          then \$v | floor | tostring else \$d end" "$json"
 }
-str() { jq -r "($1) | if type == \"string\" then . else \"\" end" "$json"; }
+str() { jq -r "(try ($1) catch null) | if type == \"string\" then . else \"\" end" "$json"; }
 
 status=$(str .status)
 case "$status" in ok | dry_run | cap_exceeded | error) ;; *) status=error ;; esac
@@ -54,17 +59,23 @@ to_dash() {
     awk -v c="$1" -v p="$cpd" 'BEGIN { s = sprintf("%.8f", c / p); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'
 }
 
+spent=$(num .spentCredits 0)
+# Outputs first, so they exist even if rendering below goes wrong.
+output status "$status"
+output spent-dash "$(to_dash "$spent")"
+
 source=$(str .source)
 url=$(str .repo.url)
 owner=$(str .repo.owner)
 name=$(str .repo.name)
-created=$(jq -r '.repo.created == true' "$json")
-spent=$(num .spentCredits 0)
+created=$(jq -r '(try .repo.created catch null) == true' "$json")
 estimate=$(num .estimateCredits 0)
 balance=$(num .balanceCredits '')
 budget=$(num .key.budgetCredits '')
 remaining=$(num .key.remainingCredits '')
 expires=$(num .key.expiresAt '')
+# Past year 9999 means "never" for display purposes.
+[ -z "$expires" ] || [ "$expires" -lt 253402300800000 ] || expires=''
 pack_bytes=$(num .counts.packBytes 0)
 renew="Renew at forge.dashhq.org/${owner:-<owner>}/${name:-<name>}/settings/mirror."
 
@@ -123,12 +134,9 @@ if [ -n "$expires" ]; then
 fi
 while IFS= read -r w; do
     [ -z "$w" ] || annotate warning "Forge mirror" "$w"
-done < <(jq -r '(.warnings // [])[] | strings | gsub("[\r\n]+"; " ")' "$json")
+done < <(jq -r 'try (.warnings // [])[] | strings | gsub("[\r\n]+"; " ")' "$json")
 if [ "$status" = error ] || [ "$status" = cap_exceeded ]; then
     err=$(str .error)
     annotate error "Forge mirror $status" "${err:-forge-import reported $status without a message}"
     [ -z "$err" ] || printf '\n**Error:** %s\n' "$(cell "$err")" >>"$md"
 fi
-
-output status "$status"
-output spent-dash "$(to_dash "$spent")"
