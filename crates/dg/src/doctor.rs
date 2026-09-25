@@ -6,7 +6,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use forge_core::network::{self, ContractSource, NetworkTarget};
-use forge_core::platform::Network;
+use forge_core::platform::{Network, PlatformClient};
 use forge_core::tokens::TOKEN_HISTORY_CONTRACT_ID;
 
 use crate::config::{config_path, Config};
@@ -28,7 +28,7 @@ impl Check {
 /// Run the full diagnostic suite.
 pub async fn run(ctx: &Ctx) -> Result<()> {
     let network = ctx.network_label();
-    let checks = vec![
+    let mut checks = vec![
         check_dg(),
         check_git(),
         check_helper(),
@@ -36,8 +36,25 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
         check_network(ctx.network()),
         check_contracts(&ctx.target),
         check_identity(ctx),
-        check_dapi(ctx, &network).await,
     ];
+    // One connection serves every live check. The protocol version is read only after a
+    // proved query: the SDK starts at its per-network floor and learns the real version
+    // from verified response metadata.
+    let mut protocol_version = None;
+    match ctx.connect().await {
+        Ok(client) => {
+            checks.push(check_dapi(&client, &ctx.target, &network).await);
+            let (protocol, version) = check_protocol(&client).await;
+            protocol_version = version;
+            checks.push(protocol);
+            checks.push(check_forge_v2(&client, &ctx.target).await);
+        }
+        Err(e) => checks.push(Check {
+            name: "dapi",
+            ok: false,
+            detail: format!("could not connect to {network}: {e:#}"),
+        }),
+    }
 
     let all_ok = checks.iter().all(|c| c.ok);
     let checks_json: Vec<Value> = checks.iter().map(Check::to_json).collect();
@@ -52,6 +69,12 @@ pub async fn run(ctx: &Ctx) -> Result<()> {
             "ok": all_ok,
             "network": network,
             "registry": registry,
+            "protocolVersion": protocol_version,
+            "forgeV2": ctx.target.v2.as_ref().map(|ids| json!({
+                "core": ids.core,
+                "collab": ids.collab,
+                "group": ids.group,
+            })),
             "checks": checks_json,
         }),
         || {
@@ -285,29 +308,100 @@ fn check_identity(ctx: &Ctx) -> Check {
 /// DAPI connectivity + proof verification: fetch the registry contract, or — on a network
 /// with no registry (the `contracts` check already fails for that) — the TokenHistory
 /// system contract, whose id is the same everywhere, so connectivity is still reported.
-async fn check_dapi(ctx: &Ctx, network: &str) -> Check {
-    let (what, contract_id) = match &ctx.target.registry {
+async fn check_dapi(client: &PlatformClient, target: &NetworkTarget, network: &str) -> Check {
+    let (what, contract_id) = match &target.registry {
         Some(r) => ("registry contract", r.contract_id.as_str()),
         None => ("TokenHistory system contract", TOKEN_HISTORY_CONTRACT_ID),
     };
-    match ctx.connect().await {
-        Ok(client) => match client.fetch_contract(contract_id).await {
-            Ok(_) => Check {
-                name: "dapi",
-                ok: true,
-                detail: format!("connected to {network}; {what} fetched + proof-verified"),
-            },
-            Err(e) => Check {
-                name: "dapi",
-                ok: false,
-                detail: format!("connected but {what} fetch failed: {e}"),
-            },
+    match client.fetch_contract(contract_id).await {
+        Ok(_) => Check {
+            name: "dapi",
+            ok: true,
+            detail: format!("connected to {network}; {what} fetched + proof-verified"),
         },
         Err(e) => Check {
             name: "dapi",
             ok: false,
-            detail: format!("could not connect to {network}: {e}"),
+            detail: format!("connected but {what} fetch failed: {e}"),
         },
+    }
+}
+
+/// The protocol version the network reports in proof-verified response metadata. A refresh
+/// (a proved epoch query) runs first so the version is learned even when the dapi fetch
+/// failed; if it fails too, the SDK is still at its per-network floor and that is reported
+/// instead of a network version.
+async fn check_protocol(client: &PlatformClient) -> (Check, Option<u32>) {
+    match client.refresh_protocol_version().await {
+        Ok(v) => (
+            Check {
+                name: "protocol",
+                ok: true,
+                detail: format!("protocol version {v} (from a proof-verified response)"),
+            },
+            Some(v),
+        ),
+        Err(e) => (
+            Check {
+                name: "protocol",
+                ok: false,
+                detail: format!(
+                    "could not learn the protocol version ({e}); the SDK is still at its \
+                     per-network floor {}",
+                    client.protocol_version()
+                ),
+            },
+            None,
+        ),
+    }
+}
+
+/// The forge-v2 contracts recorded for this network: both must fetch with a verified proof
+/// and both must be enrolled, as whole contracts, in the recorded contract group. A network
+/// with no forge-v2 deployment passes with a note — v1 is the live data plane there.
+async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Check {
+    let Some(ids) = &target.v2 else {
+        return Check {
+            name: "forge-v2",
+            ok: true,
+            detail: format!("not deployed on {}", target.network.key()),
+        };
+    };
+    let mut problems = Vec::new();
+    for (label, id) in [("forge-core", &ids.core), ("forge-collab", &ids.collab)] {
+        if let Err(e) = client.fetch_contract(id).await {
+            problems.push(format!("{label} {id} not provable: {e}"));
+            continue;
+        }
+        match client.contract_groups_of(id).await {
+            Ok(groups) if groups.contains(&ids.group) => {}
+            Ok(groups) => problems.push(format!(
+                "{label} {id} is not in group {} (member of: {})",
+                ids.group,
+                if groups.is_empty() {
+                    "none".to_string()
+                } else {
+                    groups.join(", ")
+                }
+            )),
+            Err(e) => problems.push(format!("{label} {id} group lookup failed: {e}")),
+        }
+    }
+    if problems.is_empty() {
+        Check {
+            name: "forge-v2",
+            ok: true,
+            detail: format!(
+                "core={} collab={} both proof-verified and enrolled in group {}",
+                ids.core, ids.collab, ids.group
+            ),
+        }
+    } else {
+        Check {
+            name: "forge-v2",
+            ok: false,
+            detail: problems.join("; "),
+        }
     }
 }
 
