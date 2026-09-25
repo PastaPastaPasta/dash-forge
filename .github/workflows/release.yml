@@ -163,6 +163,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # The Platform monorepo (a git dependency) has paths that push a checkout under
+      # C:\Users\runneradmin\.cargo\git\checkouts\... past Windows' 260-character MAX_PATH,
+      # and cargo's libgit2 checkout then fails with "path too long". A short CARGO_HOME
+      # keeps them under it; longpaths covers git itself.
+      - name: Shorten CARGO_HOME (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.longpaths true
+          echo 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
+          echo 'C:\ch\bin' >> "$GITHUB_PATH"
+
       # tenderdash-proto compiles .proto files at build time and needs protoc >= 25; distro
       # packages are too old (see docs/BUILDING.md). The zip is checked against a pinned
       # digest so a swapped upstream asset cannot slip into a release build.
