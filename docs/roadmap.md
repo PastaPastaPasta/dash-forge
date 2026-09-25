@@ -69,7 +69,7 @@ Every roadmap item must keep all of these true:
 ### Decided (owner, 2026-09-24)
 | # | Decision |
 |---|---|
-| D-A | **Default tier = one shared contract with PV14 writer gates** (`ownerRefersTo` + deletable `lookup` references). Per-repo write ACLs are enforced by consensus, and repo creation and forks become a handful of documents. The per-repo contract stays as an opt-in "sovereign" tier. See §6 Phase 2. |
+| D-A | **One shared forge-v2 contract pair (forge-core + forge-collab, in one PV14 contract group) with PV14 writer gates.** Membership docs (`maintainer`/`writer`, keyed by repo and member) are granted by the repo owner only. Write-path types declare `ownerRefersTo` lookups, and `event` is gated too so authorization survives revocation. Refs, manifests, config and events can't be deleted, because PV14 doesn't check references on deletes. The owner enrolls themselves as a maintainer at creation. **The per-repo "sovereign" tier is dropped:** anyone who wants their own rules registers their own copy of the template. Reviewed by a protocol architect (Fable 5.1), 2026-09-24. Spec: `docs/contracts/forge-v2.md`. |
 | D-B | **Bring your own storage.** A repo's packs go to the backends its owner configures (S3-compatible, IPFS) or to Platform. Manifests and refs always stay on Platform. No Forge-run defaults. |
 | D-F | **No moderation** on the contracts. |
 | D-G | **Users fund their own identities.** No sponsored grants and no faucet in the product (the testnet/devnet faucet links are only for development). |
@@ -112,6 +112,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] If the schema exceeds 16 KiB, split it into core and collab contracts that reference each other, joined by a PV14 contract group.
 - [ ] forge-core, the web app and the conformance vectors on the new model. Cross-repo queries arrive for free (my PRs, activity, issue search), and forks point at parent packs.
 - [ ] Migration: the importer copies v1 repos into forge-v2 (history preserved); v1 stays readable.
+- [ ] Remove the per-repo contract (repo-v1 token ACL) write paths once forge-v2 is the default. Keep read compatibility.
 - [ ] e2e on moutai: grant → push → revoke → the push is rejected at consensus, plus everything from the CLI suite.
 - [ ] `git push` cost guard (`dash.costWarnThreshold`, `dash.confirm`).
 - [ ] PV14 extras: **budget- and expiry-limited keys** bound to the forge contract for web login and CI runners (in place of raw key paste); `encryptedFor` for relay webhook secrets; `indexOnly` stars/follows.
