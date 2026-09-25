@@ -1516,6 +1516,20 @@ impl<'a> RepoService<'a> {
         repo: &RepoHandle,
         manifest: &PackManifestInfo,
     ) -> Result<Vec<u8>> {
+        let contract = self.repo_contract(repo).await?;
+        self.fetch_manifest_pack(repo, &contract, manifest).await
+    }
+
+    /// [`Self::fetch_pack_bytes`] against an already-fetched repo contract. A platform-tier
+    /// manifest is read from its `chunk` docs; an external-tier one races its mirror URIs
+    /// (hash-verified) — its URIs are `ipfs://` / `https://`, which the platform backend
+    /// cannot read, so the tier decides the path, never the first URI.
+    pub async fn fetch_manifest_pack(
+        &self,
+        repo: &RepoHandle,
+        repo_contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+    ) -> Result<Vec<u8>> {
         if manifest.storage == 0 {
             let locator = Uri(format!(
                 "{}://{}/{}",
@@ -1523,7 +1537,7 @@ impl<'a> RepoService<'a> {
                 repo.repo_contract_id,
                 hex::encode(manifest.pack_hash),
             ));
-            return self.get_pack(repo, &locator, None).await;
+            return self.get_pack_from(repo_contract, &locator, None).await;
         }
         // External tier: race the mirror URIs, hash-verified.
         let mut registry = BackendRegistry::new();

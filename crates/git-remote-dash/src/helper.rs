@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
-use forge_core::backends::{PackMeta, Uri};
+use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
@@ -32,6 +32,10 @@ use crate::url::DashUrl;
 /// Packs downloaded concurrently by a fetch — the same window the platform backend
 /// pipelines chunk uploads with (spike S0.1).
 const PACK_DOWNLOAD_WINDOW: usize = forge_core::backends::platform::PIPELINE_WINDOW;
+
+/// How long a fetch waits on one external-tier pack's mirrors before skipping it. The
+/// mirror HTTP clients set no timeout of their own.
+const EXTERNAL_PACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// A single want from a `fetch <oid> <name>` line.
 #[derive(Debug, Clone)]
@@ -231,26 +235,48 @@ impl Helper {
         let svc = &svc;
         let repo = &conn.repo;
         let contract = &svc.repo_contract(repo).await?;
-        let downloaded: Vec<Vec<u8>> = stream::iter(git_packs.iter().map(|m| async move {
-            let uri = match m.uris.first() {
-                Some(u) => Uri(u.clone()),
-                None => default_platform_uri(&repo.repo_contract_id, &m.pack_hash),
+        let fetched: Vec<Option<Vec<u8>>> = stream::iter(git_packs.iter().map(|m| async move {
+            let hash = hex::encode(m.pack_hash);
+            // The storage tier picks the path: an external-tier manifest's URIs are
+            // ipfs:// / https:// mirrors, which the platform backend cannot parse.
+            let bytes = if m.storage == 0 {
+                svc.fetch_manifest_pack(repo, contract, m)
+                    .await
+                    .with_context(|| format!("downloading pack {hash}"))?
+            } else {
+                // An external mirror can be down, rate-limited or absent. The pack is then
+                // skipped rather than failing the fetch: git verifies after the fetch that
+                // every wanted object arrived, so if this pack was actually needed the
+                // fetch still fails, and if it was not (e.g. it only holds a deleted
+                // branch) the clone is not held hostage by one dead mirror.
+                let got = tokio::time::timeout(
+                    EXTERNAL_PACK_TIMEOUT,
+                    svc.fetch_manifest_pack(repo, contract, m),
+                )
+                .await;
+                match got {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(e)) => {
+                        tracing::warn!(pack = %hash, mirrors = ?m.uris, error = %e, "external pack unobtainable; skipping it");
+                        return Ok(None);
+                    }
+                    Err(_) => {
+                        tracing::warn!(pack = %hash, mirrors = ?m.uris, "external pack mirrors timed out; skipping it");
+                        return Ok(None);
+                    }
+                }
             };
-            let bytes = svc
-                .get_pack_from(contract, &uri, None)
-                .await
-                .with_context(|| format!("downloading pack {}", hex::encode(m.pack_hash)))?;
             // Integrity: reassembled bytes must match the manifest packHash (SHA-256).
             let got = PackMeta::for_bytes(&bytes).pack_hash;
-            let expected = hex::encode(m.pack_hash);
-            if !got.eq_ignore_ascii_case(&expected) {
-                bail!("pack integrity check failed: expected {expected}, got {got}");
+            if !got.eq_ignore_ascii_case(&hash) {
+                bail!("pack integrity check failed: expected {hash}, got {got}");
             }
-            Ok(bytes)
+            Ok(Some(bytes))
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect()
         .await?;
+        let downloaded: Vec<Vec<u8>> = fetched.into_iter().flatten().collect();
 
         if let Some(filter) = options.filter.as_deref() {
             // Partial clone: re-pack the downloaded objects through a scratch repo applying
@@ -643,15 +669,6 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
         bail!("oid {oid:?} is not 20 bytes (sha1)");
     }
     Ok(raw)
-}
-
-/// The default `platform://<contract>/<packHashHex>` locator when a manifest recorded no
-/// explicit URI (platform-tier packs are addressable by contract + packHash).
-fn default_platform_uri(contract_id: &str, pack_hash: &[u8; 32]) -> Uri {
-    Uri(format!(
-        "platform://{contract_id}/{}",
-        hex::encode(pack_hash)
-    ))
 }
 
 /// Select the network from `DASH_FORGE_NETWORK` (testnet default).
