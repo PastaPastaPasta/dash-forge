@@ -12,10 +12,9 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { PACK_KIND, type PackKind } from '../constants'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { compareKey } from '../rules'
-import { orderPackCopies, type Role } from '../rules/v2'
-import { DOC, parseJsonList, str, type RepoRef } from './contract'
-import { base64ToBytes, base64ToHex } from '../sdk'
+import { v2PackList, type Role } from '../rules/v2'
+import { DOC, parseJsonList, str, type RepoRef, type V2RepoRef } from './contract'
+import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
 import { readRoleOracle } from './members'
 import { repoSource } from './source'
 
@@ -48,11 +47,13 @@ export interface PackManifest {
   /**
    * forge-v2: every writer's copy of this pack, in the order a reader tries them
    * (`orderPackCopies`: current maintainers, then writers, then everyone else; each by
-   * `($createdAt, $id)`), this manifest first. A whole-pack download falls through to the
-   * next copy when one does not verify against `packHash` (`forge-v2.md` §4). Absent on v1,
-   * where `packHash` is unique.
+   * `($createdAt, $id)`), this manifest first. A read falls through to the next copy when one
+   * cannot be read or does not verify (`forge-v2.md` §4). Absent on v1, where `packHash` is
+   * unique.
    */
   readonly copies?: readonly PackManifest[]
+  /** forge-v2 raw copies: the uploader's current role (null: not a member). Absent on v1. */
+  readonly ownerRole?: Role | null
 }
 
 /**
@@ -130,59 +131,62 @@ export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<Pac
   return documents.map(toManifest)
 }
 
+/** A `(createdAt, id)` bound: v1 callers pass the locator's `$createdAt` alone. */
+export type AsOf = number | { readonly createdAt: number; readonly id: string }
+
 /**
- * forge-v2: fold every writer's manifest of a pack into one entry per `packHash`
- * (`forge-v2.md` §4 front-running rule). Each pack is represented by its first copy in
- * `orderPackCopies` order (uploader's current role, then `($createdAt, $id)`), carrying all
- * copies in that order for whole-pack fallbacks. `supersedes` is honoured from the
- * representative copy only. Its position in the manifest list (and so in a locator's
- * `packRef` space) is the pack's FIRST upload by `($createdAt, $id)`, which a later copy
- * cannot move.
- *
- * A copy's bytes are not verified here: the browse reader re-hashes every object it reads,
- * and whole-pack reads verify `packHash` and fall through to the next copy.
+ * forge-v2: the pack list of one `kind` (`v2PackList`, `forge-v2.md` §4) over raw manifest
+ * copies that carry their uploader's role ({@link readRepoPackManifests}), in `packRef`
+ * order. Each entry is the representative copy's manifest, positioned at the pack's first
+ * upload (`createdAt` / `documentId` are the first upload's), with every usable copy in the
+ * order a reader tries them. Superseded packs stay in the list, in place: a hash proves a
+ * pack's bytes, not that it holds everything it claims to replace.
  */
-export function selectPackCopies(
-  manifests: readonly PackManifest[],
-  roleOf: (identity: string) => Role | null,
-): PackManifest[] {
-  const byHash = new Map<string, PackManifest[]>()
-  for (const m of manifests) {
-    const key = m.packHash.toLowerCase()
-    const group = byHash.get(key)
-    if (group === undefined) byHash.set(key, [m])
-    else group.push(m)
-  }
-  const byKey = (a: PackManifest, b: PackManifest): number =>
-    compareKey({ id: a.documentId, createdAt: a.createdAt }, { id: b.documentId, createdAt: b.createdAt })
-  const out: PackManifest[] = []
-  for (const group of byHash.values()) {
-    const first = [...group].sort(byKey)[0] as PackManifest
-    const byId = new Map(group.map((m) => [m.documentId, m]))
-    const ordered = orderPackCopies(
-      group.map((m) => ({
-        id: m.documentId,
-        packHash: m.packHash,
-        ownerRole: roleOf(m.uploader),
-        createdAt: m.createdAt,
-      })),
-    ).map((c) => byId.get(c.id) as PackManifest)
-    const best = ordered[0] as PackManifest
-    out.push({
-      ...best,
-      createdAt: first.createdAt,
-      documentId: first.documentId,
-      copies: ordered,
+export function v2PacksOfKind(
+  copies: readonly PackManifest[],
+  kind: number,
+  asOf?: AsOf,
+): (PackManifest & { readonly superseded: boolean })[] {
+  const byId = new Map(copies.map((m) => [m.documentId, m]))
+  const bound = asOf === undefined ? null : typeof asOf === 'number' ? { createdAt: asOf, id: '\uffff' } : asOf
+  const listed = v2PackList(
+    copies.map((m) => ({
+      id: m.documentId,
+      packHash: m.packHash.toLowerCase(),
+      kind: m.kind,
+      createdAt: m.createdAt,
+      ownerRole: m.ownerRole ?? null,
+      sizeBytes: m.sizeBytes,
+      objectCount: m.objectCount,
+      chunkCount: m.chunkCount,
+      supersedes: m.supersedes.map((h) => h.toLowerCase()),
+      verified: null,
+    })),
+    bound,
+  )
+  return listed
+    .filter((p) => p.kind === kind)
+    .map((p) => {
+      const ranked = p.copies.map((id) => byId.get(id) as PackManifest)
+      const rep = ranked[0] as PackManifest
+      return {
+        ...rep,
+        createdAt: p.first.createdAt,
+        documentId: p.first.id,
+        copies: ranked,
+        superseded: p.superseded,
+      }
     })
-  }
-  // Newest first, like the list it came from.
-  return out.sort((a, b) => -byKey(a, b))
+}
+
+/** Whether a manifest list is forge-v2 raw copies (each carries its uploader's role). */
+export function isV2Copies(manifests: readonly PackManifest[]): boolean {
+  return manifests.some((m) => m.ownerRole !== undefined)
 }
 
 /**
- * Every pack manifest a reader should use, newest first: v1 as stored; forge-v2 with each
- * pack's writer copies folded by {@link selectPackCopies} against the repo's current
- * membership.
+ * Every pack manifest of a repo, newest first: v1 as stored; forge-v2 as raw copies, each
+ * tagged with its uploader's current role so {@link v2PacksOfKind} can rank them.
  */
 export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
   if (repo.kind === 'v1') return readPackManifests(sdk, repo)
@@ -190,7 +194,31 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
     readPackManifests(sdk, repo),
     readRoleOracle(sdk, repo),
   ])
-  return selectPackCopies(manifests, (id) => oracle.currentRole(id))
+  return manifests.map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+}
+
+/**
+ * forge-v2: every writer's copy of `packHash` (`(repoId, packHash)` index), ranked for
+ * reading, as one manifest with `copies` — or null when no copy claims `kind`. Independent of
+ * how many other packs the repo holds.
+ */
+export async function readV2PackCopies(
+  sdk: EvoSDK,
+  repo: V2RepoRef,
+  packHashHex: string,
+  kind: number,
+): Promise<PackManifest | null> {
+  const [documents, oracle] = await Promise.all([
+    queryAllDocuments(
+      sdk,
+      repoSource(repo).repoQuery(DOC.packManifest, {
+        where: [['packHash', '==', hexToBase64(packHashHex)]],
+      }),
+    ),
+    readRoleOracle(sdk, repo),
+  ])
+  const copies = documents.map(toManifest).map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+  return v2PacksOfKind(copies, kind)[0] ?? null
 }
 
 /** The newest manifest of a given kind (the current locator / flatIndex), or null. */

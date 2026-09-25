@@ -199,7 +199,9 @@ export function toEvent(doc: PlainDocument): Event | null {
   const value = doc['value']
   return {
     id: str(doc, '$id'),
-    targetId: str(doc, 'targetId'),
+    // An identifier-typed byteArray: base58 from 4.2's toJSON, base64 from others. The repo
+    // feed groups events by it, so it must match the target's base58 `$id` either way.
+    targetId: asIdentifierString(doc['targetId']),
     kind,
     actor: str(doc, '$ownerId'),
     value: typeof value === 'string' ? value : null,

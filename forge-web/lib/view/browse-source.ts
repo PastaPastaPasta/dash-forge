@@ -28,6 +28,10 @@ import {
 } from '../browse'
 import {
   CHUNK_QUERY_MAX,
+  isV2Copies,
+  readV2PackCopies,
+  v2PacksOfKind,
+  type AsOf,
   liveGitPackManifests,
   liveLocatorManifests,
   readNewestManifestOfKind,
@@ -589,7 +593,7 @@ export function artifactRangeFetch(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
-): RangeFetch {
+): (start: number, end: number, copy?: number) => Promise<Uint8Array> {
   const readCopy = async (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => {
     if (copy.storage !== 0) {
       return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
@@ -598,15 +602,20 @@ export function artifactRangeFetch(
     noteSource(repo)
     return bytes
   }
-  return async (start: number, end: number) => {
-    // forge-v2: a range cannot be hashed on its own (the reader re-hashes every object it
-    // builds from it), but a copy that cannot serve the range at all falls through to the
-    // next one in `orderPackCopies` order.
+  return async (start: number, end: number, copy?: number) => {
+    // forge-v2: a range cannot be hashed on its own. The reader re-hashes every object it
+    // builds from one and asks for a specific `copy` when the current one fails it; without
+    // one, a copy that cannot serve the range at all falls through to the next in order.
     const copies = manifest.copies ?? [manifest]
+    if (copy !== undefined) {
+      const chosen = copies[copy]
+      if (chosen === undefined) throw new Error(`pack ${manifest.packHash.slice(0, 12)}… has no copy ${copy}`)
+      return readCopy(chosen, start, end)
+    }
     let lastErr: unknown
-    for (const copy of copies) {
+    for (const c of copies) {
       try {
-        return await readCopy(copy, start, end)
+        return await readCopy(c, start, end)
       } catch (e) {
         lastErr = e
       }
@@ -759,10 +768,25 @@ export function orderGitPacks(
  */
 export function locatorPackSpace(
   manifests: readonly PackManifest[],
-  asOf?: number,
+  asOf?: AsOf,
 ): PackManifest[] {
-  const bounded = asOf === undefined ? manifests : manifests.filter((m) => m.createdAt <= asOf)
+  // forge-v2: the v2 pack list's kind-0 packs (`forge-v2.md` §4), superseded ones included
+  // and in place — a locator's packRefs index every git pack listed as of it.
+  if (isV2Copies(manifests)) return v2PacksOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
+  const bound = typeof asOf === 'object' ? asOf.createdAt : asOf
+  const bounded = bound === undefined ? manifests : manifests.filter((m) => m.createdAt <= bound)
   return orderGitPacks(liveGitPackManifests(bounded))
+}
+
+/**
+ * The live index fragments (objectLocators), newest first: v1 per `liveLocatorManifests`;
+ * forge-v2 from the v2 pack list's kind-1 packs, those a verified pack supersedes left out.
+ */
+function locatorFragments(manifests: readonly PackManifest[]): PackManifest[] {
+  if (!isV2Copies(manifests)) return liveLocatorManifests(manifests)
+  return v2PacksOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
+    .filter((p) => !p.superseded)
+    .reverse()
 }
 
 /**
@@ -777,15 +801,16 @@ export function buildPackSource(
   sdk: EvoSDK,
   repo: RepoRef,
   manifests: readonly PackManifest[],
-  asOf?: number,
+  asOf?: AsOf,
 ): PackSource {
   const ordered = locatorPackSpace(manifests, asOf)
   return {
-    async fetchRange(packRef: number, start: number, end: number): Promise<Uint8Array> {
+    async fetchRange(packRef: number, start: number, end: number, copy?: number): Promise<Uint8Array> {
       const manifest = ordered[packRef]
       if (!manifest) throw new Error(`packRef ${packRef} out of range (${ordered.length} packs)`)
-      return artifactRangeFetch(sdk, repo, manifest)(start, end)
+      return artifactRangeFetch(sdk, repo, manifest)(start, end, copy)
     },
+    copyCount: (packRef: number) => ordered[packRef]?.copies?.length ?? 1,
   }
 }
 
@@ -817,7 +842,14 @@ export interface BrowseContext {
  */
 export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatIndex | null> {
   // Index lookup (`kind ==`, `$createdAt desc`, limit 1) — independent of manifest volume.
-  const flatManifest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
+  const newest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
+  if (!newest) return null
+  // forge-v2: any writer can post a kind-2 manifest, so read the pack's copies in order and
+  // accept only bytes that hash to `packHash` (loadArtifactBytes checks each copy).
+  const flatManifest =
+    repo.kind === 'v2'
+      ? await readV2PackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
+      : newest
   if (!flatManifest) return null
   const bytes = await loadArtifactBytes(sdk, repo, flatManifest)
   return FlatIndex.parse(bytes)
@@ -881,7 +913,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
     totalSizeBytes,
   })
 
-  const fragments = liveLocatorManifests(manifests)
+  const fragments = locatorFragments(manifests)
   if (fragments.length === 0) return behind('no-index')
 
   // Every fragment must index a PREFIX of the current pack space, or the `packRef`s merged
@@ -890,7 +922,11 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // consolidated, so the only way to fail is a fragment published concurrently with a
   // repack. Checked from the manifest list alone, before any bytes are fetched.
   for (const f of fragments) {
-    const asOf = locatorPackSpace(manifests, f.createdAt)
+    // v1: as of the fragment's `$createdAt`; forge-v2: as of its first upload `(createdAt, id)`.
+    const asOf = locatorPackSpace(
+      manifests,
+      isV2Copies(manifests) ? { createdAt: f.createdAt, id: f.documentId } : f.createdAt,
+    )
     if (asOf.length > livePacks.length) return behind('index-behind')
     if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
   }

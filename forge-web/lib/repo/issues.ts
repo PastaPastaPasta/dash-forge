@@ -204,6 +204,34 @@ export interface TargetLog {
 
 const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
 
+/**
+ * The repo feed is read up front only while it is small: past this many pages per type (and
+ * `authorEvent` can be written by any issue author), a list page folds each row from its own
+ * target log instead, so its cost is O(page), not O(repo activity).
+ */
+const FEED_MAX_PAGES = 5
+/** How long a repo feed serves list pages (issues and pulls share it). */
+const FEED_TTL_MS = 30_000
+const feedCache = new Map<string, { at: number; promise: Promise<Map<string, TargetLog> | null> }>()
+
+/** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
+function readRepoFeedCached(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog> | null> {
+  const key = `${repo.forge.collab}:${repo.repoId}`
+  const hit = feedCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise
+  const promise = readRepoFeed(sdk, repo)
+  feedCache.set(key, { at: Date.now(), promise })
+  promise.catch(() => {
+    if (feedCache.get(key)?.promise === promise) feedCache.delete(key)
+  })
+  return promise
+}
+
+/** Drop a repo's cached feed (tests; and after a write lands, with v2 writes). */
+export function invalidateRepoFeed(repo: V2RepoRef): void {
+  feedCache.delete(`${repo.forge.collab}:${repo.repoId}`)
+}
+
 function toEvents(documents: readonly PlainDocument[]): Event[] {
   return documents.map(toEvent).filter((e): e is Event => e !== null)
 }
@@ -239,11 +267,23 @@ export async function readTargetLog(
  * its rows without a query per row. `event` is member-gated and `authorEvent` author-gated at
  * consensus, so the feed is bounded by real activity, not by what strangers post.
  */
-async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog>> {
+async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog> | null> {
   const source = repoSource(repo)
   const read = async (type: string): Promise<Event[]> =>
-    toEvents(await queryAllDocuments(sdk, source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] })))
-  const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+    toEvents(
+      await queryAllDocuments(sdk, source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] }), {
+        maxPages: FEED_MAX_PAGES,
+      }),
+    )
+  let events: Event[]
+  let authorEvents: Event[]
+  try {
+    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+  } catch (e) {
+    // Too much activity to read up front: the caller folds rows one target at a time.
+    if (e instanceof IncompleteReadError) return null
+    throw e
+  }
   const byTarget = new Map<string, TargetLog>()
   const slot = (targetId: string): TargetLog => {
     let entry = byTarget.get(targetId)
@@ -358,24 +398,17 @@ async function foldRows<T>(
   foldOne: (doc: PlainDocument, log: TargetLog | undefined) => Promise<T>,
   incomplete: (doc: PlainDocument) => T,
 ): Promise<T[]> {
-  if (repo.kind === 'v2') {
-    if (documents.length === 0) return []
-    let feed: Map<string, TargetLog>
-    try {
-      feed = await readRepoFeed(sdk, repo)
-    } catch (e) {
-      if (!(e instanceof IncompleteReadError)) throw e
-      return documents.map(incomplete)
-    }
-    return Promise.all(documents.map((doc) => foldOne(doc, feed.get(str(doc, '$id')) ?? EMPTY_LOG)))
-  }
+  // forge-v2: fold from the repo feed while it is small; otherwise (feed = null) each row
+  // reads its own target log, as v1 does.
+  const feed = repo.kind === 'v2' && documents.length > 0 ? await readRepoFeedCached(sdk, repo) : null
   // Per-row tolerance. `issue`, `event` and `comment` are un-gated, so one target padded
   // past the reader's completeness bound must not take down a whole page of issues — and
   // dropping the row silently would be the same class of bug this all fixes. The row is
-  // kept with `stateComplete: false`; callers render the state as unverified.
+  // kept with `stateComplete: false`; callers render the state as unverified. (A PR row also
+  // reads its base ref's history, which can fail the same way, on either model.)
   return Promise.all(
     documents.map((doc) =>
-      foldOne(doc, undefined).catch((e: unknown) => {
+      foldOne(doc, feed === null ? undefined : feed.get(str(doc, '$id')) ?? EMPTY_LOG).catch((e: unknown) => {
         if (!(e instanceof IncompleteReadError)) throw e
         return incomplete(doc)
       }),

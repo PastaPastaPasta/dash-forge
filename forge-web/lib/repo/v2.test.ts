@@ -29,7 +29,7 @@ import {
   repoSource,
   resolveAnyRepo,
   resolveAnyRepoWith,
-  selectPackCopies,
+  v2PacksOfKind,
   wellFormed,
   type PackManifest,
   type V1RepoRef,
@@ -361,9 +361,14 @@ describe('wellFormed', () => {
   })
 })
 
-describe('selectPackCopies', () => {
-  const copy = (id: string, uploader: string, createdAt: number, packHash = 'aa'): PackManifest => ({
-    packHash,
+describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
+  const copy = (
+    id: string,
+    uploader: string,
+    createdAt: number,
+    over: Partial<PackManifest> = {},
+  ): PackManifest => ({
+    packHash: 'aa',
     kind: 0,
     sizeBytes: 1,
     objectCount: 1,
@@ -375,22 +380,65 @@ describe('selectPackCopies', () => {
     createdAt,
     documentId: id,
     uploader,
+    ownerRole: ({ [MAINT]: 'maintainer', [WRITER]: 'writer' } as Record<string, 'maintainer' | 'writer'>)[uploader] ?? null,
+    ...over,
   })
-  const roles: Record<string, 'maintainer' | 'writer'> = { [MAINT]: 'maintainer', [WRITER]: 'writer' }
 
   it('reads maintainers’ copies first but keeps the pack at its first upload’s position', () => {
-    const [pack] = selectPackCopies(
-      [copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)],
-      (id) => roles[id] ?? null,
-    )
+    const [pack] = v2PacksOfKind([copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)], 0)
     expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m', 'w', 's'])
     expect(pack?.uploader).toBe(MAINT)
     expect(pack?.createdAt).toBe(1)
     expect(pack?.documentId).toBe('s')
   })
 
-  it('keeps one entry per pack hash', () => {
-    const packs = selectPackCopies([copy('a', MAINT, 1, 'aa'), copy('b', MAINT, 2, 'bb')], () => 'maintainer')
-    expect(packs.map((p) => p.packHash)).toEqual(['bb', 'aa'])
+  it('takes kind and metadata from the representative and drops copies that disagree', () => {
+    const packs = [
+      copy('w', WRITER, 1, { kind: 1, objectCount: 0 }), // an earlier writer claims kind 1
+      copy('m', MAINT, 2, { objectCount: 17 }),
+    ]
+    const [pack] = v2PacksOfKind(packs, 0)
+    expect(pack?.objectCount).toBe(17)
+    expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m'])
+    expect(pack?.documentId).toBe('w') // position still pinned to the first upload
+    expect(v2PacksOfKind(packs, 1)).toEqual([])
+  })
+
+  it('numbers packRefs within a kind, so index fragments do not shift git packs', () => {
+    const packs = [
+      copy('p1', MAINT, 1, { packHash: 'p1' }),
+      copy('l1', MAINT, 2, { packHash: 'l1', kind: 1 }),
+      copy('p2', MAINT, 3, { packHash: 'p2' }),
+    ]
+    expect(v2PacksOfKind(packs, 0).map((p) => p.packHash)).toEqual(['p1', 'p2'])
+    expect(v2PacksOfKind(packs, 0, { createdAt: 2, id: 'l1' }).map((p) => p.packHash)).toEqual(['p1'])
+  })
+})
+
+describe('BrowseReader copy failover', () => {
+  it('reads an object from the next copy when the first copy’s bytes do not hash to it', async () => {
+    const { BrowseReader } = await import('../browse')
+    const { indexPacks, serializeLocator } = await import('../browse/indexer')
+    const { ObjectLocator } = await import('../browse')
+    const { packFrame, objHeader } = await import('../browse/pack-fixtures')
+    const { zlibSync } = await import('fflate')
+    const body = new TextEncoder().encode('hello forge-v2\n')
+    const stored = new Uint8Array([...objHeader(3, body.length), ...zlibSync(body)])
+    const good = packFrame(stored)
+    const bad = good.map((b, i) => (i >= 12 && i < good.length - 20 ? b ^ 0xff : b))
+    const objects = await indexPacks([good])
+    const locator = ObjectLocator.parse(serializeLocator(objects))
+    const served: number[] = []
+    const reader = new BrowseReader(locator, {
+      fetchRange: async (_ref, start, end, copy = 0) => {
+        served.push(copy)
+        return (copy === 0 ? bad : good).subarray(start, end)
+      },
+      copyCount: () => 2,
+    })
+    const oid = objects[0]?.oidHex as string
+    const obj = await reader.readObject(oid)
+    expect(new TextDecoder().decode(obj.bytes)).toBe('hello forge-v2\n')
+    expect(served).toContain(1)
   })
 })

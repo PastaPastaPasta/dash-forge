@@ -87,8 +87,11 @@ export {
   readNewestLocatorManifest,
   readNewestManifestOfKind,
   readPackManifests,
+  isV2Copies,
   readRepoPackManifests,
-  selectPackCopies,
+  readV2PackCopies,
+  v2PacksOfKind,
+  type AsOf,
   type PackManifest,
 } from './packs'
 export {

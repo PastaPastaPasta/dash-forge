@@ -34,7 +34,14 @@ import { Spinner } from '@/components/ui/states'
  * `repo` document `sourceRepoId` names (a fork, in the same forge contracts), read so its
  * owner and visibility are real; null while loading or when it cannot be found.
  */
-function useSourceRepo(base: RepoRef, sourceId: string | null, author: string): RepoRef | null {
+type SourceRepo =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'found'; readonly repo: RepoRef }
+  /** The v2 `sourceRepoId` names no readable repo: the diff reads the base repo alone. */
+  | { readonly kind: 'missing'; readonly message: string; readonly retry?: () => void }
+
+function useSourceRepo(base: RepoRef, sourceId: string | null, author: string): SourceRepo {
   const { sdk, ready } = useSdk()
   const v1Source = useMemo<RepoRef | null>(
     () =>
@@ -52,7 +59,16 @@ function useSourceRepo(base: RepoRef, sourceId: string | null, author: string): 
     [ready, forge?.core ?? '', sourceId ?? ''],
     { enabled: ready && sdk !== null && forge !== null && sourceId !== null },
   )
-  return base.kind === 'v1' ? v1Source : v2Source.data
+  if (sourceId === null) return { kind: 'none' }
+  if (base.kind === 'v1') return v1Source === null ? { kind: 'none' } : { kind: 'found', repo: v1Source }
+  if (v2Source.error) {
+    return { kind: 'missing', message: `The source repo could not be read (${v2Source.error}).`, retry: v2Source.reload }
+  }
+  if (v2Source.data) return { kind: 'found', repo: v2Source.data }
+  if (v2Source.settled && !v2Source.loading) {
+    return { kind: 'missing', message: `The source repo ${sourceId.slice(0, 8)}… this PR names does not exist.` }
+  }
+  return { kind: 'loading' }
 }
 
 /** Link to the archived upstream PR's own diff, for an imported PR from GitHub. */
@@ -164,16 +180,26 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   const baseKey = repoKey(baseRepo)
   const sourceKey = pull.sourceId || baseKey
   const crossRepo = sourceKey !== baseKey
-  const sourceRepo = useSourceRepo(baseRepo, crossRepo ? sourceKey : null, pull.author)
+  const source = useSourceRepo(baseRepo, crossRepo ? sourceKey : null, pull.author)
 
   const baseState = useBrowseReader(baseRepo)
-  const sourceState = useBrowseReader(sourceRepo)
-  const headState = crossRepo ? sourceState : baseState
+  const sourceState = useBrowseReader(source.kind === 'found' ? source.repo : null)
+  // A source that does not resolve falls back to the base repo's reader (as a v1 PR does when
+  // its source is unreadable), with a visible note, instead of waiting forever.
+  const sourceMissing = source.kind === 'missing'
+  const headState = crossRepo && !sourceMissing ? sourceState : baseState
 
   const baseReader = baseState.kind === 'ready' ? baseState.reader : null
   const headReader = headState.kind === 'ready' ? headState.reader : null
   const baseProblem = sideProblem(baseState, 'base repo')
-  const headProblem = crossRepo ? sideProblem(sourceState, 'source repo') : null
+  const headProblem = !crossRepo
+    ? null
+    : source.kind === 'missing'
+      ? {
+          message: `${source.message} The diff reads from the base repo only.`,
+          ...(source.retry ? { action: { label: 'Retry source repo', run: source.retry } } : {}),
+        }
+      : sideProblem(sourceState, 'source repo')
   const problems = [baseProblem, headProblem].filter((p): p is SideProblem => p !== null)
 
   // Each side reads its own repo when it can, else the other one.
