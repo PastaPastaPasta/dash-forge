@@ -1,0 +1,36 @@
+{
+  "name": "issue_author_reopen_after_member_close_valid",
+  "description": "Known design choice kept from v1: the author may reopen after a member closes (a member can close again).",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reopen",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "private_review_without_enc",
+  "description": "A private review needs enc and epoch.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review"
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

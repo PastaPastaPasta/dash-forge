@@ -199,7 +199,10 @@ pub fn number_ceiling(count: u64) -> u64 {
 ///
 /// `count` is the provable count of the repo's issues (the rangeCountable `number` index).
 /// `taken_numbers_desc` are claimed numbers as the `number` index returns them (descending;
-/// the order is not relied on). It must hold every taken number from `base` (below) upward.
+/// the order is not relied on). It must hold `base` (below) and every taken number in the
+/// contiguous run directly above it: a caller that queries ascending from `base + 1` must page
+/// to the end of that run (the first gap), not stop after one page, or it hands in a run cut
+/// short and gets back a number that is already taken.
 ///
 /// 1. `ceiling = min(2 × count + 100, 2^32 − 1)`.
 /// 2. `base` = the largest taken number `≤ ceiling`, or 0.
@@ -376,6 +379,9 @@ pub struct Approvals {
 
 /// Count a PR's approvals, `forge-v2.md` §6.
 ///
+/// `reviews` must already be filtered by [`is_well_formed`] (kind [`ContentKind::Review`]): a
+/// malformed review is skipped by readers, so it does not count here either.
+///
 /// A review counts only if it is on `head_oid` (a push after it resets it) and its reviewer
 /// was a maintainer or writer at the review's `created_at` ([`RoleOracle::member_at`]). A
 /// reviewer's standing verdict is their newest counting approve or request-changes review by
@@ -438,14 +444,17 @@ pub enum ContentKind {
     Patch,
     /// `comment`: plaintext `body` (required).
     Comment,
-    /// `review`: plaintext `body` (required).
+    /// `review`: plaintext `body` (optional: a review's content is its verdict and
+    /// `commitOid`, which are never encrypted).
     Review,
     /// `refUpdate` or `protectedRefUpdate`: plaintext `refName` (required).
     RefUpdate,
+    /// `config`: plaintext `defaultBranch`, `protectedPatterns` (neither required).
+    Config,
 }
 
-/// The content fields of a document, flattened. An absent field and an empty string are the
-/// same.
+/// The content fields of a document, flattened. An absent field, an empty string and an
+/// empty `protectedPatterns` list are the same.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentDoc {
@@ -466,6 +475,12 @@ pub struct ContentDoc {
     /// `sourceRefName` (patches).
     #[serde(default)]
     pub source_ref_name: Option<String>,
+    /// `defaultBranch` (config).
+    #[serde(default)]
+    pub default_branch: Option<String>,
+    /// `protectedPatterns` (config).
+    #[serde(default)]
+    pub protected_patterns: Option<Vec<String>>,
     /// `enc`, hex.
     #[serde(default)]
     pub enc: Option<String>,
@@ -478,41 +493,71 @@ fn present(s: Option<&String>) -> bool {
     s.is_some_and(|s| !s.is_empty())
 }
 
+/// What [`is_well_formed`] needs from a document's plaintext fields.
+struct Plaintext {
+    /// The kind has a required plaintext field, and it is absent.
+    required_missing: bool,
+    /// Any of the kind's plaintext fields is present.
+    any: bool,
+}
+
+impl ContentDoc {
+    fn plaintext(&self) -> Plaintext {
+        let any = |fields: &[Option<&String>]| fields.iter().any(|f| present(*f));
+        let (required, any) = match self.kind {
+            ContentKind::Issue => (
+                Some(self.title.as_ref()),
+                any(&[self.title.as_ref(), self.body.as_ref()]),
+            ),
+            ContentKind::Patch => (
+                Some(self.title.as_ref()),
+                any(&[
+                    self.title.as_ref(),
+                    self.body.as_ref(),
+                    self.base_ref_name.as_ref(),
+                    self.source_ref_name.as_ref(),
+                ]),
+            ),
+            ContentKind::Comment => (Some(self.body.as_ref()), present(self.body.as_ref())),
+            ContentKind::Review => (None, present(self.body.as_ref())),
+            ContentKind::RefUpdate => (
+                Some(self.ref_name.as_ref()),
+                present(self.ref_name.as_ref()),
+            ),
+            ContentKind::Config => (
+                None,
+                present(self.default_branch.as_ref())
+                    || self
+                        .protected_patterns
+                        .as_ref()
+                        .is_some_and(|p| !p.is_empty()),
+            ),
+        };
+        Plaintext {
+            required_missing: required.is_some_and(|f| !present(f)),
+            any,
+        }
+    }
+}
+
 /// Whether a document is well-formed for its repository, `forge-v2.md` §5. Readers skip a
 /// malformed document.
 ///
 /// Plaintext xor `enc`, and the repository's visibility says which:
 ///
-/// * **public**: no `enc`, and the kind's required plaintext field is present ([`ContentKind`]);
+/// * **public**: no `enc`, and the kind's required plaintext field, if it has one
+///   ([`ContentKind`]);
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
 ///
-/// So a document with neither, or both, is malformed, and so is plaintext in a private repo
-/// (including a private ref update's `refName`) or ciphertext in a public one. A `review`
-/// needs a `body` like a `comment`: a bare verdict is written with a body (or `enc`).
+/// So plaintext in a private repo (including a private ref update's `refName`) and ciphertext
+/// in a public one are malformed, as is an issue, patch, comment or ref update with neither.
 #[must_use]
 pub fn is_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
-    let (required, others): (Option<&String>, &[Option<&String>]) = match doc.kind {
-        ContentKind::Issue => (doc.title.as_ref(), &[doc.body.as_ref()]),
-        ContentKind::Patch => (
-            doc.title.as_ref(),
-            &[
-                doc.body.as_ref(),
-                doc.base_ref_name.as_ref(),
-                doc.source_ref_name.as_ref(),
-            ],
-        ),
-        ContentKind::Comment | ContentKind::Review => (doc.body.as_ref(), &[]),
-        ContentKind::RefUpdate => (doc.ref_name.as_ref(), &[]),
-    };
+    let plaintext = doc.plaintext();
     let encrypted = present(doc.enc.as_ref());
     match visibility {
-        Visibility::Public => !encrypted && present(required),
-        Visibility::Private => {
-            encrypted
-                && doc.epoch.is_some()
-                && !present(required)
-                && !others.iter().any(|s| present(*s))
-        }
+        Visibility::Public => !encrypted && !plaintext.required_missing,
+        Visibility::Private => encrypted && doc.epoch.is_some() && !plaintext.any,
     }
 }
 

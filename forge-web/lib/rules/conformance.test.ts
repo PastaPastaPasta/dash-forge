@@ -173,12 +173,37 @@ function runCase(v: Vector): void {
 }
 
 /**
- * Refuse input keys the case does not read, as the Rust harness does (`deny_unknown_fields`),
- * so a vector cannot carry a field (e.g. v1's `tokenRecords`) that the rules silently ignore.
+ * The keys each v2 input record may carry. The harness refuses any other key, at any depth,
+ * as the Rust harness does, so a vector cannot carry a field (v1's `tokenRecords`, a misspelt
+ * `supersedes`) that the rules silently ignore.
  */
+const EVENT_KEYS = ['id', 'targetId', 'kind', 'actor', 'value', 'oid', 'createdAt']
+const MEMBERSHIP_KEYS = ['identity', 'role', 'createdAt']
+const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
+  events: EVENT_KEYS,
+  authorEvents: EVENT_KEYS,
+  copies: ['id', 'packHash', 'ownerRole', 'createdAt', 'verified', 'supersedes'],
+  reviews: ['id', 'reviewer', 'verdict', 'commitOid', 'createdAt'],
+  memberships: MEMBERSHIP_KEYS,
+  queries: ['identity', 'at'],
+  doc: [
+    'kind', 'title', 'body', 'refName', 'baseRefName', 'sourceRefName',
+    'defaultBranch', 'protectedPatterns', 'enc', 'epoch',
+  ],
+}
+
 function onlyKeys(v: Vector, allowed: readonly string[]): void {
-  const extra = Object.keys(v.input as object).filter((k) => !allowed.includes(k))
+  const input = v.input as Record<string, unknown>
+  const extra = Object.keys(input).filter((k) => !allowed.includes(k))
   expect(extra, `vector ${v.name}: unknown input keys`).toEqual([])
+  for (const [key, nestedAllowed] of Object.entries(NESTED_KEYS)) {
+    const value = input[key]
+    if (value === undefined || value === null) continue
+    for (const [i, rec] of (Array.isArray(value) ? value : [value]).entries()) {
+      const bad = Object.keys(rec as object).filter((k) => !nestedAllowed.includes(k))
+      expect(bad, `vector ${v.name}: unknown keys in ${key}[${i}]`).toEqual([])
+    }
+  }
 }
 
 function runCaseV2(v: Vector): void {
@@ -256,6 +281,21 @@ function runCaseV2(v: Vector): void {
       )
       break
     }
+    case 'role_oracle': {
+      onlyKeys(v, ['memberships', 'queries'])
+      const inp = v.input as {
+        readonly memberships: readonly v2.Membership[]
+        readonly queries: readonly { readonly identity: string; readonly at: number }[]
+      }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      const got = inp.queries.map((q) => ({
+        roleAt: oracle.roleAt(q.identity, q.at),
+        memberAt: oracle.memberAt(q.identity, q.at),
+        currentRole: oracle.currentRole(q.identity),
+      }))
+      expect(got).toEqual(v.expected)
+      break
+    }
     default:
       throw new Error(`unknown v2 vector case: ${v.case}`)
   }
@@ -274,7 +314,7 @@ describe('FORGE_RULES conformance vectors', () => {
 
   it('loads the full vector corpus', () => {
     expect(v1.length).toBeGreaterThanOrEqual(70)
-    expect(v2Vectors.length).toBeGreaterThanOrEqual(40)
+    expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(v1.length + v2Vectors.length).toBe(vectors.length)
   })
 

@@ -1,0 +1,37 @@
+{
+  "name": "readded_member_starts_again",
+  "description": "Revoked and re-added: only the new document (createdAt 300) exists, so membership starts at 300.",
+  "case": "role_oracle",
+  "rules": "v2",
+  "input": {
+    "memberships": [
+      {
+        "identity": "x",
+        "role": "writer",
+        "createdAt": 300
+      }
+    ],
+    "queries": [
+      {
+        "identity": "x",
+        "at": 100
+      },
+      {
+        "identity": "x",
+        "at": 300
+      }
+    ]
+  },
+  "expected": [
+    {
+      "roleAt": null,
+      "memberAt": false,
+      "currentRole": "writer"
+    },
+    {
+      "roleAt": "writer",
+      "memberAt": true,
+      "currentRole": "writer"
+    }
+  ]
+}

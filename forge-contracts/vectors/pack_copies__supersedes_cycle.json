@@ -1,0 +1,44 @@
+{
+  "name": "supersedes_cycle",
+  "description": "P1 and P2 each claim to supersede the other: both are superseded and both are still read, by createdAt.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "c2",
+        "packHash": "P2",
+        "ownerRole": "writer",
+        "createdAt": 20,
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      },
+      {
+        "id": "c1",
+        "packHash": "P1",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true,
+        "supersedes": [
+          "P2"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "readOrder": [
+      {
+        "packHash": "P1",
+        "copyId": "c1",
+        "superseded": true
+      },
+      {
+        "packHash": "P2",
+        "copyId": "c2",
+        "superseded": true
+      }
+    ]
+  }
+}

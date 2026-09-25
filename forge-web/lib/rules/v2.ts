@@ -20,7 +20,7 @@ import {
   prStateOf,
   sorted,
 } from './fold'
-import { compareKey } from './oid'
+import { compareKey, compareStrings } from './oid'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
 
 /** The versioned rules identifier for forge-v2 repositories. */
@@ -136,8 +136,16 @@ export function numberCeiling(count: number): number {
  * The number to claim for a new issue (or PR), `forge-v2.md` §6: the first free number above
  * `base`, the largest taken number at or below the ceiling (0 if none). `null` when every
  * number from `base + 1` to `2^32 − 1` is taken.
+ *
+ * `takenNumbersDesc` must hold every taken number from `base` upward through the contiguous
+ * run above it: a caller querying ascending from `base + 1` must page to the end of that run
+ * (the first gap), not stop at one page. `count` must be a non-negative integer (the Rust
+ * port takes a `u64`); anything else throws.
  */
 export function allocateNumber(count: number, takenNumbersDesc: readonly number[]): number | null {
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new RangeError(`allocateNumber: count must be a non-negative integer, got ${count}`)
+  }
   const ceiling = numberCeiling(count)
   const taken = new Set(takenNumbersDesc)
   let base = 0
@@ -187,17 +195,13 @@ export interface PackPick {
   readonly superseded: boolean
 }
 
-function compareStr(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
-}
-
 /**
  * Every readable pack of a repo, in fetch order: per pack hash the selected copy (packs with
  * no verified copy left out); packs a selected copy of another pack supersedes go last, not
  * dropped; then `createdAt`, then `packHash`.
  */
 export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
-  const hashes = [...new Set(copies.map((c) => c.packHash))].sort(compareStr)
+  const hashes = [...new Set(copies.map((c) => c.packHash))].sort(compareStrings)
   const selected: PackCopy[] = []
   for (const hash of hashes) {
     const pick = selectPackCopy(copies.filter((c) => c.packHash === hash))
@@ -212,7 +216,7 @@ export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
     (a, b) =>
       Number(isSuperseded(a)) - Number(isSuperseded(b)) ||
       a.createdAt - b.createdAt ||
-      compareStr(a.packHash, b.packHash),
+      compareStrings(a.packHash, b.packHash),
   )
   return selected.map((c) => ({ packHash: c.packHash, copyId: c.id, superseded: isSuperseded(c) }))
 }
@@ -271,9 +275,12 @@ export function countApprovals(
 
 export type Visibility = 'public' | 'private'
 
-export type ContentKind = 'issue' | 'patch' | 'comment' | 'review' | 'refUpdate'
+export type ContentKind = 'issue' | 'patch' | 'comment' | 'review' | 'refUpdate' | 'config'
 
-/** A document's content fields. An absent field and an empty string are the same. */
+/**
+ * A document's content fields. An absent field, an empty string and an empty
+ * `protectedPatterns` list are the same.
+ */
 export interface ContentDoc {
   readonly kind: ContentKind
   readonly title?: string | null
@@ -281,32 +288,49 @@ export interface ContentDoc {
   readonly refName?: string | null
   readonly baseRefName?: string | null
   readonly sourceRefName?: string | null
+  /** `config.defaultBranch`. */
+  readonly defaultBranch?: string | null
+  /** `config.protectedPatterns`. */
+  readonly protectedPatterns?: readonly string[] | null
   /** `enc`, hex. */
   readonly enc?: string | null
   readonly epoch?: number | null
 }
 
-function present(s: string | null | undefined): boolean {
-  return s != null && s.length > 0
+type Field = string | readonly string[] | null | undefined
+
+function present(f: Field): boolean {
+  return f != null && f.length > 0
+}
+
+/** A kind's required plaintext field (null: none) and all of its plaintext fields. */
+function contentFields(doc: ContentDoc): [Field | null, Field[]] {
+  switch (doc.kind) {
+    case 'issue':
+      return [doc.title, [doc.title, doc.body]]
+    case 'patch':
+      return [doc.title, [doc.title, doc.body, doc.baseRefName, doc.sourceRefName]]
+    case 'comment':
+      return [doc.body, [doc.body]]
+    case 'review':
+      return [null, [doc.body]]
+    case 'refUpdate':
+      return [doc.refName, [doc.refName]]
+    case 'config':
+      return [null, [doc.defaultBranch, doc.protectedPatterns]]
+  }
 }
 
 /**
- * Plaintext xor `enc`, and the visibility says which: a public repo's document has no `enc`
- * and its kind's required plaintext field; a private repo's has a non-empty `enc`, an `epoch`
- * and none of its kind's plaintext fields.
+ * Plaintext xor `enc`, and the visibility says which (`forge-v2.md` §5): a public repo's
+ * document has no `enc` and its kind's required plaintext field, if the kind has one; a
+ * private repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields.
  */
 export function isWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
-  const [required, others]: [string | null | undefined, (string | null | undefined)[]] =
-    doc.kind === 'issue'
-      ? [doc.title, [doc.body]]
-      : doc.kind === 'patch'
-        ? [doc.title, [doc.body, doc.baseRefName, doc.sourceRefName]]
-        : doc.kind === 'refUpdate'
-          ? [doc.refName, []]
-          : [doc.body, []]
+  const [required, plaintext] = contentFields(doc)
   const encrypted = present(doc.enc)
-  if (visibility === 'public') return !encrypted && present(required)
-  return encrypted && doc.epoch != null && !present(required) && !others.some(present)
+  if (visibility === 'public') return !encrypted && (required === null || present(required))
+  return encrypted && doc.epoch != null && !plaintext.some(present)
 }
 
 // ---------------------------------------------------------------------------

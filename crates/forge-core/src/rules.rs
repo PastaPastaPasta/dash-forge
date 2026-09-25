@@ -1151,7 +1151,7 @@ mod tests {
         Event, EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
         TokenOp, TokenRecord, TreeDiff, Verdict,
     };
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
 
     /// A minted-at-genesis WRITE holder record (the common authz fixture).
@@ -1446,10 +1446,11 @@ mod tests {
         }
     }
 
-    // --- FORGE_RULES_V2 input envelopes (unknown fields refused, so a vector cannot carry a
-    // v1 field such as `tokenRecords` that the v2 rules would silently ignore) ------------
+    // --- FORGE_RULES_V2 input envelopes. Unknown keys are refused at every depth (see
+    // `input`), so a vector cannot carry a field, such as v1's `tokenRecords` or a misspelt
+    // `authorEvent` key, that the v2 rules would silently ignore -----------------------------
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldIssueV2Input {
         #[serde(default)]
@@ -1459,7 +1460,7 @@ mod tests {
         target_author: String,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldPrV2Input {
         #[serde(default)]
@@ -1473,20 +1474,20 @@ mod tests {
         ancestry: Ancestry,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct AllocateNumberInput {
         count: u64,
         taken_numbers_desc: Vec<u32>,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct PackCopiesInput {
         copies: Vec<v2::PackCopy>,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ApprovalsInput {
         reviews: Vec<v2::Review>,
@@ -1494,22 +1495,62 @@ mod tests {
         head_oid: String,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct WellFormedInput {
         doc: v2::ContentDoc,
         visibility: v2::Visibility,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct RepoNameInput {
         name: String,
     }
 
-    fn input<T: serde::de::DeserializeOwned>(v: &Vector) -> T {
-        serde_json::from_value(v.input.clone())
-            .unwrap_or_else(|e| panic!("vector `{}`: {} input: {e}", v.name, v.case))
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoleQuery {
+        identity: String,
+        at: u64,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RoleOracleInput {
+        memberships: Vec<v2::Membership>,
+        queries: Vec<RoleQuery>,
+    }
+
+    /// Every key of `given` (the vector's JSON) must survive a parse + re-serialize into
+    /// `parsed`, at every depth. A key the rule types do not have would be dropped by serde's
+    /// default (ignore unknown fields) on the nested public types, so a typo there would
+    /// otherwise pass silently.
+    fn assert_no_unknown_keys(given: &serde_json::Value, parsed: &serde_json::Value, at: &str) {
+        match (given, parsed) {
+            (serde_json::Value::Object(g), serde_json::Value::Object(p)) => {
+                for (k, gv) in g {
+                    let pv = p
+                        .get(k)
+                        .unwrap_or_else(|| panic!("unknown input key `{at}.{k}`"));
+                    assert_no_unknown_keys(gv, pv, &format!("{at}.{k}"));
+                }
+            }
+            (serde_json::Value::Array(g), serde_json::Value::Array(p)) => {
+                for (i, (gv, pv)) in g.iter().zip(p).enumerate() {
+                    assert_no_unknown_keys(gv, pv, &format!("{at}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn input<T: serde::de::DeserializeOwned + Serialize>(v: &Vector) -> T {
+        let parsed: T = serde_json::from_value(v.input.clone())
+            .unwrap_or_else(|e| panic!("vector `{}`: {} input: {e}", v.name, v.case));
+        let again = serde_json::to_value(&parsed).expect("re-serialize input");
+        assert_no_unknown_keys(&v.input, &again, &format!("{} input", v.name));
+        parsed
     }
 
     fn expected<T: serde::de::DeserializeOwned>(v: &Vector) -> T {
@@ -1595,6 +1636,22 @@ mod tests {
                 });
                 assert_eq!(got, v.expected, "vector `{ctx}`");
             }
+            "role_oracle" => {
+                let inp: RoleOracleInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got: Vec<serde_json::Value> = inp
+                    .queries
+                    .iter()
+                    .map(|q| {
+                        serde_json::json!({
+                            "roleAt": oracle.role_at(&q.identity, q.at),
+                            "memberAt": oracle.member_at(&q.identity, q.at),
+                            "currentRole": oracle.current_role(&q.identity),
+                        })
+                    })
+                    .collect();
+                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
+            }
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
     }
@@ -1635,7 +1692,7 @@ mod tests {
             }
         }
         assert!(ran_v1 >= 70, "ran {ran_v1} v1 vectors, expected 70+");
-        assert!(ran_v2 >= 40, "ran {ran_v2} v2 vectors, expected 40+");
+        assert!(ran_v2 >= 110, "ran {ran_v2} v2 vectors, expected 110+");
         println!("conformance_vectors: {ran_v1} v1 + {ran_v2} v2 vectors green");
     }
 

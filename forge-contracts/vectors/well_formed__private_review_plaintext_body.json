@@ -1,0 +1,16 @@
+{
+  "name": "private_review_plaintext_body",
+  "description": "A private review must not carry a plaintext body.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review",
+      "body": "LGTM",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

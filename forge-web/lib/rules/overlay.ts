@@ -6,6 +6,7 @@
  * tree without re-downloading a fresh flatIndex (the S0.5 cold-load correction).
  */
 
+import { compareStrings } from './oid'
 import type { FlatIndex, FlatIndexEntry, TreeDiff } from './types'
 
 /**
@@ -36,6 +37,6 @@ export function overlayTree(base: FlatIndex, laterCommitTreeDiffs: readonly Tree
     tip = diff.commit
   }
 
-  const entries = [...tree.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  const entries = [...tree.values()].sort((a, b) => compareStrings(a.path, b.path))
   return { tip, entries }
 }

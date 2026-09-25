@@ -11,7 +11,7 @@
  */
 
 import { AuthzResolver, holdingsAny } from './holdings'
-import { compareKey, isLegalRefName } from './oid'
+import { compareKey, compareStrings, isLegalRefName } from './oid'
 import type { Event, IsAncestor, IssueState, PrState } from './types'
 
 /** Order events deterministically by `(createdAt, id)`. */
@@ -175,7 +175,7 @@ export function foldPrState(
   return prStateOf(s)
 }
 
-/** Sort + dedupe a set into a stable array (mirrors Rust's BTreeSet ordering). */
+/** Sort + dedupe a set into a stable array (mirrors Rust's BTreeSet ordering: code points). */
 export function sorted(set: ReadonlySet<string>): string[] {
-  return [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  return [...set].sort(compareStrings)
 }

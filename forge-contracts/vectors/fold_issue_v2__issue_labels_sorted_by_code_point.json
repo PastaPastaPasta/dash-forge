@@ -1,0 +1,38 @@
+{
+  "name": "issue_labels_sorted_by_code_point",
+  "description": "Labels sort by Unicode code point (Rust's str order): U+FF01 before U+1F600. UTF-16 code-unit order would put the surrogate pair of U+1F600 first.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "😀",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "！",
+        "oid": null,
+        "createdAt": 110
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [
+      "！",
+      "😀"
+    ],
+    "assignees": []
+  }
+}
