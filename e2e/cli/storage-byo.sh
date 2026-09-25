@@ -175,4 +175,37 @@ else
   bad "N=1 push failed"
 fi
 
+step "5. re-push of an already-recorded pack whose recorded copy is gone → refused, ref unchanged"
+# 5a: store a new commit on MinIO only, then stop after the manifest (no ref written).
+printf 'third commit %s\n' "$RUN_ID" >"$SRC/third.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -q -m "third ${RUN_ID}"
+git -C "$SRC" config dash.storage "minio"
+git -C "$SRC" config --unset dash.replicas
+DASH_FORGE_FAIL_BEFORE_REFS=1 DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash "$ID_DEPLOYER" "$LOG-push-5a" \
+  -C "$SRC" push -v "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}" || true
+check "5a: interrupted after the manifest" assert_file_contains "$LOG-push-5a.err" "simulated interruption"
+PACK5="$(grep -oE 'pack [0-9a-f]{12} \(' "$LOG-push-5a.err" | head -1 | cut -d' ' -f2)"
+# Destroy the only recorded copy (MinIO stores each object as a directory in xl-single mode).
+OBJ_DIR="$(docker exec forge-e2e-minio sh -c "ls -d /data/forge-byo/e2e/${RUN_ID}/packs/${PACK5}*.pack" 2>/dev/null | head -1)"
+if [[ -n "$PACK5" && -n "$OBJ_DIR" ]]; then
+  docker exec forge-e2e-minio rm -rf "$OBJ_DIR"
+  check "5a copy is gone from MinIO" bash -c "! curl -fsS -o /dev/null '${MINIO}/forge-byo/e2e/${RUN_ID}/packs/'\"\$(basename '$OBJ_DIR')\""
+  # 5b: the same pack again, now to kubo only. The manifest already exists and records
+  # only the dead MinIO copy → the push must refuse and name both sides.
+  git -C "$SRC" config dash.storage "kubo"
+  if DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash "$ID_DEPLOYER" "$LOG-push-5b" \
+       -C "$SRC" push -v "$E2E_REMOTE" "refs/heads/${BR}:refs/heads/${BR}"; then
+    bad "5b: push succeeded although the recorded copy is gone"
+  else
+    check "5b: error says the pack is already recorded and unreachable" \
+      assert_file_contains "$LOG-push-5b.err" "already recorded at"
+    check "5b: error names the new kubo copy" assert_file_contains "$LOG-push-5b.err" "ipfs://"
+  fi
+  DASH_FORGE_KEY="$ID_DEPLOYER" git ls-remote "$E2E_REMOTE" "refs/heads/${BR}" >"$LOG-lsremote3.out" 2>/dev/null
+  check "5b: remote ref unchanged" assert_eq "$NEW_TIP" "$(cut -f1 "$LOG-lsremote3.out")"
+else
+  cat "$LOG-push-5a.err" >&2
+  bad "5a: could not find the pack hash / MinIO object to remove"
+fi
+
 finish_scenario

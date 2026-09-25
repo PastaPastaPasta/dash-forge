@@ -30,6 +30,12 @@ This guide covers:
 | Pack bytes | your bucket / IPFS node (and/or Platform chunks) | public, if you give the bucket a public URL |
 | Manifest: pack SHA-256, public URLs, CID | Dash Platform | everyone |
 
+> **What becomes public.** The manifest records, on-chain and forever:
+> - the public URL of every copy;
+> - the `s3://<bucket>/<prefix>/packs/<sha256>.pack` locator of every S3 copy. This discloses the **bucket name and key prefix**, even for a private bucket with no `--public-url`.
+>
+> It never records the endpoint or any credential. If the bucket name itself is sensitive, give the profile a `--public-url` (a CDN or custom domain that hides the bucket) and treat the bucket name as public anyway. `dg storage advertise` publishes only the https public read bases.
+
 Secrets are **never** written to `storage.toml`, to the chain, or to logs. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
 
 A push works like this:
@@ -40,7 +46,9 @@ A push works like this:
 3. It uploads to every target **in parallel**. The object keys are content-addressed (`packs/<sha256>.pack`, or the CID for IPFS), so a re-push is idempotent.
 4. It **verifies each copy by reading it back**. Packs up to 16 MiB get a full GET plus SHA-256. Larger packs get a size check plus byte-exact head and tail ranges. The store also verified the whole body on upload (S3 checks `x-amz-content-sha256`; IPFS checks that kubo's CID matches a local re-derivation).
 5. If fewer than `dash.replicas` targets confirm, **the push fails before anything is written to Platform**: no manifest, no ref. The error names each failing target.
-6. Otherwise it writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets.
+6. Otherwise it writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets. If an earlier push already recorded this exact pack, the helper first checks that at least one copy that manifest records is readable and hash-matches. If none is, it refuses to update any ref.
+
+`git push --dry-run` builds the pack and always prints the plan line, then stops.
 
 Use `git push -v` (or anything louder than `-q`) to see the helper's `dash:` lines.
 
@@ -252,11 +260,14 @@ Git owns the helper's stdin and stdout, so the question goes to `/dev/tty`. With
 Every clone, fetch, repack and reseed reads each pack like this:
 
 1. It tries every `https://` URL the manifest recorded (public bucket URLs, public gateway URLs).
-2. For each recorded `s3://bucket/key` where you have a profile for that bucket, it tries a signed GET. This covers private buckets.
+2. For each recorded `s3://bucket/key` where you have a profile for that bucket, it tries a signed GET. This covers private buckets. The secrets are resolved only when this step is actually reached. If several profiles name the same bucket (on different endpoints), each is tried in turn. Keys containing `.`, `..` or empty segments are never signed.
 3. It tries `ipfs://<cid>` on **every gateway in your list**, two at a time.
 4. Only then does it fall back to Platform chunks, if the manifest has any.
 
-A candidate wins only when its bytes hash to the manifest's SHA-256. The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash` and `dg` embed it, and the web app is meant to import the same file when its storage settings land. Override it in `storage.toml`:
+A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
+- a body larger than the manifest's `sizeBytes` is refused;
+- each candidate gets at most 120 s;
+- when Platform chunks exist, the external copies together get 90 s before the reader falls back to the chunks. The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash` and `dg` embed it, and the web app is meant to import the same file when its storage settings land. Override it in `storage.toml`:
 
 ```toml
 [read]
@@ -277,3 +288,5 @@ ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.io", "https://dweb.link"
 | `pinning service request … still queued` | The service cannot reach your node. Make it dialable or raise `--pin-timeout-secs`. |
 | `dg storage test`: `browser CORS` FAIL | Paste the printed provider CORS configuration. The CLI works without CORS, but the web app does not. |
 | `No terminal to confirm on` | See [Cost guard](#cost-guard). |
+| `pack … already recorded at …, none reachable` | An earlier push already recorded this exact pack, but none of its copies can be read now. Restore that storage, or `dg reseed` the pack from a clone that has it. The error lists the copies this push did confirm, so you can record them afterwards. No ref was updated. |
+| `note: an earlier interrupted push left Platform chunks …` | A Platform upload was interrupted and you then pushed the same pack to external storage only. Those chunks still hold a refundable deposit. Re-push with `platform` in `dash.storage` to use them, or reclaim them at teardown. The journal that names them is kept. |
