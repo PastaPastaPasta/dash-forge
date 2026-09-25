@@ -45,7 +45,7 @@ async fn create(
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
     let input = ReleaseInput {
         tag_name: tag.to_string(),
@@ -55,7 +55,7 @@ async fn create(
         assets: Vec::new(),
     };
     let doc_id = svc
-        .create_release(&handle.repo_contract_id, &input)
+        .create_release(handle.v1_contract_id()?, &input)
         .await
         .context("create_release")?;
 
@@ -69,10 +69,10 @@ async fn create(
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
     let releases = svc
-        .list_releases(&handle.repo_contract_id)
+        .list_releases(handle.v1_contract_id()?)
         .await
         .context("list_releases")?;
 
@@ -113,9 +113,9 @@ async fn download(
 ) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = ReleaseService::new(&client, &identity, &bridge);
-    let releases = svc.list_releases(&handle.repo_contract_id).await?;
+    let releases = svc.list_releases(handle.v1_contract_id()?).await?;
     let release = releases
         .into_iter()
         .find(|r| r.tag_name == tag)

@@ -68,6 +68,7 @@ use crate::platform::{
     FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
 use crate::rules::RefUpdate;
+use crate::scope::DocScope;
 
 /// The plain ref-update document type.
 pub(crate) const DOC_REF_UPDATE: &str = "refUpdate";
@@ -108,10 +109,14 @@ pub(crate) trait RefDocSource {
     async fn full_scan(&self, doc_type: &str) -> Result<Vec<FetchedDocument>>;
 }
 
-/// [`RefDocSource`] over a live Platform connection.
+/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: on
+/// forge-v2 every query leads with `repoId == R` (the `refState` and `reflog` indexes are
+/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`), on v1 the repo
+/// contract is the scope.
 pub(crate) struct PlatformRefSource<'a> {
     pub(crate) client: &'a PlatformClient,
     pub(crate) contract: &'a LoadedContract,
+    pub(crate) scope: &'a DocScope,
 }
 
 impl RefDocSource for PlatformRefSource<'_> {
@@ -120,10 +125,9 @@ impl RefDocSource for PlatformRefSource<'_> {
         doc_type: &str,
         after: Option<[u8; 32]>,
     ) -> Result<Vec<FetchedDocument>> {
-        let filters: Vec<QueryFilter> = after
-            .map(|h| QueryFilter::gt("refNameHash", FieldValue::bytes32(h)))
-            .into_iter()
-            .collect();
+        let filters = self
+            .scope
+            .filters(after.map(|h| QueryFilter::gt("refNameHash", FieldValue::bytes32(h))));
         self.client
             .query_documents(
                 self.contract,
@@ -144,7 +148,9 @@ impl RefDocSource for PlatformRefSource<'_> {
             .query_all_documents(
                 self.contract,
                 doc_type,
-                &[QueryFilter::eq("refNameHash", FieldValue::bytes32(hash))],
+                &self
+                    .scope
+                    .filters([QueryFilter::eq("refNameHash", FieldValue::bytes32(hash))]),
                 &[QueryOrder::asc("$createdAt")],
             )
             .await
@@ -155,28 +161,44 @@ impl RefDocSource for PlatformRefSource<'_> {
             .query_all_documents(
                 self.contract,
                 doc_type,
-                &[],
+                &self.scope.filters([]),
                 &[QueryOrder::asc("$createdAt")],
             )
             .await
     }
 }
 
-/// Read every ref's complete history from a live repo contract. See the module docs.
+/// Read every ref's complete history of the repository `scope` names, from `contract`
+/// (forge-core on v2, the repo contract on v1). See the module docs.
 pub async fn read_all_ref_updates(
     client: &PlatformClient,
     contract: &LoadedContract,
+    scope: &DocScope,
 ) -> Result<RefHistories> {
-    read_all_with(&PlatformRefSource { client, contract }).await
+    read_all_with(&PlatformRefSource {
+        client,
+        contract,
+        scope,
+    })
+    .await
 }
 
-/// Read one ref's complete history (both types) from a live repo contract.
+/// Read one ref's complete history (both types) of the repository `scope` names.
 pub async fn read_ref_history(
     client: &PlatformClient,
     contract: &LoadedContract,
+    scope: &DocScope,
     ref_name_hash: [u8; 32],
 ) -> Result<Vec<RefUpdate>> {
-    ref_history_with(&PlatformRefSource { client, contract }, ref_name_hash).await
+    ref_history_with(
+        &PlatformRefSource {
+            client,
+            contract,
+            scope,
+        },
+        ref_name_hash,
+    )
+    .await
 }
 
 pub(crate) async fn ref_history_with(

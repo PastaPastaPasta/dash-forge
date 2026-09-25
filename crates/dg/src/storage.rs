@@ -699,7 +699,7 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
     }
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let doc = svc
         .set_backend(&handle, mode, Some(&uris))
@@ -723,29 +723,24 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
 async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    // Fold in any extra availability URIs announced via `packMirror` docs (anyone can
-    // reseed → announce). Empty on a v1-template contract that lacks the packMirror type.
-    let mirrors = svc.read_pack_mirrors(&handle).await.unwrap_or_default();
+    let scope = handle.scope()?;
     let reader = PackReader::from_user_config();
     let https = forge_core::backends::HttpsBackend::with_client(forge_core::storage::http_client());
 
     let mut packs = Vec::new();
     for m in &manifests {
-        // The manifest's own URIs plus any packMirror-announced URIs for this pack.
+        // Each manifest is one uploader's copy (on v2 a pack may have several).
         let mut uris: Vec<String> = m.uris.clone();
-        for (mirror_hash, mirror_uris) in &mirrors {
-            if *mirror_hash == m.pack_hash {
-                uris.extend(mirror_uris.iter().cloned());
-            }
-        }
         uris.sort();
         uris.dedup();
-        let rows = probe_rows(m, &uris, &handle.repo_contract_id, &reader, &https).await;
+        let locator = scope.locator(&m.owner_id, &hex::encode(m.pack_hash));
+        let rows = probe_rows(m, &uris, &locator, &reader, &https).await;
         packs.push(json!({
             "packHash": hex::encode(m.pack_hash),
+            "uploader": m.owner_id,
             "kind": m.kind,
             "sizeBytes": m.size_bytes,
             "chunkCount": m.chunk_count,
@@ -756,16 +751,13 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 
     ctx.emit(
         json!({
-            "repoContractId": handle.repo_contract_id,
+            "repoId": handle.id(),
             "packCount": manifests.len(),
             "ipfsGateways": reader.gateways(),
             "packs": packs,
         }),
         || {
-            println!(
-                "Storage status for {}/{}:",
-                handle.owner_id, handle.normalized_name
-            );
+            println!("Storage status for {}:", handle.display());
             if manifests.is_empty() {
                 println!("  (no packs)");
             }
@@ -798,7 +790,7 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 async fn probe_rows(
     m: &forge_core::repo::PackManifestInfo,
     uris: &[String],
-    contract_id: &str,
+    platform_locator: &str,
     reader: &PackReader,
     https: &forge_core::backends::HttpsBackend,
 ) -> Vec<serde_json::Value> {
@@ -822,7 +814,7 @@ async fn probe_rows(
     // Platform tier (storage == 0) means the bytes are on-chain chunk docs.
     if m.storage == 0 || m.uris.is_empty() {
         rows.push(json!({
-            "uri": format!("platform://{contract_id}/{}", hex::encode(m.pack_hash)),
+            "uri": platform_locator,
             "scheme": "platform",
             "ok": m.chunk_count > 0,
             "detail": "on-chain chunk documents",

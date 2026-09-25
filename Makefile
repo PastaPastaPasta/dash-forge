@@ -54,7 +54,8 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE testnet) against its reserved repo (e2e/README.md).
+## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2; scenario 08 reads a
+## testnet v1 repo) against the OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
@@ -110,8 +111,8 @@ storage-it: infra-up
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local MinIO + kubo and only the manifest + ref on testnet, against the dedicated
-## storage-e2e-a / storage-e2e-b repos (e2e/README.md; created once, ~1.18 tDASH each).
+## on local MinIO + kubo and only the manifest + ref on devnet moutai, against the
+## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up
 	cargo build -p dg

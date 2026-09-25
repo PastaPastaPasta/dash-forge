@@ -1,4 +1,4 @@
-//! Live testnet collaboration + token-management lifecycle test (gated `#[ignore]`).
+//! Live testnet collaboration + v1 token-read test (gated `#[ignore]`).
 //!
 //! Reuses the DEPLOYER-owned M1 repo contract (cheap — the token contract already exists)
 //! to exercise the [`forge_core::collab`] and [`forge_core::tokens`] service layer against
@@ -8,9 +8,9 @@
 //!   event → fold shows closed → reopen event → fold shows open. `issue_count` reflects the
 //!   count tree.
 //! * **Social** (registry, un-gated): star a listing id → `star_count` reflects it → unstar.
-//! * **Tokens** (the ACL): grant WRITE to COLLAB → `list_collaborators` shows it →
-//!   suspend (freeze) → `holdings` shows frozen → unsuspend (restore). `token_history` shows
-//!   the mint record. Optional destroy-revoke behind `FORGE_TOKEN_DESTROY=1`.
+//! * **Tokens** (the v1 ACL, read only now): `list_collaborators` includes the repo owner,
+//!   and `token_history` reads the mint records back. Granting and revoking is forge-v2
+//!   membership (`forge_core::members`), exercised by the moutai live tests.
 //!
 //! Run with:
 //! ```text
@@ -20,7 +20,7 @@
 use forge_core::collab::{IssueService, SocialService, StateFilter};
 use forge_core::keystore::BridgeIdentity;
 use forge_core::platform::{self, FieldValue, Network, PlatformClient, QueryFilter, QueryOrder};
-use forge_core::tokens::{Role, TokenService};
+use forge_core::tokens::TokenService;
 
 /// Whether the `event` docs for `target_id` carry a consensus `$createdAt` — the clock the
 /// close/reopen fold needs. `false` on a stale pre-`$createdAt` contract (M1).
@@ -211,125 +211,48 @@ async fn collab_and_token_lifecycle_on_testnet() {
     );
 
     // =====================================================================
-    // 3. Tokens: grant WRITE to COLLAB -> list -> suspend -> holdings -> unsuspend
+    // 3. Tokens (v1, read only): the owner is a collaborator; history reads back.
     // =====================================================================
-    let tokens = TokenService::new(&client, &identity, &bridge);
-
-    let write_token = tokens
-        .token_id(M1_REPO_CONTRACT, forge_core::tokens::WRITE_POSITION)
-        .await
-        .expect("write token id");
-    println!("WRITE token id: {write_token}");
-
-    tokens
-        .grant(M1_REPO_CONTRACT, &collab_id, Role::Write)
-        .await
-        .expect("grant WRITE to COLLAB");
-    println!("granted WRITE to COLLAB");
-
+    let tokens = TokenService::new(&client);
     let collaborators = tokens
         .list_collaborators(M1_REPO_CONTRACT)
         .await
         .expect("list_collaborators");
     println!("collaborators: {collaborators:#?}");
-    let collab_entry = collaborators
-        .iter()
-        .find(|c| c.identity_id == collab_id)
-        .expect("COLLAB should appear as a collaborator");
-    assert!(collab_entry.holdings.write, "COLLAB should hold WRITE");
     assert!(
-        !collab_entry.holdings.write_frozen,
-        "COLLAB WRITE should not be frozen yet"
+        collaborators.iter().any(|c| c.identity_id == owner_id),
+        "the repo owner holds the baseSupply tokens"
     );
-
-    // Suspend (freeze) -> holdings shows frozen.
-    tokens
-        .suspend(M1_REPO_CONTRACT, &collab_id, Role::Write)
-        .await
-        .expect("suspend COLLAB WRITE");
-    println!("suspended (froze) COLLAB WRITE");
-    let holdings = tokens
-        .holdings(M1_REPO_CONTRACT, &collab_id)
-        .await
-        .expect("holdings");
-    println!("COLLAB holdings after suspend: {holdings:?}");
-    assert!(holdings.write, "COLLAB still holds the WRITE balance");
-    assert!(holdings.write_frozen, "COLLAB WRITE should be frozen");
-
-    // list_collaborators reflects the frozen status too.
-    let collaborators = tokens
-        .list_collaborators(M1_REPO_CONTRACT)
-        .await
-        .expect("list_collaborators");
-    let collab_entry = collaborators
-        .iter()
-        .find(|c| c.identity_id == collab_id)
-        .expect("COLLAB still a collaborator while frozen");
-    assert!(
-        collab_entry.holdings.write_frozen,
-        "list_collaborators should show COLLAB WRITE frozen"
-    );
-
-    // token_history shows the mint (grant) record for COLLAB.
     let history = tokens
         .token_history(M1_REPO_CONTRACT)
         .await
         .expect("token_history");
-    let collab_mints = history
-        .iter()
-        .filter(|r| {
-            r.identity == collab_id
-                && matches!(r.op, forge_core::rules::TokenOp::Mint)
-                && r.token == forge_core::rules::TokenKind::Write
-        })
-        .count();
-    println!(
-        "token_history: {} record(s) total, {} COLLAB WRITE mint(s)",
-        history.len(),
-        collab_mints
-    );
-    assert!(collab_mints >= 1, "a COLLAB WRITE mint should be recorded");
-
-    if std::env::var("FORGE_TOKEN_DESTROY").is_ok() {
-        // Full revoke (destroys COLLAB's frozen balance).
-        tokens
-            .revoke(M1_REPO_CONTRACT, &collab_id, Role::Write)
-            .await
-            .expect("revoke COLLAB WRITE");
-        println!("revoked (destroyed) COLLAB WRITE balance");
-        let holdings = tokens
-            .holdings(M1_REPO_CONTRACT, &collab_id)
-            .await
-            .expect("holdings");
-        assert!(!holdings.write, "after revoke COLLAB holds no WRITE");
-    } else {
-        // Restore clean state so re-runs are cheap and idempotent.
-        tokens
-            .unsuspend(M1_REPO_CONTRACT, &collab_id, Role::Write)
-            .await
-            .expect("unsuspend COLLAB WRITE");
-        println!("unsuspended COLLAB WRITE (restored)");
-        let holdings = tokens
-            .holdings(M1_REPO_CONTRACT, &collab_id)
-            .await
-            .expect("holdings");
-        assert!(!holdings.write_frozen, "COLLAB WRITE should be unfrozen");
-    }
+    println!("token_history: {} record(s)", history.len());
+    let _ = &collab_id;
 
     // =====================================================================
     // 4. Cleanup (best-effort refund of the deletable docs).
     // =====================================================================
     // The issue + comment are author-owned & deletable; close/reopen events are
-    // non-deletable (permanent audit log) and stay. Reuse `RepoService::delete_document`.
-    let repo = forge_core::repo::RepoService::new(&client, &identity, &bridge);
-    if let Err(e) = repo
-        .delete_document(M1_REPO_CONTRACT, "comment", &comment_id)
+    // non-deletable (permanent audit log) and stay.
+    let contract = client
+        .fetch_contract(M1_REPO_CONTRACT)
+        .await
+        .expect("fetch repo contract");
+    let engine = forge_core::platform::WriteEngine::new(
+        &client,
+        &identity,
+        bridge.doc_op_key().expect("doc key"),
+    )
+    .expect("engine");
+    if let Err(e) = engine
+        .delete_document(&contract, "comment", &comment_id)
         .await
     {
         println!("comment cleanup skipped: {e}");
     }
-    if let Err(e) = repo
-        .delete_document(M1_REPO_CONTRACT, "issue", &issue.document_id)
+    if let Err(e) = engine
+        .delete_document(&contract, "issue", &issue.document_id)
         .await
     {
         println!("issue cleanup skipped: {e}");

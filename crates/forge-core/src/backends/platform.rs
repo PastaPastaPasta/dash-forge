@@ -7,17 +7,11 @@
 //! and a window of [`PIPELINE_WINDOW`] (spike S0.1: ~4 docs/sec landing at window 8).
 //! Read-back is by `(packHash, seq)` range.
 //!
-//! ## What is live here vs. deferred to M1
-//!
-//! - **Write** ([`PlatformBackend::put`]) drives the real [`WriteEngine`] and is exercised
-//!   by the `#[ignore]`d live test (needs a repo/chunk contract + a funded identity).
-//! - **The chunk-document encode/decode** ([`encode_chunk_doc`] / [`decode_chunk_doc`]) is
-//!   pure and covered by offline round-trip unit tests — it is the load-bearing on-chain
-//!   byte format.
-//! - **Read-back** ([`PlatformBackend::get`]) needs a property-returning `chunk` query by
-//!   `(packHash, seq)`; that query helper lives in `crate::platform` and lands in M1 (the
-//!   SDK is confined to that module). Until then `get`/`probe` return a clear pending
-//!   error, and the reassembly is the pure [`crate::pack::join`] over decoded chunks.
+//! Read-back ([`PlatformBackend::get`]) reads one uploader's chunks by
+//! `(packHash, seq)` (with `repoId` and the uploader on forge-v2, see
+//! [`crate::scope::DocScope::chunk_filters`]) and reassembles them with the pure
+//! [`crate::pack::join`]. The chunk encode/decode is covered offline; the write path by the
+//! `#[ignore]`d live tests.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +20,8 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
 use crate::pack::{join, split, Chunk, FIELDS_PER_DOC};
-use crate::platform::{FieldValue, LoadedContract, QueryFilter, QueryOrder, WriteEngine};
+use crate::platform::{FieldValue, LoadedContract, QueryOrder, WriteEngine};
+use crate::scope::DocScope;
 
 /// The platform scheme label used in manifest URIs.
 pub const PLATFORM_SCHEME: &str = "platform";
@@ -37,10 +32,6 @@ pub const CHUNK_DOC_TYPE: &str = "chunk";
 /// In-flight write window for the chunk pipeline (frozen S0.1 sweet spot: window 8,
 /// ~4 docs/sec landing; look-ahead caps ~24).
 pub const PIPELINE_WINDOW: usize = 8;
-
-/// Page size for the chunk read-back scan. Platform caps a document query at ~100 rows,
-/// so a pack with more chunks is paged via a `seq`-ordered `start_after` cursor.
-const CHUNK_PAGE_LIMIT: u32 = 100;
 
 /// The document field carrying a chunk's packHash (32-byte `byteArray`).
 pub const FIELD_PACK_HASH: &str = "packHash";
@@ -112,72 +103,90 @@ pub fn chunk_documents(
         .collect()
 }
 
-/// The Platform storage backend, bound to a [`WriteEngine`] + the repo/chunk contract it
-/// writes into.
+/// A parsed `platform://` locator: whose chunks, and which pack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformLocator {
+    /// The uploader whose copy the chunks are. forge-v2 locators name it (a v2 chunk's key
+    /// includes `$ownerId`); v1 ones do not, the repo contract being the whole scope.
+    pub owner: Option<String>,
+    /// The pack hash.
+    pub pack_hash: [u8; 32],
+}
+
+impl PlatformLocator {
+    /// Parse `platform://<contract>/<packHash>` (v1) or
+    /// `platform://<core>/<repoId>/<owner>/<packHash>` (v2).
+    pub fn parse(uri: &Uri) -> Result<Self> {
+        let rest = uri
+            .rest()
+            .filter(|_| uri.scheme() == Some(PLATFORM_SCHEME))
+            .ok_or_else(|| Error::Config(format!("not a platform locator: {uri}")))?;
+        let parts: Vec<&str> = rest.split('/').collect();
+        let (owner, hex_hash) = match parts.as_slice() {
+            [_contract, hash] => (None, *hash),
+            [_core, _repo, owner, hash] => (Some((*owner).to_string()), *hash),
+            _ => return Err(Error::Config(format!("malformed platform locator: {uri}"))),
+        };
+        let raw = hex::decode(hex_hash)
+            .map_err(|e| Error::Config(format!("platform locator packHash not hex: {e}")))?;
+        let pack_hash = raw
+            .try_into()
+            .map_err(|_| Error::Config("platform locator packHash is not 32 bytes".into()))?;
+        Ok(Self { owner, pack_hash })
+    }
+}
+
+/// The Platform storage backend, bound to a [`WriteEngine`], the contract it writes into and
+/// the repository scope inside it.
 ///
 /// Holds borrows (the engine borrows a `PlatformClient`, a keystore key and an identity),
 /// so it is constructed per-push rather than stored long-lived or boxed `'static`.
 pub struct PlatformBackend<'a> {
     engine: &'a WriteEngine<'a>,
     contract: &'a LoadedContract,
+    scope: &'a DocScope,
+    /// The identity the engine writes as (a v2 chunk's key includes its uploader).
+    writer: String,
 }
 
 impl<'a> PlatformBackend<'a> {
-    /// Bind a backend to `engine` writing `chunk` docs into `contract`.
-    pub fn new(engine: &'a WriteEngine<'a>, contract: &'a LoadedContract) -> Self {
-        Self { engine, contract }
-    }
-
-    /// The `platform://<contractId>/<packHash>` locator for a stored pack.
-    fn locator_uri(&self, pack_hash: &str) -> Uri {
-        Uri(format!(
-            "{PLATFORM_SCHEME}://{}/{}",
-            self.contract.id(),
-            pack_hash
-        ))
-    }
-
-    /// The 32-byte packHash from a `platform://<contractId>/<packHashHex>` locator.
-    fn pack_hash_from_uri(uri: &Uri) -> Result<[u8; 32]> {
-        let rest = uri
-            .rest()
-            .ok_or_else(|| Error::Config(format!("not a platform locator: {uri}")))?;
-        let hex_hash = rest.rsplit_once('/').map_or(rest, |(_, h)| h);
-        let raw = hex::decode(hex_hash)
-            .map_err(|e| Error::Config(format!("platform locator packHash not hex: {e}")))?;
-        raw.try_into()
-            .map_err(|_| Error::Config("platform locator packHash is not 32 bytes".into()))
-    }
-
-    /// Read every `chunk` document for `pack_hash`, ordered by `seq`, paging through the
-    /// ~100-row query cap with a `start_after` cursor. Decodes each to a [`Chunk`].
-    async fn read_chunks(&self, pack_hash: [u8; 32]) -> Result<Vec<Chunk>> {
-        let client = self.engine.client();
-        let mut chunks: Vec<Chunk> = Vec::new();
-        let mut start_after: Option<String> = None;
-        loop {
-            let page = client
-                .query_documents(
-                    self.contract,
-                    CHUNK_DOC_TYPE,
-                    &[QueryFilter::eq(
-                        FIELD_PACK_HASH,
-                        FieldValue::bytes32(pack_hash),
-                    )],
-                    &[QueryOrder::asc(FIELD_SEQ)],
-                    CHUNK_PAGE_LIMIT,
-                    start_after.as_deref(),
-                )
-                .await?;
-            let page_len = page.len();
-            for doc in &page {
-                chunks.push(decode_chunk_doc(&doc.fields)?);
-            }
-            start_after = page.last().map(|d| d.id.clone());
-            if page_len < CHUNK_PAGE_LIMIT as usize {
-                break;
-            }
+    /// Bind a backend to `engine` (writing as `writer`) for `scope`'s chunks in `contract`.
+    pub fn new(
+        engine: &'a WriteEngine<'a>,
+        contract: &'a LoadedContract,
+        scope: &'a DocScope,
+        writer: impl Into<String>,
+    ) -> Self {
+        Self {
+            engine,
+            contract,
+            scope,
+            writer: writer.into(),
         }
+    }
+
+    /// The locator of a pack this backend stores.
+    fn locator_uri(&self, pack_hash: &str) -> Uri {
+        Uri(self.scope.locator(&self.writer, pack_hash))
+    }
+
+    /// Read every `chunk` document of `owner`'s copy of `pack_hash` (complete, `seq`
+    /// ordered) and decode each to a [`Chunk`]. `owner` is required on forge-v2.
+    async fn read_chunks(&self, owner: Option<&str>, pack_hash: [u8; 32]) -> Result<Vec<Chunk>> {
+        let docs = self
+            .engine
+            .client()
+            .query_all_documents(
+                self.contract,
+                CHUNK_DOC_TYPE,
+                &self.scope.chunk_filters(owner, pack_hash)?,
+                &[QueryOrder::asc(FIELD_SEQ)],
+            )
+            .await?;
+        let mut chunks = docs
+            .iter()
+            .map(|d| decode_chunk_doc(&d.fields))
+            .collect::<Result<Vec<Chunk>>>()?;
         // The (packHash, seq) index already returns seq-ordered, but sort defensively so
         // reassembly never depends on traversal order.
         chunks.sort_by_key(|c| c.seq);
@@ -206,7 +215,7 @@ impl PackBackend for PlatformBackend<'_> {
     }
 
     fn caps(&self) -> Caps {
-        // On-chain: CLI write (holds the WRITE token + signing key); reads available to
+        // On-chain: CLI write (a writer/maintainer membership + signing key); reads available to
         // CLI and browser via DAPI. Browser writes need the identity's key — CLI-shaped.
         Caps {
             read_cli: true,
@@ -225,7 +234,7 @@ impl PackBackend for PlatformBackend<'_> {
         // engine's sequential-nonce + idempotent re-broadcast handles landing order.
         stream::iter(docs.into_iter().map(|(_seq, props)| {
             self.engine
-                .create_document(self.contract, CHUNK_DOC_TYPE, props)
+                .create_document(self.contract, CHUNK_DOC_TYPE, self.scope.scoped(props))
         }))
         .buffered(PIPELINE_WINDOW)
         .try_collect::<Vec<_>>()
@@ -239,8 +248,10 @@ impl PackBackend for PlatformBackend<'_> {
         // the pure `crate::pack::join`. A ranged read slices the reassembled bytes — the
         // platform tier serves whole chunks, so partial fetch is a post-join slice (the
         // browse plane's per-object ranged reads run over the locator, not raw chunks).
-        let pack_hash = Self::pack_hash_from_uri(uri)?;
-        let chunks = self.read_chunks(pack_hash).await?;
+        let loc = PlatformLocator::parse(uri)?;
+        let chunks = self
+            .read_chunks(loc.owner.as_deref(), loc.pack_hash)
+            .await?;
         if chunks.is_empty() {
             return Err(Error::NotFound);
         }
@@ -265,7 +276,7 @@ impl PackBackend for PlatformBackend<'_> {
         // A cheap presence check: seek the first chunk (`limit 1`) for the pack. `ok` is
         // whether any chunk is stored; size is left unknown (a whole-pack size would
         // require reading every chunk — that's `get`'s job, not a probe's).
-        let pack_hash = Self::pack_hash_from_uri(uri)?;
+        let loc = PlatformLocator::parse(uri)?;
         let started = std::time::Instant::now();
         let page = self
             .engine
@@ -273,10 +284,9 @@ impl PackBackend for PlatformBackend<'_> {
             .query_documents(
                 self.contract,
                 CHUNK_DOC_TYPE,
-                &[QueryFilter::eq(
-                    FIELD_PACK_HASH,
-                    FieldValue::bytes32(pack_hash),
-                )],
+                &self
+                    .scope
+                    .chunk_filters(loc.owner.as_deref(), loc.pack_hash)?,
                 &[QueryOrder::asc(FIELD_SEQ)],
                 1,
                 None,
@@ -373,5 +383,17 @@ mod tests {
             .map(|(_, props)| decode_chunk_doc(props).unwrap())
             .collect();
         assert_eq!(join(&rebuilt), data);
+    }
+
+    #[test]
+    fn locators_parse_in_both_generations() {
+        let h = "cd".repeat(32);
+        let v1 = PlatformLocator::parse(&Uri(format!("platform://C/{h}"))).unwrap();
+        assert_eq!(v1.owner, None);
+        assert_eq!(v1.pack_hash, [0xcd; 32]);
+        let v2 = PlatformLocator::parse(&Uri(format!("platform://C/R/OWNER/{h}"))).unwrap();
+        assert_eq!(v2.owner.as_deref(), Some("OWNER"));
+        assert!(PlatformLocator::parse(&Uri(format!("platform://C/R/{h}"))).is_err());
+        assert!(PlatformLocator::parse(&Uri(format!("https://C/{h}"))).is_err());
     }
 }

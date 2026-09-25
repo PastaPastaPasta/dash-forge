@@ -89,6 +89,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::SUSPENDED, "write access suspended"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
+    (codes::READ_ONLY, "v1 repository is read only"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -153,6 +154,8 @@ pub mod codes {
     pub const ALREADY_EXISTS: &str = "E603";
     /// Any other consensus rejection.
     pub const REJECTED: &str = "E604";
+    /// A write to a forge-v1 repository, which is read only.
+    pub const READ_ONLY: &str = "E605";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.
@@ -530,6 +533,29 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             ),
         ),
         CoreError::TokenFrozen => suspended(ctx, &format!("40702 {core}")),
+        CoreError::NotAMember {
+            document_type,
+            detail,
+        } if MAINTAINER_ONLY.contains(&document_type.as_str()) => {
+            needs_maintainer(ctx, document_type, detail)
+        }
+        CoreError::NotAMember { detail, .. } => not_a_writer(ctx, detail),
+        CoreError::V1ReadOnly { repo } => UserError::new(
+            codes::READ_ONLY,
+            ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
+        )
+        .cause("forge-v1 repositories (one contract each) can still be cloned and viewed, but no longer written")
+        .fix("create a forge-v2 repository (`dg repo create <name>`) and push there")
+        .note("`dg migrate` (moving a v1 repo to forge-v2) is coming soon"),
+        CoreError::V2NotDeployed { network } => UserError::new(
+            codes::NOT_DEPLOYED,
+            ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),
+        )
+        .cause(format!(
+            "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
+        ))
+        .fix("use a network where it is: `--network devnet --devnet-name moutai`")
+        .note("existing v1 repositories on this network stay readable"),
         CoreError::Unauthorized => not_a_writer(ctx, &format!("40700/40701 {core}")),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
         CoreError::IncompleteRead {
@@ -742,6 +768,37 @@ fn suspended(ctx: &ErrorContext<'_>, why: &str) -> UserError {
     ))
 }
 
+/// forge-core document types only a `maintainer` may create (forge-v2.md §2).
+const MAINTAINER_ONLY: [&str; 4] = ["protectedRefUpdate", "config", "release", "repoKey"];
+
+/// E601 for a maintainer-only write by someone who is not a maintainer (possibly a writer).
+fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> UserError {
+    let repo = ctx.repo_or("<owner>/<repo>");
+    let what = match document_type {
+        "protectedRefUpdate" => "a protected ref",
+        "config" => "the repository's configuration",
+        _ => "this",
+    };
+    let u = UserError::new(
+        codes::NOT_A_WRITER,
+        ctx.rejected_headline(&format!(
+            "only maintainers of {} can change {what}",
+            ctx.repo_or("this repo")
+        )),
+    )
+    .cause(format!(
+        "Platform refused the {document_type} at consensus ({why})"
+    ))
+    .fix(format!(
+        "ask the owner to run `dg collab add {repo} <your identity id> --role maintainer`"
+    ));
+    if document_type == "protectedRefUpdate" {
+        u.fix("or push to a branch that is not protected")
+    } else {
+        u
+    }
+}
+
 fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
     let repo = ctx.repo_or("<owner>/<repo>");
     // "Not a writer" is what a refused push means. Other writes (collab admin, releases,
@@ -756,7 +813,7 @@ fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
         )
         .cause(format!("Platform refused the write at consensus ({why})"))
         .fix(format!(
-            "ask a maintainer of {repo} to grant you the role this needs (`dg collab add {repo} <your identity id> --role write|maintain`)"
+            "ask the owner of {repo} to grant you the role this needs (`dg collab add {repo} <your identity id> --role writer|maintainer`)"
         ));
     }
     UserError::new(
@@ -768,11 +825,9 @@ fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
     )
     .cause(format!("Platform refused the write at consensus ({why})"))
     .fix(format!(
-        "ask the owner to run `dg collab add {repo} <your identity id> --role write`"
+        "ask the owner to run `dg collab add {repo} <your identity id> --role writer`"
     ))
-    .fix(format!(
-        "push to a repo of your own and open a pull request: `dg pr create {repo} --title <t> --source-contract <your repo contract id> --head-oid <oid>`"
-    ))
+    .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
 }
 
 fn timed_out(ctx: &ErrorContext<'_>, retryable: bool) -> UserError {
@@ -1322,6 +1377,58 @@ mod tests {
     /// Display (`referenced {entity_type} {entity_id} not found for path {path}`), with the
     /// `ownerRefersTo` gate reported on path `$ownerId`, inside the broadcast error.
     const V2_GATE_40120: &str = "state transition broadcast error: referenced deletable document (own contract, document type writer, found through unique index byRepoAndMember) 5DtbWjpyYyNtMd3FBwyXGr3NTZzGUBGHnPHM3gs6ndmQ not found for path $ownerId";
+
+    #[test]
+    fn a_typed_40120_on_a_maintainer_only_type_asks_for_maintainer() {
+        // A writer pushing a protected ref: `protectedRefUpdate` is maintainer-only, so
+        // "you are not a writer" would be false and `--role writer` would not help.
+        let u = core_chain(
+            CoreError::NotAMember {
+                document_type: "protectedRefUpdate".into(),
+                detail: "40120: …".into(),
+            },
+            &PUSH,
+        );
+        assert_eq!(u.code, "E601");
+        assert_eq!(
+            u.message,
+            "push rejected: only maintainers of alice/project can change a protected ref"
+        );
+        assert!(u.fix[0].contains("--role maintainer"), "{u:?}");
+
+        // Any other gated type: not a member at all.
+        let u = core_chain(
+            CoreError::NotAMember {
+                document_type: "refUpdate".into(),
+                detail: "40120: …".into(),
+            },
+            &PUSH,
+        );
+        assert_eq!(
+            u.message,
+            "push rejected: you are not a writer of alice/project"
+        );
+        assert!(u.fix[0].contains("--role writer"), "{u:?}");
+    }
+
+    #[test]
+    fn v1_writes_and_undeployed_v2_have_their_own_codes() {
+        let u = core_chain(
+            CoreError::V1ReadOnly {
+                repo: "alice/old".into(),
+            },
+            &PUSH,
+        );
+        assert_eq!((u.code, u.exit_code()), ("E605", 6));
+        let u = core_chain(
+            CoreError::V2NotDeployed {
+                network: "testnet".into(),
+            },
+            &PUSH,
+        );
+        assert_eq!(u.code, "E702");
+        assert!(u.fix[0].contains("--devnet-name moutai"), "{u:?}");
+    }
 
     #[test]
     fn maps_v2_writer_gate_40120_to_e601() {

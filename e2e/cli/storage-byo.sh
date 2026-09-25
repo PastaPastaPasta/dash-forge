@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # storage-byo.sh — bring-your-own-storage end to end: a REAL `git push` / `git clone`
 # over dash:// whose pack bytes go to LOCAL MinIO (SigV4-signed) + kubo, with only the
-# packManifest + refUpdate written to testnet. Run via `make storage-e2e`.
+# packManifest + refUpdate written to Platform (devnet moutai, forge-v2 — config.sh).
+# Run via `make storage-e2e`.
 #
-# Runs against two DEDICATED repos owned by DEPLOYER — never the shared m1 test repo,
+# Runs against two DEDICATED forge-v2 repos owned by OWNER — never the shared test repo,
 # because every pack this script stores lives on localhost MinIO/kubo and so is
 # unreadable to anyone else: STORAGE_E2E_REPO (steps 1-4) and STORAGE_E2E_REPO_B (steps
-# 5-6), defaults in config.sh (reserved in e2e/README.md). Each is created (repo-v1,
-# ~1.18 tDASH, once) only if it does not exist; every run uses a fresh branch and
-# deletes it at the end.
+# 5-6), defaults in config.sh (reserved in e2e/README.md). Each is created (~0.001 DASH,
+# once, resumably) if it does not exist; every run uses a fresh branch and deletes it at
+# the end.
 #
 # Proves:
 #   1. push with dash.storage=minio,kubo dash.replicas=2 → the manifest records
@@ -25,8 +26,8 @@
 #   6. `dg reseed --from-local` restores the exact recorded copy from the pusher's clone,
 #      after which the re-push succeeds and a fresh clone of repo B works.
 #
-# Spend per run: a handful of manifests + ref updates on testnet (well under 0.01 tDASH
-# of the DEPLOYER identity), no chunk documents. Requires infra/docker-compose.yml up.
+# Spend per run: a handful of manifests + ref updates (well under 0.01 DASH of the OWNER
+# identity), no chunk documents. Requires infra/docker-compose.yml up.
 SCENARIO_NAME="storage-byo (MinIO + kubo, real push/clone)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 harness_init
@@ -38,22 +39,8 @@ curl -fsS -o /dev/null "${MINIO}/minio/health/live" || skip_scenario "MinIO not 
 curl -fsS -o /dev/null -X POST "${KUBO_API}/api/v0/version" || skip_scenario "kubo not up (make infra-up)"
 
 # --- the dedicated repos ------------------------------------------------------
-ensure_repo() { # ensure_repo <name> — create under DEPLOYER once; reuse afterwards
-  local name="$1"
-  if DASH_FORGE_KEY="$ID_DEPLOYER" "$DG" --json repo view "${E2E_OWNER_ID}/${name}" >/dev/null 2>&1; then
-    info "reusing dedicated repo ${name}"
-    return 0
-  fi
-  info "creating dedicated repo ${name} (one-time, ~1.18 tDASH)"
-  DASH_FORGE_KEY="$ID_DEPLOYER" "$DG" --yes --json repo create "$name" \
-    --description "Dash Forge storage-byo e2e fixture (reserved; see e2e/README.md)" \
-    >"${WORKROOT}/create-${name}.out" 2>"${WORKROOT}/create-${name}.err" || {
-    cat "${WORKROOT}/create-${name}.err" >&2
-    skip_scenario "could not create the dedicated repo ${name} (funds/flake)"
-  }
-}
-ensure_repo "$STORAGE_E2E_REPO"
-ensure_repo "$STORAGE_E2E_REPO_B"
+harness_ensure_repo "$STORAGE_E2E_REPO" || skip_scenario "could not create the dedicated repo ${STORAGE_E2E_REPO}"
+harness_ensure_repo "$STORAGE_E2E_REPO_B" || skip_scenario "could not create the dedicated repo ${STORAGE_E2E_REPO_B}"
 REMOTE_A="dash://${E2E_OWNER_ID}/${STORAGE_E2E_REPO}"
 REMOTE_B="dash://${E2E_OWNER_ID}/${STORAGE_E2E_REPO_B}"
 # lib.sh's cleanup deletes registered refs on $E2E_REMOTE; each repo is cleaned below.
@@ -118,7 +105,7 @@ step "1. push with dash.storage=minio,kubo dash.replicas=2"
 if ! DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash_retry "$ID_DEPLOYER" "$LOG-push" \
       -C "$SRC" push -v "$REMOTE_A" "refs/heads/${BR}:refs/heads/${BR}"; then
   cat "$LOG-push.err" >&2
-  is_flake "$LOG-push.err" && skip_scenario "testnet transport flake"
+  is_flake "$LOG-push.err" && skip_scenario "transport flake"
   bad "push failed"; finish_scenario
 fi
 register_ref "refs/heads/${BR}"
@@ -207,7 +194,7 @@ if DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash_retry "$ID_DEPLOYER" "$LOG-p
   check "remote ref advanced" assert_eq "$NEW_TIP" "$(cut -f1 "$LOG-lsremote2.out")"
 else
   cat "$LOG-push-n1.err" >&2
-  is_flake "$LOG-push-n1.err" && skip_scenario "testnet transport flake"
+  is_flake "$LOG-push-n1.err" && skip_scenario "transport flake"
   bad "N=1 push failed"
 fi
 
@@ -240,7 +227,7 @@ if [[ -n "$PACK5" && -n "$OBJ_DIR" ]]; then
   else
     check "5b: error says the pack is already recorded and unreachable" \
       assert_file_contains "$LOG-push-5b.err" "already recorded at"
-    check "5b: error points at dg reseed --from-local" assert_file_contains "$LOG-push-5b.err" "reseed --from-local"
+    check "5b: error points at dg reseed --from-local" grep -qE 'dg reseed [^ ]+ --from-local|reseed --from-local' "$LOG-push-5b.err"
     check "5b: nothing was stored first" assert_not_file_contains "$LOG-push-5b.err" "verified)"
   fi
   DASH_FORGE_KEY="$ID_DEPLOYER" git ls-remote "$REMOTE_B" "refs/heads/${BR5}" >"$LOG-lsremote5.out" 2>/dev/null

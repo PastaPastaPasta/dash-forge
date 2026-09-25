@@ -39,10 +39,10 @@ fn to_filter(state: StateArg) -> StateFilter {
 async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issues = svc
-        .list_issues(&handle.repo_contract_id, to_filter(state), limit, None)
+        .list_issues(handle.v1_contract_id()?, to_filter(state), limit, None)
         .await
         .context("list_issues")?;
 
@@ -72,10 +72,10 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let iw = svc
-        .issue_state(&handle.repo_contract_id, number)
+        .issue_state(handle.v1_contract_id()?, number)
         .await
         .context("issue_state")?
         .ok_or_else(|| {
@@ -123,10 +123,10 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .create_issue(&handle.repo_contract_id, title, body)
+        .create_issue(handle.v1_contract_id()?, title, body)
         .await
         .context("create_issue")?;
 
@@ -148,10 +148,10 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -160,7 +160,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
             )
         })?;
     let doc_id = svc
-        .comment(&handle.repo_contract_id, &issue.document_id, body, None)
+        .comment(handle.v1_contract_id()?, &issue.document_id, body, None)
         .await
         .context("comment")?;
 
@@ -178,10 +178,10 @@ async fn close_reopen(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -190,10 +190,10 @@ async fn close_reopen(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result
             )
         })?;
     let event_id = if close {
-        svc.close(&handle.repo_contract_id, &issue.document_id)
+        svc.close(handle.v1_contract_id()?, &issue.document_id)
             .await?
     } else {
-        svc.reopen(&handle.repo_contract_id, &issue.document_id)
+        svc.reopen(handle.v1_contract_id()?, &issue.document_id)
             .await?
     };
 
@@ -231,10 +231,10 @@ async fn label(
         return Err(crate::errors::cancelled());
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = IssueService::new(&client, &identity, &bridge);
     let issue = svc
-        .get_issue(&handle.repo_contract_id, number)
+        .get_issue(handle.v1_contract_id()?, number)
         .await?
         .ok_or_else(|| {
             crate::errors::not_found(
@@ -244,7 +244,7 @@ async fn label(
         })?;
     let event_id = svc
         .add_event(
-            &handle.repo_contract_id,
+            handle.v1_contract_id()?,
             &issue.document_id,
             kind,
             Some(&value),

@@ -114,7 +114,6 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not show the repository", Some(repo))
         }
         Command::Repo(Rp::List { .. }) => ("could not list repositories", None),
-        Command::Repo(Rp::Delete { repo }) => ("repository storage not deleted", Some(repo)),
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }

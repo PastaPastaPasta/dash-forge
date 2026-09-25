@@ -509,7 +509,12 @@ async fn platform_backend_live_put() {
     let key = bridge.doc_op_key().unwrap();
     let engine = WriteEngine::new(&client, &identity, key).unwrap();
 
-    let backend = PlatformBackend::new(&engine, &contract);
+    // The S0.1 throwaway contract is its own scope (a v1-shaped chunk type, no `repoId`).
+    let scope = crate::scope::DocScope {
+        contract_id: contract_id.clone(),
+        repo_id: None,
+    };
+    let backend = PlatformBackend::new(&engine, &contract, &scope, identity_id.clone());
     // A SMALL payload → a few chunk docs.
     let data: Vec<u8> = (0..20_000u32)
         .map(|i| u8::try_from(i % 251).unwrap())

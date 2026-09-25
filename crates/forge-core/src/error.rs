@@ -107,6 +107,41 @@ pub enum Error {
         network: String,
     },
 
+    /// The selected network has no forge-v2 deployment (no fully registered `v2` record in
+    /// its deployment file). v2 writes and v2 lookups fail with this; v1 reads still work.
+    #[error(
+        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name moutai \
+         (existing v1 repos there stay readable)"
+    )]
+    V2NotDeployed {
+        /// The network key (`testnet`, `mainnet`).
+        network: String,
+    },
+
+    /// A write was attempted on a forge-v1 repository. v1 (one contract per repo) is read
+    /// only now; new writes go to forge-v2.
+    #[error(
+        "{repo} is a v1 repo (read-only); run `dg migrate` (coming soon) to move it to forge-v2"
+    )]
+    V1ReadOnly {
+        /// The repo as the user named it (`owner/name` or a contract id).
+        repo: String,
+    },
+
+    /// Consensus refused a write because the writer has no membership document the
+    /// document type needs (protocol 14 `ownerRefersTo`, consensus code 40120): not a
+    /// member at all, or a writer where the type is maintainer-only (`protectedRefUpdate`,
+    /// `config`, `release`).
+    #[error(
+        "consensus refused {document_type}: no membership document for your identity ({detail})"
+    )]
+    NotAMember {
+        /// The refused document type.
+        document_type: String,
+        /// The consensus error.
+        detail: String,
+    },
+
     /// An error surfaced by the Dash Platform SDK (connect, fetch, sign, broadcast).
     ///
     /// The SDK's rich error type is flattened to a message here so the SDK stays

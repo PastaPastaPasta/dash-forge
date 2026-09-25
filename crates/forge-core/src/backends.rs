@@ -43,7 +43,9 @@ mod live_tests;
 pub use gitmirror::{GitMirrorBackend, GITMIRROR_SCHEME};
 pub use https::HttpsBackend;
 pub use ipfs::IpfsBackend;
-pub use platform::{decode_chunk_doc, encode_chunk_doc, PlatformBackend, PLATFORM_SCHEME};
+pub use platform::{
+    decode_chunk_doc, encode_chunk_doc, PlatformBackend, PlatformLocator, PLATFORM_SCHEME,
+};
 pub use s3::{S3Backend, S3Config};
 
 /// A storage location for pack bytes (e.g. `ipfs://<cid>`, `s3://…`, `https://…`,

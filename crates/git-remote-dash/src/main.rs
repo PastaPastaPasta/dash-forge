@@ -14,7 +14,7 @@
 //! - `push`        → build a self-contained pack, store it per the repo's storage policy
 //!   (`dash.storage` / `dash.replicas`), write the manifest, then the ref updates.
 //!
-//! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--teardown`,
+//! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--dump-refs`,
 //! `--balance`, `--version`) used to provision/inspect repos outside the git protocol.
 //!
 //! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of

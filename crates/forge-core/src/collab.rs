@@ -516,7 +516,7 @@ impl<'a> IssueService<'a> {
 
     /// Build the as-of-time authorization resolver from the repo's token history.
     async fn authz(&self, repo_contract_id: &str) -> Result<AuthzResolver> {
-        let records = TokenService::new(self.client, self.identity, self.bridge)
+        let records = TokenService::new(self.client)
             .token_history(repo_contract_id)
             .await?;
         Ok(AuthzResolver::new(records))
@@ -905,7 +905,7 @@ impl<'a> PullRequestService<'a> {
         };
         let contract = self.client.fetch_contract(repo_contract_id).await?;
         let events = fetch_events(self.client, &contract, &pr.document_id).await?;
-        let records = TokenService::new(self.client, self.identity, self.bridge)
+        let records = TokenService::new(self.client)
             .token_history(repo_contract_id)
             .await?;
         let authz = AuthzResolver::new(records);
@@ -934,7 +934,13 @@ impl<'a> PullRequestService<'a> {
         base_ref_name: &str,
     ) -> Result<(std::collections::BTreeSet<String>, Option<String>)> {
         let ref_name_hash = sha256(base_ref_name.as_bytes());
-        let updates = crate::refs::read_ref_history(self.client, contract, ref_name_hash).await?;
+        // Issues and PRs still live in v1 repo contracts: the contract is the whole scope.
+        let scope = crate::scope::DocScope {
+            contract_id: contract.id(),
+            repo_id: None,
+        };
+        let updates =
+            crate::refs::read_ref_history(self.client, contract, &scope, ref_name_hash).await?;
         let mut tips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut newest: Option<(u64, String, String)> = None; // (created_at, id, oid)
         for u in updates {
@@ -1067,13 +1073,11 @@ fn pr_from_doc(d: &platform::FetchedDocument) -> PullRequest {
         // `sourceContractId` / `sourceListingId` are identifier byteArrays; base58 is the
         // form every Platform contract/document API takes.
         source_contract_id: d
-            .field_bytes("sourceContractId")
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .field_bytes32("sourceContractId")
             .map(platform::encode_identifier)
             .unwrap_or_default(),
         source_listing_id: d
-            .field_bytes("sourceListingId")
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .field_bytes32("sourceListingId")
             .map(platform::encode_identifier),
         source_ref_name: d.field_str("sourceRefName"),
         patch_manifest_hash: d.field_hex("patchManifestHash"),

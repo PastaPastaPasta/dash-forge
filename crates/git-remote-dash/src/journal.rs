@@ -11,12 +11,16 @@ use std::path::{Path, PathBuf};
 use forge_core::platform::{JournalStore, PushJournal};
 use forge_core::{Error, Result};
 
-/// The journal path for a pack under a repo's `GIT_DIR`.
-pub fn journal_path(git_dir: &Path, pack_hash_hex: &str) -> PathBuf {
+/// The journal path for one uploader's chunks of a pack in one repository, under the
+/// clone's `GIT_DIR`. The repository and the uploader are part of the key because a chunk is
+/// keyed by them on forge-v2 (`(repoId, $ownerId, packHash, seq)`): a journal from a push to
+/// another repo, or by another identity, names chunks this push has not stored, and
+/// resuming from it would write a manifest over missing chunks.
+pub fn journal_path(git_dir: &Path, repo_id: &str, uploader: &str, pack_hash_hex: &str) -> PathBuf {
     git_dir
         .join("dash")
         .join("journal")
-        .join(format!("{pack_hash_hex}.json"))
+        .join(format!("{repo_id}-{uploader}-{pack_hash_hex}.json"))
 }
 
 /// Load an existing journal for `pack_hash_hex`, or start a fresh one. A journal whose
@@ -61,7 +65,7 @@ impl JournalStore for FileJournalStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_or_new, FileJournalStore};
+    use super::{journal_path, load_or_new, FileJournalStore};
     use forge_core::platform::{JournalStore, PushJournal, WriteIntent, WriteOp};
 
     fn intent(seq: u32) -> WriteIntent {
@@ -97,6 +101,18 @@ mod tests {
         assert!(resumed.has(1));
         assert!(!resumed.has(2), "chunk 2 was never uploaded");
         assert!(!resumed.is_complete());
+    }
+
+    #[test]
+    fn journals_are_per_repo_and_uploader() {
+        // A v2 chunk is keyed (repoId, $ownerId, packHash, seq): a journal of the same pack
+        // pushed to another repo, or by another identity, names chunks this push has not
+        // stored, and must not be resumed.
+        let g = std::path::Path::new("/g");
+        let base = journal_path(g, "R1", "alice", "p");
+        assert_ne!(base, journal_path(g, "R2", "alice", "p"));
+        assert_ne!(base, journal_path(g, "R1", "bob", "p"));
+        assert_ne!(base, journal_path(g, "R1", "alice", "q"));
     }
 
     #[test]
