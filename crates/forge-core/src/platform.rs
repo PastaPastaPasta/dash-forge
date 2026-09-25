@@ -1313,7 +1313,7 @@ impl<'a> WriteEngine<'a> {
                     WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
                         // Loop around to re-broadcast the identical signed bytes, after a
                         // backoff so a node whose ban just lapsed is not re-picked at once.
-                        let delay = RETRY_BACKOFF_BASE * 2u32.pow(attempt - 1);
+                        let delay = backoff_delay(RETRY_BACKOFF_BASE, attempt);
                         tracing::warn!(
                             attempt,
                             delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
@@ -1830,6 +1830,11 @@ fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
 /// (2 s, 4 s, 8 s).
 const RETRY_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// The pause after failed attempt number `attempt` (1-based): `base`, then doubling.
+fn backoff_delay(base: std::time::Duration, attempt: u32) -> std::time::Duration {
+    base * 2u32.saturating_pow(attempt.saturating_sub(1))
+}
+
 /// Run a proof-verified read, retrying transient node failures with exponential backoff.
 ///
 /// Reads are side-effect free, so a retry is always safe. Each attempt is a fresh SDK call
@@ -1868,7 +1873,7 @@ where
         match op().await {
             Ok(v) => return Ok(v),
             Err(e) if attempt < MAX_READ_ATTEMPTS && transient(&e) => {
-                let delay = base * 2u32.pow(attempt - 1);
+                let delay = backoff_delay(base, attempt);
                 tracing::warn!(
                     op = label,
                     attempt,

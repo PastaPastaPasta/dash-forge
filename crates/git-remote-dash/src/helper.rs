@@ -20,7 +20,7 @@ use forge_core::keystore::BridgeIdentity;
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 use forge_core::repo::{PackManifestInput, RepoHandle, RepoService};
-use forge_core::rules::{RefState, TokenRecord};
+use forge_core::rules::{Holdings, RefState, TokenRecord};
 use forge_core::tokens::TokenService;
 
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -230,13 +230,14 @@ impl Helper {
         // fetches twice. `buffered` keeps a bounded window in flight and preserves order.
         let svc = &svc;
         let repo = &conn.repo;
+        let contract = &svc.repo_contract(repo).await?;
         let downloaded: Vec<Vec<u8>> = stream::iter(git_packs.iter().map(|m| async move {
             let uri = match m.uris.first() {
                 Some(u) => Uri(u.clone()),
                 None => default_platform_uri(&repo.repo_contract_id, &m.pack_hash),
             };
             let bytes = svc
-                .get_pack(repo, &uri, None)
+                .get_pack_from(contract, &uri, None)
                 .await
                 .with_context(|| format!("downloading pack {}", hex::encode(m.pack_hash)))?;
             // Integrity: reassembled bytes must match the manifest packHash (SHA-256).
@@ -695,36 +696,44 @@ async fn write_access_denied(conn: &Conn) -> Option<String> {
         return None;
     }
     Some(write_denied_reason(
-        has_frozen_grant(&records, &me, now),
+        frozen_grants(&records, &me, now),
         &conn.repo.owner_id,
         &conn.repo.name,
     ))
 }
 
-/// Whether `identity` still holds a WRITE or MAINTAIN grant that is frozen at `now` (a
-/// suspended collaborator), as opposed to never having held one. Frozen tokens are not
-/// spendable, so [`forge_core::rules::holdings_as_of`] reports both cases the same way;
-/// replaying the history with the freezes left out tells them apart without a second copy
-/// of the token state machine. Only meaningful when the real holdings are empty.
-fn has_frozen_grant(records: &[TokenRecord], identity: &str, now: u64) -> bool {
+/// Which of `identity`'s WRITE / MAINTAIN grants are still held but frozen at `now` (a
+/// suspended collaborator), as opposed to never held. Frozen tokens are not spendable, so
+/// [`forge_core::rules::holdings_as_of`] reports both cases the same way; replaying the
+/// history with the freezes left out tells them apart without a second copy of the token
+/// state machine. Only meaningful when the real holdings are empty.
+fn frozen_grants(records: &[TokenRecord], identity: &str, now: u64) -> Holdings {
     use forge_core::rules::TokenOp;
     let unfrozen: Vec<TokenRecord> = records
         .iter()
         .filter(|r| !matches!(r.op, TokenOp::Freeze | TokenOp::Unfreeze))
         .cloned()
         .collect();
-    forge_core::rules::holdings_as_of(&unfrozen, identity, now).any()
+    forge_core::rules::holdings_as_of(&unfrozen, identity, now)
 }
 
 /// The push refusal for an identity with no spendable token. A suspended collaborator is
-/// told so: "no WRITE token" is false for them, and forking is not the fix.
-fn write_denied_reason(frozen: bool, owner_id: &str, name: &str) -> String {
+/// told which token is frozen: "no WRITE token" is false for them, and forking is not the
+/// fix.
+fn write_denied_reason(frozen: Holdings, owner_id: &str, name: &str) -> String {
     // Worded unlike the consensus error ("token frozen: this identity's write access has
     // been suspended"), so a caller can tell this local refusal from a network verdict.
-    if frozen {
-        return "your WRITE token on this repo is frozen: a maintainer suspended your push \
-                access, so consensus would reject this push. Ask a maintainer to unfreeze it."
-            .to_string();
+    let which = match (frozen.write, frozen.maintain) {
+        (true, true) => Some("WRITE and MAINTAIN tokens on this repo are"),
+        (true, false) => Some("WRITE token on this repo is"),
+        (false, true) => Some("MAINTAIN token on this repo is"),
+        (false, false) => None,
+    };
+    if let Some(which) = which {
+        return format!(
+            "your {which} frozen: a maintainer suspended your push access, so consensus \
+             would reject this push. Ask a maintainer to unfreeze it."
+        );
     }
     // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
     // pusher typed into their remote URL — not the contract id, which is not an address
@@ -765,45 +774,84 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_frozen_grant, oid_to_bytes, write_denied_reason, PushOutcome};
-    use forge_core::rules::{TokenKind, TokenOp, TokenRecord};
+    use super::{frozen_grants, oid_to_bytes, write_denied_reason, PushOutcome};
+    use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
 
-    fn rec(identity: &str, op: TokenOp, created_at: u64) -> TokenRecord {
+    fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
         TokenRecord {
             id: format!("r{created_at}"),
             identity: identity.to_string(),
-            token: TokenKind::Write,
+            token,
             op,
             created_at,
         }
     }
 
     #[test]
-    fn frozen_grant_is_told_apart_from_no_grant() {
-        let frozen = [rec("me", TokenOp::Mint, 1), rec("me", TokenOp::Freeze, 2)];
-        assert!(has_frozen_grant(&frozen, "me", 10));
-        // Never granted, or granted to someone else: not a frozen grant.
-        assert!(!has_frozen_grant(&[], "me", 10));
-        assert!(!has_frozen_grant(&frozen, "someone-else", 10));
+    fn frozen_grants_are_told_apart_from_no_grant() {
+        use TokenKind::{Maintain, Write};
+        let frozen = [
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&frozen, "me", 10),
+            Holdings {
+                write: true,
+                maintain: false
+            }
+        );
+        // Never granted, or granted to someone else: nothing frozen.
+        assert!(!frozen_grants(&[], "me", 10).any());
+        assert!(!frozen_grants(&frozen, "someone-else", 10).any());
         // Revoked (destroyed) after the freeze: nothing is held any more.
         let revoked = [
-            rec("me", TokenOp::Mint, 1),
-            rec("me", TokenOp::Freeze, 2),
-            rec("me", TokenOp::Destroy, 3),
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+            rec("me", Write, TokenOp::Destroy, 3),
         ];
-        assert!(!has_frozen_grant(&revoked, "me", 10));
+        assert!(!frozen_grants(&revoked, "me", 10).any());
+        // A suspended maintainer who never held WRITE.
+        let maint = [
+            rec("me", Maintain, TokenOp::Mint, 1),
+            rec("me", Maintain, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&maint, "me", 10),
+            Holdings {
+                write: false,
+                maintain: true
+            }
+        );
     }
 
     #[test]
     fn a_frozen_pusher_is_not_told_to_fork() {
-        let frozen = write_denied_reason(true, "owner", "repo");
-        assert!(frozen.contains("is frozen"), "{frozen}");
+        let write = Holdings {
+            write: true,
+            maintain: false,
+        };
+        let frozen = write_denied_reason(write, "owner", "repo");
+        assert!(
+            frozen.contains("WRITE token on this repo is frozen"),
+            "{frozen}"
+        );
         assert!(!frozen.contains("dg pr create"), "{frozen}");
         // Must not read as the consensus error, or e2e scenario 04 could not tell a local
         // refusal from a network verdict.
         assert!(!frozen.contains("token frozen"), "{frozen}");
 
-        let none = write_denied_reason(false, "owner", "repo");
+        let maintain = Holdings {
+            write: false,
+            maintain: true,
+        };
+        let frozen = write_denied_reason(maintain, "owner", "repo");
+        assert!(
+            frozen.contains("MAINTAIN token on this repo is frozen"),
+            "{frozen}"
+        );
+
+        let none = write_denied_reason(Holdings::default(), "owner", "repo");
         assert!(none.starts_with("no WRITE token"), "{none}");
         assert!(none.contains("dg pr create owner/repo"), "{none}");
     }

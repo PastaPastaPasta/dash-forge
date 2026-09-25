@@ -887,9 +887,27 @@ impl<'a> RepoService<'a> {
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>> {
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        self.get_pack_from(&repo_contract, uri, range).await
+    }
+
+    /// [`Self::get_pack`] against an already-fetched repo contract, for callers reading many
+    /// packs (a fetch downloads every stored pack) that should not re-fetch and re-verify
+    /// the same contract once per pack.
+    pub async fn get_pack_from(
+        &self,
+        repo_contract: &LoadedContract,
+        uri: &Uri,
+        range: Option<ByteRange>,
+    ) -> Result<Vec<u8>> {
         let engine = self.doc_engine()?;
-        let backend = PlatformBackend::new(&engine, &repo_contract);
+        let backend = PlatformBackend::new(&engine, repo_contract);
         backend.get(uri, range).await
+    }
+
+    /// Fetch (and register with the proof verifier) the repo's contract once, for use with
+    /// [`Self::get_pack_from`].
+    pub async fn repo_contract(&self, repo: &RepoHandle) -> Result<LoadedContract> {
+        self.client.fetch_contract(&repo.repo_contract_id).await
     }
 
     /// Delete a document by id from an arbitrary contract (used for teardown — chunks /
