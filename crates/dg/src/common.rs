@@ -1,10 +1,11 @@
 //! Shared command helpers: `owner/name` parsing and repo resolution.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Context as _, Result};
 
 use forge_core::keystore::BridgeIdentity;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{RepoHandle, RepoService};
+use forge_core::user_error::{codes, UserError};
 
 /// A parsed `owner/name` (or bare `name`) repository reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,7 @@ impl RepoRef {
     pub fn parse(s: &str) -> Result<Self> {
         let Some((owner, name)) = s.split_once('/') else {
             if s.is_empty() {
-                bail!("empty repo reference");
+                return Err(invalid_ref(s, "the repository reference is empty"));
             }
             return Ok(Self {
                 owner: None,
@@ -31,13 +32,15 @@ impl RepoRef {
             });
         };
         if owner.is_empty() || name.is_empty() {
-            bail!("invalid repo reference {s:?}: expected `owner/name`");
+            return Err(invalid_ref(s, "expected `owner/name`"));
         }
         if !looks_like_identity_id(owner) {
-            bail!(
-                "owner {owner:?} is not a base58 identity id — DPNS name resolution is \
-                 not yet wired; pass the owner's base58 identity id"
-            );
+            return Err(invalid_ref(
+                s,
+                &format!(
+                    "owner {owner:?} is not a base58 identity id (DPNS name resolution is not yet wired)"
+                ),
+            ));
         }
         Ok(Self {
             owner: Some(owner.to_string()),
@@ -49,6 +52,27 @@ impl RepoRef {
     pub fn owner_or<'a>(&'a self, default_owner: &'a str) -> &'a str {
         self.owner.as_deref().unwrap_or(default_owner)
     }
+
+    /// The repo contract id, when the reference is a bare base58 contract id (what the
+    /// helper prints for a `dash://<contractId>` remote). Repo names are lowercase, so a
+    /// base58 id — which mixes cases — can never be mistaken for one.
+    pub fn contract_id(&self) -> Option<&str> {
+        (self.owner.is_none()
+            && looks_like_identity_id(&self.name)
+            && self.name.chars().any(|c| c.is_ascii_uppercase()))
+        .then_some(self.name.as_str())
+    }
+}
+
+/// E203 for an unusable `owner/name`.
+fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
+    UserError::new(
+        codes::INVALID_REPO_REF,
+        format!("invalid repository reference {input:?}"),
+    )
+    .cause(why)
+    .fix("use `<owner identity id>/<name>`, e.g. `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's contract id")
+    .into()
 }
 
 /// Whether `s` is plausibly a base58 identity id (32-byte id ≈ 42-44 base58 chars, no
@@ -66,11 +90,19 @@ pub async fn resolve(
     bridge: &BridgeIdentity,
     repo_ref: &RepoRef,
 ) -> Result<RepoHandle> {
-    let owner = repo_ref.owner_or(&identity.id()).to_string();
     let svc = RepoService::new(client, identity, bridge);
+    if let Some(contract_id) = repo_ref.contract_id() {
+        return svc
+            .resolve_repo_by_contract(contract_id)
+            .await
+            .with_context(|| format!("resolving repo contract {contract_id}"));
+    }
+    let owner = repo_ref.owner_or(&identity.id()).to_string();
+    // `with_context`, not a flattened message: the typed forge-core error must survive for
+    // the error renderer (NotFound → E102, a network failure → E701).
     svc.resolve_repo(&owner, &repo_ref.name)
         .await
-        .map_err(|e| anyhow!("resolving {owner}/{}: {e}", repo_ref.name))
+        .with_context(|| format!("resolving {owner}/{}", repo_ref.name))
 }
 
 #[cfg(test)]
@@ -93,6 +125,19 @@ mod tests {
         assert!(r.owner.is_none());
         assert_eq!(r.name, "just-a-name");
         assert_eq!(r.owner_or("owner-x"), "owner-x");
+    }
+
+    #[test]
+    fn a_bare_contract_id_is_a_contract_reference() {
+        let r = RepoRef::parse(ID).unwrap();
+        assert_eq!(r.contract_id(), Some(ID));
+        assert_eq!(RepoRef::parse("my-repo").unwrap().contract_id(), None);
+        assert_eq!(
+            RepoRef::parse(&format!("{ID}/my-repo"))
+                .unwrap()
+                .contract_id(),
+            None
+        );
     }
 
     #[test]

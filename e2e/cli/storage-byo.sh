@@ -190,7 +190,8 @@ if DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" git_dash "$ID_DEPLOYER" "$LOG-push-fa
   bad "push unexpectedly succeeded with an unreachable replica and N=2"
 else
   ok "push refused"
-  check "error names the policy" assert_file_contains "$LOG-push-fail.err" "storage policy not met: 1 of 2"
+  check "error names the policy" assert_file_contains "$LOG-push-fail.err" "storage policy not met (1 of 2 targets confirmed)"
+  check "error carries its code" assert_file_contains "$LOG-push-fail.err" "[E502]"
   check "error names the dead target" assert_file_contains "$LOG-push-fail.err" "dead:"
 fi
 DASH_FORGE_KEY="$ID_DEPLOYER" git ls-remote "$REMOTE_A" "refs/heads/${BR}" >"$LOG-lsremote.out" 2>"$LOG-lsremote.err"

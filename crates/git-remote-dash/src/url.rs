@@ -35,6 +35,16 @@ pub enum DashUrl {
     },
 }
 
+impl std::fmt::Display for DashUrl {
+    /// `owner/repo`, or the contract id — how the push plan line names the repo.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DashUrl::Named { owner, repo } => write!(f, "{owner}/{repo}"),
+            DashUrl::Contract { contract_id } => f.write_str(contract_id),
+        }
+    }
+}
+
 impl DashUrl {
     /// Parse either addressing form, rejecting anything else under the `dash` scheme.
     pub fn parse(url: &str) -> Result<Self> {

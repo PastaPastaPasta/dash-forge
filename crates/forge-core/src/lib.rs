@@ -20,6 +20,8 @@
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
+//! - [`user_error`] — [`user_error::UserError`]: stable code + cause + fix, the exit-code
+//!   table, and the mapping from [`Error`] / SDK messages that `dg` and the helper render.
 //!
 //! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
 //! is touched in exactly one module); every other module is synchronous and SDK-free.
@@ -36,5 +38,7 @@ pub mod repo;
 pub mod rules;
 pub mod storage;
 pub mod tokens;
+pub mod user_error;
 
 pub use error::{Error, Result};
+pub use user_error::UserError;

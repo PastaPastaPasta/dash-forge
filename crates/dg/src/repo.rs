@@ -1,12 +1,13 @@
 //! `dg repo` — repo lifecycle: create / view / list / delete / backend set (+ clone/fork).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::cost::prompt_delete_refund;
 use forge_core::platform::{self, FieldValue, QueryFilter, QueryOrder};
 use forge_core::repo::{CreateRepoOpts, RepoService};
 use forge_core::tokens::TokenService;
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
@@ -52,7 +53,7 @@ async fn create(
         "Create repo {name:?}? This instantiates a contract (~{})",
         cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
@@ -115,25 +116,22 @@ fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
 /// Fails rather than returning success. It used to print a TODO and exit 0, which made
 /// `dg repo fork X && dg pr create ...` proceed as though a fork existed, and left the
 /// contributor half of the PR flow with an entry point that silently did nothing.
-fn fork(ctx: &Ctx, repo: &str) -> Result<()> {
-    ctx.emit(
+#[allow(clippy::unnecessary_wraps)]
+fn fork(_ctx: &Ctx, repo: &str) -> Result<()> {
+    Err(crate::errors::reported(
+        UserError::new(codes::NOT_IMPLEMENTED, "dg repo fork is not implemented yet")
+            .cause("forking needs the fork-contract + copied-refs pipeline (PRD 02 §B)")
+            .fix("`dg repo create <name>` — mints your own repo contract (not cheap: see `dg repo create --help`)")
+            .fix("`git push dash://<you>/<name> <branch>`")
+            .fix(format!(
+                "`dg pr create {repo} --title <t> --source-contract <contract id> --head-oid <oid>`"
+            )),
         json!({
             "status": "not_implemented",
             "repo": repo,
             "workaround": "dg repo create <name>, push your branch to it, then dg pr create --source-contract <its contract id>",
         }),
-        || {
-            eprintln!("dg repo fork is not implemented.");
-            eprintln!();
-            eprintln!("Until it is, fork by hand:");
-            eprintln!("  1. dg repo create <name>          # mints your own repo contract");
-            eprintln!("  2. git push dash://<you>/<name> <branch>");
-            eprintln!("  3. dg pr create {repo} --title <t> --source-contract <contract id> --head-oid <oid>");
-            eprintln!();
-            eprintln!("Step 1 instantiates a data contract, which is not cheap — see `dg repo create --help`.");
-        },
-    );
-    bail!("dg repo fork is not implemented");
+    ))
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, collaborator count.
@@ -292,7 +290,7 @@ async fn delete(ctx: &Ctx, repo: &str) -> Result<()> {
         handle.normalized_name,
         refund_line(refund, price)
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     let mut deleted_chunks = 0usize;
@@ -381,7 +379,7 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
         "Set backend of {}/{} to {label}? (a small config write)",
         handle.owner_id, handle.normalized_name
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     let svc = RepoService::new(&client, &identity, &bridge);

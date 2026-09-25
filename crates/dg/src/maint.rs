@@ -67,7 +67,7 @@ pub async fn repack(
         handle.normalized_name,
         refund_line(est_refund, price)
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     // The consolidated pack's destination. Platform (default) is the tier the refund
@@ -179,7 +179,9 @@ pub async fn reseed(
     let backend = match profile {
         Some(name) => profile_backend(name)?,
         None => build_external_backend(to)?.ok_or_else(|| {
-            anyhow::anyhow!("`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3)")
+            crate::errors::usage(
+                "`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3)",
+            )
         })?,
     };
     let target_label = profile.unwrap_or_else(|| to.map_or("external", Backend::label));
@@ -188,7 +190,7 @@ pub async fn reseed(
         "Reseed {}/{} packs to {target_label}? (re-uploads pack bytes for availability)",
         handle.owner_id, handle.normalized_name
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
 
     let report = svc
@@ -268,7 +270,7 @@ pub async fn reseed_from_local(
         .map(|h| -> Result<[u8; 32]> {
             let raw = hex::decode(h).context("--pack must be a hex SHA-256")?;
             raw.try_into()
-                .map_err(|_| anyhow::anyhow!("--pack must be 32 bytes (64 hex chars)"))
+                .map_err(|_| crate::errors::usage("--pack must be 32 bytes (64 hex chars)"))
         })
         .transpose()?;
 
@@ -284,7 +286,7 @@ pub async fn reseed_from_local(
         handle.normalized_name,
         git_dir.display()
     ))? {
-        bail!("aborted");
+        return Err(crate::errors::cancelled());
     }
     let refs: Vec<&dyn StorageTarget> = targets.iter().map(|t| t as &dyn StorageTarget).collect();
     let report = svc
@@ -317,10 +319,10 @@ fn reseed_targets(profile: Option<&str>) -> Result<(Vec<ExternalTarget>, usize, 
     )?
     .resolve(&StorageProfiles::load()?)?;
     if resolved.external.is_empty() {
-        bail!(
+        return Err(crate::errors::usage(
             "this repo's storage policy has no external target to restore to; pass --profile \
-             <name> (the profile the pack was pushed with restores its recorded URI)"
-        );
+             <name> (the profile the pack was pushed with restores its recorded URI)",
+        ));
     }
     let http = forge_core::storage::http_client();
     let targets = resolved
@@ -418,7 +420,9 @@ fn load_external_profile(name: &str) -> Result<forge_core::storage::Profile> {
         .get(name)
         .with_context(|| format!("no storage profile {name:?} (see `dg storage list`)"))?;
     if profile.is_platform() {
-        bail!("profile {name:?} is Platform storage; omit --profile to use the platform tier");
+        return Err(crate::errors::usage(format!(
+            "profile {name:?} is Platform storage; omit --profile to use the platform tier"
+        )));
     }
     Ok(profile)
 }
@@ -471,7 +475,9 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
             Some(Box::new(S3Backend::new(S3Config::public(endpoint, bucket))))
         }
         Some(Backend::Https) => {
-            bail!("the https backend is read-only; reseed to s3/ipfs (or platform) instead")
+            return Err(crate::errors::usage(
+                "the https backend is read-only; reseed to s3/ipfs (or platform) instead",
+            ))
         }
     })
 }
@@ -489,19 +495,23 @@ fn net_credits_to_dash(net: i128) -> f64 {
 }
 
 /// `dg import <github-url>` — thin wrapper over `forge-import` (PRD 06), not yet wired.
+///
+/// Fails (E103) rather than exiting 0, so `dg import X && …` does not proceed as if a
+/// repository had been imported.
 #[allow(clippy::unnecessary_wraps)]
-pub fn import(ctx: &Ctx, url: &str) -> Result<()> {
-    ctx.emit(
+pub fn import(_ctx: &Ctx, url: &str) -> Result<()> {
+    Err(crate::errors::reported(
+        forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::NOT_IMPLEMENTED,
+            "dg import is not wired yet",
+        )
+        .cause(format!("{url} would be delegated to forge-import (PRD 06), which has no callable entry point yet"))
+        .fix("run the forge-import binary directly (`cargo run -p forge-import -- --help`)"),
         json!({
             "status": "not_implemented",
             "command": "import",
             "url": url,
             "todo": "delegate to the forge-import crate (Forgejo-semantics mapping, PRD 06); the importer is not yet exposed as a callable entry point",
         }),
-        || {
-            eprintln!("dg import: not yet wired");
-            eprintln!("  TODO: delegate {url} to forge-import (PRD 06).");
-        },
-    );
-    Ok(())
+    ))
 }

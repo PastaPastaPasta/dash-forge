@@ -1,15 +1,16 @@
 //! Command execution context: global-flag + config resolution, connection helpers,
-//! confirmation prompts, JSON/human output, and actionable error mapping.
+//! confirmation prompts and JSON/human output. Errors are rendered by [`crate::errors`].
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Context as _, Result};
-use serde_json::{json, Value};
+use anyhow::{Context as _, Result};
+use serde_json::Value;
 
 use forge_core::keystore::BridgeIdentity;
 use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
+use forge_core::user_error::{codes, UserError};
 
 use crate::config::Config;
 use crate::Cli;
@@ -85,10 +86,11 @@ impl Ctx {
     /// The resolved identity path, or an actionable error explaining how to set one.
     pub fn require_identity_path(&self) -> Result<&PathBuf> {
         self.identity_path.as_ref().ok_or_else(|| {
-            anyhow!(
-                "no identity configured — pass --identity <file>, set DASH_FORGE_KEY, or run \
-                 `dg auth login --identity <file>` to set a default"
-            )
+            UserError::new(codes::NO_IDENTITY, "no identity configured")
+                .cause("this command signs with an identity, and none was given or set as the default")
+                .fix("`dg auth login --identity <file>` (the bridge identity export) to set a default")
+                .fix("or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
+                .into()
         })
     }
 
@@ -130,13 +132,18 @@ impl Ctx {
         if self.yes {
             return Ok(true);
         }
+        let no_prompt = |why: &str| -> anyhow::Error {
+            UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
+                .cause(format!("{prompt} — and {why}"))
+                .fix("check the estimate, then run the same command with --yes")
+                .note("nothing was written")
+                .into()
+        };
         if self.json {
-            bail!("refusing to run a cost-bearing command in --json mode without --yes");
+            return Err(no_prompt("--json mode cannot prompt"));
         }
         if !std::io::stdin().is_terminal() {
-            bail!(
-                "refusing to run a cost-bearing command on a non-interactive stdin without --yes"
-            );
+            return Err(no_prompt("stdin is not a terminal"));
         }
         eprint!("{prompt} [y/N] ");
         std::io::stderr().flush().ok();
@@ -154,75 +161,11 @@ impl Ctx {
     #[allow(clippy::needless_pass_by_value)]
     pub fn emit(&self, value: Value, human: impl FnOnce()) {
         if self.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-            );
+            crate::errors::print_json(&value);
         } else {
             human();
         }
     }
-}
-
-/// Render a top-level command error as an actionable message (human) or a structured
-/// `{"error": …}` object (`--json`), enriching the known forge-core error classes with
-/// remediation hints (funding bridge, token requirement).
-pub fn report_error(json: bool, err: &anyhow::Error) {
-    let hint = actionable_hint(err);
-    // Alternate Display (`{:#}`) renders the full anyhow context chain (`outer: cause: …`),
-    // which is what makes an error actionable.
-    let message = format!("{err:#}");
-    if json {
-        let obj = json!({
-            "error": message,
-            "hint": hint,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&obj).unwrap_or_else(|_| obj.to_string())
-        );
-    } else {
-        eprintln!("error: {message}");
-        if let Some(h) = hint {
-            eprintln!("  hint: {h}");
-        }
-    }
-}
-
-/// Map a known forge-core error class to a remediation hint.
-fn actionable_hint(err: &anyhow::Error) -> Option<String> {
-    use forge_core::error::Error as CoreError;
-    let core = err.downcast_ref::<CoreError>()?;
-    Some(match core {
-        CoreError::InsufficientCredits { .. } => {
-            "top up the identity's credits via the funding bridge / testnet faucet \
-             (https://bridge.thepasta.org), then retry"
-                .to_string()
-        }
-        CoreError::Unauthorized => {
-            "this action needs a WRITE (push/upload) or MAINTAIN (releases/config) token — \
-             ask the repo owner to grant it with `dg collab add`"
-                .to_string()
-        }
-        CoreError::TokenFrozen => {
-            "this identity's access has been suspended (token frozen); ask the repo owner to \
-             `dg collab` unsuspend it"
-                .to_string()
-        }
-        CoreError::NotFound => {
-            "not found — check the owner/name or that the repo exists".to_string()
-        }
-        CoreError::Timeout { retryable: true } => {
-            "timed out; the signed transition may still land — retry".to_string()
-        }
-        CoreError::NotDeployed { .. } => {
-            "pick a network with a deployment (`--network testnet`), or point \
-             FORGE_REGISTRY_CONTRACT_ID / `registry_contract_id` in config.toml at a registry \
-             you deployed; `dg doctor` shows what is configured"
-                .to_string()
-        }
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
