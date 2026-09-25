@@ -837,6 +837,12 @@ impl Default for PrState {
 /// `merge` additionally requires the merge `oid` to be reachable from the base tip
 /// (an ancestor of it). Everything else from a non-holder is **inert** — the event
 /// exists on-chain (the spammer paid fees) but the fold ignores it.
+///
+/// The same kind-and-role table holds on forge-v2 (`docs/contracts/forge-v2.md` §3), where
+/// "holder" becomes "had a `maintainer`/`writer` document for the repo" and consensus already
+/// refuses events from anyone who is neither a member nor the target's author. Consensus does
+/// not check the kind, so this rule remains the only thing that makes an author's `label` or
+/// `merge` event inert.
 fn actor_authorized(
     e: &Event,
     target_author: &str,
