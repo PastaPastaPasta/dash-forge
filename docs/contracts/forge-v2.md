@@ -52,7 +52,7 @@ References into forge-core carry `contractId`. The schema file holds the placeho
 | `comment` | anyone | yes; `repoId`, `targetId` immutable | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable |
 | `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; clients count approvals only from M/W holders (§6) |
 | `event` | M or W | no | **no** | every kind (close, reopen, merge, label, assign, retarget, draft, ready); §3 |
-| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind` is 1 (close) or 2 (reopen) only, enforced by the schema; §3 |
+| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind` is 1 (close) or 2 (reopen) only, enforced by the schema; indexes `(targetId, $createdAt)` and repo feed `(repoId, $createdAt)`; §3 |
 | `checkRun` | M or W | yes (status progression); `repoId`, `headOid`, `name` immutable | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs |
 | `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
 | `profile` | anyone | yes | yes | one per identity |
@@ -74,7 +74,7 @@ Issue and PR state changes are two document types, one per kind of authority, so
 
   Its `kind` is an integer with `minimum 1, maximum 2`, so consensus refuses an author's merge, label or any other kind outright. It carries no `value` or `oid`.
 
-For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `number` equal the document's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4. Both are indexed `(targetId, $createdAt)`; `event` also has the repo feed `(repoId, $createdAt)`.
+For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `number` equal the document's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4. Both are indexed `(targetId, $createdAt)` (a target's history) and `(repoId, $createdAt)` (the repo's activity feed, which reads both types).
 
 `authorEvent`'s operands are `permanentDocument` lookups, so `issue` and `patch` must be non-deletable (registration rejects a permanent lookup into a deletable type with 40122). That is why issues and PRs can no longer be deleted for a refund.
 
@@ -90,7 +90,9 @@ Both types are immutable and non-deletable, and the gate is judged at creation. 
 | merge | yes, if `oid` is reachable from the base tip (the v1 predicate) | never (consensus refuses the kind) |
 | label+, label−, assign, unassign, retarget, draft, ready | yes | never |
 
-An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway. Events of both types are merged into one log and ordered by `($createdAt, $id)`, the v1 order, and a merged PR cannot be reopened, as in v1.
+An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway, and ignores one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, the v1 order, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened, as in v1.
+
+**Known design choices, kept from v1.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
 
 ## 4. Non-deletable audit types
 
@@ -128,7 +130,7 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
 - **Encrypted fields.** `issue`, `patch`, `comment` and `review` take `enc` (a byte array, AES-256-GCM under the epoch key, including title and body) plus `epoch`, and leave the plaintext `title`/`body` empty. `refUpdate`, `protectedRefUpdate` and `config` take the same `enc`/`epoch` pair.
   - A private ref update puts `refName` inside `enc` and sets `refNameHash = HMAC-SHA256(epoch key, refName)`, so ref names cannot be recovered by dictionary. `refName` is optional for this reason.
   - `dependentRequired {enc: [epoch]}` makes consensus refuse ciphertext without an epoch.
-  - **"Plaintext or `enc`, not both, not neither" is a client rule** (`is_well_formed`, vectors `well_formed__*`). `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Each kind has a required plaintext field (`title` for `issue`/`patch`, `body` for `comment`/`review`, `refName` for a ref update) and optional ones (`body`, and a patch's `baseRefName`/`sourceRefName`). In a **public** repo a document is well-formed when it has no `enc` and has its required field. In a **private** repo it is well-formed when it has a non-empty `enc`, an `epoch`, and none of its plaintext fields, so a private repo's `refUpdate` carrying a plaintext `refName` is malformed. An empty string counts as absent. Clients skip a malformed document.
+  - **"Plaintext or `enc`, not both, not neither" is a client rule** (`is_well_formed`, vectors `well_formed__*`). `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Each kind has plaintext fields and at most one required one: `issue` (`title` required, `body`), `patch` (`title` required, `body`, `baseRefName`, `sourceRefName`), `comment` (`body` required), `review` (`body`, optional: a review's content is its verdict and `commitOid`, which are never encrypted), a ref update (`refName` required), `config` (`defaultBranch`, `protectedPatterns`, neither required). In a **public** repo a document is well-formed when it has no `enc` and has its required field, if its kind has one. In a **private** repo it is well-formed when it has a non-empty `enc`, an `epoch`, and none of its plaintext fields, so a private repo's `refUpdate` carrying a plaintext `refName` is malformed. An empty string, or an empty `protectedPatterns` list, counts as absent. Clients skip a malformed document, and every other rule (approvals included) only sees well-formed ones.
   - Packs are encrypted before upload (Platform chunks or external storage). Oids, sizes and timing stay visible.
 - **What a stranger can still do.** Issues and PRs are un-gated, so anyone can post plaintext into a private repo's namespace. Clients show only documents that decrypt under a key the reader holds, or that come from a member.
 
@@ -146,14 +148,14 @@ The concrete AEAD layout, key derivation and test vectors are Phase 3 work and n
 | Owner lock-out prevention (`baseSupply`) | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | unchanged, still rules |
 | Issue and PR numbering | client rule, see below |
-| PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. A review counts only if it is on the PR's current `headOid` and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3) and unknown verdicts neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting |
+| PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current `headOid` and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3) and unknown verdicts neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
 
 **Numbering** (client rule, `allocate_number`, vectors `allocate_number__*`). Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
 
 1. `n` = the provable count of the repo's issues (rangeCountable `number` index).
 2. `ceiling` = `min(2 × n + 100, 2³² − 1)`.
 3. `base` = the largest taken number ≤ `ceiling` (a range query on the `number` index, descending from `ceiling`, limit 1), or 0 if there is none.
-4. Claim the first number greater than `base` that is not taken. Every number in `(base, ceiling]` is free by the choice of `base`, so below the ceiling this is `base + 1`. Only when `base` equals `ceiling` can squatters sit directly above it, and the probe steps over them (an ascending query from `base + 1`).
+4. Claim the first number greater than `base` that is not taken. Every number in `(base, ceiling]` is free by the choice of `base`, so below the ceiling this is `base + 1`. Only when `base` equals `ceiling` can squatters sit directly above it, and the probe steps over them: an ascending query from `base + 1`, **paged to the end of the contiguous run** (the first gap). Stopping after one page hands the allocator a run cut short, and it would pick a number that is already taken.
 5. If every number from `base + 1` to 2³² − 1 is taken, there is nothing to allocate.
 
 Gaps below `base` are never filled. A number above the ceiling cannot be reached until the repo grows to about half that many issues, so a squatter at 2³²−1 (or anywhere far ahead) is ignored. A squatter at exactly the ceiling is counted, and allocation continues above it. Squatting the number the allocator is about to take costs the squatter a document fee and the allocator one retry: consensus refuses the duplicate, and the next attempt sees it as `base`. Issues and PRs number independently.
@@ -182,25 +184,25 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Document types / indexes | 12 / 26 | 11 / 22 |
-| Serialized contract | 11,761 B | 11,981 B |
-| Signed `DataContractCreate` v1 | **11,924 B** | **12,087 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 59.0% |
-| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.54 DASH** |
+| Document types / indexes | 12 / 26 | 11 / 23 |
+| Serialized contract | 11,761 B | 12,043 B |
+| Signed `DataContractCreate` v1 | **11,924 B** | **12,149 B** |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 59.3% |
+| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.55 DASH** |
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.14 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
+Total one-time registration fees are **1.15 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
 
 **Measured on devnet moutai (2026-09-25)**, as the deployer's balance change:
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.545473 DASH (54,547,323,690 credits) |
-| of which the registration fee | 0.60 | 0.54 |
+| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.555523 DASH (55,552,297,710 credits) |
+| of which the registration fee | 0.60 | 0.55 |
 | storage + processing | 0.0057 | 0.0055 |
 
-Together that is **1.151184 DASH**. The first forge-collab registration (the single four-operand `event`, superseded, §8) cost a further 0.515157 DASH (51,515,695,120 credits).
+Together that is **1.161234 DASH**. The two superseded forge-collab registrations (§8) cost a further 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
 
 ## 8. Deploying
 
@@ -212,18 +214,25 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 # re-register forge-collab alone (new id) against the recorded forge-core and group:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --only collab --force-new [--dry-run]
+# would an in-place DataContractUpdate from the registered schema be accepted instead?
+git show <commit it was registered from>:forge-contracts/contracts/forge-collab.json > /tmp/registered-forge-collab.json
+cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml -- \
+     forge-contracts/contracts/forge-core.json forge-contracts/contracts/forge-collab.json \
+     --previous /tmp/registered-forge-collab.json
 ```
 
 - forge-core's create transition registers the contract group (`dash-forge`) and enrols forge-core as a whole contract.
 - forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
-- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy unless told to.
-- `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab even though one is recorded: the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
+- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy unless told to. Each record also carries `schemaHash`, the sha256 of the schema JSON (after placeholder substitution, compactly re-serialized) it was registered from; a rerun that finds a recorded contract whose hash differs from the current schema warns and leaves it as is. A dry run's forge-core step is not checked against a leftover record.
+- `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
 - **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) on 2026-09-25 by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled:
   - forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1)
-  - forge-collab `6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W` (nonce 3), with the `event`/`authorEvent` split of §3, registered with `--only collab --force-new`
+  - forge-collab `CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq` (nonce 4), the current schema (the `event`/`authorEvent` split of §3, with `authorEvent`'s feed index), registered with `--only collab --force-new`
   - contract group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o` (`dash-forge`)
-  - superseded: forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2), the first registration, whose `event` took all four operands. It stays on chain and in the group; clients do not read it. The split could not be an update: `tools/contract-validate … forge-collab.json --previous <that schema>` reports `validate_update` refusing the removal of `event`'s `ownerRefersTo` operands (adding `authorEvent` alone would have been accepted).
+  - superseded, still on chain and in the group, not read by clients:
+    - forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2), the first registration, whose `event` took all four operands. The split could not be an update: `--previous` reports `validate_update` refusing the removal of `event`'s `ownerRefersTo` operands (adding `authorEvent` alone would have been accepted).
+    - forge-collab `6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W` (nonce 3), the split without `authorEvent`'s feed index. Adding an index is refused on update too ("we do not allow modifications of data contract index paths").
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
