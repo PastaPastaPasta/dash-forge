@@ -30,12 +30,13 @@ import {
   liveGitPackManifests,
   liveLocatorManifests,
   readNewestManifestOfKind,
-  readPackManifests,
+  readRepoPackManifests,
+  repoKey,
+  repoSource,
   type PackManifest,
   type RepoRef,
 } from '../repo'
-import { base64ToBytes, hexToBase64, queryDocumentsWithProof } from '../sdk'
-import { DOC } from '../repo'
+import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
 
 /**
@@ -127,10 +128,11 @@ export function clearChunkCache(): void {
 /** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
 async function queryChunkBatch(
   sdk: EvoSDK,
-  contractId: string,
-  packHashHex: string,
+  repo: RepoRef,
+  manifest: PackManifest,
   seqs: readonly number[],
 ): Promise<Map<number, Uint8Array>> {
+  const source = repoSource(repo)
   // One query returns at most CHUNK_QUERY_MAX rows, so a request spanning more seqs than
   // that is split into several parallel queries rather than silently coming back short.
   // Without this split a single range spanning more than 100 chunks could never load, which
@@ -154,19 +156,10 @@ async function queryChunkBatch(
       const i = next++
       const batch = batches[i]
       if (batch === undefined) return
-      const { documents } = await queryDocumentsWithProof(sdk, {
-        dataContractId: contractId,
-        documentTypeName: DOC.chunk,
-        where: [
-          ['packHash', '==', hexToBase64(packHashHex)],
-          ['seq', 'in', batch],
-        ],
-        orderBy: [
-          ['packHash', 'asc'],
-          ['seq', 'asc'],
-        ],
-        limit: CHUNK_QUERY_MAX,
-      })
+      const { documents } = await queryDocumentsWithProof(
+        sdk,
+        source.chunkQuery(manifest.packHash, manifest.uploader, batch),
+      )
       for (const doc of documents) {
         const raw = doc['seq']
         const seq = typeof raw === 'bigint' ? Number(raw) : typeof raw === 'number' ? raw : -1
@@ -196,11 +189,16 @@ async function queryChunkBatch(
  */
 async function fetchPlatformRange(
   sdk: EvoSDK,
-  contractId: string,
-  packHashHex: string,
+  repo: RepoRef,
+  manifest: PackManifest,
   start: number,
   end: number,
 ): Promise<Uint8Array> {
+  const packHashHex = manifest.packHash
+  // Keyed by repo and uploader, not the pack hash alone: on forge-v2 every writer has its own
+  // copy of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for
+  // an honest one — nor one repo's for another's.
+  const cachePrefix = `${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
   const firstSeq = Math.floor(start / CHUNK_PAYLOAD_MAX)
   const lastSeq = Math.floor((end - 1) / CHUNK_PAYLOAD_MAX)
   const seqs: number[] = []
@@ -209,12 +207,12 @@ async function fetchPlatformRange(
   const held = new Map<number, Promise<Uint8Array>>()
   const missing: number[] = []
   for (const seq of seqs) {
-    const hit = chunkCacheGet(`${packHashHex}:${seq}`)
+    const hit = chunkCacheGet(`${cachePrefix}:${seq}`)
     if (hit !== undefined) held.set(seq, hit)
     else missing.push(seq)
   }
   if (missing.length > 0) {
-    const batch = queryChunkBatch(sdk, contractId, packHashHex, missing)
+    const batch = queryChunkBatch(sdk, repo, manifest, missing)
     for (const seq of missing) {
       const promise = batch.then((bySeq) => {
         const payload = bySeq.get(seq)
@@ -223,7 +221,7 @@ async function fetchPlatformRange(
         }
         return payload
       })
-      chunkCacheSet(`${packHashHex}:${seq}`, promise)
+      chunkCacheSet(`${cachePrefix}:${seq}`, promise)
       held.set(seq, promise)
     }
   }
@@ -585,7 +583,7 @@ async function firstSequential<T, R>(
 
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
 function noteSource(repo: RepoRef, uri?: string): void {
-  noteContentCheck(repo.contractId, {
+  noteContentCheck(repoKey(repo), {
     source: uri === undefined ? 'platform' : externalSourceName(uri),
   })
 }
@@ -596,13 +594,28 @@ export function artifactRangeFetch(
   repo: RepoRef,
   manifest: PackManifest,
 ): RangeFetch {
-  return async (start: number, end: number) => {
-    if (manifest.storage !== 0) {
-      return fetchExternalRange(manifest, start, end, (uri) => noteSource(repo, uri))
+  const readCopy = async (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => {
+    if (copy.storage !== 0) {
+      return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
     }
-    const bytes = await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, start, end)
+    const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
     noteSource(repo)
     return bytes
+  }
+  return async (start: number, end: number) => {
+    // forge-v2: a range cannot be hashed on its own (the reader re-hashes every object it
+    // builds from it), but a copy that cannot serve the range at all falls through to the
+    // next one in `orderPackCopies` order.
+    const copies = manifest.copies ?? [manifest]
+    let lastErr: unknown
+    for (const copy of copies) {
+      try {
+        return await readCopy(copy, start, end)
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    throw lastErr
   }
 }
 
@@ -643,6 +656,40 @@ export async function loadArtifactBytesProgress(
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
+  if (manifest.copies === undefined) return loadOneCopy(sdk, repo, manifest, onProgress, cancel)
+  // forge-v2: every writer may hold a copy of a pack. Read them in `orderPackCopies` order
+  // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
+  // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
+  // pack no copy serves is unreadable.
+  const failures: unknown[] = []
+  for (const copy of manifest.copies) {
+    try {
+      const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
+      if (bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()) return bytes
+      failures.push(new Error(`copy ${copy.documentId.slice(0, 8)}… does not hash to the pack`))
+    } catch (e) {
+      failures.push(e)
+    }
+  }
+  // One copy: its own error. Every copy external and unserved: the fallback clone's
+  // "unavailable" case, which it reports rather than failing the clone on.
+  if (failures.length === 1) throw failures[0]
+  const last = failures[failures.length - 1]
+  if (last instanceof PackUnavailableError && failures.every((f) => f instanceof PackUnavailableError)) {
+    throw last
+  }
+  throw new Error(
+    `no copy of pack ${manifest.packHash.slice(0, 12)}… could be read and verified: ${failures.map(errorText).join('; ')}`,
+  )
+}
+
+async function loadOneCopy(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
@@ -654,7 +701,7 @@ export async function loadArtifactBytesProgress(
   const out = new Uint8Array(total)
   for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
-    out.set(await fetchPlatformRange(sdk, repo.contractId, manifest.packHash, at, end), at)
+    out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
     onProgress?.(end, total)
   }
   noteSource(repo)
@@ -827,7 +874,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // queries pairs a post-repack index with a pre-repack pack list, and `packRef` then
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door.
-  const manifests = await readPackManifests(sdk, repo)
+  const manifests = await readRepoPackManifests(sdk, repo)
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
@@ -894,7 +941,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
-  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repo.contractId) })
+  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repoKey(repo)) })
   return { kind: 'ready', context: { locator, packs, reader } }
 }
 
@@ -948,13 +995,13 @@ function browseEntryLive(entry: BrowseCacheEntry): boolean {
 }
 
 /** Drop a repo's cached browse context (e.g. on an explicit home reload). */
-export function invalidateBrowseContext(contractId: string): void {
-  browseCache.delete(contractId)
+export function invalidateBrowseContext(key: string): void {
+  browseCache.delete(key)
 }
 
 /** The cached settled browse state for a contract, if still live — for first-paint seeding. */
-export function peekBrowseState(contractId: string): BrowseState | undefined {
-  const entry = browseCache.get(contractId)
+export function peekBrowseState(key: string): BrowseState | undefined {
+  const entry = browseCache.get(key)
   if (entry === undefined || !browseEntryLive(entry)) return undefined
   return entry.settled
 }
@@ -966,7 +1013,8 @@ export function peekBrowseState(contractId: string): BrowseState | undefined {
  * immediately, and a fresh resolve starts behind it so the next read sees any push since.
  */
 export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
-  const hit = browseCache.get(repo.contractId)
+  const key = repoKey(repo)
+  const hit = browseCache.get(key)
   if (hit !== undefined && browseEntryLive(hit)) {
     const stale = hit.settled !== undefined && Date.now() - hit.at >= BROWSE_REVALIDATE_MS
     if (stale && !hit.revalidating) {
@@ -976,8 +1024,8 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
         .then((state) => {
           // Only replace an entry this refresh still owns — an explicit reload may have
           // dropped it, and a newer resolve must not be clobbered by an older one.
-          if (browseCache.get(repo.contractId) !== hit) return
-          browseCache.set(repo.contractId, { at: Date.now(), promise: next, settled: state })
+          if (browseCache.get(key) !== hit) return
+          browseCache.set(key, { at: Date.now(), promise: next, settled: state })
         })
         .catch(() => {
           // Keep serving the last good state; the TTL will force a fresh resolve.
@@ -987,13 +1035,13 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
     return hit.promise
   }
   const entry: BrowseCacheEntry = { at: Date.now(), promise: loadBrowseContext(sdk, repo) }
-  browseCache.set(repo.contractId, entry)
+  browseCache.set(key, entry)
   entry.promise
     .then((state) => {
       entry.settled = state
     })
     .catch(() => {
-      if (browseCache.get(repo.contractId) === entry) browseCache.delete(repo.contractId)
+      if (browseCache.get(key) === entry) browseCache.delete(key)
     })
   return entry.promise
 }

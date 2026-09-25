@@ -15,20 +15,28 @@ import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
-import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
+import {
+  NotDeployedState,
+  V2NotDeployedNote,
+  isForgeDeployed,
+  isRegistryDeployed,
+  isV2Deployed,
+} from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { connectionTrust, deriveConnectionTrust, listRecentRepos } from '@/lib/view'
+import { connectionTrust, deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, trusted, error: sdkError, network } = useSdk()
   const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted))
-  const deployed = isRegistryDeployed()
+  const deployed = isForgeDeployed()
+  const v2 = isV2Deployed()
   const feed = useAsync(
     () => listRecentRepos(sdk!, { network, limit: 24 }),
     [ready, network],
     { enabled: deployed && ready && sdk !== null },
   )
+  const total = feed.data ? feed.data.v2.length + feed.data.v1.length : 0
 
   return (
     <AppShell wide>
@@ -71,7 +79,7 @@ export default function LandingPage(): JSX.Element {
       <section className="mt-14">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl">Recent repos</h2>
-          {feed.loading ? <Spinner label="Reading registry" /> : null}
+          {feed.loading ? <Spinner label={v2 ? 'Reading forge-core' : 'Reading registry'} /> : null}
         </div>
 
         {!deployed ? (
@@ -80,11 +88,11 @@ export default function LandingPage(): JSX.Element {
           <ErrorState title="Could not reach Platform" message={sdkError} />
         ) : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />
-        ) : feed.data && feed.data.length === 0 ? (
+        ) : feed.data && total === 0 ? (
           <EmptyState
             icon={GitBranch}
             title="The registry is quiet"
-            body="No repos have been published to this network's registry yet. Forge the first one."
+            body="No repos have been created on this network yet. Forge the first one."
             action={
               <Link href="/new">
                 <Button variant="primary">
@@ -94,10 +102,13 @@ export default function LandingPage(): JSX.Element {
             }
           />
         ) : feed.data ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {feed.data.map((r) => (
-              <RepoCard key={r.listingId} repo={r} />
-            ))}
+          <div className="space-y-6">
+            {!v2 && isRegistryDeployed() ? <V2NotDeployedNote /> : null}
+            <RepoGrid repos={feed.data.v2} />
+            {feed.data.v1.length > 0 && feed.data.v2.length > 0 ? (
+              <h3 className="text-prose text-anvil-600 dark:text-anvil-300">v1 repos</h3>
+            ) : null}
+            <RepoGrid repos={feed.data.v1} />
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -108,6 +119,17 @@ export default function LandingPage(): JSX.Element {
         )}
       </section>
     </AppShell>
+  )
+}
+
+function RepoGrid({ repos }: { repos: readonly DiscoveredRepo[] }): JSX.Element | null {
+  if (repos.length === 0) return null
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {repos.map((r) => (
+        <RepoCard key={r.key} repo={r} />
+      ))}
+    </div>
   )
 }
 

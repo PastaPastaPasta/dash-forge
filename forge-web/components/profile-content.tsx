@@ -12,7 +12,16 @@
 import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
-import { readFollowerCount, readFollowingCount, followIdentity, isFollowing, unfollowIdentity } from '@/lib/repo'
+import {
+  followIdentity,
+  isFollowing,
+  readFollowerCount,
+  readFollowingCount,
+  readV2FollowCounts,
+  resolveOwner,
+  unfollowIdentity,
+} from '@/lib/repo'
+import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useRegistryToggle } from '@/hooks/use-registry-toggle'
@@ -22,11 +31,15 @@ import { IdentityPill } from '@/components/ui/identity-pill'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed, isRegistryDeployed } from '@/components/ui/network-badge'
 
 interface ProfileData {
+  /** The identity id the address resolved to (it may have been a DPNS name). */
+  readonly identityId: string
   readonly name: string | null
   readonly repos: DiscoveredRepo[]
+  /** forge-v2 repos this identity is a maintainer or writer of (and does not own). */
+  readonly memberOf: DiscoveredRepo[]
   /** `null` when the count read failed — shown as unknown, never as a false 0. */
   readonly followers: number | null
   readonly following: number | null
@@ -41,28 +54,41 @@ function Count({ value }: { value: number | null }): JSX.Element {
   )
 }
 
-export function ProfileContent({ identityId }: { identityId: string }): JSX.Element {
+export function ProfileContent({ identityId: address }: { identityId: string }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
 
-  const { data, loading, error, reload } = useAsync<ProfileData>(
+  const { data, loading, error, reload } = useAsync<ProfileData | null>(
     async () => {
-      const [name, repos, followers, followingCount] = await Promise.all([
+      // The address may be a DPNS name (`/u?name=alice`) or an identity id.
+      const identityId = await resolveOwner(sdk!, address)
+      if (identityId === null) return null
+      const forge = NETWORKS[network].v2
+      // Follows live in forge-collab where forge-v2 is deployed, else in the v1 registry.
+      const follows = forge !== null
+        ? readV2FollowCounts(sdk!, forge, identityId)
+        : Promise.all([
+            readFollowerCount(sdk!, identityId, { network }).catch(() => null),
+            readFollowingCount(sdk!, identityId, { network }).catch(() => null),
+          ]).then(([followers, following]) => ({ followers, following }))
+      const [name, repos, counts] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
         listReposByOwner(sdk!, identityId, { network }),
-        readFollowerCount(sdk!, identityId, { network }).catch(() => null),
-        readFollowingCount(sdk!, identityId, { network }).catch(() => null),
+        follows,
       ])
-      return { name, repos, followers, following: followingCount }
+      return { identityId, name, repos: repos.owned, memberOf: repos.member, ...counts }
     },
-    [ready, identityId, network],
-    { enabled: isRegistryDeployed() && ready && sdk !== null && identityId !== '' },
+    [ready, address, network],
+    { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
   )
+  const identityId = data?.identityId ?? address
+  // Following is a v1 registry write; forge-v2 follows come with v2 writes.
+  const canFollow = isRegistryDeployed() && NETWORKS[network].v2 === null
 
   const isSelf = identity === identityId
   const follow = useRegistryToggle({
-    enabled: ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
+    enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
     read: () => isFollowing(sdk!, network, identity!, identityId),
     add: async () => (await followIdentity(sdk!, signer!, identityId)).confirmed,
@@ -80,10 +106,13 @@ export function ProfileContent({ identityId }: { identityId: string }): JSX.Elem
   // Signed in but whether you already follow is not known yet (or unreadable): no action.
   const followUnknown = identity !== null && signer !== null && follow.on === null
 
-  if (!identityId) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id) to the URL." />
-  if (!isRegistryDeployed()) return <NotDeployedState />
+  if (!address) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id or DPNS name) to the URL." />
+  if (!isForgeDeployed()) return <NotDeployedState />
   if (loading) return <LoadingBlock label="Reading profile" />
   if (error) return <ErrorState message={error} onRetry={reload} />
+  if (data === null && ready) {
+    return <EmptyState icon={Users} title="No such identity" body={`"${address}" is not an identity id or a registered DPNS name on this network.`} />
+  }
   if (!data) return <LoadingBlock />
 
   return (
@@ -95,7 +124,7 @@ export function ProfileContent({ identityId }: { identityId: string }): JSX.Elem
           <span><Count value={data.following} /> following</span>
           <span><span className="font-semibold text-anvil-900 dark:text-anvil-50">{data.repos.length}</span> repos</span>
         </div>
-        {!isSelf ? (
+        {!isSelf && canFollow ? (
           <div className="ml-auto flex items-center gap-2">
             {follow.error ? (
               <span role="alert" className="max-w-[18rem] text-[12px] text-danger">{follow.error}</span>
@@ -116,15 +145,26 @@ export function ProfileContent({ identityId }: { identityId: string }): JSX.Elem
       <div>
         <h2 className="mb-3 text-prose">Repositories</h2>
         {data.repos.length === 0 ? (
-          <EmptyState icon={GitBranch} title="No repos yet" body="This identity has not published any repos to the registry." />
+          <EmptyState icon={GitBranch} title="No repos yet" body="This identity has not created any repos on this network." />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {data.repos.map((r) => (
-              <RepoCard key={r.listingId} repo={r} />
+              <RepoCard key={r.key} repo={r} />
             ))}
           </div>
         )}
       </div>
+
+      {data.memberOf.length > 0 ? (
+        <div>
+          <h2 className="mb-3 text-prose">Member of</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {data.memberOf.map((r) => (
+              <RepoCard key={r.key} repo={r} />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

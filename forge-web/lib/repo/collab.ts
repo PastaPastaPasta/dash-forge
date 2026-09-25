@@ -17,7 +17,7 @@ import {
   base64ToBytes,
   type PlainDocument,
 } from '../sdk'
-import { REGISTRY_DOC, TOKEN_POSITION, DOC, type RepoRef } from './contract'
+import { REGISTRY_DOC, TOKEN_POSITION, DOC, type V1RepoRef } from './contract'
 
 interface TokensFacadeLike {
   calculateId: (contractId: string, tokenPosition: number) => Promise<string>
@@ -42,7 +42,7 @@ export interface Collaborator {
 /** Derive the WRITE / MAINTAIN token ids for a repo contract. */
 export async function repoTokenIds(
   sdk: EvoSDK,
-  repo: RepoRef,
+  repo: V1RepoRef,
 ): Promise<{ write: string; maintain: string }> {
   const tokens = (sdk as unknown as SdkTokensLike).tokens
   const [write, maintain] = await Promise.all([
@@ -57,7 +57,7 @@ export async function repoTokenIds(
  * across `refUpdate`) plus the repo owner. Platform cannot enumerate token holders, so this
  * candidate set bounds the balance lookups.
  */
-export async function candidateCollaborators(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+export async function candidateCollaborators(sdk: EvoSDK, repo: V1RepoRef): Promise<string[]> {
   const pushers = await skipScanDistinct(sdk, {
     dataContractId: repo.contractId,
     documentTypeName: DOC.refUpdate,
@@ -84,7 +84,7 @@ function isFrozen(info: unknown): boolean {
  */
 export async function readCollaborators(
   sdk: EvoSDK,
-  repo: RepoRef,
+  repo: V1RepoRef,
   candidates?: readonly string[],
 ): Promise<Collaborator[]> {
   const ids = candidates ? [...candidates] : await candidateCollaborators(sdk, repo)

@@ -16,7 +16,7 @@ import Link from 'next/link'
 import { GitPullRequest, GitMerge, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { PullView } from '@/lib/repo'
-import { listPulls } from '@/lib/repo'
+import { listPulls, repoContractIds, repoKey } from '@/lib/repo'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -38,11 +38,11 @@ function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: str
 }
 
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.contractId])
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const { data, loading, error, reload } = useAsync<PullView[]>(
     () => listPulls(sdk!, home.repo, undefined, 100),
-    [ready, home.repo.contractId],
+    [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )
 

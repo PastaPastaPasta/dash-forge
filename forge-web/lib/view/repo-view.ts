@@ -1,25 +1,28 @@
 /**
  * Repo home view-model (view glue) — composes the reads a repo page needs into one shape.
  *
- * The cold home view is size-independent: resolve the repo from the registry, read its
- * current config + default branch, resolve refs (skip-scan), and read the O(1) star count.
- * The root tree / README ride the browse plane (locator) and are loaded separately so the
- * header can paint immediately.
+ * The cold home view is size-independent: resolve the repo (a forge-v2 `repo` document, else
+ * the v1 registry), read its current config + default branch, resolve refs, and read the
+ * O(1) star count. The root tree / README ride the browse plane (locator) and are loaded
+ * separately so the header can paint immediately.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { requireRegistryContractId, type Network } from '../constants'
+import type { Network } from '../constants'
 import {
   branchesOf,
   readConfigBundle,
   readRefs,
   readStarCount,
-  resolveRepoWithListing,
+  readV2StarCount,
+  resolveAnyRepo,
   tagsOf,
+  type RepoAddressParams,
   type RepoConfig,
   type RepoRef,
   type ResolvedRef,
+  type V2RepoDoc,
 } from '../repo'
 
 /** Backend descriptor for the repo header badge / clone box. */
@@ -53,7 +56,12 @@ export function backendInfo(config: RepoConfig | null): BackendInfo {
 /** Everything the repo header + rail render (excludes browse-plane tree/README). */
 export interface RepoHome {
   readonly repo: RepoRef
+  /** The v1 registry listing id (stars live on it), or null (forge-v2, or no listing). */
   readonly listingId: string | null
+  /** The forge-v2 `repo` document (description, display name, topics, fork), else null. */
+  readonly v2: V2RepoDoc | null
+  /** The repo description: the v2 `repo` document's, else the v1 listing's. */
+  readonly description: string
   readonly config: RepoConfig | null
   readonly defaultBranch: string
   readonly branches: readonly ResolvedRef[]
@@ -63,37 +71,43 @@ export interface RepoHome {
   readonly backend: BackendInfo
 }
 
-/** Resolve + compose a repo home view-model by `(owner, name)`. Returns null if unresolved. */
+/**
+ * Resolve + compose a repo home view-model from its route address (`owner`, `name`, and an
+ * optional `?repo=` / `?contract=` pin). Returns null if nothing authentic resolves.
+ */
 export async function loadRepoHome(
   sdk: EvoSDK,
-  params: { network: Network; ownerId: string; name: string },
+  params: RepoAddressParams & { readonly network: Network },
 ): Promise<RepoHome | null> {
-  // One registry lookup serves both §4-verified resolution and the stars listing id.
-  const resolved = await resolveRepoWithListing(
-    sdk,
-    requireRegistryContractId(params.network),
-    params.ownerId,
-    params.name,
-  )
+  const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
-  const { repo, listing } = resolved
-  const listingId = listing.listingId || null
+  const { repo } = resolved
+  const v2 = 'doc' in resolved ? resolved.doc : null
+  const listing = 'listing' in resolved ? resolved.listing : null
+  const listingId = listing?.listingId || null
+
+  const readStars = (): Promise<number | null> => {
+    if (repo.kind === 'v2') return readV2StarCount(sdk, repo.forge, repo.repoId).catch(() => null)
+    return listingId
+      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => null)
+      : Promise.resolve(0)
+  }
 
   // One config query serves both the current config and the history readRefs folds with.
   const bundlePromise = readConfigBundle(sdk, repo)
   const [{ config }, refs, starCount] = await Promise.all([
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
-    listingId
-      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => null)
-      : Promise.resolve(0),
+    readStars(),
   ])
 
   return {
     repo,
     listingId,
+    v2,
+    description: v2?.description ?? listing?.description ?? '',
     config,
-    defaultBranch: config?.defaultBranch ?? 'main',
+    defaultBranch: config?.defaultBranch ?? v2?.defaultBranch ?? 'main',
     branches: branchesOf(refs),
     tags: tagsOf(refs),
     starCount,

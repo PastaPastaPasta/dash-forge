@@ -45,8 +45,16 @@ export function CloneBox({ home, addr }: { home: RepoHome; addr: RepoAddress }):
           </button>
         </div>
         <p className="mt-2 text-[12px] leading-snug text-anvil-500 dark:text-anvil-400">
-          Push and pull with the <span className="font-mono">git-remote-dash</span> helper. Contract{' '}
-          <Oid value={home.repo.contractId} chars={8} />
+          Push and pull with the <span className="font-mono">git-remote-dash</span> helper.{' '}
+          {home.repo.kind === 'v1' ? (
+            <>
+              Contract <Oid value={home.repo.contractId} chars={8} />
+            </>
+          ) : (
+            <>
+              Repo <Oid value={home.repo.repoId} chars={8} />
+            </>
+          )}
         </p>
       </div>
     </div>

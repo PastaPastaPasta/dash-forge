@@ -1,5 +1,12 @@
 /**
- * Issue / PR reads — list + fold (data-contracts §2.3, §4).
+ * Issue / PR reads — list + fold (data-contracts §2.3, §4; `forge-v2.md` §3, §5, §6).
+ *
+ * forge-v2 repos fold `event` + `authorEvent` through FORGE_RULES_V2 (`foldIssueStateV2` /
+ * `foldPrStateV2`): an event's existence is its authorization, so no ACL history is read.
+ * Lists read the repo's two feeds (`(repoId, $createdAt)`) once and fold every row from them,
+ * rather than two queries per row. Documents that are not well-formed for the repo's
+ * visibility (`isWellFormed`: plaintext xor `enc`) are skipped everywhere. The rest of this
+ * note describes v1.
  *
  * Issue/PR *state* is not an on-chain field (mutation ownership forbids a maintainer
  * editing an author-owned doc); it is a deterministic fold of the append-only `event` log
@@ -35,8 +42,18 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { asIdentifierString, byteFieldToHex, DOC, toEvent, type RepoRef } from './contract'
+import { foldIssueStateV2, foldPrStateV2 } from '../rules/v2'
+import {
+  asIdentifierString,
+  byteFieldToHex,
+  DOC,
+  toEvent,
+  V2_DOC,
+  wellFormed,
+  type RepoRef,
+} from './contract'
 import { readRefUpdates } from './refs'
+import { repoSource } from './source'
 import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
 
@@ -87,13 +104,14 @@ export interface PullView {
   readonly baseOidAtOpen: string
   readonly headOid: string
   /**
-   * The **source** repo contract id (base58) — where the PR's objects actually live.
+   * Where the PR's objects actually live: the **source** repo contract id (v1) or `repo`
+   * document id (v2 `sourceRepoId`), base58.
    *
    * Surfaced because a reviewer cannot fetch a PR without it: a PR's head commit usually
-   * sits in a different contract from the repo it targets, and this is the only pointer the
-   * patch document carries to it. Empty for a malformed document.
+   * sits in a different repo (a fork) from the one it targets, and this is the only pointer
+   * the patch document carries to it. Empty for a malformed document.
    */
-  readonly sourceContractId: string
+  readonly sourceId: string
   /** The branch the PR was opened from, in the source repo, when recorded. */
   readonly sourceRefName: string | null
   /**
@@ -176,13 +194,78 @@ function str(doc: PlainDocument, field: string): string {
  * `query_all_documents` for exactly this reason.
  */
 export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Event[]> {
-  const documents = await queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.event,
-    where: [['targetId', '==', targetId]],
-    orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
-  })
-  return documents.map(toEvent).filter((e): e is Event => e !== null)
+  const log = await readTargetLog(sdk, repo, targetId)
+  return [...log.events, ...log.authorEvents].sort(compareKey)
+}
+
+/**
+ * A target's state documents, by the type that admitted them. v1 has only `event`; forge-v2
+ * splits member events (`event`) from the author's own close/reopen (`authorEvent`,
+ * `forge-v2.md` §3), and the v2 fold needs to know which is which.
+ */
+export interface TargetLog {
+  readonly events: Event[]
+  readonly authorEvents: Event[]
+}
+
+const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
+
+/** One target's complete {@link TargetLog} (see {@link readEvents} on completeness). */
+export async function readTargetLog(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  targetId: string,
+): Promise<TargetLog> {
+  const source = repoSource(repo)
+  const read = async (type: string): Promise<Event[]> => {
+    const documents = await queryAllDocuments(
+      sdk,
+      source.targetQuery(type, {
+        where: [['targetId', '==', targetId]],
+        orderBy: [
+          ['targetId', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+      }),
+    )
+    return documents.map(toEvent).filter((e): e is Event => e !== null)
+  }
+  if (repo.kind === 'v1') return { events: await read(DOC.event), authorEvents: [] }
+  const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+  return { events, authorEvents }
+}
+
+/**
+ * forge-v2: every `event` and `authorEvent` of a repo, grouped by target — the repo feed
+ * (`(repoId, $createdAt)` on both types), read to completion once so a list page folds all of
+ * its rows without a query per row. `event` is member-gated and `authorEvent` author-gated at
+ * consensus, so the feed is bounded by real activity, not by what strangers post.
+ */
+export async function readRepoFeed(
+  sdk: EvoSDK,
+  repo: Extract<RepoRef, { kind: 'v2' }>,
+): Promise<Map<string, TargetLog>> {
+  const source = repoSource(repo)
+  const read = async (type: string): Promise<Event[]> => {
+    const documents = await queryAllDocuments(
+      sdk,
+      source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] }),
+    )
+    return documents.map(toEvent).filter((e): e is Event => e !== null)
+  }
+  const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+  const byTarget = new Map<string, { events: Event[]; authorEvents: Event[] }>()
+  const slot = (targetId: string): { events: Event[]; authorEvents: Event[] } => {
+    let entry = byTarget.get(targetId)
+    if (entry === undefined) {
+      entry = { events: [], authorEvents: [] }
+      byTarget.set(targetId, entry)
+    }
+    return entry
+  }
+  for (const e of events) slot(e.targetId ?? '').events.push(e)
+  for (const e of authorEvents) slot(e.targetId ?? '').authorEvents.push(e)
+  return byTarget
 }
 
 /**
@@ -196,13 +279,17 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
  * Parity: forge-core `PullRequestService::list_reviews`.
  */
 export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): Promise<ReviewView[]> {
-  const documents = await queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.review,
-    where: [['patchId', '==', patchId]],
-    orderBy: [['patchId', 'asc'], ['$createdAt', 'asc']],
-  })
-  return documents.map((d) => {
+  const documents = await queryAllDocuments(
+    sdk,
+    repoSource(repo).targetQuery(DOC.review, {
+      where: [['patchId', '==', patchId]],
+      orderBy: [
+        ['patchId', 'asc'],
+        ['$createdAt', 'asc'],
+      ],
+    }),
+  )
+  return documents.filter((d) => wellFormed(repo, 'review', d)).map((d) => {
     const { verdict, code } = verdictFromCode(num(d, 'verdict'))
     return {
       id: str(d, '$id'),
@@ -216,17 +303,27 @@ export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): 
   })
 }
 
-/** Read one issue and fold its state. Resolves the token-history authz when not supplied. */
+/**
+ * Read one issue and fold its state. v1 resolves the token-history authz when not supplied;
+ * forge-v2 needs no ACL (`log`, when given, is the target's slice of the repo feed).
+ */
 export async function readIssue(
   sdk: EvoSDK,
   repo: RepoRef,
   issueDoc: PlainDocument,
   authz?: AuthzResolver,
+  log?: TargetLog,
 ): Promise<IssueView> {
-  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(issueDoc, '$id')
   const author = str(issueDoc, '$ownerId')
-  const events = await readEvents(sdk, repo, id)
+  let state: IssueState
+  if (repo.kind === 'v1') {
+    const resolver = authz ?? (await resolveAuthz(sdk, repo))
+    state = foldIssueState(await readEvents(sdk, repo, id), author, resolver)
+  } else {
+    const l = log ?? (await readTargetLog(sdk, repo, id))
+    state = foldIssueStateV2(l.events, l.authorEvents, author)
+  }
   return {
     id,
     number: num(issueDoc, 'number'),
@@ -234,36 +331,83 @@ export async function readIssue(
     body: str(issueDoc, 'body'),
     author,
     createdAt: num(issueDoc, '$createdAt'),
-    state: foldIssueState(events, author, resolver),
+    state,
     stateComplete: true,
   }
 }
 
-/** List issues (newest first) with folded state. Resolves the authz once for the whole page. */
-export async function listIssues(
+/**
+ * The newest `limit` issues or patches of a repo, `$createdAt` descending, without the ones
+ * that are not well-formed for the repo's visibility (forge-v2; v1 has no such rule).
+ */
+async function newestTargets(
   sdk: EvoSDK,
   repo: RepoRef,
-  authz?: AuthzResolver,
-  limit = 50,
-): Promise<IssueView[]> {
-  const resolver = authz ?? (await resolveAuthz(sdk, repo))
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.issue,
-    orderBy: [['$createdAt', 'desc']],
-    limit,
-  })
+  type: 'issue' | 'patch',
+  limit: number,
+): Promise<PlainDocument[]> {
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(type === 'issue' ? DOC.issue : DOC.patch, {
+      orderBy: [['$createdAt', 'desc']],
+      limit,
+    }),
+  )
+  return documents.filter((d) => wellFormed(repo, type, d))
+}
+
+/**
+ * Fold a page of issue or patch rows. forge-v2: from the repo feed, read once for the whole
+ * page. v1: one row at a time, keeping a row (state unverified) whose event log cannot be read
+ * to completion.
+ */
+async function foldRows<T>(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documents: readonly PlainDocument[],
+  foldOne: (doc: PlainDocument, log: TargetLog | undefined) => Promise<T>,
+  incomplete: (doc: PlainDocument) => T,
+): Promise<T[]> {
+  if (repo.kind === 'v2') {
+    if (documents.length === 0) return []
+    let feed: Map<string, TargetLog>
+    try {
+      feed = await readRepoFeed(sdk, repo)
+    } catch (e) {
+      if (!(e instanceof IncompleteReadError)) throw e
+      return documents.map(incomplete)
+    }
+    return Promise.all(documents.map((doc) => foldOne(doc, feed.get(str(doc, '$id')) ?? EMPTY_LOG)))
+  }
   // Per-row tolerance. `issue`, `event` and `comment` are un-gated, so one target padded
   // past the reader's completeness bound must not take down a whole page of issues — and
   // dropping the row silently would be the same class of bug this all fixes. The row is
   // kept with `stateComplete: false`; callers render the state as unverified.
   return Promise.all(
     documents.map((doc) =>
-      readIssue(sdk, repo, doc, resolver).catch((e: unknown) => {
+      foldOne(doc, undefined).catch((e: unknown) => {
         if (!(e instanceof IncompleteReadError)) throw e
-        return incompleteIssueView(doc)
+        return incomplete(doc)
       }),
     ),
+  )
+}
+
+/** List issues (newest first) with folded state. Resolves the v1 authz once for the page. */
+export async function listIssues(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  authz?: AuthzResolver,
+  limit = 50,
+): Promise<IssueView[]> {
+  const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
+  const documents = await newestTargets(sdk, repo, 'issue', limit)
+  return foldRows(
+    sdk,
+    repo,
+    documents,
+    (doc, log) => readIssue(sdk, repo, doc, resolver, log),
+    incompleteIssueView,
   )
 }
 
@@ -298,6 +442,11 @@ function readImported(doc: PlainDocument): { imported: boolean; importedUrl: str
   if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '' }
   const url = (value as PlainDocument)['url']
   return { imported: true, importedUrl: typeof url === 'string' ? url : '' }
+}
+
+/** A patch's source pointer: v1 `sourceContractId`, forge-v2 `sourceRepoId`. */
+function sourceIdOf(repo: RepoRef, doc: PlainDocument): string {
+  return asIdentifierString(doc[repo.kind === 'v1' ? 'sourceContractId' : 'sourceRepoId'])
 }
 
 /** A base ref's tips, as a PR read needs them. */
@@ -336,8 +485,8 @@ export async function readPull(
   repo: RepoRef,
   patchDoc: PlainDocument,
   authz?: AuthzResolver,
+  log?: TargetLog,
 ): Promise<PullView> {
-  const resolver = authz ?? (await resolveAuthz(sdk, repo))
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
   const createdAt = num(patchDoc, '$createdAt')
@@ -353,7 +502,14 @@ export async function readPull(
   }
   const baseTip = tips.tip
 
-  const events = await readEvents(sdk, repo, id)
+  let state: PrState
+  if (repo.kind === 'v1') {
+    const resolver = authz ?? (await resolveAuthz(sdk, repo))
+    state = foldPrState(await readEvents(sdk, repo, id), author, resolver, baseTip, isAncestor)
+  } else {
+    const l = log ?? (await readTargetLog(sdk, repo, id))
+    state = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor)
+  }
   let headOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
     try {
@@ -374,42 +530,35 @@ export async function readPull(
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     headOid,
-    sourceContractId: asIdentifierString(patchDoc['sourceContractId']),
+    sourceId: sourceIdOf(repo, patchDoc),
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
     headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
     ...readImported(patchDoc),
-    state: foldPrState(events, author, resolver, baseTip, isAncestor),
+    state,
     stateComplete: true,
   }
 }
 
-/** List PRs (patches, newest first) with folded state. Resolves the authz once for the page. */
+/** List PRs (patches, newest first) with folded state. Resolves the v1 authz once for the page. */
 export async function listPulls(
   sdk: EvoSDK,
   repo: RepoRef,
   authz?: AuthzResolver,
   limit = 50,
 ): Promise<PullView[]> {
-  const resolver = authz ?? (await resolveAuthz(sdk, repo))
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.patch,
-    orderBy: [['$createdAt', 'desc']],
-    limit,
-  })
-  // Same per-row tolerance as `listIssues`.
-  return Promise.all(
-    documents.map((doc) =>
-      readPull(sdk, repo, doc, resolver).catch((e: unknown) => {
-        if (!(e instanceof IncompleteReadError)) throw e
-        return incompletePullView(doc)
-      }),
-    ),
+  const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
+  const documents = await newestTargets(sdk, repo, 'patch', limit)
+  return foldRows(
+    sdk,
+    repo,
+    documents,
+    (doc, log) => readPull(sdk, repo, doc, resolver, log),
+    (doc) => incompletePullView(repo, doc),
   )
 }
 
 /** A PR row whose event log could not be read completely: identity only, no folded state. */
-function incompletePullView(doc: PlainDocument): PullView {
+function incompletePullView(repo: RepoRef, doc: PlainDocument): PullView {
   let headOid = ''
   const raw = doc['headOid']
   if (typeof raw === 'string' && raw.length > 0) {
@@ -433,7 +582,7 @@ function incompletePullView(doc: PlainDocument): PullView {
     headOid,
     // The source pointer is plain document content, not a fold — it is readable even when
     // the event log is not, and it is what a reviewer needs to fetch the PR at all.
-    sourceContractId: asIdentifierString(doc['sourceContractId']),
+    sourceId: sourceIdOf(repo, doc),
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     headOnBase: false,
     ...readImported(doc),

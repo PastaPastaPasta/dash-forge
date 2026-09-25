@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Archive, Code2, GitCommit, GitPullRequest, MessageSquare, Settings } from 'lucide-react'
+import { Archive, Code2, GitCommit, GitPullRequest, Lock, MessageSquare, Settings, Star } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Author } from '@/components/author'
@@ -35,14 +35,42 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <Author identityId={home.repo.ownerId} link />
           <span className="text-anvil-300 dark:text-anvil-600">/</span>
           <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
-            {addr.name}
+            {home.repo.name || addr.name}
           </Link>
+          {home.repo.kind === 'v2' && home.repo.visibility === 'private' ? (
+            <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">
+              <Lock className="h-3 w-3" aria-hidden /> private
+            </span>
+          ) : null}
+          {home.repo.kind === 'v1' ? (
+            <span
+              className="rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
+              title="A v1 repo: its own contract, with a token ACL. Readable here; new repos are forge-v2."
+            >
+              v1
+            </span>
+          ) : null}
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <StarButton listingId={home.listingId} count={home.starCount} />
+          {home.repo.kind === 'v1' ? (
+            <StarButton listingId={home.listingId} count={home.starCount} />
+          ) : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 px-2.5 py-1 text-dense text-anvil-600 dark:border-anvil-750 dark:text-anvil-300"
+              title="Stars (a provable count). Starring a forge-v2 repo from the browser is not available yet."
+            >
+              <Star className="h-3.5 w-3.5" aria-hidden />
+              <span className="font-mono text-[12px]">{home.starCount ?? '–'}</span>
+              <span className="sr-only">stars</span>
+            </span>
+          )}
         </div>
       </div>
+
+      {home.description ? (
+        <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>
+      ) : null}
 
       {home.config?.archived ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution">

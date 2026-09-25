@@ -11,7 +11,7 @@ import { GitBranch } from 'lucide-react'
 import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
@@ -31,7 +31,7 @@ export function RepoScaffold({
   /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
   refParam?: string
 }): JSX.Element {
-  const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr.owner, addr.name)
+  const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
 
   if (!addr.owner || !addr.name) {
     return (
@@ -46,7 +46,7 @@ export function RepoScaffold({
     )
   }
 
-  if (!isRegistryDeployed()) {
+  if (!isForgeDeployed()) {
     return (
       <AppShell wide>
         <NotDeployedState />
@@ -88,7 +88,7 @@ export function RepoScaffold({
         <EmptyState
           icon={GitBranch}
           title="Repo not found"
-          body={`No authentic registry listing resolves ${addr.owner}/${addr.name} on this network.`}
+          body={`Neither a forge-v2 repo nor an authentic registry listing resolves ${addr.owner}/${addr.name} on this network.`}
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
       </AppShell>

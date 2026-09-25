@@ -2,15 +2,18 @@
  * Repo-contract shape constants + on-chain-document → FORGE_RULES conversions.
  *
  * The document type names and field names mirror the repo-v1 template (data-contracts
- * §2.2/§2.3). Platform stores oids/hashes as byteArray (returned base64 in wasm queries);
- * the rules layer works in hex, so conversions normalize base64 → hex here.
+ * §2.2/§2.3), which forge-v2 kept (`docs/contracts/forge-v2.md` §2). Platform stores
+ * oids/hashes as byteArray (returned base64 in wasm queries); the rules layer works in hex,
+ * so conversions normalize base64 → hex here.
  */
 
+import type { ForgeIds } from '../deployments'
 import type { Event, EventKind, RefUpdate, TokenKind } from '../rules'
+import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
-/** Repo-contract document type names (data-contracts §2.2). */
+/** Repo-contract document type names (data-contracts §2.2; forge-v2 keeps them). */
 export const DOC = {
   config: 'config',
   refUpdate: 'refUpdate',
@@ -27,6 +30,17 @@ export const DOC = {
   release: 'release',
   checkRun: 'checkRun',
   webhook: 'webhook',
+} as const
+
+/** The forge-v2-only document types (`forge-v2.md` §2). */
+export const V2_DOC = {
+  repo: 'repo',
+  maintainer: 'maintainer',
+  writer: 'writer',
+  authorEvent: 'authorEvent',
+  star: 'star',
+  follow: 'follow',
+  profile: 'profile',
 } as const
 
 /** Registry-contract document type names (data-contracts §1). */
@@ -54,10 +68,47 @@ const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
   10: 'ready',
 }
 
-/** A repo reference: which contract, on which network. */
-export interface RepoRef {
+/**
+ * A v1 repository: its own repo contract (template `repo-v1.json`, token ACL). Readable on
+ * the networks that have them (testnet); the web app's v1 writes are unchanged.
+ */
+export interface V1RepoRef {
+  readonly kind: 'v1'
   readonly contractId: string
   readonly ownerId: string
+  /** The listing's name (`''` when the repo was addressed by contract id alone). */
+  readonly name: string
+}
+
+/**
+ * A forge-v2 repository: a `repo` document in the network's shared forge-core contract,
+ * with everything else keyed by its id (`forge-v2.md` §2).
+ */
+export interface V2RepoRef {
+  readonly kind: 'v2'
+  readonly forge: ForgeIds
+  /** The `repo` document id (base58). */
+  readonly repoId: string
+  readonly ownerId: string
+  readonly name: string
+  readonly visibility: Visibility
+}
+
+/** A repo reference: a v1 repo contract, or a forge-v2 `repo` document. */
+export type RepoRef = V1RepoRef | V2RepoRef
+
+/** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
+export function repoContractIds(repo: RepoRef | null): string[] {
+  if (repo === null) return []
+  return repo.kind === 'v1' ? [repo.contractId] : [repo.forge.core, repo.forge.collab]
+}
+
+/**
+ * The stable identity of a repo within a network — the v1 contract id or the v2 `repoId`.
+ * Session caches (browse context, content checks, fallback clones) key by it.
+ */
+export function repoKey(repo: RepoRef): string {
+  return repo.kind === 'v1' ? repo.contractId : repo.repoId
 }
 
 function str(doc: PlainDocument, field: string): string {
@@ -88,6 +139,38 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
       .join('')
   }
   return ''
+}
+
+/**
+ * Whether a raw document is well-formed for its repo (`isWellFormed`, `forge-v2.md` §5:
+ * plaintext xor `enc`, the visibility says which). v1 has no such rule, so every v1 document
+ * passes. Every forge-v2 reader skips a malformed document before any other rule sees it.
+ */
+export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
+  if (repo.kind === 'v1') return true
+  const text = (field: string): string | null => {
+    const v = doc[field]
+    return typeof v === 'string' ? v : null
+  }
+  const patterns = doc['protectedPatterns']
+  const epoch = doc['epoch']
+  return isWellFormed(
+    {
+      kind,
+      title: text('title'),
+      body: text('body'),
+      refName: text('refName'),
+      baseRefName: text('baseRefName'),
+      sourceRefName: text('sourceRefName'),
+      defaultBranch: text('defaultBranch'),
+      protectedPatterns: Array.isArray(patterns)
+        ? patterns.filter((x): x is string => typeof x === 'string')
+        : null,
+      enc: byteFieldToHex(doc, 'enc') || null,
+      epoch: typeof epoch === 'number' ? epoch : typeof epoch === 'bigint' ? Number(epoch) : null,
+    },
+    repo.visibility,
+  )
 }
 
 /**

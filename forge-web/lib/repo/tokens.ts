@@ -38,7 +38,7 @@ import {
 } from '../rules'
 import { base64ToBytes, queryAllDocuments } from '../sdk'
 import { repoTokenIds } from './collab'
-import type { RepoRef } from './contract'
+import type { V1RepoRef } from './contract'
 
 /** TokenHistory document type names (parity with `tokens.rs`). */
 const TH = {
@@ -93,7 +93,7 @@ function num(doc: Record<string, unknown>, field: string): number {
  * {@link AuthzResolver} / {@link holdingsAsOf}. See the module note for the three parity
  * invariants (owner seed, pagination, owner-freeze). Returns `[]` on any failure.
  */
-export async function readTokenHistory(sdk: EvoSDK, repo: RepoRef): Promise<TokenRecord[]> {
+export async function readTokenHistory(sdk: EvoSDK, repo: V1RepoRef): Promise<TokenRecord[]> {
   // A system contract: the same id on every network.
   const historyContractId = TOKEN_HISTORY_CONTRACT_ID
 
@@ -209,7 +209,7 @@ export function invalidateAuthz(contractId: string): void {
 /** {@link readTokenHistory} through the per-contract session cache (failures not cached). */
 function tokenHistoryCached(
   sdk: EvoSDK,
-  repo: RepoRef,
+  repo: V1RepoRef,
   network: Network,
 ): Promise<TokenRecord[]> {
   const key = authzKey(network, repo.contractId)
@@ -240,7 +240,7 @@ function tokenHistoryCached(
  */
 export async function resolveAuthz(
   sdk: EvoSDK,
-  repo: RepoRef,
+  repo: V1RepoRef,
   network: Network = DEFAULT_NETWORK,
 ): Promise<AuthzResolver> {
   return new AuthzResolver(await tokenHistoryCached(sdk, repo, network))
@@ -263,7 +263,7 @@ export function currentHoldings(
 /** {@link currentHoldings} for `identity`, read through the shared history cache. */
 export async function readViewerHoldings(
   sdk: EvoSDK,
-  repo: RepoRef,
+  repo: V1RepoRef,
   identity: string,
   network: Network = DEFAULT_NETWORK,
 ): Promise<Holdings | null> {

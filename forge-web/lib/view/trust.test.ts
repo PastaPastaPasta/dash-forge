@@ -59,6 +59,11 @@ describe('deriveTrust — proofs and refs', () => {
     expect(r.refs.state).toBe('verified')
   })
 
+  it('names the rules that folded the refs (v1 or forge-v2)', () => {
+    expect(deriveTrust(inputs()).refs.detail).toMatch(/FORGE_RULES_V1/)
+    expect(deriveTrust(inputs({ model: 'v2' })).refs.detail).toMatch(/FORGE_RULES_V2/)
+  })
+
   it('reports proofs and refs as unverified on a connection that does not check proofs', () => {
     const r = deriveTrust(inputs({ connection: 'untrusted' }))
     expect(r.proofs.state).toBe('unverified')

@@ -4,8 +4,8 @@
  * PullDiff — the PR's "Files changed": its head against the merge base with the base branch.
  *
  * Two repos are involved. The base history is read from the repo being viewed; the head is
- * read from the contract it was pushed to (the patch's `sourceContractId`, usually the
- * contributor's own repo). Each is resolved through the same browse states as any other view
+ * read from the repo it was pushed to (the patch's source pointer — v1 `sourceContractId`,
+ * forge-v2 `sourceRepoId` — usually the contributor's own repo or fork). Each is resolved through the same browse states as any other view
  * — published index, else the in-browser fallback clone — and reads prefer their own side's
  * repo while falling back to the other, since objects are content-addressed and verified.
  *
@@ -17,14 +17,42 @@
 import { useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
-import type { PullView, RepoRef } from '@/lib/repo'
+import { readV2RepoById, repoKey, v2RefOf, type PullView, type RepoRef } from '@/lib/repo'
 import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
 import { DiffView } from '@/components/repo/diff-view'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { Spinner } from '@/components/ui/states'
+
+/**
+ * The PR's source repo when it is not the base repo. v1: the source contract — browse reads
+ * are keyed by contract alone, and the owner is the PR author, who pushed it. forge-v2: the
+ * `repo` document `sourceRepoId` names (a fork, in the same forge contracts), read so its
+ * owner and visibility are real; null while loading or when it cannot be found.
+ */
+function useSourceRepo(base: RepoRef, sourceId: string | null, author: string): RepoRef | null {
+  const { sdk, ready } = useSdk()
+  const v1Source = useMemo<RepoRef | null>(
+    () =>
+      base.kind === 'v1' && sourceId !== null
+        ? { kind: 'v1', contractId: sourceId, ownerId: author, name: '' }
+        : null,
+    [base.kind, sourceId, author],
+  )
+  const forge = base.kind === 'v2' ? base.forge : null
+  const v2Source = useAsync<RepoRef | null>(
+    async () => {
+      const doc = await readV2RepoById(sdk!, forge!, sourceId!)
+      return doc === null ? null : v2RefOf(forge!, doc)
+    },
+    [ready, forge?.core ?? '', sourceId ?? ''],
+    { enabled: ready && sdk !== null && forge !== null && sourceId !== null },
+  )
+  return base.kind === 'v1' ? v1Source : v2Source.data
+}
 
 /** Link to the archived upstream PR's own diff, for an imported PR from GitHub. */
 function originalDiffUrl(value: string): string | null {
@@ -131,14 +159,11 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   const baseTipOid = tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid)
   const baseOidAtOpen = retargeted ? '' : pull.baseOidAtOpen
   // An empty source pointer only comes from a malformed document; the base repo is then the
-  // only place the head could be. Browse reads are keyed by contract alone — the owner is
-  // carried for the type and is the PR author, who pushed the source repo.
-  const sourceContractId = pull.sourceContractId || baseRepo.contractId
-  const crossRepo = sourceContractId !== baseRepo.contractId
-  const sourceRepo = useMemo<RepoRef | null>(
-    () => (crossRepo ? { contractId: sourceContractId, ownerId: pull.author } : null),
-    [crossRepo, sourceContractId, pull.author],
-  )
+  // only place the head could be.
+  const baseKey = repoKey(baseRepo)
+  const sourceKey = pull.sourceId || baseKey
+  const crossRepo = sourceKey !== baseKey
+  const sourceRepo = useSourceRepo(baseRepo, crossRepo ? sourceKey : null, pull.author)
 
   const baseState = useBrowseReader(baseRepo)
   const sourceState = useBrowseReader(sourceRepo)
@@ -174,8 +199,8 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
         imported: pull.imported,
       }),
     [
-      baseRepo.contractId,
-      sourceContractId,
+      baseKey,
+      sourceKey,
       sidesKey,
       baseTipOid,
       baseOidAtOpen,

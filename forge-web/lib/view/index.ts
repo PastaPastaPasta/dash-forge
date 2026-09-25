@@ -140,6 +140,7 @@ export {
   readThread,
   type CommentView,
   type IssueThread,
+  type PullApprovals,
   type PullThread,
   type TimelineItem,
 } from './issues-view'

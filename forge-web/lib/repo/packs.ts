@@ -12,8 +12,12 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { PACK_KIND, type PackKind } from '../constants'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { compareKey } from '../rules'
+import { orderPackCopies, type Role } from '../rules/v2'
 import { DOC, parseJsonList, type RepoRef } from './contract'
 import { base64ToBytes, base64ToHex } from '../sdk'
+import { readRoleOracle } from './members'
+import { repoSource } from './source'
 
 /** A parsed `packManifest`. */
 export interface PackManifest {
@@ -36,6 +40,19 @@ export interface PackManifest {
   readonly createdAt: number
   /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak (data-contracts §2.3). */
   readonly documentId: string
+  /**
+   * The manifest's `$ownerId` — who uploaded this copy. On forge-v2 chunks are keyed by it
+   * (`(repoId, $ownerId, packHash, seq)`), so a chunk read must name it.
+   */
+  readonly uploader: string
+  /**
+   * forge-v2: every writer's copy of this pack, in the order a reader tries them
+   * (`orderPackCopies`: current maintainers, then writers, then everyone else; each by
+   * `($createdAt, $id)`), this manifest first. A whole-pack download falls through to the
+   * next copy when one does not verify against `packHash` (`forge-v2.md` §4). Absent on v1,
+   * where `packHash` is unique.
+   */
+  readonly copies?: readonly PackManifest[]
 }
 
 /**
@@ -80,11 +97,13 @@ function toManifest(doc: PlainDocument): PackManifest {
     objectCount: num('objectCount'),
     chunkCount: num('chunkCount'),
     storage: num('storage'),
+    // v1: JSON-in-string; forge-v2: a typed string array. parseJsonList reads both.
     uris: parseJsonList(doc, 'uris'),
     tips: parsePackedHashes(doc, 'tips', 20),
     supersedes: parsePackedHashes(doc, 'supersedes', 32),
     createdAt: num('$createdAt'),
     documentId: typeof doc['$id'] === 'string' ? (doc['$id'] as string) : '',
+    uploader: typeof doc['$ownerId'] === 'string' ? (doc['$ownerId'] as string) : '',
   }
 }
 
@@ -104,12 +123,77 @@ function toManifest(doc: PlainDocument): PackManifest {
  * not depend on manifest volume at all. Parity: forge-core `read_pack_manifests`.
  */
 export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
-  const documents = await queryAllDocuments(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.packManifest,
-    orderBy: [['$createdAt', 'desc']],
-  })
+  const documents = await queryAllDocuments(
+    sdk,
+    repoSource(repo).repoQuery(DOC.packManifest, { orderBy: [['$createdAt', 'desc']] }),
+  )
   return documents.map(toManifest)
+}
+
+/**
+ * forge-v2: fold every writer's manifest of a pack into one entry per `packHash`
+ * (`forge-v2.md` §4 front-running rule). Each pack is represented by its first copy in
+ * `orderPackCopies` order (uploader's current role, then `($createdAt, $id)`), carrying all
+ * copies in that order for whole-pack fallbacks. `supersedes` is honoured from the
+ * representative copy only. Its position in the manifest list (and so in a locator's
+ * `packRef` space) is the pack's FIRST upload by `($createdAt, $id)`, which a later copy
+ * cannot move.
+ *
+ * A copy's bytes are not verified here: the browse reader re-hashes every object it reads,
+ * and whole-pack reads verify `packHash` and fall through to the next copy.
+ */
+export function selectPackCopies(
+  manifests: readonly PackManifest[],
+  roleOf: (identity: string) => Role | null,
+): PackManifest[] {
+  const byHash = new Map<string, PackManifest[]>()
+  for (const m of manifests) {
+    const key = m.packHash.toLowerCase()
+    const group = byHash.get(key)
+    if (group === undefined) byHash.set(key, [m])
+    else group.push(m)
+  }
+  const out: PackManifest[] = []
+  for (const group of byHash.values()) {
+    const first = [...group].sort((a, b) => compareKey(
+      { id: a.documentId, createdAt: a.createdAt },
+      { id: b.documentId, createdAt: b.createdAt },
+    ))[0] as PackManifest
+    const byId = new Map(group.map((m) => [m.documentId, m]))
+    const ordered = orderPackCopies(
+      group.map((m) => ({
+        id: m.documentId,
+        packHash: m.packHash,
+        ownerRole: roleOf(m.uploader),
+        createdAt: m.createdAt,
+      })),
+    ).map((c) => byId.get(c.id) as PackManifest)
+    const best = ordered[0] as PackManifest
+    out.push({
+      ...best,
+      createdAt: first.createdAt,
+      documentId: first.documentId,
+      copies: ordered,
+    })
+  }
+  // Newest first, like the list it came from.
+  return out.sort((a, b) =>
+    -compareKey({ id: a.documentId, createdAt: a.createdAt }, { id: b.documentId, createdAt: b.createdAt }),
+  )
+}
+
+/**
+ * Every pack manifest a reader should use, newest first: v1 as stored; forge-v2 with each
+ * pack's writer copies folded by {@link selectPackCopies} against the repo's current
+ * membership.
+ */
+export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
+  if (repo.kind === 'v1') return readPackManifests(sdk, repo)
+  const [manifests, oracle] = await Promise.all([
+    readPackManifests(sdk, repo),
+    readRoleOracle(sdk, repo),
+  ])
+  return selectPackCopies(manifests, (id) => oracle.currentRole(id))
 }
 
 /** The newest manifest of a given kind (the current locator / flatIndex), or null. */
@@ -118,16 +202,17 @@ export async function readNewestManifestOfKind(
   repo: RepoRef,
   kind: PackKind,
 ): Promise<PackManifest | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: repo.contractId,
-    documentTypeName: DOC.packManifest,
-    where: [['kind', '==', kind]],
-    orderBy: [
-      ['kind', 'asc'],
-      ['$createdAt', 'desc'],
-    ],
-    limit: 1,
-  })
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(DOC.packManifest, {
+      where: [['kind', '==', kind]],
+      orderBy: [
+        ['kind', 'asc'],
+        ['$createdAt', 'desc'],
+      ],
+      limit: 1,
+    }),
+  )
   const doc = documents[0]
   return doc === undefined ? null : toManifest(doc)
 }

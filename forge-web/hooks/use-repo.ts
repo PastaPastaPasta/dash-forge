@@ -1,10 +1,11 @@
 'use client'
 
 /**
- * useRepoHome — resolve + compose a repo's home view-model from `(owner, name)`.
+ * useRepoHome — resolve + compose a repo's home view-model from its route address.
  *
- * Connects the SDK (registry + DPNS preloaded), resolves the repo through the registry with
- * listing-authenticity verification, and loads config + refs + star count. Returns the async
+ * Connects the SDK (registry, DPNS and the forge-v2 contracts preloaded), resolves the repo —
+ * a forge-v2 `repo` document by `($ownerId, name)`, else the v1 registry with
+ * listing-authenticity verification — and loads config + refs + star count. Returns the async
  * state the repo chrome renders. `notFound` distinguishes an unresolved repo from a read error.
  *
  * Resolution is cached per `(network, owner, name)` with the settled value kept alongside the
@@ -20,8 +21,10 @@ import { useCallback } from 'react'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
+import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { RepoAddress } from '@/hooks/use-query-param'
 
 export interface UseRepoResult extends AsyncState<RepoHome | null> {
   readonly ready: boolean
@@ -44,16 +47,12 @@ interface HomeCacheEntry {
 }
 const homeCache = new Map<string, HomeCacheEntry>()
 
-function homeCacheKey(network: Network, owner: string, name: string): string {
-  return `${network}/${owner}/${name}`
+function homeCacheKey(network: Network, addr: RepoAddress): string {
+  return `${network}/${addr.owner}/${addr.name}/${addr.repoId ?? ''}/${addr.contractId ?? ''}`
 }
 
-function startLoad(
-  sdk: EvoSDK,
-  key: string,
-  params: { network: Network; ownerId: string; name: string },
-): HomeCacheEntry {
-  const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, params) }
+function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
+  const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, { network, ...addr }) }
   homeCache.set(key, entry)
   entry.promise
     .then((value) => {
@@ -66,11 +65,8 @@ function startLoad(
   return entry
 }
 
-function loadRepoHomeCached(
-  sdk: EvoSDK,
-  params: { network: Network; ownerId: string; name: string },
-): Promise<RepoHome | null> {
-  const key = homeCacheKey(params.network, params.ownerId, params.name)
+function loadRepoHomeCached(sdk: EvoSDK, network: Network, addr: RepoAddress): Promise<RepoHome | null> {
+  const key = homeCacheKey(network, addr)
   const hit = homeCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < HOME_CACHE_TTL_MS) {
     const fresh = Date.now() - hit.at < HOME_REVALIDATE_MS
@@ -78,43 +74,40 @@ function loadRepoHomeCached(
     // caller's data was already seeded synchronously from the stale value.
     if (fresh || hit.settled === undefined) return hit.promise
   }
-  return startLoad(sdk, key, params).promise
+  return startLoad(sdk, key, network, addr).promise
 }
 
-/** The cached settled home for `(network, owner, name)`, if any — wrapper disambiguates a
- *  cached not-found (`{ value: null }`) from "no cache" (`undefined`). */
-function peekRepoHome(
-  network: Network,
-  owner: string,
-  name: string,
-): { value: RepoHome | null } | undefined {
-  const hit = homeCache.get(homeCacheKey(network, owner, name))
+/** The cached settled home for an address, if any — wrapper disambiguates a cached
+ *  not-found (`{ value: null }`) from "no cache" (`undefined`). */
+function peekRepoHome(network: Network, addr: RepoAddress): { value: RepoHome | null } | undefined {
+  const hit = homeCache.get(homeCacheKey(network, addr))
   if (hit === undefined || hit.settled === undefined) return undefined
   if (Date.now() - hit.at >= HOME_CACHE_TTL_MS) return undefined
   return hit.settled
 }
 
-export function useRepoHome(owner: string, name: string): UseRepoResult {
+export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const { sdk, ready, error: sdkError, network } = useSdk()
-  const enabled = ready && sdk !== null && owner !== '' && name !== ''
+  const enabled = ready && sdk !== null && addr.owner !== '' && addr.name !== ''
+  const key = homeCacheKey(network, addr)
   const state = useAsync<RepoHome | null>(
-    () => loadRepoHomeCached(sdk!, { network, ownerId: owner, name }),
-    [ready, owner, name, network],
+    () => loadRepoHomeCached(sdk!, network, addr),
+    [ready, key],
     {
       enabled,
       // A cached not-found seeds `null` as a REAL settled value (instant "Repo not found");
       // only a cache miss returns undefined (no seed → loading shell).
       initial: () => {
-        const settled = peekRepoHome(network, owner, name)
+        const settled = peekRepoHome(network, addr)
         return settled === undefined ? undefined : settled.value
       },
     },
   )
   const { data, reload: rerun } = state
   const reload = useCallback(() => {
-    homeCache.delete(homeCacheKey(network, owner, name))
-    if (data !== null) invalidateBrowseContext(data.repo.contractId)
+    homeCache.delete(key)
+    if (data !== null) invalidateBrowseContext(repoKey(data.repo))
     rerun()
-  }, [network, owner, name, data, rerun])
+  }, [key, data, rerun])
   return { ...state, reload, ready, sdkError, network }
 }
