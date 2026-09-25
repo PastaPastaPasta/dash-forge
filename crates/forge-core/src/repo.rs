@@ -31,7 +31,7 @@ use crate::platform::{
     PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::private::RefNameHasher;
-use crate::rules::v2::{PackCopy, Role};
+use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack};
 use crate::rules::{self, ConfigDoc, RefState};
 use crate::scope::{self, DocScope, RepoRef};
 use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
@@ -335,7 +335,7 @@ pub struct LocalReseed {
 
 /// A repository's current members as the pack reader rule needs them (maintainers'
 /// copies first): empty on v1, where every copy is the repo contract's own.
-type RoleMap = BTreeMap<String, Role>;
+pub type RoleMap = BTreeMap<String, Role>;
 
 /// The git data-plane service, bound to one signing identity and its keys.
 ///
@@ -834,9 +834,10 @@ impl<'a> RepoService<'a> {
     /// permanent, so the superseded packs stay readable as the fallback the reader rule
     /// keeps (a hash proves a pack's bytes, not that it holds everything it replaces).
     ///
-    /// Flow: resolve refs → reachable tips; fetch each live kind-0 pack (best copy);
-    /// rebuild one self-contained pack over the tips ([`crate::pack::repack_from_packs`]);
-    /// upload it to `target`; write its manifest (`supersedes` every live kind-0 pack, the
+    /// Flow: resolve refs → reachable tips; fetch every git pack (best copy; superseded
+    /// ones too — a hash does not prove a consolidation is complete); rebuild one
+    /// self-contained pack over the tips ([`crate::pack::repack_from_packs`]); upload it to
+    /// `target`; write its manifest (`supersedes` the packs not already superseded, the
     /// resolved tips); publish the consolidated browse index (best-effort).
     pub async fn repack(&self, repo: &RepoRef, target: RepackTarget<'_>) -> Result<RepackReport> {
         let (_, contract) = self.writable(repo).await?;
@@ -850,17 +851,15 @@ impl<'a> RepoService<'a> {
             ));
         }
         let manifests = self.read_pack_manifests(repo).await?;
-        let live = live_kind0_manifests(&manifests);
-        if live.is_empty() {
-            return Err(Error::Config(
-                "repack: no live git packs to consolidate".into(),
-            ));
+        let git = git_pack_manifests(&manifests);
+        if git.is_empty() {
+            return Err(Error::Config("repack: no git packs to consolidate".into()));
         }
 
         let roles = self.copy_roles(repo).await?;
         let reader = PackReader::from_user_config();
         let mut pack_blobs = Vec::new();
-        for (hash, copies) in group_by_hash(&live) {
+        for (hash, copies) in group_by_hash(&git) {
             let (bytes, _) = self
                 .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
                 .await
@@ -880,7 +879,7 @@ impl<'a> RepoService<'a> {
         let object_count = consolidated.parsed.object_count() as u64;
 
         // Already a single optimal pack: nothing to gain, and nothing to write.
-        if live.iter().any(|m| m.pack_hash == new_pack_hash) {
+        if git.iter().any(|m| m.pack_hash == new_pack_hash) {
             return Err(Error::Config(
                 "repack: the repo is already a single consolidated pack (nothing to do)".into(),
             ));
@@ -907,7 +906,7 @@ impl<'a> RepoService<'a> {
             )
             .await?;
         let locator_manifest_id = self
-            .publish_locator_best_effort(repo, &consolidated.parsed, new_pack_hash, target)
+            .publish_locator_best_effort(repo, &roles, &consolidated.parsed, new_pack_hash, target)
             .await;
         let balance_end = self
             .client
@@ -1011,11 +1010,11 @@ impl<'a> RepoService<'a> {
         let (_, contract) = self.writable(repo).await?;
         let me = self.identity.id();
         let manifests = self.read_pack_manifests(repo).await?;
-        let live = live_kind0_manifests(&manifests);
+        let git = git_pack_manifests(&manifests);
         let roles = self.copy_roles(repo).await?;
         let reader = PackReader::from_user_config();
         let mut report = ReseedReport::default();
-        for (hash, copies) in group_by_hash(&live) {
+        for (hash, copies) in group_by_hash(&git) {
             let (bytes, best) = self
                 .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
                 .await?;
@@ -1053,7 +1052,7 @@ impl<'a> RepoService<'a> {
 
     /// Restore lost external copies from a LOCAL clone (`dg reseed --from-local`).
     ///
-    /// For every live kind-0 pack (or just `only`), the pack's exact bytes are looked up in
+    /// For every git pack (or just `only`), the pack's exact bytes are looked up in
     /// `git_dir` ([`crate::storage::local::find_local_pack`]: the helper's kept copy, or a
     /// fetched `objects/pack/*.pack`), SHA-256-verified against the manifest, and stored
     /// on `targets` (≥ `required` must confirm). Storage keys are content-addressed — S3
@@ -1073,13 +1072,13 @@ impl<'a> RepoService<'a> {
         force: bool,
     ) -> Result<LocalReseedReport> {
         let manifests = self.read_pack_manifests(repo).await?;
-        let live: Vec<PackManifestInfo> = live_kind0_manifests(&manifests)
+        let live: Vec<PackManifestInfo> = git_pack_manifests(&manifests)
             .into_iter()
             .filter(|m| only.is_none_or(|h| h == m.pack_hash))
             .collect();
         if let (Some(h), true) = (only, live.is_empty()) {
             return Err(Error::Config(format!(
-                "no live pack {} in this repo's manifests",
+                "no git pack {} in this repo's manifests",
                 hex::encode(h)
             )));
         }
@@ -1120,11 +1119,15 @@ impl<'a> RepoService<'a> {
     async fn publish_locator_best_effort(
         &self,
         repo: &RepoRef,
+        roles: &RoleMap,
         pack: &crate::pack::ParsedPack,
         pack_hash: [u8; 32],
         target: RepackTarget<'_>,
     ) -> Option<String> {
-        match self.publish_locator(repo, pack, pack_hash, target).await {
+        match self
+            .publish_locator(repo, roles, pack, pack_hash, target)
+            .await
+        {
             Ok(id) => Some(id),
             Err(e) => {
                 tracing::warn!(
@@ -1140,27 +1143,29 @@ impl<'a> RepoService<'a> {
     /// Build and publish an `objectLocator` (kind 1) over the consolidated repack pack,
     /// superseding every prior locator fragment.
     ///
-    /// `pack_ref` is read from a FRESH manifest list rather than assumed to be 0: a push
-    /// landing between this repack's manifest read and its write stores a pack it could not
-    /// supersede, with an earlier `$createdAt`, which takes packRef 0.
+    /// `pack_ref` is read from a FRESH manifest list: the consolidated pack is appended to
+    /// the pack space (superseded packs keep their positions), after any pack a concurrent
+    /// push stored first.
     async fn publish_locator(
         &self,
         repo: &RepoRef,
+        roles: &RoleMap,
         pack: &crate::pack::ParsedPack,
         pack_hash: [u8; 32],
         target: RepackTarget<'_>,
     ) -> Result<String> {
         let manifests = self.read_pack_manifests(repo).await?;
-        let space = locator_pack_space(&manifests, None);
+        let space = locator_pack_space(&manifests, roles, None);
+        let hash = hex::encode(pack_hash);
         let idx = space
             .iter()
-            .position(|m| m.pack_hash == pack_hash)
+            .position(|p| p.pack_hash == hash)
             .ok_or_else(|| {
-                Error::Config("repack: the consolidated pack is not in the live pack set".into())
+                Error::Config("repack: the consolidated pack is not in the pack set".into())
             })?;
         let pack_ref = u16::try_from(idx).map_err(|_| {
             Error::Config(format!(
-                "repack: live pack set has {} packs — past the locator's 16-bit packRef",
+                "repack: the pack set has {} packs — past the locator's 16-bit packRef",
                 space.len()
             ))
         })?;
@@ -1190,8 +1195,9 @@ impl<'a> RepoService<'a> {
         target: RepackTarget<'_>,
     ) -> Result<PushIndexOutcome> {
         let manifests = self.read_pack_manifests(repo).await?;
-        let space_len = locator_pack_space(&manifests, None).len();
-        let (pack_ref, live_locators) = match plan_push_index(&manifests, pack_hash) {
+        let roles = self.copy_roles(repo).await?;
+        let space_len = locator_pack_space(&manifests, &roles, None).len();
+        let (pack_ref, live_locators) = match plan_push_index(&manifests, &roles, pack_hash) {
             PushIndexPlan::Skip(why) => return Ok(PushIndexOutcome::Skipped(why)),
             PushIndexPlan::Publish {
                 pack_ref,
@@ -1234,7 +1240,7 @@ impl<'a> RepoService<'a> {
             .is_some_and(|r| usize::from(r) >= space_len)
         {
             return Ok(PushIndexOutcome::Skipped(
-                "a published index fragment addresses a pack outside the live pack set — \
+                "a published index fragment addresses a pack outside the pack set — \
                  run `dg repack` to rebuild the index"
                     .into(),
             ));
@@ -1388,33 +1394,42 @@ fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
     out
 }
 
-/// Pack hashes a repack's consolidated manifest lists in `supersedes`: every live kind-0
-/// pack except the new one, oldest first.
+/// Pack hashes a repack's consolidated manifest lists in `supersedes`: the git packs no
+/// manifest already names in `supersedes`, except the new one, in pack-space order.
 ///
-/// `supersedes` is a packed byteArray capped at 1024 bytes — **32 hashes**. On forge-v2
-/// nothing is deleted, so a pack superseded by an earlier repack stays superseded (the
-/// manifest that says so is permanent) and needs no slot here. Past 32 the list is
-/// truncated and the caller warned: the repack still consolidates, but a pack it could not
-/// name stays live, so the browse index reads as behind until a later repack names it.
+/// `supersedes` is a packed byteArray capped at 1024 bytes — **32 hashes**. A pack an
+/// earlier repack superseded stays superseded (the manifest that says so is permanent), so
+/// it needs no slot here. Past 32 the list is truncated and the caller warned: the repack
+/// still consolidates, and a pack it could not name is only read whole a little longer.
 fn repack_supersedes(manifests: &[PackManifestInfo], new_pack_hash: [u8; 32]) -> Vec<[u8; 32]> {
     /// `packManifest.supersedes` is a byteArray of at most 1024 bytes.
     const MAX_SUPERSEDES: usize = 1024 / 32;
-    let mut out: Vec<[u8; 32]> = Vec::new();
-    for m in locator_pack_space(manifests, None) {
-        if m.pack_hash != new_pack_hash && !out.contains(&m.pack_hash) {
-            out.push(m.pack_hash);
-        }
-    }
+    let claimed: BTreeSet<[u8; 32]> = manifests
+        .iter()
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
+    let new_hash = hex::encode(new_pack_hash);
+    let mut out: Vec<[u8; 32]> = locator_pack_space(manifests, &RoleMap::new(), None)
+        .iter()
+        .filter(|p| p.pack_hash != new_hash)
+        .filter_map(|p| hash32(&p.pack_hash))
+        .filter(|h| !claimed.contains(h))
+        .collect();
     if out.len() > MAX_SUPERSEDES {
         tracing::warn!(
             wanted = out.len(),
             kept = MAX_SUPERSEDES,
-            "more packs than `supersedes` can name; the browse index will read as behind \
-             until a later repack can name the rest"
+            "more packs than `supersedes` can name; the rest stay read whole until a later \
+             repack names them"
         );
         out.truncate(MAX_SUPERSEDES);
     }
     out
+}
+
+/// A 64-hex pack hash as bytes.
+fn hash32(hex_hash: &str) -> Option<[u8; 32]> {
+    hex::decode(hex_hash).ok()?.try_into().ok()
 }
 
 /// What [`RepoService::publish_push_locator`] should do, decided from the manifest list
@@ -1438,23 +1453,28 @@ enum PushIndexPlan {
 /// `manifests` must already include the pack just written. Three ways this declines, each
 /// meaning the index would otherwise start addressing the wrong bytes:
 ///
-/// * the pushed pack is not live — a repack superseded it between the push and this read;
-/// * the live pack set outgrew the locator's 16-bit `packRef`;
-/// * a live fragment indexes a pack space that is not a prefix of the current one. Between
-///   repacks the live pack list only grows at the end, so this holds; a repack breaks it and
-///   supersedes the fragments it consolidated, leaving only the concurrent-repack race.
-fn plan_push_index(manifests: &[PackManifestInfo], pack_hash: [u8; 32]) -> PushIndexPlan {
-    let space = locator_pack_space(manifests, None);
-    let Some(idx) = space.iter().position(|m| m.pack_hash == pack_hash) else {
+/// * the pushed pack is not in the git pack space (another copy re-labelled its kind);
+/// * the pack space outgrew the locator's 16-bit `packRef`;
+/// * a live fragment indexes a pack space that is not a prefix of the current one. The
+///   space only grows at the end (a pack keeps its first-upload position, superseded or
+///   not), so this holds unless a pack's kind changed under a later, higher-ranked copy.
+fn plan_push_index(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    pack_hash: [u8; 32],
+) -> PushIndexPlan {
+    let space = locator_pack_space(manifests, roles, None);
+    let hash = hex::encode(pack_hash);
+    let Some(idx) = space.iter().position(|p| p.pack_hash == hash) else {
         return PushIndexPlan::Skip(
-            "the pushed pack is not in the live pack set (superseded by a concurrent \
-             repack?) — its index would address the wrong bytes"
+            "the pushed pack is not in the git pack space — its index would address the \
+             wrong bytes"
                 .into(),
         );
     };
     let Ok(pack_ref) = u16::try_from(idx) else {
         return PushIndexPlan::Skip(format!(
-            "live pack set has {} packs — past the locator's 16-bit packRef; \
+            "the pack set has {} packs — past the locator's 16-bit packRef; \
              run `dg maint repack` to consolidate",
             space.len()
         ));
@@ -1462,7 +1482,14 @@ fn plan_push_index(manifests: &[PackManifestInfo], pack_hash: [u8; 32]) -> PushI
 
     let live_locators = live_locator_manifests(manifests);
     for m in &live_locators {
-        let as_of = locator_pack_space(manifests, Some(m.created_at));
+        let as_of = locator_pack_space(
+            manifests,
+            roles,
+            Some(&CopyKey {
+                created_at: m.created_at,
+                id: m.document_id.clone(),
+            }),
+        );
         if as_of.len() > space.len()
             || as_of
                 .iter()
@@ -1470,7 +1497,7 @@ fn plan_push_index(manifests: &[PackManifestInfo], pack_hash: [u8; 32]) -> PushI
                 .any(|(a, b)| a.pack_hash != b.pack_hash)
         {
             return PushIndexPlan::Skip(
-                "a published index fragment no longer matches the live pack set \
+                "a published index fragment no longer matches the pack set \
                  (a repack landed concurrently) — run `dg maint repack` to rebuild it"
                     .into(),
             );
@@ -1485,48 +1512,46 @@ fn plan_push_index(manifests: &[PackManifestInfo], pack_hash: [u8; 32]) -> PushI
     }
 }
 
-/// The pack list a locator's `packRef` indexes — THE normative definition, shared with the
-/// web client (`forge-web/lib/view/browse-source.ts::locatorPackSpace`) and with whatever
-/// publishes a locator.
-///
-/// `packRef` is "an index into the manifest's pack list", but no pack list is stored
-/// on-chain, so reader and writer must derive the same one. It is: **the LIVE kind-0 packs
-/// as of `as_of`, oldest-first by `($createdAt, $id)`.** Three parts, each load-bearing:
-///
-/// * *as of* — a locator only indexes packs that existed when it was built; later
-///   incremental packs are outside its space. `None` means "as of now".
-/// * *live* — a repack consolidates several packs into one and marks the originals
-///   `supersedes`. Superseded manifests survive (v2 manifests are permanent; v1 repacks
-///   deleted only the caller's own), so counting them would shift every index. Liveness is
-///   computed WITHIN the as-of bound, so a later repack cannot retroactively change what an
-///   older locator meant.
-/// * *oldest-first by `($createdAt, $id)`* — the platform total order, not a reversed
-///   `$createdAt desc` query, which drops the `$id` tiebreak on equal timestamps.
-/// * *one entry per pack* — on forge-v2 each uploader has its own copy of a pack; a pack's
-///   position is that of its earliest copy.
+/// The repository's pack list (`FORGE_RULES_V2::v2_pack_list`, forge-v2.md §4) over its
+/// manifests: every pack once, however many uploaders hold a copy, with its `packRef` among
+/// the packs of its kind. `roles` ranks the copies (empty on v1, where each pack has one).
+/// Copies are listed unchecked (`verified: None`), so no pack counts as superseded here;
+/// supersession only changes which packs a reader fetches whole, never a position.
+pub fn pack_list(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    as_of: Option<&CopyKey>,
+) -> Vec<V2Pack> {
+    let rows: Vec<PackCopyRow> = manifests
+        .iter()
+        .map(|m| PackCopyRow {
+            id: m.document_id.clone(),
+            pack_hash: hex::encode(m.pack_hash),
+            kind: m.kind,
+            created_at: m.created_at,
+            owner_role: roles.get(&m.owner_id).copied(),
+            size_bytes: m.size_bytes,
+            object_count: m.object_count,
+            chunk_count: m.chunk_count,
+            supersedes: m.supersedes.iter().map(hex::encode).collect(),
+            verified: None,
+        })
+        .collect();
+    crate::rules::v2::v2_pack_list(&rows, as_of)
+}
+
+/// The space a locator's `packRef` indexes: the git (kind-0) packs of [`pack_list`], in
+/// `packRef` order. `as_of` bounds it to what existed when an older locator was built.
+/// Shared with forge-web (`v2PackList`) through the `v2_pack_list__*` vectors.
 pub fn locator_pack_space(
     manifests: &[PackManifestInfo],
-    as_of: Option<u64>,
-) -> Vec<PackManifestInfo> {
-    let bounded: Vec<PackManifestInfo> = match as_of {
-        None => manifests.to_vec(),
-        Some(t) => manifests
-            .iter()
-            .filter(|m| m.created_at <= t)
-            .cloned()
-            .collect(),
-    };
-    let mut live = live_kind0_manifests(&bounded);
-    live.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.document_id.cmp(&b.document_id))
-    });
-    // forge-v2: several uploaders may each hold a copy of one pack. The space has one entry
-    // per pack, placed at its first copy — a later copy does not shift existing packRefs.
-    let mut seen = BTreeSet::new();
-    live.retain(|m| seen.insert(m.pack_hash));
-    live
+    roles: &RoleMap,
+    as_of: Option<&CopyKey>,
+) -> Vec<V2Pack> {
+    pack_list(manifests, roles, as_of)
+        .into_iter()
+        .filter(|p| p.kind == u64::from(crate::pack::KIND_GIT_PACK))
+        .collect()
 }
 
 /// Decode a `packManifest` document.
@@ -1587,20 +1612,13 @@ fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInf
     live
 }
 
-/// The live (non-superseded) kind-0 git packs among `manifests`: kind-0 manifests whose
-/// `packHash` no *other* manifest lists in its `supersedes`. This is what repack
-/// consolidates and reseed re-uploads. On forge-v2 a pack may appear once per uploader.
-/// Unordered — [`locator_pack_space`] is what puts the
-/// live packs in the `packRef` order a locator addresses them by.
-fn live_kind0_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
-    let superseded: BTreeSet<[u8; 32]> = manifests
-        .iter()
-        .flat_map(|m| m.supersedes.iter().copied())
-        .collect();
+/// Every git pack (kind 0) manifest, all copies: what a fetch, a repack or a reseed reads
+/// (per pack, from its best verifying copy). Superseded packs are included — they are the
+/// fallback the reader rule keeps.
+fn git_pack_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
     manifests
         .iter()
         .filter(|m| m.kind == u64::from(crate::pack::KIND_GIT_PACK))
-        .filter(|m| !superseded.contains(&m.pack_hash))
         .cloned()
         .collect()
 }
@@ -1631,7 +1649,7 @@ mod tests {
         order_copies, plan_push_index, repack_supersedes, PackManifestInfo, PushIndexPlan, RoleMap,
         MAX_LOCATOR_FRAGMENTS,
     };
-    use crate::rules::v2::Role;
+    use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
 
     /// A manifest stub carrying only what the packRef space is derived from.
@@ -1656,6 +1674,18 @@ mod tests {
         ms.iter().map(|m| m.pack_hash[0]).collect()
     }
 
+    /// The first byte of each pack in the locator space (unranked copies, as of now or `t`).
+    fn space(ms: &[PackManifestInfo], as_of: Option<(u64, &str)>) -> Vec<u8> {
+        let key = as_of.map(|(created_at, id)| CopyKey {
+            created_at,
+            id: id.to_string(),
+        });
+        locator_pack_space(ms, &RoleMap::new(), key.as_ref())
+            .iter()
+            .map(|p| hex::decode(&p.pack_hash).unwrap()[0])
+            .collect()
+    }
+
     #[test]
     fn locator_pack_space_orders_live_packs_oldest_first_with_the_id_tiebreak() {
         // Query order is `$createdAt desc`; the packRef space is the reverse WITH the id
@@ -1666,11 +1696,13 @@ mod tests {
             manifest("mm", 100, 0, 1),
             manifest("ll", 150, 1, 9), // a locator is not part of the pack space
         ];
-        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![1, 2, 3]);
+        assert_eq!(space(&manifests, None), vec![1, 2, 3]);
     }
 
     #[test]
-    fn locator_pack_space_excludes_superseded_packs_within_the_as_of_bound() {
+    fn superseded_packs_keep_their_positions_and_as_of_bounds_the_space() {
+        // v2 manifests are permanent: a repack appends the consolidated pack and the packs
+        // it supersedes keep their packRefs, so no locator is ever renumbered.
         let mut consolidated = manifest("cc", 300, 0, 9);
         consolidated.supersedes = vec![[1u8; 32], [2u8; 32]];
         let manifests = vec![
@@ -1678,17 +1710,9 @@ mod tests {
             manifest("bb", 200, 0, 2),
             manifest("aa", 100, 0, 1),
         ];
-
-        // As of now: only the consolidated pack is live.
-        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![9]);
-
-        // As of a locator published BEFORE the repack, the originals are still live and
-        // still hold packRef 0 and 1 — a later repack must not retroactively renumber what
-        // an older index fragment meant.
-        assert_eq!(
-            hashes(&locator_pack_space(&manifests, Some(250))),
-            vec![1, 2]
-        );
+        assert_eq!(space(&manifests, None), vec![1, 2, 9]);
+        // As of a locator published before the repack: only the originals.
+        assert_eq!(space(&manifests, Some((250, "ll"))), vec![1, 2]);
     }
 
     #[test]
@@ -1727,7 +1751,7 @@ mod tests {
 
     /// Shorthand: what `plan_push_index` decided, as `(pack_ref, fold)` or the skip reason.
     fn plan(manifests: &[PackManifestInfo], hash: u8) -> Result<(u16, bool, usize), String> {
-        match plan_push_index(manifests, [hash; 32]) {
+        match plan_push_index(manifests, &RoleMap::new(), [hash; 32]) {
             PushIndexPlan::Publish {
                 pack_ref,
                 fold,
@@ -1770,9 +1794,9 @@ mod tests {
     }
 
     #[test]
-    fn push_index_plan_declines_when_a_repack_superseded_the_pushed_pack() {
-        // The race: a repack landed between the push and this read, so the pack the push
-        // stored is no longer live and an index over it would address the wrong bytes.
+    fn push_index_plan_indexes_a_pack_a_concurrent_repack_superseded() {
+        // A repack landed between the push and this read. The pushed pack keeps its
+        // position (superseded packs are never renumbered), so its fragment is still right.
         let mut consolidated = manifest("cc", 300, 0, 9);
         consolidated.supersedes = vec![[1u8; 32], [2u8; 32]];
         let manifests = vec![
@@ -1780,28 +1804,28 @@ mod tests {
             manifest("p2", 200, 0, 2),
             manifest("p1", 100, 0, 1),
         ];
-        assert!(plan(&manifests, 2)
-            .unwrap_err()
-            .contains("not in the live pack set"));
+        assert_eq!(plan(&manifests, 2), Ok((1, false, 0)));
     }
 
     #[test]
-    fn push_index_plan_declines_when_a_live_fragment_predates_a_repack() {
-        // A fragment published concurrently with a repack survives (the repack could not
-        // list it in `supersedes`) but indexes a pack space the repack replaced. Folding it
-        // in would carry its packRefs into an index that means different packs.
-        let mut consolidated = manifest("cc", 300, 0, 9);
-        consolidated.supersedes = vec![[1u8; 32], [2u8; 32]];
+    fn push_index_plan_declines_a_pack_whose_kind_another_copy_changed() {
+        // A maintainer's later copy labels the pushed hash a locator (kind 1): the pack is
+        // no longer in the git pack space, so indexing it would address the wrong bytes.
+        let mut relabel = manifest("m1", 300, 1, 3);
+        relabel.owner_id = "alice".into();
         let manifests = vec![
-            manifest("p4", 400, 0, 4), // the pack this push stored
-            consolidated,
-            manifest("f1", 250, 1, 8), // indexed [p1, p2] — not a prefix of [cc, p4]
-            manifest("p2", 200, 0, 2),
+            relabel,
+            manifest("p3", 200, 0, 3),
             manifest("p1", 100, 0, 1),
         ];
-        assert!(plan(&manifests, 4)
-            .unwrap_err()
-            .contains("no longer matches the live pack set"));
+        let roles: RoleMap = [("alice".to_string(), Role::Maintainer)]
+            .into_iter()
+            .collect();
+        let got = plan_push_index(&manifests, &roles, [3; 32]);
+        assert!(
+            matches!(&got, PushIndexPlan::Skip(why) if why.contains("not in the git pack space")),
+            "{got:?}"
+        );
     }
 
     #[test]
@@ -1827,7 +1851,7 @@ mod tests {
         prev.supersedes = vec![[1u8; 32]];
         let new = manifest("new", 400, 0, 9);
         let out = repack_supersedes(&[new, prev, bob], [9u8; 32]);
-        assert_eq!(out, vec![[2u8; 32]]);
+        assert_eq!(out, vec![[2u8; 32]], "P1 is already superseded by `prev`");
     }
 
     #[test]
@@ -1850,7 +1874,7 @@ mod tests {
         let mut copy = manifest("c2", 300, 0, 1);
         copy.owner_id = "carol".into();
         let manifests = vec![copy, manifest("p2", 200, 0, 2), manifest("p1", 100, 0, 1)];
-        assert_eq!(hashes(&locator_pack_space(&manifests, None)), vec![1, 2]);
+        assert_eq!(space(&manifests, None), vec![1, 2]);
         assert_eq!(group_by_hash(&manifests)[0].1.len(), 2);
     }
 

@@ -120,7 +120,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 4. `packRef` is the pack's index, by first upload, **among the packs of its kind**: kind-0 git packs are numbered 0..n regardless of interleaved kind-1 index fragments.
 5. A pack is superseded when another listed pack's representative names it in `supersedes` **and that representative verified**; an unchecked claim supersedes nothing. Superseded packs keep their `packRef` (positions never shift); readers skip them only when fetching whole packs, and read them as a fallback.
 
-The function is kind-agnostic: callers pass every copy and select a kind from its output (the locator space is the kind-0 packs). On forge-v1, where each pack has one copy, it reduces to the v1 rule (live kind-0 packs, oldest first).
+The function is kind-agnostic: callers pass every copy and select a kind from its output (the locator space is the kind-0 packs). It differs from the v1 rule on purpose: v1 dropped superseded packs from the space (a v1 repack deleted the caller's own), while v2 keeps them, because v2 manifests are permanent and a position that never moves means no locator ever needs renumbering. Locators of v1 repositories keep the v1 rule.
 
 `release`, `label`, `webhook`, `checkRun`, `comment`, `review`, `star`, `follow` and `profile` stay deletable. Their resolution is newest-wins or per-author, so a deletion removes only the deleter's own contribution. Residual risk: a revoked maintainer can delete a release they published. Readers fall back to the next-newest release for that tag.
 

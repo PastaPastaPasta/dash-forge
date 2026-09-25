@@ -40,11 +40,12 @@ pub async fn repack(
     let price = dash_usd_price();
 
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let space = forge_core::repo::locator_pack_space(&manifests, None);
+    let roles = svc.copy_roles(&handle).await.unwrap_or_default();
+    let space = forge_core::repo::locator_pack_space(&manifests, &roles, None);
     let live_bytes: u64 = space.iter().map(|m| m.size_bytes).sum();
     if !ctx.json {
         println!(
-            "Repack {}: {} live pack(s), {live_bytes} bytes",
+            "Repack {}: {} git pack(s), {live_bytes} bytes",
             handle.display(),
             space.len()
         );
