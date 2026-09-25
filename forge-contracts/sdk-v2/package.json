@@ -1,0 +1,10 @@
+{
+  "name": "@dash-forge/forge-v2-deploy-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned Platform SDK for scripts/deploy-v2.mjs (protocol 14). Kept apart from ../node_modules, which scripts/deploy.mjs (v1, evo-sdk 4.0) uses.",
+  "type": "module",
+  "dependencies": {
+    "@dashevo/evo-sdk": "4.2.0-beta.4"
+  }
+}

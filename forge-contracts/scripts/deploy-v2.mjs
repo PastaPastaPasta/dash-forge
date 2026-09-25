@@ -1,0 +1,328 @@
+// Register the forge-v2 contract pair (forge-core + forge-collab) in one PV14 contract group.
+//
+//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
+//   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
+//        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
+//
+// Steps, each skipped when deployments/<network>.json shows it already done and the chain
+// confirms it (so a failed run is resumed by running the same command again):
+//   1. forge-core: a DataContractCreate v1 that registers the contract group AND enrols
+//      forge-core in it (the group id derives from the owner and the same nonce, so the
+//      transition can name the group it creates);
+//   2. forge-collab: substitute forge-core's id for FORGE_CORE_CONTRACT_ID in its schema, then a
+//      DataContractCreate v1 enrolling forge-collab in the group.
+// Both are signed with the deployer's CRITICAL authentication key (contract create needs
+// CRITICAL or HIGH; CRITICAL is what deploy.mjs has always used). The deployer owns the
+// contracts and the group; no moderation, not readonly (flip readonly in a later update once
+// the schema is final).
+//
+// Before anything is broadcast, the script checks the network runs protocol 14, rebuilds both
+// contracts with full validation locally (the same rs-dpp as the network, compiled to wasm), and
+// prints the transition sizes. --dry-run stops there.
+//
+// Protocol notes: the contract id is hash_double(owner || nonce) and the group id
+// hash_double("contract_group" || owner || nonce) (rs-dpp contract_group::generate_contract_group_id).
+// The JS below derives the group id itself because evo-sdk exposes no helper; the Rust validator
+// (tools/contract-validate) prints a known-answer vector that --self-test checks.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE, '..');
+// The pinned protocol-14 SDK lives in sdk-v2/ so it cannot collide with the evo-sdk 4.0 that
+// deploy.mjs (v1) resolves from ../node_modules. The package is ESM-only.
+const EVO_SDK_ENTRY = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk', 'dist', 'evo-sdk.module.js');
+export async function loadEvoSdk() {
+  if (!existsSync(EVO_SDK_ENTRY)) throw new Error('run `npm ci` in forge-contracts/sdk-v2 first');
+  const evo = await import(pathToFileURL(EVO_SDK_ENTRY).href);
+  // The wasm module is initialized lazily; the offline classes (DataContract, PrivateKey, ...)
+  // need it before any SDK connects, and this is the one public call that runs the init.
+  await evo.EvoSDK.getLatestVersionNumber();
+  return evo;
+}
+const PROTOCOL_VERSION = 14;
+const MAX_STATE_TRANSITION_SIZE = 20480;
+const PLACEHOLDER = 'FORGE_CORE_CONTRACT_ID';
+const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core and forge-collab' };
+const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 90000, retries: 3 };
+const CREDITS_PER_DASH = 1e11;
+const DEFAULT_ADDRESSES = {
+  // devnet moutai (protocol 14, drive 4.2.0-beta.4)
+  moutai: [254, 207, 192, 194, 195, 196, 253, 198, 199, 84].map((o) => `https://68.67.122.${o}:1443`),
+};
+
+const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
+
+function parseArgs(argv) {
+  const a = {};
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (!t.startsWith('--')) throw new Error(`unexpected argument: ${t}`);
+    const k = t.slice(2);
+    a[k] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
+  }
+  return a;
+}
+
+// ---- base58 + id derivation (rs-dpp hash_double = sha256(sha256(x))) ----
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function b58decode(s) {
+  let n = 0n;
+  for (const c of s) {
+    const v = B58.indexOf(c);
+    if (v < 0) throw new Error(`bad base58: ${s}`);
+    n = n * 58n + BigInt(v);
+  }
+  const bytes = [];
+  while (n > 0n) { bytes.unshift(Number(n % 256n)); n /= 256n; }
+  for (const c of s) { if (c === '1') bytes.unshift(0); else break; }
+  return Buffer.from(bytes);
+}
+function b58encode(buf) {
+  let n = BigInt(`0x${Buffer.from(buf).toString('hex') || '0'}`);
+  let out = '';
+  while (n > 0n) { out = B58[Number(n % 58n)] + out; n /= 58n; }
+  for (const b of buf) { if (b === 0) out = `1${out}`; else break; }
+  return out;
+}
+const sha256 = (b) => createHash('sha256').update(b).digest();
+const hashDouble = (b) => sha256(sha256(b));
+const u64be = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+export function contractId(ownerB58, nonce) {
+  return b58encode(hashDouble(Buffer.concat([b58decode(ownerB58), u64be(nonce)])));
+}
+export function contractGroupId(ownerB58, nonce) {
+  return b58encode(hashDouble(Buffer.concat([Buffer.from('contract_group'), b58decode(ownerB58), u64be(nonce)])));
+}
+
+function selfTest() {
+  // Printed by tools/contract-validate for owner 0x07 * 32, nonce 1
+  const owner = b58encode(Buffer.alloc(32, 7));
+  const want = { contract: '4xQ1gLbVttHSnHSNAexse7ByXJd7BQCRLgLYuPevrcTW', group: 'EjmhECjYE4T5yC24xyU852tpWTmwwmAphwLLnJrShYkH' };
+  const got = { contract: contractId(owner, 1), group: contractGroupId(owner, 1) };
+  if (got.contract !== want.contract || got.group !== want.group) {
+    throw new Error(`id derivation self-test failed: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
+  }
+  log('id derivation self-test: ok (matches rs-dpp)');
+}
+
+// ---- deployment record ----
+function depPath(network, devnetName) {
+  return join(ROOT, 'deployments', `${network === 'devnet' ? `devnet-${devnetName}` : network}.json`);
+}
+function readDep(file) {
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+}
+function writeDep(file, dep) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(dep, null, 2)}\n`);
+  renameSync(tmp, file); // never leave a half-written record behind
+}
+
+export { b58decode, b58encode, selfTest };
+
+export function loadSchema(name, substitutions = {}) {
+  let text = readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8');
+  for (const [k, v] of Object.entries(substitutions)) text = text.split(k).join(v);
+  if (text.includes('_CONTRACT_ID"')) throw new Error(`${name}: unresolved contract id placeholder`);
+  return JSON.parse(text);
+}
+
+function pickKey(rec, purpose, level) {
+  const k = rec.identityKeys.find((x) => x.purpose === purpose && x.securityLevel === level);
+  if (!k) throw new Error(`deployer identity has no ${level} ${purpose} key`);
+  return k;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  selfTest();
+  if (args['self-test']) return;
+
+  const network = args.network || 'devnet';
+  const devnetName = network === 'devnet' ? (args['devnet-name'] || 'moutai') : undefined;
+  if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
+  if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
+  const dryRun = Boolean(args['dry-run']);
+  const addresses = typeof args.addresses === 'string'
+    ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
+    : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
+
+  const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
+  const ownerId = rec.identityId;
+  const critKey = pickKey(rec, 'AUTHENTICATION', 'CRITICAL');
+
+  const evo = await loadEvoSdk();
+  const { EvoSDK, DataContract, DataContractCreateTransition, PrivateKey, IdentityPublicKey } = evo;
+  const sdkOptions = { network, trusted: true, settings: PUT_SETTINGS, version: PROTOCOL_VERSION };
+  if (devnetName) sdkOptions.devnetName = devnetName;
+  if (addresses) sdkOptions.addresses = addresses;
+  const sdk = new EvoSDK(sdkOptions);
+  log(`connecting (${network}${devnetName ? `/${devnetName}` : ''}, ${addresses ? `${addresses.length} addresses` : 'discovered addresses'})...`);
+  await sdk.connect();
+
+  const status = await sdk.system.status();
+  const current = status.version.protocol.drive.current;
+  if (current < PROTOCOL_VERSION) {
+    throw new Error(`network runs protocol ${current}; forge-v2 needs ${PROTOCOL_VERSION} (contract groups, ownerRefersTo)`);
+  }
+  log(`network protocol ${current}, drive ${status.version.software.drive ?? '?'}`);
+
+  const identity = await sdk.identities.fetch(ownerId);
+  if (!identity) {
+    // A dry run only builds and sizes the transitions, which needs no identity on chain
+    if (!dryRun) throw new Error(`deployer identity ${ownerId} not found on ${network}`);
+    log(`deployer ${ownerId} is not on this network; dry run continues with nonce 1`);
+  } else {
+    const onChainKey = identity.getPublicKeyById(critKey.id);
+    if (!onChainKey || String(onChainKey.data).toLowerCase() !== critKey.publicKeyHex.toLowerCase()) {
+      throw new Error(`key ${critKey.id} of ${ownerId} on chain does not match the identity file`);
+    }
+  }
+
+  const publicKey = new IdentityPublicKey({
+    keyId: critKey.id,
+    purpose: critKey.purpose,
+    securityLevel: critKey.securityLevel,
+    keyType: critKey.keyType,
+    isReadOnly: false,
+    data: Buffer.from(critKey.publicKeyHex, 'hex'),
+  });
+  const privateKey = PrivateKey.fromWIF(critKey.privateKeyWif);
+
+  const depFile = depPath(network, devnetName);
+  const dep = readDep(depFile);
+  dep.v2 ??= {};
+  const v2 = dep.v2;
+  const record = () => writeDep(depFile, dep);
+
+  const balance = async () => BigInt((await sdk.identities.balance(ownerId)) ?? 0n);
+  const chainNonce = async () => (identity ? BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) : 0n);
+  let dryRunNextNonce = null;
+  const report = { network: devnetName ? `devnet-${devnetName}` : network, ownerId, steps: [] };
+
+  // Build, check and (unless --dry-run) broadcast one contract create. `nonce` is reserved in
+  // the record BEFORE broadcasting, so a crash after broadcast resumes by checking that id
+  // rather than registering a second copy under a new nonce.
+  async function registerContract({ key, schemaName, substitutions, registerGroup, groupId }) {
+    const existing = v2[key];
+    if (existing?.contractId) {
+      const onChain = await sdk.contracts.fetch(existing.contractId);
+      if (onChain) {
+        log(`${key}: already registered as ${existing.contractId}; skipping`);
+        return existing.contractId;
+      }
+      if (existing.status === 'registered') {
+        throw new Error(`${key}: the record says ${existing.contractId} is registered but the network does not have it (devnet reset?). Move deployments/${report.network}.json aside to start over.`);
+      }
+      log(`${key}: a previous run reserved nonce ${existing.identityNonce} (${existing.contractId}) but it is not on chain`);
+    }
+
+    // In a dry run nothing is broadcast, so the next contract's nonce is one past this one's
+    const nonce = dryRunNextNonce ?? (await chainNonce()) + 1n;
+    if (dryRun) dryRunNextNonce = nonce + 1n;
+    if (existing?.identityNonce && BigInt(existing.identityNonce) === nonce) {
+      log(`${key}: the reserved nonce ${nonce} is still next; reusing it`);
+    }
+    const id = contractId(ownerId, nonce);
+
+    const json = loadSchema(schemaName, substitutions);
+    const full = {
+      $formatVersion: '1',
+      id,
+      ownerId,
+      version: 1,
+      ...(json.description ? { description: json.description } : {}),
+      ...(json.keywords ? { keywords: json.keywords } : {}),
+      schemaDefs: json.schemaDefs,
+      documentSchemas: json.documentSchemas,
+    };
+    // Full validation, the same parse a node's action transform runs (a cross-contract
+    // reference is resolved only at registration, against state)
+    const contract = DataContract.fromJSON(full, true, PROTOCOL_VERSION);
+    if (contract.id.toString() !== id) throw new Error(`${key}: contract id mismatch ${contract.id} != ${id}`);
+
+    const transition = new DataContractCreateTransition(contract, nonce, PROTOCOL_VERSION);
+    if (registerGroup) transition.setContractGroup({ admins: [], name: GROUP.name, description: GROUP.description });
+    transition.setContractGroupMemberships([{ contractGroupId: b58decode(groupId), member: 'contract' }]);
+    const st = transition.toStateTransition();
+    st.sign(privateKey, publicKey);
+    const size = st.toBytes().length;
+    log(`${key}: id ${id}, nonce ${nonce}, signed create transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
+    if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: transition exceeds max_state_transition_size`);
+    if (dryRun) {
+      report.steps.push({ key, contractId: id, nonce: nonce.toString(), sizeBytes: size, dryRun: true });
+      return id;
+    }
+
+    v2[key] = { contractId: id, identityNonce: nonce.toString(), status: 'broadcasting', sizeBytes: size };
+    if (registerGroup) v2.contractGroupId = groupId;
+    record();
+
+    const before = await balance();
+    await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+    const after = await balance();
+    const fetched = await sdk.contracts.fetch(id);
+    if (!fetched) throw new Error(`${key}: broadcast confirmed but ${id} cannot be fetched`);
+    const costCredits = before - after;
+    v2[key] = {
+      contractId: id,
+      ownerId,
+      identityNonce: nonce.toString(),
+      status: 'registered',
+      deployedAt: new Date().toISOString(),
+      sizeBytes: size,
+      costCredits: costCredits.toString(),
+      costDash: Number(costCredits) / CREDITS_PER_DASH,
+    };
+    record();
+    log(`${key}: registered; cost ${(Number(costCredits) / CREDITS_PER_DASH).toFixed(6)} DASH`);
+    report.steps.push({ key, ...v2[key] });
+    return id;
+  }
+
+  // The group is registered by forge-core's transition, so its id follows forge-core's nonce.
+  // On a resume the recorded group id wins (it was derived from the nonce actually used).
+  const coreNonceGuess = v2.forgeCore?.identityNonce
+    ? BigInt(v2.forgeCore.identityNonce)
+    : (await chainNonce()) + 1n;
+  const groupId = v2.contractGroupId || contractGroupId(ownerId, coreNonceGuess);
+
+  const coreId = await registerContract({ key: 'forgeCore', schemaName: 'forge-core', substitutions: {}, registerGroup: true, groupId });
+  const groupIdFinal = dryRun ? contractGroupId(ownerId, coreNonceGuess) : v2.contractGroupId;
+  if (!dryRun && groupIdFinal !== contractGroupId(ownerId, BigInt(v2.forgeCore.identityNonce))) {
+    throw new Error('recorded contract group id does not match forge-core\'s nonce');
+  }
+  await registerContract({
+    key: 'forgeCollab',
+    schemaName: 'forge-collab',
+    substitutions: { [PLACEHOLDER]: coreId },
+    registerGroup: false,
+    groupId: groupIdFinal,
+  });
+
+  if (!dryRun) {
+    const info = await sdk.contractGroups.info(groupIdFinal);
+    if (!info || info.ownerId !== ownerId) throw new Error(`contract group ${groupIdFinal} not found or not owned by ${ownerId}`);
+    for (const key of ['forgeCore', 'forgeCollab']) {
+      const m = await sdk.contractGroups.forContract(v2[key].contractId);
+      if (!m.contract.includes(groupIdFinal)) throw new Error(`${key} is not enrolled in ${groupIdFinal}`);
+    }
+    v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
+    v2.protocolVersion = PROTOCOL_VERSION;
+    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.4';
+    if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
+    record();
+    log(`contract group ${groupIdFinal} verified: owner ${ownerId}, both contracts enrolled`);
+  }
+  report.contractGroupId = groupIdFinal;
+  report.deployment = depFile;
+  console.log(JSON.stringify(report, null, 2));
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  main().catch((e) => { log(`ERROR: ${e?.message || e}`); process.exit(1); });
+}
