@@ -4,7 +4,7 @@
 
 This document covers three things:
 - where the project actually stands, checked against the code on `master` and not against the tracker's status lines;
-- the decisions the owner needs to make;
+- the owner's decisions, and the questions still open;
 - the ordered plan that turns a testnet proof-of-concept into something real users would choose.
 
 ---
@@ -34,126 +34,136 @@ This document covers three things:
 3. **The headline feature is not wired into pushes.** `git push` always stores packs on Platform (`storage: 0`, `crates/git-remote-dash/src/helper.rs:518`) whatever the repo's backend setting says. Cheap storage only happens through `dg repack`/`reseed`. S3 has no SigV4, so authenticated buckets (AWS, R2, B2) don't work. There is no IPFS pinning service, and reads are pinned to the single `ipfs.io` gateway.
 4. **No path in for a new user.** No release binaries (users must build a large Rust tree with protoc), no DPNS names (URLs need 44-character base58 ids), plaintext key files, no identity creation in the web app, and login means pasting a raw private key.
 5. **The web app says things that aren't true.** The trust panel hard-codes `refs: 'verified', packs: 'verified'` (`components/repo/repo-rail.tsx:35`). "Merge" records an event but merges nothing, and it is shown to users who can't merge. Star/follow buttons always start un-set. The Archive button does nothing.
-6. **The trust story has single points of failure.** The web app is served from GitHub Pages behind one domain. Both the CLI and the web app get quorum keys from one HTTPS endpoint: the docs say the CLI is "fully trustless", but it uses `TrustedHttpContextProvider` (`crates/forge-core/src/platform.rs:219`). There is one IPFS gateway. Identity bootstrap goes through one bridge/faucet.
+6. **The trust story has single points of failure.** The web app is served from GitHub Pages behind one domain. Both the CLI and the web app get quorum keys from one HTTPS endpoint: the docs say the CLI is "fully trustless", but it uses `TrustedHttpContextProvider` (`crates/forge-core/src/platform.rs:219`). There is one IPFS gateway. Identity bootstrap points at one bridge site.
 7. **No real code review.** No PR diff on `master`, no line-level commit diffs, no inline comments, no approve/request-changes in the web app, no opening a PR or merging from the browser. `dg repo fork` is a stub.
 8. **CI is red.** The testnet nightly has failed every night since 2026-09-11, which is the first night it actually ran. The causes: a landing-page contrast (a11y) failure, scenario 07 hitting the 60-minute timeout, and transport flakes turning scenarios 02 and 04 into SKIPs.
 
 ## 3. Who it's for (the beachhead)
 
-The sequence has to earn trust before it asks for commitment. Users will not move their primary repo to a new host on day one. They will add an **unkillable mirror** if it takes one YAML file and costs under a dollar.
+**Forge hosts nothing.** It is a static frontend (GitHub Pages) plus a CLI. A user brings exactly one thing: an S3-compatible bucket (AWS, R2, B2, MinIO…), an IPFS node or pinning account, or Platform credits (highest cost, maximum decentralization). Forge never runs infrastructure on anyone's behalf: no default replicas, no public relay, no sponsored identities.
+
+Trust has to come before commitment. Nobody moves their main repo to a new host on day one, but plenty will add a **mirror that can't be taken down** if it takes one YAML file and their own bucket.
 
 | Persona | Why they care | First product they touch |
 |---|---|---|
-| **Takedown-exposed OSS maintainer** (privacy tools, crypto, DRM/scraper tools, anything DMCA- or sanction-adjacent) | GitHub has removed repos like theirs before | **Forge Mirror Action**: continuous GitHub → Forge mirror |
-| **Dash ecosystem projects** (dashpay/*, Platform apps) | Dogfooding; credible "we host ourselves" | import + mirror, then primary hosting |
-| **Sovereignty-minded developers** | They own their identity and their history | `dg` + `git-remote-dash` |
-| **Archivists** | Preserving repos at risk | `forge-import`, reseed, multi-backend replication |
+| **OSS maintainer at risk of takedown** (privacy tools, crypto, anything near DMCA or sanctions) | GitHub has removed repos like theirs before | **Forge Mirror Action**: a continuous GitHub → Forge mirror into their own bucket |
+| **Dash ecosystem** (launch partner: **dashpay mirrors on mainnet**) | Dogfooding; a credible "we host ourselves" | Mirror, then primary hosting |
+| **Developers who want to own their setup** | Their identity, their bucket, their history | `dg` + `git-remote-dash` |
+| **Teams with sensitive code** | Private repos with no host who can read them | Private repos (encrypted to recipients) |
 | **Visitors / contributors** | Read, clone, file an issue, send a PR | forge web |
 
-**Wedge → expansion:** the mirror (insurance) leads to a Forge-native issue/PR flow (a second home), which leads to Forge as primary (GitHub becomes the mirror).
+**How it grows:** first a mirror (insurance), then Forge's own issues and PRs (a second home), then Forge as the primary host with GitHub as the mirror.
 
 ## 4. Non-negotiable invariants (the ethos)
 
 Every roadmap item must keep all of these true:
-1. **No server in the trust path.** Anything the product contacts (web host, DAPI node, gateway, relay, bucket) may lie or disappear. Correctness comes from proofs and hashes, and availability comes from having more than one of each.
-2. **Every server is replaceable by anyone.** No component may require infrastructure run by us. Anything we host is a convenience with documented alternatives.
-3. **The UI shows only what was verified.** A "verified" badge must come from an actual check that passed. A button's label must describe what the click actually does.
-4. **Cost honesty.** Show an estimate before every paid write, split into deposit and burn, with DASH primary. No surprise spend, and that includes `git push`.
-5. **Zero workflow change.** Plain git and jj. `dg` mirrors `gh`.
+1. **We host nothing.** No feature may require infrastructure operated by the Forge project. Anything that looks hosted is either a static asset or something the user runs.
+2. **No server in the trust path.** Anything the product contacts (web host, DAPI node, gateway, relay, bucket) may lie or disappear. Correctness comes from proofs and hashes, and availability from redundancy the user controls.
+3. **No moderation.** The contracts are registered without Platform contract moderation, so no one can ban identities or delete content at the protocol level.
+4. **The UI shows only what was verified.** A "verified" badge comes from a check that actually passed, and a button's label says what the click actually does.
+5. **Cost honesty.** Show an estimate before every paid write, split into deposit and burn, with DASH primary. No surprise spend, including on `git push`.
+6. **Zero workflow change.** Plain git and jj; `dg` mirrors `gh`.
 
-## 5. Decisions needed from the owner
+## 5. Decisions
 
-| # | Decision | Recommendation | Why |
-|---|---|---|---|
-| **D-A** | **Repo cost model.** Per-repo contracts cost ≥0.5–1.2 DASH by protocol fee. | **Two tiers.** *Community repos*: documents in one shared `forge-repos` contract, with access control enforced by the deterministic client rules (the same mechanism that already governs un-gated `patch`/`event`). Target < 0.02 DASH to create. *Sovereign repos*: the existing per-repo contract with consensus-enforced token ACLs, for projects that need it. Community → sovereign upgrade as a first-class flow. | $40 per repo kills adoption, and forks become unaffordable. Client-rule ACL still trusts no server: unauthorized writes cost the attacker fees and are inert for every reader, exactly as events are today. Consensus enforcement stays available where it matters. |
-| **D-B** | Where does push data go by default? | **External (IPFS pinned in ≥2 places, and/or S3-compatible), with Platform as an opt-in premium tier.** The manifest and refs always stay on Platform. | ~100× cheaper, and this *is* the value proposition. |
-| **D-C** | How does the web app get its trust anchor? | Short term: cross-check quorum keys from ≥2 independent endpoints and show the result honestly. Long term: SPV-verified quorums (Core light client) in the CLI; the web app keeps a disclosed trusted mode. | Removes the single trusted endpoint without blocking launch. |
-| **D-D** | Who holds the mainnet registry owner key? | A jointly held owner identity (keys held by ≥2 people, documented custody) before deploy. | Cannot be changed after deploy (`docs/mainnet-runbook.md`). |
-| **D-E** | Should opening a PR require a WRITE token? | Keep PRs un-gated, with client-side spam filtering (hide PRs from identities with no history or no DPNS name unless someone expands them). | Drive-by contributions are the point of open source. |
+### Decided (owner, 2026-09-24)
+| # | Decision |
+|---|---|
+| D-A | **Default tier = one shared contract with PV14 writer gates** (`ownerRefersTo` + deletable `lookup` references). Per-repo write ACLs are enforced by consensus, and repo creation and forks become a handful of documents. The per-repo contract stays as an opt-in "sovereign" tier. See §6 Phase 2. |
+| D-B | **Bring your own storage.** A repo's packs go to the backends its owner configures (S3-compatible, IPFS) or to Platform. Manifests and refs always stay on Platform. No Forge-run defaults. |
+| D-F | **No moderation** on the contracts. |
+| D-G | **Users fund their own identities.** No sponsored grants and no faucet in the product (the testnet/devnet faucet links are only for development). |
+| D-H | **Private repos are in the first release.** |
+| D-I | **Hosting = GitHub Pages only** (plus a published IPFS build users can pin themselves). |
+| D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on **devnet moutai** (protocol 14, drive 4.2.0-beta.4) until then. |
+| D-K | External accounts (Apple signing, pinning services, cloud buckets) are **out of scope for now**. S3 and IPFS are tested against local MinIO and kubo only. |
+
+### Still open
+| # | Question | Default until decided |
+|---|---|---|
+| D-D | Who owns the mainnet registry and shared contract (identity and key custody)? | The owner decides before registering. The deploy script takes the owner identity as input. |
+| D-C | Trust anchor: web app and CLI take quorum keys from a known HTTPS endpoint. | Cross-check ≥2 endpoints, disclose honestly in the trust panel; SPV quorum verification in the CLI later. |
+| D-E | Should opening a PR require a token? | No: anyone may open one, with client-side spam filtering. |
 
 ## 6. Roadmap
 
-Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phases 1 and 2 can run in parallel once Phase 0 is done.
+Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 comes first. Phases 1 and 2 then run in parallel. Phase 2 targets moutai now and moves to testnet when PV14 activates there.
 
 ### Phase 0 — Make it true and green (S–M) · *gate: nightly green 7 days, zero misleading UI*
 - [ ] Land PR #4 (browse index on push). Rebase and land `fix/pull-request-diff` (PR diff renderer).
-- [ ] Fix the nightly: the landing-page contrast failure; the scenario 07 timeout (hang in `git-remote-dash` under `timeout`); retry transport flakes, so that 02/04 produce a verdict and not a SKIP.
-- [ ] Trust panel driven by actual verification state (proof-verified ref reads, pack hash checks), with "unverified"/"partial" states. Remove the hard-coded "verified" chips.
-- [ ] Show "Merge" only to WRITE/MAINTAIN holders and label it for what it does ("Mark merged"), until Phase 4 makes a real browser merge.
-- [ ] Star/follow buttons read their initial state and surface errors. Remove or implement Archive.
-- [ ] Make the registry id per-network configuration in forge-core, dg, the relay and doctor (not a constant). Load `forge-contracts/deployments/<network>.json`.
-- [ ] Correct the docs: the CLI trust mode, the README status and domain, and `EXECUTION.md` pointing at this roadmap.
+- [ ] Fix the nightly: the landing-page contrast failure; the scenario 07 hang/timeout; transport flakes retried until they give a verdict rather than a SKIP.
+- [ ] Trust panel driven by actual verification state, with "unverified" and "partial" states; remove the hard-coded "verified" chips.
+- [ ] Show "Merge" only to WRITE/MAINTAIN holders and label it for what it does until Phase 4. Star/follow read their initial state; Archive is implemented or removed.
+- [ ] Network config: registry and contract ids per network (testnet, **devnet** with a name such as `moutai`, mainnet) loaded from `forge-contracts/deployments/<network>.json` in forge-core, dg, the relay, doctor and web. No hard-coded ids.
+- [ ] Docs: correct the CLI trust mode, the README status and domain, `EXECUTION.md` → this roadmap.
 
-### Phase 1 — Make "unbreakable" real (L) · *gate: the survivability drill passes*
-Storage:
-- [ ] `git push` honors the repo's backend setting. Packs are uploaded to the configured external backends; the manifest records every URI and the hash, and refs go to Platform. Platform chunks are used only for the Platform tier or as a fallback.
-- [ ] S3 SigV4 (AWS, Cloudflare R2, Backblaze B2, MinIO), with credentials from env/keychain and never on-chain.
-- [ ] IPFS pinning services (Pinata, Filebase, Storacha, any Pinning Service API) plus local kubo. **Replication policy**: N ≥ 2 independent targets per pack, and the push fails if fewer than N confirm.
-- [ ] Template v2 `packMirror` document, so `dg reseed` (and anyone else) can *record* new mirrors on-chain. Readers use every recorded mirror.
-- [ ] Gateway lists: several IPFS gateways, raced in the browser and the CLI, with Platform chunks as the last resort.
+### Phase 1 — Bring your own storage, for real (L) · *gate: the survivability drill passes*
+- [ ] `git push` honors the repo's storage config: packs go to the owner's backends, the manifest records every URI plus the hash, refs go to Platform. Platform chunks are used only when Platform is the configured tier.
+- [ ] Storage profiles the user supplies once (`dg storage add`, and the web app's settings): S3-compatible with **SigV4** (AWS/R2/B2/MinIO), IPFS via their kubo API or any Pinning Service API endpoint they choose. Credentials stay local (OS keychain / browser-encrypted vault) and never go on-chain.
+- [ ] Browser push: the web app uploads to the user's bucket directly (presigned or SigV4 in-browser; CORS setup guide), so web-only users can publish without the CLI.
+- [ ] A replication policy chosen by the user (N targets; the push fails if fewer than N confirm).
+- [ ] `packMirror` document so anyone can record extra mirrors on-chain (`dg reseed`). Readers race every recorded URI plus a user-configurable gateway list, with Platform chunks as the last resort.
+- [ ] Web app IPFS build published on each release (users pin it themselves), reproducible, with its hash recorded on-chain so the loaded app can be verified.
+- [ ] **Survivability drill** in CI (local MinIO + kubo): delete the bucket, stop a gateway, take down the web host, kill the relay. Clone and browse must still work from the remaining sources and must say why.
 
-Access and hosting:
-- [ ] Web app published to IPFS on every release (CID and DNSLink), with Pages kept as one of several mirrors. Reproducible build, with the build hash published on-chain in a `forgeRelease` registry document so users can verify the app they loaded.
-- [ ] Several DAPI seed sources, and quorum keys cross-checked from ≥2 endpoints (D-C).
+### Phase 2 — Shared contract on PV14 (L) · *gate: repo create ≤ 0.01 DASH on moutai; consensus rejects a revoked writer*
+- [ ] Bump the Platform SDK pins to `v4.2.0-beta.4` (Rust git tag + `@dashevo/evo-sdk@4.2.0-beta.4`); add `--network devnet --devnet-name moutai` (DAPI addresses + `quorums.moutai.networks.dash.org`).
+- [ ] `forge-v2` shared contract: `repo`, `writer`/`maintainer` membership docs keyed `(repoId, memberId)`, with the owner-only grant enforced by a `$ownerId` `propertyAgreement` against the repo doc; `ownerRefersTo` writer gates on ref/pack/manifest/release/config types; no moderation; `readonly` once final. Validated offline against rs-dpp beta.4, then registered on moutai.
+- [ ] If the schema exceeds 16 KiB, split it into core and collab contracts that reference each other, joined by a PV14 contract group.
+- [ ] forge-core, the web app and the conformance vectors on the new model. Cross-repo queries arrive for free (my PRs, activity, issue search), and forks point at parent packs.
+- [ ] Migration: the importer copies v1 repos into forge-v2 (history preserved); v1 stays readable.
+- [ ] e2e on moutai: grant → push → revoke → the push is rejected at consensus, plus everything from the CLI suite.
+- [ ] `git push` cost guard (`dash.costWarnThreshold`, `dash.confirm`).
+- [ ] PV14 extras: **budget- and expiry-limited keys** bound to the forge contract for web login and CI runners (in place of raw key paste); `encryptedFor` for relay webhook secrets; `indexOnly` stars/follows.
 
-**Survivability drill** (automated, in the nightly): delete the S3 bucket, block `ipfs.io`, take down the Pages host, and kill the relay. `git clone dash://…` and the IPFS-served web app must still work, and must report *why*.
+### Phase 3 — Private repos (L) · *gate: an outsider with full bucket + chain access learns nothing but sizes and timing*
+- [ ] Design (security-reviewed): a per-repo content key that encrypts packs and the private collab docs. The key is wrapped per member to their identity encryption key (ECDH, PV14 `encryptedFor` envelope where it fits). Key rotation on member removal re-wraps and re-encrypts future pushes; past content stays readable to past members (stated plainly).
+- [ ] Encrypted packs in the user's bucket and on Platform; encrypted issue/PR bodies; ref names hashed.
+- [ ] CLI and web decrypt paths; the trust panel shows the "private" state.
 
-### Phase 2 — Make it affordable (M–L, needs D-A) · *gate: creating a repo < 0.02 DASH, a typical push < $0.05*
-- [ ] Shared `forge-repos` contract (community tier): repo, ACL (owner-appended maintainer set), ref, manifest and collab documents keyed by `repoId`. Rules-engine ACL fold plus conformance vectors, shared by Rust and TS.
-- [ ] Cheap fork: a new community repo whose manifests point at the parent's external packs (nothing re-uploaded).
-- [ ] Community → sovereign upgrade: deploy a per-repo contract, re-point the listing, keep the old history readable.
-- [ ] `git push` cost guard: `dash.costWarnThreshold` in git config. Above the threshold, the push shows the estimate and requires confirmation (`dash.confirm=always|threshold|never`). Push is the one paid path that has no guard today.
-- [ ] Price feed (optional, multi-source) in place of the hard-coded $30/DASH.
+### Phase 4 — Adoptable (L) · *gate: public beta on testnet/moutai*
+- [ ] Release pipeline: `dg` + `git-remote-dash` binaries for Linux, macOS and Windows as GitHub Release assets (unsigned on macOS for now), plus a checksummed install script, `cargo binstall`, and a Docker image for the relay that users run themselves.
+- [ ] `dg auth`: OS keychain, 0600 fallback files; `dg auth new` guides the user through funding their own identity (QR asset lock; the faucet on test networks). DPNS username registration.
+- [ ] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
+- [ ] Web onboarding: create an identity in the browser from the user's own funds (QR asset lock), an encrypted key vault (passphrase/passkey), and limited keys (Phase 2).
+- [ ] **Forge Mirror Action**: a GitHub Action that pushes every GitHub push into Forge using the repo's own bucket and a runner identity with a limited key. Issue/PR sync is incremental.
+- [ ] `dg import` → forge-import, plus a continuous mirror mode.
+- [ ] User docs: quick start, "bring your bucket" guides (R2, B2, S3, MinIO, kubo), migrating from GitHub, how to verify the forge isn't lying to you, key backup and recovery.
 
-### Phase 3 — Make it adoptable, and launch on mainnet (L) · *gate: public beta*
-Distribution and identity:
-- [ ] Release pipeline: signed `dg` + `git-remote-dash` binaries for macOS, Linux and Windows; a Homebrew tap; `cargo binstall`; `curl | sh` with checksum; a Docker image for the relay.
-- [ ] `dg auth`: keys in the OS keychain, and fallback files written with mode 0600. `dg auth new` creates an identity, funding it by QR asset lock (mainnet) or faucet (testnet). DPNS username registration.
-- [ ] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grant by name, profile names and avatars.
-- [ ] Web onboarding: create an identity in the browser (QR asset lock), an encrypted key vault (passphrase/passkey) in place of raw key paste, and wallet integration where available.
+### Phase 5 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
+- [ ] Line-level commit/PR diffs, inline review comments, approve/request-changes, re-review on new heads.
+- [ ] Real merges from the browser (fast-forward and clean merges via isomorphic-git, pushed to the user's bucket), respecting protected refs.
+- [ ] Open a PR from the browser; forks (`dg repo fork` = a few documents on forge-v2).
+- [ ] Web editing (CodeMirror → commit → push); releases page with assets in the user's bucket; labels and assignees UI; history pagination, blame, in-repo code search; a poll-based notification inbox (local state).
+- [ ] Relay: users run it (Docker), with `encryptedFor` webhook secrets and a check-run write-back Action.
 
-Wedge:
-- [ ] **Forge Mirror Action**: a GitHub Action (plus `dg mirror` for other CI) that pushes every GitHub push to Forge and syncs issues and PRs incrementally. One YAML file, a runner identity with a WRITE token, external storage by default.
-- [ ] `dg import` delegates to forge-import, and import gains a continuous mirror mode.
+### Phase 6 — Mainnet launch (S, gated on PV14 mainnet ≈ 1 month)
+- [ ] The owner registers the forge-v2 contracts (D-D); commit `deployments/mainnet.json`; mainnet web build (network switch retained).
+- [ ] dashpay mirrors on mainnet; Dash Forge hosts itself on Forge with GitHub as its mirror.
+- [ ] Weekly mainnet smoke run from a user-funded CI identity.
 
-Launch:
-- [ ] Execute `docs/mainnet-runbook.md` (after D-D): mainnet registry and shared contract, web build on mainnet (testnet as a switchable network), the weekly mainnet smoke run, and a balance watchdog.
-- [ ] Dogfood: Dash Forge's own repo hosted on Forge mainnet, with GitHub as the mirror.
-- [ ] A landing page that explains the promise, the survivability drill results, and the cost in plain numbers.
-
-### Phase 4 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
-- [ ] Code review: line-level commit and PR diffs, inline review comments (a `reviewComment` anchored to path/line/commit), approve/request-changes in the web app, re-review on new heads.
-- [ ] Real merges: fast-forward and clean merges from the browser (isomorphic-git builds the merge commit and pushes the pack + ref through the browser WriteEngine), respecting protected refs.
-- [ ] Open a PR from the browser (choose a fork branch); `dg repo fork`.
-- [ ] Web editing: CodeMirror edit → commit → push, for small changes.
-- [ ] Releases page, and asset upload to external backends with hashes recorded on-chain.
-- [ ] Label and assignee UI, commit history pagination, blame, in-repo code search (a client-side index cached in IndexedDB).
-- [ ] Notifications: a poll-based inbox over watched repos (local state only).
-- [ ] Relay: encrypted webhook secrets (decrypted by the relay identity), a public instance, and a check-run write-back Action for GitHub Actions runners.
-
-### Phase 5 — Organizations and longevity (L)
-- [ ] Organizations: multi-member groups for token administration (sovereign tier) and multi-maintainer ACL sets (community tier); a key-custody guide.
-- [ ] Template versioning and migration (repo-v2 → vN) with a readers' compatibility matrix.
-- [ ] Audit-log compaction design (checkpoint documents), large files via external backends (LFS-style pointers), SHA-256 object-format repos.
-- [ ] Optional community-run indexer, following the relay's pattern (availability-only trust): global search, explore/trending, activity feeds.
-- [ ] Private repos: client-side encryption to recipient identities (design → prototype).
+### Later
+Organizations (multi-member admin sets, key custody guide), template versioning, audit-log compaction, large files through pointers to the user's bucket, SHA-256 repos, optional user-run indexer for global search.
 
 ## 7. Launch criteria (what "real users would want it" means)
 
 Public beta ships when all of these hold on **mainnet**:
-1. A GitHub user goes from nothing to an unkillable, continuously synced mirror in **under 10 minutes, for under $1**, without building from source.
+1. A GitHub user with their own bucket goes from nothing to a continuously synced mirror that can't be taken down in **under 10 minutes**, without building from source and without any Forge-run service.
 2. The **survivability drill** passes in CI: any single host, bucket, gateway, relay or domain can disappear and clone and browse still work.
 3. Nothing in the UI claims more than was verified. The nightly has been green for 14 days.
-4. Creating a repo costs **< 0.02 DASH** (community tier). A 100 KiB push costs **< $0.05** by default.
-5. Dash Forge itself, plus at least 3 external projects, are hosted or mirrored on Forge mainnet.
+4. Creating a repo costs **≤ 0.01 DASH**. A 100 KiB push to the user's own bucket costs **< $0.05** in Platform fees.
+5. Private repos pass their security review.
+6. dashpay and Dash Forge itself are on Forge mainnet.
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Client-rule ACL (D-A) is seen as weaker than consensus enforcement | Keep the sovereign tier. Show which tier a repo is on in the trust panel. Conformance vectors for the ACL fold. |
-| External storage disappears (unpaid pinning) | N ≥ 2 replication, `packMirror` + reseed by anyone, a storage-status warning when a pack's live mirrors drop below N. |
+| PV14 semantics shift before mainnet (4.2 is beta), or the devnet is reset | Pin the SDK tag, keep the forge-v2 schema in tests validated against each new 4.2 tag, and script the full moutai deploy so a reset costs minutes. |
+| A revoked writer can still delete the Platform chunks they uploaded (no token cost on delete) | External storage is the default, and repack re-uploads. Documented in the trust model. |
+| Private-repo key handling mistakes | A separate design doc, an independent security review, test vectors, and no "private" label in the UI until it passes. |
+| A user's bucket disappears (unpaid, deleted) | Replication to N targets the user chooses, `packMirror` + reseed by anyone, a storage-status warning when a pack's live copies drop below N, and Platform as a fallback tier. |
 | Testnet instability makes CI flaky | Tell transport flakes apart from real failures, retry with backoff, and record flake rates. |
 | Platform SDK / protocol churn (fee schedule v3, SDK tags) | Pin SDK tags, run a nightly against the next tag, and keep the fee model read from the live platform version. |
-| DASH price volatility | DASH-primary pricing, a multi-source price feed, and external storage keeping absolute costs small. |
-| Mainnet deploy mistakes cannot be undone | Runbook canary, a jointly held owner, and a registry version pointer so a successor registry can be adopted. |
+| DASH price volatility | DASH-primary pricing, an optional user-selected price source, and bring-your-own storage keeping Platform spend small. |
+| Mainnet deploy mistakes cannot be undone | Rehearse the exact deploy on moutai and then testnet; a runbook canary; a contract-group version pointer so a successor contract can be adopted. |
