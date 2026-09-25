@@ -156,6 +156,21 @@ Protocol 14 changes three things that a client has to handle:
   Drive rejects. forge-web's `documentForCreate` builds documents through
   `Document.fromObject`, which keeps bytes as bytes.
 
+Protocol 13 under the 4.2 verifier has two paging gotchas, which both clients handle in their
+complete readers (`query_all_documents` / `queryAllDocuments`):
+
+- **Descending page after a cursor.** The 4.2 grovedb verifier rejects the proof a
+  protocol-13 node returns for one ("Proof op family does not match the query direction").
+  A descending read is paged ascending and reversed, which gives the same rows in the same
+  order.
+- **Same-block ties.** A `start_after` cursor excludes the cursor's whole `$createdAt`, so
+  documents created in the same block as a page's last row, and sorting after it, are
+  skipped. When the index ends in `$createdAt`, the readers also query the boundary
+  timestamp with `==`. This needs the boundary row's `$createdAt`. The history-keeping
+  repo-v1 types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return it from a
+  proved query, so their reads keep the gap until they move to forge-v2 on protocol 14,
+  which bounds the cursor by document id.
+
 ## Networks
 
 Every binary and the web app target one of **testnet** (the default), **mainnet**, or a
