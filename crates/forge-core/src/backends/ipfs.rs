@@ -21,7 +21,7 @@ use std::time::Duration;
 use reqwest::{multipart, Client, RequestBuilder, StatusCode};
 use serde::Deserialize;
 
-use super::https::{http_get, http_probe, transport_err};
+use super::https::{http_get, http_get_capped, http_probe, transport_err, truncate_chars};
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::Secret;
@@ -342,8 +342,7 @@ impl<'a> PinningClient<'a> {
             } else {
                 ""
             };
-            let mut body = body;
-            body.truncate(400);
+            let body = truncate_chars(body, 400);
             return Err(Error::Io(format!(
                 "pinning service {what} failed with status {status}{hint}: {body}"
             )));
@@ -452,6 +451,10 @@ impl PackBackend for IpfsBackend {
         http_get(&self.client, &self.read_url(uri)?, range).await
     }
 
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        http_get_capped(&self.client, &self.read_url(uri)?, None, Some(max_bytes)).await
+    }
+
     async fn probe(&self, uri: &Uri) -> Result<Health> {
         http_probe(&self.client, &self.read_url(uri)?).await
     }
@@ -498,6 +501,15 @@ mod tests {
     fn errors_on_missing_hash() {
         assert!(parse_add_cid(r#"{"Name":"x"}"#).is_err());
         assert!(parse_add_cid("").is_err());
+    }
+
+    #[test]
+    fn pinning_error_bodies_truncate_on_a_char_boundary() {
+        // A multi-byte character straddling byte 400 must not panic.
+        let body = format!("{}é{}", "a".repeat(399), "b".repeat(50));
+        let cut = truncate_chars(body, 400);
+        assert!(cut.ends_with('…'));
+        assert!(cut.len() <= 400 + '…'.len_utf8());
     }
 
     #[test]

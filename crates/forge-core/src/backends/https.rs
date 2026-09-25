@@ -84,6 +84,17 @@ pub(crate) async fn http_get(
     url: &str,
     range: Option<ByteRange>,
 ) -> Result<Vec<u8>> {
+    http_get_capped(client, url, range, None).await
+}
+
+/// [`http_get`] that refuses to buffer more than `max_bytes` (a hostile or broken host
+/// streaming without end must cost a failed candidate, not the reader's memory).
+pub(crate) async fn http_get_capped(
+    client: &Client,
+    url: &str,
+    range: Option<ByteRange>,
+    max_bytes: Option<u64>,
+) -> Result<Vec<u8>> {
     let mut req = client.get(url);
     if let Some(r) = range {
         req = req.header(reqwest::header::RANGE, r.http_header_value());
@@ -109,11 +120,48 @@ pub(crate) async fn http_get(
         return Err(Error::Io(format!("GET {url} failed with status {status}")));
     }
 
-    let bytes = resp
-        .bytes()
+    read_body_capped(resp, max_bytes, url).await
+}
+
+/// Read a response body, erroring as soon as it exceeds `max_bytes` (checked against
+/// `Content-Length` up front and against the running total while streaming).
+pub(crate) async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max_bytes: Option<u64>,
+    what: &str,
+) -> Result<Vec<u8>> {
+    let too_big = |n: u64| match max_bytes {
+        Some(m) if n > m => Err(Error::Io(format!(
+            "{what}: response is larger than the expected {m} bytes; refusing to read it"
+        ))),
+        _ => Ok(()),
+    };
+    if let Some(len) = resp.content_length() {
+        too_big(len)?;
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| transport_err("reading response body", &e))?;
-    Ok(bytes.to_vec())
+        .map_err(|e| transport_err("reading response body", &e))?
+    {
+        out.extend_from_slice(&chunk);
+        too_big(out.len() as u64)?;
+    }
+    Ok(out)
+}
+
+/// Truncate `s` to at most `max` bytes on a char boundary, marking the cut with `…`.
+pub(crate) fn truncate_chars(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut cut = max;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push('…');
+    }
+    s
 }
 
 /// Shared HEAD probe used by the https and s3 adapters.

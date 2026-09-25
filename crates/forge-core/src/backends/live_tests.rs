@@ -372,6 +372,29 @@ async fn ipfs_cid_matches_kubo() {
     assert!(super::cid::cid_v1_raw_leaves(&big).starts_with("bafybei"));
 }
 
+/// A file of MORE than 174 leaves (≈ 44 MiB → 175 leaves) forces a two-level balanced
+/// dag-pb tree; kubo's CID must still equal the local derivation.
+#[tokio::test]
+async fn ipfs_cid_matches_kubo_for_a_two_level_tree() {
+    skip_unless!(
+        &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
+        "ipfs_cid_matches_kubo_for_a_two_level_tree"
+    );
+    let leaves = super::cid::MAX_LINKS + 1;
+    let len = super::cid::CHUNK_SIZE * leaves - 12_345;
+    let data: Vec<u8> = (0..len)
+        .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) % 251).unwrap())
+        .collect();
+    let backend = IpfsBackend::new(IpfsConfig::local(IPFS_API, IPFS_GATEWAY));
+    let expected = super::cid::cid_v1_raw_leaves(&data);
+    let got = backend.add(&data).await.expect("kubo add (~44 MiB)");
+    assert_eq!(
+        got, expected,
+        "two-level tree: kubo CID must equal the local derivation"
+    );
+    backend.unpin(&got).await.expect("unpin");
+}
+
 /// Replication across the real stores: signed S3 + kubo, N = 2, then the reader races
 /// the recorded URIs back (hash-verified); a dead target with N = 2 fails the policy.
 #[tokio::test]
@@ -422,14 +445,17 @@ async fn replicate_to_minio_and_kubo_then_read_back() {
         .collect();
     assert_eq!(
         reader
-            .fetch_verified(&ipfs_only, &meta.pack_hash)
+            .fetch_verified(&ipfs_only, &meta.pack_hash, Some(data.len() as u64))
             .await
             .unwrap(),
         data
     );
     // And the full list.
     assert_eq!(
-        reader.fetch_verified(&uris, &meta.pack_hash).await.unwrap(),
+        reader
+            .fetch_verified(&uris, &meta.pack_hash, None)
+            .await
+            .unwrap(),
         data
     );
 

@@ -19,7 +19,7 @@
 
 use reqwest::{Client, Method, StatusCode, Url};
 
-use super::https::{http_get, http_probe, transport_err};
+use super::https::{http_get_capped, http_probe, read_body_capped, transport_err, truncate_chars};
 use super::sigv4::{self, AmzDate, RequestToSign, SigningKeys, EMPTY_PAYLOAD_SHA256};
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
@@ -28,10 +28,36 @@ use crate::keystore::Secret;
 /// The S3 scheme label used in manifest URIs.
 pub const S3_SCHEME: &str = "s3";
 
-/// The longest store error body echoed into an error message. S3 error documents can be
-/// long (a `SignatureDoesNotMatch` carries the whole canonical request); the first part is
-/// the actionable code + message.
-const MAX_ERROR_BODY: usize = 600;
+/// The longest store error message echoed into an error. Only the S3 error document's
+/// `<Code>` and `<Message>` are ever echoed — never the rest of the body, which for
+/// `SignatureDoesNotMatch` can carry the canonical request (and so a session token).
+const MAX_ERROR_MESSAGE: usize = 300;
+
+/// Reject a URL that could smuggle credentials or break key placement: userinfo
+/// (`https://user:token@host`), a query string or a fragment.
+pub(crate) fn reject_url_extras(field: &str, url: &Url) -> Result<()> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::Config(format!(
+            "{field} must not embed credentials (user:password@); use a secret reference"
+        )));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(Error::Config(format!(
+            "{field} must not have a query string or fragment"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether a key has an empty, `.` or `..` segment — which an HTTP stack would normalize
+/// AFTER signing, addressing a different key (possibly in another bucket) than the one
+/// the signature was meant for.
+pub(crate) fn key_has_bad_segment(key: &str) -> bool {
+    key.is_empty()
+        || key
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+}
 
 /// Static credentials for SigV4 signing. The secret parts are [`Secret`]s, so a `Debug`
 /// of this struct (or of an [`S3Config`] holding it) never prints them.
@@ -100,9 +126,11 @@ impl S3Config {
     /// empty, `.` or `..` segments (an HTTP stack would normalize those AFTER signing and
     /// break the signature, or point the key somewhere else entirely).
     pub fn validate(&self) -> Result<()> {
-        let url = Url::parse(&self.endpoint).map_err(|e| {
-            Error::Config(format!("s3 endpoint {:?} is not a URL: {e}", self.endpoint))
-        })?;
+        // Unparseable values are not echoed (they may hold a pasted token); once the URL
+        // is known to carry no userinfo/query, echoing it below is safe.
+        let url = Url::parse(&self.endpoint)
+            .map_err(|e| Error::Config(format!("s3 endpoint is not a URL: {e}")))?;
+        reject_url_extras("s3 endpoint", &url)?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return Err(Error::Config(format!(
                 "s3 endpoint {:?} must be an http(s) origin",
@@ -123,6 +151,16 @@ impl S3Config {
             return Err(Error::Config(format!(
                 "s3 bucket name {:?} must be lowercase letters, digits, '-', '.', '_'",
                 self.bucket
+            )));
+        }
+        let ip_host = url
+            .host_str()
+            .is_some_and(|h| h.parse::<std::net::IpAddr>().is_ok() || h.starts_with('['));
+        if !self.path_style && ip_host {
+            return Err(Error::Config(format!(
+                "s3 endpoint {:?} is an IP address, which cannot take a bucket subdomain; \
+                 set path_style = true",
+                self.endpoint
             )));
         }
         if !self.path_style && self.bucket.contains('.') && url.scheme() == "https" {
@@ -146,7 +184,8 @@ impl S3Config {
         }
         if let Some(public) = &self.public_url {
             let u = Url::parse(public)
-                .map_err(|e| Error::Config(format!("public_url {public:?} is not a URL: {e}")))?;
+                .map_err(|e| Error::Config(format!("public_url is not a URL: {e}")))?;
+            reject_url_extras("public_url", &u)?;
             if !matches!(u.scheme(), "http" | "https") {
                 return Err(Error::Config(format!(
                     "public_url {public:?} must be http(s)"
@@ -181,15 +220,29 @@ struct Prepared {
 }
 
 impl S3Backend {
-    /// Build a backend from `config` with a fresh HTTP client.
+    /// Build a backend from `config` with its own HTTP client.
     pub fn new(config: S3Config) -> Self {
         Self {
             config,
-            client: Client::new(),
+            client: Self::client(),
         }
     }
 
-    /// Build a backend over an existing client.
+    /// The HTTP client S3 requests use: bounded timeouts and **no redirects**. A signed
+    /// request cannot survive a redirect (the signature covers host and path), and
+    /// following one would carry `x-amz-security-token` to wherever the redirect points;
+    /// a 301/307 is reported with its cause instead (see `auth_hint`).
+    pub fn client() -> Client {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .read_timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_default()
+    }
+
+    /// Build a backend over an existing client. The client should not follow redirects
+    /// (see [`S3Backend::client`]).
     pub fn with_client(config: S3Config, client: Client) -> Self {
         Self { config, client }
     }
@@ -221,6 +274,41 @@ impl S3Backend {
         })
     }
 
+    /// The URIs a manifest records for `key`: the public URL (what browsers read) first,
+    /// then the `s3://` locator (a credentialed CLI read path; it names the bucket).
+    fn uris_for(&self, key: &str) -> Vec<Uri> {
+        let mut uris = Vec::with_capacity(2);
+        if let Some(public) = self.public_url(key) {
+            uris.push(Uri(public));
+        }
+        uris.push(Uri(self.s3_uri(key)));
+        uris
+    }
+
+    /// Read `uri` (an `s3://` locator of this bucket, or a public http(s) URL).
+    async fn get_bounded(
+        &self,
+        uri: &Uri,
+        range: Option<ByteRange>,
+        max_bytes: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        match uri.scheme() {
+            Some(S3_SCHEME) => {
+                let key = self.key_of(uri).ok_or_else(|| {
+                    Error::Config(format!(
+                        "s3 uri {uri} does not name a valid key in this profile's bucket {:?}",
+                        self.config.bucket
+                    ))
+                })?;
+                self.get_object_capped(&key, range, max_bytes).await
+            }
+            Some("http" | "https") => http_get_capped(&self.client, &uri.0, range, max_bytes).await,
+            other => Err(Error::Config(format!(
+                "s3 backend cannot serve uri scheme {other:?}: {uri}"
+            ))),
+        }
+    }
+
     /// The canonical `s3://bucket/key` URI for `key`.
     pub fn s3_uri(&self, key: &str) -> String {
         format!("{S3_SCHEME}://{}/{}", self.config.bucket, key)
@@ -230,7 +318,7 @@ impl S3Backend {
     fn api_url(&self, key: &str) -> Result<Url> {
         // `.`/`..`/empty segments would be normalized by the URL parser AFTER signing (and
         // could address another key) — refuse them rather than sign one path and send another.
-        if key.is_empty() || key.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+        if key_has_bad_segment(key) {
             return Err(Error::Config(format!(
                 "s3 object key {key:?} has an empty, '.' or '..' segment"
             )));
@@ -265,7 +353,24 @@ impl S3Backend {
         payload_hash: &str,
     ) -> Result<Prepared> {
         let url = self.api_url(key)?;
+        // What is signed must be exactly what is sent: the path the parser produced must be
+        // the bucket (path-style) + the once-encoded key, byte for byte.
+        let intended = if self.config.path_style {
+            format!("/{}/{}", self.config.bucket, sigv4::uri_encode(key, true))
+        } else {
+            format!("/{}", sigv4::uri_encode(key, true))
+        };
+        if url.path() != intended {
+            return Err(Error::Config(format!(
+                "s3 request path {:?} differs from the intended {intended:?}; refusing to sign it",
+                url.path()
+            )));
+        }
         let mut headers: Vec<(String, String)> = extra_headers.to_vec();
+        if self.config.credentials.is_none() && payload_hash != EMPTY_PAYLOAD_SHA256 {
+            // Anonymous uploads still ask the store to check the body hash.
+            headers.push(("x-amz-content-sha256".into(), payload_hash.to_string()));
+        }
         if let Some(creds) = &self.config.credentials {
             let host = match url.port() {
                 Some(p) => format!("{}:{p}", url.host_str().unwrap_or_default()),
@@ -348,6 +453,16 @@ impl S3Backend {
 
     /// `GET` `key` (optionally a range) from the API endpoint, signed when credentialed.
     pub async fn get_object(&self, key: &str, range: Option<ByteRange>) -> Result<Vec<u8>> {
+        self.get_object_capped(key, range, None).await
+    }
+
+    /// [`Self::get_object`], refusing a whole-object body larger than `max_bytes`.
+    pub async fn get_object_capped(
+        &self,
+        key: &str,
+        range: Option<ByteRange>,
+        max_bytes: Option<u64>,
+    ) -> Result<Vec<u8>> {
         let extra: Vec<(String, String)> = range
             .map(|r| vec![("range".to_string(), r.http_header_value())])
             .unwrap_or_default();
@@ -363,17 +478,17 @@ impl S3Backend {
             )));
         }
         if !status.is_success() {
-            let body = truncated_body(resp).await;
+            let body = error_message(resp).await;
             return Err(Error::Io(format!(
-                "S3 GET {key} failed with status {status}{}: {body}",
+                "S3 GET {key} failed with status {status}{}{body}",
                 auth_hint(status)
             )));
         }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| transport_err("reading S3 body", &e))?
-            .to_vec())
+        let cap = match range {
+            Some(r) => Some(r.len()),
+            None => max_bytes,
+        };
+        read_body_capped(resp, cap, &format!("S3 GET {key}")).await
     }
 
     /// `DELETE` `key` (signed). A missing key is success (S3 semantics).
@@ -386,11 +501,13 @@ impl S3Backend {
         expect_success(resp, "DELETE", key).await
     }
 
-    /// Resolve an `s3://bucket/key` URI to its key, when it names this backend's bucket.
+    /// Resolve an `s3://bucket/key` URI to its key, when it names this backend's bucket and
+    /// the key has no empty, `.` or `..` segment (a hostile manifest must not be able to
+    /// steer a signed request at another key or bucket).
     fn key_of(&self, uri: &Uri) -> Option<String> {
         let rest = uri.rest()?;
         let (bucket, key) = rest.split_once('/')?;
-        (bucket == self.config.bucket).then(|| key.to_string())
+        (bucket == self.config.bucket && !key_has_bad_segment(key)).then(|| key.to_string())
     }
 }
 
@@ -408,17 +525,28 @@ fn auth_hint(status: StatusCode) -> &'static str {
     }
 }
 
-async fn truncated_body(resp: reqwest::Response) -> String {
-    let mut body = resp.text().await.unwrap_or_default();
-    if body.len() > MAX_ERROR_BODY {
-        let mut cut = MAX_ERROR_BODY;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
+/// `": <Code>: <Message>"` from an S3 error document, or empty. Nothing else from the body
+/// is echoed (see [`MAX_ERROR_MESSAGE`]).
+async fn error_message(resp: reqwest::Response) -> String {
+    let body = resp.text().await.unwrap_or_default();
+    let code = xml_element(&body, "Code");
+    let message = xml_element(&body, "Message");
+    match (code, message) {
+        (None, None) => String::new(),
+        (c, m) => {
+            let joined = [c, m].into_iter().flatten().collect::<Vec<_>>().join(": ");
+            format!(": {}", truncate_chars(joined, MAX_ERROR_MESSAGE))
         }
-        body.truncate(cut);
-        body.push('…');
     }
-    body
+}
+
+/// The text of the first `<tag>…</tag>` in `xml` (no attributes; S3 error documents are flat).
+fn xml_element(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = start + xml[start..].find(&format!("</{tag}>"))?;
+    let text = xml[start..end].trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 async fn expect_success(resp: reqwest::Response, op: &str, key: &str) -> Result<()> {
@@ -426,9 +554,9 @@ async fn expect_success(resp: reqwest::Response, op: &str, key: &str) -> Result<
     if status.is_success() {
         return Ok(());
     }
-    let body = truncated_body(resp).await;
+    let body = error_message(resp).await;
     Err(Error::Io(format!(
-        "S3 {op} {key} failed with status {status}{}: {body}",
+        "S3 {op} {key} failed with status {status}{}{body}",
         auth_hint(status)
     )))
 }
@@ -450,37 +578,31 @@ impl PackBackend for S3Backend {
 
     /// Store `bytes` at the content-addressed key, skipping the upload when an object of
     /// the same size is already there (a re-push). Whether the bytes AT the key are right
-    /// is the caller's verification step — see [`crate::storage`].
+    /// is the caller's verification step — see [`crate::storage`], which calls
+    /// [`Self::reput`] once when that check fails.
     async fn put(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
         let key = self.object_key(&Self::pack_key(&meta.pack_hash));
         if self.head_object(&key).await? != Some(bytes.len() as u64) {
             self.put_object(&key, bytes, "application/octet-stream")
                 .await?;
         }
-        let mut uris = Vec::with_capacity(2);
-        if let Some(public) = self.public_url(&key) {
-            uris.push(Uri(public));
-        }
-        uris.push(Uri(self.s3_uri(&key)));
-        Ok(uris)
+        Ok(self.uris_for(&key))
+    }
+
+    /// Upload unconditionally (repairs a same-size but corrupt object at the key).
+    async fn reput(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+        let key = self.object_key(&Self::pack_key(&meta.pack_hash));
+        self.put_object(&key, bytes, "application/octet-stream")
+            .await?;
+        Ok(self.uris_for(&key))
     }
 
     async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
-        match uri.scheme() {
-            Some(S3_SCHEME) => {
-                let key = self.key_of(uri).ok_or_else(|| {
-                    Error::Config(format!(
-                        "s3 uri {uri} does not name this profile's bucket {:?}",
-                        self.config.bucket
-                    ))
-                })?;
-                self.get_object(&key, range).await
-            }
-            Some("http" | "https") => http_get(&self.client, &uri.0, range).await,
-            other => Err(Error::Config(format!(
-                "s3 backend cannot serve uri scheme {other:?}: {uri}"
-            ))),
-        }
+        self.get_bounded(uri, range, None).await
+    }
+
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        self.get_bounded(uri, None, Some(max_bytes)).await
     }
 
     async fn probe(&self, uri: &Uri) -> Result<Health> {
@@ -574,6 +696,71 @@ mod tests {
         assert!(b.api_url("a/./b").is_err());
         assert!(b.api_url("a//b").is_err());
         assert!(b.api_url("").is_err());
+    }
+
+    #[test]
+    fn hostile_s3_uris_cannot_steer_to_another_key() {
+        let b = S3Backend::new(cfg(true));
+        for bad in [
+            "s3://examplebucket/../other/k",
+            "s3://examplebucket/a/./k",
+            "s3://examplebucket/a//k",
+            "s3://examplebucket/",
+        ] {
+            assert_eq!(b.key_of(&Uri(bad.into())), None, "{bad}");
+        }
+        assert!(b
+            .prepare("GET", "../other/k", &[], EMPTY_PAYLOAD_SHA256)
+            .is_err());
+    }
+
+    #[test]
+    fn error_documents_echo_only_code_and_message() {
+        let doc = "<?xml version=\"1.0\"?><Error><Code>SignatureDoesNotMatch</Code>\
+                   <Message>The signature does not match.</Message>\
+                   <CanonicalRequest>GET\n/b/k\n\nx-amz-security-token:SECRET-TOKEN\n</CanonicalRequest>\
+                   </Error>";
+        assert_eq!(
+            xml_element(doc, "Code").as_deref(),
+            Some("SignatureDoesNotMatch")
+        );
+        assert_eq!(
+            xml_element(doc, "Message").as_deref(),
+            Some("The signature does not match.")
+        );
+        assert_eq!(xml_element("<html>nope</html>", "Code"), None);
+    }
+
+    #[test]
+    fn urls_with_credentials_query_or_fragment_are_refused() {
+        for endpoint in [
+            "https://user:tok@s3.example.com",
+            "https://s3.example.com?x=1",
+            "https://s3.example.com#f",
+        ] {
+            let mut c = cfg(true);
+            c.endpoint = endpoint.into();
+            assert!(c.validate().is_err(), "{endpoint}");
+        }
+        let mut c = cfg(true);
+        c.public_url = Some("https://u:p@cdn.example.org".into());
+        assert!(c.validate().is_err());
+        let mut c = cfg(false);
+        c.endpoint = "http://127.0.0.1:9000".into();
+        assert!(c.validate().is_err(), "virtual-hosted on an IP");
+        c.endpoint = "http://[::1]:9000".into();
+        assert!(c.validate().is_err(), "virtual-hosted on an IPv6");
+    }
+
+    #[test]
+    fn anonymous_uploads_still_send_the_body_hash() {
+        let b = S3Backend::new(cfg(true));
+        let p = b.prepare("PUT", "k", &[], "abc123").unwrap();
+        assert!(p
+            .headers
+            .iter()
+            .any(|(k, v)| k == "x-amz-content-sha256" && v == "abc123"));
+        assert!(!p.headers.iter().any(|(k, _)| k == "authorization"));
     }
 
     #[test]

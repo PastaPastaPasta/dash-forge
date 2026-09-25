@@ -187,6 +187,25 @@ pub trait PackBackend: Send + Sync {
     /// Store `bytes`, returning one or more URIs the manifest should record.
     async fn put(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>>;
 
+    /// Store `bytes` again unconditionally, for when a verification re-read found the
+    /// stored copy wrong. Backends whose `put` never skips an existing object (IPFS is
+    /// content-addressed by the bytes themselves) keep the default.
+    async fn reput(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+        self.put(bytes, meta).await
+    }
+
+    /// [`Self::get`] of a whole object, refusing a body larger than `max_bytes`. The
+    /// default reads then checks; HTTP backends override it to stop reading early.
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        let bytes = self.get(uri, None).await?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(Error::Io(format!(
+                "{uri} returned more than the expected {max_bytes} bytes"
+            )));
+        }
+        Ok(bytes)
+    }
+
     /// Fetch bytes for `uri`, optionally restricted to `range` (partial clone / browse).
     ///
     /// A ranged read MUST be served as an HTTP `206 Partial Content` (or equivalent) —
