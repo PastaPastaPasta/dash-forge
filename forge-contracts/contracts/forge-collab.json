@@ -750,6 +750,17 @@
               "$createdAt": "asc"
             }
           ]
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
         }
       ],
       "required": [

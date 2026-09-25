@@ -44,6 +44,7 @@ expect_reject cross-deletable-on-permanent collab '.documentSchemas.issue.proper
 expect_reject issue-deletable-under-author-lookup collab '.documentSchemas.issue.canBeDeleted = true | del(.documentSchemas.issue.documentsKeepHistory)'
 expect_reject author-lookup-wrong-index collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[0].lookup.index = "number"'
 expect_reject author-lookup-optional-key collab '.documentSchemas.authorEvent.required -= ["targetNumber"]'
+expect_reject author-lookup-optional-repo collab '.documentSchemas.authorEvent.required -= ["repoId"]'
 expect_reject author-agreement-non-id collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[1].propertyAgreement = {"targetNumber": "$id"}'
 expect_reject agreement-kind-mismatch collab '.documentSchemas.event.properties.targetId.refersTo.anyOf[0].propertyAgreement.targetNumber = "title"'
 expect_reject key-id-not-integer core '.documentSchemas.repoKey.properties.recipientKeyId = {"type":"string","maxLength":10,"position":3}'
