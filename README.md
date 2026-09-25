@@ -24,6 +24,15 @@ arrange. **`protoc` must be on PATH** (a transitive dependency compiles `.proto`
 its build script). See [docs/BUILDING.md](docs/BUILDING.md) for prerequisites, how to bump
 the pinned Platform tag, and how to develop against a local Platform checkout.
 
+**Networks.** Testnet is the default. Pick another network with `--network mainnet`, or
+`--network devnet --devnet-name moutai` for a named devnet (`--dapi-addresses` sets its
+nodes). The helper reads the same settings from git config (`dash.network`,
+`dash.devnetName`, `dash.dapiAddresses`), and the web build reads them from
+`NEXT_PUBLIC_NETWORK` and `NEXT_PUBLIC_DEVNET_NAME`. Contract ids come only from
+`forge-contracts/deployments/<network>.json`. A network with no deployment (mainnet, until
+the runbook is executed) fails with a clear "not deployed" error and never falls back to
+testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
+
 ## Document index
 
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.

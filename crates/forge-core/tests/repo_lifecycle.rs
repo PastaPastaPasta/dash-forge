@@ -29,7 +29,7 @@ async fn full_repo_lifecycle_on_testnet() {
     let owner_id = bridge.identity_id.clone();
     println!("owner (DEPLOYER): {owner_id}");
 
-    let client = PlatformClient::connect(Network::Testnet)
+    let client = PlatformClient::connect_network(Network::Testnet)
         .await
         .expect("connect testnet");
     let identity = client
@@ -179,7 +179,7 @@ async fn full_repo_lifecycle_on_testnet() {
         .expect("delete packManifest");
     service
         .delete_document(
-            forge_core::repo::TESTNET_REGISTRY_CONTRACT_ID,
+            client.registry_contract_id().expect("testnet registry"),
             "repoListing",
             &created.listing_document_id,
         )

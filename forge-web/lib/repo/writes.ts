@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { NETWORKS, type Network } from '../constants'
+import { requireRegistryContractId, type Network } from '../constants'
 import { isLegalRefName } from '../rules'
 import { decodeIdentifier } from '../auth/base58'
 import { errorMessage } from '../utils'
@@ -88,14 +88,8 @@ function isDuplicateUniqueError(e: unknown): boolean {
   return m.includes('duplicate') || m.includes('unique index') || m.includes('already exists')
 }
 
-function registryIdFor(network: Network): string {
-  const id = NETWORKS[network].registryContractId
-  if (id === null) throw new Error(`no registry contract configured for ${network}`)
-  return id
-}
-
 function registryId(auth: WriteAuth): string {
-  return registryIdFor(auth.network)
+  return requireRegistryContractId(auth.network)
 }
 
 async function nextIssueNumber(sdk: EvoSDK, repo: RepoRef): Promise<number> {
@@ -393,7 +387,7 @@ async function findOwnRegistryDoc(
   field: string,
   targetId: string,
 ): Promise<string | null> {
-  const contractId = registryIdFor(network)
+  const contractId = requireRegistryContractId(network)
   // Complete, matching forge-core `find_own`: this backs un-star / un-follow, and a user
   // past 100 stars could otherwise not remove an older one — while the call still reported
   // success, since "not found" and "not looked at" are indistinguishable here.
@@ -533,6 +527,9 @@ export async function createRepo(
   opts: CreateRepoOptions = {},
 ): Promise<CreateRepoResult> {
   const normalized = normalizeRepoName(name)
+  // No registry on this network: fail before paying for a contract whose listing could never
+  // be published (parity with forge-core `create_repo`).
+  const listingRegistry = registryId(auth)
   const contract = await createRepoContract(sdk, auth)
   const contractId = contract.contractId
 
@@ -551,7 +548,7 @@ export async function createRepo(
 
   // registry repoListing (ungated).
   const listing = await createDocumentIdempotent(sdk, auth, {
-    contractId: registryId(auth),
+    contractId: listingRegistry,
     documentType: REGISTRY_DOC.repoListing,
     data: {
       name,

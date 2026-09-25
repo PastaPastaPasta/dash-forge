@@ -65,6 +65,15 @@ fn run_git(
     Ok(out.stdout)
 }
 
+/// `git config --get <key>` in the helper's environment (the repo git spawned it for, then
+/// global/system config, plus any `git -c key=value` the user passed, which git forwards
+/// to the helper). `None` when the key is unset or git fails.
+pub fn config_get(key: &str) -> Option<String> {
+    let out = run_git(&["config", "--get", key], None, false, None).ok()?;
+    let value = String::from_utf8(out).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
 /// never an error. Used for the boolean predicates `cat-file -e` / `merge-base
 /// --is-ancestor`.

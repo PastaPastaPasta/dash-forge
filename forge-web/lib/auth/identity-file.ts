@@ -24,6 +24,11 @@ export interface ParsedIdentityFile {
   readonly identityId: string
   /** The network the file declares, if any (used to reject a testnet key on mainnet). */
   readonly network: Network | null
+  /**
+   * The full network key the file declares (`testnet`, `mainnet`, `devnet-moutai`), or null.
+   * A bare `devnet` (no name) is kept as `devnet` and matches any devnet build.
+   */
+  readonly networkKey: string | null
   /** The chosen AUTHENTICATION signing key, WIF-encoded. */
   readonly signingKeyWif: string
   /** The chosen key's security level, for display / diagnostics. */
@@ -45,7 +50,15 @@ function asString(v: unknown): string | null {
 function normalizeNetwork(v: unknown): Network | null {
   if (v === 'mainnet') return 'mainnet'
   if (v === 'testnet') return 'testnet'
+  if (v === 'devnet' || (typeof v === 'string' && v.startsWith('devnet-'))) return 'devnet'
   return null
+}
+
+/** Whether an identity file's declared network key fits a build's network key. */
+export function identityFileMatchesNetwork(fileKey: string | null, buildKey: string): boolean {
+  if (fileKey === null) return true
+  if (fileKey === 'devnet') return buildKey.startsWith('devnet-')
+  return fileKey === buildKey
 }
 
 /** Rank an AUTHENTICATION key: CRITICAL (0, best) < HIGH (1) < everything else (unusable). */
@@ -78,6 +91,7 @@ export function parseIdentityFile(json: unknown): ParsedIdentityFile {
     throw new Error('identity file is missing "identityId"')
   }
   const network = normalizeNetwork(obj['network'])
+  const networkKey = network === null ? null : (obj['network'] as string)
 
   const rawKeys = obj['identityKeys'] ?? obj['keys']
   if (!Array.isArray(rawKeys)) {
@@ -106,7 +120,7 @@ export function parseIdentityFile(json: unknown): ParsedIdentityFile {
     )
   }
 
-  return { identityId, network, signingKeyWif: best.wif, securityLevel: best.level }
+  return { identityId, network, networkKey, signingKeyWif: best.wif, securityLevel: best.level }
 }
 
 /** Parse identity-file text (JSON string) with a friendly error on malformed JSON. */

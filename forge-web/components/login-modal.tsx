@@ -13,7 +13,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
-import { DEFAULT_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 
 type Tab = 'file' | 'key'
@@ -57,7 +57,7 @@ export function LoginModal(): JSX.Element {
       open={open}
       onClose={close}
       title="Sign in to Dash Forge"
-      description={`Your key signs writes on ${DEFAULT_NETWORK}. It stays in your browser — never sent anywhere.`}
+      description={`Your key signs writes on ${ACTIVE_NETWORK.key}. It stays in your browser — never sent anywhere.`}
     >
       <div className="mb-4 inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
         <TabButton active={tab === 'file'} onClick={() => setTab('file')}>

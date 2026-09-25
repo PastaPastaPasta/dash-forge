@@ -1,4 +1,24 @@
 {
+  "network": "devnet",
+  "devnetName": "moutai",
+  "dapiAddresses": [
+    "https://68.67.122.254:1443",
+    "https://68.67.122.207:1443",
+    "https://68.67.122.192:1443",
+    "https://68.67.122.194:1443",
+    "https://68.67.122.195:1443",
+    "https://68.67.122.196:1443",
+    "https://68.67.122.253:1443",
+    "https://68.67.122.198:1443",
+    "https://68.67.122.199:1443",
+    "https://68.67.122.84:1443"
+  ],
+  "registry": {
+    "contractId": null,
+    "ownerId": null,
+    "deployedAt": null,
+    "version": 1
+  },
   "v2": {
     "forgeCore": {
       "contractId": "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L",

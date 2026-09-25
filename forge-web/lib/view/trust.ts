@@ -16,7 +16,7 @@
  * {@link ContentChecks}; no SDK, no React.
  */
 
-import { QUORUM_KEY_ENDPOINT, type Network } from '../constants'
+import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefState } from '../rules'
 import type { ContentChecks } from './content-checks'
 
@@ -33,6 +33,8 @@ export interface TrustLink {
 
 export interface TrustReport {
   readonly network: Network
+  /** How the network is named in copy: its key, so a devnet reads `devnet-moutai`. */
+  readonly networkLabel: string
   /** The HTTPS endpoint the quorum public keys come from (the trust anchor). */
   readonly quorumEndpoint: string
   /** Its host, for display. */
@@ -99,12 +101,14 @@ function hostOf(url: string): string {
 }
 
 function deriveProofs(network: Network, connection: ConnectionTrust, endpoint: string): TrustLink {
+  // The full key, so a devnet reads `devnet-moutai` rather than a bare `devnet`.
+  const label = NETWORKS[network].key
   switch (connection) {
     case 'connecting':
       return {
         state: 'pending',
         summary: 'connecting',
-        detail: `Connecting to ${network}. Nothing has been read or checked yet.`,
+        detail: `Connecting to ${label}. Nothing has been read or checked yet.`,
       }
     case 'untrusted':
       return {
@@ -117,7 +121,7 @@ function deriveProofs(network: Network, connection: ConnectionTrust, endpoint: s
       return {
         state: 'verified',
         summary: 'proof',
-        detail: `This connection runs in trusted mode, which checks Platform reads against proofs signed by the ${network} quorum, using quorum public keys fetched from ${hostOf(endpoint)}.`,
+        detail: `This connection runs in trusted mode, which checks Platform reads against proofs signed by the ${label} quorum, using quorum public keys fetched from ${hostOf(endpoint)}.`,
       }
   }
 }
@@ -232,6 +236,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
   const source = deriveSource(input, content)
   return {
     network: input.network,
+    networkLabel: NETWORKS[input.network].key,
     quorumEndpoint,
     quorumHost: hostOf(quorumEndpoint),
     proofs,

@@ -9,7 +9,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { NETWORKS, type Network } from '../constants'
+import { DEFAULT_NETWORK, requireRegistryContractId, type Network } from '../constants'
 import {
   countDocuments,
   queryDocuments,
@@ -115,9 +115,7 @@ export async function readCollaborators(
 // ---------------------------------------------------------------------------
 
 function registryId(network: Network | undefined, override?: string): string {
-  const id = override ?? NETWORKS[network ?? 'testnet'].registryContractId
-  if (id === null) throw new Error('no registry contract id configured')
-  return id
+  return override ?? requireRegistryContractId(network ?? DEFAULT_NETWORK)
 }
 
 /** Star count for a repo listing (countable `star(listingId)`). `listingId` is base58. */

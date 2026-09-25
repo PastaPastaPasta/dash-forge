@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 
 use estimate::SkipFlags;
-use forge_core::platform::Network;
+use forge_core::network::NetworkSettings;
 use github::GithubRepoRef;
 use importer::{Backend, ImportConfig};
 
@@ -73,9 +73,18 @@ struct Cli {
     #[arg(long)]
     resume: Option<PathBuf>,
 
-    /// Dash network.
-    #[arg(long, value_enum, default_value_t = NetworkArg::Testnet)]
-    network: NetworkArg,
+    /// Dash network (default: `DASH_FORGE_NETWORK`, else testnet).
+    #[arg(long, value_enum)]
+    network: Option<NetworkArg>,
+
+    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    #[arg(long)]
+    devnet_name: Option<String>,
+
+    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
+    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
+    #[arg(long)]
+    dapi_addresses: Option<String>,
 
     /// Signing identity file (bridge JSON). Falls back to `DASH_FORGE_KEY`.
     #[arg(long)]
@@ -119,12 +128,12 @@ enum NetworkArg {
     Devnet,
 }
 
-impl From<NetworkArg> for Network {
-    fn from(value: NetworkArg) -> Self {
-        match value {
-            NetworkArg::Testnet => Network::Testnet,
-            NetworkArg::Mainnet => Network::Mainnet,
-            NetworkArg::Devnet => Network::Devnet,
+impl NetworkArg {
+    fn kind(self) -> &'static str {
+        match self {
+            NetworkArg::Testnet => "testnet",
+            NetworkArg::Mainnet => "mainnet",
+            NetworkArg::Devnet => "devnet",
         }
     }
 }
@@ -236,7 +245,14 @@ async fn main() -> Result<()> {
         yes: cli.yes,
         limit: cli.limit,
         resume_path,
-        network: cli.network.into(),
+        // Flags > DASH_FORGE_* / FORGE_REGISTRY_CONTRACT_ID env > embedded deployment.
+        network: NetworkSettings::from_flags(
+            cli.network.map(|n| n.kind().to_string()),
+            cli.devnet_name.clone(),
+            cli.dapi_addresses.clone(),
+        )
+        .overlay(NetworkSettings::from_env())
+        .resolve()?,
         identity_path,
     };
 

@@ -15,6 +15,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { useSdk } from '@/hooks/use-sdk'
@@ -64,6 +65,14 @@ export default function NewRepoPage(): JSX.Element {
     })
     void result
     router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(normalizeRepoName(name.trim()))}`)
+  }
+
+  if (!isRegistryDeployed()) {
+    return (
+      <AppShell>
+        <NotDeployedState />
+      </AppShell>
+    )
   }
 
   if (!identity) {

@@ -106,7 +106,7 @@ export function TrustPanel({
             <Step step="04" title="Byte source" link={report.source} />
           </ol>
           <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[12px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
-            Trust-minimized, not trustless: proofs are only as good as the {report.network} quorum
+            Trust-minimized, not trustless: proofs are only as good as the {report.networkLabel} quorum
             keys they are checked against, and this app fetches those from{' '}
             <span className="font-mono">{report.quorumHost}</span>. Whoever controls
             that endpoint could vouch for false data.

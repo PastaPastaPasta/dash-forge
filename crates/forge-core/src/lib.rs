@@ -2,7 +2,9 @@
 //!
 //! Module map (mirrors `docs/design/style-guide.md` §B repo layout):
 //!
-//! - [`platform`] — `PlatformClient` (rs-sdk wrapper, live testnet/mainnet) and the
+//! - [`network`] — the network model (testnet / mainnet / named devnet) and per-network
+//!   contract ids from the embedded `forge-contracts/deployments/*.json`.
+//! - [`platform`] — `PlatformClient` (rs-sdk wrapper, live testnet/mainnet/devnet) and the
 //!   `WriteEngine` document create/delete lifecycle + idempotent-retry journal types.
 //! - [`repo`] — `RepoService`: the repo-lifecycle API (`create_repo` / `resolve_repo` /
 //!   ref + pack-manifest + chunk read/write) `git-remote-dash` calls.
@@ -27,6 +29,7 @@ pub mod collab;
 pub mod cost;
 pub mod error;
 pub mod keystore;
+pub mod network;
 pub mod pack;
 pub mod platform;
 pub mod repo;

@@ -45,6 +45,15 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
+    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub devnet_name: Option<String>,
+
+    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
+    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
+    #[arg(long, global = true, value_name = "ADDRS")]
+    pub dapi_addresses: Option<String>,
+
     /// Override the identity file for this invocation.
     #[arg(long, global = true, value_name = "FILE")]
     pub identity: Option<PathBuf>,
@@ -60,6 +69,19 @@ pub enum NetworkArg {
     Testnet,
     /// Dash mainnet.
     Mainnet,
+    /// A named devnet (with `--devnet-name`).
+    Devnet,
+}
+
+impl NetworkArg {
+    /// The network kind string forge-core's resolver takes.
+    pub fn kind(self) -> &'static str {
+        match self {
+            NetworkArg::Testnet => "testnet",
+            NetworkArg::Mainnet => "mainnet",
+            NetworkArg::Devnet => "devnet",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -710,7 +732,7 @@ fn main() {
 /// Build the tokio runtime and dispatch the parsed command.
 fn run(cli: &Cli) -> Result<()> {
     let config = Config::load().unwrap_or_default();
-    let ctx = Ctx::resolve(cli, &config);
+    let ctx = Ctx::resolve(cli, &config)?;
     let rt = Runtime::new()?;
     rt.block_on(dispatch(&ctx, cli))
 }
@@ -784,6 +806,26 @@ mod tests {
         assert_eq!(
             cli.identity.as_deref().unwrap().to_str().unwrap(),
             "/tmp/id.json"
+        );
+    }
+
+    #[test]
+    fn parses_devnet_flags() {
+        let cli = Cli::parse_from([
+            "dg",
+            "doctor",
+            "--network",
+            "devnet",
+            "--devnet-name",
+            "moutai",
+            "--dapi-addresses",
+            "10.0.0.1,10.0.0.2:2443",
+        ]);
+        assert!(matches!(cli.network, Some(NetworkArg::Devnet)));
+        assert_eq!(cli.devnet_name.as_deref(), Some("moutai"));
+        assert_eq!(
+            cli.dapi_addresses.as_deref(),
+            Some("10.0.0.1,10.0.0.2:2443")
         );
     }
 

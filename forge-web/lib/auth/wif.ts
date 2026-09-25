@@ -40,9 +40,14 @@ export function networkOfWifPrefix(prefix: number): Network | null {
   return null
 }
 
-/** Whether a WIF's prefix matches the given network. */
+/** Whether a WIF's prefix matches the given network (devnets use the testnet prefix). */
 export function validateWifNetwork(prefix: number, network: Network): boolean {
-  return networkOfWifPrefix(prefix) === network
+  return networkOfWifPrefix(prefix) === wifNetwork(network)
+}
+
+/** The WIF-format network: devnets share testnet's version prefix (dashcore `Devnet`). */
+function wifNetwork(network: Network): 'mainnet' | 'testnet' {
+  return network === 'mainnet' ? 'mainnet' : 'testnet'
 }
 
 /** Quick heuristic: does this string look like a Dash WIF (51–52 chars, valid checksum)? */
@@ -121,6 +126,6 @@ export function parsePrivateKey(input: string): ParsedPrivateKey {
  */
 export function normalizeToWif(input: string, network: Network): string {
   const parsed = parsePrivateKey(input)
-  if (parsed.format === 'wif' && parsed.network === network) return input.trim()
+  if (parsed.format === 'wif' && parsed.network === wifNetwork(network)) return input.trim()
   return encodeWif(parsed.privateKey, network, true)
 }

@@ -60,7 +60,7 @@ async fn collab_and_token_lifecycle_on_testnet() {
     println!("owner (DEPLOYER): {owner_id}");
     println!("collaborator (COLLAB): {collab_id}");
 
-    let client = PlatformClient::connect(Network::Testnet)
+    let client = PlatformClient::connect_network(Network::Testnet)
         .await
         .expect("connect testnet");
     let identity = client

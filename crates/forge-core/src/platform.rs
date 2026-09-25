@@ -6,7 +6,7 @@
 //! [`LoadedContract`] / [`LoadedIdentity`] handles, the journal structs), so binaries
 //! never name a Platform type directly.
 //!
-//! - [`PlatformClient`] — a `dash_sdk::Sdk` wrapper connected to testnet/mainnet with a
+//! - [`PlatformClient`] — a `dash_sdk::Sdk` wrapper connected to testnet/mainnet/a devnet with a
 //!   trusted HTTP context provider (proof-verified reads; the only path that works
 //!   without a Core RPC node — spike S0.3). Read helpers: [`PlatformClient::fetch_contract`],
 //!   [`PlatformClient::fetch_identity`], [`PlatformClient::get_balance`],
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::dapi_client::CanRetry;
+use dash_sdk::dapi_client::{Address, AddressList, CanRetry};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::consensus::ConsensusError;
@@ -109,26 +109,14 @@ const DAPI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// quickly, and a connect timeout is now cheap enough to allow more.
 const DAPI_RETRIES: usize = 6;
 
-/// The network a client is bound to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Network {
-    /// Dash testnet.
-    Testnet,
-    /// Dash mainnet.
-    Mainnet,
-    /// A local devnet (dashmate).
-    Devnet,
-}
+pub use crate::network::{Network, NetworkTarget, Registry};
 
-impl Network {
-    /// The corresponding `dashcore` network used by the SDK's context provider.
-    fn to_dashcore(self) -> DashcoreNetwork {
-        match self {
-            Network::Testnet => DashcoreNetwork::Testnet,
-            Network::Mainnet => DashcoreNetwork::Mainnet,
-            Network::Devnet => DashcoreNetwork::Devnet,
-        }
+/// The `dashcore` network the SDK and its context provider use for `network`.
+fn to_dashcore(network: &Network) -> DashcoreNetwork {
+    match network {
+        Network::Testnet => DashcoreNetwork::Testnet,
+        Network::Mainnet => DashcoreNetwork::Mainnet,
+        Network::Devnet { .. } => DashcoreNetwork::Devnet,
     }
 }
 
@@ -197,14 +185,15 @@ impl std::fmt::Debug for LoadedIdentity {
     }
 }
 
-/// An rs-sdk-backed Platform client: a connected `Sdk` plus the network it targets.
+/// An rs-sdk-backed Platform client: a connected `Sdk` plus the network it targets and the
+/// registry resolved for that network.
 ///
 /// Construct with [`PlatformClient::connect`]. Proof verification is always on (the
 /// trusted context provider supplies quorum public keys over HTTPS); there is no
 /// trustless-without-Core path, matching spike S0.3.
 pub struct PlatformClient {
     sdk: Sdk,
-    network: Network,
+    target: NetworkTarget,
     /// A handle to the same context provider the SDK holds (it is `Clone` over shared
     /// inner state). The trusted provider only serves user data contracts from its
     /// known-contracts cache — it has no SDK-refetch path — so every contract we fetch
@@ -216,38 +205,60 @@ pub struct PlatformClient {
 impl std::fmt::Debug for PlatformClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlatformClient")
-            .field("network", &self.network)
+            .field("target", &self.target)
             .finish_non_exhaustive()
     }
 }
 
 impl PlatformClient {
-    /// Connect to `network`, wiring in the trusted HTTP context provider so proofs
+    /// Connect to `target.network`, wiring in the trusted HTTP context provider so proofs
     /// verify without a local Core RPC node.
     ///
-    /// Only testnet and mainnet have built-in seed address lists; devnet is rejected
-    /// here (it needs an explicit address list this constructor does not take).
-    // Kept `async` for a stable I/O-shaped contract: `SdkBuilder::build()` connects
-    // lazily today, but the connect surface should not churn if that changes. Two lints
-    // notice the missing `.await`; the second arrived in clippy 1.98.
-    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
-    pub async fn connect(network: Network) -> Result<Self> {
-        let dashcore_network = network.to_dashcore();
+    /// Testnet and mainnet use the SDK's built-in seed lists. A devnet uses its configured
+    /// DAPI addresses; when it has none they are discovered from the devnet's quorum
+    /// service (`/masternodes`), the same trusted source the quorum keys come from.
+    ///
+    /// The target's registry is not fetched here: a network with no deployment still
+    /// connects (identity/balance reads work), and registry operations fail with
+    /// [`Error::NotDeployed`] when they need it.
+    pub async fn connect(target: NetworkTarget) -> Result<Self> {
+        let network = &target.network;
+        let dashcore_network = to_dashcore(network);
+        let cache_size = NonZeroUsize::new(100).expect("cache size is non-zero");
 
-        let context_provider = TrustedHttpContextProvider::new(
-            dashcore_network,
-            None,
-            NonZeroUsize::new(100).expect("cache size is non-zero"),
-        )
-        .map_err(|e| Error::Platform(format!("building context provider: {e}")))?;
+        let context_provider = match network {
+            Network::Devnet { .. } => TrustedHttpContextProvider::new_with_url(
+                dashcore_network,
+                network.quorum_base_url(),
+                cache_size,
+            ),
+            _ => TrustedHttpContextProvider::new(dashcore_network, None, cache_size),
+        }
+        .map_err(|e| Error::Platform(format!("building context provider for {network}: {e}")))?;
 
         let builder = match network {
             Network::Testnet => SdkBuilder::new_testnet(),
             Network::Mainnet => SdkBuilder::new_mainnet(),
-            Network::Devnet => {
-                return Err(Error::Config(
-                    "devnet requires an explicit address list; not supported by connect()".into(),
-                ))
+            Network::Devnet { dapi_addresses, .. } => {
+                let addresses = if dapi_addresses.is_empty() {
+                    context_provider
+                        .fetch_masternode_addresses()
+                        .await
+                        .map_err(|e| {
+                            Error::Config(format!(
+                                "devnet {network} has no DAPI addresses configured and \
+                                 discovery from {} failed ({e}); pass --dapi-addresses \
+                                 (or set dash.dapiAddresses / DASH_FORGE_DAPI_ADDRESSES)",
+                                network.quorum_base_url()
+                            ))
+                        })?
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect()
+                } else {
+                    dapi_addresses.clone()
+                };
+                SdkBuilder::new(parse_address_list(&addresses)?).with_network(dashcore_network)
             }
         };
 
@@ -267,14 +278,38 @@ impl PlatformClient {
 
         Ok(Self {
             sdk,
-            network,
+            target,
             context_provider,
         })
     }
 
+    /// Connect to `network` with the registry from its embedded deployment (or the
+    /// `FORGE_REGISTRY_CONTRACT_ID` override). For callers without a config layer of their
+    /// own — tests and examples.
+    pub async fn connect_network(network: Network) -> Result<Self> {
+        Self::connect(NetworkTarget::for_network(network)?).await
+    }
+
     /// The network this client targets.
-    pub fn network(&self) -> Network {
-        self.network
+    pub fn network(&self) -> &Network {
+        &self.target.network
+    }
+
+    /// The resolved network + registry this client was connected with.
+    pub fn target(&self) -> &NetworkTarget {
+        &self.target
+    }
+
+    /// The registry contract id for this network, or [`Error::NotDeployed`] when no registry
+    /// is deployed on it (never another network's id).
+    pub fn registry_contract_id(&self) -> Result<&str> {
+        Ok(self.target.require_registry()?.contract_id.as_str())
+    }
+
+    /// Fetch the registry contract for this network (see [`Self::registry_contract_id`]).
+    pub async fn fetch_registry(&self) -> Result<LoadedContract> {
+        let id = self.registry_contract_id()?.to_string();
+        self.fetch_contract(&id).await
     }
 
     /// The underlying SDK handle. Kept crate-visible so [`WriteEngine`] can drive it
@@ -1527,6 +1562,17 @@ impl FieldValue {
     }
 }
 
+/// Parse `https://host:port` DAPI URLs into the SDK's address list.
+fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
+    addresses
+        .iter()
+        .map(|a| {
+            a.parse::<Address>()
+                .map_err(|e| Error::Config(format!("invalid DAPI address {a:?}: {e}")))
+        })
+        .collect()
+}
+
 /// Parse a base58 Platform id, mapping failures to a config error.
 fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     Identifier::from_string(s, Encoding::Base58)
@@ -2031,7 +2077,7 @@ impl PushJournal {
 mod tests {
     use super::{
         is_transient_node_error, page_to_exhaustion, retry_with_backoff, FetchedDocument,
-        JournalStore, Network, PushJournal, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
+        JournalStore, PushJournal, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
         MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
@@ -2128,19 +2174,6 @@ mod tests {
         // High bits above bit 40 are stripped; the low 40 survive.
         let raw = (0xABCD_u64 << 40) | 0x12_3456_789A;
         assert_eq!(raw & NONCE_MASK, 0x12_3456_789A);
-    }
-
-    #[test]
-    fn network_round_trips_through_json() {
-        for n in [Network::Testnet, Network::Mainnet, Network::Devnet] {
-            let s = serde_json::to_string(&n).unwrap();
-            let back: Network = serde_json::from_str(&s).unwrap();
-            assert_eq!(n, back);
-        }
-        assert_eq!(
-            serde_json::to_string(&Network::Testnet).unwrap(),
-            "\"testnet\""
-        );
     }
 
     /// An in-memory [`JournalStore`] proving the journal scaffolding is exercised (the

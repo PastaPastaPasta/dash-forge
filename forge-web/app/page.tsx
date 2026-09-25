@@ -15,6 +15,7 @@ import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { NotDeployedState, isRegistryDeployed } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { connectionTrust, deriveConnectionTrust, listRecentRepos } from '@/lib/view'
@@ -22,10 +23,11 @@ import { connectionTrust, deriveConnectionTrust, listRecentRepos } from '@/lib/v
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, trusted, error: sdkError, network } = useSdk()
   const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted))
+  const deployed = isRegistryDeployed()
   const feed = useAsync(
     () => listRecentRepos(sdk!, { network, limit: 24 }),
     [ready, network],
-    { enabled: ready && sdk !== null },
+    { enabled: deployed && ready && sdk !== null },
   )
 
   return (
@@ -72,7 +74,9 @@ export default function LandingPage(): JSX.Element {
           {feed.loading ? <Spinner label="Reading registry" /> : null}
         </div>
 
-        {sdkError ? (
+        {!deployed ? (
+          <NotDeployedState />
+        ) : sdkError ? (
           <ErrorState title="Could not reach Platform" message={sdkError} />
         ) : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />

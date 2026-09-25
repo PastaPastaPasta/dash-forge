@@ -5,6 +5,8 @@ on:
     branches: [master]
     paths:
       - 'forge-web/**'
+      # Bundled into the web app: lib/deployments.ts imports the per-network contract ids.
+      - 'forge-contracts/deployments/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 

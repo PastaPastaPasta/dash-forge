@@ -21,8 +21,9 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
+use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
-use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
+use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{
     PackManifestInput, PlatformChunkTarget, RepackTarget, RepoHandle, RepoService, StoredArtifact,
 };
@@ -95,24 +96,25 @@ pub struct Helper {
     /// the per-remote `remote.<name>.dash*` storage settings.
     remote: Option<String>,
     key_path: PathBuf,
-    network: Network,
+    target: NetworkTarget,
     conn: Option<Conn>,
 }
 
 impl Helper {
-    /// Build a helper for `url`, reading identity + network config from the environment.
+    /// Build a helper for `url`, reading identity + network config from the environment
+    /// and git config.
     ///
     /// `DASH_FORGE_KEY` names the bridge-format identity JSON (falling back to
-    /// `~/.config/dash-forge/identities/<owner>.identity.json`); `DASH_FORGE_NETWORK`
-    /// selects the network (testnet default).
+    /// `~/.config/dash-forge/identities/<owner>.identity.json`). The network comes from
+    /// [`network_target`].
     pub fn new(url: DashUrl, remote: Option<String>) -> Result<Self> {
         let key_path = resolve_key_path(&url)?;
-        let network = network_from_env();
+        let target = network_target()?;
         Ok(Self {
             url,
             remote,
             key_path,
-            network,
+            target,
             conn: None,
         })
     }
@@ -126,9 +128,11 @@ impl Helper {
                     self.key_path.display()
                 )
             })?;
-            let client = PlatformClient::connect(self.network)
+            let client = PlatformClient::connect(self.target.clone())
                 .await
-                .context("connecting to Dash Platform")?;
+                .with_context(|| {
+                    format!("connecting to Dash Platform ({})", self.target.network)
+                })?;
             let identity = client
                 .fetch_identity(&bridge.identity_id)
                 .await
@@ -1017,13 +1021,22 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
     Ok(raw)
 }
 
-/// Select the network from `DASH_FORGE_NETWORK` (testnet default).
-pub(crate) fn network_from_env() -> Network {
-    match std::env::var("DASH_FORGE_NETWORK").as_deref() {
-        Ok("mainnet") => Network::Mainnet,
-        Ok("devnet") => Network::Devnet,
-        _ => Network::Testnet,
-    }
+/// Resolve the network and registry. Precedence, field by field: the environment
+/// (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`,
+/// `DASH_FORGE_QUORUM_URL`, `FORGE_REGISTRY_CONTRACT_ID` — what `dg` and forge-import set
+/// per invocation) > git config (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`,
+/// `dash.quorumUrl`, `dash.registryContractId`) > the embedded deployment > testnet.
+pub(crate) fn network_target() -> Result<NetworkTarget> {
+    resolve_network(
+        NetworkSettings::from_env(),
+        NetworkSettings::from_git_config(crate::git::config_get),
+    )
+}
+
+fn resolve_network(env: NetworkSettings, git: NetworkSettings) -> Result<NetworkTarget> {
+    env.overlay(git)
+        .resolve()
+        .context("resolving the network (DASH_FORGE_NETWORK / git config dash.network)")
 }
 
 /// Whether `DASH_FORGE_SKIP_WRITE_PRECHECK` asks to bypass [`write_access_denied`].
@@ -1137,7 +1150,8 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frozen_grants, oid_to_bytes, write_denied_reason, PushOutcome};
+    use super::{frozen_grants, oid_to_bytes, resolve_network, write_denied_reason, PushOutcome};
+    use forge_core::network::NetworkSettings;
     use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
 
     fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
@@ -1217,6 +1231,38 @@ mod tests {
         let none = write_denied_reason(Holdings::default(), "owner", "repo");
         assert!(none.starts_with("no WRITE token"), "{none}");
         assert!(none.contains("dg pr create owner/repo"), "{none}");
+    }
+
+    fn git_devnet() -> NetworkSettings {
+        NetworkSettings::from_git_config(|k| match k {
+            "dash.network" => Some("devnet".into()),
+            "dash.devnetName" => Some("moutai".into()),
+            "dash.dapiAddresses" => Some("10.0.0.1,10.0.0.2".into()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn git_config_selects_a_devnet_when_the_env_is_silent() {
+        let t = resolve_network(NetworkSettings::default(), git_devnet()).unwrap();
+        assert_eq!(t.network.key(), "devnet-moutai");
+    }
+
+    #[test]
+    fn the_env_beats_git_config() {
+        let env = NetworkSettings {
+            network: Some("testnet".into()),
+            ..Default::default()
+        };
+        let t = resolve_network(env, git_devnet()).unwrap();
+        assert_eq!(t.network.key(), "testnet");
+    }
+
+    #[test]
+    fn nothing_configured_is_testnet() {
+        let t = resolve_network(NetworkSettings::default(), NetworkSettings::default()).unwrap();
+        assert_eq!(t.network.key(), "testnet");
+        assert!(t.registry.is_some());
     }
 
     #[test]

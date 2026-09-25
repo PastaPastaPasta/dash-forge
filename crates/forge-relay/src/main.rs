@@ -33,8 +33,6 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use forge_core::platform::Network;
-
 use crate::config::{CliOverrides, RelayConfig};
 
 /// forge-relay command-line interface.
@@ -77,6 +75,15 @@ struct RunArgs {
     #[arg(long, value_enum)]
     network: Option<NetworkArg>,
 
+    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    #[arg(long = "devnet-name")]
+    devnet_name: Option<String>,
+
+    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
+    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
+    #[arg(long = "dapi-addresses")]
+    dapi_addresses: Option<String>,
+
     /// Allow delivery to private/loopback/link-local targets (LOCAL TESTING ONLY — the M2
     /// test delivers to 127.0.0.1).
     #[arg(long)]
@@ -102,12 +109,12 @@ enum NetworkArg {
     Devnet,
 }
 
-impl From<NetworkArg> for Network {
-    fn from(value: NetworkArg) -> Self {
-        match value {
-            NetworkArg::Testnet => Network::Testnet,
-            NetworkArg::Mainnet => Network::Mainnet,
-            NetworkArg::Devnet => Network::Devnet,
+impl NetworkArg {
+    fn kind(self) -> &'static str {
+        match self {
+            NetworkArg::Testnet => "testnet",
+            NetworkArg::Mainnet => "mainnet",
+            NetworkArg::Devnet => "devnet",
         }
     }
 }
@@ -129,7 +136,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let overrides = CliOverrides {
-        network: args.network.map(Network::from),
+        network: forge_core::network::NetworkSettings::from_flags(
+            args.network.map(|n| n.kind().to_string()),
+            args.devnet_name,
+            args.dapi_addresses,
+        ),
         identity: args.identity,
         repos: if args.repos.is_empty() {
             None
@@ -144,8 +155,11 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     };
 
     let cfg = RelayConfig::load(args.config.as_deref(), &overrides)?;
+    if let Err(e) = cfg.target.require_registry() {
+        tracing::warn!(error = %e, "repos will be named by contract id in payloads");
+    }
     tracing::info!(
-        ?cfg.network,
+        network = %cfg.target.network,
         repos = cfg.repos.len(),
         poll_interval_s = cfg.poll_interval.as_secs(),
         allow_private = cfg.allow_private,

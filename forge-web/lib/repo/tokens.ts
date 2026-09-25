@@ -27,7 +27,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Decode, base58Encode } from '../auth/base58'
-import { TOKEN_HISTORY_CONTRACT_ID, type Network } from '../constants'
+import { DEFAULT_NETWORK, TOKEN_HISTORY_CONTRACT_ID, type Network } from '../constants'
 import {
   AuthzResolver,
   holdingsAsOf,
@@ -93,13 +93,9 @@ function num(doc: Record<string, unknown>, field: string): number {
  * {@link AuthzResolver} / {@link holdingsAsOf}. See the module note for the three parity
  * invariants (owner seed, pagination, owner-freeze). Returns `[]` on any failure.
  */
-export async function readTokenHistory(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  network: Network = 'testnet',
-): Promise<TokenRecord[]> {
-  const historyContractId = TOKEN_HISTORY_CONTRACT_ID[network]
-  if (!historyContractId) return []
+export async function readTokenHistory(sdk: EvoSDK, repo: RepoRef): Promise<TokenRecord[]> {
+  // A system contract: the same id on every network.
+  const historyContractId = TOKEN_HISTORY_CONTRACT_ID
 
   try {
     const owner = repo.ownerId
@@ -219,7 +215,7 @@ function tokenHistoryCached(
   const key = authzKey(network, repo.contractId)
   const hit = authzCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < AUTHZ_TTL_MS) return hit.promise
-  const promise: Promise<TokenRecord[]> = readTokenHistory(sdk, repo, network).then(
+  const promise: Promise<TokenRecord[]> = readTokenHistory(sdk, repo).then(
     (records) => {
       if (!historyComplete(records) && authzCache.get(key)?.promise === promise) {
         authzCache.delete(key)
@@ -245,7 +241,7 @@ function tokenHistoryCached(
 export async function resolveAuthz(
   sdk: EvoSDK,
   repo: RepoRef,
-  network: Network = 'testnet',
+  network: Network = DEFAULT_NETWORK,
 ): Promise<AuthzResolver> {
   return new AuthzResolver(await tokenHistoryCached(sdk, repo, network))
 }
@@ -269,7 +265,7 @@ export async function readViewerHoldings(
   sdk: EvoSDK,
   repo: RepoRef,
   identity: string,
-  network: Network = 'testnet',
+  network: Network = DEFAULT_NETWORK,
 ): Promise<Holdings | null> {
   return currentHoldings(await tokenHistoryCached(sdk, repo, network), identity)
 }
