@@ -2,21 +2,16 @@
 
 /**
  * PullContent — PR detail: folded state, base/head, where the PR's objects live, the author's
- * body, the timeline (comments, state events and review verdicts), a comment composer, and
- * mark-as-merged / close / reopen.
+ * body, the files changed (see {@link PullDiff}), the timeline (comments, state events and
+ * review verdicts), a comment composer, and mark-as-merged / close / reopen.
  *
- * Two things this does NOT do, stated here because the names suggest otherwise:
- *
- * * **It cannot merge code.** "Mark as merged" appends a `merge` event carrying the PR head
- *   oid. The fold accepts that event only from a WRITE or MAINTAIN holder, and only once the
- *   head has been a tip of the base ref — which a push must do. So the control is shown only
- *   to WRITE/MAINTAIN holders ({@link pullActions}) and says whether the head is already on
- *   the base branch. For a base branch that has moved on, the merge commit is not the head
- *   oid at all; that merge is recorded with the CLI (`dg pr merge --merge-oid`).
- * * **No diff is rendered.** A PR's head commit normally lives in a different contract from
- *   the repo being viewed, and the browse boundary is bound to a single contract, so showing
- *   one needs a second browse context against `sourceContractId`. Until then the page links
- *   out rather than pretending.
+ * **It cannot merge code**, stated here because the name suggests otherwise. "Mark as merged"
+ * appends a `merge` event carrying the PR head oid. The fold accepts that event only from a
+ * WRITE or MAINTAIN holder, and only once the head has been a tip of the base ref — which a
+ * push must do. So the control is shown only to WRITE/MAINTAIN holders ({@link pullActions})
+ * and says whether the head is already on the base branch. For a base branch that has moved
+ * on, the merge commit is not the head oid at all; that merge is recorded with the CLI
+ * (`dg pr merge --merge-oid`).
  */
 
 import { useState } from 'react'
@@ -32,6 +27,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
+import { PullDiff } from '@/components/repo/pull-diff'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -158,6 +154,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           {pull.body ? <MarkdownView source={pull.body} /> : <p className="italic text-anvil-400">No description.</p>}
         </div>
       </div>
+
+      <PullDiff pull={pull} home={home} />
 
       {timeline.length > 0 ? <Timeline items={timeline} /> : null}
 

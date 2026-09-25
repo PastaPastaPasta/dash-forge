@@ -1,46 +1,24 @@
 'use client'
 
 /**
- * CommitContent — a single commit: metadata + the file-level change set (browse-plane tree diff
- * vs first parent). Each changed path links to its blob. Line-level diffs are a follow-up; the
- * change set + verified blob content is the M3 surface.
+ * CommitContent — a single commit: metadata + its patch against its first parent (browse-plane
+ * tree diff, then per-file line diffs through the shared {@link DiffView}). A root commit shows
+ * every file as added. Each changed path links to its blob on the default branch — the blob
+ * route addresses branches and tags, not commits.
  */
 
 import Link from 'next/link'
-import { FileDiff, GitCommit } from 'lucide-react'
+import { useMemo } from 'react'
+import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
-import type { CommitObject, FileChange, RepoHome } from '@/lib/view'
-import { commitSubject, diffTrees, formatDate, parseCommit, timeAgo } from '@/lib/view'
+import type { DiffSides, RepoHome } from '@/lib/view'
+import { commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { DiffView } from '@/components/repo/diff-view'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { cn } from '@/lib/utils'
-
-interface CommitView {
-  readonly commit: CommitObject
-  readonly changes: FileChange[]
-}
-
-async function loadCommit(reader: BrowseReader, oid: string): Promise<CommitView> {
-  const obj = await reader.readObject(oid)
-  if (obj.type !== 'commit') throw new Error(`${oid.slice(0, 8)} is not a commit`)
-  const commit = parseCommit(obj.bytes)
-  let parentTree: string | null = null
-  if (commit.parents[0]) {
-    const p = await reader.readObject(commit.parents[0])
-    if (p.type === 'commit') parentTree = parseCommit(p.bytes).tree
-  }
-  const changes = await diffTrees(reader, parentTree, commit.tree)
-  return { commit, changes }
-}
-
-const STATUS_META: Record<FileChange['status'], { label: string; klass: string }> = {
-  added: { label: 'A', klass: 'text-verify' },
-  modified: { label: 'M', klass: 'text-caution' },
-  deleted: { label: 'D', klass: 'text-danger' },
-}
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
@@ -52,12 +30,13 @@ export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoA
 }
 
 function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: RepoAddress }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => loadCommit(reader, oid), [oid])
+  const { data, loading, error, reload } = useAsync(() => loadCommitChanges(reader, oid), [oid])
+  const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />
 
-  const { commit, changes } = data
+  const { commit, changes, truncated } = data
   const body = commit.message.split('\n').slice(1).join('\n').trim()
 
   return (
@@ -75,36 +54,23 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
             </Link>
           ))}
         </div>
+        {commit.parents.length > 1 ? (
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+            Merge commit — changes are shown against the first parent.
+          </p>
+        ) : null}
       </div>
 
-      <div className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
-        <FileDiff className="h-3.5 w-3.5" aria-hidden />
-        {changes.length} file{changes.length === 1 ? '' : 's'} changed
-      </div>
-
-      {changes.length === 0 ? (
+      {changes.length === 0 && !truncated ? (
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
       ) : (
-        <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-          {changes.map((c) => {
-            const meta = STATUS_META[c.status]
-            return (
-              <div key={c.path} className="flex items-center gap-3 border-b border-anvil-100 px-3 py-2 text-dense last:border-b-0 dark:border-anvil-850">
-                <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={c.status}>
-                  {meta.label}
-                </span>
-                {c.status === 'deleted' ? (
-                  <span className="min-w-0 flex-1 truncate font-mono text-anvil-500 line-through dark:text-anvil-400">{c.path}</span>
-                ) : (
-                  <Link href={repoHref('/repo/blob', addr, { path: c.path })} className="min-w-0 flex-1 truncate font-mono hover:text-forge-600 dark:hover:text-forge-400">
-                    {c.path}
-                  </Link>
-                )}
-                <Oid value={c.oid} chars={7} copyable={false} />
-              </div>
-            )
-          })}
-        </div>
+        <DiffView
+          key={oid}
+          sides={sides}
+          changes={changes}
+          truncated={truncated}
+          fileHref={(path) => repoHref('/repo/blob', addr, { path })}
+        />
       )}
     </div>
   )
