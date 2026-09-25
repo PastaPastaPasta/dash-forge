@@ -404,6 +404,33 @@ pub struct ReseedReport {
     pub mirror_docs_written: usize,
 }
 
+/// One pack [`RepoService::reseed_from_local`] re-uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalReseed {
+    /// The pack.
+    pub pack_hash: [u8; 32],
+    /// Every URI the confirmed copies are at now.
+    pub uris: Vec<String>,
+    /// Whether one of them is a URI the manifest already records (the recorded copy is
+    /// readable again — the usual outcome when re-uploading through the original profile).
+    pub restored_recorded_uri: bool,
+}
+
+/// The result of [`RepoService::reseed_from_local`].
+#[derive(Debug, Clone, Default)]
+pub struct LocalReseedReport {
+    /// Packs re-uploaded from the local clone.
+    pub restored: Vec<LocalReseed>,
+    /// Packs whose recorded copies still verified (skipped).
+    pub healthy: Vec<[u8; 32]>,
+    /// Packs that needed restoring but have no local copy in this clone.
+    pub missing: Vec<[u8; 32]>,
+    /// Whether new locations could be announced on-chain (`packMirror` present).
+    pub announced_on_chain: bool,
+    /// `packMirror` docs written.
+    pub mirror_docs_written: usize,
+}
+
 /// The repo-lifecycle service, bound to one owner identity and its keys.
 ///
 /// Constructed per-operation-batch: it borrows a connected [`PlatformClient`], the
@@ -981,13 +1008,16 @@ impl<'a> RepoService<'a> {
         let engine = self.doc_engine()?;
         let pack_hash = meta.pack_hash_bytes()?;
 
-        // Test affordance (no effect unless the env var is set): abort after uploading N
-        // fresh chunks to simulate a `kill -9` mid-push, so the resume path can be
-        // exercised deterministically end-to-end. The journal is already checkpointed for
-        // every chunk written before the abort.
+        // Test affordance, compiled only with `--features test-hooks`: abort after
+        // uploading N fresh chunks to simulate a `kill -9` mid-push, so the resume path can
+        // be exercised deterministically end-to-end. The journal is already checkpointed
+        // for every chunk written before the abort.
+        #[cfg(feature = "test-hooks")]
         let kill_after: Option<usize> = std::env::var("DASH_FORGE_KILL_AFTER_CHUNK")
             .ok()
             .and_then(|s| s.parse().ok());
+        #[cfg(not(feature = "test-hooks"))]
+        let kill_after: Option<usize> = None;
         let mut uploaded_now = 0usize;
 
         for (seq, props) in chunk_documents(bytes, pack_hash) {
@@ -1429,6 +1459,103 @@ impl<'a> RepoService<'a> {
         })
     }
 
+    /// Restore lost external copies from a LOCAL clone (`dg reseed --from-local`).
+    ///
+    /// For every live kind-0 pack (or just `only`), the pack's exact bytes are looked up in
+    /// `git_dir` ([`crate::storage::local::find_local_pack`]: the helper's kept copy, or a
+    /// fetched `objects/pack/*.pack`), SHA-256-verified against the manifest, and stored
+    /// on `targets` (≥ `required` must confirm). Storage keys are content-addressed — S3
+    /// `…/packs/<sha256>.pack`, the IPFS CID — so re-uploading through the SAME profile the
+    /// pack was pushed with recreates the very URI the immutable manifest already records,
+    /// and readers find it again. Copies at new locations are announced as `packMirror`
+    /// docs when the contract has that type; on repo-v1 (no `packMirror`) they are only
+    /// returned, for the caller to print.
+    ///
+    /// Packs with no local copy are reported in `missing`; packs whose recorded copies
+    /// still verify are skipped unless `force`.
+    pub async fn reseed_from_local(
+        &self,
+        repo: &RepoHandle,
+        git_dir: &std::path::Path,
+        targets: &[&dyn StorageTarget],
+        required: usize,
+        only: Option<[u8; 32]>,
+        force: bool,
+    ) -> Result<LocalReseedReport> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let live: Vec<PackManifestInfo> = live_kind0_manifests(&manifests)
+            .into_iter()
+            .filter(|m| only.is_none_or(|h| h == m.pack_hash))
+            .collect();
+        if let (Some(h), true) = (only, live.is_empty()) {
+            return Err(Error::Config(format!(
+                "no live pack {} in this repo's manifests",
+                hex::encode(h)
+            )));
+        }
+        let contract = self.repo_contract(repo).await?;
+        let reader = PackReader::from_user_config();
+        let mut report = LocalReseedReport::default();
+        for m in &live {
+            if !force
+                && self
+                    .fetch_artifact_from(repo, &contract, m, &reader)
+                    .await
+                    .is_ok()
+            {
+                report.healthy.push(m.pack_hash);
+                continue;
+            }
+            let Some(bytes) = crate::storage::local::find_local_pack(git_dir, m.pack_hash)? else {
+                report.missing.push(m.pack_hash);
+                continue;
+            };
+            let meta = PackMeta::for_bytes(&bytes);
+            let rep = crate::storage::replicate(targets, &bytes, &meta, required)
+                .await
+                .map_err(|e| Error::Io(format!("pack {}: {e}", meta.pack_hash)))?;
+            let uris = rep.uris();
+            let restored = uris.iter().any(|u| m.uris.contains(u));
+            report.restored.push(LocalReseed {
+                pack_hash: m.pack_hash,
+                uris,
+                restored_recorded_uri: restored,
+            });
+        }
+
+        // Announce new locations where the contract allows it.
+        if contract.has_document_type(DOC_PACK_MIRROR) {
+            let repo_id_bytes = platform::decode_identifier(&repo.repo_contract_id)?;
+            let engine = self.doc_engine()?;
+            for r in &report.restored {
+                let fresh: Vec<&String> = r
+                    .uris
+                    .iter()
+                    .filter(|u| {
+                        !live
+                            .iter()
+                            .any(|m| m.pack_hash == r.pack_hash && m.uris.contains(u))
+                    })
+                    .collect();
+                if fresh.is_empty() {
+                    continue;
+                }
+                let mut props = BTreeMap::new();
+                props.insert("repoId".to_string(), FieldValue::identifier(repo_id_bytes));
+                props.insert("packHash".to_string(), FieldValue::bytes32(r.pack_hash));
+                let json = serde_json::to_string(&fresh)
+                    .map_err(|e| Error::Config(format!("serializing packMirror uris: {e}")))?;
+                props.insert("uris".to_string(), FieldValue::text(json));
+                engine
+                    .create_document(&contract, DOC_PACK_MIRROR, props)
+                    .await?;
+                report.mirror_docs_written += 1;
+            }
+            report.announced_on_chain = true;
+        }
+        Ok(report)
+    }
+
     /// Publish the consolidated browse index for a repack, reporting failure as `None`
     /// rather than unwinding it.
     ///
@@ -1713,8 +1840,13 @@ impl<'a> RepoService<'a> {
         repo_contract: &LoadedContract,
         manifest: &PackManifestInfo,
     ) -> Result<Vec<u8>> {
-        self.fetch_artifact_from(repo, repo_contract, manifest, &PackReader::from_user_config())
-            .await
+        self.fetch_artifact_from(
+            repo,
+            repo_contract,
+            manifest,
+            &PackReader::from_user_config(),
+        )
+        .await
     }
 
     /// Fetch a stored artifact's bytes, SHA-256-verified against its manifest.
@@ -1749,22 +1881,15 @@ impl<'a> RepoService<'a> {
         // Every body is capped at the manifest's size (0 = unknown on very old manifests).
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         if reader.has_candidates(&manifest.uris) {
-            let attempt = reader.fetch_verified(&manifest.uris, &expected, size);
-            // With chunks to fall back on, the external copies get a bounded total time —
-            // dead gateways must not cost minutes per pack before the on-chain read.
-            let result = if has_chunks {
-                tokio::time::timeout(crate::storage::read::DEFAULT_EXTERNAL_BUDGET, attempt)
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(Error::Io(format!(
-                            "external copies did not verify within {}s",
-                            crate::storage::read::DEFAULT_EXTERNAL_BUDGET.as_secs()
-                        )))
-                    })
-            } else {
-                attempt.await
-            };
-            match result {
+            // With chunks to fall back on, the external copies get a size-scaled budget
+            // after which no new candidate starts — dead gateways must not cost minutes per
+            // pack before the on-chain read, but a big pack streaming from a healthy mirror
+            // is not abandoned mid-transfer.
+            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            match reader
+                .fetch_verified(&manifest.uris, &expected, size, budget)
+                .await
+            {
                 Ok(bytes) => return Ok(bytes),
                 Err(e) if !has_chunks => return Err(e),
                 Err(e) => tracing::info!(

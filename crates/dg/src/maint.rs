@@ -13,6 +13,7 @@ use serde_json::json;
 use forge_core::backends::ipfs::IpfsConfig;
 use forge_core::backends::{IpfsBackend, PackBackend, S3Backend, S3Config};
 use forge_core::repo::{RepackTarget, RepoService};
+use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
 
 use crate::common::{resolve, RepoRef};
@@ -243,6 +244,171 @@ pub async fn reseed(
         },
     );
     Ok(())
+}
+
+/// `dg reseed --from-local [GIT_DIR]` — restore lost pack copies from this clone.
+///
+/// Targets: `--profile <name>`, else the external targets of this repo's storage policy
+/// (`dash.storage` / `dash.replicas`, the same config `git push` uses). Re-uploading
+/// through the profile a pack was pushed with recreates the exact URI its manifest
+/// records (keys are content-addressed), which is what makes the pack readable again.
+pub async fn reseed_from_local(
+    ctx: &Ctx,
+    repo: Option<&str>,
+    git_dir: &std::path::Path,
+    profile: Option<&str>,
+    pack: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let repo = repo.context("`dg reseed` needs a repository: dg reseed <owner>/<name>")?;
+    let repo_ref = RepoRef::parse(repo)?;
+    let git_dir =
+        std::fs::canonicalize(git_dir).with_context(|| format!("git dir {}", git_dir.display()))?;
+    let only = pack
+        .map(|h| -> Result<[u8; 32]> {
+            let raw = hex::decode(h).context("--pack must be a hex SHA-256")?;
+            raw.try_into()
+                .map_err(|_| anyhow::anyhow!("--pack must be 32 bytes (64 hex chars)"))
+        })
+        .transpose()?;
+
+    let (targets, required, label) = reseed_targets(profile)?;
+
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &bridge, &repo_ref).await?;
+    let svc = RepoService::new(&client, &identity, &bridge);
+    if !ctx.confirm(&format!(
+        "Restore unreadable packs of {}/{} from {} to {label}? (uploads to your storage; \
+         no Platform spend unless packMirror docs are written)",
+        handle.owner_id,
+        handle.normalized_name,
+        git_dir.display()
+    ))? {
+        bail!("aborted");
+    }
+    let refs: Vec<&dyn StorageTarget> = targets.iter().map(|t| t as &dyn StorageTarget).collect();
+    let report = svc
+        .reseed_from_local(&handle, &git_dir, &refs, required, only, force)
+        .await
+        .context("reseed from local failed")?;
+
+    emit_local_reseed(ctx, &handle, &git_dir, &label, &report);
+    if !report.missing.is_empty() {
+        bail!(
+            "{} pack(s) could not be restored from this clone",
+            report.missing.len()
+        );
+    }
+    Ok(())
+}
+
+/// `dg reseed --from-local` targets: the named profile, or this repo's storage policy's
+/// external targets. Returns `(targets, required confirmations, label)`.
+fn reseed_targets(profile: Option<&str>) -> Result<(Vec<ExternalTarget>, usize, String)> {
+    if let Some(name) = profile {
+        return Ok((vec![external_profile_target(name)?], 1, name.to_string()));
+    }
+    let storage = git_config_scoped("dash.storage").map(|(_, v)| v);
+    let replicas = git_config_scoped("dash.replicas").map(|(_, v)| v);
+    let resolved = forge_core::storage::StoragePolicy::from_git_values(
+        storage.as_deref(),
+        replicas.as_deref(),
+        None,
+    )?
+    .resolve(&StorageProfiles::load()?)?;
+    if resolved.external.is_empty() {
+        bail!(
+            "this repo's storage policy has no external target to restore to; pass --profile \
+             <name> (the profile the pack was pushed with restores its recorded URI)"
+        );
+    }
+    let http = forge_core::storage::http_client();
+    let targets = resolved
+        .external
+        .iter()
+        .map(|(n, p)| ExternalTarget::from_profile(n, p, &http).map_err(anyhow::Error::from))
+        .collect::<Result<Vec<_>>>()?;
+    let required = resolved.replicas.min(targets.len()).max(1);
+    let label = resolved
+        .external
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok((targets, required, label))
+}
+
+/// Print (or `--json`-emit) a finished `dg reseed --from-local`.
+fn emit_local_reseed(
+    ctx: &Ctx,
+    handle: &forge_core::repo::RepoHandle,
+    git_dir: &std::path::Path,
+    label: &str,
+    report: &forge_core::repo::LocalReseedReport,
+) {
+    let restored_json: Vec<_> = report
+        .restored
+        .iter()
+        .map(|r| {
+            json!({
+                "packHash": hex::encode(r.pack_hash),
+                "uris": r.uris,
+                "restoredRecordedUri": r.restored_recorded_uri,
+            })
+        })
+        .collect();
+    let missing: Vec<String> = report.missing.iter().map(hex::encode).collect();
+    ctx.emit(
+        json!({
+            "status": if missing.is_empty() { "reseeded" } else { "partial" },
+            "repoContractId": handle.repo_contract_id,
+            "targets": label,
+            "restored": restored_json,
+            "healthy": report.healthy.len(),
+            "missingLocally": missing,
+            "announcedOnChain": report.announced_on_chain,
+            "packMirrorDocsWritten": report.mirror_docs_written,
+        }),
+        || {
+            println!(
+                "Restored {} pack(s) of {}/{} from {} to {label} ({} still healthy).",
+                report.restored.len(),
+                handle.owner_id,
+                handle.normalized_name,
+                git_dir.display(),
+                report.healthy.len()
+            );
+            for r in &report.restored {
+                let state = if r.restored_recorded_uri {
+                    "its recorded copy is readable again"
+                } else {
+                    "stored at NEW locations only (see below)"
+                };
+                println!("  {} — {state}", hex::encode(r.pack_hash));
+                for u in &r.uris {
+                    println!("      {u}");
+                }
+            }
+            if report.restored.iter().any(|r| !r.restored_recorded_uri) {
+                if report.announced_on_chain {
+                    println!(
+                        "  new locations announced on-chain: {} packMirror doc(s).",
+                        report.mirror_docs_written
+                    );
+                } else {
+                    println!(
+                        "  note: this repo's contract has no packMirror type, and a manifest is \
+                         immutable, so readers will not find NEW locations. Re-run with \
+                         --profile <the profile the pack was pushed with> to recreate the \
+                         recorded URI."
+                    );
+                }
+            }
+            for h in &missing {
+                println!("  {h} — no local copy in this clone (try a clone that fetched it)");
+            }
+        },
+    );
 }
 
 /// Load the named EXTERNAL profile from storage.toml.

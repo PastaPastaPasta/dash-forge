@@ -19,6 +19,7 @@
 //! own, or a public gateway that is only ever trusted for bytes that hash-verify.
 
 pub mod cors;
+pub mod local;
 pub mod policy;
 pub mod profiles;
 pub mod read;

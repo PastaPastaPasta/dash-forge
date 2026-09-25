@@ -107,6 +107,17 @@ pub enum Command {
         /// Storage profile (from `dg storage add`) to reseed to.
         #[arg(long)]
         profile: Option<String>,
+        /// Restore lost copies from THIS clone's local pack files (the git dir, default
+        /// `.git`) instead of downloading them, uploading to the repo's storage policy
+        /// (dash.storage / dash.replicas), or to --profile.
+        #[arg(long, value_name = "GIT_DIR", num_args = 0..=1, default_missing_value = ".git", conflicts_with = "to")]
+        from_local: Option<PathBuf>,
+        /// With --from-local: only this pack (hex SHA-256).
+        #[arg(long, requires = "from_local")]
+        pack: Option<String>,
+        /// With --from-local: re-upload even packs whose recorded copies still verify.
+        #[arg(long, requires = "from_local")]
+        force: bool,
     },
     /// Storage availability.
     #[command(subcommand)]
@@ -720,9 +731,27 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             backend,
             profile,
         } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref()).await,
-        Command::Reseed { repo, to, profile } => {
-            maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await
+        Command::Reseed {
+            repo,
+            profile,
+            from_local: Some(git_dir),
+            pack,
+            force,
+            ..
+        } => {
+            maint::reseed_from_local(
+                ctx,
+                repo.as_deref(),
+                git_dir,
+                profile.as_deref(),
+                pack.as_deref(),
+                *force,
+            )
+            .await
         }
+        Command::Reseed {
+            repo, to, profile, ..
+        } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import { url } => maint::import(ctx, url),
         Command::Doctor => doctor::run(ctx).await,
     }

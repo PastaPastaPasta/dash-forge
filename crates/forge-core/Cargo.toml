@@ -43,6 +43,11 @@ drive-proof-verifier.workspace = true
 rs-sdk-trusted-context-provider.workspace = true
 simple-signer.workspace = true
 
+[features]
+# Fault-injection environment hooks for the e2e harness (DASH_FORGE_KILL_AFTER_CHUNK).
+# Off in normal builds; enabled through git-remote-dash's `test-hooks`.
+test-hooks = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
