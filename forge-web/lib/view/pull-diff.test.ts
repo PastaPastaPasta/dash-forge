@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import { diffTrees, loadCommitChanges } from './commit-log'
 import { MODE_TREE, Store } from './diff-fixtures'
-import { findMergeBase, IMPORTED_BASE_ERROR, loadPullComparison, preferring } from './pull-diff'
+import {
+  findMergeBase,
+  IMPORTED_BASE_ERROR,
+  loadPullComparison,
+  MergeBaseSearchLimitError,
+  preferring,
+} from './pull-diff'
 
 const summary = (changes: readonly { path: string; status: string }[]): string[] =>
   changes.map((c) => `${c.status[0]?.toUpperCase()} ${c.path}`)
@@ -133,7 +139,7 @@ describe('findMergeBase', () => {
     await expect(findMergeBase(s.reader(), base, head)).resolves.toBe(fork)
   })
 
-  it('returns null for unrelated histories and when the cap is reached', async () => {
+  it('returns null for unrelated histories, and rejects rather than answering when the cap is reached', async () => {
     const s = new Store()
     const t = s.files({ f: '1' })
     const a = s.commit(t, [], 'a')
@@ -143,8 +149,26 @@ describe('findMergeBase', () => {
     let tip = s.commit(t, [], 'root')
     const root = tip
     for (let i = 0; i < 20; i++) tip = s.commit(t, [tip], `c${i}`)
-    await expect(findMergeBase(s.reader(), tip, root, 5)).resolves.toBeNull()
+    // Stopping early is not evidence of unrelated histories — it must not read as "none".
+    await expect(findMergeBase(s.reader(), tip, root, 5)).rejects.toBeInstanceOf(MergeBaseSearchLimitError)
     await expect(findMergeBase(s.reader(), tip, root)).resolves.toBe(root)
+  })
+
+  it('does not settle for an early candidate when the cap stops the walk', async () => {
+    const s = new Store()
+    const t = s.files({ f: '1' })
+    // The same skewed-clock shape as above: `root` is met first, the true base `fork` later.
+    const root = s.commitAt(t, [], 1)
+    const fork = s.commitAt(t, [root], 2)
+    const base = s.commitAt(t, [fork], 3)
+    const skewed = s.commitAt(t, [fork], 0)
+    const head = s.commitAt(t, [skewed, root], 10)
+    await expect(findMergeBase(s.reader(), base, head)).resolves.toBe(fork)
+    for (let cap = 1; cap < 6; cap++) {
+      const got = await findMergeBase(s.reader(), base, head, cap).catch((e: unknown) => e)
+      // Either the right answer or an explicit "stopped" — never `root` and never "unrelated".
+      if (got !== fork) expect(got).toBeInstanceOf(MergeBaseSearchLimitError)
+    }
   })
 })
 

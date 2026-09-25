@@ -107,11 +107,15 @@ export async function loadPullComparison(
     try {
       mergeBase = await findMergeBase(sides.head, oid, headOid)
     } catch (e) {
-      failed.push(`${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`)
+      failed.push(
+        e instanceof MergeBaseSearchLimitError
+          ? `${which}: ${e.message}`
+          : `${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`,
+      )
       continue
     }
     if (mergeBase === null) {
-      failed.push(`${which}: no common ancestor within ${MERGE_BASE_COMMIT_CAP} commits`)
+      failed.push(`${which}: no common ancestor`)
       continue
     }
     if (mergeBase === headOid) {
@@ -141,6 +145,17 @@ export async function loadPullComparison(
 class CapReached extends Error {}
 
 /**
+ * The merge-base search stopped at its commit cap. Distinct from "no common ancestor": the
+ * histories may well be related (a candidate may already have been found), the walk just did
+ * not finish, so no base can be named with confidence.
+ */
+export class MergeBaseSearchLimitError extends Error {
+  constructor(readonly cap: number) {
+    super(`the search for a common ancestor stopped at its ${cap}-commit limit`)
+  }
+}
+
+/**
  * Find the best merge base of `baseOid` and `headOid` — git's `paint_down_to_common` plus
  * `remove_redundant`. Both histories are walked newest-commit-first, each commit painted with
  * the side(s) it is reachable from; a commit reached from both is a candidate, and its
@@ -149,8 +164,10 @@ class CapReached extends Error {}
  * returning the first candidate is what keeps a skewed committer clock from yielding an older
  * common ancestor than the fork point.
  *
- * `null` when there is none, or when more than `cap` commits would have to be read (so corrupt
- * or enormous history cannot run away). A commit that cannot be read rejects.
+ * `null` when the histories share no commit. Rejects with {@link MergeBaseSearchLimitError}
+ * when the walk would have to read more than `cap` commits (so corrupt or enormous history
+ * cannot run away) — even if a candidate was already seen, since a later one could be better —
+ * and with the read error when a commit cannot be read.
  */
 export async function findMergeBase(
   reader: ObjectReader,
@@ -207,7 +224,7 @@ export async function findMergeBase(
       await Promise.all(parents.filter((p) => (flagsOf(p) & flag) !== flag).map((p) => push(p, flag)))
     }
   } catch (e) {
-    if (e instanceof CapReached) return null
+    if (e instanceof CapReached) throw new MergeBaseSearchLimitError(cap)
     throw e
   }
 
@@ -241,7 +258,9 @@ export async function findMergeBase(
     }
     return newest(kept.length > 0 ? kept : candidates)
   } catch (e) {
-    if (e instanceof CapReached) return newest(candidates)
+    // Picking among unreduced candidates would be a guess — the same "inexact baseline" the
+    // caller refuses elsewhere — so the cap is reported rather than papered over.
+    if (e instanceof CapReached) throw new MergeBaseSearchLimitError(cap)
     throw e
   }
 }

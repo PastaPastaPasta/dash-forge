@@ -123,6 +123,19 @@ export function DiffView({
     )
   }
 
+  // A size skip taken from the (unverified) browse index can be overridden: download the
+  // blobs and let the measured size decide.
+  const loadAnyway = (change: FileChange): void => {
+    setPatches((prev) => {
+      const next = new Map(prev)
+      next.delete(change.path)
+      return next
+    })
+    void loadFilePatch(sides, change, { ignoreSizeHint: true }).then((patch) =>
+      setPatches((prev) => new Map(prev).set(change.path, patch)),
+    )
+  }
+
   const pick = (index: number): void => {
     if (index >= shown) setShown(Math.min(changes.length, Math.ceil((index + 1) / FILE_PAGE) * FILE_PAGE))
     setScrollTo(index)
@@ -169,8 +182,8 @@ export function DiffView({
 
       {truncated ? (
         <p className="rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
-          This comparison is too large to list completely; only the first {changes.length} changed files are shown.
-          Clone the repo to see the rest.
+          This comparison is too large to list completely: {changes.length} changed files are listed, and others
+          (mostly deeper in the tree) are not. Clone the repo to see the rest.
         </p>
       ) : null}
 
@@ -181,6 +194,7 @@ export function DiffView({
           change={change}
           patch={patches.get(change.path)}
           href={fileHref && change.status !== 'deleted' ? fileHref(change.path) : undefined}
+          onLoadAnyway={() => loadAnyway(change)}
         />
       ))}
 
@@ -211,11 +225,13 @@ function FilePatchView({
   change,
   patch,
   href,
+  onLoadAnyway,
 }: {
   id: string
   change: FileChange
   patch: FilePatch | undefined
   href: string | undefined
+  onLoadAnyway: () => void
 }): JSX.Element {
   // Deleted files start collapsed: their patch is the whole old file in red.
   const [open, setOpen] = useState(change.status !== 'deleted')
@@ -259,7 +275,14 @@ function FilePatchView({
               <Spinner label="Reading file" />
             </div>
           ) : patch.kind === 'placeholder' ? (
-            <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400">{patch.note}</p>
+            <div className="flex flex-wrap items-center gap-3 px-4 py-4">
+              <p className="text-dense text-anvil-500 dark:text-anvil-400">{patch.note}</p>
+              {patch.unverifiedSize ? (
+                <Button size="sm" variant="ghost" onClick={onLoadAnyway}>
+                  Download and check
+                </Button>
+              ) : null}
+            </div>
           ) : patch.lines.length === 0 ? (
             <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400">Empty file.</p>
           ) : (
