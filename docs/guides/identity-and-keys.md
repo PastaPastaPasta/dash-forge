@@ -16,7 +16,7 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 
 An identity is a record on Dash Platform with:
 
-- an **id**: a 44-character base58 string such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. It appears in your repository addresses (`dash://<id>/<repo>`);
+- an **id**: a 42–44 character base58 string such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. It appears in your repository addresses (`dash://<id>/<repo>`);
 - a set of **public keys**. Anything you write on Forge is signed by one of them, and Platform checks the signature;
 - a **credit balance** that pays Platform fees. 1 DASH = 100,000,000,000 credits.
 
@@ -56,7 +56,7 @@ Do this once:
 
 1. Write the 12 words on paper, in order. Keep two copies in separate places.
 2. Keep the words offline. Do not put them in a password manager that syncs, in a note-taking app, or in a screenshot.
-3. Treat the identity file (`dash-identity-<id>.json`) like the words. It contains them, plus every private key. Keep it `chmod 600`. `dg doctor` warns when it is readable by other users, and `dg doctor --fix` tightens it.
+3. Treat the identity file (`dash-identity-<id>.json`) like the words. It contains them, plus every private key. Keep it `chmod 600`, and the same for the copy `dg auth login` makes in `~/.config/dash-forge/identities/`. `dg doctor` warns when the identity file it uses is readable by other users, and `dg doctor --fix` tightens it.
 
 If you lose a laptop but still have the words or a backup of the file, nothing is lost. Your repositories, issues and history are on Platform, not on your laptop:
 
@@ -106,17 +106,17 @@ Platform lets the MASTER key add new keys to an identity and disable old ones. A
 
 Today you do this in the Dash bridge, not in `dg`:
 
-1. Open <https://bridge.thepasta.org> (add `?network=testnet` for testnet) and choose **Manage Identity Keys**.
+1. Open <https://bridge.thepasta.org> (it defaults to testnet; add `?network=mainnet` for mainnet) and choose **Manage Identity Keys**.
 2. Sign in with the identity id and the **MASTER** key's private key. This is the one place where the master key is used. Do it on a machine you trust, and check the page address first.
 3. Add a new key (for example a new HIGH authentication key), or disable a key you think is exposed.
-4. Save the new private key into your identity file, in the matching `identityKeys` entry.
+4. Update your identity file: add an `identityKeys` entry for the new key, and **delete the entry for the key you disabled**. The bridge gives you the new key's private key (WIF). Signing uses only `id`, `purpose`, `securityLevel` and `privateKeyWif`, but every field of an entry must be present for the file to load, so set the ones you don't have (`privateKeyHex`, `publicKeyHex`, `derivationPath`, `name`) to `""` and `keyType` to `"ECDSA_SECP256K1"`. `dg` and `git-remote-dash` sign with the first HIGH authentication key in the file, so a disabled key left in it makes every write fail. Then run `dg auth login --identity <file>` again to refresh the copy `dg` uses.
 
 When to rotate:
 
 - a laptop or CI secret that held a signing key was lost or leaked: **disable that key**;
 - you gave a CI job the HIGH key and are retiring the job.
 
-If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can re-enable or add keys. Move your credits out with the TRANSFER key to a new identity, and start over there. On forge-v2 you can then add the new identity to your repositories as a maintainer. On v1 (testnet today), the old identity owns its repository contracts forever, and there is no ownership transfer.
+If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred on either v1 or forge-v2, and the attacker now controls everything only the owner can do, such as adding and removing members.
 
 **Coming soon:** `dg auth keys list | add | disable`.
 

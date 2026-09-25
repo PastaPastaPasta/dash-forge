@@ -9,13 +9,13 @@
 
 ## Try it (testnet)
 
-Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=testnet), which has a faucet for free tDASH, and download its key backup. Then, from any git repository:
+Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=testnet), fund it from the bridge's testnet faucet twice (a repository costs ~1.18 tDASH; each request gives 1), and download its key backup. Then, from any git repository:
 
 ```sh
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
 dg auth login --identity ~/Downloads/dash-identity-<id>.json
 export DASH_FORGE_KEY=~/.config/dash-forge/identities/testnet/<id>.identity.json
-dg repo create hello                    # ~1.18 tDASH on testnet (v1); ~0.001 DASH on forge-v2
+dg repo create hello                    # a v1 repository: ~1.18 tDASH (forge-v2 will be ~0.001 DASH)
 git remote add forge dash://<id>/hello && git push -u forge main
 ```
 
@@ -41,7 +41,7 @@ Prebuilt binaries and a one-line `install.sh` will come with the first tagged re
 | Network | Forge version | State |
 |---|---|---|
 | **Testnet** | **v1** (legacy): one contract per repository, token access control | Live. Everything in the guides works here. A repository costs ~1.18 tDASH. |
-| **Devnet moutai** | **forge-v2**: two shared contracts, membership access control, Platform protocol 14 | Contracts registered. CLI and web support are landing now. A repository costs ~0.001 DASH. |
+| **Devnet moutai** | **forge-v2**: two shared contracts, membership access control, Platform protocol 14 | Contracts registered. The CLI and web app cannot use them yet; support is landing now. A repository will cost ~0.001 DASH. |
 | **Mainnet** | — | Not deployed. forge-v2 will be registered once Platform protocol 14 activates on mainnet. |
 
 Specified but not built yet, and marked **coming soon** in the guides: prebuilt releases, identity creation in `dg` and in the browser, limited-budget keys, DPNS usernames, forks, opening and merging PRs from the browser, the GitHub Mirror Action, and private repositories.

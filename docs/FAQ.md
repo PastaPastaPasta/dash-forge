@@ -13,7 +13,7 @@ The Forge project publishes code and nothing else. Anything that looks hosted is
 
 ### Can my repository be taken down?
 
-Not at the protocol level. The Forge contracts are registered **without Platform's contract moderation**, so nobody can delete your documents or ban your identity. That includes the Forge project, Dash Core Group, and the masternode operators. Refs and ref history can't be deleted even by you (forge-v2 keeps them permanently), so nobody can rewind a branch.
+Not at the protocol level. The Forge contracts are registered **without Platform's contract moderation**, so nobody can delete your documents or ban your identity. That includes the Forge project, Dash Core Group, and the masternode operators. Ref history can't be deleted even by you, so nobody can rewind a branch.
 
 What someone *can* do:
 
@@ -23,7 +23,7 @@ What someone *can* do:
 
 ### Is there any moderation?
 
-Not at the protocol level. Spam and abuse cost the sender fees, which is the only floor. Clients can still choose what to show: a repository's view counts only its members' approvals and state changes, and anyone can build a client that filters more. No one can delete another person's documents.
+Not at the protocol level. Spam and abuse cost the sender fees, which is the only floor. Clients can still choose what to show: an issue's or PR's state counts only changes made by its author or by the repository's members, and anyone can build a client that filters more. No one can delete another person's documents.
 
 ### What if forge.dashhq.org disappears?
 
@@ -42,7 +42,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ### How much does it cost?
 
-On forge-v2, creating a repository costs about **0.001 DASH**, and a push to your own bucket about **0.0003 DASH**. On today's testnet (v1) a repository costs about 1.18 tDASH, which is free test money. Storing packs on Platform costs about 0.28 DASH per MiB. The full table is in [Costs](guides/costs.md).
+On forge-v2, creating a repository will cost about **0.001 DASH**. A push to your own bucket costs about **0.0003 DASH** today. On today's testnet (v1) a repository costs about 1.18 tDASH, which is free test money. Storing packs on Platform costs about 0.28 DASH per MiB. The full table is in [Costs](guides/costs.md).
 
 ### When is it on mainnet?
 
@@ -51,7 +51,7 @@ After **Dash Platform protocol 14** activates on mainnet. forge-v2 depends on pr
 | Network | Status |
 |---|---|
 | **Testnet** | v1 is live: one contract per repository, token-based access. Protocol 14 is expected on testnet shortly before mainnet. |
-| **Devnet moutai** | forge-v2 contracts are registered, and client support is landing now. |
+| **Devnet moutai** | forge-v2 contracts are registered. The CLI and web app cannot use them yet; client support is landing now. |
 | **Mainnet** | Not deployed. The forge-v2 contracts will be registered once protocol 14 is active. |
 
 `dg doctor` shows which network you are on, its protocol version, and whether forge-v2 is deployed there.
@@ -80,7 +80,7 @@ No. Your repositories are on Platform and in your storage. Your identity survive
 
 ### I lost my 12 words and my identity file.
 
-Then that identity is gone. Nobody can recover it, and nobody can sign as it again. On forge-v2, anything it published stays readable and clonable forever, but only that identity could have pushed to its repositories, and it can no longer do so. Create a new identity and fork. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
+Then that identity is gone. Nobody can recover it, and nobody can sign as it again. Everything it published stays readable and clonable. Its repositories can no longer gain or lose members, because only the owner can change membership. On forge-v2, members it already added can keep pushing; on v1, token holders can too. To carry on under a new identity, create a new repository and push your clone to it. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
 
 ### Where do I report a bug?
 

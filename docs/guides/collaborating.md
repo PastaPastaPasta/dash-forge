@@ -10,7 +10,7 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 
 The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. DPNS usernames are not resolved yet.
 
-> **Two access models.** Today's **testnet** repositories are **v1**: access is a pair of tokens on each repository's own contract. **forge-v2**, on devnet moutai now and on mainnet after Platform protocol 14 activates, uses membership documents in one shared contract instead. The commands stay the same. What changes underneath is called out where it matters.
+> **Two access models.** Today's **testnet** repositories are **v1**: access is a pair of tokens on each repository's own contract. **forge-v2** uses membership documents in one shared contract instead. Its contracts are registered on devnet moutai, but `dg`, `git-remote-dash` and the web app cannot use them yet; it comes to mainnet after Platform protocol 14 activates. The commands below work on v1 today. The differences on forge-v2 are called out where they matter.
 
 ---
 
@@ -20,15 +20,21 @@ There are two roles:
 
 | Role | `--role` | Can |
 |---|---|---|
-| Writer | `write` | Push to unprotected branches; label, assign, close and reopen any issue or PR; merge PRs. |
-| Maintainer | `maintain` | Everything a writer can, plus protected branches, releases, labels, webhooks and repository settings. |
+| Writer | `write` | Push to unprotected branches; label, close and reopen any issue or PR; record merges. |
+| Maintainer | `maintain` | Protected branches, releases, labels, webhooks and repository settings, plus the issue and PR actions a writer has. On forge-v2 a maintainer can also push anywhere a writer can. |
 
-Anyone, member or not, can open issues and PRs, comment and review. Only members' approvals count toward a PR's review state.
+**On v1, give a maintainer both roles.** Pushing needs the WRITE token, even to a protected branch (the pack and manifest are WRITE-gated). A collaborator with only `maintain` cannot push:
 
 ```sh
-dg collab list <owner>/<repo>
 dg collab add <owner>/<repo> <identity id> --role write
 dg collab add <owner>/<repo> <identity id> --role maintain
+```
+
+Anyone, member or not, can open issues and PRs, comment and review.
+
+```sh
+dg collab list   <owner>/<repo>
+dg collab add    <owner>/<repo> <identity id> --role write
 dg collab remove <owner>/<repo> <identity id> --role write
 ```
 
@@ -49,7 +55,7 @@ A suspended writer's next push is rejected at consensus ([`E602`](../errors.md#e
 
 ### forge-v2: membership documents
 
-*Available on devnet moutai; mainnet after Platform protocol 14 activates.*
+*Contracts registered on devnet moutai, client support in progress; mainnet after Platform protocol 14 activates.*
 
 On forge-v2, a collaborator is a `writer` or `maintainer` document keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
@@ -93,7 +99,7 @@ A pull request is a `patch` document in the **base** repository. It points at th
 Otherwise, use a repository of your own. **`dg repo fork` is not implemented yet** (it fails with [`E103`](../errors.md#e103)). Create a repository yourself instead:
 
 ```sh
-dg repo create project-fork       # v1: ~1.18 DASH; forge-v2: ~0.001 DASH
+dg repo create project-fork       # a v1 repository: ~1.18 DASH (forge-v2 forks will cost ~0.001)
 ```
 
 **2. Push your branch to it.**
@@ -134,14 +140,16 @@ dg pr review   <owner>/project 7 --verdict approve --body "LGTM"
 dg pr review   <owner>/project 7 --verdict request-changes --body "Needs a test"
 ```
 
-A review is counted for the commit it was made on (`--commit`, which defaults to the PR head). Only approvals from current writers and maintainers count. A new push to the PR makes older approvals stale.
+A review records the commit it was made on (`--commit`, which defaults to the PR head). Today `dg pr view` and the web app list every review as posted: nothing counts or filters approvals yet.
+
+**Coming soon (forge-v2 rule):** only approvals from current writers and maintainers, made on the PR's current head, will count.
 
 **5. Merge.** In Forge, merging is two separate steps:
 
 1. **Push the merged code to the base branch.** This is plain git, and you need write access to the base branch. Consensus enforces that.
 2. **Record the merge.** `dg pr merge` posts a `merge` event naming the commit that landed.
 
-A PR shows as merged only when **both** are true: the event comes from a writer or maintainer, and its commit is reachable from the base branch's tip. A `merge` event on its own merges nothing, and clients ignore it.
+A PR shows as merged only when **both** are true: the event comes from a writer or maintainer, and its commit has been **the tip of the base branch** after some push. A `merge` event on its own merges nothing, and clients ignore it. So record the commit that you pushed as the new tip, as in the two examples below.
 
 Fast-forward (the PR head goes onto `main` as it is):
 
@@ -178,7 +186,7 @@ dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <path>]
 ```
 
-`dg release download` checks each asset against the SHA-256 recorded in the release and refuses a mismatch. `dg release create` has no way to attach assets yet, and `forge-import` copies a GitHub release's tag, title and notes but not its assets.
+`dg release create` records the tag, title and notes. No Forge tool can attach assets yet, and `forge-import` does not copy a GitHub release's assets either. `dg release download` checks each recorded asset against its SHA-256 and refuses a mismatch; it is ready for when assets can be attached.
 
 To withdraw a release, publish it again with `--yanked`. The newest release for a tag wins.
 

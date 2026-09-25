@@ -42,7 +42,7 @@ A proof is only as good as the quorum public key it is checked against. Today, *
 | mainnet | `https://quorums.mainnet.networks.dash.org` |
 | devnet moutai | `https://quorums.moutai.networks.dash.org` |
 
-Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. The web app's Assay panel says this in its footer and names the endpoint. `dg doctor` prints it on the `target` line.
+Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. The web app's Assay panel says this in its footer and names the endpoint. On a devnet, `dg doctor` prints the endpoint on its `target` line. On testnet and mainnet the tools use the endpoint in the table above, which is built into the Platform SDK.
 
 ### Cross-check the quorum keys yourself
 
@@ -86,7 +86,7 @@ DASH_FORGE_KEY=<your identity file> git-remote-dash --dump-refs <owner id> <repo
 ```
 
 ```
---- refUpdate: 3 docs ---
+--- refUpdate: 2 docs ---
   ref="refs/heads/main" new=8f3e2a1… prev=0000000… force=false createdAt=1758… id=…
   ref="refs/heads/main" new=c41d9e0… prev=8f3e2a1… force=false createdAt=1758… id=…
 --- protectedRefUpdate: 0 docs ---
@@ -101,7 +101,7 @@ dg storage status <owner>/<repo>
 dg --json storage status <owner>/<repo> | jq '.packs[] | {packHash, sizeBytes, storageTier}'
 ```
 
-`packHash` is the SHA-256 that every copy of the pack must match. `storage status` also fetches each recorded copy (bucket URL, IPFS gateways, Platform chunks) and reports which ones answer.
+`packHash` is the SHA-256 that every copy of the pack must match. `storage status` also checks that each recorded copy answers. It sends a `HEAD` request to each bucket URL and IPFS gateway, and reports the Platform copy from its manifest. That checks availability, not hashes. Step 3 checks the bytes.
 
 **3. Clone, and make git check every object:**
 
@@ -155,7 +155,7 @@ ipfs add -r --cid-version 1 out/     # the last line's CID is the site root
 
 Open it through a **subdomain** gateway, which serves the site at the root of its own origin: `https://<cid>.ipfs.dweb.link/`, or `http://<cid>.ipfs.localhost:8080/` on your own kubo node. Path gateways (`https://<gateway>/ipfs/<cid>/`) do not work, because the build loads its assets from `/`. The same applies to any host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
 
-The app talks only to Platform nodes and to wherever each repository's packs are stored. Your copy works exactly like the hosted one.
+The app talks only to Platform nodes, the quorum key endpoint, IPFS gateways, and wherever each repository's packs are stored. Your copy works exactly like the hosted one.
 
 **Coming soon:** an official IPFS build published with each release, reproducible, with its hash recorded on-chain, so you can check that the app you loaded is the released one. Until then, building it yourself from a commit you have read is the way to be sure.
 
@@ -174,7 +174,7 @@ The card has four rows:
 | **03 Content hashes** | How many objects read this session were re-hashed and matched their git id, and whether any pack could not be fetched. |
 | **04 Byte source** | Where the bytes came from (Platform, a bucket, an IPFS gateway). A source gives availability, not authenticity. |
 
-Each row, and the card as a whole, shows one of five states. The card shows the worst of its rows.
+Each row, and the card as a whole, shows one of five states. The card shows the most serious state among its rows, in this order: failed, unverified, partial, verified. It shows *pending* only while every row is still pending.
 
 | State | Color | Meaning |
 |---|---|---|

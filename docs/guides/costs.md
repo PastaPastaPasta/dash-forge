@@ -61,7 +61,7 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-| Action | v1 (testnet today) | forge-v2 (devnet moutai; mainnet after protocol 14) |
+| Action | v1 (testnet today) | forge-v2 (planned: devnet moutai once client support lands; mainnet after protocol 14) |
 |---|---|---|
 | Create a repository | **~1.18 DASH**, not refundable | **~0.001 DASH** (three small documents; estimated, still being measured) |
 | Fork a repository | same as create (`dg repo fork` is not built yet) | ~0.001 DASH, sharing the parent's packs |
@@ -129,7 +129,7 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
 
 ## Seeing costs before you pay
 
-- **`dg` asks first.** Every command that costs something prints an estimate and asks `[y/N]`, unless you pass `--yes`. With `--json` or no terminal, it refuses to spend without `--yes` ([`E802`](../errors.md#e802)).
+- **`dg` asks first.** Every command that writes asks `[y/N]` unless you pass `--yes`. `dg repo create` and `dg repack` show their price in the question, and `dg repo delete` its refund. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
@@ -137,6 +137,6 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
   ```
   Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending.
 - **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it.
-- **The web app** shows a cost preview, and asks you to confirm, before it creates a repository, files an issue or comment, changes an issue or PR's state, or changes collaborators. (Starring does not show one yet.)
+- **The web app** shows a cost preview before it creates a repository, files an issue or comment, changes an issue or PR's state, or changes collaborators. Starring and following do not show one yet.
 
 **Coming soon:** a local spend ledger with `dg cost audit` month and all-time totals by repository, actual-versus-estimate in the web app's toasts, and a budget on each key (with protocol 14's limited keys).

@@ -30,7 +30,7 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login`. The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.28 DASH/MiB.
 
-> **Network.** Everything here runs on **testnet** today. There, each repository is a v1 contract that costs about **1.18 DASH** to create. On **forge-v2**, the same repository costs about **0.001 DASH**. forge-v2 is available on devnet moutai, and on mainnet after Platform protocol 14 activates. The steps stay the same.
+> **Network.** Everything here runs on **testnet** today. There, each repository is a v1 contract that costs about **1.18 DASH** to create. On **forge-v2**, the same repository will cost about **0.001 DASH**. forge-v2's contracts are registered on devnet moutai, but `forge-import`, `dg` and `git-remote-dash` cannot use them yet; it comes to mainnet after Platform protocol 14 activates.
 
 ---
 
@@ -62,7 +62,7 @@ Useful flags (all real; see `forge-import --help`):
 | `--yes` | No confirmation prompt, for CI. |
 | `--network`, `--devnet-name` | The same network flags as `dg`. |
 
-Issues and PRs are created by **your** identity, since GitHub users have no Dash identity. Each keeps its GitHub author and number in the body.
+Issues and PRs are created by **your** identity, since GitHub users have no Dash identity. Each carries an `imported` record with the GitHub author, creation time and URL. Forge assigns its own issue and PR numbers, so they may differ from GitHub's.
 
 **Where the packs go.** The importer pushes through `git-remote-dash`, so it follows the git config the helper reads. To keep packs off Platform, set the storage policy globally before you import:
 
@@ -80,7 +80,12 @@ The import is a one-time copy. To follow new commits, push every branch and tag 
 
 **What stays in sync this way:** branches and tags, including force-pushes and deletions (with `--prune`).
 
-**What does not:** new issues, PRs and releases. `forge-import` imports each GitHub issue and PR only once per progress file, so rerun it from time to time if you want new ones copied. Incremental issue and PR sync is part of the [Mirror Action](#the-forge-mirror-action-coming-soon).
+**What does not:** new issues, PRs and releases. To copy new ones, rerun `forge-import` with the same `--resume` file: it skips everything it already imported. Two things to know about reruns:
+
+- Name the repository you already have with `--repo-contract <contract id>` (from `dg repo view`), so the importer adds to it instead of planning a new one. That path imports issues, PRs and releases only; your CI job keeps pushing the code.
+- The printed estimate, and the `--max-spend` check, cover **all** of the GitHub repository's issues, PRs, releases, labels and comments again, not only the new ones. Size the cap for that, or leave it off and read the estimate.
+
+Incremental issue and PR sync is part of the [Mirror Action](#the-forge-mirror-action-coming-soon).
 
 ### The CI secret
 
@@ -153,7 +158,7 @@ jobs:
 Notes:
 
 - **Build time.** The first run builds from source, which takes several minutes. Add [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache) to reuse it. Once releases are published, the build step becomes one `install.sh` line.
-- `refs/remotes/origin/*` is used because `actions/checkout` creates only one local branch. It also includes `origin/HEAD`, which you may delete from the mirror once: `git push dash://… :refs/heads/HEAD`.
+- `refs/remotes/origin/*` is used because `actions/checkout` creates only one local branch. With `fetch-depth: 0` it fetches every branch into `refs/remotes/origin/`.
 - `dash.confirm=never` tells the cost guard not to wait for a terminal that CI does not have. The push still prints its estimate and its actual charge in the job log.
 - **Cost cap.** The helper has no per-run cap yet (the Action will add `cost-cap`). Keep the CI identity's balance small. That balance is the cap.
 - **Bring your own storage in CI.** Add your storage profile to the job with `dg storage add … --secret-access-key env:S3_SECRET_ACCESS_KEY`, set the secret from GitHub secrets, and run `dg storage use <profile>` before the push. The job then also needs `dg`. [Bring your own storage](bring-your-own-storage.md) lists the flags for each provider.
@@ -164,10 +169,10 @@ Any machine with cron works the same way:
 
 ```sh
 # crontab -e
-*/15 * * * * cd /srv/mirror/project && git fetch --prune origin && DASH_FORGE_KEY=/srv/mirror/ci-identity.json git -c dash.confirm=never push --prune dash://<owner>/<repo> '+refs/remotes/origin/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+*/15 * * * * cd /srv/mirror/project && git fetch --prune --prune-tags --tags origin && DASH_FORGE_KEY=/srv/mirror/ci-identity.json git -c dash.confirm=never push --prune dash://<owner>/<repo> '+refs/remotes/origin/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
 ```
 
-Create `/srv/mirror/project` once with `git clone https://github.com/alice/project`.
+Create `/srv/mirror/project` once with `git clone https://github.com/alice/project`. `--prune-tags` makes tag deletions on GitHub reach the mirror. A clone also has `refs/remotes/origin/HEAD`, which the refspec pushes as a branch named `HEAD`. Delete it from the mirror once with `git push dash://<owner>/<repo> :refs/heads/HEAD`, or ignore it.
 
 ---
 
@@ -176,7 +181,7 @@ Create `/srv/mirror/project` once with `git clone https://github.com/alice/proje
 ```sh
 git ls-remote dash://<owner>/<repo>           # every branch and tag, as recorded on-chain
 dg repo view <owner>/<repo>                   # refs, collaborators, storage
-dg storage status <owner>/<repo>              # is every copy of every pack readable?
+dg storage status <owner>/<repo>              # does every recorded copy of every pack answer?
 ```
 
 On the web: `https://forge.dashhq.org/repo?owner=<owner>&name=<repo>`.
@@ -240,5 +245,4 @@ In this future format, `DASH_FORGE_KEY` holds the limited key itself as one past
 - Every branch and tag is mirrored, force-pushes included.
 - Releases are mirrored with their assets re-uploaded to your bucket and their SHA-256 recorded.
 - Issues, PRs and comments are mirrored with a header naming the GitHub author. A mirrored PR's head is kept at `refs/mirror/pull/<n>/head`, so it can be checked out.
-- Reruns are idempotent and cost nothing.
 - The job summary shows what was written, what Platform charged, and how much budget the runner key has left.

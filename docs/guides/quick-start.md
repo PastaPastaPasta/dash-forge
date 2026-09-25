@@ -13,7 +13,7 @@ You will:
 
 Allow about 15 minutes. Most of it is the first build, or waiting for testnet to confirm your identity.
 
-> **Which network?** Testnet runs the first version of Forge ("v1": one Platform contract per repository). **forge-v2**, which makes repositories about 1,000× cheaper, is live on **devnet moutai** and comes to mainnet after Platform protocol 14 activates there. Mainnet has no Forge deployment yet. See [the network status table](../../README.md#status).
+> **Which network?** Testnet runs the first version of Forge ("v1": one Platform contract per repository). **forge-v2**, which makes repositories about 1,000× cheaper, has its contracts registered on **devnet moutai**. The tools cannot use them yet: client support is being built now. It comes to mainnet after Platform protocol 14 activates there. Mainnet has no Forge deployment yet. See [the network status table](../../README.md#status).
 
 ---
 
@@ -64,9 +64,10 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 **Forge never funds or creates identities for you.** On testnet, free test Dash is available for trying things out:
 
 1. Open the **Dash bridge** in testnet mode: <https://bridge.thepasta.org/?network=testnet>.
-2. Choose **Create New Identity**. On testnet the deposit step has a **Request Testnet Funds** button that sends you free tDASH, so you do not need a wallet.
+2. Choose **Create New Identity**. On testnet the deposit step has a **Request Testnet Funds** button that sends you 1 free tDASH, so you do not need a wallet.
 3. **Write down the 12 words it shows you.** They are the only way to recover the identity.
 4. When the identity is registered, choose **Download Key Backup**. You get a file named `dash-identity-<id>.json`. `dg` reads your keys from it.
+5. **Top up once more.** A testnet repository costs about 1.18 tDASH, which is more than one faucet request. Choose **Top Up Existing Identity**, enter your identity id, and use **Request Testnet Funds** again. The faucet allows 3 requests an hour.
 
 Keep the file private. It holds every private key of the identity. Move it somewhere safe, for example:
 
@@ -78,7 +79,7 @@ chmod 600 ~/.config/dash-forge/dash-identity-*.json
 
 > **Devnet moutai.** Use `https://bridge.thepasta.org/?network=devnet-moutai`. Fund it from the moutai faucet at <https://faucet.moutai.networks.dash.org>.
 >
-> **Mainnet.** Use the bridge without `?network=` and fund the deposit address from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+> **Mainnet.** Use <https://bridge.thepasta.org/?network=mainnet> (the bridge defaults to testnet) and fund the deposit address from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
 
 **Coming soon:** `dg auth new`, which creates and funds an identity from the terminal (it shows a QR code for the deposit) and stores the keys in your OS keychain. Creating an identity in the web app is coming too.
 
@@ -95,10 +96,16 @@ dg auth login --identity ~/.config/dash-forge/dash-identity-<id>.json
 ```
 Logged in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on testnet.
 Stored default identity at /home/you/.config/dash-forge/identities/testnet/8hJm….identity.json.
-Balance: 99990000000 credits (~0.999900 DASH).
+Balance: 199980000000 credits (~1.999800 DASH).
 ```
 
-`dg` copies the file into `~/.config/dash-forge/identities/<network>/` and uses it by default from now on.
+`dg` copies the file into `~/.config/dash-forge/identities/<network>/` and uses it by default from now on. The copy is created with your default file mode, so make it private:
+
+```sh
+dg doctor --fix      # chmod 700 the directory and 600 the copied key file
+```
+
+`dg doctor --fix` also sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that pushes ask before spending more than 0.01 DASH. Inside a git repository it can also pin `dash.network` in that repository's config to match `dg`. It never spends anything.
 
 **git needs to find the key too.** `git-remote-dash` does not read `dg`'s settings. It reads the `DASH_FORGE_KEY` environment variable. It needs an identity even to **clone**, although cloning spends nothing. Add this line to your shell profile (`~/.zshrc`, `~/.bashrc`):
 
@@ -106,7 +113,7 @@ Balance: 99990000000 credits (~0.999900 DASH).
 export DASH_FORGE_KEY="$HOME/.config/dash-forge/identities/testnet/<your identity id>.identity.json"
 ```
 
-Then check everything:
+Then check everything. `dg doctor` should now show no warnings for your identity:
 
 ```sh
 dg auth status
@@ -135,7 +142,7 @@ Created 8hJm…/my-project
   cost:     ~1.18 DASH ≈ $35.40
 ```
 
-On testnet this costs about **1.18 tDASH**, which is free test money. It is that expensive because a v1 repository is a whole Platform contract. On forge-v2 a repository is three small documents, about **0.001 DASH**. See [Costs](costs.md).
+On testnet this costs about **1.18 tDASH**, which is free test money. It is that expensive because a v1 repository is a whole Platform contract. `dg repo create` makes v1 repositories only. On forge-v2 a repository will be three small documents, about **0.001 DASH**. See [Costs](costs.md).
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit.
 
@@ -156,6 +163,7 @@ Or start from an empty directory:
 ```sh
 git clone dash://<your identity id>/my-project
 cd my-project
+git switch -c main                  # an empty clone has no branch yet
 echo "# my-project" > README.md
 git add README.md && git commit -m "first commit"
 git push -u origin main
@@ -165,9 +173,9 @@ The helper prints what it will store, and where, before it pays for anything. It
 
 ```
 dash: 8hJm…/my-project ← main (8f3e2a1, 3 objects, 245 B)
-dash: storage      → Platform chunks · Platform stores pack + manifest + refs, est 0.0021 DASH
-dash: platform     chunk 1 · manifest 2 · refUpdate 1 est 0.0021 DASH
-dash: done · Platform charged ≈0.0020 DASH · remaining 0.9869 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: storage      → Platform chunks · Platform stores pack + manifest + refs, est 0.0006 DASH
+dash: platform     chunk 1 · manifest 2 · refUpdate 1 est 0.0006 DASH
+dash: done · Platform charged ≈0.0006 DASH · remaining 0.8192 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push.)
@@ -180,10 +188,10 @@ dg storage test r2-main
 dg storage use r2-main                 # in this repo: packs go to r2-main
 ```
 
-To make a push ask before it spends more than 0.01 DASH:
+If you ran `dg doctor --fix`, a push already asks before it spends more than 0.01 DASH. To choose another threshold:
 
 ```sh
-git config --global dash.costWarnThreshold 0.01
+git config --global dash.costWarnThreshold 0.05
 ```
 
 Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj works too. Shallow clones (`--depth`) are not supported and fail with a clear error.
