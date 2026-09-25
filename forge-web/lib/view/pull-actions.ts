@@ -50,6 +50,11 @@ export interface PullActionInputs {
   readonly model?: 'v1' | 'v2'
 }
 
+/** What a repo's ACL is read from, for "couldn't read …" messages. */
+export function aclName(model: 'v1' | 'v2'): string {
+  return model === 'v1' ? 'token history' : 'members'
+}
+
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
 export function pullActions({ pull, viewer, holdings, model = 'v1' }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
@@ -64,14 +69,15 @@ export function pullActions({ pull, viewer, holdings, model = 'v1' }: PullAction
 
   let mergeHint: string | null = null
   if (!canMarkMerged && actionable && open && viewer !== null && holdings !== 'loading') {
-    mergeHint =
-      holdings === null
-        ? `Couldn't read this repo's ${model === 'v1' ? 'token history' : 'members'}, so merge permission is unknown.`
-        : pull.headOid === ''
-          ? 'This PR records no head commit to mark as merged.'
-          : model === 'v1'
-            ? 'Only WRITE or MAINTAIN holders can mark a PR as merged.'
-            : "Only this repo's maintainers and writers can mark a PR as merged."
+    if (holdings === null) {
+      mergeHint = `Couldn't read this repo's ${aclName(model)}, so merge permission is unknown.`
+    } else if (pull.headOid === '') {
+      mergeHint = 'This PR records no head commit to mark as merged.'
+    } else if (model === 'v1') {
+      mergeHint = 'Only WRITE or MAINTAIN holders can mark a PR as merged.'
+    } else {
+      mergeHint = "Only this repo's maintainers and writers can mark a PR as merged."
+    }
   }
 
   return {

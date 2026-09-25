@@ -18,9 +18,9 @@ import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
 import { normalizeDocument, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import {
+  DOC,
   REGISTRY_DOC,
   V2_DOC,
-  asIdentifierString,
   readMemberRepoIds,
   toV2RepoDoc,
   type RepoListing,
@@ -43,11 +43,7 @@ export interface DiscoveredRepo {
   readonly slug: string
   readonly description: string
   readonly createdAt: number
-  /** v1 only: the registry listing and its repo contract. */
-  readonly listingId?: string
-  readonly repoContractId?: string
   /** forge-v2 only. */
-  readonly repoId?: string
   readonly visibility?: 'public' | 'private'
   /** forge-v2: provable counts, or null when not read. */
   readonly stars?: number | null
@@ -57,15 +53,12 @@ export interface DiscoveredRepo {
 }
 
 function fromListing(d: PlainDocument): DiscoveredRepo {
-  const listingId = asString(d['$id'])
   return {
     kind: 'v1',
-    key: listingId,
-    listingId,
+    key: asString(d['$id']),
     ownerId: asString(d['$ownerId']),
     name: asString(d['name']) || asString(d['normalizedName']),
     slug: asString(d['normalizedName']) || asString(d['name']),
-    repoContractId: asIdentifierString(d['repoContractId']),
     description: asString(d['description']),
     createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
   }
@@ -75,7 +68,6 @@ function fromV2(doc: V2RepoDoc, counts?: { stars?: number | null; issues?: numbe
   return {
     kind: 'v2',
     key: doc.repoId,
-    repoId: doc.repoId,
     ownerId: doc.ownerId,
     name: doc.displayName || doc.name,
     slug: doc.name,
@@ -106,7 +98,7 @@ function countOf(counts: Map<string, bigint> | undefined, id: string): number | 
  * (`documents.composite`, protocol 14). Falls back to a plain page without counts if the
  * composite surface is unavailable.
  */
-export async function listRecentV2Repos(
+async function listRecentV2Repos(
   sdk: EvoSDK,
   forge: ForgeIds,
   limit = 24,
@@ -126,7 +118,7 @@ export async function listRecentV2Repos(
         },
         {
           dataContractId: forge.collab,
-          documentType: 'issue',
+          documentType: DOC.issue,
           kind: 'counts',
           bind: { sourceProperty: '$id', field: 'repoId' },
         },
@@ -149,18 +141,14 @@ export async function listRecentV2Repos(
 }
 
 /** The newest v1 repo listings from the registry (empty on a network without one). */
-export async function listRecentV1Repos(
-  sdk: EvoSDK,
-  opts: { network?: Network; registryContractId?: string; limit?: number } = {},
-): Promise<DiscoveredRepo[]> {
-  const registryId =
-    opts.registryContractId ?? NETWORKS[opts.network ?? DEFAULT_NETWORK].registryContractId
+async function listRecentV1Repos(sdk: EvoSDK, network: Network, limit: number): Promise<DiscoveredRepo[]> {
+  const registryId = NETWORKS[network].registryContractId
   if (registryId === null) return []
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: registryId,
     documentTypeName: REGISTRY_DOC.repoListing,
     orderBy: [['$createdAt', 'desc']],
-    limit: opts.limit ?? 30,
+    limit,
   })
   return documents.map(fromListing)
 }
@@ -176,9 +164,10 @@ export async function listRecentRepos(
 ): Promise<{ v2: DiscoveredRepo[]; v1: DiscoveredRepo[] }> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = NETWORKS[network].v2
+  const limit = opts.limit ?? 24
   const [v2, v1] = await Promise.all([
-    forge !== null ? listRecentV2Repos(sdk, forge, opts.limit ?? 24) : Promise.resolve([]),
-    listRecentV1Repos(sdk, { network, limit: opts.limit ?? 24 }),
+    forge !== null ? listRecentV2Repos(sdk, forge, limit) : Promise.resolve([]),
+    listRecentV1Repos(sdk, network, limit),
   ])
   return { v2, v1 }
 }
@@ -234,14 +223,17 @@ export async function listReposByOwner(
     })
     const roleOf = new Map(rows.map((r) => [r.repoId, r.role]))
     return documents
-      .map((d) => toV2RepoDoc(d))
+      .map(toV2RepoDoc)
       .filter((doc) => doc.ownerId !== ownerId)
       .map((doc) => ({ ...fromV2(doc), role: roleOf.get(doc.repoId) }))
   }
 
-  const [a, b, member] = await Promise.all([v2Owned(), v1Owned(), v2Member()])
+  const [ownedV2, ownedV1, member] = await Promise.all([v2Owned(), v1Owned(), v2Member()])
   const newestFirst = (x: DiscoveredRepo, y: DiscoveredRepo): number => y.createdAt - x.createdAt
-  return { owned: [...a.sort(newestFirst), ...b.sort(newestFirst)], member: member.sort(newestFirst) }
+  return {
+    owned: [...ownedV2.sort(newestFirst), ...ownedV1.sort(newestFirst)],
+    member: member.sort(newestFirst),
+  }
 }
 
 /** Re-export the listing type for callers that only import from view glue. */

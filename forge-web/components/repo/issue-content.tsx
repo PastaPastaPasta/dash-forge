@@ -11,7 +11,7 @@
 import { useState } from 'react'
 import { CheckCircle2, CircleDot } from 'lucide-react'
 import type { RepoHome, IssueThread } from '@/lib/view'
-import { loadIssueThread, timeAgo } from '@/lib/view'
+import { aclName, loadIssueThread, timeAgo } from '@/lib/view'
 import { closeTarget, createComment, readViewerPermissions, reopenTarget, repoContractIds, repoKey } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import { previewDocumentCreate } from '@/lib/sdk'
@@ -74,7 +74,7 @@ export function IssueContent({
   // rather than silently withholding the control (the PR page does the same for merge).
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
-      ? `Couldn't read this repo's ${v1 ? 'token history' : 'members'}, so close/reopen permission is unknown.`
+      ? `Couldn't read this repo's ${aclName(home.repo.kind)}, so close/reopen permission is unknown.`
       : null
 
   const postComment = async (): Promise<void> => {

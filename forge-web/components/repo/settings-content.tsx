@@ -78,18 +78,7 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
     <div className="mx-auto max-w-2xl space-y-8">
       {/* Backend */}
       <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
-        <div className="flex items-center gap-3">
-          <BackendBadge backend={home.backend} />
-          {home.backend.uris.length > 0 ? (
-            <ul className="min-w-0 flex-1 space-y-0.5">
-              {home.backend.uris.map((u) => (
-                <li key={u} className="truncate font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{u}</li>
-              ))}
-            </ul>
-          ) : (
-            <span className="text-dense text-anvil-500 dark:text-anvil-400">Readers follow manifest URIs; no explicit backend URIs set.</span>
-          )}
-        </div>
+        <StorageBackend backend={home.backend} emptyText="Readers follow manifest URIs; no explicit backend URIs set." />
         <p className="mt-2 text-[12px] text-anvil-400">
           Change it with <span className="font-mono">dg repo backend set</span> (an owner-signed config write). It records a preference: git push currently stores packs on Platform whatever it says, and <span className="font-mono">dg repack</span> / <span className="font-mono">dg reseed</span> move them.
         </p>
@@ -236,21 +225,11 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )
+  const memberRows = members.data ?? []
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
-        <div className="flex items-center gap-3">
-          <BackendBadge backend={home.backend} />
-          {home.backend.uris.length > 0 ? (
-            <ul className="min-w-0 flex-1 space-y-0.5">
-              {home.backend.uris.map((u) => (
-                <li key={u} className="truncate font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{u}</li>
-              ))}
-            </ul>
-          ) : (
-            <span className="text-dense text-anvil-500 dark:text-anvil-400">Readers follow each pack manifest&apos;s own storage.</span>
-          )}
-        </div>
+        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
       </Section>
 
       <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-400" aria-hidden />}>
@@ -260,12 +239,12 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
           <ErrorState message={members.error} onRetry={members.reload} />
         ) : (
           <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-            {(members.data ?? []).length === 0 ? (
+            {memberRows.length === 0 ? (
               <div className="px-4 py-6 text-center text-dense text-anvil-500 dark:text-anvil-400">
                 No maintainers or writers. Nobody can push to this repo.
               </div>
             ) : (
-              (members.data ?? []).map((m) => (
+              memberRows.map((m) => (
                 <div
                   key={`${m.role}:${m.identity}`}
                   className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
@@ -315,6 +294,24 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
   )
 }
 
+/** The configured backend badge and its URIs (or `emptyText` when it names none). */
+function StorageBackend({ backend, emptyText }: { backend: RepoHome['backend']; emptyText: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-3">
+      <BackendBadge backend={backend} />
+      {backend.uris.length > 0 ? (
+        <ul className="min-w-0 flex-1 space-y-0.5">
+          {backend.uris.map((u) => (
+            <li key={u} className="truncate font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{u}</li>
+          ))}
+        </ul>
+      ) : (
+        <span className="text-dense text-anvil-500 dark:text-anvil-400">{emptyText}</span>
+      )}
+    </div>
+  )
+}
+
 function Section({
   title,
   icon,
@@ -348,7 +345,7 @@ function NotSet(): JSX.Element {
   return <span className="text-dense text-anvil-400">—</span>
 }
 
-function RoleTag({ role }: { role: 'WRITE' | 'MAINTAIN' | 'MAINTAINER' | 'WRITER' }): JSX.Element {
+function RoleTag({ role }: { role: string }): JSX.Element {
   return (
     <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-600 dark:text-forge-400">
       {role}

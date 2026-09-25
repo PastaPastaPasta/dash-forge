@@ -40,6 +40,8 @@ function openDatabase(): Promise<IDBDatabase | null> {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+        // `contractId` is the persisted key name; it now holds the repo key (v1 contract id or
+        // forge-v2 repo id). Renaming it would change the stored schema.
         request.result.createObjectStore(STORE_NAME, { keyPath: 'contractId' })
       }
     }

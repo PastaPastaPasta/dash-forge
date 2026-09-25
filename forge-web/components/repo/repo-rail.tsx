@@ -61,7 +61,7 @@ export function RepoRail({
     <aside className="space-y-4">
       <TrustPanel
         report={report}
-        serial={home.repo.kind === 'v1' ? home.repo.contractId : home.repo.repoId}
+        serial={key}
         tipOid={tipOidOf(selected.ref) ?? undefined}
       />
       <CloneBox home={home} addr={addr} />

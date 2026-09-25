@@ -8,7 +8,7 @@
  * listing-authenticity verification — and loads config + refs + star count. Returns the async
  * state the repo chrome renders. `notFound` distinguishes an unresolved repo from a read error.
  *
- * Resolution is cached per `(network, owner, name)` with the settled value kept alongside the
+ * Resolution is cached per `(network, owner, name, ?repo=, ?contract=)` with the settled value kept alongside the
  * promise, so navigating between a repo's pages (code → issues → commits …) renders the
  * composed home on the first paint — no "Resolving…" shell on warm navigations. Hits older
  * than {@link HOME_REVALIDATE_MS} serve the cached value and refresh in the background

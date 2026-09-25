@@ -47,10 +47,13 @@ import {
   asIdentifierString,
   byteFieldToHex,
   DOC,
+  num,
+  str,
   toEvent,
   V2_DOC,
   wellFormed,
   type RepoRef,
+  type V2RepoRef,
 } from './contract'
 import { readRefUpdates } from './refs'
 import { repoSource } from './source'
@@ -170,16 +173,6 @@ export interface ReviewView {
   readonly createdAt: number
 }
 
-function num(doc: PlainDocument, field: string): number {
-  const v = doc[field]
-  // Content integer fields (e.g. issue/PR `number`) come back as bigint from the SDK; only
-  // system numeric fields are pre-normalized to `number`.
-  if (typeof v === 'bigint') return Number(v)
-  return typeof v === 'number' ? v : 0
-}
-function str(doc: PlainDocument, field: string): string {
-  return typeof doc[field] === 'string' ? (doc[field] as string) : ''
-}
 
 /**
  * Fetch a target's **complete** event log (ascending), converted to rules {@link Event}s.
@@ -191,7 +184,8 @@ function str(doc: PlainDocument, field: string): string {
  * displayed state if this read stopped at one page. It pages to exhaustion, and
  * {@link queryAllDocuments} throws rather than returning a short answer if it cannot
  * prove it reached the end. Parity: forge-core `CollabEngine::fetch_events` uses
- * `query_all_documents` for exactly this reason.
+ * `query_all_documents` for exactly this reason. On forge-v2 the log is `event` and
+ * `authorEvent` merged in `($createdAt, $id)` order ({@link readTargetLog} keeps them apart).
  */
 export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Event[]> {
   const log = await readTargetLog(sdk, repo, targetId)
@@ -210,6 +204,10 @@ export interface TargetLog {
 
 const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
 
+function toEvents(documents: readonly PlainDocument[]): Event[] {
+  return documents.map(toEvent).filter((e): e is Event => e !== null)
+}
+
 /** One target's complete {@link TargetLog} (see {@link readEvents} on completeness). */
 export async function readTargetLog(
   sdk: EvoSDK,
@@ -217,19 +215,19 @@ export async function readTargetLog(
   targetId: string,
 ): Promise<TargetLog> {
   const source = repoSource(repo)
-  const read = async (type: string): Promise<Event[]> => {
-    const documents = await queryAllDocuments(
-      sdk,
-      source.targetQuery(type, {
-        where: [['targetId', '==', targetId]],
-        orderBy: [
-          ['targetId', 'asc'],
-          ['$createdAt', 'asc'],
-        ],
-      }),
+  const read = async (type: string): Promise<Event[]> =>
+    toEvents(
+      await queryAllDocuments(
+        sdk,
+        source.targetQuery(type, {
+          where: [['targetId', '==', targetId]],
+          orderBy: [
+            ['targetId', 'asc'],
+            ['$createdAt', 'asc'],
+          ],
+        }),
+      ),
     )
-    return documents.map(toEvent).filter((e): e is Event => e !== null)
-  }
   if (repo.kind === 'v1') return { events: await read(DOC.event), authorEvents: [] }
   const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
   return { events, authorEvents }
@@ -241,21 +239,13 @@ export async function readTargetLog(
  * its rows without a query per row. `event` is member-gated and `authorEvent` author-gated at
  * consensus, so the feed is bounded by real activity, not by what strangers post.
  */
-export async function readRepoFeed(
-  sdk: EvoSDK,
-  repo: Extract<RepoRef, { kind: 'v2' }>,
-): Promise<Map<string, TargetLog>> {
+async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog>> {
   const source = repoSource(repo)
-  const read = async (type: string): Promise<Event[]> => {
-    const documents = await queryAllDocuments(
-      sdk,
-      source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] }),
-    )
-    return documents.map(toEvent).filter((e): e is Event => e !== null)
-  }
+  const read = async (type: string): Promise<Event[]> =>
+    toEvents(await queryAllDocuments(sdk, source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] })))
   const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
-  const byTarget = new Map<string, { events: Event[]; authorEvents: Event[] }>()
-  const slot = (targetId: string): { events: Event[]; authorEvents: Event[] } => {
+  const byTarget = new Map<string, TargetLog>()
+  const slot = (targetId: string): TargetLog => {
     let entry = byTarget.get(targetId)
     if (entry === undefined) {
       entry = { events: [], authorEvents: [] }
@@ -348,7 +338,7 @@ async function newestTargets(
 ): Promise<PlainDocument[]> {
   const { documents } = await queryDocumentsWithProof(
     sdk,
-    repoSource(repo).repoQuery(type === 'issue' ? DOC.issue : DOC.patch, {
+    repoSource(repo).repoQuery(DOC[type], {
       orderBy: [['$createdAt', 'desc']],
       limit,
     }),

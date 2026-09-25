@@ -40,7 +40,6 @@ export const V2_DOC = {
   authorEvent: 'authorEvent',
   star: 'star',
   follow: 'follow',
-  profile: 'profile',
 } as const
 
 /** Registry-contract document type names (data-contracts §1). */
@@ -111,16 +110,23 @@ export function repoKey(repo: RepoRef): string {
   return repo.kind === 'v1' ? repo.contractId : repo.repoId
 }
 
-function str(doc: PlainDocument, field: string): string {
+/** A string field, or `''` when absent or not a string. */
+export function str(doc: PlainDocument, field: string): string {
   const v = doc[field]
   return typeof v === 'string' ? v : ''
 }
 
-function num(doc: PlainDocument, field: string): number {
+/** A numeric field, or 0. Content integers (e.g. `kind`, `number`) return as bigint. */
+export function num(doc: PlainDocument, field: string): number {
   const v = doc[field]
-  // Content integer fields (e.g. event `kind`) return as bigint; system fields are normalized.
   if (typeof v === 'bigint') return Number(v)
   return typeof v === 'number' ? v : 0
+}
+
+/** A native string-array field (forge-v2 typed arrays), or null when absent or not an array. */
+export function stringArray(doc: PlainDocument, field: string): string[] | null {
+  const v = doc[field]
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null
 }
 
 /** A byteArray field returns base64; normalize to hex (empty string when absent/null). */
@@ -148,12 +154,7 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
  */
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
   if (repo.kind === 'v1') return true
-  const text = (field: string): string | null => {
-    const v = doc[field]
-    return typeof v === 'string' ? v : null
-  }
-  const patterns = doc['protectedPatterns']
-  const epoch = doc['epoch']
+  const text = (field: string): string | null => (typeof doc[field] === 'string' ? str(doc, field) : null)
   return isWellFormed(
     {
       kind,
@@ -163,11 +164,9 @@ export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument)
       baseRefName: text('baseRefName'),
       sourceRefName: text('sourceRefName'),
       defaultBranch: text('defaultBranch'),
-      protectedPatterns: Array.isArray(patterns)
-        ? patterns.filter((x): x is string => typeof x === 'string')
-        : null,
+      protectedPatterns: stringArray(doc, 'protectedPatterns'),
       enc: byteFieldToHex(doc, 'enc') || null,
-      epoch: typeof epoch === 'number' ? epoch : typeof epoch === 'bigint' ? Number(epoch) : null,
+      epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
     },
     repo.visibility,
   )

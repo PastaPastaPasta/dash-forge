@@ -18,7 +18,7 @@
  */
 
 import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause } from '../sdk'
-import { DOC, V2_DOC, type RepoRef } from './contract'
+import { DOC, V2_DOC, type RepoRef, type V1RepoRef, type V2RepoRef } from './contract'
 
 /** The forge-v2 document types held by forge-core; everything else is forge-collab. */
 const CORE_TYPES: ReadonlySet<string> = new Set([
@@ -33,7 +33,6 @@ const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.chunk,
   DOC.release,
   DOC.label,
-  'repoKey',
 ])
 
 /** The clauses a caller adds to a scoped query. */
@@ -44,9 +43,6 @@ export interface QueryShape {
 }
 
 export interface RepoSource {
-  readonly repo: RepoRef
-  /** The contract holding `documentType` for this repo. */
-  contractOf(documentType: string): string
   /** A query on an index that lists this repo's documents (v2: `repoId ==` prefixed). */
   repoQuery(documentType: string, shape?: QueryShape): DocumentQuery
   /**
@@ -62,24 +58,18 @@ export interface RepoSource {
   chunkQuery(packHashHex: string, uploader: string, seqs: readonly number[]): DocumentQuery
 }
 
-/** Platform's per-query document cap; a chunk batch never asks for more seqs than this. */
+/**
+ * Platform's per-query document cap. A document query returns at most this many rows, so a
+ * chunk read spanning more seqs than this is split (browse-source `queryChunkBatch`).
+ */
 export const CHUNK_QUERY_MAX = 100
 
 function build(dataContractId: string, documentTypeName: string, shape: QueryShape): DocumentQuery {
-  return {
-    dataContractId,
-    documentTypeName,
-    ...(shape.where !== undefined ? { where: shape.where } : {}),
-    ...(shape.orderBy !== undefined ? { orderBy: shape.orderBy } : {}),
-    ...(shape.limit !== undefined ? { limit: shape.limit } : {}),
-  }
+  return { dataContractId, documentTypeName, ...shape }
 }
 
-function v1Source(repo: Extract<RepoRef, { kind: 'v1' }>): RepoSource {
-  const contractOf = (): string => repo.contractId
+function v1Source(repo: V1RepoRef): RepoSource {
   return {
-    repo,
-    contractOf,
     repoQuery: (type, shape = {}) => build(repo.contractId, type, shape),
     targetQuery: (type, shape = {}) => build(repo.contractId, type, shape),
     chunkQuery: (packHashHex, _uploader, seqs) =>
@@ -97,7 +87,7 @@ function v1Source(repo: Extract<RepoRef, { kind: 'v1' }>): RepoSource {
   }
 }
 
-function v2Source(repo: Extract<RepoRef, { kind: 'v2' }>): RepoSource {
+function v2Source(repo: V2RepoRef): RepoSource {
   const contractOf = (type: string): string =>
     CORE_TYPES.has(type) ? repo.forge.core : repo.forge.collab
   const repoQuery = (type: string, shape: QueryShape = {}): DocumentQuery =>
@@ -106,8 +96,6 @@ function v2Source(repo: Extract<RepoRef, { kind: 'v2' }>): RepoSource {
       where: [['repoId', '==', repo.repoId], ...(shape.where ?? [])],
     })
   return {
-    repo,
-    contractOf,
     repoQuery,
     targetQuery: (type, shape = {}) => build(contractOf(type), type, shape),
     chunkQuery: (packHashHex, uploader, seqs) =>

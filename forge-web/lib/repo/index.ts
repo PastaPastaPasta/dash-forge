@@ -17,7 +17,10 @@ export {
   TOKEN_POSITION,
   V2_DOC,
   asIdentifierString,
+  num,
   parseJsonList,
+  str,
+  stringArray,
   repoContractIds,
   repoKey,
   toEvent,
@@ -27,12 +30,10 @@ export {
   type V1RepoRef,
   type V2RepoRef,
 } from './contract'
-export { repoSource, type QueryShape, type RepoSource } from './source'
+export { CHUNK_QUERY_MAX, repoSource } from './source'
 export {
   fetchContractOwner,
-  isIdentifier,
   readV2RepoById,
-  readV2RepoByName,
   resolveAnyRepo,
   resolveAnyRepoWith,
   resolveOwner,
@@ -58,12 +59,8 @@ export {
 } from './members'
 export {
   readV2FollowCounts,
-  readV2Profile,
   readV2StarCount,
-  readV2StarCounts,
-  readV2StarredRepoIds,
   readV2Stargazers,
-  type V2Profile,
 } from './social'
 export {
   readConfig,
@@ -107,7 +104,6 @@ export {
   listIssues,
   listPulls,
   readEvents,
-  readRepoFeed,
   readTargetLog,
   readIssue,
   readPull,

@@ -13,6 +13,7 @@ import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
+import { V1Badge } from '@/components/ui/v1-badge'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
@@ -42,14 +43,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
               <Lock className="h-3 w-3" aria-hidden /> private
             </span>
           ) : null}
-          {home.repo.kind === 'v1' ? (
-            <span
-              className="rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
-              title="A v1 repo: its own contract, with a token ACL. Readable here; new repos are forge-v2."
-            >
-              v1
-            </span>
-          ) : null}
+          {home.repo.kind === 'v1' ? <V1Badge /> : null}
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">

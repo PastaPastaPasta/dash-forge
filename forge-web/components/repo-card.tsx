@@ -11,6 +11,7 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
+import { V1Badge } from '@/components/ui/v1-badge'
 
 export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
   const href = repoHref('/repo', { owner: repo.ownerId, name: repo.slug })
@@ -26,12 +27,7 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
           {repo.name}
         </Link>
         {repo.kind === 'v1' ? (
-          <span
-            className="ml-auto shrink-0 rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
-            title="A v1 repo (its own contract). Readable here; new repos are forge-v2."
-          >
-            v1
-          </span>
+          <V1Badge className="ml-auto" />
         ) : repo.role ? (
           <span className="ml-auto shrink-0 rounded bg-forge-500/10 px-1.5 py-0.5 text-[11px] text-forge-700 dark:text-forge-300">
             {repo.role}

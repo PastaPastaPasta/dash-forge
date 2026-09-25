@@ -86,7 +86,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
 
       const feed = await listRecentRepos(sdk, { network: 'devnet' })
       const repoId = home.repo.repoId
-      const demo = feed.v2.find((r) => r.repoId === repoId)
+      const demo = feed.v2.find((r) => r.key === repoId)
       expect(demo).toMatchObject({ stars: 1, issues: 3 })
 
       const profile = await listReposByOwner(sdk, MAINTAINER, { network: 'devnet' })

@@ -27,6 +27,7 @@ import {
   type RangeFetch,
 } from '../browse'
 import {
+  CHUNK_QUERY_MAX,
   liveGitPackManifests,
   liveLocatorManifests,
   readNewestManifestOfKind,
@@ -38,12 +39,6 @@ import {
 } from '../repo'
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
-
-/**
- * Platform's per-query document cap. A document query returns at most this many rows, so any
- * read spanning more than this must be split — see {@link queryChunkBatch}.
- */
-const CHUNK_QUERY_MAX = 100
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -184,7 +179,8 @@ async function queryChunkBatch(
  * always resolved from the row actually returned (its real length), never assumed full.
  *
  * Chunk payloads are served through the session LRU: only the seqs absent from the cache
- * are queried (one batch — the `(packHash, seq)` index is unique per key, so no
+ * are queried (one batch — the chunk index, `(packHash, seq)` on v1 and
+ * `(repoId, $ownerId, packHash, seq)` on forge-v2, is unique per key, so no
  * `in`-starvation fallback is needed), and every fetched chunk is cached for later ranges.
  */
 async function fetchPlatformRange(
@@ -950,7 +946,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
 // ---------------------------------------------------------------------------
 
 /**
- * One browse context per contract for the session (the locator-path analog of the
+ * One browse context per repo (`repoKey`) for the session (the locator-path analog of the
  * fallback-clone cache in `browse-fallback.ts`) — navigating between a repo's pages must
  * not re-fetch manifests, re-download the locator, or discard the reader's warm state.
  *
@@ -994,12 +990,12 @@ function browseEntryLive(entry: BrowseCacheEntry): boolean {
   return Date.now() - entry.at < ttl
 }
 
-/** Drop a repo's cached browse context (e.g. on an explicit home reload). */
+/** Drop a repo's cached browse context, by `repoKey` (e.g. on an explicit home reload). */
 export function invalidateBrowseContext(key: string): void {
   browseCache.delete(key)
 }
 
-/** The cached settled browse state for a contract, if still live — for first-paint seeding. */
+/** The cached settled browse state for a repo (`repoKey`), if still live — for first-paint seeding. */
 export function peekBrowseState(key: string): BrowseState | undefined {
   const entry = browseCache.get(key)
   if (entry === undefined || !browseEntryLive(entry)) return undefined

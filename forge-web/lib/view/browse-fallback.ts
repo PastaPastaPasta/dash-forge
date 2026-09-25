@@ -10,7 +10,7 @@
  * main bundles), and assembles the same {@link BrowseContext} the locator path produces,
  * so every downstream view works unchanged.
  *
- * One in-flight/completed context is cached per contract for the session, while completed
+ * One in-flight/completed context is cached per repo (`repoKey`) for the session, while completed
  * clones are persisted in IndexedDB — navigation and hard reloads neither re-download nor
  * re-index an unchanged pack set. Failed runs are evicted so a retry starts clean. When
  * flatIndex-backed features (filename search / full listing) gain UI consumers, this context
@@ -63,29 +63,29 @@ const restores = new Map<string, Promise<BrowseContext | null>>()
  */
 export const PARTIAL_FALLBACK_TTL_MS = 60_000
 
-function remember(contractId: string, manifestKey: string, promise: Promise<BrowseContext>): Promise<BrowseContext> {
+function remember(key: string, manifestKey: string, promise: Promise<BrowseContext>): Promise<BrowseContext> {
   const entry: CacheEntry = { manifestKey, promise }
-  cache.set(contractId, entry)
+  cache.set(key, entry)
   promise.then(
     (ctx) => {
       if ((ctx.unavailable?.length ?? 0) === 0) return
       setTimeout(() => {
-        if (cache.get(contractId) === entry) cache.delete(contractId)
+        if (cache.get(key) === entry) cache.delete(key)
       }, PARTIAL_FALLBACK_TTL_MS)
     },
     () => {
-      if (cache.get(contractId) === entry) cache.delete(contractId)
+      if (cache.get(key) === entry) cache.delete(key)
     },
   )
   return promise
 }
 
-/** The session's in-flight or completed fallback context for a contract, if any. */
+/** The session's in-flight or completed fallback context for a repo (`repoKey`), if any. */
 export function cachedFallback(
-  contractId: string,
+  key: string,
   livePacks?: readonly PackManifest[],
 ): Promise<BrowseContext> | null {
-  const entry = cache.get(contractId)
+  const entry = cache.get(key)
   if (entry === undefined) return null
   if (livePacks !== undefined && entry.manifestKey !== fallbackManifestKey(livePacks)) return null
   return entry.promise

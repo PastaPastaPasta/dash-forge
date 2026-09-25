@@ -14,7 +14,7 @@ import { PACK_KIND, type PackKind } from '../constants'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey } from '../rules'
 import { orderPackCopies, type Role } from '../rules/v2'
-import { DOC, parseJsonList, type RepoRef } from './contract'
+import { DOC, parseJsonList, str, type RepoRef } from './contract'
 import { base64ToBytes, base64ToHex } from '../sdk'
 import { readRoleOracle } from './members'
 import { repoSource } from './source'
@@ -102,8 +102,8 @@ function toManifest(doc: PlainDocument): PackManifest {
     tips: parsePackedHashes(doc, 'tips', 20),
     supersedes: parsePackedHashes(doc, 'supersedes', 32),
     createdAt: num('$createdAt'),
-    documentId: typeof doc['$id'] === 'string' ? (doc['$id'] as string) : '',
-    uploader: typeof doc['$ownerId'] === 'string' ? (doc['$ownerId'] as string) : '',
+    documentId: str(doc, '$id'),
+    uploader: str(doc, '$ownerId'),
   }
 }
 
@@ -153,12 +153,11 @@ export function selectPackCopies(
     if (group === undefined) byHash.set(key, [m])
     else group.push(m)
   }
+  const byKey = (a: PackManifest, b: PackManifest): number =>
+    compareKey({ id: a.documentId, createdAt: a.createdAt }, { id: b.documentId, createdAt: b.createdAt })
   const out: PackManifest[] = []
   for (const group of byHash.values()) {
-    const first = [...group].sort((a, b) => compareKey(
-      { id: a.documentId, createdAt: a.createdAt },
-      { id: b.documentId, createdAt: b.createdAt },
-    ))[0] as PackManifest
+    const first = [...group].sort(byKey)[0] as PackManifest
     const byId = new Map(group.map((m) => [m.documentId, m]))
     const ordered = orderPackCopies(
       group.map((m) => ({
@@ -177,9 +176,7 @@ export function selectPackCopies(
     })
   }
   // Newest first, like the list it came from.
-  return out.sort((a, b) =>
-    -compareKey({ id: a.documentId, createdAt: a.createdAt }, { id: b.documentId, createdAt: b.createdAt }),
-  )
+  return out.sort((a, b) => -byKey(a, b))
 }
 
 /**

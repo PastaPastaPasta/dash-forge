@@ -5,8 +5,9 @@
  *
  * Two repos are involved. The base history is read from the repo being viewed; the head is
  * read from the repo it was pushed to (the patch's source pointer — v1 `sourceContractId`,
- * forge-v2 `sourceRepoId` — usually the contributor's own repo or fork). Each is resolved through the same browse states as any other view
- * — published index, else the in-browser fallback clone — and reads prefer their own side's
+ * forge-v2 `sourceRepoId` — usually the contributor's own repo or fork). Each is resolved
+ * through the same browse states as any other view — published index, else the in-browser
+ * fallback clone — and reads prefer their own side's
  * repo while falling back to the other, since objects are content-addressed and verified.
  *
  * When a side cannot be loaded the comparison is still attempted from the other one (a merged

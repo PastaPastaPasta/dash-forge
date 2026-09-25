@@ -22,6 +22,14 @@ import { repoSource } from './source'
 import { readViewerHoldings } from './tokens'
 
 const ROLES: readonly Role[] = ['maintainer', 'writer']
+const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: V2_DOC.maintainer, writer: V2_DOC.writer }
+
+/** A repo an identity is a member of. */
+export interface MemberRepo {
+  readonly repoId: string
+  readonly role: Role
+  readonly createdAt: number
+}
 
 function toMembership(doc: PlainDocument, role: Role): Membership | null {
   const identity = asIdentifierString(doc['memberId'])
@@ -41,7 +49,7 @@ export async function readMemberships(sdk: EvoSDK, repo: V2RepoRef): Promise<Mem
     ROLES.map(async (role) => {
       const docs = await queryAllDocuments(
         sdk,
-        source.repoQuery(role === 'maintainer' ? V2_DOC.maintainer : V2_DOC.writer, {
+        source.repoQuery(ROLE_DOC[role], {
           orderBy: [['memberId', 'asc']],
         }),
       )
@@ -77,7 +85,7 @@ export function readMembershipsCached(
   return promise
 }
 
-/** Drop a repo's cached membership (after an add or revoke lands). */
+/** Drop a repo's cached membership (for tests now; for member add/revoke with v2 writes). */
 export function invalidateMembers(repo: V2RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))
 }
@@ -125,12 +133,12 @@ export async function readMemberRepoIds(
   sdk: EvoSDK,
   forge: ForgeIds,
   memberId: string,
-): Promise<{ repoId: string; role: Role; createdAt: number }[]> {
+): Promise<MemberRepo[]> {
   const perRole = await Promise.all(
     ROLES.map(async (role) => {
       const docs = await queryAllDocuments(sdk, {
         dataContractId: forge.core,
-        documentTypeName: role === 'maintainer' ? V2_DOC.maintainer : V2_DOC.writer,
+        documentTypeName: ROLE_DOC[role],
         where: [['memberId', '==', memberId]],
       })
       return docs.map((d) => ({
@@ -141,7 +149,7 @@ export async function readMemberRepoIds(
     }),
   )
   // One row per repo, the better role winning (maintainer is listed first).
-  const byRepo = new Map<string, { repoId: string; role: Role; createdAt: number }>()
+  const byRepo = new Map<string, MemberRepo>()
   for (const row of perRole.flat()) {
     if (row.repoId !== '' && !byRepo.has(row.repoId)) byRepo.set(row.repoId, row)
   }

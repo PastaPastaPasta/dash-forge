@@ -8,7 +8,7 @@
  * manifest. This ledger records those outcomes where they happen so the panel can report
  * what was checked instead of what could be — including "nothing read yet" and a mismatch.
  *
- * Keyed by repo contract id and kept for the session, the same lifetime as the browse caches
+ * Keyed by `repoKey` (the v1 repo contract id or the forge-v2 repo id) and kept for the session, the same lifetime as the browse caches
  * whose reads it counts. Subscribable for `useSyncExternalStore`: every update replaces the
  * repo's record, so a snapshot is a stable reference until something changes.
  */
@@ -70,8 +70,8 @@ const ledger = new Map<string, ContentChecks>()
 const listeners = new Set<() => void>()
 
 /** Record checks for a repo. No-op (no notification) when nothing would change. */
-export function noteContentCheck(contractId: string, delta: ContentCheckDelta): void {
-  const prev = ledger.get(contractId) ?? NO_CONTENT_CHECKS
+export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
+  const prev = ledger.get(key) ?? NO_CONTENT_CHECKS
   const newSource = delta.source !== undefined && !prev.sources.includes(delta.source)
   const counters: Counter[] = [
     'objectsVerified',
@@ -92,13 +92,13 @@ export function noteContentCheck(contractId: string, delta: ContentCheckDelta): 
   if (newSource && delta.source !== undefined) next.sources = [...prev.sources, delta.source]
   if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
-  ledger.set(contractId, next)
+  ledger.set(key, next)
   for (const l of listeners) l()
 }
 
 /** The repo's ledger (a stable reference until the next change). */
-export function contentChecks(contractId: string): ContentChecks {
-  return ledger.get(contractId) ?? NO_CONTENT_CHECKS
+export function contentChecks(key: string): ContentChecks {
+  return ledger.get(key) ?? NO_CONTENT_CHECKS
 }
 
 /** Subscribe to ledger changes (any repo). Returns the unsubscribe function. */
@@ -116,8 +116,8 @@ const VERDICT_COUNTER: Readonly<Record<ObjectVerdict, Counter>> = {
 }
 
 /** A {@link BrowseReader} `onObject` callback that records into this repo's ledger. */
-export function objectObserver(contractId: string): (verdict: ObjectVerdict) => void {
-  return (verdict) => noteContentCheck(contractId, { [VERDICT_COUNTER[verdict]]: 1 })
+export function objectObserver(key: string): (verdict: ObjectVerdict) => void {
+  return (verdict) => noteContentCheck(key, { [VERDICT_COUNTER[verdict]]: 1 })
 }
 
 /** Test hook: forget every repo's ledger. */

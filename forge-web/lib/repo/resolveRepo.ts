@@ -1,5 +1,5 @@
 /**
- * Repo resolution — `(owner, name)` → a {@link RepoRef}.
+ * Repo resolution — `(owner, name)` → a `RepoRef`.
  *
  * Order (the forge-v2 client migration, `forge-v2.md` §6: "the `repo` document is the
  * listing"):
@@ -20,14 +20,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Decode } from '../auth/base58'
 import { DEFAULT_NETWORK, NETWORKS, requireRegistryContractId, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
-import type { Visibility } from '../rules/v2'
-import { normalizeRepoName } from '../rules/v2'
-import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { normalizeRepoName, type Visibility } from '../rules/v2'
+import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
 import {
   REGISTRY_DOC,
   V2_DOC,
   asIdentifierString,
-  type RepoRef,
+  stringArray,
   type V1RepoRef,
   type V2RepoRef,
 } from './contract'
@@ -94,7 +93,6 @@ function toListing(doc: PlainDocument): RepoListing {
 
 /** Flatten a forge-core `repo` document. */
 export function toV2RepoDoc(doc: PlainDocument): V2RepoDoc {
-  const topics = doc['topics']
   const forkOf = asIdentifierString(doc['forkOf'])
   return {
     repoId: asString(doc['$id']),
@@ -104,7 +102,7 @@ export function toV2RepoDoc(doc: PlainDocument): V2RepoDoc {
     description: asString(doc['description']),
     visibility: doc['visibility'] === 'private' ? 'private' : 'public',
     defaultBranch: typeof doc['defaultBranch'] === 'string' ? doc['defaultBranch'] : null,
-    topics: Array.isArray(topics) ? topics.filter((t): t is string => typeof t === 'string') : [],
+    topics: stringArray(doc, 'topics') ?? [],
     forkOf: forkOf === '' ? null : forkOf,
     createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
   }
@@ -123,7 +121,7 @@ export function v2RefOf(forge: ForgeIds, repo: V2RepoDoc): V2RepoRef {
 }
 
 /** Whether `s` is a base58 identity / document id (32 bytes). */
-export function isIdentifier(s: string): boolean {
+function isIdentifier(s: string): boolean {
   try {
     return base58Decode(s).length === 32
   } catch {
@@ -229,40 +227,33 @@ export async function resolveRepoWithListing(
   }
 }
 
-/** The forge-v2 `repo` document `($ownerId, name)`, or null. */
-export async function readV2RepoByName(
+/** The one forge-v2 `repo` document `where` selects, or null. */
+async function readV2Repo(
   sdk: EvoSDK,
   forge: ForgeIds,
-  ownerId: string,
-  name: string,
+  where: readonly WhereClause[],
 ): Promise<V2RepoDoc | null> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: forge.core,
     documentTypeName: V2_DOC.repo,
-    where: [
-      ['$ownerId', '==', ownerId],
-      ['name', '==', name],
-    ],
+    where,
     limit: 1,
   })
   const doc = documents[0]
   return doc === undefined ? null : toV2RepoDoc(doc)
 }
 
+/** The forge-v2 `repo` document `($ownerId, name)`, or null. */
+function readV2RepoByName(sdk: EvoSDK, forge: ForgeIds, ownerId: string, name: string): Promise<V2RepoDoc | null> {
+  return readV2Repo(sdk, forge, [
+    ['$ownerId', '==', ownerId],
+    ['name', '==', name],
+  ])
+}
+
 /** The forge-v2 `repo` document with id `repoId`, or null. */
-export async function readV2RepoById(
-  sdk: EvoSDK,
-  forge: ForgeIds,
-  repoId: string,
-): Promise<V2RepoDoc | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: forge.core,
-    documentTypeName: V2_DOC.repo,
-    where: [['$id', '==', repoId]],
-    limit: 1,
-  })
-  const doc = documents[0]
-  return doc === undefined ? null : toV2RepoDoc(doc)
+export function readV2RepoById(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<V2RepoDoc | null> {
+  return readV2Repo(sdk, forge, [['$id', '==', repoId]])
 }
 
 /** What resolved: a forge-v2 repo with its document, or a v1 repo with its listing. */
@@ -321,13 +312,12 @@ export async function resolveAnyRepoWith(
     }
   }
   if (registryId === null) return null
-  const v1 = await resolveRepoWithListing(sdk, registryId, ownerId, params.name)
-  return v1 === null ? null : { repo: v1.repo, listing: v1.listing }
+  return resolveRepoWithListing(sdk, registryId, ownerId, params.name)
 }
 
 /**
- * Resolve a v1 repo to its contract, verifying listing authenticity. Returns the {@link RepoRef}
- * only if the repo contract's owner matches the listing owner (§4).
+ * Resolve a v1 repo to its contract, verifying listing authenticity. Returns the
+ * {@link V1RepoRef} only if the repo contract's owner matches the listing owner (§4).
  */
 export async function resolveRepo(
   sdk: EvoSDK,
@@ -337,7 +327,7 @@ export async function resolveRepo(
     readonly ownerId: string
     readonly name: string
   },
-): Promise<RepoRef | null> {
+): Promise<V1RepoRef | null> {
   const registryId =
     params.registryContractId ?? requireRegistryContractId(params.network ?? DEFAULT_NETWORK)
 

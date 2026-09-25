@@ -12,17 +12,20 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
+  num,
   readIssue,
   readPull,
   readReviews,
   readRoleOracle,
   readTargetLog,
   repoSource,
+  str,
   wellFormed,
   type IssueView,
   type PullView,
   type RepoRef,
   type ReviewView,
+  type V2RepoRef,
 } from '../repo'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
@@ -36,14 +39,6 @@ export interface CommentView {
   readonly createdAt: number
 }
 
-function str(doc: PlainDocument, field: string): string {
-  const v = doc[field]
-  return typeof v === 'string' ? v : ''
-}
-function num(doc: PlainDocument, field: string): number {
-  const v = doc[field]
-  return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : 0
-}
 
 /**
  * Read **every** comment on a target (issue/PR), oldest first.
@@ -94,7 +89,7 @@ async function docByNumber(
 ): Promise<PlainDocument | null> {
   const { documents } = await queryDocumentsWithProof(
     sdk,
-    repoSource(repo).repoQuery(type === 'issue' ? DOC.issue : DOC.patch, {
+    repoSource(repo).repoQuery(DOC[type], {
       where: [['number', '==', number]],
       limit: 1,
     }),
@@ -157,30 +152,35 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
     readReviews(sdk, repo, id),
   ])
   const pull = await readPull(sdk, repo, doc, undefined, log)
-  let approvals: PullApprovals | null = null
-  if (repo.kind === 'v2') {
-    try {
-      const oracle = await readRoleOracle(sdk, repo)
-      const counted = countApprovals(
-        reviews.map((r) => ({
-          id: r.id,
-          reviewer: r.reviewer,
-          verdict: r.verdictCode,
-          commitOid: r.commitOid,
-          createdAt: r.createdAt,
-        })),
-        oracle,
-        pull.headOid,
-      )
-      const roles = new Map(
-        [...counted.approvers, ...counted.changesRequested].map((id) => [id, oracle.currentRole(id)]),
-      )
-      approvals = { ...counted, roles }
-    } catch {
-      approvals = null
-    }
-  }
+  const approvals = repo.kind === 'v2' ? await readApprovals(sdk, repo, reviews, pull.headOid) : null
   return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), approvals }
+}
+
+/** A forge-v2 PR's counted approvals, or null when the membership could not be read. */
+async function readApprovals(
+  sdk: EvoSDK,
+  repo: V2RepoRef,
+  reviews: readonly ReviewView[],
+  headOid: string,
+): Promise<PullApprovals | null> {
+  try {
+    const oracle = await readRoleOracle(sdk, repo)
+    const counted = countApprovals(
+      reviews.map((r) => ({
+        id: r.id,
+        reviewer: r.reviewer,
+        verdict: r.verdictCode,
+        commitOid: r.commitOid,
+        createdAt: r.createdAt,
+      })),
+      oracle,
+      headOid,
+    )
+    const reviewers = [...counted.approvers, ...counted.changesRequested]
+    return { ...counted, roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])) }
+  } catch {
+    return null
+  }
 }
 
 /** Read comments + events for a target and merge them into one chronological timeline. */
@@ -199,16 +199,17 @@ function mergeTimeline(
   authorEvents: readonly Event[],
   reviews: readonly ReviewView[],
 ): TimelineItem[] {
+  const eventItem = (e: Event, byAuthor: boolean) => ({
+    kind: 'event' as const,
+    at: e.createdAt,
+    id: e.id ?? '',
+    event: e,
+    ...(byAuthor ? { byAuthor } : {}),
+  })
   const items: (TimelineItem & { readonly id: string })[] = [
     ...comments.map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
-    ...events.map((e) => ({ kind: 'event' as const, at: e.createdAt, id: e.id ?? '', event: e })),
-    ...authorEvents.map((e) => ({
-      kind: 'event' as const,
-      at: e.createdAt,
-      id: e.id ?? '',
-      event: e,
-      byAuthor: true,
-    })),
+    ...events.map((e) => eventItem(e, false)),
+    ...authorEvents.map((e) => eventItem(e, true)),
     ...reviews.map((r) => ({ kind: 'review' as const, at: r.createdAt, id: r.id, review: r })),
   ]
   items.sort((a, b) => compareKey({ id: a.id, createdAt: a.at }, { id: b.id, createdAt: b.at }))
