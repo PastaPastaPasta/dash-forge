@@ -297,17 +297,61 @@ export function externalFetchUrls(
  * GET `url` and read the whole body under one hard deadline (a stalled body counts, not only
  * a stalled connect). A 206 is accepted alongside 2xx.
  */
-async function fetchBody(url: string, init: RequestInit = {}): Promise<Uint8Array> {
+async function fetchBody(
+  url: string,
+  init: RequestInit = {},
+  opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number } = {},
+): Promise<Uint8Array> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), EXTERNAL_FETCH_TIMEOUT_MS)
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  // An IDLE deadline, re-armed on every chunk: a slow mirror streaming a large pack is
+  // fine, a silent one is not. A whole-body deadline would make every pack larger than
+  // bandwidth × deadline permanently "unavailable" from healthy mirrors.
+  const arm = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, EXTERNAL_FETCH_TIMEOUT_MS)
+  }
+  const onCancel = (): void => controller.abort()
+  opts.cancel?.addEventListener('abort', onCancel)
+  if (opts.cancel?.aborted) controller.abort()
+  arm()
   try {
     const resp = await fetch(url, { ...init, signal: controller.signal })
     if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
-    return new Uint8Array(await resp.arrayBuffer())
+    if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
+    const reader = resp.body.getReader()
+    const parts: Uint8Array[] = []
+    let total = 0
+    for (;;) {
+      arm()
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.length
+      // A mirror streaming more than the manifest says cannot be serving this pack.
+      if (opts.maxBytes !== undefined && total > opts.maxBytes) {
+        controller.abort()
+        throw new Error('served more bytes than the manifest records')
+      }
+      parts.push(value)
+    }
+    const out = new Uint8Array(total)
+    let at = 0
+    for (const p of parts) {
+      out.set(p, at)
+      at += p.length
+    }
+    return out
   } catch (e) {
-    throw controller.signal.aborted ? new Error(`no answer in ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`) : e
+    if (timedOut) throw new Error(`no data for ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`)
+    if (opts.cancel?.aborted) throw new Error('another mirror served it first')
+    throw e
   } finally {
     clearTimeout(timer)
+    opts.cancel?.removeEventListener('abort', onCancel)
   }
 }
 
@@ -362,9 +406,12 @@ async function fetchExternalWhole(
   }
   let corrupt = false
   const reasons: string[] = []
+  // Cancels the losing mirrors once one has served the pack: an ipfs:// URI fans out to
+  // one request per gateway, and each would otherwise download (and hold) the whole pack.
+  const winner = new AbortController()
   const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
     try {
-      const bytes = await fetchBody(url)
+      const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
       if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
         corrupt = true
         throw new Error('served bytes that do not match the manifest sha256')
@@ -377,6 +424,7 @@ async function fetchExternalWhole(
   }
   try {
     const { url, bytes } = await firstFulfilled(urls.map(attempt))
+    winner.abort()
     onServed?.(url)
     return bytes
   } catch {

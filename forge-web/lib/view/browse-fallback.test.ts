@@ -225,7 +225,8 @@ describe('startFallback with external-storage packs', () => {
     const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
     const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: 2, documentId: 'b' })
     const repo: RepoRef = { contractId: 'fallback-liar', ownerId: 'owner' }
-    stubFetch({ 'https://mirror.example/p': () => blobPack('forged!!!\n').pack })
+    // Same length as the real pack, different bytes: only the sha256 check can catch it.
+    stubFetch({ 'https://mirror.example/p': () => blobPack('forgery!\n').pack })
     const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
     expect(ctx.unavailable?.[0]?.reason).toMatch(/sha256/)
     await expect(ctx.reader.readObject(ext.oid)).rejects.toThrow(/could not be fetched/)

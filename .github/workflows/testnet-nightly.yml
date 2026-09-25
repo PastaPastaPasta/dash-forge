@@ -83,6 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       present: ${{ steps.probe.outputs.present }}
+      # The read-fixture seeder signs with DEPLOYER alone.
+      deployer: ${{ steps.probe.outputs.deployer }}
     steps:
       - name: Probe
         id: probe
@@ -92,6 +94,11 @@ jobs:
           FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
           FORGE_TEST_IDENTITY_FROZEN: ${{ secrets.FORGE_TEST_IDENTITY_FROZEN }}
         run: |
+          if [ -n "$FORGE_TEST_IDENTITY_DEPLOYER" ]; then
+            echo "deployer=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deployer=false" >> "$GITHUB_OUTPUT"
+          fi
           missing=()
           # Report the SECRET names an operator has to create, not internal aliases.
           for name in FORGE_TEST_IDENTITY_DEPLOYER FORGE_TEST_IDENTITY_COLLAB \
@@ -121,7 +128,7 @@ jobs:
   seed-read-fixture:
     name: seed the read fixture
     needs: fixtures
-    if: needs.fixtures.outputs.present == 'true'
+    if: needs.fixtures.outputs.deployer == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

@@ -154,15 +154,45 @@ describe('white text on solid fills meets WCAG AA', () => {
    * value the file assigns.
    */
   function whiteTextBackgrounds(text: string): { token: string; line: number }[] {
-    const lines = text.split('\n')
     const out: { token: string; line: number }[] = []
-    const computed = /text-white[^\n]*\$\{[\w.]*\bbg\}/.test(text)
-    lines.forEach((l, i) => {
-      const isBgValue = computed && /\bbg:\s*/.test(l)
-      if (!l.includes('text-white') && !isBgValue) return
-      for (const m of l.matchAll(SOLID_BG)) out.push({ token: m[1] as string, line: i + 1 })
-    })
-    return out
+    const lineAt = (offset: number): number => text.slice(0, offset).split('\n').length
+    const scan = (chunk: string, base: number): void => {
+      for (const m of chunk.matchAll(SOLID_BG)) {
+        out.push({ token: m[1] as string, line: lineAt(base + (m.index ?? 0)) })
+      }
+    }
+    // Whole class expressions, however many lines they span: a `className="…"` string, a
+    // `className={…}` expression (template, `cn(…)` call — braces balanced), or a
+    // `cva`-style quoted string. Each that contains `text-white` is scanned as a unit.
+    const CLASS_EXPR = /className=(?:"[^"]*"|'[^']*'|\{)/g
+    for (const m of text.matchAll(CLASS_EXPR)) {
+      const start = m.index ?? 0
+      let end = start + m[0].length
+      if (m[0].endsWith('{')) {
+        let depth = 1
+        while (end < text.length && depth > 0) {
+          const c = text[end]
+          if (c === '{') depth += 1
+          else if (c === '}') depth -= 1
+          end += 1
+        }
+      }
+      const expr = text.slice(start, end)
+      if (expr.includes('text-white')) scan(expr, start)
+    }
+    // Class strings defined away from the element (a variants table): any quoted string
+    // holding both `text-white` and a solid fill.
+    for (const m of text.matchAll(/'[^'\n]*'|"[^"\n]*"/g)) {
+      if (m[0].includes('text-white') && !text.slice(Math.max(0, (m.index ?? 0) - 10), m.index).includes('className=')) {
+        scan(m[0], m.index ?? 0)
+      }
+    }
+    // A badge whose background is computed (`${status.bg}`): every `bg:` value the file
+    // assigns can end up behind the white text.
+    if (/text-white[\s\S]{0,200}?\$\{[\w.]*\bbg\}/.test(text)) {
+      for (const m of text.matchAll(/\bbg:\s*[^\n]*/g)) scan(m[0], m.index ?? 0)
+    }
+    return [...new Map(out.map((b) => [`${b.line}:${b.token}`, b])).values()]
   }
 
   it('checks the Merged / Open / Closed / Draft badges and every other white-text fill', () => {
@@ -191,6 +221,9 @@ describe('white text on solid fills meets WCAG AA', () => {
     expect(contrast(rgb('#ffffff'), rgb(tokenHex('dash') as string))).toBeLessThan(AA_TEXT)
     expect(contrast(rgb('#ffffff'), rgb(tokenHex('verify') as string))).toBeLessThan(AA_TEXT)
     expect(tokens('<b className="text-white bg-forge-700 hover:bg-forge-600">')).toEqual(['forge-700'])
+    // text-white and the fill on different lines of one class expression.
+    expect(tokens('<b\n  className={cn(\n    \'rounded text-white\',\n    \'bg-dash\',\n  )}\n>')).toEqual(['dash'])
+    expect(tokens('<b className="px-2\n  text-white\n  bg-verify">')).toEqual(['verify'])
     expect(tokens('<b className="text-anvil-700 bg-dash/10">')).toEqual([])
   })
 })

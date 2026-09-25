@@ -12,7 +12,9 @@ import { join } from 'node:path'
  */
 export const M1 = {
   owner: process.env['E2E_FIXTURE_OWNER'] ?? '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB',
-  name: process.env['E2E_FIXTURE_NAME'] ?? 'm1-5124',
+  // The seeder's override (NIGHTLY_FIXTURE_REPO) applies here too, so a renamed fixture is
+  // seeded and read as the same repo.
+  name: process.env['E2E_FIXTURE_NAME'] ?? process.env['NIGHTLY_FIXTURE_REPO'] ?? 'm1-5124',
 } as const
 
 export function repoUrl(path = ''): string {
