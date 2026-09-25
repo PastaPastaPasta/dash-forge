@@ -46,7 +46,15 @@ module.exports = {
         verify: '#16a34a', // proof/hash verified
         caution: '#d97706', // degraded availability
         danger: '#dc2626', // force-push, delete, failed verification
-        dash: '#008de4', // Dash brand blue — identity/credits/network UI only
+        // Dash brand blue — identity/credits/network UI only. The brand value is for fills,
+        // tints and icons; it is under 4.5:1 as TEXT on every surface in both themes, so
+        // text uses the WCAG AA shades: `text-dash-600 dark:text-dash-400` (the same
+        // light/dark pairing forge text uses). lib/design/contrast.test.ts pins the ratios.
+        dash: {
+          DEFAULT: '#008de4',
+          400: '#4aaef0', // text on dark surfaces (anvil-950…800)
+          600: '#006bb0', // text on light surfaces (white, anvil-50/100)
+        },
       },
       fontFamily: {
         // UI: system stack — fast, no font payload.

@@ -49,7 +49,7 @@ export function AppHeader(): JSX.Element {
           </span>
         </Link>
 
-        <span className="hidden rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash sm:inline">
+        <span className="hidden rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash-600 dark:text-dash-400 sm:inline">
           {DEFAULT_NETWORK}
         </span>
 
@@ -122,7 +122,7 @@ function AccountMenu({
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance
             </div>
-            <div className="mt-0.5 font-mono text-prose text-dash">{dash} DASH</div>
+            <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
             <div className="font-mono text-[12px] text-anvil-400">
               {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
             </div>

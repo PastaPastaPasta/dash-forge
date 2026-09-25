@@ -177,7 +177,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
             {registryContractId !== null ? <Oid value={registryContractId} chars={12} label="registry contract id" /> : <NotSet />}
           </DetailRow>
           <DetailRow label="Network">
-            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash">{DEFAULT_NETWORK}</span>
+            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash-600 dark:text-dash-400">{DEFAULT_NETWORK}</span>
           </DetailRow>
         </dl>
         <p className="mt-2 text-[12px] text-anvil-400">

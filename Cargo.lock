@@ -1665,6 +1665,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "forge-core",
+ "futures",
  "hex",
  "serde_json",
  "tempfile",

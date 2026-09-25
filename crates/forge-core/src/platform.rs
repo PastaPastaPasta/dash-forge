@@ -71,7 +71,7 @@ use dash_sdk::platform::tokens::identity_token_balances::IdentitiesTokenBalances
 use dash_sdk::platform::tokens::token_info::IdentitiesTokenInfosQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
-use dash_sdk::{Sdk, SdkBuilder};
+use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
 use drive_proof_verifier::types::identity_token_balance::IdentitiesTokenBalances;
 use drive_proof_verifier::types::token_info::IdentitiesTokenInfos;
 use drive_proof_verifier::DocumentCount;
@@ -90,6 +90,24 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the *identical* signed bytes (same nonce + entropy), so extra attempts can only make
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
+
+/// Maximum attempts for one proof-verified read. The SDK already rotates across DAPI nodes
+/// within an attempt; this outer loop covers the case where that rotation runs out (every
+/// node it tried was banned, or kept serving unverifiable proofs) by backing off and
+/// starting a fresh rotation.
+const MAX_READ_ATTEMPTS: u32 = 4;
+
+/// TCP connect timeout for a DAPI node. The SDK default is none, which leaves an
+/// unreachable node to the OS connect timeout — about two minutes on Linux. Every request
+/// that lands on a dead node pays that in full, the node's ban lapses after a minute so it
+/// is picked again, and each `git-remote-dash` process starts with no ban list. One dead
+/// node on testnet was enough to push a partial clone past its command timeout.
+const DAPI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Per-request retries inside the SDK (each retry lands on a different, unbanned node).
+/// The SDK default is 3. A testnet with some unreachable or behind nodes exhausts that
+/// quickly, and a connect timeout is now cheap enough to allow more.
+const DAPI_RETRIES: usize = 6;
 
 /// The network a client is bound to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,7 +251,16 @@ impl PlatformClient {
             }
         };
 
+        // Only the connect timeout and the retry count are set. A per-request `timeout`
+        // here would also override the SDK's longer per-method deadlines (30 s for
+        // waitForStateTransitionResult, 5 min for streams), because client settings are
+        // applied after them.
         let sdk = builder
+            .with_settings(RequestSettings {
+                connect_timeout: Some(DAPI_CONNECT_TIMEOUT),
+                retries: Some(DAPI_RETRIES),
+                ..RequestSettings::default()
+            })
             .with_context_provider(context_provider.clone())
             .build()
             .map_err(|e| Error::Platform(format!("building SDK: {e}")))?;
@@ -259,10 +286,11 @@ impl PlatformClient {
     /// Fetch a data contract by base58 id.
     pub async fn fetch_contract(&self, contract_id: &str) -> Result<LoadedContract> {
         let id = parse_id(contract_id, "contract id")?;
-        let contract = DataContract::fetch(&self.sdk, id)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?
-            .ok_or(Error::NotFound)?;
+        let contract =
+            retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
+                .await
+                .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?
+                .ok_or(Error::NotFound)?;
         // Register with the context provider so proof verification of subsequent
         // writes against this contract can resolve it (see field docs).
         self.context_provider.add_known_contract(contract.clone());
@@ -272,7 +300,7 @@ impl PlatformClient {
     /// Fetch an identity by base58 id.
     pub async fn fetch_identity(&self, identity_id: &str) -> Result<LoadedIdentity> {
         let id = parse_id(identity_id, "identity id")?;
-        let identity = Identity::fetch(&self.sdk, id)
+        let identity = retry_transient_read("fetch identity", || Identity::fetch(&self.sdk, id))
             .await
             .map_err(|e| Error::Platform(format!("fetching identity {identity_id}: {e}")))?
             .ok_or(Error::NotFound)?;
@@ -335,9 +363,11 @@ impl PlatformClient {
         let query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
             .with_document_id(&doc_id);
-        let found = Document::fetch(&self.sdk, query)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
+        let found = retry_transient_read("fetch document", || {
+            Document::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
         Ok(found.is_some())
     }
 
@@ -405,9 +435,11 @@ impl PlatformClient {
             query.start = Some(Start::StartAfter(id.to_vec()));
         }
 
-        let documents = Document::fetch_many(&self.sdk, query)
-            .await
-            .map_err(|e| Error::Platform(format!("querying {document_type} documents: {e}")))?;
+        let documents = retry_transient_read("query documents", || {
+            Document::fetch_many(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("querying {document_type} documents: {e}")))?;
 
         Ok(documents
             .into_iter()
@@ -737,7 +769,10 @@ impl PlatformClient {
             identity_ids,
             token_id,
         };
-        let balances: IdentitiesTokenBalances = TokenAmount::fetch_many(&self.sdk, query)
+        let balances: IdentitiesTokenBalances =
+            retry_transient_read("query token balances", || {
+                TokenAmount::fetch_many(&self.sdk, query.clone())
+            })
             .await
             .map_err(|e| Error::Platform(format!("querying token balances: {e}")))?;
         Ok(balances
@@ -765,9 +800,11 @@ impl PlatformClient {
             identity_ids,
             token_id,
         };
-        let infos: IdentitiesTokenInfos = IdentityTokenInfo::fetch_many(&self.sdk, query)
-            .await
-            .map_err(|e| Error::Platform(format!("querying token infos: {e}")))?;
+        let infos: IdentitiesTokenInfos = retry_transient_read("query token infos", || {
+            IdentityTokenInfo::fetch_many(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("querying token infos: {e}")))?;
         Ok(infos
             .iter()
             .map(|(id, info)| {
@@ -801,9 +838,11 @@ impl PlatformClient {
             });
         }
         query = query.with_select(SelectProjection::count_star());
-        let count = DocumentCount::fetch(&self.sdk, query)
-            .await
-            .map_err(|e| Error::Platform(format!("counting {document_type} documents: {e}")))?;
+        let count = retry_transient_read("count documents", || {
+            DocumentCount::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("counting {document_type} documents: {e}")))?;
         Ok(count.map_or(0, |c| c.0))
     }
 }
@@ -1272,12 +1311,16 @@ impl<'a> WriteEngine<'a> {
                 Err(e) => match classify_write_error(&e, &prepared.document_type) {
                     WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
                     WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
-                        // Loop around to re-broadcast the identical signed bytes.
+                        // Loop around to re-broadcast the identical signed bytes, after a
+                        // backoff so a node whose ban just lapsed is not re-picked at once.
+                        let delay = backoff_delay(RETRY_BACKOFF_BASE, attempt);
                         tracing::warn!(
                             attempt,
+                            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                             error = %e,
                             "retryable broadcast failure; re-broadcasting identical signed bytes (same nonce/entropy)"
                         );
+                        tokio::time::sleep(delay).await;
                     }
                     WriteFailure::Retryable => return Err(Error::Timeout { retryable: true }),
                     WriteFailure::Fatal(err) => return Err(err),
@@ -1756,12 +1799,94 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
         }
     }
 
-    // Authoritative retry signal (StaleNode / TimeoutReached / Proof).
-    if e.can_retry() {
+    // The SDK's retry signal (StaleNode / TimeoutReached / Proof) plus node-level transport
+    // failures. Re-broadcasting the identical signed bytes is safe for all of them.
+    if is_transient_node_error(e) {
         return WriteFailure::Retryable;
     }
 
     WriteFailure::Fatal(Error::Platform(e.to_string()))
+}
+
+/// Whether an SDK error is a node problem that a fresh DAPI rotation can fix, as opposed to
+/// an answer. Drives both the read retry and the write re-broadcast (whose idempotency
+/// comes from re-sending the same signed bytes, not from this check).
+///
+/// The SDK's own [`CanRetry`] for its top-level error covers a stale node, an
+/// SDK timeout and a failed proof, but not the two failures testnet produces most: a
+/// retryable gRPC status from the node (`Unavailable` for an unreachable one), and the SDK
+/// giving up because it banned every node it tried. Both are transient: a ban lapses after
+/// a minute (the SDK's default base ban period), so a backed-off retry does not just ask
+/// the same dead nodes again.
+fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
+    match e {
+        dash_sdk::Error::NoAvailableAddressesToRetry(_) => true,
+        dash_sdk::Error::DapiClientError(d) => d.can_retry() || d.is_no_available_addresses(),
+        other => other.can_retry(),
+    }
+}
+
+/// Base delay before the second read or broadcast attempt; later attempts double it
+/// (2 s, 4 s, 8 s).
+const RETRY_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The pause after failed attempt number `attempt` (1-based): `base`, then doubling.
+fn backoff_delay(base: std::time::Duration, attempt: u32) -> std::time::Duration {
+    base * 2u32.saturating_pow(attempt.saturating_sub(1))
+}
+
+/// Run a proof-verified read, retrying transient node failures with exponential backoff.
+///
+/// Reads are side-effect free, so a retry is always safe. Each attempt is a fresh SDK call
+/// and therefore a fresh rotation over the unbanned DAPI nodes. A non-transient error (a
+/// verified "not found" is an `Ok(None)`, not an error; a malformed query is not transient)
+/// returns immediately.
+// The error is the SDK's own (large) type, passed straight through from the SDK calls this
+// wraps; every caller maps it to a crate error on the next line.
+#[allow(clippy::result_large_err)]
+async fn retry_transient_read<T, F, Fut>(
+    label: &str,
+    op: F,
+) -> std::result::Result<T, dash_sdk::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, dash_sdk::Error>>,
+{
+    retry_with_backoff(label, RETRY_BACKOFF_BASE, is_transient_node_error, op).await
+}
+
+/// The loop behind [`retry_transient_read`], generic over the error and the delay so the
+/// attempt count and backoff are testable without a network or a real clock.
+async fn retry_with_backoff<T, E, F, Fut>(
+    label: &str,
+    base: std::time::Duration,
+    transient: impl Fn(&E) -> bool,
+    mut op: F,
+) -> std::result::Result<T, E>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+{
+    let mut attempt: u32 = 1;
+    loop {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_READ_ATTEMPTS && transient(&e) => {
+                let delay = backoff_delay(base, attempt);
+                tracing::warn!(
+                    op = label,
+                    attempt,
+                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    error = %e,
+                    "transient Platform read failure; backing off and retrying on a fresh node rotation"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// A signed state transition ready to (re)broadcast.
@@ -1905,8 +2030,9 @@ impl PushJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        page_to_exhaustion, FetchedDocument, JournalStore, Network, PushJournal, SignedTransition,
-        WriteIntent, WriteOp, MAX_PAGES, NONCE_MASK, PAGE_SIZE,
+        is_transient_node_error, page_to_exhaustion, retry_with_backoff, FetchedDocument,
+        JournalStore, Network, PushJournal, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
+        MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use std::cell::RefCell;
@@ -2056,5 +2182,80 @@ mod tests {
         assert!(journal.has(0));
         assert_eq!(journal.uploaded.len(), 2);
         assert_eq!(store.last.borrow().as_ref().unwrap().uploaded.len(), 2);
+    }
+
+    /// Drive `retry_with_backoff` with a scripted sequence of outcomes (no clock: zero base
+    /// delay). Returns the result and how many attempts were made.
+    async fn run_script(
+        script: Vec<std::result::Result<u32, &'static str>>,
+    ) -> (std::result::Result<u32, &'static str>, usize) {
+        let calls = RefCell::new(script.into_iter());
+        let attempts = RefCell::new(0usize);
+        let out = retry_with_backoff(
+            "test",
+            std::time::Duration::ZERO,
+            |e: &&str| e.starts_with("transient"),
+            || {
+                *attempts.borrow_mut() += 1;
+                std::future::ready(calls.borrow_mut().next().expect("script exhausted"))
+            },
+        )
+        .await;
+        let n = *attempts.borrow();
+        (out, n)
+    }
+
+    #[tokio::test]
+    async fn transient_read_failures_are_retried_until_success() {
+        let (out, n) = run_script(vec![Err("transient a"), Err("transient b"), Ok(7)]).await;
+        assert_eq!(out, Ok(7));
+        assert_eq!(n, 3);
+    }
+
+    #[tokio::test]
+    async fn transient_read_retries_are_bounded() {
+        let script = (0..MAX_READ_ATTEMPTS + 2)
+            .map(|_| Err("transient"))
+            .collect();
+        let (out, n) = run_script(script).await;
+        assert_eq!(out, Err("transient"));
+        assert_eq!(n, MAX_READ_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn a_non_transient_read_error_is_not_retried() {
+        let (out, n) = run_script(vec![Err("malformed query"), Ok(1)]).await;
+        assert_eq!(out, Err("malformed query"));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn node_level_failures_classify_as_transient() {
+        use dash_sdk::dapi_client::transport::TransportError;
+        use dash_sdk::dapi_client::DapiClientError;
+        let grpc = |s: dapi_grpc::tonic::Status| {
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(s)))
+        };
+
+        // An unreachable node surfaces as gRPC Unavailable ("tcp connect error").
+        assert!(is_transient_node_error(&grpc(
+            dapi_grpc::tonic::Status::unavailable("tcp connect error")
+        )));
+        // Every node banned: the SDK's give-up error, both shapes.
+        assert!(is_transient_node_error(&dash_sdk::Error::DapiClientError(
+            DapiClientError::NoAvailableAddresses
+        )));
+        assert!(is_transient_node_error(
+            &dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(grpc(
+                dapi_grpc::tonic::Status::unavailable("x")
+            )))
+        ));
+        // A request the node understood and refused is an answer, not a flake.
+        assert!(!is_transient_node_error(&grpc(
+            dapi_grpc::tonic::Status::invalid_argument("bad where clause")
+        )));
+        assert!(!is_transient_node_error(&dash_sdk::Error::Config(
+            "bad".into()
+        )));
     }
 }

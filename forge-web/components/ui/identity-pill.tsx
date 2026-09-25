@@ -53,7 +53,7 @@ export function IdentityPill({
         {initial}
       </span>
       {name ? (
-        <span className="font-medium text-dash">{name}</span>
+        <span className="font-medium text-dash-600 dark:text-dash-400">{name}</span>
       ) : null}
       <span className="font-mono text-anvil-500 dark:text-anvil-400">
         {abbreviate(identityId)}

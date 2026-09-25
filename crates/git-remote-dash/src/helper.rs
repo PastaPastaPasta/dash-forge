@@ -15,17 +15,27 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
-use forge_core::backends::{PackMeta, Uri};
+use forge_core::backends::PackMeta;
 use forge_core::keystore::BridgeIdentity;
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 use forge_core::repo::{PackManifestInput, RepoHandle, RepoService};
-use forge_core::rules::RefState;
+use forge_core::rules::{Holdings, RefState, TokenRecord};
 use forge_core::tokens::TokenService;
+
+use futures::stream::{self, StreamExt, TryStreamExt};
 
 use crate::git::{LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::url::DashUrl;
+
+/// Packs downloaded concurrently by a fetch — the same window the platform backend
+/// pipelines chunk uploads with (spike S0.1).
+const PACK_DOWNLOAD_WINDOW: usize = forge_core::backends::platform::PIPELINE_WINDOW;
+
+/// How long a fetch waits on one external-tier pack's mirrors before skipping it. The
+/// mirror HTTP clients set no timeout of their own.
+const EXTERNAL_PACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// A single want from a `fetch <oid> <name>` line.
 #[derive(Debug, Clone)]
@@ -218,25 +228,55 @@ impl Helper {
         }
 
         // Download + verify every pack (M1: whole-repo packs; the want-set is served by the
-        // union of stored packs, and git dedups objects it already has).
-        let mut downloaded: Vec<Vec<u8>> = Vec::with_capacity(git_packs.len());
-        for m in &git_packs {
-            let uri = match m.uris.first() {
-                Some(u) => Uri(u.clone()),
-                None => default_platform_uri(&conn.repo.repo_contract_id, &m.pack_hash),
+        // union of stored packs, and git dedups objects it already has). Every push adds a
+        // pack, so this grows with the repo's push count; downloading them one at a time
+        // took ~50 s for the nightly's 56-pack test repo, per fetch — and a partial clone
+        // fetches twice. `buffered` keeps a bounded window in flight and preserves order.
+        let svc = &svc;
+        let repo = &conn.repo;
+        let contract = &svc.repo_contract(repo).await?;
+        let fetched: Vec<Option<Vec<u8>>> = stream::iter(git_packs.iter().map(|m| async move {
+            let hash = hex::encode(m.pack_hash);
+            // The storage tier picks the path: an external-tier manifest's URIs are
+            // ipfs:// / https:// mirrors, which the platform backend cannot parse.
+            let bytes = if m.storage == 0 {
+                svc.fetch_manifest_pack(repo, contract, m)
+                    .await
+                    .with_context(|| format!("downloading pack {hash}"))?
+            } else {
+                // An external mirror can be down, rate-limited or absent. The pack is then
+                // skipped rather than failing the fetch: git verifies after the fetch that
+                // every wanted object arrived, so if this pack was actually needed the
+                // fetch still fails, and if it was not (e.g. it only holds a deleted
+                // branch) the clone is not held hostage by one dead mirror.
+                let got = tokio::time::timeout(
+                    EXTERNAL_PACK_TIMEOUT,
+                    svc.fetch_manifest_pack(repo, contract, m),
+                )
+                .await;
+                match got {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(e)) => {
+                        tracing::warn!(pack = %hash, mirrors = ?m.uris, error = %e, "external pack unobtainable; skipping it");
+                        return Ok(None);
+                    }
+                    Err(_) => {
+                        tracing::warn!(pack = %hash, mirrors = ?m.uris, "external pack mirrors timed out; skipping it");
+                        return Ok(None);
+                    }
+                }
             };
-            let bytes = svc
-                .get_pack(&conn.repo, &uri, None)
-                .await
-                .with_context(|| format!("downloading pack {}", hex::encode(m.pack_hash)))?;
             // Integrity: reassembled bytes must match the manifest packHash (SHA-256).
             let got = PackMeta::for_bytes(&bytes).pack_hash;
-            let expected = hex::encode(m.pack_hash);
-            if !got.eq_ignore_ascii_case(&expected) {
-                bail!("pack integrity check failed: expected {expected}, got {got}");
+            if !got.eq_ignore_ascii_case(&hash) {
+                bail!("pack integrity check failed: expected {hash}, got {got}");
             }
-            downloaded.push(bytes);
-        }
+            Ok(Some(bytes))
+        }))
+        .buffered(PACK_DOWNLOAD_WINDOW)
+        .try_collect()
+        .await?;
+        let downloaded: Vec<Vec<u8>> = fetched.into_iter().flatten().collect();
 
         if let Some(filter) = options.filter.as_deref() {
             // Partial clone: re-pack the downloaded objects through a scratch repo applying
@@ -285,7 +325,10 @@ impl Helper {
         // consensus rejects one at a time, burning processing fees and surfacing a raw
         // platform error. That error is the first thing a would-be contributor sees, and it
         // teaches them nothing; this is the moment to point them at the PR flow instead.
-        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) {
+        //
+        // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
+        // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
+        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) && !skip_write_precheck() {
             if let Some(reason) = write_access_denied(conn).await {
                 return Ok(specs
                     .iter()
@@ -628,15 +671,6 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
     Ok(raw)
 }
 
-/// The default `platform://<contract>/<packHashHex>` locator when a manifest recorded no
-/// explicit URI (platform-tier packs are addressable by contract + packHash).
-fn default_platform_uri(contract_id: &str, pack_hash: &[u8; 32]) -> Uri {
-    Uri(format!(
-        "platform://{contract_id}/{}",
-        hex::encode(pack_hash)
-    ))
-}
-
 /// Select the network from `DASH_FORGE_NETWORK` (testnet default).
 pub(crate) fn network_from_env() -> Network {
     match std::env::var("DASH_FORGE_NETWORK").as_deref() {
@@ -644,6 +678,14 @@ pub(crate) fn network_from_env() -> Network {
         Ok("devnet") => Network::Devnet,
         _ => Network::Testnet,
     }
+}
+
+/// Whether `DASH_FORGE_SKIP_WRITE_PRECHECK` asks to bypass [`write_access_denied`].
+fn skip_write_precheck() -> bool {
+    matches!(
+        std::env::var("DASH_FORGE_SKIP_WRITE_PRECHECK").as_deref(),
+        Ok("1" | "true")
+    )
 }
 
 /// `Some(reason)` when the connected identity provably holds no spendable WRITE or MAINTAIN
@@ -665,20 +707,60 @@ async fn write_access_denied(conn: &Conn) -> Option<String> {
             .as_millis(),
     )
     .ok()?;
-    let holdings = forge_core::rules::holdings_as_of(&records, &conn.identity.id(), now);
+    let me = conn.identity.id();
+    let holdings = forge_core::rules::holdings_as_of(&records, &me, now);
     if holdings.any() {
         return None;
+    }
+    Some(write_denied_reason(
+        frozen_grants(&records, &me, now),
+        &conn.repo.owner_id,
+        &conn.repo.name,
+    ))
+}
+
+/// Which of `identity`'s WRITE / MAINTAIN grants are still held but frozen at `now` (a
+/// suspended collaborator), as opposed to never held. Frozen tokens are not spendable, so
+/// [`forge_core::rules::holdings_as_of`] reports both cases the same way; replaying the
+/// history with the freezes left out tells them apart without a second copy of the token
+/// state machine. Only meaningful when the real holdings are empty.
+fn frozen_grants(records: &[TokenRecord], identity: &str, now: u64) -> Holdings {
+    use forge_core::rules::TokenOp;
+    let unfrozen: Vec<TokenRecord> = records
+        .iter()
+        .filter(|r| !matches!(r.op, TokenOp::Freeze | TokenOp::Unfreeze))
+        .cloned()
+        .collect();
+    forge_core::rules::holdings_as_of(&unfrozen, identity, now)
+}
+
+/// The push refusal for an identity with no spendable token. A suspended collaborator is
+/// told which token is frozen: "no WRITE token" is false for them, and forking is not the
+/// fix.
+fn write_denied_reason(frozen: Holdings, owner_id: &str, name: &str) -> String {
+    // Worded unlike the consensus error ("token frozen: this identity's write access has
+    // been suspended"), so a caller can tell this local refusal from a network verdict.
+    let which = match (frozen.write, frozen.maintain) {
+        (true, true) => Some("WRITE and MAINTAIN tokens on this repo are"),
+        (true, false) => Some("WRITE token on this repo is"),
+        (false, true) => Some("MAINTAIN token on this repo is"),
+        (false, false) => None,
+    };
+    if let Some(which) = which {
+        return format!(
+            "your {which} frozen: a maintainer suspended your push access, so consensus \
+             would reject this push. Ask a maintainer to unfreeze it."
+        );
     }
     // `dg pr create` takes the target repo POSITIONALLY as `owner/name`, which is what the
     // pusher typed into their remote URL — not the contract id, which is not an address
     // `dg` accepts here.
-    Some(format!(
+    format!(
         "no WRITE token on this repo — you cannot push to it. Fork it and open a pull \
          request instead: `dg repo create <name>`, push your branch there, then \
-         `dg pr create {}/{} --title <t> --source-contract <your contract id> \
-         --head-oid <oid>`",
-        conn.repo.owner_id, conn.repo.name
-    ))
+         `dg pr create {owner_id}/{name} --title <t> --source-contract <your contract id> \
+         --head-oid <oid>`"
+    )
 }
 
 /// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
@@ -709,7 +791,87 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oid_to_bytes, PushOutcome};
+    use super::{frozen_grants, oid_to_bytes, write_denied_reason, PushOutcome};
+    use forge_core::rules::{Holdings, TokenKind, TokenOp, TokenRecord};
+
+    fn rec(identity: &str, token: TokenKind, op: TokenOp, created_at: u64) -> TokenRecord {
+        TokenRecord {
+            id: format!("r{created_at}"),
+            identity: identity.to_string(),
+            token,
+            op,
+            created_at,
+        }
+    }
+
+    #[test]
+    fn frozen_grants_are_told_apart_from_no_grant() {
+        use TokenKind::{Maintain, Write};
+        let frozen = [
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&frozen, "me", 10),
+            Holdings {
+                write: true,
+                maintain: false
+            }
+        );
+        // Never granted, or granted to someone else: nothing frozen.
+        assert!(!frozen_grants(&[], "me", 10).any());
+        assert!(!frozen_grants(&frozen, "someone-else", 10).any());
+        // Revoked (destroyed) after the freeze: nothing is held any more.
+        let revoked = [
+            rec("me", Write, TokenOp::Mint, 1),
+            rec("me", Write, TokenOp::Freeze, 2),
+            rec("me", Write, TokenOp::Destroy, 3),
+        ];
+        assert!(!frozen_grants(&revoked, "me", 10).any());
+        // A suspended maintainer who never held WRITE.
+        let maint = [
+            rec("me", Maintain, TokenOp::Mint, 1),
+            rec("me", Maintain, TokenOp::Freeze, 2),
+        ];
+        assert_eq!(
+            frozen_grants(&maint, "me", 10),
+            Holdings {
+                write: false,
+                maintain: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_frozen_pusher_is_not_told_to_fork() {
+        let write = Holdings {
+            write: true,
+            maintain: false,
+        };
+        let frozen = write_denied_reason(write, "owner", "repo");
+        assert!(
+            frozen.contains("WRITE token on this repo is frozen"),
+            "{frozen}"
+        );
+        assert!(!frozen.contains("dg pr create"), "{frozen}");
+        // Must not read as the consensus error, or e2e scenario 04 could not tell a local
+        // refusal from a network verdict.
+        assert!(!frozen.contains("token frozen"), "{frozen}");
+
+        let maintain = Holdings {
+            write: false,
+            maintain: true,
+        };
+        let frozen = write_denied_reason(maintain, "owner", "repo");
+        assert!(
+            frozen.contains("MAINTAIN token on this repo is frozen"),
+            "{frozen}"
+        );
+
+        let none = write_denied_reason(Holdings::default(), "owner", "repo");
+        assert!(none.starts_with("no WRITE token"), "{none}");
+        assert!(none.contains("dg pr create owner/repo"), "{none}");
+    }
 
     #[test]
     fn oid_round_trips_to_20_bytes() {
