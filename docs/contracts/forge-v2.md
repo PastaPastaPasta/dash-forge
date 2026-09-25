@@ -28,18 +28,18 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 
 | Type | Gate (create) | Mutable | Deletable | Notes |
 |---|---|---|---|---|
-| `repo` | anyone | yes; `name`, `visibility`, `forkOf` immutable | **no** (target of `permanentDocument` refs) | unique `($ownerId, name)`, rangeCountable (repos per owner); `name` `^[a-z0-9][a-z0-9._-]{0,62}$`; `forkOf` → permanent `repo` |
+| `repo` | anyone | yes; `name`, `visibility`, `forkOf` immutable | **no** (target of `permanentDocument` refs) | unique `($ownerId, name)`, rangeCountable (repos per owner); `name` is the immutable URL slug `^[a-z0-9][a-z0-9._-]{0,62}$`; `displayName` (≤ 400 bytes) and `description` are editable; `forkOf` → permanent `repo` |
 | `maintainer` | repo owner only (`repoId` → repo with `{"$ownerId":"$ownerId"}`) | no | yes (= revoke) | unique `(repoId, memberId)`; `memberId` → existing identity; index `memberId` |
 | `writer` | repo owner only | no | yes (= revoke) | same shape as `maintainer` |
 | `refUpdate` | M or W | no | **no** | `(repoId, refNameHash, $createdAt)` ref state, `(repoId, $createdAt)` reflog, `(repoId, $ownerId, $createdAt)` pusher |
 | `protectedRefUpdate` | M | no | **no** | same indexes |
 | `config` | M | no | **no** | append-only, newest wins; `protectedPatterns` and `backend.uris` are typed string arrays now |
-| `packManifest` | M or W | no | **no** | unique `(repoId, packHash)`; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)` |
-| `manifestPart` | M or W | no | **no** | unique `(repoId, packHash, partSeq)` |
-| `chunk` | M or W | no | yes (refund) | unique `(repoId, packHash, seq)`, rangeCountable (availability audit) |
-| `release` | M or W | no | yes | newest per `(repoId, tagName)` wins |
+| `packManifest` | M or W | no | **no** | unique `(repoId, $ownerId, packHash)`; `(repoId, packHash)` lookup; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)` |
+| `manifestPart` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, partSeq)` |
+| `chunk` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, seq)`, rangeCountable (availability audit per uploader) |
+| `release` | **M** | no | yes | newest per `(repoId, tagName)` wins; maintainer-only because a release names artifacts users install |
 | `label` | M or W | no | yes | newest per `(repoId, name)` wins |
-| `repoKey` | M | no | **no** | private repos, §5 |
+| `repoKey` | M | no | **no** | unique `(repoId, memberId, epoch, $ownerId)`; private repos, §5 |
 
 ### forge-collab
 
@@ -50,10 +50,10 @@ References into forge-core carry `contractId`. The schema file holds the placeho
 | `issue` | anyone (fees are the spam floor) | yes, history kept; `repoId`, `number` immutable | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `event` uses); `repoId` → permanent `repo` |
 | `patch` (PR) | anyone | yes, history kept; `repoId`, `number`, `sourceRepoId` immutable | **no** | as `issue`, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRepoId` |
 | `comment` | anyone | yes; `repoId`, `targetId` immutable | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable |
-| `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo |
+| `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; clients count approvals only from M/W holders (§6) |
 | `event` | M or W, **or the author of the target issue or PR** | no | **no** | §3 |
 | `checkRun` | M or W | yes (status progression); `repoId`, `headOid`, `name` immutable | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs |
-| `webhook` | M | no | yes | `secret` is `encryptedFor` the relay identity's encryption key (§5) |
+| `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
 | `profile` | anyone | yes | yes | one per identity |
 | `star` | anyone | no | yes (unstar) | `indexOnly`: `(repoId)` countable = star count; `($ownerId)` with terminal `repoId` = my stars; one star per (repo, identity) is structural |
 | `follow` | anyone | no | yes (unfollow) | `indexOnly`: follower and following counts are both countable; `identityId` → existing identity, `distinctFrom: $ownerId` |
@@ -75,6 +75,16 @@ Operands 3 and 4 are `permanentDocument` lookups, so `issue` and `patch` must be
 
 Events are immutable and non-deletable, and the gate is judged at creation. **An event's existence therefore proves its writer was authorized at its block time.** Revoking a maintainer later does not invalidate their past events, and nothing has to be reconstructed from token history.
 
+**Kinds are authorized by kind and role, client-side.** Consensus admits an event from any of the four operands, whatever its `kind`. The fold (`forge-core::rules::actor_authorized`, `FORGE_RULES_V1`, and the `fold_issue__*` / `fold_pr__*` conformance vectors) then decides per kind:
+
+| kind | who may apply it |
+|---|---|
+| close, reopen | M, W, or the target's author |
+| merge | M or W, and `oid` reachable from the base tip |
+| label+, label−, assign, unassign, retarget, draft, ready | M or W |
+
+An author's `label` or `merge` event exists on chain but is inert. For v2, "M or W" means a `maintainer`/`writer` document for the repo existed when the event was created. The gate already proves that for operands 1 and 2, so a client can tell which operand held by looking the membership up as of the event's `$createdAt` (membership docs carry `$createdAt`; a deleted one is found in the reader's cache or the operand is assumed to be the author path).
+
 ## 4. Non-deletable audit types
 
 Protocol 14 checks references on create and replace only; **a delete is never reference-checked**. Any owner can delete their own document of a deletable type, even after their membership is revoked. The types whose deletion would rewrite history are therefore non-deletable:
@@ -83,9 +93,15 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 - `config`: as-of protection evaluation needs every historical config;
 - `packManifest`, `manifestPart`: otherwise a revoked writer could delete the index of packs other people's refs point into;
 - `event`, `issue`, `patch`, `repo`: see §3, and `repo` is the target of every `permanentDocument` reference;
+- `chunk`: the pack bytes themselves (owner decision 2026-09-25: an unbreakable repo outweighs the refund);
 - `repoKey`: past epochs must stay readable to past members.
 
-`chunk` stays deletable. Platform chunks are a cache of packs that can also live in the owner's storage, and repack must be able to reclaim storage. A revoked writer can delete the chunks they uploaded: the manifest survives, the chunk-count audit (`count(repoId, packHash) == chunkCount`, O(1) on the rangeCountable index) detects the gap, and any current writer re-uploads.
+**Platform-tier storage is permanent.** A chunk once written stays, so bring-your-own storage (S3-compatible, IPFS) is the cheap default and Platform chunks are the tier you pick for packs that must outlive every bucket. Consequences:
+
+- **Repack on the Platform tier only consolidates.** It writes a superseding pack (a new `packManifest` with `supersedes`, new chunks) and deletes nothing. Readers prefer the consolidated pack; the old one stays readable.
+- **`dg repack` / GC must change**: today they delete superseded chunks and manifests for the refund (`crates/dg`, `forge-core::pack`). On v2 those deletes are refused at consensus, so the delete step goes, and GC applies only to external storage the user controls.
+
+**Front-running.** Every pack-write unique index includes `$ownerId` (`packManifest (repoId, $ownerId, packHash)`, `manifestPart (…, partSeq)`, `chunk (…, seq)`). Without it, the first writer to claim a `(repoId, packHash)` would own that slot forever: a hostile writer could post a manifest with the right hash and wrong content, or one chunk, and block the honest upload. With it, each writer has its own slot. **Reader rule:** for a `packHash`, gather every writer's manifest (`(repoId, packHash)` index), verify the reassembled bytes against `packHash`, use the first that verifies, and try maintainers' copies before writers'. A copy that fails verification is ignored.
 
 `release`, `label`, `webhook`, `checkRun`, `comment`, `review`, `star`, `follow` and `profile` stay deletable. Their resolution is newest-wins or per-author, so a deletion removes only the deleter's own contribution. Residual risk: a revoked maintainer can delete a release they published. Readers fall back to the next-newest release for that tag.
 
@@ -98,12 +114,14 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
 - **Content key per epoch.** A maintainer draws a 32-byte key for epoch 0 and wraps it for every member (the owner included) in a `repoKey` document `{repoId, memberId, epoch, recipientKeyId, senderKeyId, wrapped}`.
   - `wrapped` is `encryptedFor {recipient: memberId, recipientKey: recipientKeyId, senderKey: senderKeyId, scheme: ecdh-secp256k1-aes256-cbc}`. Consensus checks its shape: at least 32 bytes and a multiple of 16.
   - `memberId` carries `refersTo identityPublicKey` with `keyIdProperty: recipientKeyId` and `keyRequirements {purpose: encryption}`, and `senderKeyId` carries the owner form (`identityProperty: $ownerId`, purpose encryption). Consensus refuses a wrap to a key that does not exist, is disabled, or is not an encryption key.
-  - Unique `(repoId, memberId, epoch)`; gated to maintainers; immutable and non-deletable.
+  - Unique `(repoId, memberId, epoch, $ownerId)`; gated to maintainers; immutable and non-deletable. `$ownerId` is in the key so one maintainer cannot claim a member's slot for an epoch before another.
+  - **Reader rule.** A member accepts a wrapped key for `(repo, epoch)` only if its writer was a maintainer when it was written (the gate proves it held then), and only if the unwrapped key verifies against the epoch's key-check value. A key-check value is `HMAC-SHA256(key, "forge-v2 key check" ‖ repoId ‖ epoch)`, carried by the epoch's first `config` (Phase 3 fixes the exact field). When several maintainers wrapped for the same epoch, any copy that verifies is the key.
   - Consensus cannot also require `memberId` to be a member: an `identityPublicKey` reference cannot be combined with other operands. Wrapping the key to a non-member amounts to leaking it, which a maintainer can always do anyway.
 - **Rotation.** On removing a member, a maintainer posts epoch `n+1` wraps for the remaining members. Future content uses the new key. Past content stays readable to past members, and the product says so plainly.
 - **Encrypted fields.** `issue`, `patch`, `comment` and `review` take `enc` (a byte array, AES-256-GCM under the epoch key, including title and body) plus `epoch`, and leave the plaintext `title`/`body` empty. `refUpdate`, `protectedRefUpdate` and `config` take the same `enc`/`epoch` pair.
   - A private ref update puts `refName` inside `enc` and sets `refNameHash = HMAC-SHA256(epoch key, refName)`, so ref names cannot be recovered by dictionary. `refName` is optional for this reason.
   - `dependentRequired {enc: [epoch]}` makes consensus refuse ciphertext without an epoch.
+  - **"Plaintext or `enc`, not both, not neither" is a client rule.** `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Clients treat an `issue`/`patch` with neither `title` nor `enc`, a `comment`/`review` with neither `body` nor `enc`, or a private repo's `refUpdate` carrying a plaintext `refName`, as malformed and skip it.
   - Packs are encrypted before upload (Platform chunks or external storage). Oids, sizes and timing stay visible.
 - **What a stranger can still do.** Issues and PRs are un-gated, so anyone can post plaintext into a private repo's namespace. Clients show only documents that decrypt under a key the reader holds, or that come from a member.
 
@@ -120,9 +138,19 @@ The concrete AEAD layout, key derivation and test vectors are Phase 3 work and n
 | Listing authenticity (listing owner == repo contract owner) | gone: `repo` is the listing |
 | Owner lock-out prevention (`baseSupply`) | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | unchanged, still rules |
-| Issue and PR numbering | unchanged in spirit, see below |
+| Issue and PR numbering | client rule, see below |
+| PR approvals | client rule: `review` is un-gated, and only reviews by M/W holders (as of the review's `$createdAt`) count toward approval |
 
-**Numbering.** A unique `(repoId, number)` and optimistic max+1 would let a spammer post issue #4294967295 and stop allocation. v2 clients allocate `count(repoId) + 1`, using the rangeCountable `number` index (an O(log n) provable count), and on a collision probe upward to the first free number. A squatted number costs the squatter a document fee and the allocator one retry.
+**Numbering (client rule, to implement).** Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
+
+1. `n` = the provable count of the repo's issues (rangeCountable `number` index).
+2. `ceiling` = `2 × n + 100`.
+3. `base` = the largest existing number ≤ `ceiling` (a range query on the `number` index, descending, limit 1), or 0.
+4. Allocate `base + 1`; if taken, probe upward to the first free number ≤ `ceiling`, then above it.
+
+A number above the ceiling cannot be reached without the repo actually growing to about half that many issues, so a squatter at 2³²−1 (or anywhere far ahead) is ignored. Gaps below the ceiling are simply skipped. Squatting a number just ahead of the allocator costs the squatter a document fee and the allocator one retry. Issues and PRs number independently.
+
+**Conformance.** The kind-and-role rule of §3, the numbering rule above, the pack reader rule of §4, and the repoKey reader rule of §5 are `FORGE_RULES_V2` rules. Each needs conformance vectors before a client ships on v2.
 
 **Holdings vectors.** The `holdings__*` conformance vectors (token-history reconstruction) and the as-of-authorization parts of the `fold_*` vectors no longer apply to v2 repos. They stay for reading v1 repos. New v2 vectors are membership-existence facts plus the unchanged kind rules.
 
@@ -132,15 +160,15 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Document types / indexes | 12 / 25 | 10 / 21 |
-| Serialized contract | 11,691 B | 11,199 B |
-| Signed `DataContractCreate` v1 | **11,854 B** | **11,305 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 57.9% | 55.2% |
-| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.59 DASH** | **0.51 DASH** |
+| Document types / indexes | 12 / 26 | 10 / 21 |
+| Serialized contract | 11,761 B | 11,208 B |
+| Signed `DataContractCreate` v1 | **11,924 B** | **11,314 B** |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 55.2% |
+| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.51 DASH** |
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.10 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. This estimate still needs confirming on moutai.
+Total one-time registration fees are **1.11 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. This estimate still needs confirming on moutai.
 
 ## 8. Deploying
 
@@ -153,7 +181,8 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 
 - forge-core's create transition registers the contract group (`dash-forge`) and enrols forge-core as a whole contract.
 - forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
-- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce and id are written before broadcasting, so rerunning the same command resumes, and it never registers a second copy.
+- Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy.
+- The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
 - The dry run against moutai (2026-09-25) confirmed protocol 14 and drive 4.2.0-beta.4 there. The contracts are not registered yet: no deployer identity exists on moutai.
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 

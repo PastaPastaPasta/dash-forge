@@ -109,7 +109,7 @@ No document subscriptions → web/CLI poll indexed queries with cursors; **relay
 
 ## 7. Cross-client parity
 
-Ref-resolution, event-folding, and cost-estimation rules are versioned (`FORGE_RULES_V1`) with **shared conformance vectors** (JSON fixtures) consumed by the Rust workspace tests and forge-web tests alike — the only defense against Rust/TS divergence.
+Ref-resolution, event-folding, and cost-estimation rules are versioned (`FORGE_RULES_V1`) with **shared conformance vectors** (JSON fixtures) consumed by the Rust workspace tests and forge-web tests alike — the only defense against Rust/TS divergence. On the forge-v2 contracts, consensus enforces who may write each type, and the rules that remain client-side are listed in [`contracts/forge-v2.md`](contracts/forge-v2.md) §6: event kinds by role (§3 there), issue/PR numbering, PR approvals, the pack and repoKey reader rules, and the plaintext-or-`enc` rule.
 
 ## 8. Economics (full model: [economics.md](economics.md))
 
