@@ -11,10 +11,12 @@
 //!   hold heterogeneous backends behind `dyn`.
 //! - [`https`] — [`https::HttpsBackend`], read-only plain GET + HTTP Range (the simplest
 //!   adapter; validates the 206 ranged-read path the browse plane depends on).
-//! - [`s3`] — [`s3::S3Backend`], MinIO / S3-compatible over a public bucket (authless
-//!   PUT/GET/HEAD + Range). Authenticated (SigV4) writes are a documented v1 follow-up.
-//! - [`ipfs`] — [`ipfs::IpfsBackend`], write via kubo `/api/v0/add`, read via gateway
-//!   `…/ipfs/<CID>` + Range; the CID double-verifies alongside the manifest SHA-256.
+//! - [`s3`] — [`s3::S3Backend`], S3-compatible storage (AWS/R2/B2/MinIO): SigV4-signed
+//!   PUT/GET/HEAD/DELETE ([`sigv4`]), path-style or virtual-hosted, plus unsigned reads
+//!   from the bucket's public URL.
+//! - [`ipfs`] — [`ipfs::IpfsBackend`], write via kubo `/api/v0/add` with pinned import
+//!   parameters (the CID is re-derived locally by [`cid`] and must match), optional remote
+//!   pin through an IPFS Pinning Service API; read via gateway `…/ipfs/<CID>` + Range.
 //! - [`platform`] — [`platform::PlatformBackend`], pack bytes as pipelined `chunk` docs
 //!   through the Platform [`WriteEngine`](crate::platform::WriteEngine).
 //! - [`gitmirror`] — [`gitmirror::GitMirrorBackend`], an existing git hoster as a byte
@@ -27,11 +29,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+pub mod cid;
 pub mod gitmirror;
 pub mod https;
 pub mod ipfs;
 pub mod platform;
 pub mod s3;
+pub mod sigv4;
 
 #[cfg(test)]
 mod live_tests;

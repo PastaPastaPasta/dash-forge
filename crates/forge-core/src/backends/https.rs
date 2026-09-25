@@ -41,7 +41,7 @@ impl HttpsBackend {
 
 /// Map a transport-level reqwest error onto the crate error taxonomy (there is no
 /// dedicated network variant; a failed request is an I/O failure).
-pub(super) fn transport_err(context: &str, e: &reqwest::Error) -> Error {
+pub(crate) fn transport_err(context: &str, e: &reqwest::Error) -> Error {
     Error::Io(format!("{context}: {e}"))
 }
 
@@ -79,7 +79,7 @@ impl PackBackend for HttpsBackend {
 
 /// Shared GET (with optional Range) used by the https and s3 adapters — both read plain
 /// HTTP URLs. A ranged request asserts `206`; a full request accepts `200`/`206`.
-pub(super) async fn http_get(
+pub(crate) async fn http_get(
     client: &Client,
     url: &str,
     range: Option<ByteRange>,
@@ -117,7 +117,7 @@ pub(super) async fn http_get(
 }
 
 /// Shared HEAD probe used by the https and s3 adapters.
-pub(super) async fn http_probe(client: &Client, url: &str) -> Result<Health> {
+pub(crate) async fn http_probe(client: &Client, url: &str) -> Result<Health> {
     let started = Instant::now();
     let resp = client.head(url).send().await;
     let latency = started.elapsed();

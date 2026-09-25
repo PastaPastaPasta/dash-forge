@@ -2,7 +2,10 @@
 #
 # Brings up local stand-ins for the storage adapters under test:
 #   - kubo:         IPFS node (write via API, read via gateway)
-#   - minio:        S3-compatible object storage (+ one-shot bucket bootstrap)
+#   - minio:        S3-compatible object storage (+ one-shot bucket bootstrap):
+#                     forge-packs — anonymous read+write (the legacy public-bucket fixture)
+#                     forge-byo   — SigV4-signed writes (minioadmin/minioadmin), anonymous
+#                                   reads: the shape of a real R2/B2/S3 bring-your-own bucket
 #   - static-http:  plain HTTPS-style static file host (nginx)
 #
 # Usage: docker compose -f infra/docker-compose.yml up -d
@@ -78,7 +81,9 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb --ignore-existing local/forge-packs &&
       mc anonymous set public local/forge-packs &&
-      echo 'forge-packs bucket ready'
+      mc mb --ignore-existing local/forge-byo &&
+      mc anonymous set download local/forge-byo &&
+      echo 'forge-packs (public read+write) and forge-byo (SigV4 write, public read) buckets ready'
       "
     restart: "no"
 
