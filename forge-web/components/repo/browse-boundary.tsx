@@ -24,6 +24,7 @@ import { formatBytes, type UnavailablePack } from '@/lib/view'
  */
 function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }): JSX.Element {
   const n = packs.length
+  const corrupt = packs.filter((p) => p.corrupt).length
   return (
     <div
       role="status"
@@ -35,10 +36,18 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
           {n} {n === 1 ? 'pack' : 'packs'} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
           objects may be missing. Everything shown was still hash-checked.
         </p>
+        {corrupt > 0 ? (
+          <p className="mt-1 font-medium text-danger">
+            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {corrupt}{' '}
+            {corrupt === 1 ? 'pack' : 'packs'}: bytes that do not match the sha256 in the proof-checked
+            manifest. They were refused.
+          </p>
+        ) : null}
         <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
           {packs.map((p) => (
             <li key={p.packHash}>
               {p.packHash.slice(0, 12)}… — {p.hosts.length > 0 ? p.hosts.join(', ') : 'no browser-fetchable mirror'}
+              {p.corrupt ? ' (served bad data)' : ''}
             </li>
           ))}
         </ul>

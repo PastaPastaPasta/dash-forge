@@ -176,7 +176,12 @@ function deriveContent(checks: ContentChecks): TrustLink {
   // Everything shown passed its check, but the answer is incomplete: objects only the
   // skipped packs hold cannot be shown at all. That is at best `partial`, never `verified`
   // — and never `pending` either, since the skip is known before any object is read.
-  const note = `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some objects may be missing.`
+  const corrupt = checks.corruptMirrorPacks.length
+  const bad =
+    corrupt > 0
+      ? ` A mirror served bad data (bytes that fail the manifest sha256) for ${plural(corrupt, 'pack')}; it was refused.`
+      : ''
+  const note = `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some objects may be missing.${bad}`
   return {
     state: link.state === 'unverified' ? 'unverified' : 'partial',
     summary: `${missing} ${missing === 1 ? 'pack' : 'packs'} missing`,

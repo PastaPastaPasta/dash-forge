@@ -293,66 +293,126 @@ export function externalFetchUrls(
   return [...new Set(out)]
 }
 
+/** Requests in flight per origin. Every external pack starts at once; one host must not be
+ * hit with all of them (nor hold the browser's per-host connection pool hostage). */
+const PER_ORIGIN_CONCURRENCY = 4
+
+/** How many of an artifact's URLs are raced at once (an `ipfs://` fans out per gateway). */
+const MIRROR_RACE_WIDTH = 3
+
+/** Why a URL failed: a timeout is worth one more sequential try, anything else is not. */
+class FetchFailure extends Error {
+  constructor(
+    message: string,
+    readonly timedOut: boolean,
+  ) {
+    super(message)
+  }
+}
+
+/** A tiny per-origin semaphore. */
+const originSlots = new Map<string, { active: number; waiting: (() => void)[] }>()
+
+async function withOriginSlot<T>(url: string, run: () => Promise<T>): Promise<T> {
+  let origin: string
+  try {
+    origin = new URL(url).origin
+  } catch {
+    origin = url
+  }
+  let slot = originSlots.get(origin)
+  if (slot === undefined) {
+    slot = { active: 0, waiting: [] }
+    originSlots.set(origin, slot)
+  }
+  const s = slot
+  if (s.active >= PER_ORIGIN_CONCURRENCY) await new Promise<void>((resolve) => s.waiting.push(resolve))
+  s.active += 1
+  try {
+    return await run()
+  } finally {
+    s.active -= 1
+    s.waiting.shift()?.()
+  }
+}
+
 /**
- * GET `url` and read the whole body under one hard deadline (a stalled body counts, not only
- * a stalled connect). A 206 is accepted alongside 2xx.
+ * URLs that failed this session for a reason other than a timeout (connection refused, 404,
+ * wrong bytes). A later pack naming the same mirror skips them rather than paying for the
+ * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
+ */
+const deadUrls = new Set<string>()
+
+/** Test hook: forget the dead-URL list and the per-origin queues. */
+export function resetExternalFetchState(): void {
+  deadUrls.clear()
+  originSlots.clear()
+}
+
+/**
+ * GET `url` and read the whole body. Two deadlines, both {@link EXTERNAL_FETCH_TIMEOUT_MS}:
+ * one for the response to begin (a dead or silent host), then an IDLE deadline re-armed on
+ * every chunk, started only once the response has begun — a slow mirror streaming a large
+ * pack is fine, a stalled one is not. A whole-body deadline would make every pack larger
+ * than bandwidth × deadline permanently "unavailable" from healthy mirrors. The per-origin
+ * queue wait is not counted against either. A 206 is accepted alongside 2xx.
  */
 async function fetchBody(
   url: string,
   init: RequestInit = {},
   opts: { readonly cancel?: AbortSignal; readonly maxBytes?: number } = {},
 ): Promise<Uint8Array> {
-  const controller = new AbortController()
-  let timedOut = false
-  let timer: ReturnType<typeof setTimeout> | undefined
-  // An IDLE deadline, re-armed on every chunk: a slow mirror streaming a large pack is
-  // fine, a silent one is not. A whole-body deadline would make every pack larger than
-  // bandwidth × deadline permanently "unavailable" from healthy mirrors.
-  const arm = (): void => {
-    clearTimeout(timer)
-    timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, EXTERNAL_FETCH_TIMEOUT_MS)
-  }
-  const onCancel = (): void => controller.abort()
-  opts.cancel?.addEventListener('abort', onCancel)
-  if (opts.cancel?.aborted) controller.abort()
-  arm()
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal })
-    if (!resp.ok && resp.status !== 206) throw new Error(`HTTP ${resp.status}`)
-    if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
-    const reader = resp.body.getReader()
-    const parts: Uint8Array[] = []
-    let total = 0
-    for (;;) {
-      arm()
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.length
-      // A mirror streaming more than the manifest says cannot be serving this pack.
-      if (opts.maxBytes !== undefined && total > opts.maxBytes) {
+  return withOriginSlot(url, async () => {
+    if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
+    const controller = new AbortController()
+    let timedOut = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const arm = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        timedOut = true
         controller.abort()
-        throw new Error('served more bytes than the manifest records')
+      }, EXTERNAL_FETCH_TIMEOUT_MS)
+    }
+    const onCancel = (): void => controller.abort()
+    opts.cancel?.addEventListener('abort', onCancel)
+    arm() // the response must begin within the deadline
+    try {
+      const resp = await fetch(url, { ...init, signal: controller.signal })
+      if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false)
+      if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
+      const reader = resp.body.getReader()
+      const parts: Uint8Array[] = []
+      let total = 0
+      for (;;) {
+        arm() // idle deadline: re-armed per chunk once the body is streaming
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.length
+        // A mirror streaming more than the manifest says cannot be serving this pack.
+        if (opts.maxBytes !== undefined && total > opts.maxBytes) {
+          controller.abort()
+          throw new FetchFailure('served more bytes than the manifest records', false)
+        }
+        parts.push(value)
       }
-      parts.push(value)
+      const out = new Uint8Array(total)
+      let at = 0
+      for (const p of parts) {
+        out.set(p, at)
+        at += p.length
+      }
+      return out
+    } catch (e) {
+      if (timedOut) throw new FetchFailure(`no data for ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`, true)
+      if (opts.cancel?.aborted) throw new FetchFailure('another mirror served it first', false)
+      if (e instanceof FetchFailure) throw e
+      throw new FetchFailure(e instanceof Error ? e.message : String(e), false)
+    } finally {
+      clearTimeout(timer)
+      opts.cancel?.removeEventListener('abort', onCancel)
     }
-    const out = new Uint8Array(total)
-    let at = 0
-    for (const p of parts) {
-      out.set(p, at)
-      at += p.length
-    }
-    return out
-  } catch (e) {
-    if (timedOut) throw new Error(`no data for ${EXTERNAL_FETCH_TIMEOUT_MS / 1000}s`)
-    if (opts.cancel?.aborted) throw new Error('another mirror served it first')
-    throw e
-  } finally {
-    clearTimeout(timer)
-    opts.cancel?.removeEventListener('abort', onCancel)
-  }
+  })
 }
 
 function hostsOf(urls: readonly string[]): string[] {
@@ -373,13 +433,14 @@ async function fetchExternalRange(
 ): Promise<Uint8Array> {
   const urls = externalFetchUrls(manifest.uris)
   let lastErr: unknown = 'no browser-fetchable mirror'
-  for (const url of urls) {
+  for (const url of urls.filter((u) => !deadUrls.has(u))) {
     try {
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
       onServed?.(url)
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
+      if (e instanceof FetchFailure && !e.timedOut) deadUrls.add(url)
       lastErr = e
     }
   }
@@ -391,57 +452,135 @@ function errorText(e: unknown): string {
 }
 
 /**
- * Fetch a whole external artifact, racing every fetchable mirror; the first body whose size
- * and sha256 match the proof-read manifest wins. Mirrors are availability, never authority:
- * one answering with other bytes is treated as down (and flagged `corrupt`).
+ * Fetch a whole external artifact; the first body whose size and sha256 match the
+ * proof-read manifest wins. Mirrors are availability, never authority: one answering with
+ * other bytes is treated as down and flagged `corrupt` (reported distinctly — it is a
+ * misbehaving host, not an outage).
+ *
+ * The URLs are raced {@link MIRROR_RACE_WIDTH} at a time (skipping this session's dead URLs),
+ * and the losers are cancelled as soon as one wins. URLs that only timed out get ONE more
+ * sequential try each before the pack is declared unavailable: a gateway resolving a cold
+ * CID is often slow once and fast after. `cancel` aborts everything (the clone gave up).
  */
 async function fetchExternalWhole(
   manifest: PackManifest,
   onServed?: (uri: string) => void,
+  cancel?: AbortSignal,
 ): Promise<Uint8Array> {
   const urls = externalFetchUrls(manifest.uris)
   const want = manifest.packHash.toLowerCase()
-  if (urls.length === 0) {
-    throw new PackUnavailableError(manifest.packHash, [], false, 'nothing to try')
+  const live = urls.filter((u) => !deadUrls.has(u))
+  if (live.length === 0) {
+    throw new PackUnavailableError(
+      manifest.packHash,
+      hostsOf(urls),
+      false,
+      urls.length === 0 ? 'nothing to try' : 'every mirror already failed this session',
+    )
   }
   let corrupt = false
   const reasons: string[] = []
-  // Cancels the losing mirrors once one has served the pack: an ipfs:// URI fans out to
-  // one request per gateway, and each would otherwise download (and hold) the whole pack.
+  const timedOut: string[] = []
+  // Cancels the losing mirrors once one has served the pack (or the whole clone gave up):
+  // an ipfs:// URI fans out to one request per gateway, and each would otherwise download
+  // (and hold) the whole pack.
   const winner = new AbortController()
+  const onCancel = (): void => winner.abort()
+  cancel?.addEventListener('abort', onCancel)
+  if (cancel?.aborted) winner.abort()
+
   const attempt = async (url: string): Promise<{ url: string; bytes: Uint8Array }> => {
     try {
       const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
       if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
         corrupt = true
-        throw new Error('served bytes that do not match the manifest sha256')
+        throw new FetchFailure('served bytes that do not match the manifest sha256', false)
       }
       return { url, bytes }
     } catch (e) {
-      reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
+      if (!winner.signal.aborted) {
+        reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
+        if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
+        else deadUrls.add(url)
+      }
       throw e
     }
   }
+
   try {
-    const { url, bytes } = await firstFulfilled(urls.map(attempt))
-    winner.abort()
-    onServed?.(url)
-    return bytes
-  } catch {
+    const got = (await raceBounded(live, MIRROR_RACE_WIDTH, attempt, winner.signal)) ??
+      (await firstSequential(timedOut, attempt, winner.signal))
+    if (got !== null) {
+      winner.abort()
+      onServed?.(got.url)
+      return got.bytes
+    }
+    if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
     throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasons.join('; '))
+  } finally {
+    cancel?.removeEventListener('abort', onCancel)
   }
 }
 
-/** The first promise to fulfil; rejects only once every one has rejected. */
-function firstFulfilled<T>(promises: readonly Promise<T>[]): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let pending = promises.length
-    for (const p of promises) {
-      p.then(resolve, () => {
-        if (--pending === 0) reject(new Error('every attempt failed'))
-      })
+/**
+ * Run `attempt` over `items` with at most `width` in flight; resolve with the first success,
+ * or null once every item has failed (or `stop` fired).
+ */
+function raceBounded<T, R>(
+  items: readonly T[],
+  width: number,
+  attempt: (item: T) => Promise<R>,
+  stop: AbortSignal,
+): Promise<R | null> {
+  return new Promise((resolve) => {
+    let next = 0
+    let running = 0
+    let settled = false
+    const launch = (): void => {
+      while (!settled && !stop.aborted && running < width && next < items.length) {
+        const item = items[next++] as T
+        running += 1
+        attempt(item).then(
+          (r) => {
+            if (!settled) {
+              settled = true
+              resolve(r)
+            }
+          },
+          () => {
+            running -= 1
+            if (settled) return
+            if ((next >= items.length || stop.aborted) && running === 0) {
+              settled = true
+              resolve(null)
+            } else launch()
+          },
+        )
+      }
+      if (!settled && running === 0) {
+        settled = true
+        resolve(null)
+      }
     }
+    launch()
   })
+}
+
+/** Try `items` one at a time; the first success, or null. */
+async function firstSequential<T, R>(
+  items: readonly T[],
+  attempt: (item: T) => Promise<R>,
+  stop: AbortSignal,
+): Promise<R | null> {
+  for (const item of [...items]) {
+    if (stop.aborted) return null
+    try {
+      return await attempt(item)
+    } catch {
+      /* next */
+    }
+  }
+  return null
 }
 
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
@@ -502,12 +641,13 @@ export async function loadArtifactBytesProgress(
   repo: RepoRef,
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
 ): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri))
+    const bytes = await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
     onProgress?.(total, total)
     return bytes
   }
@@ -612,6 +752,8 @@ export interface UnavailablePack {
   /** Hosts tried (empty: the manifest records no browser-fetchable mirror). */
   readonly hosts: readonly string[]
   readonly reason: string
+  /** Some mirror served bytes that failed the sha256 check — a misbehaving host, not an outage. */
+  readonly corrupt: boolean
 }
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */

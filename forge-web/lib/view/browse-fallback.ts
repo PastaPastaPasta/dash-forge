@@ -55,12 +55,28 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>()
 const restores = new Map<string, Promise<BrowseContext | null>>()
 
+/**
+ * How long a PARTIAL clone (some external packs skipped) is reused before the next view
+ * tries the mirrors again. A mirror that was down or slow a minute ago may be back; holding
+ * the partial context for the whole session would keep hiding its objects. A complete clone
+ * is kept for the session (and persisted), as before.
+ */
+export const PARTIAL_FALLBACK_TTL_MS = 60_000
+
 function remember(contractId: string, manifestKey: string, promise: Promise<BrowseContext>): Promise<BrowseContext> {
   const entry: CacheEntry = { manifestKey, promise }
   cache.set(contractId, entry)
-  promise.catch(() => {
-    if (cache.get(contractId) === entry) cache.delete(contractId)
-  })
+  promise.then(
+    (ctx) => {
+      if ((ctx.unavailable?.length ?? 0) === 0) return
+      setTimeout(() => {
+        if (cache.get(contractId) === entry) cache.delete(contractId)
+      }, PARTIAL_FALLBACK_TTL_MS)
+    },
+    () => {
+      if (cache.get(contractId) === entry) cache.delete(contractId)
+    },
+  )
   return promise
 }
 
@@ -208,12 +224,14 @@ async function downloadPacks(
   report: (bytesFetched: number) => void,
 ): Promise<PackOutcome[]> {
   let fetched = 0
+  // Cancels every external download when the clone fails on a Platform pack: nothing will
+  // use those bytes, and a large pack would otherwise keep downloading in the background.
+  const abandon = new AbortController()
   const external = new Map(
     livePacks
       .filter((m) => m.storage !== 0)
-      .map((m) => [
-        m,
-        loadArtifactBytesProgress(sdk, repo, m).then(
+      .map((m) => {
+        const outcome = loadArtifactBytesProgress(sdk, repo, m, undefined, abandon.signal).then(
           (bytes): PackOutcome => {
             fetched += m.sizeBytes
             report(fetched)
@@ -223,25 +241,34 @@ async function downloadPacks(
             if (!(e instanceof PackUnavailableError)) throw e
             return {
               manifest: m,
-              unavailable: { packHash: m.packHash, hosts: e.hosts, reason: e.message },
+              unavailable: { packHash: m.packHash, hosts: e.hosts, reason: e.message, corrupt: e.corrupt },
             }
           },
-        ),
-      ]),
+        )
+        // Observed here so an outcome no one awaits (the clone failed first) is never an
+        // unhandled rejection.
+        outcome.catch(() => undefined)
+        return [m, outcome] as const
+      }),
   )
-  const outcomes: PackOutcome[] = []
-  for (const manifest of livePacks) {
-    const ext = external.get(manifest)
-    if (ext !== undefined) {
-      outcomes.push(await ext)
-      continue
+  try {
+    const outcomes: PackOutcome[] = []
+    for (const manifest of livePacks) {
+      const ext = external.get(manifest)
+      if (ext !== undefined) {
+        outcomes.push(await ext)
+        continue
+      }
+      const base = fetched
+      const bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
+      fetched += manifest.sizeBytes
+      outcomes.push({ manifest, bytes })
     }
-    const base = fetched
-    const bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
-    fetched += manifest.sizeBytes
-    outcomes.push({ manifest, bytes })
+    return outcomes
+  } catch (e) {
+    abandon.abort()
+    throw e
   }
-  return outcomes
 }
 
 async function runFallback(
@@ -274,7 +301,9 @@ async function runFallback(
       ),
     ).values(),
   ]
-  for (const u of unavailable) noteContentCheck(repo.contractId, { unavailablePack: u.packHash })
+  for (const u of unavailable) {
+    noteContentCheck(repo.contractId, { unavailablePack: u.packHash, corruptMirror: u.corrupt })
+  }
   if (got.length === 0) {
     throw new Error(
       `none of this repo's ${livePacks.length} live packs could be fetched from their storage: ` +
@@ -295,9 +324,20 @@ async function runFallback(
   noteContentCheck(repo.contractId, { packsVerified: packs.length })
 
   const { indexPacks, serializeLocator, memoryPackSource } = await import('../browse/indexer')
-  const objects = await indexPacks(packs, (objectsIndexed, objectsTotal) =>
-    report({ phase: 'index', bytesFetched: bytesTotal, objectsIndexed, objectsTotal }),
-  )
+  let objects: Awaited<ReturnType<typeof indexPacks>>
+  try {
+    objects = await indexPacks(packs, (objectsIndexed, objectsTotal) =>
+      report({ phase: 'index', bytesFetched: bytesTotal, objectsIndexed, objectsTotal }),
+    )
+  } catch (e) {
+    // A thin pack (imported or third-party) can REF_DELTA a base that only a skipped pack
+    // holds. Say so, naming the skipped packs, instead of a bare indexer error.
+    const base = /REF_DELTA base not found in live packs: ([0-9a-f]+)/.exec(
+      e instanceof Error ? e.message : '',
+    )?.[1]
+    if (base !== undefined && unavailable.length > 0) throw missingObjectError(base, unavailable)
+    throw e
+  }
   const locatorBytes = serializeLocator(objects)
   const locator = ObjectLocator.parse(locatorBytes)
   // The synthesized locator's packRef space is exactly the packs that downloaded.
