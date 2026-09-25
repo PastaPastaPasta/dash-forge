@@ -15,9 +15,19 @@
  * pager has). Same family as dashpay/platform#4396; the orderBy-only shape is still unfixed
  * there. A range where-clause carries no cursor document, so nothing leaks.
  *
- * COMPLETENESS CHECK: every non-null `prevOid` a pusher records is some earlier update's
- * `newOid` in the same ref. A dangling one means a row is missing, and the reader then falls
- * back to every update in `$createdAt` (`reflog`) order, unioned in by `$id`.
+ * WHEN THE SCAN IS NOT TRUSTED: the scan is abandoned and the answer comes from the
+ * `$createdAt` (`reflog`) read of both types ALONE, deduplicated by `$id`, when a page is out
+ * of `refNameHash` order, holds a row at or below its `> last` bound, or would not advance
+ * `last` (the node did not honor the query), or when the completeness check fails: every
+ * non-null `prevOid` a pusher records is some earlier update's `newOid` in the same ref, so a
+ * dangling one means a row is missing (or was written dangling on purpose — which costs the
+ * extra read, never the answer).
+ *
+ * LIMITS (same as forge-core `refs`, whose module doc has the detail): the check sees only
+ * mid-chain gaps — a missing newest update or a wholly missing ref leaves no dangling
+ * `prevOid`. And a ref with more than a page of updates is read by `==` paged with
+ * `startAfter`: single-branch, so no sibling drop, but protocol 13's same-`$createdAt`
+ * boundary skip still applies to repo-v1 ref updates until forge-v2 on protocol 14.
  *
  * Tip resolution folds a ref's full update history (both types, with the `protected` flag
  * set per source) through {@link resolveRef}, honoring as-of protected-pattern config.
@@ -103,17 +113,28 @@ function readOneRef(
   })
 }
 
+/** Drop repeated `$id`s, keeping the first occurrence. */
+function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
+  const seen = new Set<string>()
+  return rows.filter((d) => {
+    const id = String(d['$id'])
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
+
 /**
- * Page one type by key (see the module doc). Returns the rows and whether every page came
- * back ordered and within its bound — one that did not says the node ignored the query.
+ * Page one type by key (see the module doc). `null` when the node did not honor the query —
+ * a page out of order, a row at or below the `> last` bound, or a round that would not
+ * advance `last` — and the caller then discards the scan entirely.
  */
 async function keysetScan(
   sdk: EvoSDK,
   repo: RepoRef,
   documentTypeName: string,
-): Promise<{ rows: PlainDocument[]; ordered: boolean }> {
+): Promise<PlainDocument[] | null> {
   const rows: PlainDocument[] = []
-  let ordered = true
   let after = null as { hex: string; b64: string } | null
   for (let round = 0; round < MAX_KEYSET_ROUNDS; round++) {
     const floorHex = after?.hex
@@ -128,27 +149,31 @@ async function keysetScan(
       limit: PAGE,
     })
     const hashes = page.map((d) => refHashHexOf(d, documentTypeName))
-    ordered &&=
-      hashes.every((h, i) => i === 0 || (hashes[i - 1] as string) <= h) &&
-      (floorHex === undefined || hashes.every((h) => h > floorHex))
+    const inOrder = hashes.every((h, i) => i === 0 || (hashes[i - 1] as string) <= h)
+    const inRange = floorHex === undefined || hashes.every((h) => h > floorHex)
+    if (!inOrder || !inRange) return null
 
     if (page.length < PAGE) {
       rows.push(...page)
-      return { rows, ordered }
+      return dedupeById(rows)
     }
     const last = hashes[hashes.length - 1] as string
     const cut = hashes.indexOf(last)
+    let next: { hex: string; b64: string }
     if (cut === 0) {
       // One ref filled the page: read it on its own, then move past it.
       const b64 = (page[0] as PlainDocument)['refNameHash'] as string
       rows.push(...(await readOneRef(sdk, repo, documentTypeName, b64)))
-      after = { hex: last, b64 }
+      next = { hex: last, b64 }
     } else {
       // Every ref before the last is whole; the last may be cut off and is re-read next page.
       const prev = page[cut - 1] as PlainDocument
-      after = { hex: hashes[cut - 1] as string, b64: prev['refNameHash'] as string }
+      next = { hex: hashes[cut - 1] as string, b64: prev['refNameHash'] as string }
       rows.push(...page.slice(0, cut))
     }
+    // In-range pages already imply progress; this guards the invariant termination rests on.
+    if (floorHex !== undefined && next.hex <= floorHex) return null
+    after = next
   }
   throw new IncompleteReadError(
     documentTypeName,
@@ -189,8 +214,8 @@ function groupByRef(scans: readonly TypeScan[]): Map<string, RefUpdate[]> {
 
 /**
  * Every ref's complete update history, keyed by `refNameHash` hex. Keyset scan per type, then
- * the `prevOid` completeness check; on a gap (or an out-of-order page) every update is re-read
- * in `reflog` order and unioned in by `$id`.
+ * the `prevOid` completeness check; when the scan misbehaves or fails the check, the answer
+ * is the `reflog` read of both types alone (see the module doc).
  */
 export async function readAllRefUpdates(
   sdk: EvoSDK,
@@ -200,25 +225,29 @@ export async function readAllRefUpdates(
     REF_UPDATE_TYPES.map(async ([type, isProtected]) => ({
       type,
       isProtected,
-      ...(await keysetScan(sdk, repo, type)),
+      rows: await keysetScan(sdk, repo, type),
     })),
   )
-  const grouped = groupByRef(scanned)
-  const consistent = scanned.every((s) => s.ordered)
-  if (consistent && ![...grouped.values()].some(hasMissingParent)) return grouped
+  if (scanned.every((s) => s.rows !== null)) {
+    const grouped = groupByRef(scanned as TypeScan[])
+    if (![...grouped.values()].some(hasMissingParent)) return grouped
+  }
 
-  const repaired = await Promise.all(
-    scanned.map(async (s): Promise<TypeScan> => {
-      const seen = new Set(s.rows.map((d) => String(d['$id'])))
-      const full = await queryAllDocuments(sdk, {
-        dataContractId: repo.contractId,
-        documentTypeName: s.type,
-        orderBy: [['$createdAt', 'asc']],
-      })
-      return { ...s, rows: [...s.rows, ...full.filter((d) => !seen.has(String(d['$id'])))] }
-    }),
+  // The fallback stands alone: a scan that misbehaved or lost rows is not trusted for any.
+  const full = await Promise.all(
+    REF_UPDATE_TYPES.map(async ([type, isProtected]): Promise<TypeScan> => ({
+      type,
+      isProtected,
+      rows: dedupeById(
+        await queryAllDocuments(sdk, {
+          dataContractId: repo.contractId,
+          documentTypeName: type,
+          orderBy: [['$createdAt', 'asc']],
+        }),
+      ),
+    })),
   )
-  return groupByRef(repaired)
+  return groupByRef(full)
 }
 
 /**

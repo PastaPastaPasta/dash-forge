@@ -66,7 +66,7 @@ const hexOf = (d: Doc): string => base64ToHex(d['refNameHash'] as string)
  * (`refNameHash`, then `$id` — `$createdAt` being absent). `dropOnKeyset` removes one `$id`
  * from keyset pages only, standing in for a node answering a correct query incompletely.
  */
-function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string } = {}) {
+function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boolean } = {}) {
   const sorted = [...rows].sort((a, b) =>
     hexOf(a) < hexOf(b) ? -1 : hexOf(a) > hexOf(b) ? 1 : String(a['$id']) < String(b['$id']) ? -1 : 1,
   )
@@ -97,7 +97,7 @@ function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string } = {}) {
           const gt = where.find((w) => w[1] === '>')
           const eq = where.find((w) => w[1] === '==')
           let docs = sorted
-          if (gt) docs = docs.filter((d) => hexOf(d) > base64ToHex(gt[2] as string))
+          if (gt && !opts.ignoreRange) docs = docs.filter((d) => hexOf(d) > base64ToHex(gt[2] as string))
           if (eq) docs = docs.filter((d) => hexOf(d) === base64ToHex(eq[2] as string))
           if (gt && opts.dropOnKeyset) docs = docs.filter((d) => d['$id'] !== opts.dropOnKeyset)
           if (!gt && !eq && q.orderBy?.[0]?.[0] === 'refNameHash' && opts.dropOnKeyset) {
@@ -183,7 +183,7 @@ describe('readRefs keyset scan', () => {
     expect(eqReads.map((q) => base64ToHex(q.where?.[0]?.[2] as string))).toContain(refHashHex(7))
   })
 
-  it('falls back to the reflog read when a prevOid has no parent, and unions without duplicates', async () => {
+  it('falls back to the reflog read alone when a prevOid has no parent', async () => {
     const rows = nightlyLike()
     // Ref 2 has 3 updates; hide its middle one from keyset pages.
     const victim = rows.find(
@@ -198,6 +198,20 @@ describe('readRefs keyset scan', () => {
       oid: oidHex(3),
     })
     expect(refs).toHaveLength(60)
+  })
+
+  it('abandons the scan on an out-of-range page and answers from the reflog read alone', async () => {
+    // A node ignoring `refNameHash > last` serves the first page again: stop at once.
+    const { sdk, seen } = mockDrive(nightlyLike(), { ignoreRange: true })
+    const refs = await readRefs(sdk, REPO)
+    expect(seen.filter(isKeysetPage).filter((q) => q.documentTypeName === DOC.refUpdate)).toHaveLength(2)
+    expect(refs).toHaveLength(60)
+    for (let r = 1; r <= 60; r++) {
+      expect(refs.find((x) => x.refNameHash === refHashHex(r))?.state).toMatchObject({
+        state: 'resolved',
+        oid: oidHex(1 + (r % 4)),
+      })
+    }
   })
 })
 

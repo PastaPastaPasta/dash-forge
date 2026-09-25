@@ -27,18 +27,39 @@
 //!    (`refNameHash == h`), which is single-branch — the cursor bug needs sibling branches —
 //!    and the scan resumes after it.
 //!
-//! Each round strictly advances `last`, so the scan terminates without leaning on a page
-//! cap, and a one-ref read costs pages of that ref only, not of the whole repo.
+//! Each round must strictly advance `last` — the scan checks it — so it terminates without
+//! leaning on a page cap, and a one-ref read costs pages of that ref only, not of the whole
+//! repo.
 //!
-//! ## Completeness check
+//! ## When the scan is not trusted
 //!
-//! Every non-null `prevOid` a pusher records is the tip it saw, which is some earlier
-//! update's `newOid` for the same ref. An update whose `prevOid` matches nothing is
-//! therefore evidence that a row is missing, and triggers the fallback: every update of
-//! the type read in `$createdAt` (`reflog`) order, the only other complete read. Its rows are
-//! unioned with the scan's (both are proof-verified documents; a union can only add real
-//! rows). A dangling `prevOid` can also be written on purpose, which costs the fallback's
-//! extra reads but never changes the answer.
+//! The scan is abandoned, and every update of both types is re-read in `$createdAt`
+//! (`reflog`) order instead — the result then comes from that read ALONE, deduplicated by
+//! `$id` — when either:
+//!
+//! * a page comes back out of `refNameHash` order, holds a row at or below its
+//!   `refNameHash > last` bound, or would not advance `last` (the node did not honor the
+//!   query, so nothing it returned is trusted); or
+//! * the completeness check fails. Every non-null `prevOid` a pusher records is the tip it
+//!   saw, which is some earlier update's `newOid` for the same ref; an update whose
+//!   `prevOid` matches nothing is evidence of a missing row. A dangling `prevOid` can also
+//!   be written on purpose (by a WRITE holder), which costs the fallback's extra reads but
+//!   never changes the answer.
+//!
+//! ## What the completeness check cannot see
+//!
+//! It finds a gap only in the MIDDLE of a chain. A missing newest update, or a ref missing
+//! entirely, leaves no dangling `prevOid`, so the ref would quietly resolve to an older tip
+//! (or not be listed). The scan itself does not drop rows that way — it is cursor-free,
+//! which is the point — so this is a limit of the safety net, not a known failure.
+//!
+//! One path does still use a cursor: a ref with more than a page of updates is read with
+//! `refNameHash == h` paged by `startAfter`. That is single-branch, so the sibling-branch
+//! drop cannot happen, but protocol 13 still skips rows sharing the page boundary's
+//! `$createdAt` (docs/BUILDING.md, "same-block ties"), and repo-v1 ref updates do not return
+//! `$createdAt` from a proved query, so the tie probe cannot repair it. That read is the one
+//! `base_ref_tips` always used; it goes away with forge-v2 on protocol 14, whose cursor is
+//! bounded by document id. The mock's `ref_history` is exact, so no test here covers it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -175,45 +196,55 @@ pub(crate) async fn ref_history_with(
 /// The scan behind [`read_all_ref_updates`], over any [`RefDocSource`].
 pub(crate) async fn read_all_with(src: &impl RefDocSource) -> Result<RefHistories> {
     let mut docs: Vec<(Vec<FetchedDocument>, bool, &str)> = Vec::new();
-    let mut consistent = true;
+    let mut misbehaved = false;
     for (doc_type, protected) in REF_UPDATE_TYPES {
-        let (rows, ordered) = keyset_scan(src, doc_type).await?;
-        consistent &= ordered;
+        let Some(rows) = keyset_scan(src, doc_type).await? else {
+            misbehaved = true;
+            break;
+        };
         docs.push((rows, protected, doc_type));
     }
-    let mut by_hash = group(&docs)?;
-    let dangling = by_hash.values().filter(|u| has_missing_parent(u)).count();
-    if consistent && dangling == 0 {
-        return Ok(by_hash);
+    if misbehaved {
+        tracing::warn!(
+            "a ref-update keyset page came back out of order or out of range; re-reading \
+             every update in reflog order"
+        );
+    } else {
+        let by_hash = group(&docs)?;
+        let dangling = by_hash.values().filter(|u| has_missing_parent(u)).count();
+        if dangling == 0 {
+            return Ok(by_hash);
+        }
+        tracing::warn!(
+            refs_with_missing_parent = dangling,
+            "ref-update keyset scan is missing parents; re-reading every update in reflog order"
+        );
     }
-
-    tracing::warn!(
-        refs_with_missing_parent = dangling,
-        out_of_order_page = !consistent,
-        "ref-update keyset scan looks incomplete; re-reading every update in reflog order"
-    );
-    for (rows, _, doc_type) in &mut docs {
-        let seen: BTreeSet<String> = rows.iter().map(|d| d.id.clone()).collect();
-        let extra: Vec<FetchedDocument> = src
-            .full_scan(doc_type)
-            .await?
-            .into_iter()
-            .filter(|d| !seen.contains(&d.id))
-            .collect();
-        rows.extend(extra);
+    // The fallback stands alone: a scan that misbehaved or lost rows is not trusted for any
+    // of them, and the reflog read is complete on its own.
+    let mut full = Vec::with_capacity(REF_UPDATE_TYPES.len());
+    for (doc_type, protected) in REF_UPDATE_TYPES {
+        full.push((dedupe(src.full_scan(doc_type).await?), protected, doc_type));
     }
-    by_hash = group(&docs)?;
-    Ok(by_hash)
+    group(&full)
 }
 
-/// Page one type by key (see the module docs). Returns the rows and whether every page was
-/// ordered and within its bound — a page that is not says the node did not honor the query.
+/// Drop repeated `$id`s, keeping the first occurrence.
+fn dedupe(rows: Vec<FetchedDocument>) -> Vec<FetchedDocument> {
+    let mut seen = BTreeSet::new();
+    rows.into_iter()
+        .filter(|d| seen.insert(d.id.clone()))
+        .collect()
+}
+
+/// Page one type by key (see the module docs). `None` when the node did not honor the
+/// query: a page out of order, a row at or below the `refNameHash > after` bound, or a round
+/// that would not move `after` forward. The caller then discards the scan entirely.
 async fn keyset_scan(
     src: &impl RefDocSource,
     doc_type: &str,
-) -> Result<(Vec<FetchedDocument>, bool)> {
+) -> Result<Option<Vec<FetchedDocument>>> {
     let mut out: Vec<FetchedDocument> = Vec::new();
-    let mut ordered = true;
     let mut after: Option<[u8; 32]> = None;
     for _ in 0..MAX_KEYSET_ROUNDS {
         let page = src.keyset_page(doc_type, after).await?;
@@ -221,25 +252,34 @@ async fn keyset_scan(
             .iter()
             .map(|d| ref_hash(d, doc_type))
             .collect::<Result<Vec<_>>>()?;
-        ordered &= hashes.windows(2).all(|w| w[0] <= w[1])
-            && after.is_none_or(|a| hashes.iter().all(|h| *h > a));
+        let in_order = hashes.windows(2).all(|w| w[0] <= w[1]);
+        let in_range = after.is_none_or(|a| hashes.iter().all(|h| *h > a));
+        if !in_order || !in_range {
+            return Ok(None);
+        }
 
         if page.len() < KEYSET_PAGE as usize {
             out.extend(page);
-            return Ok((out, ordered));
+            return Ok(Some(dedupe(out)));
         }
         let last = *hashes.last().expect("a full page is non-empty");
         let cut = hashes.iter().position(|h| *h == last).unwrap_or(0);
-        if cut == 0 {
+        let next = if cut == 0 {
             // One ref filled the page: read it on its own, then move past it.
             out.extend(src.ref_history(doc_type, last).await?);
-            after = Some(last);
+            last
         } else {
             // Every ref before the last is whole; the last may be cut off, so it is
             // re-read from its start on the next page.
-            after = Some(hashes[cut - 1]);
             out.extend(page.into_iter().take(cut));
+            hashes[cut - 1]
+        };
+        // In-range pages already imply progress; this guards the invariant the loop's
+        // termination rests on rather than the node's behavior.
+        if after.is_some_and(|a| next <= a) {
+            return Ok(None);
         }
+        after = Some(next);
     }
     Err(Error::IncompleteRead {
         document_type: doc_type.to_string(),
@@ -361,6 +401,8 @@ mod tests {
     struct MockDrive {
         rows: Vec<FetchedDocument>,
         drop_on_keyset: Option<String>,
+        /// Serve keyset pages ignoring `refNameHash > after` (a node not honoring the query).
+        ignore_range: bool,
         keyset_calls: Cell<usize>,
         history_calls: RefCell<Vec<[u8; 32]>>,
         full_scans: Cell<usize>,
@@ -372,6 +414,7 @@ mod tests {
             Self {
                 rows,
                 drop_on_keyset: None,
+                ignore_range: false,
                 keyset_calls: Cell::new(0),
                 history_calls: RefCell::new(Vec::new()),
                 full_scans: Cell::new(0),
@@ -409,7 +452,7 @@ mod tests {
             Ok(self
                 .rows
                 .iter()
-                .filter(|d| after.is_none_or(|a| hash_of(d) > a))
+                .filter(|d| self.ignore_range || after.is_none_or(|a| hash_of(d) > a))
                 .filter(|d| self.drop_on_keyset.as_deref() != Some(d.id.as_str()))
                 .take(KEYSET_PAGE as usize)
                 .cloned()
@@ -541,7 +584,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_parent_falls_back_to_the_full_scan_and_unions() {
+    async fn an_out_of_range_page_abandons_the_scan_for_the_full_read() {
+        // A node that ignores `refNameHash > after` serves the first page forever: the scan
+        // must stop at once (not loop, not merge) and answer from the reflog read alone.
+        let mut drive = MockDrive::new(nightly_like());
+        drive.ignore_range = true;
+        let drive = PlainOnly(drive);
+        let got = read_all_with(&drive).await.unwrap();
+        assert_eq!(drive.0.keyset_calls.get(), 2, "stops on the first bad page");
+        assert_eq!(drive.0.full_scans.get(), 1);
+        assert_eq!(
+            got.values().map(Vec::len).sum::<usize>(),
+            drive.0.rows.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_parent_falls_back_to_the_full_scan_alone() {
         let mut rows = nightly_like();
         // Drop the middle update of a 3-update ref from keyset pages only.
         let victim = rows
