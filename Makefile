@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify storage-it storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -91,3 +91,22 @@ devnet-identities: tools/mint-identity/node_modules
 ## devnet-identities-verify: check the devnet pool exists on Platform with balances and keys.
 devnet-identities-verify: tools/mint-identity/node_modules
 	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"
+
+## storage-it: bring-your-own-storage integration tests against LOCAL MinIO + kubo
+## (infra/docker-compose.yml): SigV4-signed PUT/HEAD/GET/DELETE on a bucket that refuses
+## anonymous writes, kubo CID == local CIDv1 derivation, N-of-M replication + gateway
+## read-back. FORGE_IT_S3/FORGE_IT_IPFS turn an unreachable fixture into a FAILURE
+## instead of a silent skip. No network beyond localhost; no Platform spend.
+storage-it: infra-up
+	@for i in $$(seq 1 30); do \
+		curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && \
+		curl -fsS -o /dev/null -X POST http://127.0.0.1:5001/api/v0/version && break; \
+		sleep 2; \
+	done
+	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
+
+## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
+## on local MinIO + kubo (N = 2) and only the manifest + ref on testnet. Spends a few
+## thousand credits of the e2e DEPLOYER identity (e2e/cli/config.sh). Opt-in.
+storage-e2e: infra-up build-rust
+	@bash e2e/cli/storage-byo.sh
