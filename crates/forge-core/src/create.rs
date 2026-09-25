@@ -250,17 +250,17 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
 /// * A consensus refusal that proves nothing executed (a stale protocol version, a unique
 ///   index already taken, a gate): it never landed; re-deciding adopts or re-signs.
 /// * Anything else (the network) is returned: the transition may still land.
-async fn replay_landed(
+pub(crate) async fn replay_landed(
     engine: &WriteEngine<'_>,
-    core: &LoadedContract,
-    step: Step,
+    contract: &LoadedContract,
+    doc_type: &str,
     intent: &WriteIntent,
 ) -> Result<bool> {
-    match engine.replay(step.doc_type(), intent).await {
+    match engine.replay(doc_type, intent).await {
         Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(true),
         Ok(BroadcastOutcome::NonceConsumed) => {
             engine
-                .landed(core, step.doc_type(), &intent.document_id, true)
+                .landed(contract, doc_type, &intent.document_id, true)
                 .await
         }
         Err(
@@ -399,7 +399,7 @@ where
     P: FnOnce() -> BTreeMap<String, FieldValue>,
 {
     if let Some(intent) = journal.slot(step).clone() {
-        if replay_landed(engine, core, step, &intent).await? {
+        if replay_landed(engine, core, step.doc_type(), &intent).await? {
             return Ok((intent.document_id, StepOutcome::Resumed));
         }
         tracing::warn!(

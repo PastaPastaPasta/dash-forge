@@ -540,6 +540,11 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             needs_maintainer(ctx, document_type, detail)
         }
         CoreError::NotAMember { detail, .. } => not_a_writer(ctx, detail),
+        CoreError::NotPermitted {
+            action,
+            reason,
+            needs,
+        } => not_permitted(ctx, action, reason, needs),
         CoreError::V1ReadOnly { repo } => UserError::new(
             codes::READ_ONLY,
             ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
@@ -613,6 +618,25 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
         _ => return None,
     })
+}
+
+/// E601 for a write the client refused before signing: the signer holds no role (or is
+/// not the author) that consensus would admit.
+fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str) -> UserError {
+    let repo = ctx.repo_or("<owner>/<repo>");
+    let u = UserError::new(
+        codes::NOT_A_WRITER,
+        ctx.rejected_headline(&format!("you cannot {action}")),
+    )
+    .cause(reason)
+    .note("checked before anything was signed; nothing was written or paid");
+    if needs == "author" {
+        u.fix("ask the author or a member of the repository to do it")
+    } else {
+        u.fix(format!(
+            "ask the owner to run `dg collab add {repo} <your identity id> --role {needs}`"
+        ))
+    }
 }
 
 fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
@@ -1409,6 +1433,27 @@ mod tests {
             "push rejected: you are not a writer of alice/project"
         );
         assert!(u.fix[0].contains("--role writer"), "{u:?}");
+    }
+
+    #[test]
+    fn a_client_side_refusal_is_e601_and_says_nothing_was_paid() {
+        let ctx = ErrorContext {
+            goal: Some("issue not closed"),
+            repo: Some("alice/project"),
+            ..ErrorContext::default()
+        };
+        let u = core_chain(
+            CoreError::NotPermitted {
+                action: "close issue #3".into(),
+                reason: "you are neither a member of alice/project nor the issue's author".into(),
+                needs: "writer".into(),
+            },
+            &ctx,
+        );
+        assert_eq!((u.code, u.exit_code()), ("E601", 6));
+        assert_eq!(u.message, "issue not closed: you cannot close issue #3");
+        assert!(u.fix[0].contains("dg collab add alice/project"), "{u:?}");
+        assert!(u.note.as_deref().unwrap().contains("nothing was written"));
     }
 
     #[test]

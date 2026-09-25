@@ -16,6 +16,11 @@
 //! * [`ReleaseService`] / [`LabelService`] — MAINTAIN-gated, append-only newest-wins.
 //! * [`SocialService`] — registry star / unstar / follow / unfollow + O(1) count-tree
 //!   totals.
+//!
+//! These address v1 repositories (one contract each), which are read only now. forge-v2
+//! repositories are served by [`v2::Collab`].
+
+pub mod v2;
 
 use std::collections::BTreeMap;
 
@@ -52,12 +57,12 @@ const MAX_NUMBER_ATTEMPTS: u32 = 8;
 
 /// The page size a caller-supplied `limit` of 0 means: "one page of the server default".
 /// Drive's own default and maximum are both 100 rows.
-const DEFAULT_PAGE: u32 = 100;
+pub(crate) const DEFAULT_PAGE: u32 = 100;
 
 /// Build a HIGH-key document write/delete engine over `client` for `identity`.
 ///
 /// Document create/delete accept a HIGH auth key (S0.7); only token admin needs CRITICAL.
-fn doc_engine<'a>(
+pub(crate) fn doc_engine<'a>(
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,
     bridge: &'a BridgeIdentity,
@@ -68,7 +73,7 @@ fn doc_engine<'a>(
 /// Fail fast on a text field that exceeds its contract `maxLength`, before spending a
 /// broadcast on a create consensus will reject. Counts Unicode scalar values (the
 /// client-side approximation; consensus is authoritative).
-fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
+pub(crate) fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
     let len = value.chars().count();
     if len > max {
         return Err(Error::Config(format!(
@@ -96,7 +101,7 @@ pub struct Imported {
 
 impl Imported {
     /// Build the nested `imported` object field, validating the string lengths.
-    fn to_field(&self) -> Result<FieldValue> {
+    pub(crate) fn to_field(&self) -> Result<FieldValue> {
         check_len("imported author", &self.author, 120)?;
         check_len("imported url", &self.url, 300)?;
         let mut map = BTreeMap::new();
@@ -125,7 +130,7 @@ fn insert_imported(
 }
 
 /// Map a [`crate::rules::EventKind`] to its stored numeric `kind` (data-contracts §2.3).
-fn event_kind_to_u64(kind: EventKind) -> u64 {
+pub(crate) fn event_kind_to_u64(kind: EventKind) -> u64 {
     match kind {
         EventKind::Close => 1,
         EventKind::Reopen => 2,
@@ -141,7 +146,7 @@ fn event_kind_to_u64(kind: EventKind) -> u64 {
 }
 
 /// Map a stored numeric `kind` back to a [`crate::rules::EventKind`] (unknown → `None`).
-fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
+pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
     Some(match kind {
         1 => EventKind::Close,
         2 => EventKind::Reopen,
@@ -1085,7 +1090,7 @@ fn pr_from_doc(d: &platform::FetchedDocument) -> PullRequest {
     }
 }
 
-fn review_from_doc(d: &platform::FetchedDocument) -> Review {
+pub(crate) fn review_from_doc(d: &platform::FetchedDocument) -> Review {
     Review {
         document_id: d.id.clone(),
         reviewer: d.owner_id.clone(),
@@ -1143,6 +1148,9 @@ pub struct Release {
     pub yanked: bool,
     /// Assets (parsed from the `assets` JSON-string field).
     pub assets: Vec<ReleaseAsset>,
+    /// Who published this revision (`$ownerId`). Always shown: a maintainer who is later
+    /// revoked can still delete (not edit) their release, so readers name the publisher.
+    pub publisher: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
@@ -1244,7 +1252,7 @@ impl<'a> ReleaseService<'a> {
 }
 
 /// Build a [`Release`] from a fetched document.
-fn release_from_doc(d: &platform::FetchedDocument) -> Release {
+pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
     let assets = d
         .field_str("assets")
         .and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
@@ -1256,6 +1264,7 @@ fn release_from_doc(d: &platform::FetchedDocument) -> Release {
         notes: d.field_str("notes").unwrap_or_default(),
         yanked: d.field_bool("yanked"),
         assets,
+        publisher: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
     }
 }
@@ -1358,7 +1367,7 @@ impl<'a> LabelService<'a> {
 }
 
 /// Build a [`Label`] from a fetched document.
-fn label_from_doc(d: &platform::FetchedDocument) -> Label {
+pub(crate) fn label_from_doc(d: &platform::FetchedDocument) -> Label {
     Label {
         document_id: d.id.clone(),
         name: d.field_str("name").unwrap_or_default(),
