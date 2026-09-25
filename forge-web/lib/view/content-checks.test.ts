@@ -58,6 +58,14 @@ describe('content-check ledger', () => {
     unsubscribe()
   })
 
+  it('records each unavailable pack once, case-insensitively', () => {
+    noteContentCheck('repo-a', { unavailablePack: 'AB'.repeat(32) })
+    const snap = contentChecks('repo-a')
+    noteContentCheck('repo-a', { unavailablePack: 'ab'.repeat(32) })
+    expect(contentChecks('repo-a')).toBe(snap)
+    expect(snap.unavailablePacks).toEqual(['ab'.repeat(32)])
+  })
+
   it('names an external source by its host', () => {
     expect(externalSourceName('https://ipfs.io/ipfs/bafy')).toBe('ipfs.io')
     expect(externalSourceName('https://bucket.s3.amazonaws.com/p.pack')).toBe('bucket.s3.amazonaws.com')

@@ -29,6 +29,17 @@ export interface ContentChecks {
   readonly packsFailed: number
   /** Where bytes actually came from: `platform`, `browser cache`, or an external host. */
   readonly sources: readonly string[]
+  /**
+   * Live external packs (hash hex) the in-browser clone skipped because no mirror served
+   * them. What is shown was checked, but it is not the whole repo: objects only those packs
+   * hold are missing.
+   */
+  readonly unavailablePacks: readonly string[]
+  /**
+   * Of those, the packs some mirror answered with bytes that failed the sha256 check — a host
+   * serving bad data, reported distinctly from an outage.
+   */
+  readonly corruptMirrorPacks: readonly string[]
 }
 
 export const NO_CONTENT_CHECKS: ContentChecks = {
@@ -38,12 +49,22 @@ export const NO_CONTENT_CHECKS: ContentChecks = {
   packsVerified: 0,
   packsFailed: 0,
   sources: [],
+  unavailablePacks: [],
+  corruptMirrorPacks: [],
 }
 
-type Counter = Exclude<keyof ContentChecks, 'sources'>
+type Counter = Exclude<keyof ContentChecks, 'sources' | 'unavailablePacks' | 'corruptMirrorPacks'>
 
-/** A change to one repo's ledger: counter increments and/or a byte source seen. */
-export type ContentCheckDelta = Partial<Record<Counter, number>> & { readonly source?: string }
+/**
+ * A change to one repo's ledger: counter increments, a byte source seen, and/or a live pack
+ * that could not be fetched (hash hex).
+ */
+export type ContentCheckDelta = Partial<Record<Counter, number>> & {
+  readonly source?: string
+  readonly unavailablePack?: string
+  /** With `unavailablePack`: a mirror served bytes that failed the sha256 check. */
+  readonly corruptMirror?: boolean
+}
 
 const ledger = new Map<string, ContentChecks>()
 const listeners = new Set<() => void>()
@@ -60,11 +81,17 @@ export function noteContentCheck(contractId: string, delta: ContentCheckDelta): 
     'packsFailed',
   ]
   const bumped = counters.some((k) => (delta[k] ?? 0) > 0)
-  if (!newSource && !bumped) return
+  const missing = delta.unavailablePack?.toLowerCase()
+  const newMissing = missing !== undefined && !prev.unavailablePacks.includes(missing)
+  const newCorrupt =
+    missing !== undefined && delta.corruptMirror === true && !prev.corruptMirrorPacks.includes(missing)
+  if (!newSource && !bumped && !newMissing && !newCorrupt) return
 
   const next: { -readonly [K in keyof ContentChecks]: ContentChecks[K] } = { ...prev }
   for (const k of counters) next[k] = prev[k] + Math.max(0, delta[k] ?? 0)
   if (newSource && delta.source !== undefined) next.sources = [...prev.sources, delta.source]
+  if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
+  if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
   ledger.set(contractId, next)
   for (const l of listeners) l()
 }

@@ -25,10 +25,10 @@ use crate::backends::{ByteRange, PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
-    self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
-    PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    self, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient, PushJournal,
+    QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
-use crate::rules::{self, ConfigDoc, RefState, RefUpdate};
+use crate::rules::{self, ConfigDoc, RefState};
 use crate::storage::{PackReader, Replication, StorageTarget};
 
 /// The repo-v1 contract template (2 tokens + 15 doc types), embedded at build time.
@@ -44,8 +44,7 @@ const REPO_V1_TEMPLATE: &str = include_str!(concat!(
 
 // Document type names (repo contract).
 const DOC_CONFIG: &str = "config";
-const DOC_REF_UPDATE: &str = "refUpdate";
-const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
+use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
 const DOC_PACK_MANIFEST: &str = "packManifest";
 const DOC_MANIFEST_PART: &str = "manifestPart";
 const DOC_CHUNK: &str = "chunk";
@@ -712,17 +711,19 @@ impl<'a> RepoService<'a> {
 
     /// Enumerate every ref and its resolved [`RefState`].
     ///
-    /// Both ref-update types are read whole, paged in `$createdAt` order, and grouped by
-    /// `refNameHash` locally; each ref's combined update history + the repo's `config`
-    /// history is folded by [`crate::rules::resolve_ref`].
+    /// Every ref's history comes from [`crate::refs::read_all_ref_updates`] — a keyset scan
+    /// over the `refState` index, ⌈updates/100⌉ queries per type plus one per ref that fills
+    /// a page by itself, with a `prevOid` completeness check — and each ref's combined
+    /// update history + the repo's `config` history is folded by
+    /// [`crate::rules::resolve_ref`].
     ///
-    /// This used to discover refs with the S0.8 skip-scan (one `limit 1` query per ref per
-    /// type) and then read each ref's history separately: about four sequential round-trips
-    /// per ref, *including deleted ones*, since a delete is just another update. Every
-    /// `git` command on a `dash://` remote reads refs at least once, so on the nightly's
-    /// test repo (≈80 refs ever pushed, 170 updates) that was ~300 queries and over a
-    /// minute per command — the reason a partial clone, which reads refs twice, outlived
-    /// its command timeout. Paging costs ⌈updates/100⌉ queries per type instead.
+    /// Two earlier readers failed in opposite ways. The S0.8 skip-scan (one `limit 1` query
+    /// per ref per type, then one history read per ref) cost about four sequential
+    /// round-trips per ref ever pushed, deleted ones included: over a minute per `git`
+    /// command on the nightly repo. Paging the `refState` index with a `startAfter` cursor
+    /// was fast but silently lost rows on protocol 13 (see the `refs` module docs). Paging
+    /// the whole `reflog` index was correct but read every update of every ref on every
+    /// command, so it is kept only as the fallback the completeness check falls to.
     ///
     /// The ancestry predicate is reflexive-only here (M1 has no read-side commit graph):
     /// fast-forward supersession via `prevOid` still resolves, but descend-detection is
@@ -732,7 +733,7 @@ impl<'a> RepoService<'a> {
         let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
         let configs = self.fetch_config_history(&repo_contract).await?;
 
-        let by_hash = self.read_all_ref_updates(&repo_contract).await?;
+        let by_hash = crate::refs::read_all_ref_updates(self.client, &repo_contract).await?;
 
         let mut out = Vec::with_capacity(by_hash.len());
         for (hash, updates) in &by_hash {
@@ -1975,70 +1976,6 @@ impl<'a> RepoService<'a> {
                     .unwrap_or_default(),
             })
             .collect())
-    }
-
-    /// Read every ref's full update history, grouped by `refNameHash`: both ref-update types
-    /// paged to exhaustion in `$createdAt` order. Within a ref, plain updates come before
-    /// protected ones and each source is `$createdAt asc` — the order the per-ref fold has
-    /// always consumed (the fold itself re-sorts by `(createdAt, id)`).
-    ///
-    /// Paged to exhaustion: `resolve_ref` folds the whole causal chain, so stopping at one
-    /// page would pin a branch at a stale tip — `list` would advertise it, clones would get
-    /// a stale HEAD, and `plan_pushes` would call correct fast-forwards non-fast-forward.
-    ///
-    /// A document without a 32-byte `refNameHash` cannot be attributed to a ref; the
-    /// schema forbids it, and skipping it silently would make the answer wrong rather than
-    /// partial, so it fails the read.
-    async fn read_all_ref_updates(
-        &self,
-        repo_contract: &LoadedContract,
-    ) -> Result<BTreeMap<[u8; 32], Vec<RefUpdate>>> {
-        let mut by_hash: BTreeMap<[u8; 32], Vec<RefUpdate>> = BTreeMap::new();
-        for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
-            let docs = self
-                .client
-                .query_all_documents(
-                    repo_contract,
-                    doc_type,
-                    &[],
-                    // The `reflog` index. NOT `refState` (`refNameHash, $createdAt`): on
-                    // testnet, `start_after` paging over that compound index dropped 5 of
-                    // 168 updates at the page boundary (one ref vanished from `ls-remote`),
-                    // while `$createdAt` paging returns all of them.
-                    &[QueryOrder::asc("$createdAt")],
-                )
-                .await?;
-            for d in &docs {
-                let hash = d
-                    .field_bytes("refNameHash")
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or_else(|| {
-                        Error::Platform(format!("{doc_type} {} has no 32-byte refNameHash", d.id))
-                    })?;
-                by_hash.entry(hash).or_default().push(ref_update_from_doc(
-                    d,
-                    &hex::encode(hash),
-                    protected,
-                ));
-            }
-        }
-        Ok(by_hash)
-    }
-}
-
-/// Flatten a `refUpdate` / `protectedRefUpdate` document to the [`RefUpdate`] shape
-/// [`crate::rules::resolve_ref`] consumes.
-fn ref_update_from_doc(d: &FetchedDocument, hash_hex: &str, protected: bool) -> RefUpdate {
-    RefUpdate {
-        id: d.id.clone(),
-        ref_name_hash: hash_hex.to_string(),
-        ref_name: d.field_str("refName").unwrap_or_default(),
-        prev_oid: d.field_hex("prevOid").unwrap_or_default(),
-        new_oid: d.field_hex("newOid").unwrap_or_default(),
-        force: d.field_bool("force"),
-        protected,
-        author: d.owner_id.clone(),
-        created_at: d.created_at.unwrap_or(0),
     }
 }
 

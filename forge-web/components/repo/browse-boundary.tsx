@@ -10,13 +10,51 @@
  */
 
 import type { ReactNode } from 'react'
-import { HardDriveDownload, PackageOpen } from 'lucide-react'
+import { AlertTriangle, HardDriveDownload, PackageOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoRef } from '@/lib/repo'
-import { formatBytes } from '@/lib/view'
+import { formatBytes, type UnavailablePack } from '@/lib/view'
+
+/**
+ * The honest caveat for a partial in-browser clone: some live packs live in external storage
+ * nobody could serve, so what is shown is checked but not the whole repo.
+ */
+function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }): JSX.Element {
+  const n = packs.length
+  const corrupt = packs.filter((p) => p.corrupt).length
+  return (
+    <div
+      role="status"
+      className="mb-3 flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200"
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
+      <div>
+        <p>
+          {n} {n === 1 ? 'pack' : 'packs'} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
+          objects may be missing. Everything shown was still hash-checked.
+        </p>
+        {corrupt > 0 ? (
+          <p className="mt-1 font-medium text-danger">
+            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {corrupt}{' '}
+            {corrupt === 1 ? 'pack' : 'packs'}: bytes that do not match the sha256 in the proof-checked
+            manifest. They were refused.
+          </p>
+        ) : null}
+        <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
+          {packs.map((p) => (
+            <li key={p.packHash}>
+              {p.packHash.slice(0, 12)}… — {p.hosts.length > 0 ? p.hosts.join(', ') : 'no browser-fetchable mirror'}
+              {p.corrupt ? ' (served bad data)' : ''}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  )
+}
 
 export function BrowseBoundary({
   repo,
@@ -48,6 +86,7 @@ export function BrowseBoundary({
             Viewing a copy loaded into your browser — this repo&apos;s browse index{' '}
             {state.behind ? "doesn't cover everything stored" : "hasn't been published"} yet.
           </p>
+          {state.unavailable.length > 0 ? <UnavailablePacksNotice packs={state.unavailable} /> : null}
           {children(state.reader)}
         </div>
       )

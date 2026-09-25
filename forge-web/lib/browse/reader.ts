@@ -50,6 +50,11 @@ export interface BrowseReaderOptions {
    * read). This is how the UI learns what was actually checked rather than assuming it.
    */
   readonly onObject?: (verdict: ObjectVerdict) => void
+  /**
+   * The error for an OID the locator does not index. Defaults to `object not in locator`; a
+   * reader built over an incomplete pack set supplies one that names what is missing.
+   */
+  readonly missingObject?: (oidHex: string) => Error
 }
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
@@ -117,7 +122,9 @@ export class BrowseReader {
     if (cached !== undefined) return cached
 
     const entry = this.locate(oidHex)
-    if (entry === null) throw new Error(`object not in locator: ${oidHex}`)
+    if (entry === null) {
+      throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
+    }
 
     const obj = singleReadAdvised(entry)
       ? await this.readSpan(entry)

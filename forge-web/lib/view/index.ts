@@ -67,8 +67,10 @@ export {
   loadFlatIndex,
   orderGitPacks,
   peekBrowseState,
+  PackUnavailableError,
   type BrowseContext,
   type BrowseState,
+  type UnavailablePack,
 } from './browse-source'
 export {
   cachedFallback,

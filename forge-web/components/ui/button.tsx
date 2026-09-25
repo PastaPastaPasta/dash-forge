@@ -15,9 +15,10 @@ const button = cva(
     variants: {
       variant: {
         // forge-700 (#c2410c) with white text = 5.18:1, clears WCAG AA (4.5:1); forge-600 as
-        // text-on-orange only reaches ~3.6:1 and fails. Hover brightens to forge-600 for lift.
+        // text-on-orange only reaches ~3.6:1 and fails — as a hover fill too, so hover darkens
+        // to forge-800 (7.31:1) instead of brightening. lib/design/contrast.test.ts checks it.
         primary:
-          'bg-forge-700 text-white hover:bg-forge-600 dark:bg-forge-700 dark:hover:bg-forge-600',
+          'bg-forge-700 text-white hover:bg-forge-800 dark:bg-forge-700 dark:hover:bg-forge-800',
         outline:
           'border border-anvil-300 bg-transparent text-anvil-800 hover:bg-anvil-100 ' +
           'dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800',

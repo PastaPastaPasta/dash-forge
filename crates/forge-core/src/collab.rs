@@ -42,8 +42,6 @@ const DOC_EVENT: &str = "event";
 const DOC_REVIEW: &str = "review";
 const DOC_LABEL: &str = "label";
 const DOC_RELEASE: &str = "release";
-const DOC_REF_UPDATE: &str = "refUpdate";
-const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
 // Registry-contract document types.
 const DOC_STAR: &str = "star";
 const DOC_FOLLOW: &str = "follow";
@@ -926,46 +924,30 @@ impl<'a> PullRequestService<'a> {
     }
 
     /// Collect every oid that was ever a tip of `base_ref_name` (the monotonic merge-
-    /// reachability set) plus the newest such tip. Walks the full `refUpdate` +
-    /// `protectedRefUpdate` history for the ref (paginated), taking every non-null `newOid`.
+    /// reachability set) plus the newest such tip. Walks the ref's full `refUpdate` +
+    /// `protectedRefUpdate` history — [`crate::refs::read_ref_history`], an equality read on
+    /// one `refNameHash`, so its cost is this ref's pushes, not the repo's — taking every
+    /// non-null `newOid`.
     async fn base_ref_tips(
         &self,
         contract: &LoadedContract,
         base_ref_name: &str,
     ) -> Result<(std::collections::BTreeSet<String>, Option<String>)> {
         let ref_name_hash = sha256(base_ref_name.as_bytes());
+        let updates = crate::refs::read_ref_history(self.client, contract, ref_name_hash).await?;
         let mut tips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut newest: Option<(u64, String, String)> = None; // (created_at, id, oid)
-        for doc_type in [DOC_REF_UPDATE, DOC_PROTECTED_REF_UPDATE] {
-            let docs = self
-                .client
-                .query_all_documents(
-                    contract,
-                    doc_type,
-                    &[QueryFilter::eq(
-                        "refNameHash",
-                        FieldValue::bytes32(ref_name_hash),
-                    )],
-                    &[QueryOrder::asc("$createdAt")],
-                )
-                .await?;
-            for d in &docs {
-                let Some(oid) = d.field_hex("newOid") else {
-                    continue;
-                };
-                if oid.is_empty() || oid.bytes().all(|b| b == b'0') {
-                    continue; // null oid = ref deletion, never a reachable tip
-                }
-                tips.insert(oid.clone());
-                let created_at = d.created_at.unwrap_or(0);
-                let candidate = (created_at, d.id.clone(), oid);
-                let better = match &newest {
-                    None => true,
-                    Some(n) => (n.0, &n.1) < (candidate.0, &candidate.1),
-                };
-                if better {
-                    newest = Some(candidate);
-                }
+        for u in updates {
+            if u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0') {
+                continue; // null oid = ref deletion, never a reachable tip
+            }
+            tips.insert(u.new_oid.clone());
+            let better = match &newest {
+                None => true,
+                Some(n) => (n.0, &n.1) < (u.created_at, &u.id),
+            };
+            if better {
+                newest = Some((u.created_at, u.id, u.new_oid));
             }
         }
         Ok((tips, newest.map(|(_, _, oid)| oid)))

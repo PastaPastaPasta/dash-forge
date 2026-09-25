@@ -2,15 +2,34 @@ import { type Page, type ConsoleMessage } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-/** Real testnet fixture: the m1 repo seeded by the CLI e2e suite. */
+/**
+ * Real testnet fixture: the nightly READ fixture, written only by
+ * `e2e/cli/seed-read-fixture.sh` (reserved in e2e/README.md). `main` holds one deterministic
+ * commit (README.md, src/, lib/) stored on Platform with no browse index, so the fallback
+ * clone is what the browse specs exercise. Never point these specs at a repo another suite
+ * writes: the storage e2e once left packs on a laptop's MinIO in the shared CLI repo, and
+ * every browse spec failed on them. Override with E2E_FIXTURE_OWNER / E2E_FIXTURE_NAME.
+ */
 export const M1 = {
-  owner: '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB',
-  name: 'm1-75299',
-  contract: '5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX',
+  owner: process.env['E2E_FIXTURE_OWNER'] ?? '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB',
+  // The seeder's override (NIGHTLY_FIXTURE_REPO) applies here too, so a renamed fixture is
+  // seeded and read as the same repo.
+  name: process.env['E2E_FIXTURE_NAME'] ?? process.env['NIGHTLY_FIXTURE_REPO'] ?? 'm1-5124',
 } as const
 
-export function repoUrl(path = ''): string {
-  const q = `owner=${M1.owner}&name=${M1.name}`
+/**
+ * The repo the opt-in WRITE spec (auth-write, E2E_WRITE=1) creates issues on — never the read
+ * fixture above, which only its seeder may write (its issues page is asserted on). This is
+ * the CLI suite's DEPLOYER-owned repo, which test runs already write to. Override with
+ * E2E_WRITE_FIXTURE_NAME. See e2e/README.md.
+ */
+export const WRITE_FIXTURE = {
+  owner: M1.owner,
+  name: process.env['E2E_WRITE_FIXTURE_NAME'] ?? 'm1-75299',
+} as const
+
+export function repoUrl(path = '', repo: { owner: string; name: string } = M1): string {
+  const q = `owner=${repo.owner}&name=${repo.name}`
   if (path === '') return `/repo/?${q}`
   return `/repo/${path}/?${q}`
 }

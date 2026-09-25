@@ -1,3 +1,4 @@
+import { avatarFill, avatarHue } from '@/lib/design/avatar'
 import { abbreviate, cn } from '@/lib/utils'
 
 /**
@@ -19,15 +20,6 @@ export interface IdentityPillProps {
   className?: string
 }
 
-/** Deterministic hue from the identity id so the stub avatar is stable per identity. */
-function hueFor(id: string): number {
-  let hash = 0
-  for (let i = 0; i < id.length; i += 1) {
-    hash = (hash * 31 + id.charCodeAt(i)) % 360
-  }
-  return hash
-}
-
 export function IdentityPill({
   identityId,
   name,
@@ -35,7 +27,7 @@ export function IdentityPill({
   className,
 }: IdentityPillProps): JSX.Element {
   const initial = (name ?? identityId).charAt(0).toUpperCase()
-  const hue = hueFor(identityId)
+  const fill = avatarFill(avatarHue(identityId))
 
   return (
     <span
@@ -47,7 +39,7 @@ export function IdentityPill({
     >
       <span
         className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-        style={{ backgroundColor: `hsl(${hue} 45% 45%)` }}
+        style={{ backgroundColor: fill }}
         aria-hidden
       >
         {initial}

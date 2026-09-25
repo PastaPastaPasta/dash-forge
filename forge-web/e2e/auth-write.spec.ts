@@ -2,17 +2,18 @@ import { test, expect } from '@playwright/test'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { repoUrl, waitForRepoResolved, shot, M1 } from './helpers'
+import { repoUrl, waitForRepoResolved, shot, WRITE_FIXTURE } from './helpers'
 
 /**
  * OPTIONAL auth / write scenario (lower priority — read paths are the gate).
  *
  * Gated behind E2E_AUTH=1 so the default CI run stays key-free and hermetic. When enabled it
- * loads the DEPLOYER bridge identity (which owns the m1 repo) from the local, gitignored
+ * loads the DEPLOYER bridge identity (which owns the write fixture) from the local, gitignored
  * ~/.config/dash-forge/test-identities/, drives the login modal's identity-file upload via
  * setInputFiles (keys never leave this machine), and verifies the session is established.
  *
- * With E2E_WRITE=1 it goes further and creates a cheap issue on m1 (a real testnet write).
+ * With E2E_WRITE=1 it goes further and creates a cheap issue on the WRITE fixture (helpers.ts
+ * WRITE_FIXTURE, never the read fixture the read specs assert on) — a real testnet write.
  * Anything flaky here self-skips rather than failing the suite.
  */
 
@@ -27,8 +28,8 @@ test.describe('auth + write (opt-in via E2E_AUTH=1)', () => {
   test.skip(!AUTH_ENABLED, 'set E2E_AUTH=1 to run the local-key login/write scenario')
   test.skip(!existsSync(IDENTITY_PATH), `DEPLOYER identity not found at ${IDENTITY_PATH}`)
 
-  test('login via identity file, then optionally create an issue on m1', async ({ page }) => {
-    await page.goto(repoUrl('issues'), { waitUntil: 'domcontentloaded' })
+  test('login via identity file, then optionally create an issue on the write fixture', async ({ page }) => {
+    await page.goto(repoUrl('issues', WRITE_FIXTURE), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
 
     // Open the login modal from the header sign-in affordance.
@@ -54,7 +55,7 @@ test.describe('auth + write (opt-in via E2E_AUTH=1)', () => {
       return
     }
 
-    // Create a real (cheap) issue on m1.
+    // Create a real (cheap) issue on the write fixture.
     const marker = `e2e-web smoke ${new Date().toISOString()}`
     await page.getByRole('button', { name: /new issue/i }).first().click()
     await page.getByLabel(/title/i).fill(marker)
@@ -66,6 +67,6 @@ test.describe('auth + write (opt-in via E2E_AUTH=1)', () => {
     await expect(page.getByText(marker)).toBeVisible({ timeout: 60_000 })
     await shot(page, '09-issue-created')
 
-    expect(M1.name).toBeTruthy()
+    expect(WRITE_FIXTURE.name).toBeTruthy()
   })
 })

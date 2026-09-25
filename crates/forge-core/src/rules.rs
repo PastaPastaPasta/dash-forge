@@ -110,7 +110,7 @@ impl Ancestry {
 // ===========================================================================
 
 /// A single append-only `refUpdate` / `protectedRefUpdate` document, flattened to the
-/// fields resolution needs. Callers fetch these (via the §2.3 skip-scan + §3
+/// fields resolution needs. Callers fetch these (via the §2.3 keyset scan, `crate::refs`, + §3
 /// completeness fallback) and hand the slice in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

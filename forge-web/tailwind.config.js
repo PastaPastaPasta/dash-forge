@@ -43,7 +43,10 @@ module.exports = {
           950: '#0f0d0c',
         },
         // Semantic colors are MEANINGFUL, never decorative. Do not repurpose.
-        verify: '#16a34a', // proof/hash verified
+        verify: {
+          DEFAULT: '#16a34a', // proof/hash verified — icons, borders, tints
+          700: '#15803d', // solid fill behind white text (5.02:1; the base value is 3.3:1)
+        },
         caution: '#d97706', // degraded availability
         danger: '#dc2626', // force-push, delete, failed verification
         // Dash brand blue — identity/credits/network UI only. The brand value is for fills,
@@ -54,6 +57,7 @@ module.exports = {
           DEFAULT: '#008de4',
           400: '#4aaef0', // text on dark surfaces (anvil-950…800)
           600: '#006bb0', // text on light surfaces (white, anvil-50/100)
+          700: '#005a94', // solid fill behind white text (7.27:1; the brand value is 3.54:1)
         },
       },
       fontFamily: {

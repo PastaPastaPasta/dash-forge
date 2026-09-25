@@ -250,7 +250,7 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
               href={original}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex h-7 items-center rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-600"
+              className="inline-flex h-7 items-center rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800"
             >
               View original diff
             </a>
