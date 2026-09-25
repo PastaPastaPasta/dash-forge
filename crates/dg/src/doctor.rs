@@ -327,10 +327,10 @@ async fn check_dapi(client: &PlatformClient, target: &NetworkTarget, network: &s
     }
 }
 
-/// The protocol version the network reports in proof-verified response metadata. A refresh
-/// (a proved epoch query) runs first so the version is learned even when the dapi fetch
-/// failed; if it fails too, the SDK is still at its per-network floor and that is reported
-/// instead of a network version.
+/// The protocol version the network reports in the metadata of a proof-verified response
+/// (the current epoch, fetched here). If that read fails, the check fails and reports
+/// `unverified`, with the SDK's current version labelled as the floor. It is never shown as
+/// the network's version.
 async fn check_protocol(client: &PlatformClient) -> (Check, Option<u32>) {
     match client.refresh_protocol_version().await {
         Ok(v) => (
@@ -346,8 +346,7 @@ async fn check_protocol(client: &PlatformClient) -> (Check, Option<u32>) {
                 name: "protocol",
                 ok: false,
                 detail: format!(
-                    "could not learn the protocol version ({e}); the SDK is still at its \
-                     per-network floor {}",
+                    "unverified (floor {}): the proved epoch read failed: {e}",
                     client.protocol_version()
                 ),
             },

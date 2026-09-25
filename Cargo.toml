@@ -46,6 +46,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Bumping the tag: change PLATFORM_TAG below in ALL FIVE entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
 # PLATFORM_TAG = v4.2.0-beta.4
+# TODO(sdk-4.2-final): a pre-release tag, pinned for protocol 14 (forge-v2 on devnets). Move
+# to v4.2.0 when it is tagged, in lockstep with forge-web's @dashevo/evo-sdk pin.
 #
 # mocks/offline-testing are dropped (default-features = false) so only the live network
 # client is built. `dapi-grpc` with the `client` feature is pulled in directly to keep the
