@@ -25,13 +25,29 @@ use super::profiles::{Profile, S3Profile, StorageProfiles};
 /// Candidates raced concurrently (PRD 04: "≤2 parallel attempts").
 const RACE_WIDTH: usize = 2;
 
-/// Default upper bound on one candidate's whole transfer (connect + body). A host that
-/// trickles bytes forever costs this much, then the next candidate is tried.
-pub const DEFAULT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(120);
+/// The floor of a candidate's whole-transfer deadline (connect + body).
+pub const MIN_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
 
-/// Default total time the external copies get before a caller with Platform chunks falls
-/// back to them (a mixed repo must not spend minutes per pack on dead gateways).
-pub const DEFAULT_EXTERNAL_BUDGET: Duration = Duration::from_secs(90);
+/// The slowest sustained rate a candidate may deliver at before its deadline cuts it off
+/// (1 MiB/s): a 2 GiB pack gets ~34 minutes. A host that stalls outright is cut off much
+/// sooner by the HTTP client's idle `read_timeout` (see [`super::http_client`]).
+pub const MIN_TRANSFER_RATE: u64 = 1024 * 1024;
+
+/// The deadline for fetching `size` bytes (unknown size → the floor):
+/// `max(MIN_TRANSFER_DEADLINE, size / MIN_TRANSFER_RATE)`.
+pub fn transfer_deadline(size: Option<u64>) -> Duration {
+    let scaled = Duration::from_secs(size.unwrap_or(0).div_ceil(MIN_TRANSFER_RATE));
+    scaled.max(MIN_TRANSFER_DEADLINE)
+}
+
+/// The time a caller with Platform chunks gives the external copies of a `size`-byte
+/// artifact before falling back to the chunks: no new candidate is STARTED after it (an
+/// in-flight transfer still gets its own deadline), so dead gateways cost a bounded
+/// ~90 s per pack in a mixed repo, while a large pack streaming from a healthy mirror is
+/// not abandoned mid-transfer.
+pub fn external_budget(size: Option<u64>) -> Duration {
+    Duration::from_secs(90).max(transfer_deadline(size) / 2)
+}
 
 /// One way to fetch the bytes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -60,8 +76,8 @@ pub struct PackReader {
     /// of a public repo never runs `security` / pops a keychain prompt). Several profiles
     /// may name the same bucket (different endpoints); each is tried in turn.
     s3_profiles: Vec<(String, String, S3Profile)>,
-    candidate_timeout: Duration,
-    budget: Option<Duration>,
+    /// Fixed per-candidate deadline override (tests); `None` = [`transfer_deadline`].
+    candidate_timeout: Option<Duration>,
 }
 
 impl PackReader {
@@ -87,8 +103,7 @@ impl PackReader {
                 .map(|g| g.trim_end_matches('/').to_string())
                 .collect(),
             s3_profiles,
-            candidate_timeout: DEFAULT_CANDIDATE_TIMEOUT,
-            budget: None,
+            candidate_timeout: None,
         }
     }
 
@@ -104,17 +119,11 @@ impl PackReader {
         }
     }
 
-    /// Bound each candidate's whole transfer.
+    /// Override each candidate's whole-transfer deadline (default: size-scaled,
+    /// [`transfer_deadline`]).
     #[must_use]
     pub fn with_candidate_timeout(mut self, t: Duration) -> Self {
-        self.candidate_timeout = t;
-        self
-    }
-
-    /// Bound the total time [`Self::fetch_verified`] spends before giving up.
-    #[must_use]
-    pub fn with_budget(mut self, budget: Duration) -> Self {
-        self.budget = Some(budget);
+        self.candidate_timeout = Some(t);
         self
     }
 
@@ -195,12 +204,15 @@ impl PackReader {
                 }
             }
         };
-        tokio::time::timeout(self.candidate_timeout, attempt)
+        let deadline = self
+            .candidate_timeout
+            .unwrap_or_else(|| transfer_deadline(range.map(|r| r.len()).or(max_bytes)));
+        tokio::time::timeout(deadline, attempt)
             .await
             .unwrap_or_else(|_| {
                 Err(Error::Io(format!(
                     "timed out after {}s",
-                    self.candidate_timeout.as_secs()
+                    deadline.as_secs()
                 )))
             })
     }
@@ -212,13 +224,15 @@ impl PackReader {
 
     /// Fetch the whole artifact from the first candidate whose bytes hash to
     /// `expected_sha256` (lowercase hex). `size` (the manifest's `sizeBytes`, when known)
-    /// caps every candidate's body. Errors with every candidate's failure when none
-    /// verifies, or when the budget ([`Self::with_budget`]) runs out.
+    /// caps every candidate's body and scales its deadline ([`transfer_deadline`]).
+    /// `budget`: no new candidate is started after it (in-flight ones keep their own
+    /// deadline). Errors with every candidate's failure when none verifies.
     pub async fn fetch_verified(
         &self,
         uris: &[String],
         expected_sha256: &str,
         size: Option<u64>,
+        budget: Option<Duration>,
     ) -> Result<Vec<u8>> {
         let candidates = self.candidates(uris);
         if candidates.is_empty() {
@@ -228,7 +242,7 @@ impl PackReader {
         let mut reasons = Vec::new();
         for window in candidates.chunks(RACE_WIDTH) {
             use futures::stream::{FuturesUnordered, StreamExt as _};
-            if let Some(budget) = self.budget {
+            if let Some(budget) = budget {
                 if started.elapsed() >= budget {
                     reasons.push(format!("gave up after the {}s budget", budget.as_secs()));
                     break;
@@ -414,12 +428,13 @@ mod tests {
                 &[format!("{base}/huge"), format!("{base}/good")],
                 &hash,
                 Some(good.len() as u64),
+                None,
             )
             .await
             .unwrap();
         assert_eq!(got, good);
         let err = r
-            .fetch_verified(&[format!("{base}/huge")], &hash, Some(13))
+            .fetch_verified(&[format!("{base}/huge")], &hash, Some(13), None)
             .await
             .unwrap_err()
             .to_string();
@@ -436,12 +451,22 @@ mod tests {
             .with_candidate_timeout(std::time::Duration::from_millis(300));
         let started = std::time::Instant::now();
         let err = r
-            .fetch_verified(&[format!("http://{addr}/x")], &hash, None)
+            .fetch_verified(&[format!("http://{addr}/x")], &hash, None, None)
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn deadlines_scale_with_size() {
+        assert_eq!(transfer_deadline(None), MIN_TRANSFER_DEADLINE);
+        assert_eq!(transfer_deadline(Some(4096)), MIN_TRANSFER_DEADLINE);
+        // 2 GiB at >= 1 MiB/s: 2048 s.
+        assert_eq!(transfer_deadline(Some(2 << 30)), Duration::from_secs(2048));
+        assert_eq!(external_budget(None), Duration::from_secs(90));
+        assert_eq!(external_budget(Some(2 << 30)), Duration::from_secs(1024));
     }
 
     #[test]
@@ -475,6 +500,7 @@ mod tests {
                 ],
                 &hash,
                 Some(good.len() as u64),
+                None,
             )
             .await
             .unwrap();
@@ -490,13 +516,14 @@ mod tests {
                 &[format!("{base}/tampered"), format!("{base}/gone")],
                 &"0".repeat(64),
                 None,
+                None,
             )
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("do not match the manifest hash"), "{err}");
         assert!(matches!(
-            r.fetch_verified(&["platform://c/h".into()], "00", None)
+            r.fetch_verified(&["platform://c/h".into()], "00", None, None)
                 .await,
             Err(Error::NotFound)
         ));

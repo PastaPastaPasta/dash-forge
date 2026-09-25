@@ -141,6 +141,7 @@ async fn download(
             &asset.uris,
             &asset.sha256.to_ascii_lowercase(),
             (asset.size_bytes > 0).then_some(asset.size_bytes),
+            None,
         )
         .await
         .context("downloading + verifying asset")?;

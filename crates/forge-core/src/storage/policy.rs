@@ -73,6 +73,71 @@ pub fn pick_scoped(
     }
 }
 
+/// Outcome of running one `git config` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitConfigRun {
+    /// Exit 0 with this stdout.
+    Found(String),
+    /// Exit 1: the key is not set (git's documented "not found" code).
+    Unset,
+    /// Anything else: git could not run, or does not understand the command (e.g.
+    /// `--show-scope` needs git ≥ 2.26 and exits 129 on older ones).
+    Failed,
+}
+
+/// Run `git <args>` in the current directory (inheriting `GIT_DIR` when git set it, so
+/// repo-local, global and `-c` values all apply) and classify the result.
+pub fn run_git_config(args: &[&str]) -> GitConfigRun {
+    match std::process::Command::new("git")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            GitConfigRun::Found(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        Ok(out) if out.status.code() == Some(1) => GitConfigRun::Unset,
+        _ => GitConfigRun::Failed,
+    }
+}
+
+/// [`git_config_scoped_with`] over the real `git`.
+pub fn git_config_scoped(key: &str) -> Option<(String, String)> {
+    git_config_scoped_with(key, run_git_config)
+}
+
+/// Read `key` with its scope through `run` (which executes `git config <args…>`).
+///
+/// Uses `git config --show-scope --get`; when that FAILS (old git), falls back to plain
+/// `git config --get` and reports the scope as `local` — the value is never silently
+/// dropped, because dropping `dash.storage` or `dash.confirm` would quietly change where a
+/// push stores data or disable its cost guard. `None` only when the key is really unset.
+pub fn git_config_scoped_with(
+    key: &str,
+    run: impl Fn(&[&str]) -> GitConfigRun,
+) -> Option<(String, String)> {
+    if key.starts_with('-') || key.chars().any(char::is_control) {
+        return None;
+    }
+    match run(&["config", "--show-scope", "--get", key]) {
+        GitConfigRun::Found(out) => {
+            let line = out.trim_end();
+            let (scope, value) = line.split_once('\t')?;
+            let value = value.trim();
+            (!value.is_empty()).then(|| (scope.to_string(), value.to_string()))
+        }
+        GitConfigRun::Unset => None,
+        GitConfigRun::Failed => match run(&["config", "--get", key]) {
+            GitConfigRun::Found(out) => {
+                let value = out.trim();
+                (!value.is_empty()).then(|| ("local".to_string(), value.to_string()))
+            }
+            GitConfigRun::Unset | GitConfigRun::Failed => None,
+        },
+    }
+}
+
 /// Parse a git-config boolean (`true/yes/on/1` and `false/no/off/0`, case-insensitive).
 pub fn parse_git_bool(key: &str, value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -340,6 +405,41 @@ kind = "platform"
         assert!(err(Some("platform,chain"), None).contains("twice"));
         assert!(err(Some("nope"), None).contains("dg storage add nope"));
         assert!(err(None, Some("2")).contains("no targets"));
+    }
+
+    #[test]
+    fn old_git_without_show_scope_falls_back_instead_of_dropping_the_policy() {
+        // git < 2.26: `--show-scope` is an unknown option (exit 129) → Failed.
+        let old_git = |args: &[&str]| {
+            if args.contains(&"--show-scope") {
+                GitConfigRun::Failed
+            } else {
+                GitConfigRun::Found("r2-main,kubo\n".into())
+            }
+        };
+        assert_eq!(
+            git_config_scoped_with("dash.storage", old_git),
+            Some(("local".into(), "r2-main,kubo".into()))
+        );
+        // Modern git.
+        let new_git = |_: &[&str]| GitConfigRun::Found("global\tr2-main\n".into());
+        assert_eq!(
+            git_config_scoped_with("dash.storage", new_git),
+            Some(("global".into(), "r2-main".into()))
+        );
+        // Really unset: no fallback call needed, and no value.
+        let unset = |args: &[&str]| {
+            assert!(
+                args.contains(&"--show-scope"),
+                "no fallback for an unset key"
+            );
+            GitConfigRun::Unset
+        };
+        assert_eq!(git_config_scoped_with("dash.storage", unset), None);
+        assert_eq!(
+            git_config_scoped_with("--bad", |_: &[&str]| GitConfigRun::Found("x".into())),
+            None
+        );
     }
 
     #[test]

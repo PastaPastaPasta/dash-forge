@@ -445,7 +445,7 @@ async fn replicate_to_minio_and_kubo_then_read_back() {
         .collect();
     assert_eq!(
         reader
-            .fetch_verified(&ipfs_only, &meta.pack_hash, Some(data.len() as u64))
+            .fetch_verified(&ipfs_only, &meta.pack_hash, Some(data.len() as u64), None)
             .await
             .unwrap(),
         data
@@ -453,7 +453,7 @@ async fn replicate_to_minio_and_kubo_then_read_back() {
     // And the full list.
     assert_eq!(
         reader
-            .fetch_verified(&uris, &meta.pack_hash, None)
+            .fetch_verified(&uris, &meta.pack_hash, None, None)
             .await
             .unwrap(),
         data

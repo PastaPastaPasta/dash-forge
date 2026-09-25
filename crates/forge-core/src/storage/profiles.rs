@@ -395,11 +395,35 @@ fn toml_error(raw: &str, e: &toml::de::Error) -> Error {
     let line = e
         .span()
         .map(|span| raw[..span.start.min(raw.len())].matches('\n').count() + 1);
-    let message = e.message().trim();
+    let message = strip_quoted(e.message().trim());
     Error::Config(match line {
         Some(n) => format!("line {n}: {message}"),
-        None => message.to_string(),
+        None => message,
     })
+}
+
+/// Replace every quoted run (`"…"`, `'…'`, `` `…` ``) in a parser message with `…`: serde
+/// quotes offending VALUES (`invalid type: string "wJalr…", expected a boolean`), and a
+/// value in storage.toml may be a pasted secret. Field names are unquoted in these
+/// messages or harmless to lose.
+fn strip_quoted(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut open: Option<char> = None;
+    for c in message.chars() {
+        match open {
+            Some(q) if c == q => {
+                open = None;
+                out.push('…');
+            }
+            Some(_) => {}
+            None if matches!(c, '"' | '\'' | '`') => open = Some(c),
+            None => out.push(c),
+        }
+    }
+    if open.is_some() {
+        out.push('…');
+    }
+    out
 }
 
 impl Profile {
@@ -762,6 +786,24 @@ secret_access_key = "wJalrXUtnFEMI-LITERAL-SECRET"
         let err = StorageProfiles::parse(raw).unwrap_err().to_string();
         assert!(!err.contains("SYNTAX-SECRET"), "{err}");
         assert!(err.contains("line 3"), "{err}");
+        // A secret pasted into a NON-string field: serde's "invalid type" quotes the value.
+        let raw = "[profiles.x]\nkind = \"s3\"\nendpoint = \"https://h\"\nbucket = \"b\"\n\
+                   path_style = \"TYPE-MISMATCH-SECRET\"\n";
+        let err = StorageProfiles::parse(raw).unwrap_err().to_string();
+        assert!(!err.contains("TYPE-MISMATCH-SECRET"), "{err}");
+        assert!(err.contains("invalid type"), "{err}");
+    }
+
+    #[test]
+    fn strip_quoted_removes_every_quoted_run() {
+        assert_eq!(
+            strip_quoted(r#"invalid type: string "s3cr3t", expected a boolean"#),
+            "invalid type: string …, expected a boolean"
+        );
+        assert_eq!(
+            strip_quoted("unknown `x` and 'y' and \"z"),
+            "unknown … and … and …"
+        );
     }
 
     #[test]

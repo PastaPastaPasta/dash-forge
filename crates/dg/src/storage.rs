@@ -17,7 +17,7 @@ use serde_json::json;
 
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
-use forge_core::storage::policy::pick_scoped;
+use forge_core::storage::policy::{git_config_scoped, pick_scoped};
 use forge_core::storage::profiles::{
     valid_profile_name, KeyId, KuboProfile, PinningProfile, PlatformProfile, S3Profile,
 };
@@ -692,21 +692,6 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
         },
     );
     Ok(())
-}
-
-/// `git config --show-scope --get <key>` → `(scope, value)`.
-fn git_config_scoped(key: &str) -> Option<(String, String)> {
-    let out = Process::new("git")
-        .args(["config", "--show-scope", "--get", key])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-    let (scope, value) = line.split_once('\t')?;
-    let value = value.trim().to_string();
-    (!value.is_empty()).then(|| (scope.to_string(), value))
 }
 
 /// Probe each pack's mirror URIs and report an availability matrix. Platform-tier packs

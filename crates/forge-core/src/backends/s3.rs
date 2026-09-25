@@ -138,9 +138,11 @@ impl S3Config {
             )));
         }
         if url.path() != "/" && !url.path().is_empty() {
+            // The path is not echoed (it may be a pasted presigned URL or bucket key).
             return Err(Error::Config(format!(
-                "s3 endpoint {:?} must be an origin with no path; put the bucket in `bucket`",
-                self.endpoint
+                "s3 endpoint must be an origin (scheme://host[:port]) with no path, got a \
+                 path on {}; put the bucket in `bucket`",
+                url.host_str().unwrap_or_default()
             )));
         }
         let bucket_ok = !self.bucket.is_empty()
@@ -210,7 +212,11 @@ impl S3Config {
 #[derive(Debug, Clone)]
 pub struct S3Backend {
     config: S3Config,
+    /// Signed API requests: never follows redirects ([`S3Backend::client`]).
     client: Client,
+    /// Unsigned reads of the public URL: follows redirects (an http→https or CDN 301 is
+    /// normal there, and there is no credential to leak).
+    public_client: Client,
 }
 
 /// A signed (or anonymous) request ready to send: the URL plus the headers to add.
@@ -222,10 +228,7 @@ struct Prepared {
 impl S3Backend {
     /// Build a backend from `config` with its own HTTP client.
     pub fn new(config: S3Config) -> Self {
-        Self {
-            config,
-            client: Self::client(),
-        }
+        Self::with_client(config, Self::client())
     }
 
     /// The HTTP client S3 requests use: bounded timeouts and **no redirects**. A signed
@@ -244,7 +247,11 @@ impl S3Backend {
     /// Build a backend over an existing client. The client should not follow redirects
     /// (see [`S3Backend::client`]).
     pub fn with_client(config: S3Config, client: Client) -> Self {
-        Self { config, client }
+        Self {
+            config,
+            client,
+            public_client: crate::storage::http_client(),
+        }
     }
 
     /// The backend's config.
@@ -302,7 +309,9 @@ impl S3Backend {
                 })?;
                 self.get_object_capped(&key, range, max_bytes).await
             }
-            Some("http" | "https") => http_get_capped(&self.client, &uri.0, range, max_bytes).await,
+            Some("http" | "https") => {
+                http_get_capped(&self.public_client, &uri.0, range, max_bytes).await
+            }
             other => Err(Error::Config(format!(
                 "s3 backend cannot serve uri scheme {other:?}: {uri}"
             ))),
@@ -623,7 +632,7 @@ impl PackBackend for S3Backend {
                     _ => Health::down(latency),
                 })
             }
-            Some("http" | "https") => http_probe(&self.client, &uri.0).await,
+            Some("http" | "https") => http_probe(&self.public_client, &uri.0).await,
             other => Err(Error::Config(format!(
                 "s3 backend cannot probe uri scheme {other:?}: {uri}"
             ))),
