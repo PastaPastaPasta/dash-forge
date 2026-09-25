@@ -120,10 +120,16 @@ function Unavailable({
 
 export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JSX.Element {
   const baseRepo = home.repo
+  // Diff against the branch the PR targets now: an authorized `retarget` moves it off the
+  // patch's original `baseRefName`. `baseTipOid` / `baseOidAtOpen` were read from the
+  // original ref's history, so they only apply while the PR still targets that ref.
+  const baseRefName = pull.state.baseRef ?? pull.baseRefName
+  const retargeted = baseRefName !== pull.baseRefName
   // The base branch's tip as every other view resolves it (validity- and protection-checked
   // by resolveRef), falling back to the newest raw update when the branch is not listed.
-  const resolvedBase = home.branches.find((b) => b.refName === pull.baseRefName)
-  const baseTipOid = tipOidOf(resolvedBase) ?? pull.baseTipOid
+  const resolvedBase = home.branches.find((b) => b.refName === baseRefName)
+  const baseTipOid = tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid)
+  const baseOidAtOpen = retargeted ? '' : pull.baseOidAtOpen
   // An empty source pointer only comes from a malformed document; the base repo is then the
   // only place the head could be. Browse reads are keyed by contract alone — the owner is
   // carried for the type and is the PR author, who pushed the source repo.
@@ -162,7 +168,7 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
     () =>
       loadPullComparison(sides as DiffSides, {
         baseTipOid,
-        baseOidAtOpen: pull.baseOidAtOpen,
+        baseOidAtOpen,
         headOid: pull.headOid,
         merged: pull.state.merged,
         imported: pull.imported,
@@ -172,7 +178,7 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
       sourceContractId,
       sidesKey,
       baseTipOid,
-      pull.baseOidAtOpen,
+      baseOidAtOpen,
       pull.headOid,
       pull.state.merged,
       pull.imported,
