@@ -6,7 +6,7 @@
 
 - A funded **mainnet** Dash identity to act as the **registry deployer / DCG identity**. Cost budget below.
 - The `dg` CLI and `git-remote-dash` helper built from a release tag (`cargo build --release`).
-- `tools/mint-identity` works against mainnet (it already supports `--network`/mainnet config in the bridge flow; note the **faucet does not exist on mainnet** — you fund the identity's asset-lock deposit address with real DASH manually, then `mint`/`topup`).
+- A mainnet identity from the bridge (`bridge.thepasta.org`). `tools/mint-identity` supports only `--network testnet` and `--network devnet` (it has no mainnet config and there is **no faucet on mainnet**), so create and fund the mainnet identity through the bridge.
 - Decide the registry owner custody model: for an org, the deployer identity should be **jointly held** (multiple high-security keys across principals) — this is the *only* succession mechanism (contract owners are immutable; see PRD 01 open questions).
 
 ## 1. Cost budget (mainnet DASH — real money)
@@ -26,8 +26,7 @@ Minimum to launch: **~0.7 DASH** (registry) + **~1.2 DASH** per canonical repo +
 ## 2. Deploy the registry
 
 ```bash
-# Fund the deployer mainnet identity first (real DASH to its asset-lock deposit address, then):
-node tools/mint-identity/mint.mjs balance --identity <deployer-mainnet.json>   # confirm funds
+# Fund the deployer mainnet identity first (bridge), and confirm its credit balance in the bridge.
 
 # Deploy the registry (uses the reconciled source with single-property count indices):
 cd forge-contracts

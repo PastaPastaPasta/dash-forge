@@ -134,12 +134,15 @@ export function createAssetLockTransaction(utxo, assetLockPubKey, fee = 1000n) {
   };
 }
 
-// Standard P2PKH spend: single input UTXO -> named outputs [{script, value}] + change.
-// changeScript receives (utxo - sum(outputs) - fee).
-export function createP2PKHTransaction(utxo, outputs, changeScript, fee = 10000n) {
-  const utxoAmount = BigInt(utxo.satoshis);
+// Standard P2PKH spend: one UTXO or an array of them (all controlled by the same
+// key) -> named outputs [{script, value}] + change.
+// changeScript receives (sum(utxos) - sum(outputs) - fee).
+export function createP2PKHTransaction(utxos, outputs, changeScript, fee = 10000n) {
+  const inputs = Array.isArray(utxos) ? utxos : [utxos];
+  if (inputs.length === 0) throw new Error('P2PKH transfer needs at least one input');
+  const inTotal = inputs.reduce((s, u) => s + BigInt(u.satoshis), 0n);
   const outTotal = outputs.reduce((s, o) => s + BigInt(o.value), 0n);
-  const change = utxoAmount - outTotal - fee;
+  const change = inTotal - outTotal - fee;
   if (change < 0n) throw new Error('Insufficient funds for P2PKH transfer');
 
   const vout = outputs.map((o) => ({ value: BigInt(o.value), scriptPubKey: o.script }));
@@ -148,11 +151,16 @@ export function createP2PKHTransaction(utxo, outputs, changeScript, fee = 10000n
   return {
     version: TX_VERSION_STANDARD,
     txType: TX_TYPE_STANDARD,
-    vin: [txInFromUtxo(utxo)],
+    vin: inputs.map(txInFromUtxo),
     vout,
     lockTime: 0,
     extraPayload: new Uint8Array(0),
   };
+}
+
+// Upper-bound size of a signed P2PKH tx (compressed keys): ~148 B per input, 34 B per output.
+export function estimateP2PKHSize(inputCount, outputCount) {
+  return 10 + 148 * inputCount + 34 * outputCount;
 }
 
 // ---- signing ----
@@ -206,6 +214,7 @@ function createP2PKHScriptSig(signature, publicKey) {
 // Sign every input with the same key (all inputs P2PKH for the same address).
 // utxos[i].scriptPubKey (hex) is used as the scriptCode.
 export async function signTransaction(tx, utxos, privateKey, publicKey) {
+  if (utxos.length !== tx.vin.length) throw new Error(`signTransaction: ${tx.vin.length} inputs but ${utxos.length} utxos`);
   let signedTx = tx;
   for (let i = 0; i < tx.vin.length; i++) {
     const scriptCode = hexToBytes(utxos[i].scriptPubKey);
