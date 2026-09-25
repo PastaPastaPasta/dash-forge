@@ -43,10 +43,20 @@ drive-proof-verifier.workspace = true
 rs-sdk-trusted-context-provider.workspace = true
 simple-signer.workspace = true
 
+# Only for `vendored-openssl` below. rs-sdk-trusted-context-provider enables reqwest's default
+# (native-tls) features, which on Linux link the system OpenSSL; this lets a release build
+# compile OpenSSL in statically instead.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", optional = true }
+
 [features]
 # Fault-injection environment hooks for the e2e harness (DASH_FORGE_KILL_AFTER_CHUNK).
 # Off in normal builds; enabled through git-remote-dash's `test-hooks`.
 test-hooks = []
+# Statically link a vendored OpenSSL on Linux, so release binaries do not depend on the
+# host's libssl version (release.yml builds with it; dev builds use the system library).
+# No effect on macOS/Windows, where native-tls uses the OS TLS stack.
+vendored-openssl = ["dep:openssl", "openssl/vendored"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

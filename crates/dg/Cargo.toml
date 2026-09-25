@@ -15,6 +15,7 @@ path = "src/main.rs"
 forge-core = { path = "../forge-core" }
 anyhow.workspace = true
 clap.workspace = true
+clap_complete = "4"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -24,6 +25,18 @@ toml = "0.8"
 hex = "0.4"
 # `dg storage test` drives the storage probes over the same rustls client forge-core uses.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
+# publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level
+# dash-forge-<version>-<target>/ directory). Keep in step with crates/git-remote-dash.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/dash-forge-{ version }-{ target }.tar.gz"
+bin-dir = "dash-forge-{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/dash-forge-{ version }-{ target }.zip"
+pkg-fmt = "zip"
 
 [lints]
 workspace = true

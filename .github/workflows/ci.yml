@@ -15,6 +15,31 @@ concurrency:
 # dependency tree does not fit a fast per-push job, so Rust is gated by `rust.yml`
 # on pull requests and pushes that touch Rust paths, plus nightly.
 jobs:
+  # install.sh is piped to a shell by users: lint it and run its tests against a fake
+  # release on both OS families it supports (no build needed; the binaries are stubs).
+  install-sh:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh install.sh tests/install/test-install.sh
+      - name: test (sh)
+        run: sh tests/install/test-install.sh
+      - name: test (dash)
+        if: runner.os == 'Linux'
+        run: dash tests/install/test-install.sh
+
   web:
     name: web
     runs-on: ubuntu-latest

@@ -1,5 +1,9 @@
 # Building Dash Forge
 
+To use Dash Forge you do not have to build it: prebuilt binaries for Linux, macOS and
+Windows come with every release. See [INSTALL.md](INSTALL.md). This page is for
+contributors.
+
 A fresh clone builds with no out-of-tree setup:
 
 ```sh
