@@ -171,8 +171,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           git config --global core.longpaths true
-          echo 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
-          echo 'C:\ch\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
+          printf '%s\n' 'C:\ch\bin' >> "$GITHUB_PATH"
 
       # tenderdash-proto compiles .proto files at build time and needs protoc >= 25; distro
       # packages are too old (see docs/BUILDING.md). The zip is checked against a pinned
