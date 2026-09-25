@@ -128,11 +128,19 @@ pub enum Error {
         repo: String,
     },
 
-    /// Consensus refused a write because the writer has no membership document for the
-    /// repository (protocol 14 `ownerRefersTo`, consensus code 40120). On forge-v2 this is
-    /// "not a writer/maintainer": never granted, or revoked.
-    #[error("not a member: {0}")]
-    NotAMember(String),
+    /// Consensus refused a write because the writer has no membership document the
+    /// document type needs (protocol 14 `ownerRefersTo`, consensus code 40120): not a
+    /// member at all, or a writer where the type is maintainer-only (`protectedRefUpdate`,
+    /// `config`, `release`).
+    #[error(
+        "consensus refused {document_type}: no membership document for your identity ({detail})"
+    )]
+    NotAMember {
+        /// The refused document type.
+        document_type: String,
+        /// The consensus error.
+        detail: String,
+    },
 
     /// An error surfaced by the Dash Platform SDK (connect, fetch, sign, broadcast).
     ///

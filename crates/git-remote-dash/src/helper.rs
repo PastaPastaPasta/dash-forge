@@ -269,12 +269,23 @@ impl Helper {
         let repo = &conn.repo;
         let contract = &svc.repo_contract(repo).await?;
         let reader = &PackReader::from_user_config();
-        let roles = &svc.copy_roles(repo).await?;
+        // Membership only ranks copies; if it cannot be read, fall back to time order
+        // rather than failing the clone (every copy is still hash-verified).
+        let roles = &svc.copy_roles(repo).await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the member list; trying pack copies in time order");
+            forge_core::repo::RoleMap::new()
+        });
         let packs = group_by_hash(&git_packs);
         let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
             let got = svc.fetch_best_copy(repo, contract, copies, roles, reader).await;
-            let on_chain = copies.iter().any(|m| m.storage == 0);
+            // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
+            // anyone who was a writer can post a manifest, so a stranger's chunkless
+            // `storage = 0` copy must not turn an unreadable pack into a failed clone (git's
+            // connectivity check still fails the fetch if a wanted object was in it).
+            let on_chain = copies.iter().any(|m| {
+                m.storage == 0 && (repo.is_v1() || roles.contains_key(&m.owner_id))
+            });
             let bytes = match got {
                 Ok((bytes, _)) => bytes,
                 Err(e) if on_chain => {
@@ -371,7 +382,7 @@ impl Helper {
         // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
         // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
         if !dry_run && specs.iter().any(|s| !s.src.is_empty()) && !skip_write_precheck() {
-            if let Some(denied) = write_access_denied(conn).await {
+            if let Some(denied) = write_access_denied(conn, &svc, specs).await {
                 // The block says why and what to do; git's own `! [remote rejected]` lines
                 // (from the per-ref reason) make the push fail.
                 denied.error.eprint("dash: ");
@@ -715,22 +726,19 @@ async fn upload_push_pack(
         policy::NOTE_NOTHING_STORED,
     )?;
 
-    // An earlier push may already have recorded this exact pack (unique packHash; a
-    // duplicate manifest create is treated as "already stored"). Decide BEFORE paying:
-    // still readable → nothing to store; unreadable → refuse now, not after new copies.
-    let copies = ctx
-        .svc
-        .read_pack_copies(ctx.repo, job.pack_hash)
-        .await
-        .context("checking for an existing manifest of this pack")?;
-    if !copies.is_empty() {
+    // An earlier push may already have recorded this exact pack. Decide BEFORE paying.
+    if already_recorded(ctx, &job).await? {
         // The browse index is left alone: the earlier push published (or tried to) the
         // fragment for this pack, and a missing one is rebuilt by the next repack.
-        confirm_existing_manifest(ctx, &job, &copies).await?;
         return Ok(Some(policy::estimate_ref_updates(ctx.refs.len())));
     }
 
-    let jpath = crate::journal::journal_path(ctx.git_dir, &job.meta.pack_hash);
+    let jpath = crate::journal::journal_path(
+        ctx.git_dir,
+        ctx.repo.id(),
+        &ctx.identity,
+        &job.meta.pack_hash,
+    );
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
     let stored_on_platform = replication.has_platform();
     let actual_estimate = job.estimate(ctx, stored_on_platform);
@@ -980,6 +988,34 @@ async fn record_pack(
     Ok(())
 }
 
+/// Whether this pack is already recorded and readable, so the push stores nothing. `false`
+/// when no manifest names it, or when none is readable and none is this identity's: forge-v2
+/// gives every uploader its own manifest slot (the pack indexes include `$ownerId`) so that
+/// nobody's dead or hostile copy can block an honest upload, and this push stores its own.
+/// This identity's own unreadable copy cannot be replaced (its slot is taken), so that case
+/// refuses, pointing at `dg reseed --from-local`.
+async fn already_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<bool> {
+    let copies = ctx
+        .svc
+        .read_pack_copies(ctx.repo, job.pack_hash)
+        .await
+        .context("checking for an existing manifest of this pack")?;
+    if copies.is_empty() {
+        return Ok(false);
+    }
+    match confirm_existing_manifest(ctx, job, &copies).await {
+        Ok(()) => Ok(true),
+        Err(e) if !copies.iter().any(|m| m.owner_id == ctx.identity) => {
+            ctx.say(&format!(
+                "no recorded copy of pack {} is readable ({e:#}); storing this push's own copy",
+                &job.meta.pack_hash[..12]
+            ));
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// This pack already has a manifest (an earlier push recorded it). Accept it only if at
 /// least one recorded copy is readable and hash-matches; otherwise refuse — before this
 /// push pays for anything — naming the dead copies and the way back.
@@ -1227,16 +1263,57 @@ struct Denied {
 /// Returns `None` — i.e. proceed — when membership cannot be determined. The read is
 /// advisory: consensus (`ownerRefersTo`, 40120) is the authority, and a transient read
 /// failure must not block a push a member is entitled to make.
-async fn write_access_denied(conn: &Conn) -> Option<Denied> {
+async fn write_access_denied(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    specs: &[PushSpec],
+) -> Option<Denied> {
     let me = conn.identity.id();
     let members = MemberReader::new(&conn.client)
         .roles_of(&conn.repo, &me)
         .await
         .ok()?;
-    if !members.is_empty() {
+    if members.is_empty() {
+        return Some(write_denied(&conn.repo.display(), &me));
+    }
+    // A writer (not a maintainer) cannot update a protected ref: its `protectedRefUpdate`
+    // is maintainer-only at consensus. Refuse before the pack is stored and paid for.
+    if members
+        .iter()
+        .any(|m| m.role == forge_core::rules::v2::Role::Maintainer)
+    {
         return None;
     }
-    Some(write_denied(&conn.repo.display(), &me))
+    let patterns = svc.protected_patterns(&conn.repo).await.ok()?;
+    let protected: Vec<&str> = specs
+        .iter()
+        .map(|s| s.dst.as_str())
+        .filter(|d| forge_core::rules::matches_protected(d, &patterns))
+        .collect();
+    if protected.is_empty() {
+        return None;
+    }
+    Some(protected_denied(&conn.repo.display(), &me, &protected))
+}
+
+/// The push refusal for a writer updating a protected ref.
+fn protected_denied(repo: &str, me: &str, refs: &[&str]) -> Denied {
+    Denied {
+        error: UserError::new(
+            codes::NOT_A_WRITER,
+            format!(
+                "push rejected: only maintainers of {repo} can update {}",
+                refs.join(", ")
+            ),
+        )
+        .cause("the ref matches the repo's protected patterns, and you are a writer")
+        .fix(format!(
+            "ask the owner to run `dg collab add {repo} {me} --role maintainer`"
+        ))
+        .fix("or push to a branch that is not protected")
+        .note(NOTE_PRECHECK),
+        wire: "protected ref: maintainers only",
+    }
 }
 
 /// The push refusal for an identity that is not a member.
@@ -1286,8 +1363,21 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oid_to_bytes, resolve_network, write_denied, PushOutcome};
+    use super::{oid_to_bytes, protected_denied, resolve_network, write_denied, PushOutcome};
     use forge_core::network::NetworkSettings;
+
+    #[test]
+    fn a_writer_on_a_protected_ref_is_told_it_needs_maintainer() {
+        let d = protected_denied("owner/repo", "me", &["refs/heads/main"]);
+        let text = d.error.render("dash: ", false);
+        assert!(
+            text.contains("only maintainers of owner/repo can update refs/heads/main"),
+            "{text}"
+        );
+        assert!(text.contains("--role maintainer"), "{text}");
+        // Local refusal, not a consensus verdict.
+        assert!(text.contains("checked before building or paying"), "{text}");
+    }
 
     #[test]
     fn a_non_member_is_pointed_at_collab_add() {

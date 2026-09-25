@@ -1221,6 +1221,7 @@ impl<'a> WriteEngine<'a> {
                 Ok(_proof) => return Ok(BroadcastOutcome::Applied),
                 Err(e) => match classify_write_error(&e, &prepared.document_type) {
                     WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
+                    WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
                     WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
                         // Loop around to re-broadcast the identical signed bytes, after a
                         // backoff so a node whose ban just lapsed is not re-picked at once.
@@ -1287,24 +1288,61 @@ impl<'a> WriteEngine<'a> {
         properties: BTreeMap<String, FieldValue>,
         mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
     ) -> Result<PreparedWrite> {
-        let prepared = self
-            .prepare_create(contract, document_type, properties.clone())
-            .await?;
-        persist(&prepared)?;
-        match self.execute(&prepared).await {
-            Ok(_) => Ok(prepared),
-            Err(Error::StaleProtocolVersion(reason)) => {
-                let version = self.client.refresh_protocol_version().await?;
-                tracing::warn!(%reason, version, "stale protocol version; re-preparing once");
-                let prepared = self
-                    .prepare_create(contract, document_type, properties)
-                    .await?;
-                persist(&prepared)?;
-                self.execute(&prepared).await?;
-                Ok(prepared)
+        // Two retries: a stale protocol version (nothing landed) and a nonce another write by
+        // this identity took first (ours can then never land). Each re-prepares with a fresh
+        // nonce and entropy, persisting the replacement before it is broadcast.
+        for attempt in 0..3 {
+            let prepared = self
+                .prepare_create(contract, document_type, properties.clone())
+                .await?;
+            persist(&prepared)?;
+            match self.execute(&prepared).await {
+                Ok(BroadcastOutcome::NonceConsumed) => {
+                    if self
+                        .landed(contract, document_type, prepared.document_id(), true)
+                        .await?
+                    {
+                        return Ok(prepared);
+                    }
+                    tracing::warn!(
+                        document_type,
+                        "another write by this identity took the nonce; re-preparing"
+                    );
+                }
+                Ok(_) => return Ok(prepared),
+                Err(Error::StaleProtocolVersion(reason)) if attempt == 0 => {
+                    let version = self.client.refresh_protocol_version().await?;
+                    tracing::warn!(%reason, version, "stale protocol version; re-preparing once");
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
+        Err(Error::Nonce)
+    }
+
+    /// Whether a document exists (`want = true`) or is gone (`want = false`), polling briefly:
+    /// a proved read right after a landing can lag a block behind it.
+    pub async fn landed(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        want: bool,
+    ) -> Result<bool> {
+        for attempt in 0..CONFIRM_ATTEMPTS {
+            if self
+                .client
+                .document_exists(contract, document_type, document_id)
+                .await?
+                == want
+            {
+                return Ok(true);
+            }
+            if attempt + 1 < CONFIRM_ATTEMPTS {
+                tokio::time::sleep(CONFIRM_DELAY).await;
+            }
+        }
+        Ok(false)
     }
 
     /// Re-broadcast a write captured earlier by [`Self::create_journaled`]. The identical
@@ -1331,13 +1369,33 @@ impl<'a> WriteEngine<'a> {
         document_type: &str,
         document_id: &str,
     ) -> Result<()> {
-        let prepared = self
-            .prepare_delete(contract, document_type, document_id)
-            .await?;
-        self.execute(&prepared).await?;
-        Ok(())
+        for _ in 0..2 {
+            let prepared = self
+                .prepare_delete(contract, document_type, document_id)
+                .await?;
+            match self.execute(&prepared).await? {
+                BroadcastOutcome::NonceConsumed => {
+                    if self
+                        .landed(contract, document_type, document_id, false)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                    tracing::warn!(
+                        document_type,
+                        "another write by this identity took the nonce; re-preparing the delete"
+                    );
+                }
+                _ => return Ok(()),
+            }
+        }
+        Err(Error::Nonce)
     }
 }
+
+/// How many proved reads [`WriteEngine::landed`] makes, and the pause between them.
+const CONFIRM_ATTEMPTS: usize = 6;
+const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// An SDK-free document field value, converted to the Platform value type inside this
 /// module. Lets callers build document properties (byteArray / integer / string /
@@ -1793,9 +1851,11 @@ fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<
 
 /// The classification of a broadcast error, driving the retry loop.
 enum WriteFailure {
-    /// The write already landed on-chain (a duplicate re-broadcast: consumed nonce,
-    /// already-present document, or gRPC AlreadyExists). Idempotent success.
+    /// The write already landed on-chain (a duplicate re-broadcast: already-present
+    /// document, or gRPC AlreadyExists). Idempotent success.
     AlreadyLanded,
+    /// The nonce was already used: this write landed earlier, or another write took it.
+    NonceConsumed,
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
     Retryable,
@@ -1845,8 +1905,8 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
         match state_error {
             // The document is already present, or the baked nonce was already consumed
             // by an earlier (identical) broadcast → the intended write has landed.
-            StateError::DocumentAlreadyPresentError(_)
-            | StateError::InvalidIdentityNonceError(_) => return WriteFailure::AlreadyLanded,
+            StateError::DocumentAlreadyPresentError(_) => return WriteFailure::AlreadyLanded,
+            StateError::InvalidIdentityNonceError(_) => return WriteFailure::NonceConsumed,
             // A resumed push re-uploading a content-addressed chunk / manifest collides on
             // its UNIQUE index — the content is already stored, so this is idempotent
             // success (never charged the storage twice), scoped to those doc types only.
@@ -1872,11 +1932,13 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                 return WriteFailure::Fatal(Error::Unauthorized)
             }
             // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
-            // membership document for the writer (forge-v2: never granted, or revoked).
+            // membership document for the writer (forge-v2: never granted, or revoked; or a
+            // writer where the type needs a maintainer).
             StateError::ReferencedEntityNotFoundError(err) if err.path() == "$ownerId" => {
-                return WriteFailure::Fatal(Error::NotAMember(format!(
-                    "consensus refused {document_type} (40120: {err})"
-                )))
+                return WriteFailure::Fatal(Error::NotAMember {
+                    document_type: document_type.to_string(),
+                    detail: format!("40120: {err}"),
+                })
             }
             _ => {}
         }
@@ -2013,6 +2075,12 @@ pub enum BroadcastOutcome {
     Applied,
     /// The transition already existed on-chain — treated as success (idempotency).
     AlreadyExists,
+    /// Platform refused the transition's nonce as already used. That is this very transition
+    /// having landed earlier (a re-broadcast) OR another write by the same identity having
+    /// taken the nonce first — on forge-v2 every write an identity makes shares one nonce
+    /// counter, so concurrent processes can collide. The caller must check which:
+    /// [`WriteEngine::create_journaled`] and [`WriteEngine::delete_document`] do.
+    NonceConsumed,
 }
 
 /// The durable idempotent-retry intent: "I intend to broadcast *these* exact signed

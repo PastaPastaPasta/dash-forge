@@ -210,7 +210,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         .await
         .expect_err("revoked writer must be refused");
     println!("revoked writer: {err}");
-    assert!(matches!(err, Error::NotAMember(_)), "{err}");
+    assert!(matches!(err, Error::NotAMember { .. }), "{err}");
     assert!(err.to_string().contains("40120"), "{err}");
 
     // --- 5. never a member ---
@@ -218,7 +218,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         .write_ref_update(&repo, "refs/heads/contrib", &[0x44; 20], None, false)
         .await
         .expect_err("non-member must be refused");
-    assert!(matches!(err, Error::NotAMember(_)), "{err}");
+    assert!(matches!(err, Error::NotAMember { .. }), "{err}");
 
     let after = client.get_balance(&owner.id()).await.unwrap();
     println!("OWNER balance now {after} credits");

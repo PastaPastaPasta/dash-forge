@@ -29,8 +29,8 @@ use crate::keystore::BridgeIdentity;
 use crate::members::{doc_type, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
-    self, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryFilter, WriteEngine,
-    WriteIntent,
+    self, BroadcastOutcome, FieldValue, LoadedContract, LoadedIdentity, PlatformClient,
+    WriteEngine, WriteIntent,
 };
 use crate::resolve::{find_v2, repo_slug, DOC_REPO};
 use crate::rules::v2::{Role, Visibility};
@@ -38,6 +38,9 @@ use crate::scope::RepoRef;
 
 /// The initial `config` document type.
 const DOC_CONFIG: &str = "config";
+/// How often a just-created repo is looked up through its index, and the pause between.
+const FIND_ATTEMPTS: usize = 6;
+const FIND_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// What to create.
 #[derive(Debug, Clone)]
@@ -222,14 +225,13 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
 
 /// The initial `config` document's properties (no protected patterns: an empty list is the
 /// same as none, and omitting it keeps the document small).
-fn config_props(repo_id: [u8; 32], opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
+fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut backend = BTreeMap::new();
     backend.insert(
         "mode".into(),
         FieldValue::integer(u64::from(opts.backend_mode)),
     );
     let mut p = BTreeMap::new();
-    p.insert("repoId".into(), FieldValue::identifier(repo_id));
     p.insert(
         "defaultBranch".into(),
         FieldValue::text(&opts.default_branch),
@@ -239,30 +241,35 @@ fn config_props(repo_id: [u8; 32], opts: &CreateRepoOpts) -> BTreeMap<String, Fi
     p
 }
 
-/// Re-broadcast a saved transition and confirm its document exists. `false` means the
-/// transition never landed and never will (its nonce went to another write): the caller
-/// discards it and decides afresh.
-async fn replay_confirmed(
-    client: &PlatformClient,
+/// Re-broadcast a saved transition and decide whether its document exists. `false` means
+/// it did not land and will not: the caller discards it and decides afresh.
+///
+/// * `Applied` / `AlreadyExists`: the proof (or a present document) says it landed.
+/// * `NonceConsumed`: this transition landed earlier, or another write by the identity took
+///   its nonce; a proved read decides.
+/// * A consensus refusal that proves nothing executed (a stale protocol version, a unique
+///   index already taken, a gate): it never landed; re-deciding adopts or re-signs.
+/// * Anything else (the network) is returned: the transition may still land.
+async fn replay_landed(
     engine: &WriteEngine<'_>,
     core: &LoadedContract,
     step: Step,
     intent: &WriteIntent,
 ) -> Result<bool> {
-    engine.replay(step.doc_type(), intent).await?;
-    // A proved read right after the landing proof can lag by a block; poll briefly.
-    for attempt in 0..6 {
-        if client
-            .document_exists(core, step.doc_type(), &intent.document_id)
-            .await?
-        {
-            return Ok(true);
+    match engine.replay(step.doc_type(), intent).await {
+        Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(true),
+        Ok(BroadcastOutcome::NonceConsumed) => {
+            engine
+                .landed(core, step.doc_type(), &intent.document_id, true)
+                .await
         }
-        if attempt < 5 {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        }
+        Err(
+            Error::StaleProtocolVersion(_)
+            | Error::DuplicateUniqueIndex(_)
+            | Error::NotAMember { .. },
+        ) => Ok(false),
+        Err(e) => Err(e),
     }
-    Ok(false)
 }
 
 /// Create (or finish creating) the repository `opts` describes, owned by `identity`.
@@ -282,6 +289,7 @@ pub async fn create_repo(
         network: target.network.key(),
     })?;
     let opts = validated(opts)?;
+    crate::private::for_visibility(opts.visibility)?;
     let owner = identity.id();
     let owner_bytes = platform::decode_identifier(&owner)?;
     let core = client.fetch_contract(&forge.core).await?;
@@ -297,7 +305,6 @@ pub async fn create_repo(
 
     // 1. repo
     let (repo_doc_id, outcome) = run_step(
-        client,
         &engine,
         &core,
         &mut journal,
@@ -310,61 +317,49 @@ pub async fn create_repo(
         || repo_props(&opts),
     )
     .await?;
-    steps.push(("repo", outcome));
+    steps.push((Step::Repo.doc_type(), outcome));
     let repo =
         find_repo_after_create(client, &forge, owner_bytes, &opts.name, &repo_doc_id).await?;
-    let repo_id = platform::decode_identifier(repo.id())?;
+    // An existing repo is adopted only if this client can finish it: a private repo's
+    // `config` must be sealed, which this version cannot write.
+    repo.require_readable()?;
+    let scope = repo.scope()?;
 
     // 2. the owner's maintainer document
     let (_, outcome) = run_step(
-        client,
         &engine,
         &core,
         &mut journal,
         Step::Maintainer,
         || async {
             Ok(MemberReader::new(client)
-                .roles_of(&repo, &owner)
+                .role_doc(&repo, &owner, Role::Maintainer)
                 .await?
-                .into_iter()
-                .find(|m| m.role == Role::Maintainer)
                 .map(|m| m.document_id))
         },
-        || {
-            repo.scope()
-                .map(|s| s.props([("memberId", FieldValue::identifier(owner_bytes))]))
-                .unwrap_or_default()
-        },
+        || scope.props([("memberId", FieldValue::identifier(owner_bytes))]),
     )
     .await?;
-    steps.push(("maintainer", outcome));
+    steps.push((Step::Maintainer.doc_type(), outcome));
 
     // 3. the initial config
     let (_, outcome) = run_step(
-        client,
         &engine,
         &core,
         &mut journal,
         Step::Config,
         || async {
             Ok(client
-                .query_documents(
-                    &core,
-                    DOC_CONFIG,
-                    &[QueryFilter::eq("repoId", FieldValue::identifier(repo_id))],
-                    &[],
-                    1,
-                    None,
-                )
+                .query_documents(&core, DOC_CONFIG, &scope.filters([]), &[], 1, None)
                 .await?
                 .into_iter()
                 .next()
                 .map(|d| d.id))
         },
-        || config_props(repo_id, &opts),
+        || scope.scoped(config_props(&opts)),
     )
     .await?;
-    steps.push(("config", outcome));
+    steps.push((Step::Config.doc_type(), outcome));
 
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
@@ -377,13 +372,6 @@ pub async fn create_repo(
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.
 fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
-    if opts.visibility == Visibility::Private {
-        return Err(Error::Config(
-            "private repositories are not supported by this version yet; create a public \
-             repository"
-                .into(),
-        ));
-    }
     if !crate::rules::is_legal_ref_name(&format!("refs/heads/{}", opts.default_branch)) {
         return Err(Error::Config(format!(
             "invalid default branch {:?}",
@@ -398,7 +386,6 @@ fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
 /// One step: replay a saved transition, else adopt an existing document, else sign, save
 /// and broadcast a new one. Returns the document id and how the step ended.
 async fn run_step<E, EFut, P>(
-    client: &PlatformClient,
     engine: &WriteEngine<'_>,
     core: &LoadedContract,
     journal: &mut Journal,
@@ -412,7 +399,7 @@ where
     P: FnOnce() -> BTreeMap<String, FieldValue>,
 {
     if let Some(intent) = journal.slot(step).clone() {
-        if replay_confirmed(client, engine, core, step, &intent).await? {
+        if replay_landed(engine, core, step, &intent).await? {
             return Ok((intent.document_id, StepOutcome::Resumed));
         }
         tracing::warn!(
@@ -445,7 +432,7 @@ async fn find_repo_after_create(
     name: &str,
     expected_id: &str,
 ) -> Result<RepoRef> {
-    for attempt in 0..6 {
+    for attempt in 0..FIND_ATTEMPTS {
         if let Some(repo) = find_v2(client, forge, owner, name).await? {
             if repo.id() != expected_id {
                 return Err(Error::Platform(format!(
@@ -455,8 +442,8 @@ async fn find_repo_after_create(
             }
             return Ok(repo);
         }
-        if attempt < 5 {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if attempt + 1 < FIND_ATTEMPTS {
+            tokio::time::sleep(FIND_DELAY).await;
         }
     }
     Err(Error::Platform(format!(
@@ -553,8 +540,8 @@ mod tests {
         let p = repo_props(&opts);
         assert!(p.contains_key("description") && p.contains_key("displayName"));
 
-        let c = config_props([9; 32], &opts);
-        assert_eq!(c.get("repoId"), Some(&FieldValue::identifier([9; 32])));
+        let c = config_props(&opts);
+        assert!(!c.contains_key("repoId"), "the scope adds repoId");
         assert!(!c.contains_key("protectedPatterns"));
         assert!(matches!(c.get("backend"), Some(FieldValue::Object(b)) if b.contains_key("mode")));
     }

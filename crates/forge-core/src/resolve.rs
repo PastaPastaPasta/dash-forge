@@ -124,8 +124,10 @@ async fn find_v1(
     Ok(Some(RepoRef::V1 {
         contract_id: platform::encode_identifier(contract),
         owner_id: owner.to_string(),
+        // The slug (`normalizedName`), not the free-form display name: it is what
+        // `dash://owner/<name>` resolves by.
         name: listing
-            .field_str("name")
+            .field_str("normalizedName")
             .unwrap_or_else(|| slug.to_string()),
     }))
 }

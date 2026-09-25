@@ -296,6 +296,8 @@ pub struct RepackReport {
 pub struct ReseedReport {
     /// Every pack re-uploaded.
     pub reseeded: Vec<Reseeded>,
+    /// Packs with no readable copy (not reseeded; `dg reseed --from-local` can restore them).
+    pub unreadable: Vec<[u8; 32]>,
 }
 
 /// One pack [`RepoService::reseed`] re-uploaded.
@@ -470,6 +472,13 @@ impl<'a> RepoService<'a> {
             out.push((ref_name, state));
         }
         Ok(out)
+    }
+
+    /// The protected-ref globs in force now (the newest `config`).
+    pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
+        let (scope, contract) = self.readable(repo).await?;
+        let configs = self.fetch_config_history(&scope, &contract).await?;
+        Ok(current_protected_patterns(&configs))
     }
 
     /// The newest `config` document in `scope`, if any.
@@ -1015,9 +1024,18 @@ impl<'a> RepoService<'a> {
         let reader = PackReader::from_user_config();
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
-            let (bytes, best) = self
+            let (bytes, best) = match self
                 .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
-                .await?;
+                .await
+            {
+                Ok(got) => got,
+                Err(e) => {
+                    // One unreadable pack must not stop the others from being reseeded.
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "no readable copy; skipping");
+                    report.unreadable.push(hash);
+                    continue;
+                }
+            };
             let meta = PackMeta::for_bytes(&bytes);
             let uris = uri_strings(target.put(&bytes, &meta).await?);
             let announced = if copies.iter().any(|m| m.owner_id == me) {

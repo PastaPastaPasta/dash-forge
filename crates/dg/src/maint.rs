@@ -192,6 +192,7 @@ pub async fn reseed(
             "repoId": handle.id(),
             "target": target_label,
             "packs": reseeded_json,
+            "unreadable": report.unreadable.iter().map(hex::encode).collect::<Vec<_>>(),
         }),
         || {
             println!(
@@ -199,6 +200,12 @@ pub async fn reseed(
                 report.reseeded.len(),
                 handle.display()
             );
+            for h in &report.unreadable {
+                println!(
+                    "  {} — no readable copy; skipped (try `dg reseed --from-local`)",
+                    hex::encode(h)
+                );
+            }
             for r in &report.reseeded {
                 let note = if r.announced {
                     "recorded as your copy"
