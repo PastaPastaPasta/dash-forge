@@ -213,6 +213,70 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
     assert!(matches!(err, Error::NotAMember { .. }), "{err}");
     assert!(err.to_string().contains("40120"), "{err}");
 
+    // --- 4b. protected refs are maintainer-only ---
+    // Protect refs/heads/main (owner = maintainer), re-grant COLLAB as a writer: COLLAB may
+    // update other refs but its update of main is refused at consensus with the typed
+    // "maintainer-only" refusal.
+    let core = client
+        .fetch_contract(
+            &forge_core::network::NetworkSettings {
+                devnet_name: Some("moutai".into()),
+                ..Default::default()
+            }
+            .resolve()
+            .unwrap()
+            .v2
+            .unwrap()
+            .core,
+        )
+        .await
+        .unwrap();
+    let mut backend = std::collections::BTreeMap::new();
+    backend.insert("mode".into(), forge_core::platform::FieldValue::integer(0));
+    let props = repo.scope().unwrap().props([
+        (
+            "defaultBranch",
+            forge_core::platform::FieldValue::text("main"),
+        ),
+        (
+            "protectedPatterns",
+            forge_core::platform::FieldValue::text_list(["refs/heads/main"]),
+        ),
+        ("backend", forge_core::platform::FieldValue::Object(backend)),
+    ]);
+    forge_core::platform::WriteEngine::new(&client, &owner, owner_b.doc_op_key().unwrap())
+        .unwrap()
+        .create_document(&core, "config", props)
+        .await
+        .expect("protect main");
+    for _ in 0..8 {
+        if svc.protected_patterns(&repo).await.unwrap() == ["refs/heads/main"] {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    members
+        .grant(&repo, &collab.id(), Role::Writer)
+        .await
+        .expect("re-grant");
+    let err = collab_svc
+        .write_ref_update(&repo, "refs/heads/main", &[0x55; 20], None, false)
+        .await
+        .expect_err("a writer cannot update a protected ref");
+    println!("writer on protected main: {err}");
+    assert!(
+        matches!(&err, Error::NotAMember { document_type, .. } if document_type == "protectedRefUpdate"),
+        "{err}"
+    );
+    collab_svc
+        .write_ref_update(&repo, "refs/heads/feature", &[0x66; 20], None, false)
+        .await
+        .expect("a writer can update an unprotected ref");
+    assert!(members
+        .revoke(&repo, &collab.id(), Role::Writer)
+        .await
+        .unwrap());
+
     // --- 5. never a member ---
     let err = RepoService::new(&client, &contrib, &contrib_b)
         .write_ref_update(&repo, "refs/heads/contrib", &[0x44; 20], None, false)

@@ -779,7 +779,7 @@ fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> U
         "config" => "the repository's configuration",
         _ => "this",
     };
-    UserError::new(
+    let u = UserError::new(
         codes::NOT_A_WRITER,
         ctx.rejected_headline(&format!(
             "only maintainers of {} can change {what}",
@@ -791,8 +791,12 @@ fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> U
     ))
     .fix(format!(
         "ask the owner to run `dg collab add {repo} <your identity id> --role maintainer`"
-    ))
-    .fix("or push to a branch that is not protected")
+    ));
+    if document_type == "protectedRefUpdate" {
+        u.fix("or push to a branch that is not protected")
+    } else {
+        u
+    }
 }
 
 fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {

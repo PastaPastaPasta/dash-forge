@@ -381,17 +381,17 @@ impl Helper {
         //
         // `DASH_FORGE_SKIP_WRITE_PRECHECK=1` skips the check, so a caller that needs to see
         // what consensus itself does with an unauthorized push (the e2e ACL scenarios) can.
-        if !dry_run && specs.iter().any(|s| !s.src.is_empty()) && !skip_write_precheck() {
-            if let Some(denied) = write_access_denied(conn, &svc, specs).await {
-                // The block says why and what to do; git's own `! [remote rejected]` lines
-                // (from the per-ref reason) make the push fail.
-                denied.error.eprint("dash: ");
-                return Ok(specs
-                    .iter()
-                    .map(|s| PushOutcome::Error(s.dst.clone(), denied.wire.to_string()))
-                    .collect());
+        let mut refused = Vec::new();
+        let kept;
+        let specs = if !dry_run && !specs.is_empty() && !skip_write_precheck() {
+            (refused, kept) = precheck(conn, &svc, specs).await;
+            if kept.is_empty() {
+                return Ok(refused);
             }
-        }
+            &kept[..]
+        } else {
+            specs
+        };
 
         let planned = plan_pushes(specs, &remote_refs);
         let progress = Progress::new(options.verbosity);
@@ -478,7 +478,8 @@ impl Helper {
             self.report_done(progress, balance_before, est_credits)
                 .await;
         }
-        Ok(outcomes)
+        refused.extend(outcomes);
+        Ok(refused)
     }
 
     /// The summary line with actuals: the balance change is what this push cost (≈: other
@@ -1239,6 +1240,31 @@ fn skip_write_precheck() -> bool {
     )
 }
 
+/// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
+/// and the specs still to push. A non-member is refused everything; a writer only the
+/// protected refs.
+async fn precheck(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    specs: &[PushSpec],
+) -> (Vec<PushOutcome>, Vec<PushSpec>) {
+    let Some(denied) = write_access_denied(conn, svc, specs).await else {
+        return (Vec::new(), specs.to_vec());
+    };
+    // The block says why and what to do; git's own `! [remote rejected]` lines (from the
+    // per-ref reason) make the push fail.
+    denied.error.eprint("dash: ");
+    let (refused, allowed): (Vec<PushSpec>, Vec<PushSpec>) = specs
+        .iter()
+        .cloned()
+        .partition(|s| denied.refs.is_empty() || denied.refs.contains(&s.dst));
+    let refused = refused
+        .into_iter()
+        .map(|s| PushOutcome::Error(s.dst, denied.wire.to_string()))
+        .collect();
+    (refused, allowed)
+}
+
 /// The note on a push the helper refused before doing anything.
 const NOTE_PRECHECK: &str = "checked before building or paying for anything: nothing was stored";
 
@@ -1255,6 +1281,8 @@ fn no_identity(why: impl Into<String>) -> anyhow::Error {
 struct Denied {
     error: UserError,
     wire: &'static str,
+    /// The refs refused; empty means the whole push.
+    refs: Vec<String>,
 }
 
 /// `Some(refusal)` when the connected identity provably is not a member (no `writer` or
@@ -1285,6 +1313,7 @@ async fn write_access_denied(
         return None;
     }
     let patterns = svc.protected_patterns(&conn.repo).await.ok()?;
+    // Deletes too: a delete of a protected ref is a `protectedRefUpdate`.
     let protected: Vec<&str> = specs
         .iter()
         .map(|s| s.dst.as_str())
@@ -1313,6 +1342,7 @@ fn protected_denied(repo: &str, me: &str, refs: &[&str]) -> Denied {
         .fix("or push to a branch that is not protected")
         .note(NOTE_PRECHECK),
         wire: "protected ref: maintainers only",
+        refs: refs.iter().map(|r| (*r).to_string()).collect(),
     }
 }
 
@@ -1333,6 +1363,7 @@ fn write_denied(repo: &str, me: &str) -> Denied {
         .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
         .note(NOTE_PRECHECK),
         wire: "not a writer of this repo",
+        refs: Vec::new(),
     }
 }
 

@@ -227,7 +227,7 @@ if [[ -n "$PACK5" && -n "$OBJ_DIR" ]]; then
   else
     check "5b: error says the pack is already recorded and unreachable" \
       assert_file_contains "$LOG-push-5b.err" "already recorded at"
-    check "5b: error points at dg reseed --from-local" assert_file_contains "$LOG-push-5b.err" "reseed --from-local"
+    check "5b: error points at dg reseed --from-local" grep -qE 'dg reseed [^ ]+ --from-local|reseed --from-local' "$LOG-push-5b.err"
     check "5b: nothing was stored first" assert_not_file_contains "$LOG-push-5b.err" "verified)"
   fi
   DASH_FORGE_KEY="$ID_DEPLOYER" git ls-remote "$REMOTE_B" "refs/heads/${BR5}" >"$LOG-lsremote5.out" 2>/dev/null

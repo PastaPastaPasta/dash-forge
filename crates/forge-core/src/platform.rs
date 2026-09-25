@@ -17,8 +17,10 @@
 //!   [`WriteEngine::prepare_delete`], capturing a fixed nonce + entropy into a
 //!   [`SignedTransition`]); [`WriteEngine::execute`] broadcasts those exact bytes and,
 //!   on a retryable failure, RE-broadcasts the *same* bytes. A duplicate landing
-//!   ("already exists" / consumed nonce) is reported as [`BroadcastOutcome::AlreadyExists`],
-//!   never a fresh write — so a killed-mid-push retry cannot double-spend or duplicate.
+//!   ("already exists") is reported as [`BroadcastOutcome::AlreadyExists`], never a fresh
+//!   write — so a killed-mid-push retry cannot double-spend or duplicate. A consumed nonce is
+//!   [`BroadcastOutcome::NonceConsumed`]: the write landed earlier OR another write took the
+//!   nonce, and the create/delete helpers confirm which with a proved read.
 //!   The SDK's `broadcast_and_wait` works on NATIVE Rust — the `waitForResponse` panic
 //!   in the spikes is WASM-only (`time not implemented`); native tokio has a timer.
 //! - [`PushJournal`] / [`WriteIntent`] / [`JournalStore`] — the resumable-push record +
@@ -1184,10 +1186,11 @@ impl<'a> WriteEngine<'a> {
     /// Broadcast a [`PreparedWrite`]'s signed bytes and wait for the confirmation proof,
     /// re-broadcasting the **identical** bytes on a retryable failure.
     ///
-    /// Returns [`BroadcastOutcome::Applied`] on a fresh landing, or
-    /// [`BroadcastOutcome::AlreadyExists`] when the write had already landed (a consumed
-    /// nonce / already-present document / gRPC AlreadyExists) — the idempotency guarantee
-    /// that a killed-and-retried push does not double-write.
+    /// Returns [`BroadcastOutcome::Applied`] on a fresh landing,
+    /// [`BroadcastOutcome::AlreadyExists`] when the document is already present (gRPC
+    /// AlreadyExists / already-present document) — the idempotency guarantee that a
+    /// killed-and-retried push does not double-write — or [`BroadcastOutcome::NonceConsumed`]
+    /// when the nonce is spent, which the caller must disambiguate.
     ///
     /// **indexOnly types (protocol 14, forge-v2 `star` / `follow`):** their proofs only
     /// attest the resulting state, so a create that finds an identical entry already present
@@ -1393,8 +1396,9 @@ impl<'a> WriteEngine<'a> {
     }
 }
 
-/// How many proved reads [`WriteEngine::landed`] makes, and the pause between them.
-const CONFIRM_ATTEMPTS: usize = 6;
+/// How many proved reads [`WriteEngine::landed`] makes, and the pause between them (about
+/// 15 s: a re-broadcast of our own landed bytes must be seen before a replacement is signed).
+const CONFIRM_ATTEMPTS: usize = 10;
 const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// An SDK-free document field value, converted to the Platform value type inside this
