@@ -181,6 +181,9 @@ async function main() {
     if (!onChainKey || String(onChainKey.data).toLowerCase() !== critKey.publicKeyHex.toLowerCase()) {
       throw new Error(`key ${critKey.id} of ${ownerId} on chain does not match the identity file`);
     }
+    if (onChainKey.disabledAt != null) {
+      throw new Error(`key ${critKey.id} of ${ownerId} was disabled at ${onChainKey.disabledAt}; it cannot sign`);
+    }
   }
 
   const publicKey = new IdentityPublicKey({
@@ -200,34 +203,59 @@ async function main() {
   const record = () => writeDep(depFile, dep);
 
   const balance = async () => BigInt((await sdk.identities.balance(ownerId)) ?? 0n);
-  const chainNonce = async () => (identity ? BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) : 0n);
+  // Identity nonces carry recent-document bits above bit 40; the contract id derives from the
+  // low 40 bits (rs-dpp IDENTITY_NONCE_VALUE_FILTER), so mask whatever the query returns.
+  const NONCE_MASK = 0xFFFFFFFFFFn;
+  const chainNonce = async () => (identity ? BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) & NONCE_MASK : 0n);
   let dryRunNextNonce = null;
   const report = { network: devnetName ? `devnet-${devnetName}` : network, ownerId, steps: [] };
 
-  // Build, check and (unless --dry-run) broadcast one contract create. `nonce` is reserved in
-  // the record BEFORE broadcasting, so a crash after broadcast resumes by checking that id
-  // rather than registering a second copy under a new nonce.
-  async function registerContract({ key, schemaName, substitutions, registerGroup, groupId }) {
+  // A step whose recorded contract is on chain is finished; bring its record up to date
+  // (a crash between broadcast and the final write leaves it `broadcasting`, without cost).
+  async function reconcile(key) {
     const existing = v2[key];
-    if (existing?.contractId) {
-      const onChain = await sdk.contracts.fetch(existing.contractId);
-      if (onChain) {
-        log(`${key}: already registered as ${existing.contractId}; skipping`);
-        return existing.contractId;
+    if (!existing?.contractId) return null;
+    const onChain = await sdk.contracts.fetch(existing.contractId);
+    if (onChain) {
+      if (existing.status !== 'registered') {
+        const cost = existing.balanceBefore != null ? BigInt(existing.balanceBefore) - (await balance()) : null;
+        v2[key] = {
+          ...existing,
+          ownerId,
+          status: 'registered',
+          confirmedAt: new Date().toISOString(),
+          ...(cost != null ? { costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, costNote: 'balance delta since the recorded pre-broadcast balance' } : {}),
+        };
+        record();
+        log(`${key}: found ${existing.contractId} on chain; record updated to registered`);
+      } else {
+        log(`${key}: already registered as ${existing.contractId}`);
       }
-      if (existing.status === 'registered') {
-        throw new Error(`${key}: the record says ${existing.contractId} is registered but the network does not have it (devnet reset?). Move deployments/${report.network}.json aside to start over.`);
-      }
-      log(`${key}: a previous run reserved nonce ${existing.identityNonce} (${existing.contractId}) but it is not on chain`);
+      report.steps.push({ key, ...v2[key], resumed: true });
+      return existing.contractId;
     }
+    if (existing.status === 'registered') {
+      throw new Error(`${key}: the record says ${existing.contractId} is registered but the network does not have it (devnet reset?). Move deployments/${report.network}.json aside to start over.`);
+    }
+    // Reserved but never landed: the nonce it named is either still free (reused below, same
+    // id) or was consumed by something else (a fresh nonce, a fresh id). Either way the next
+    // nonce is read from the chain, and the record is rewritten with it before broadcasting.
+    log(`${key}: a previous run reserved nonce ${existing.identityNonce} (${existing.contractId}) but it never landed`);
+    return null;
+  }
+
+  // Build, check and (unless --dry-run) broadcast one contract create. The nonce, contract id
+  // and (for forge-core) the contract group id derived from THAT nonce are recorded together
+  // BEFORE broadcasting, so a crash after broadcast resumes against the right ids.
+  async function registerContract({ key, schemaName, substitutions, registerGroup, groupIdFor }) {
+    const done = await reconcile(key);
+    if (done) return done;
 
     // In a dry run nothing is broadcast, so the next contract's nonce is one past this one's
     const nonce = dryRunNextNonce ?? (await chainNonce()) + 1n;
     if (dryRun) dryRunNextNonce = nonce + 1n;
-    if (existing?.identityNonce && BigInt(existing.identityNonce) === nonce) {
-      log(`${key}: the reserved nonce ${nonce} is still next; reusing it`);
-    }
     const id = contractId(ownerId, nonce);
+    const groupId = groupIdFor(nonce);
 
     const json = loadSchema(schemaName, substitutions);
     const full = {
@@ -235,6 +263,7 @@ async function main() {
       id,
       ownerId,
       version: 1,
+      ...(json.config ? { config: json.config } : {}),
       ...(json.description ? { description: json.description } : {}),
       ...(json.keywords ? { keywords: json.keywords } : {}),
       schemaDefs: json.schemaDefs,
@@ -251,30 +280,34 @@ async function main() {
     const st = transition.toStateTransition();
     st.sign(privateKey, publicKey);
     const size = st.toBytes().length;
-    log(`${key}: id ${id}, nonce ${nonce}, signed create transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
+    log(`${key}: id ${id}, nonce ${nonce}, group ${groupId}, signed create transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
     if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: transition exceeds max_state_transition_size`);
     if (dryRun) {
-      report.steps.push({ key, contractId: id, nonce: nonce.toString(), sizeBytes: size, dryRun: true });
+      report.steps.push({ key, contractId: id, nonce: nonce.toString(), contractGroupId: groupId, sizeBytes: size, dryRun: true });
       return id;
     }
 
-    v2[key] = { contractId: id, identityNonce: nonce.toString(), status: 'broadcasting', sizeBytes: size };
-    if (registerGroup) v2.contractGroupId = groupId;
+    const before = await balance();
+    v2[key] = {
+      contractId: id,
+      ownerId,
+      identityNonce: nonce.toString(),
+      contractGroupId: groupId,
+      status: 'broadcasting',
+      sizeBytes: size,
+      balanceBefore: before.toString(),
+    };
     record();
 
-    const before = await balance();
     await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
     const after = await balance();
     const fetched = await sdk.contracts.fetch(id);
     if (!fetched) throw new Error(`${key}: broadcast confirmed but ${id} cannot be fetched`);
     const costCredits = before - after;
     v2[key] = {
-      contractId: id,
-      ownerId,
-      identityNonce: nonce.toString(),
+      ...v2[key],
       status: 'registered',
       deployedAt: new Date().toISOString(),
-      sizeBytes: size,
       costCredits: costCredits.toString(),
       costDash: Number(costCredits) / CREDITS_PER_DASH,
     };
@@ -284,24 +317,26 @@ async function main() {
     return id;
   }
 
-  // The group is registered by forge-core's transition, so its id follows forge-core's nonce.
-  // On a resume the recorded group id wins (it was derived from the nonce actually used).
-  const coreNonceGuess = v2.forgeCore?.identityNonce
-    ? BigInt(v2.forgeCore.identityNonce)
-    : (await chainNonce()) + 1n;
-  const groupId = v2.contractGroupId || contractGroupId(ownerId, coreNonceGuess);
-
-  const coreId = await registerContract({ key: 'forgeCore', schemaName: 'forge-core', substitutions: {}, registerGroup: true, groupId });
-  const groupIdFinal = dryRun ? contractGroupId(ownerId, coreNonceGuess) : v2.contractGroupId;
-  if (!dryRun && groupIdFinal !== contractGroupId(ownerId, BigInt(v2.forgeCore.identityNonce))) {
-    throw new Error('recorded contract group id does not match forge-core\'s nonce');
+  // forge-core registers the group, so the group id is derived from forge-core's own nonce,
+  // whichever nonce that turns out to be (fresh, reused, or recorded by an earlier run).
+  const coreId = await registerContract({
+    key: 'forgeCore',
+    schemaName: 'forge-core',
+    substitutions: {},
+    registerGroup: true,
+    groupIdFor: (nonce) => contractGroupId(ownerId, nonce),
+  });
+  const coreNonce = dryRun ? BigInt(report.steps[0].nonce) : BigInt(v2.forgeCore.identityNonce);
+  const groupIdFinal = contractGroupId(ownerId, coreNonce);
+  if (!dryRun && v2.forgeCore.contractGroupId && v2.forgeCore.contractGroupId !== groupIdFinal) {
+    throw new Error(`recorded group ${v2.forgeCore.contractGroupId} does not derive from forge-core's nonce ${coreNonce}`);
   }
   await registerContract({
     key: 'forgeCollab',
     schemaName: 'forge-collab',
     substitutions: { [PLACEHOLDER]: coreId },
     registerGroup: false,
-    groupId: groupIdFinal,
+    groupIdFor: () => groupIdFinal,
   });
 
   if (!dryRun) {
@@ -311,6 +346,7 @@ async function main() {
       const m = await sdk.contractGroups.forContract(v2[key].contractId);
       if (!m.contract.includes(groupIdFinal)) throw new Error(`${key} is not enrolled in ${groupIdFinal}`);
     }
+    v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
     v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.4';
