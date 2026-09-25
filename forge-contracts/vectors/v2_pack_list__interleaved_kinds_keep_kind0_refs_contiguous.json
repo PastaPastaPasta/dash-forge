@@ -1,0 +1,147 @@
+{
+  "name": "interleaved_kinds_keep_kind0_refs_contiguous",
+  "description": "Kind-0 packs and kind-1 fragments interleaved in time: kind-0 packRefs are 0..n with no gaps for the fragments, and fragments number separately.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "p1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "l1",
+        "packHash": "L1",
+        "kind": 1,
+        "createdAt": 11,
+        "sizeBytes": 36,
+        "objectCount": 2,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "p2",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "l2",
+        "packHash": "L2",
+        "kind": 1,
+        "createdAt": 21,
+        "sizeBytes": 36,
+        "objectCount": 2,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "p3",
+        "packHash": "P3",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "p1"
+      },
+      "copies": [
+        "p1"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "P2",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 20,
+        "id": "p2"
+      },
+      "copies": [
+        "p2"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 2,
+      "packHash": "P3",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 30,
+        "id": "p3"
+      },
+      "copies": [
+        "p3"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 0,
+      "packHash": "L1",
+      "kind": 1,
+      "sizeBytes": 36,
+      "objectCount": 2,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 11,
+        "id": "l1"
+      },
+      "copies": [
+        "l1"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "L2",
+      "kind": 1,
+      "sizeBytes": 36,
+      "objectCount": 2,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 21,
+        "id": "l2"
+      },
+      "copies": [
+        "l2"
+      ],
+      "superseded": false
+    }
+  ]
+}

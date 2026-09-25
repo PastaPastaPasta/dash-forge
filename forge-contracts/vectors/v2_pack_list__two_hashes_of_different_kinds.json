@@ -1,0 +1,66 @@
+{
+  "name": "two_hashes_of_different_kinds",
+  "description": "A git pack and a locator: each is packRef 0 within its own kind; output is by kind, then packRef.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "l1",
+        "packHash": "L1",
+        "kind": 1,
+        "createdAt": 5,
+        "sizeBytes": 36,
+        "objectCount": 2,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      },
+      {
+        "id": "p1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "p1"
+      },
+      "copies": [
+        "p1"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 0,
+      "packHash": "L1",
+      "kind": 1,
+      "sizeBytes": 36,
+      "objectCount": 2,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 5,
+        "id": "l1"
+      },
+      "copies": [
+        "l1"
+      ],
+      "superseded": false
+    }
+  ]
+}

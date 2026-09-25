@@ -1,0 +1,90 @@
+{
+  "name": "as_of_cut_is_inclusive",
+  "description": "asOf (20, \"b\") keeps copies at or before it: P2 (exactly at the bound) is in, P3 is out, and the later copy of P1 is not counted.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "b",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "c",
+        "packHash": "P3",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "z",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 50,
+        "sizeBytes": 500,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      }
+    ],
+    "asOf": {
+      "createdAt": 20,
+      "id": "b"
+    }
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "P2",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 20,
+        "id": "b"
+      },
+      "copies": [
+        "b"
+      ],
+      "superseded": false
+    }
+  ]
+}

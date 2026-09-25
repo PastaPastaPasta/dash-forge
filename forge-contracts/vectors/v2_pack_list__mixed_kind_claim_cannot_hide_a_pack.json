@@ -1,0 +1,48 @@
+{
+  "name": "mixed_kind_claim_cannot_hide_a_pack",
+  "description": "A non-member's copy claims kind 1 for a git pack a writer uploaded as kind 0: the writer outranks it, so the pack stays a kind-0 pack.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "x1",
+        "packHash": "P1",
+        "kind": 1,
+        "createdAt": 5,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1
+      },
+      {
+        "id": "w1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 5,
+        "id": "x1"
+      },
+      "copies": [
+        "w1"
+      ],
+      "superseded": false
+    }
+  ]
+}

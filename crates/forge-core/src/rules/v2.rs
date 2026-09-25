@@ -348,6 +348,181 @@ pub fn pack_read_order(copies: &[PackCopy]) -> Vec<PackPick> {
 }
 
 // ===========================================================================
+// The pack list (packRef space)
+// ===========================================================================
+
+/// A document's position in the platform total order: `($createdAt, $id)`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyKey {
+    /// Consensus `$createdAt` (ms).
+    pub created_at: u64,
+    /// Document `$id`.
+    pub id: String,
+}
+
+/// One `packManifest` document of a repository, flattened for [`v2_pack_list`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackCopyRow {
+    /// Document `$id`.
+    pub id: String,
+    /// The pack's content hash, hex.
+    pub pack_hash: String,
+    /// `kind` (0 git pack, 1 objectLocator, 2 flatIndex).
+    pub kind: u64,
+    /// Consensus `$createdAt` (ms).
+    pub created_at: u64,
+    /// The uploader's current role ([`RoleOracle::current_role`]); `None` for anyone else.
+    #[serde(default)]
+    pub owner_role: Option<Role>,
+    /// `sizeBytes`.
+    #[serde(default)]
+    pub size_bytes: u64,
+    /// `objectCount`.
+    #[serde(default)]
+    pub object_count: u64,
+    /// `chunkCount`.
+    #[serde(default)]
+    pub chunk_count: u64,
+    /// `supersedes` (hex pack hashes).
+    #[serde(default)]
+    pub supersedes: Vec<String>,
+    /// `Some(true)`: this copy's bytes hash to `pack_hash`; `Some(false)`: they do not;
+    /// `None`: not checked.
+    #[serde(default)]
+    pub verified: Option<bool>,
+}
+
+/// One pack of [`v2_pack_list`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct V2Pack {
+    /// The pack's position among the packs of its `kind` (a locator's `packRef`).
+    pub pack_ref: usize,
+    /// The pack hash, hex.
+    pub pack_hash: String,
+    /// The representative copy's `kind`.
+    pub kind: u64,
+    /// The representative copy's `sizeBytes`.
+    pub size_bytes: u64,
+    /// The representative copy's `objectCount`.
+    pub object_count: u64,
+    /// The representative copy's `chunkCount`.
+    pub chunk_count: u64,
+    /// The representative copy's `supersedes`.
+    pub supersedes: Vec<String>,
+    /// The earliest `($createdAt, $id)` among every copy of the hash: the pack's position.
+    pub first: CopyKey,
+    /// The usable copies, in the order a reader tries them; the representative first.
+    pub copies: Vec<String>,
+    /// A pack whose representative copy verified lists this pack in `supersedes`.
+    pub superseded: bool,
+}
+
+/// Every pack of a repository with its position (`packRef`), from all its `packManifest`
+/// copies (`forge-v2.md` §4, vectors `v2_pack_list__*`). Pure; kind-agnostic: pass every
+/// copy and select a kind from the output (a copy claiming another kind cannot hide a pack).
+///
+/// 1. `as_of` (inclusive) drops copies after it — an older locator indexes only the packs
+///    that existed when it was built.
+/// 2. Copies are grouped by `pack_hash`. Each group is ranked like [`order_pack_copies`]
+///    (maintainer, writer, anyone else; then `($createdAt, $id)`), copies that failed
+///    verification are dropped, and the first remaining copy is the **representative**; a
+///    hash with no remaining copy is left out. The representative's `kind` and metadata are
+///    the pack's, and copies claiming a different kind are dropped from `copies`.
+/// 3. `first` is the earliest `($createdAt, $id)` among all the hash's copies (failed and
+///    other-kind ones included), so a copy uploaded later — or one ranked higher — never
+///    moves a pack. `pack_ref` is the pack's index among the packs of its kind, by `first`.
+/// 4. A pack is `superseded` when another listed pack's representative names it in
+///    `supersedes` and that representative verified (`Some(true)`); an unchecked claim
+///    supersedes nothing. Superseded packs keep their `pack_ref`.
+///
+/// Output order: by `kind`, then `pack_ref`.
+#[must_use]
+pub fn v2_pack_list(copies: &[PackCopyRow], as_of: Option<&CopyKey>) -> Vec<V2Pack> {
+    let key = |c: &PackCopyRow| CopyKey {
+        created_at: c.created_at,
+        id: c.id.clone(),
+    };
+    let mut groups: std::collections::BTreeMap<&str, Vec<&PackCopyRow>> =
+        std::collections::BTreeMap::new();
+    for c in copies {
+        if as_of.is_none_or(|a| key(c) <= *a) {
+            groups.entry(c.pack_hash.as_str()).or_default().push(c);
+        }
+    }
+
+    // (pack, representative verified) per hash that has a usable copy.
+    let mut packs: Vec<(V2Pack, bool)> = Vec::new();
+    for (hash, mut group) in groups {
+        let first = group
+            .iter()
+            .map(|c| key(c))
+            .min()
+            .expect("a group is non-empty");
+        group.sort_by(|a, b| {
+            role_rank(a.owner_role)
+                .cmp(&role_rank(b.owner_role))
+                .then_with(|| a.created_at.cmp(&b.created_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let usable: Vec<&PackCopyRow> = group
+            .into_iter()
+            .filter(|c| c.verified != Some(false))
+            .collect();
+        let Some(rep) = usable.first().copied() else {
+            continue;
+        };
+        packs.push((
+            V2Pack {
+                pack_ref: 0,
+                pack_hash: hash.to_string(),
+                kind: rep.kind,
+                size_bytes: rep.size_bytes,
+                object_count: rep.object_count,
+                chunk_count: rep.chunk_count,
+                supersedes: rep.supersedes.clone(),
+                first,
+                copies: usable
+                    .iter()
+                    .filter(|c| c.kind == rep.kind)
+                    .map(|c| c.id.clone())
+                    .collect(),
+                superseded: false,
+            },
+            rep.verified == Some(true),
+        ));
+    }
+
+    let superseded: BTreeSet<String> = packs
+        .iter()
+        .filter(|(_, verified)| *verified)
+        .flat_map(|(p, _)| {
+            p.supersedes
+                .iter()
+                .filter(|s| **s != p.pack_hash)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut out: Vec<V2Pack> = packs.into_iter().map(|(p, _)| p).collect();
+    out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.first.cmp(&b.first)));
+    let mut kind = None;
+    let mut index = 0;
+    for p in &mut out {
+        if kind != Some(p.kind) {
+            kind = Some(p.kind);
+            index = 0;
+        }
+        p.pack_ref = index;
+        index += 1;
+        p.superseded = superseded.contains(&p.pack_hash);
+    }
+    out
+}
+
+// ===========================================================================
 // Approvals
 // ===========================================================================
 

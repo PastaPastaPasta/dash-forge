@@ -1,0 +1,50 @@
+{
+  "name": "maintainer_copy_beats_older_writer_copy",
+  "description": "Two uploads of one pack: the maintainer's later copy is the representative (its metadata wins) and is tried first; the position is the writer's earlier upload.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "w1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 111,
+        "objectCount": 7,
+        "chunkCount": 1,
+        "ownerRole": "writer"
+      },
+      {
+        "id": "m1",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 222,
+        "objectCount": 9,
+        "chunkCount": 1,
+        "ownerRole": "maintainer"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 222,
+      "objectCount": 9,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "w1"
+      },
+      "copies": [
+        "m1",
+        "w1"
+      ],
+      "superseded": false
+    }
+  ]
+}
