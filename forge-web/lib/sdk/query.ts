@@ -186,6 +186,28 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
+/**
+ * The all-ascending `orderBy` whose traversal, reversed, is exactly `query`'s — or null when
+ * the order is already ascending or has no such equivalent. Parity: forge-core
+ * `platform::ascending_equivalent`.
+ *
+ * A complete read pages with a `startAfter` cursor. The grovedb verifier in evo-sdk 4.2 checks
+ * that every proof op matches the walk direction. Protocol-13 nodes (testnet today) answer a
+ * descending page after a cursor with a proof that fails that check. It surfaced as
+ * `packManifest` reads failing once a repo passed 100 manifests. Ascending pages verify, and
+ * Drive's descending walk is the exact reverse of its ascending walk. Reversing also
+ * reverses any clause that was already ascending, which is only harmless when an `==` filter
+ * pins that clause's field, so any other mixed order is left as requested.
+ */
+export function ascendingEquivalent(query: DocumentQuery): OrderByClause[] | null {
+  const orderBy = query.orderBy ?? []
+  if (orderBy.every(([, direction]) => direction === 'asc')) return null
+  const pinned = (field: string): boolean =>
+    (query.where ?? []).some(([f, op]) => f === field && op === '==')
+  if (orderBy.some(([field, direction]) => direction === 'asc' && !pinned(field))) return null
+  return orderBy.map(([field]) => [field, 'asc'] as const)
+}
+
 /** Thrown when a read that must be complete could not be proven complete. */
 export class IncompleteReadError extends Error {
   constructor(
@@ -224,16 +246,19 @@ export async function queryAllDocuments(
 ): Promise<PlainDocument[]> {
   const pageLimit = opts.pageLimit ?? 100
   const maxPages = opts.maxPages ?? 1000
+  // Page a descending read ascending and reverse it — see `ascendingEquivalent`.
+  const ascending = ascendingEquivalent(query)
+  const paged = ascending === null ? query : { ...query, orderBy: ascending }
   const out: PlainDocument[] = []
   let startAfter: string | undefined
   for (let page = 0; page < maxPages; page++) {
     const { documents } = await queryDocumentsWithProof(sdk, {
-      ...query,
+      ...paged,
       limit: pageLimit,
       startAfter,
     })
     out.push(...documents)
-    if (documents.length < pageLimit) return out
+    if (documents.length < pageLimit) return ascending === null ? out : out.reverse()
     const last = documents[documents.length - 1]
     const lastId = last?.['$id']
     if (typeof lastId !== 'string') {

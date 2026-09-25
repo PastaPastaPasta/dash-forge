@@ -373,6 +373,45 @@ async function pollForDocument(
 }
 
 /**
+ * Build the `Document` a create transition carries, with byte fields kept as bytes.
+ *
+ * evo-sdk 4.2's `new Document({ properties })` (and the `properties` setter) converts the
+ * properties through JSON, which turns every `Uint8Array` into an array of integers — Drive
+ * then rejects the write with "not an array of bytes" for any byteArray field (`listingId`,
+ * `refNameHash`, `newOid`, ...). `Document.fromObject` converts a `Uint8Array` to bytes, which
+ * is what 4.0's constructor did: the signed transition is byte-identical to 4.0's for every
+ * top-level field. So the system fields come from a property-less constructor call and the
+ * content is merged in through `fromObject`.
+ */
+export function documentForCreate(
+  DocumentClass: typeof import('@dashevo/evo-sdk').Document,
+  params: {
+    readonly data: Record<string, unknown>
+    readonly documentType: string
+    readonly contractId: string
+    readonly ownerId: string
+    readonly documentId: string
+    readonly entropy: Uint8Array
+    readonly platformVersion: number
+  },
+): import('@dashevo/evo-sdk').Document {
+  const base = new DocumentClass({
+    properties: {},
+    documentTypeName: params.documentType,
+    dataContractId: params.contractId,
+    ownerId: params.ownerId,
+    revision: 1n,
+    id: params.documentId,
+    entropy: params.entropy,
+  })
+  const object = { ...base.toObject(), ...params.data }
+  return DocumentClass.fromObject(
+    object as Parameters<typeof DocumentClass.fromObject>[0],
+    params.platformVersion,
+  )
+}
+
+/**
  * Create a document with idempotent retry. Builds + signs a broadcast-only state transition,
  * caches the signed bytes keyed by the deterministic document id, broadcasts, and polls for
  * confirmation. A cached ST from a prior timed-out attempt is re-broadcast verbatim; an
@@ -420,9 +459,24 @@ export async function createDocumentIdempotent(
     TokenPaymentInfo,
   } = await import('@dashevo/evo-sdk')
 
-  // Deterministic document id from generated entropy — the idempotency anchor.
+  // The nonce is fetched once and used for both the id and the transition. From protocol 14
+  // the document id commits to it (protocol 13: entropy only), and the create transition
+  // re-derives the id at the version it is given — so the id, the `Document` and the
+  // transition must all use this nonce and the connected network's version. The reads above
+  // were proved, so `version()` is the network's, not the SDK's starting floor.
+  const nonce = await nextContractNonce(sdk, ownerId, contractId)
+  const platformVersion = sdk.version()
+
+  // Deterministic document id from generated entropy + nonce — the idempotency anchor.
   const entropy = crypto.getRandomValues(new Uint8Array(32))
-  const idBytes = Document.generateId(documentType, ownerId, contractId, entropy)
+  const idBytes = Document.generateId(
+    documentType,
+    ownerId,
+    contractId,
+    entropy,
+    nonce,
+    platformVersion,
+  )
   const documentId = base58Encode(idBytes)
 
   // Re-broadcast a cached ST from a previous timed-out attempt (same nonce → no double post).
@@ -434,14 +488,14 @@ export async function createDocumentIdempotent(
     }
   }
 
-  const document = new Document({
-    properties: data,
-    documentTypeName: documentType,
-    dataContractId: contractId,
+  const document = documentForCreate(Document, {
+    data,
+    documentType,
+    contractId,
     ownerId,
-    revision: 1n,
-    id: documentId,
+    documentId,
     entropy,
+    platformVersion,
   })
 
   let tokenPaymentInfo: TokenPaymentInfo | undefined
@@ -452,12 +506,21 @@ export async function createDocumentIdempotent(
     })
   }
 
-  const nonce = await nextContractNonce(sdk, ownerId, contractId)
+  // `platformVersion` is load-bearing: without it the transition re-derives the id at the
+  // SDK's latest version (14), which on a protocol-13 network is an id Drive does not
+  // recompute, and the create is rejected.
   const createTransition = new DocumentCreateTransition({
     document,
     identityContractNonce: nonce,
+    platformVersion,
     ...(tokenPaymentInfo ? { tokenPaymentInfo } : {}),
   })
+  if (document.id.toBase58() !== documentId) {
+    throw new Error(
+      `document id drifted while building the create transition (${documentId}); ` +
+        'refusing to broadcast a write whose id the idempotency cache does not know',
+    )
+  }
   const batched = new BatchedTransition(createTransition.toDocumentTransition())
   const batch = BatchTransition.fromBatchedTransitions([batched], ownerId, 0)
   const st = batch.toStateTransition()

@@ -13,7 +13,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
-import { bytesToBase64, IncompleteReadError, queryAllDocuments, skipScanDistinct } from '../sdk'
+import {
+  ascendingEquivalent,
+  bytesToBase64,
+  IncompleteReadError,
+  queryAllDocuments,
+  skipScanDistinct,
+} from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
 import { emptyAuthz, listIssues, readEvents, readIssue, readReviews } from './issues'
@@ -374,7 +380,8 @@ describe('pack manifests across a page boundary', () => {
       chunkCount: 1,
       storage: 0,
     }))
-    const sdk = paginatingSdk({ [DOC.packManifest]: manifests })
+    const seen: QueryLike[] = []
+    const sdk = paginatingSdk({ [DOC.packManifest]: manifests }, seen)
 
     const read = await readPackManifests(sdk, REPO)
 
@@ -383,6 +390,35 @@ describe('pack manifests across a page boundary', () => {
     expect(read).toHaveLength(PAGE + 1)
     expect(read[0]?.documentId).toBe(`m-${String(PAGE).padStart(4, '0')}`)
     expect(read[read.length - 1]?.documentId).toBe('m-0000')
+    // No descending page after a cursor: the proof a protocol-13 node returns for one fails
+    // evo-sdk 4.2's verifier, so the newest-first read is paged ascending and reversed.
+    expect(seen.length).toBeGreaterThan(1)
+    expect(
+      seen.filter((q) => q.startAfter !== undefined && q.orderBy?.some(([, d]) => d === 'desc')),
+    ).toEqual([])
+  })
+})
+
+describe('ascendingEquivalent', () => {
+  const base = { dataContractId: 'c', documentTypeName: DOC.packManifest }
+  it('flips a descending order, leaves an ascending one alone', () => {
+    expect(ascendingEquivalent({ ...base, orderBy: [['$createdAt', 'desc']] })).toEqual([
+      ['$createdAt', 'asc'],
+    ])
+    expect(ascendingEquivalent({ ...base, orderBy: [['$createdAt', 'asc']] })).toBeNull()
+    expect(ascendingEquivalent(base)).toBeNull()
+  })
+  it('flips a mixed order only when its ascending fields are pinned by ==', () => {
+    const orderBy = [
+      ['$ownerId', 'asc'],
+      ['$createdAt', 'desc'],
+    ] as const
+    expect(ascendingEquivalent({ ...base, orderBy, where: [['$ownerId', '==', 'me']] })).toEqual([
+      ['$ownerId', 'asc'],
+      ['$createdAt', 'asc'],
+    ])
+    expect(ascendingEquivalent({ ...base, orderBy })).toBeNull()
+    expect(ascendingEquivalent({ ...base, orderBy, where: [['$ownerId', '>', 'me']] })).toBeNull()
   })
 })
 

@@ -19,11 +19,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { NETWORKS } from '../constants'
-import { bytesToBase64, evoSdkService, queryDocumentsWithProof, type WriteAuth } from '../sdk'
-import { decodeIdentifier, parseIdentityFileText } from '../auth'
+import { evoSdkService, queryDocumentsWithProof, type WriteAuth } from '../sdk'
+import { parseIdentityFileText } from '../auth'
 import { REGISTRY_DOC, type RepoRef } from './contract'
 import { createIssue, starRepo } from './writes'
-import { fetchContractOwner, listIssues } from './index'
+import { asIdentifierString, fetchContractOwner, listIssues } from './index'
 
 const LIVE = process.env['FORGE_LIVE'] === '1'
 const M1_REPO_CONTRACT = '5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX'
@@ -86,10 +86,11 @@ describe.skipIf(!LIVE)('live testnet browser-path writes', () => {
         orderBy: [['$ownerId', 'asc'], ['normalizedName', 'asc']],
         limit: 100,
       })
-      // repoListing.repoContractId is a byteArray field (returns base64), not a platform
-      // identifier, so match on the base64-encoded contract id.
-      const m1Base64 = bytesToBase64(decodeIdentifier(M1_REPO_CONTRACT))
-      const listing = documents.find((d) => d['repoContractId'] === m1Base64)
+      // repoListing.repoContractId is an identifier-typed byteArray: evo-sdk 4.0 serialized
+      // it as base64, 4.2 as base58. Normalize through the same helper the app uses.
+      const listing = documents.find(
+        (d) => asIdentifierString(d['repoContractId']) === M1_REPO_CONTRACT,
+      )
       expect(listing, 'm1 repo must have a registry listing').toBeDefined()
       const listingId = listing?.['$id'] as string
 

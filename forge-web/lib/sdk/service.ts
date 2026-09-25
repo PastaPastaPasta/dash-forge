@@ -113,15 +113,17 @@ class EvoSdkService {
     // Both constructors above are the *Trusted variants — record it so the UI reports what
     // this connection does rather than what the app intends.
     this.trusted = true
-    // Pin the DPP version so read normalization (`toJSON`) matches the connected network.
+    // Preload BEFORE marking ready so getSdk() callers never see an unwarmed SDK.
+    await this.preload(config.contractIds)
+    // Read the protocol version only now. evo-sdk 4.2 starts at a per-network floor (13 on
+    // testnet/mainnet, 14 on a devnet) and learns the network's real version from the first
+    // proof-verified response — the preload above is that response. Read before it,
+    // `version()` reports the floor, not the network.
     try {
-      const version = (this.sdk as unknown as { version(): number }).version()
-      setPlatformVersion(version)
+      setPlatformVersion(this.sdk.version())
     } catch {
       // Keep the default version if the SDK cannot report one.
     }
-    // Preload BEFORE marking ready so getSdk() callers never see an unwarmed SDK.
-    await this.preload(config.contractIds)
     this.ready = true
   }
 

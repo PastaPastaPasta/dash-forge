@@ -44,6 +44,7 @@ export {
   type JsonValue,
 } from './contract-create'
 export {
+  ascendingEquivalent,
   base64ToBytes,
   base64ToHex,
   bytesToBase64,
