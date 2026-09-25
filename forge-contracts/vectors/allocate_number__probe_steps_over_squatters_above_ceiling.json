@@ -1,0 +1,16 @@
+{
+  "name": "probe_steps_over_squatters_above_ceiling",
+  "description": "Base is the ceiling (108); 109 and 110 are taken, so the probe allocates 111.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      110,
+      109,
+      108,
+      3
+    ]
+  },
+  "expected": 111
+}

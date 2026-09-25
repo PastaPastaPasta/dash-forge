@@ -1,0 +1,28 @@
+{
+  "name": "none_verified",
+  "description": "No copy verifies: the pack is unreadable.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "m1",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 10,
+        "verified": false
+      },
+      {
+        "id": "w1",
+        "packHash": "P",
+        "ownerRole": "writer",
+        "createdAt": 20,
+        "verified": false
+      }
+    ]
+  },
+  "expected": {
+    "selected": null,
+    "readOrder": []
+  }
+}

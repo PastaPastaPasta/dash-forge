@@ -1,0 +1,13 @@
+{
+  "name": "max_length_63",
+  "description": "63 characters is the maximum.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expected": {
+    "valid": true,
+    "normalized": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

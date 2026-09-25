@@ -1,0 +1,16 @@
+{
+  "name": "far_squatter_ignored",
+  "description": "A squatter at 2^32-1 is above the ceiling (2*4+100 = 108) and ignored: allocate 4.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      4294967295,
+      3,
+      2,
+      1
+    ]
+  },
+  "expected": 4
+}

@@ -1,0 +1,16 @@
+{
+  "name": "private_issue_both",
+  "description": "Plaintext and enc together is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "issue",
+      "title": "t",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

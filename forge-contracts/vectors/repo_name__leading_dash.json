@@ -1,0 +1,13 @@
+{
+  "name": "leading_dash",
+  "description": "A leading dash is invalid.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": "-x"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

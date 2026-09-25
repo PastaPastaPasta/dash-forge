@@ -567,7 +567,102 @@
                 "memberId": "."
               }
             }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "propertyAgreement": {
+                  "repoId": "repoId",
+                  "targetNumber": "number"
+                }
+              }
+            ]
           },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "position": 3
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 120,
+          "maxBytes": 480,
+          "position": 4
+        },
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "authorEvent": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
           {
             "type": "permanentDocument",
             "documentType": "issue",
@@ -640,18 +735,8 @@
         "kind": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 255,
+          "maximum": 2,
           "position": 3
-        },
-        "value": {
-          "type": "string",
-          "maxLength": 120,
-          "maxBytes": 480,
-          "position": 4
-        },
-        "oid": {
-          "$ref": "#/$defs/oid",
-          "position": 5
         }
       },
       "indices": [

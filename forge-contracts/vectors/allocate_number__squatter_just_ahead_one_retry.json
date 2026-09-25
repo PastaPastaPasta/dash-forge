@@ -1,0 +1,16 @@
+{
+  "name": "squatter_just_ahead_one_retry",
+  "description": "Someone claimed the number the allocator was about to take (4); the retry sees it and allocates 5.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      4,
+      3,
+      2,
+      1
+    ]
+  },
+  "expected": 5
+}

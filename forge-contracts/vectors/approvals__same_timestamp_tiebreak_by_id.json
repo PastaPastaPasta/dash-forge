@@ -1,0 +1,38 @@
+{
+  "name": "same_timestamp_tiebreak_by_id",
+  "description": "Two reviews by one reviewer at the same createdAt order by id: r-a (request changes) then r-b (approve).",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r-b",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r-a",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

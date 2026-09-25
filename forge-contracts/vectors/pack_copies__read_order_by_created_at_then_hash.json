@@ -1,0 +1,66 @@
+{
+  "name": "read_order_by_created_at_then_hash",
+  "description": "Readable, un-superseded packs are read by their selected copy's createdAt, then pack hash; superseded packs follow in the same order.",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "cb",
+        "packHash": "PB",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "ca",
+        "packHash": "PA",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "cc",
+        "packHash": "PC",
+        "ownerRole": "writer",
+        "createdAt": 5,
+        "verified": true
+      },
+      {
+        "id": "cz",
+        "packHash": "PZ",
+        "ownerRole": "maintainer",
+        "createdAt": 40,
+        "verified": true,
+        "supersedes": [
+          "PB",
+          "PC"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "readOrder": [
+      {
+        "packHash": "PA",
+        "copyId": "ca",
+        "superseded": false
+      },
+      {
+        "packHash": "PZ",
+        "copyId": "cz",
+        "superseded": false
+      },
+      {
+        "packHash": "PC",
+        "copyId": "cc",
+        "superseded": true
+      },
+      {
+        "packHash": "PB",
+        "copyId": "cb",
+        "superseded": true
+      }
+    ]
+  }
+}

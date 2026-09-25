@@ -1,0 +1,44 @@
+{
+  "name": "writer_and_maintainer_both_count",
+  "description": "Writers' and maintainers' approvals both count.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "dev",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "dev",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "dev",
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

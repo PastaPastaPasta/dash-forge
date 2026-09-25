@@ -1,0 +1,13 @@
+{
+  "name": "leading_dot",
+  "description": "The first character must be a letter or digit.",
+  "case": "repo_name",
+  "rules": "v2",
+  "input": {
+    "name": ".hidden"
+  },
+  "expected": {
+    "valid": false,
+    "normalized": null
+  }
+}

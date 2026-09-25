@@ -1,0 +1,15 @@
+{
+  "name": "public_review_with_enc",
+  "description": "A public review must not carry enc.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

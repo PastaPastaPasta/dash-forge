@@ -1,0 +1,36 @@
+{
+  "name": "pr_author_event_merge_kind_inert",
+  "description": "An authorEvent of kind merge (impossible on chain) is inert even with a reachable oid: merge only comes from event.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "alice",
+        "value": null,
+        "oid": "M",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

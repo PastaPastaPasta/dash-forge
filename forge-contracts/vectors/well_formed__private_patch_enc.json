@@ -1,0 +1,15 @@
+{
+  "name": "private_patch_enc",
+  "description": "A private patch with only enc and epoch is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 1
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

@@ -1,0 +1,14 @@
+{
+  "name": "base_at_ceiling_with_gap",
+  "description": "Base is the ceiling (108); 109 is free, 110 is a squatter: allocate 109.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      110,
+      108
+    ]
+  },
+  "expected": 109
+}

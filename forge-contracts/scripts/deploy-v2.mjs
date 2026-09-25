@@ -3,6 +3,17 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
+//        [--only collab [--force-new]]
+//
+// --only collab registers forge-collab alone, against the forge-core and contract group already
+// recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
+// registers a NEW forge-collab when the recorded one was registered from a different schema:
+// every record carries `schemaHash` (sha256 of the schema JSON after placeholder substitution),
+// and only a registered record whose hash differs from the current schema's is superseded. The
+// old record moves to v2.forgeCollabSuperseded and the new one takes the next identity nonce, so
+// it gets a new id. Rerunning the same command after it succeeded, or after a crash, therefore
+// registers nothing new. That is how a schema change the update rules refuse (e.g. narrowing an
+// ownerRefersTo) ships; documents under the old contract stay where they are, under its id.
 //
 // Steps, each skipped when deployments/<network>.json shows it already done and the chain
 // confirms it (so a failed run is resumed by running the same command again):
@@ -124,11 +135,16 @@ function writeDep(file, dep) {
 
 export { b58decode, b58encode, selfTest };
 
-export function loadSchema(name, substitutions = {}) {
-  let text = readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8');
+export function loadSchema(name, substitutions = {}, text = readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8')) {
   for (const [k, v] of Object.entries(substitutions)) text = text.split(k).join(v);
   if (text.includes('_CONTRACT_ID"')) throw new Error(`${name}: unresolved contract id placeholder`);
   return JSON.parse(text);
+}
+
+// The identity of what a record was registered from: sha256 of the substituted schema,
+// re-serialized compactly so whitespace and formatting do not count as a change.
+export function schemaHash(json) {
+  return createHash('sha256').update(JSON.stringify(json)).digest('hex');
 }
 
 function pickKey(rec, purpose, level) {
@@ -147,6 +163,10 @@ async function main() {
   if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const dryRun = Boolean(args['dry-run']);
+  const only = args.only === undefined ? null : String(args.only);
+  if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
+  const forceNew = Boolean(args['force-new']);
+  if (forceNew && only !== 'collab') throw new Error('--force-new needs --only collab');
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
     : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
@@ -212,11 +232,14 @@ async function main() {
 
   // A step whose recorded contract is on chain is finished; bring its record up to date
   // (a crash between broadcast and the final write leaves it `broadcasting`, without cost).
-  async function reconcile(key) {
+  async function reconcile(key, currentHash) {
     const existing = v2[key];
     if (!existing?.contractId) return null;
     const onChain = await sdk.contracts.fetch(existing.contractId);
     if (onChain) {
+      if (existing.schemaHash && existing.schemaHash !== currentHash) {
+        log(`${key}: WARNING ${existing.contractId} was registered from a different schema (${existing.schemaHash.slice(0, 12)}… != ${currentHash.slice(0, 12)}…); it is left as is${key === 'forgeCollab' ? ' (--only collab --force-new registers the current one)' : ''}`);
+      }
       if (existing.status !== 'registered') {
         const cost = existing.balanceBefore != null ? BigInt(existing.balanceBefore) - (await balance()) : null;
         v2[key] = {
@@ -248,7 +271,9 @@ async function main() {
   // and (for forge-core) the contract group id derived from THAT nonce are recorded together
   // BEFORE broadcasting, so a crash after broadcast resumes against the right ids.
   async function registerContract({ key, schemaName, substitutions, registerGroup, groupIdFor }) {
-    const done = await reconcile(key);
+    const json = loadSchema(schemaName, substitutions);
+    const hash = schemaHash(json);
+    const done = await reconcile(key, hash);
     if (done) return done;
 
     // In a dry run nothing is broadcast, so the next contract's nonce is one past this one's
@@ -257,7 +282,6 @@ async function main() {
     const id = contractId(ownerId, nonce);
     const groupId = groupIdFor(nonce);
 
-    const json = loadSchema(schemaName, substitutions);
     const full = {
       $formatVersion: '1',
       id,
@@ -283,7 +307,7 @@ async function main() {
     log(`${key}: id ${id}, nonce ${nonce}, group ${groupId}, signed create transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
     if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: transition exceeds max_state_transition_size`);
     if (dryRun) {
-      report.steps.push({ key, contractId: id, nonce: nonce.toString(), contractGroupId: groupId, sizeBytes: size, dryRun: true });
+      report.steps.push({ key, contractId: id, nonce: nonce.toString(), contractGroupId: groupId, sizeBytes: size, schemaHash: hash, dryRun: true });
       return id;
     }
 
@@ -295,6 +319,7 @@ async function main() {
       contractGroupId: groupId,
       status: 'broadcasting',
       sizeBytes: size,
+      schemaHash: hash,
       balanceBefore: before.toString(),
     };
     record();
@@ -325,25 +350,63 @@ async function main() {
 
   // forge-core registers the group, so the group id is derived from forge-core's own nonce,
   // whichever nonce that turns out to be (fresh, reused, or recorded by an earlier run).
-  const coreId = await registerContract({
-    key: 'forgeCore',
-    schemaName: 'forge-core',
-    substitutions: {},
-    registerGroup: true,
-    groupIdFor: (nonce) => contractGroupId(ownerId, nonce),
-  });
-  const coreNonce = dryRun ? BigInt(report.steps[0].nonce) : BigInt(v2.forgeCore.identityNonce);
+  let coreId;
+  if (only === 'collab') {
+    // forge-core must already be registered and on chain; this mode never registers it
+    coreId = await reconcile('forgeCore', schemaHash(loadSchema('forge-core')));
+    if (!coreId) throw new Error('--only collab: forge-core is not registered on this network; run without --only first');
+  } else {
+    coreId = await registerContract({
+      key: 'forgeCore',
+      schemaName: 'forge-core',
+      substitutions: {},
+      registerGroup: true,
+      groupIdFor: (nonce) => contractGroupId(ownerId, nonce),
+    });
+  }
+  // The nonce forge-core was (or, in a dry run, would be) registered with
+  const coreStep = report.steps.find((s) => s.key === 'forgeCore');
+  const coreNonce = BigInt(coreStep?.dryRun ? coreStep.nonce : v2.forgeCore.identityNonce);
   const groupIdFinal = contractGroupId(ownerId, coreNonce);
-  if (!dryRun && v2.forgeCore.contractGroupId && v2.forgeCore.contractGroupId !== groupIdFinal) {
+  // A dry-run core step names a nonce nothing has recorded yet, so a leftover record (an
+  // interrupted reservation) is not expected to agree with it
+  if (!coreStep?.dryRun && v2.forgeCore?.contractGroupId && v2.forgeCore.contractGroupId !== groupIdFinal) {
     throw new Error(`recorded group ${v2.forgeCore.contractGroupId} does not derive from forge-core's nonce ${coreNonce}`);
   }
+
+  const collabSubstitutions = { [PLACEHOLDER]: coreId };
+  if (forceNew && v2.forgeCollab?.contractId) {
+    const old = v2.forgeCollab;
+    const currentHash = schemaHash(loadSchema('forge-collab', collabSubstitutions));
+    // Only a completed registration from a different schema is superseded. A `broadcasting`
+    // record is the new contract of an interrupted --force-new run (or an interrupted first
+    // run): registerContract below completes it if it landed, or retries its nonce if it did
+    // not. A registered record from this very schema is already the contract wanted. Either
+    // way, rerunning the same command never registers another copy. A record without a hash
+    // predates schemaHash and cannot be shown to match, so it is superseded.
+    if (old.status === 'registered' && old.schemaHash === currentHash) {
+      log(`forgeCollab: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
+    } else if (old.status === 'registered') {
+      if (dryRun) {
+        log(`forgeCollab: --force-new would supersede ${old.contractId} with a new contract`);
+      } else {
+        v2.forgeCollabSuperseded = [...(v2.forgeCollabSuperseded ?? []), { ...old, supersededAt: new Date().toISOString() }];
+        delete v2.forgeCollab;
+        record();
+        log(`forgeCollab: ${old.contractId} moved to forgeCollabSuperseded; registering a new forge-collab`);
+      }
+    }
+  }
+  const collabRecordBeforeDryRun = dryRun && forceNew ? v2.forgeCollab : undefined;
+  if (collabRecordBeforeDryRun) delete v2.forgeCollab; // a dry run sizes the new one, records nothing
   await registerContract({
     key: 'forgeCollab',
     schemaName: 'forge-collab',
-    substitutions: { [PLACEHOLDER]: coreId },
+    substitutions: collabSubstitutions,
     registerGroup: false,
     groupIdFor: () => groupIdFinal,
   });
+  if (collabRecordBeforeDryRun) v2.forgeCollab = collabRecordBeforeDryRun;
 
   if (!dryRun) {
     const info = await sdk.contractGroups.info(groupIdFinal);

@@ -1,0 +1,14 @@
+{
+  "name": "public_review_body",
+  "description": "A public review with a body is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review",
+      "body": "LGTM"
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

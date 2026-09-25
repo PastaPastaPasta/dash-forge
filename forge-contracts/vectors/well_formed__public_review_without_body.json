@@ -1,0 +1,13 @@
+{
+  "name": "public_review_without_body",
+  "description": "A review's content is its verdict and commitOid: a public review needs no body.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review"
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

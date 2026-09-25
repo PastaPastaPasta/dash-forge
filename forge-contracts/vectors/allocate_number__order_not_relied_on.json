@@ -1,0 +1,15 @@
+{
+  "name": "order_not_relied_on",
+  "description": "The taken numbers may arrive in any order.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 3,
+    "takenNumbersDesc": [
+      1,
+      3,
+      2
+    ]
+  },
+  "expected": 4
+}

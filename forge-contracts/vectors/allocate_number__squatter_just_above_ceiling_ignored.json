@@ -1,0 +1,16 @@
+{
+  "name": "squatter_just_above_ceiling_ignored",
+  "description": "A squatter at 109 with count 4 (ceiling 108) is ignored: allocate 4.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      109,
+      3,
+      2,
+      1
+    ]
+  },
+  "expected": 4
+}

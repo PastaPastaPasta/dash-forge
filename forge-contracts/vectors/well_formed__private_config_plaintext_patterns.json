@@ -1,0 +1,18 @@
+{
+  "name": "private_config_plaintext_patterns",
+  "description": "A private config must not carry plaintext protectedPatterns.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "protectedPatterns": [
+        "refs/heads/main"
+      ],
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

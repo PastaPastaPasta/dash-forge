@@ -1,0 +1,60 @@
+{
+  "name": "pr_member_draft_retarget_ready_label",
+  "description": "Members' draft, retarget, ready and label events apply in order.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "draft",
+        "actor": "writer",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 110
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "ready",
+        "actor": "writer",
+        "value": null,
+        "oid": null,
+        "createdAt": 120
+      },
+      {
+        "id": "e4",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "needs-review",
+        "oid": null,
+        "createdAt": 130
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": "refs/heads/dev",
+    "labels": [
+      "needs-review"
+    ],
+    "assignees": []
+  }
+}

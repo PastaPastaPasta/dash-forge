@@ -1,0 +1,33 @@
+{
+  "name": "both_roles_same_time",
+  "description": "Maintainer and writer documents created at the same time: maintainer.",
+  "case": "role_oracle",
+  "rules": "v2",
+  "input": {
+    "memberships": [
+      {
+        "identity": "x",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "x",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "queries": [
+      {
+        "identity": "x",
+        "at": 10
+      }
+    ]
+  },
+  "expected": [
+    {
+      "roleAt": "maintainer",
+      "memberAt": true,
+      "currentRole": "maintainer"
+    }
+  ]
+}
