@@ -108,13 +108,13 @@ runs:
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
 
+    # A fresh directory per invocation: two mirrors in one job, or a failed earlier
+    # step, can never hand this run another run's state, work dir or summary.
     - name: Paths
       id: paths
       shell: bash
-      env:
-        DIR: ${{ runner.temp }}/forge-mirror
       run: |
-        mkdir -p "$DIR"
+        DIR=$(mktemp -d "$RUNNER_TEMP/forge-mirror.XXXXXX")
         {
           echo "dir=$DIR"
           echo "bin=$DIR/bin"
@@ -141,7 +141,7 @@ runs:
       # network + destination + source.
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: ${{ runner.temp }}/forge-mirror/state
+        path: ${{ steps.paths.outputs.dir }}/state
         key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@
@@ -183,24 +183,27 @@ runs:
         SUMMARY_JSON: ${{ steps.paths.outputs.summary }}
       run: bash "$GITHUB_ACTION_PATH/summary.sh" "$SUMMARY_JSON"
 
+    # Only a successful real run advances the saved state; a dry run, a capped run or a
+    # failure leaves the previous state in the cache.
     - name: Check for sync state
       id: state
-      if: always() && inputs.state-cache == 'true'
+      if: inputs.state-cache == 'true' && inputs.dry-run != 'true'
       shell: bash
       env:
         STATE: ${{ steps.paths.outputs.state }}
       run: if [ -s "$STATE" ]; then echo "exists=true" >>"$GITHUB_OUTPUT"; fi
 
     - name: Save sync state
-      if: always() && steps.state.outputs.exists == 'true'
+      if: steps.state.outputs.exists == 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: ${{ runner.temp }}/forge-mirror/state
+        path: ${{ steps.paths.outputs.dir }}/state
         key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
 
-    - name: Remove the key file and storage profile
+    # Keep only the state and the summary; the git work dir's config may hold the token.
+    - name: Remove the key file, storage profile and work dir
       if: always() && steps.paths.outcome == 'success'
       shell: bash
       env:
         DIR: ${{ steps.paths.outputs.dir }}
-      run: rm -f "$DIR/identity.json" "$DIR/storage.toml"
+      run: rm -rf "$DIR/identity.json" "$DIR/storage.toml" "$DIR/git"

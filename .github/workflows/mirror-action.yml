@@ -10,7 +10,9 @@ name: Mirror Action
 on:
   workflow_dispatch:
   schedule:
-    - cron: "41 5 * * 1"
+    # Monday midday: well clear of testnet-nightly (06:00), which signs as the same
+    # OWNER identity; two jobs signing at once can collide on identity nonces.
+    - cron: "41 12 * * 1"
   pull_request:
     paths:
       - action/**
@@ -22,6 +24,8 @@ on:
       - action/**
       - install.sh
       - crates/forge-import/**
+      - crates/git-remote-dash/**
+      - crates/forge-core/**
       - .github/workflows/mirror-action.yml
 
 permissions:
@@ -129,13 +133,9 @@ jobs:
           DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Drop the incremental state so the second run re-examines everything: idempotency
-      # must come from the chain (content-addressed packs, gh# markers), not the state file.
-      - name: Forget the sync state
-        env:
-          STATE_DIR: ${{ runner.temp }}/forge-mirror/state
-        run: rm -rf "$STATE_DIR"
-
+      # Each invocation gets a fresh work dir and, with state-cache off, no sync state: the
+      # second run re-examines everything, so idempotency must come from the chain
+      # (content-addressed packs, ref tips, gh# markers), not from local files.
       - name: Mirror (second run, must be a no-op)
         id: second
         uses: ./action
@@ -164,7 +164,8 @@ jobs:
           jq . "$SUMMARY"
           [ "$FIRST_STATUS" = ok ] || { echo "::error::first run status is '$FIRST_STATUS'"; exit 1; }
           [ "$STATUS" = ok ] || { echo "::error::second run status is '$STATUS'"; exit 1; }
-          if ! jq -e '.spentCredits == 0 and ([.counts[]] | all(. == 0))' "$SUMMARY" >/dev/null; then
+          if ! jq -e '.spentCredits == 0 and (.counts | type == "object" and length > 0)
+                      and ([.counts[]] | all(. == 0))' "$SUMMARY" >/dev/null; then
             echo "::error title=Mirror not idempotent::the second run wrote something: $(jq -c '{spentCredits, counts}' "$SUMMARY")"
             exit 1
           fi

@@ -133,6 +133,7 @@ A failed or capped run shows the error as an annotation.
 ## Security
 
 - Grant the job only `contents: read, issues: read, pull-requests: read`. The Action writes to Dash Platform, never to GitHub.
+- **Anyone who can open an issue, comment or send a pull request can make a run spend.** Their content is stored permanently on-chain, fork PR heads included, and you pay for it: up to `cost-cap` per event, until the runner key's budget runs out. That budget is the real limit, so keep it small and use a limited key. On a busy public repository, drop the `issues`, `issue_comment` and `pull_request_target` triggers and let the daily `schedule` run pick up the changes, or remove `issues,prs` from `sync`.
 - Secrets are passed through `env:` and are never printed. A `dfk1:` key's WIF, and any secret field of an identity JSON, is masked in the log. An identity JSON is written to a `0600` file in `$RUNNER_TEMP` and deleted at the end of the job, even when the job fails.
 - The storage secrets are never written to disk. The storage profile holds `env:S3_SECRET_ACCESS_KEY`-style references, which are resolved when the push runs.
 - Every input is validated before anything runs, and inputs reach the scripts only as environment variables, never as text inside a script.

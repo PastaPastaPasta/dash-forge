@@ -83,6 +83,16 @@ case=missing
 run_summary does-not-exist.json
 expect out 'status=error'
 
+# Schema drift must not fail the step, and the outputs must still be written.
+case=drift
+printf '{"status":"ok","repo":"x","counts":null,"warnings":"w","spentCredits":1e30,"key":{"expiresAt":1e30}}' \
+    >"$here/testdata/.drift.json"
+run_summary .drift.json || { echo "FAIL [$case] exited non-zero"; fails=$((fails + 1)); }
+rm -f "$here/testdata/.drift.json"
+expect out 'status=ok'
+expect out 'spent-dash=0'
+reject ann 'expires soon'
+
 # validate.sh: every INPUT_* is set explicitly; one override per case.
 validate() {
     env -i PATH="$PATH" GITHUB_ENV="$tmp/env" \
@@ -121,6 +131,9 @@ bad INPUT_NETWORK=regtest
 bad INPUT_NETWORK=devnet
 bad INPUT_SYNC=code,wiki
 bad INPUT_SYNC=''
+bad INPUT_SYNC=code,
+bad INPUT_SYNC=$'code\n--dry-run'
+bad INPUT_DEVNET_NAME='x@y'
 bad INPUT_COST_CAP=abc
 bad INPUT_COST_CAP=0
 bad INPUT_COST_CAP=1e3

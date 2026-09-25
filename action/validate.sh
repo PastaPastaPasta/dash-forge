@@ -41,18 +41,13 @@ case "${INPUT_NETWORK:-}" in
         ;;
     *) fail network "must be mainnet, testnet or devnet" ;;
 esac
-
-if [ -z "${INPUT_SYNC:-}" ]; then
-    fail sync "must list at least one of code,issues,prs,releases,labels"
-else
-    IFS=, read -ra items <<<"$INPUT_SYNC"
-    for item in "${items[@]}"; do
-        case "$item" in
-            code | issues | prs | releases | labels) ;;
-            *) fail sync "unknown item '${item//[^A-Za-z0-9_-]/?}' (allowed: code,issues,prs,releases,labels; no spaces)" ;;
-        esac
-    done
+if [ "${INPUT_NETWORK:-}" != devnet ] && [ -n "${INPUT_DEVNET_NAME:-}" ]; then
+    fail devnet-name "applies only to network 'devnet'; leave it empty"
 fi
+
+item='(code|issues|prs|releases|labels)'
+match sync "${INPUT_SYNC:-}" "^${item}(,${item})*\$" \
+    "must be a comma list of code,issues,prs,releases,labels (no spaces)"
 
 match cost-cap "${INPUT_COST_CAP:-}" '^[0-9]{1,6}(\.[0-9]{1,8})?$' "must be a DASH amount like 0.05"
 if [[ ${INPUT_COST_CAP:-} =~ ^[0-9.]+$ ]] && ! awk -v c="$INPUT_COST_CAP" 'BEGIN { exit !(c > 0) }'; then
