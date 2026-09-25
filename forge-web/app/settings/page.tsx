@@ -43,7 +43,7 @@ export default function SettingsPage(): JSX.Element {
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Identity</h2>
           <div className="flex items-center justify-between">
             <IdentityPill identityId={identity} />
-            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash">{DEFAULT_NETWORK}</span>
+            <span className="rounded bg-dash/10 px-1.5 py-0.5 font-mono text-[11px] uppercase text-dash-600 dark:text-dash-400">{DEFAULT_NETWORK}</span>
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>
@@ -53,7 +53,7 @@ export default function SettingsPage(): JSX.Element {
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Balance</h2>
-          <div className="font-mono text-2xl text-dash">{balanceToDash(balance ?? '0')} DASH</div>
+          <div className="font-mono text-2xl text-dash-600 dark:text-dash-400">{balanceToDash(balance ?? '0')} DASH</div>
           <div className="mt-1 font-mono text-dense text-anvil-400">
             {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
           </div>

@@ -35,7 +35,7 @@ export function CostPreview({
       )}
     >
       <span className="text-anvil-500 dark:text-anvil-400">{refund ? 'Refund est.' : 'Cost'}</span>
-      <span className={cn('font-mono font-medium', refund ? 'text-verify' : 'text-dash')}>
+      <span className={cn('font-mono font-medium', refund ? 'text-verify' : 'text-dash-600 dark:text-dash-400')}>
         {refund ? '+' : '~'}
         {formatDash(cost.dash)} DASH
       </span>
