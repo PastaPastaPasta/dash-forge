@@ -380,14 +380,26 @@ pub fn valid_profile_name(name: &str) -> bool {
 }
 
 fn http_origin(field: &str, value: &str) -> Result<()> {
+    // The value is not echoed: a URL can carry a pasted token (userinfo, query).
     let url = reqwest::Url::parse(value)
-        .map_err(|e| Error::Config(format!("{field} {value:?} is not a URL: {e}")))?;
+        .map_err(|e| Error::Config(format!("{field} is not a URL: {e}")))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err(Error::Config(format!(
-            "{field} {value:?} must be an http(s) URL"
-        )));
+        return Err(Error::Config(format!("{field} must be an http(s) URL")));
     }
-    Ok(())
+    crate::backends::s3::reject_url_extras(field, &url)
+}
+
+/// A TOML parse error as `line N: message` — never the rendered snippet, which quotes the
+/// offending source line and so could print a secret pasted into the file.
+fn toml_error(raw: &str, e: &toml::de::Error) -> Error {
+    let line = e
+        .span()
+        .map(|span| raw[..span.start.min(raw.len())].matches('\n').count() + 1);
+    let message = e.message().trim();
+    Error::Config(match line {
+        Some(n) => format!("line {n}: {message}"),
+        None => message.to_string(),
+    })
 }
 
 impl Profile {
@@ -482,9 +494,10 @@ impl Profile {
     /// platform kind (the on-chain tier is not a [`PackBackend`] the push path owns).
     pub fn build_backend(&self, client: &reqwest::Client) -> Result<Option<Box<dyn PackBackend>>> {
         Ok(match self {
+            // S3 uses its own no-redirect client (see `S3Backend::client`).
             Profile::S3(p) => Some(Box::new(S3Backend::with_client(
                 p.to_config()?,
-                client.clone(),
+                S3Backend::client(),
             ))),
             Profile::IpfsKubo(p) => Some(Box::new(IpfsBackend::with_client(
                 IpfsConfig {
@@ -534,11 +547,12 @@ impl Profile {
     }
 }
 
-/// The gateway an ipfs backend re-reads through: the public one when set (it is what the
-/// manifest records), else the local one, else empty (no re-read).
+/// The gateway an ipfs backend re-reads through: the node's own gateway when set (a fresh
+/// CID is there immediately, while a public gateway may take minutes to find it), else the
+/// public one, else empty (no re-read; the CID + pin checks stand alone).
 fn verify_gateway(local: Option<&str>, public: Option<&str>) -> String {
-    public
-        .or(local)
+    local
+        .or(public)
         .unwrap_or_default()
         .trim_end_matches('/')
         .to_string()
@@ -611,7 +625,7 @@ impl StorageProfiles {
 
     /// Parse + validate TOML text.
     pub fn parse(raw: &str) -> Result<Self> {
-        let parsed: Self = toml::from_str(raw).map_err(|e| Error::Config(e.to_string()))?;
+        let parsed: Self = toml::from_str(raw).map_err(|e| toml_error(raw, &e))?;
         for (name, profile) in &parsed.profiles {
             if !valid_profile_name(name) {
                 return Err(Error::Config(format!(
@@ -733,6 +747,32 @@ secret_access_key = "wJalrXUtnFEMI-LITERAL-SECRET"
         let err = StorageProfiles::parse(raw).unwrap_err().to_string();
         assert!(err.contains("reference"), "{err}");
         assert!(!err.contains("LITERAL-SECRET"), "{err}");
+    }
+
+    #[test]
+    fn toml_errors_never_quote_the_source_line() {
+        // Inline table: the error span is the secret's own line.
+        let raw = "profiles.x = { kind = \"s3\", endpoint = \"https://h\", bucket = \"b\", \
+                   access_key_id = \"AK\", secret_access_key = \"wJalrXUtnFEMI-INLINE-SECRET\" }\n";
+        let err = StorageProfiles::parse(raw).unwrap_err().to_string();
+        assert!(!err.contains("INLINE-SECRET"), "{err}");
+        assert!(err.contains("line 1"), "{err}");
+        // A plain syntax error on the secret's line.
+        let raw = "[profiles.x]\nkind = \"s3\"\nsecret_access_key = \"SYNTAX-SECRET\" junk\n";
+        let err = StorageProfiles::parse(raw).unwrap_err().to_string();
+        assert!(!err.contains("SYNTAX-SECRET"), "{err}");
+        assert!(err.contains("line 3"), "{err}");
+    }
+
+    #[test]
+    fn urls_with_embedded_credentials_are_refused_without_echo() {
+        let raw =
+            "[profiles.k]\nkind = \"ipfs-kubo\"\napi = \"http://user:TOKEN123@127.0.0.1:5001\"\n";
+        let err = StorageProfiles::parse(raw).unwrap_err().to_string();
+        assert!(err.contains("credentials"), "{err}");
+        assert!(!err.contains("TOKEN123"), "{err}");
+        let raw = "[profiles.k]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001?token=Q\"\n";
+        assert!(StorageProfiles::parse(raw).is_err());
     }
 
     #[test]

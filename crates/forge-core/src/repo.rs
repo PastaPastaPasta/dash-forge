@@ -922,47 +922,28 @@ impl<'a> RepoService<'a> {
             )
             .await?;
 
-        docs.iter()
-            .map(|d| {
-                let pack_hash = d
-                    .field_bytes("packHash")
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or_else(|| Error::Platform("packManifest missing packHash".into()))?;
-                let uris = d
-                    .field_str("uris")
-                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                    .unwrap_or_default();
-                // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
-                let supersedes = d
-                    .field_bytes("supersedes")
-                    .map(|raw| {
-                        raw.as_chunks::<32>()
-                            .0
-                            .iter()
-                            .map(|c| {
-                                let mut h = [0u8; 32];
-                                h.copy_from_slice(c);
-                                h
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(PackManifestInfo {
-                    document_id: d.id.clone(),
-                    created_at: d.created_at.unwrap_or_default(),
-                    owner_id: d.owner_id.clone(),
-                    pack_hash,
-                    kind: d.field_u64("kind").unwrap_or_default(),
-                    size_bytes: d.field_u64("sizeBytes").unwrap_or_default(),
-                    object_count: d.field_u64("objectCount").unwrap_or_default(),
-                    chunk_count: d.field_u64("chunkCount").unwrap_or_default(),
-                    storage: d.field_u64("storage").unwrap_or_default(),
-                    offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
-                    uris,
-                    supersedes,
-                })
-            })
-            .collect()
+        docs.iter().map(manifest_info).collect()
+    }
+
+    /// Read the `packManifest` for `pack_hash`, if one exists (the index is unique).
+    pub async fn read_pack_manifest(
+        &self,
+        repo: &RepoHandle,
+        pack_hash: [u8; 32],
+    ) -> Result<Option<PackManifestInfo>> {
+        let repo_contract = self.client.fetch_contract(&repo.repo_contract_id).await?;
+        let docs = self
+            .client
+            .query_documents(
+                &repo_contract,
+                DOC_PACK_MANIFEST,
+                &[QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))],
+                &[],
+                1,
+                None,
+            )
+            .await?;
+        docs.first().map(manifest_info).transpose()
     }
 
     /// Store pack `bytes` as pipelined `chunk` documents via [`PlatformBackend`], returning
@@ -1765,8 +1746,25 @@ impl<'a> RepoService<'a> {
     ) -> Result<Vec<u8>> {
         let expected = hex::encode(manifest.pack_hash);
         let has_chunks = manifest.storage == 0;
+        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         if reader.has_candidates(&manifest.uris) {
-            match reader.fetch_verified(&manifest.uris, &expected).await {
+            let attempt = reader.fetch_verified(&manifest.uris, &expected, size);
+            // With chunks to fall back on, the external copies get a bounded total time —
+            // dead gateways must not cost minutes per pack before the on-chain read.
+            let result = if has_chunks {
+                tokio::time::timeout(crate::storage::read::DEFAULT_EXTERNAL_BUDGET, attempt)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(Error::Io(format!(
+                            "external copies did not verify within {}s",
+                            crate::storage::read::DEFAULT_EXTERNAL_BUDGET.as_secs()
+                        )))
+                    })
+            } else {
+                attempt.await
+            };
+            match result {
                 Ok(bytes) => return Ok(bytes),
                 Err(e) if !has_chunks => return Err(e),
                 Err(e) => tracing::info!(
@@ -2255,6 +2253,47 @@ pub fn locator_pack_space(
             .then_with(|| a.document_id.cmp(&b.document_id))
     });
     live
+}
+
+/// Decode a `packManifest` document.
+fn manifest_info(d: &platform::FetchedDocument) -> Result<PackManifestInfo> {
+    let pack_hash = d
+        .field_bytes("packHash")
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| Error::Platform("packManifest missing packHash".into()))?;
+    let uris = d
+        .field_str("uris")
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    // `supersedes` is a packed byteArray of concatenated 32-byte packHashes.
+    let supersedes = d
+        .field_bytes("supersedes")
+        .map(|raw| {
+            raw.as_chunks::<32>()
+                .0
+                .iter()
+                .map(|c| {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(c);
+                    h
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(PackManifestInfo {
+        document_id: d.id.clone(),
+        created_at: d.created_at.unwrap_or_default(),
+        owner_id: d.owner_id.clone(),
+        pack_hash,
+        kind: d.field_u64("kind").unwrap_or_default(),
+        size_bytes: d.field_u64("sizeBytes").unwrap_or_default(),
+        object_count: d.field_u64("objectCount").unwrap_or_default(),
+        chunk_count: d.field_u64("chunkCount").unwrap_or_default(),
+        storage: d.field_u64("storage").unwrap_or_default(),
+        offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
+        uris,
+        supersedes,
+    })
 }
 
 /// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a

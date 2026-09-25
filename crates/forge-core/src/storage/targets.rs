@@ -65,24 +65,25 @@ impl Replication {
         self.replicas.iter().any(|r| r.platform)
     }
 
-    /// Every recorded URI, public URLs first, de-duplicated, in policy order.
+    /// Every recorded URI, de-duplicated: the on-chain `platform://` locator FIRST when a
+    /// Platform copy exists (released helpers read `uris[0]` of a `storage = 0` manifest as
+    /// the chunk locator), then public http(s) URLs (what browsers and credential-less
+    /// readers use), then the rest (`ipfs://`, `s3://`), each group in policy order.
     pub fn uris(&self) -> Vec<String> {
-        let mut public = Vec::new();
-        let mut rest = Vec::new();
+        let mut groups: [Vec<String>; 3] = Default::default();
         for r in &self.replicas {
             for u in &r.uris {
-                let bucket = if matches!(u.scheme(), Some("https" | "http")) {
-                    &mut public
-                } else {
-                    &mut rest
+                let g = match u.scheme() {
+                    Some(crate::backends::PLATFORM_SCHEME) => 0,
+                    Some("https" | "http") => 1,
+                    _ => 2,
                 };
-                if !bucket.contains(&u.0) {
-                    bucket.push(u.0.clone());
+                if !groups[g].contains(&u.0) {
+                    groups[g].push(u.0.clone());
                 }
             }
         }
-        public.extend(rest);
-        public
+        groups.concat()
     }
 
     /// The URI list as the manifest's `uris` JSON, trimmed to fit `max_json_len`: private
@@ -93,6 +94,12 @@ impl Replication {
             serde_json::to_string(v).map_or(usize::MAX, |s| s.len()) <= max_json_len
         };
         let mut uris = self.uris();
+        if uris.is_empty() {
+            return Err(Error::Config(
+                "no confirmed copy recorded any URI; refusing to write a manifest nothing can read"
+                    .into(),
+            ));
+        }
         if fits(&uris) {
             return Ok(uris);
         }
@@ -171,6 +178,18 @@ pub async fn replicate(
     meta: &PackMeta,
     required: usize,
 ) -> std::result::Result<Replication, ReplicationError> {
+    if required == 0 || targets.is_empty() {
+        // A zero requirement would "succeed" with no copy at all.
+        return Err(ReplicationError {
+            confirmed: Vec::new(),
+            required: required.max(1),
+            failures: vec![TargetFailure {
+                target: "policy".into(),
+                reason: "at least one target and one required confirmation are needed".into(),
+            }],
+            skipped: Vec::new(),
+        });
+    }
     let (external, platform): (Vec<&dyn StorageTarget>, Vec<&dyn StorageTarget>) =
         targets.iter().copied().partition(|t| !t.is_platform());
 
@@ -283,7 +302,7 @@ impl ExternalTarget {
     async fn verify(&self, uri: &Uri, bytes: &[u8], meta: &PackMeta) -> Result<()> {
         let size = bytes.len() as u64;
         if size <= FULL_VERIFY_MAX {
-            let got = self.backend.get(uri, None).await?;
+            let got = self.backend.get_capped(uri, size).await?;
             if hex::encode(sha256(&got)) != meta.pack_hash {
                 return Err(Error::Io(format!(
                     "re-read of {uri} returned {} bytes that do not hash to the pack — the \
@@ -336,8 +355,15 @@ impl StorageTarget for ExternalTarget {
                 self.name
             )));
         }
-        // IPFS: also record the public gateway URL (what browsers fetch), and verify
-        // through it — that is the URL other people will rely on.
+        // Verify through the backend's own read path: the `ipfs://` CID through the node's
+        // own gateway (a fresh CID on a public gateway can take minutes to appear), else the
+        // first recorded URI (the S3 public URL, or its s3:// locator).
+        let check = uris
+            .iter()
+            .find(|u| u.scheme() == Some("ipfs"))
+            .unwrap_or(&uris[0])
+            .clone();
+        // IPFS: also record the public gateway URL (what browsers fetch).
         if let (Some(gw), Some(first)) = (&self.public_gateway, uris.first().cloned()) {
             if first.scheme() == Some("ipfs") {
                 let cid = crate::backends::IpfsBackend::cid_of(&first)?;
@@ -345,7 +371,17 @@ impl StorageTarget for ExternalTarget {
             }
         }
         if self.reread {
-            self.verify(&uris[0], bytes, meta).await?;
+            if let Err(first) = self.verify(&check, bytes, meta).await {
+                // A same-size but corrupt object at a content-addressed key would otherwise
+                // fail every push forever: re-upload once, unconditionally, and re-check.
+                tracing::warn!(target = %self.name, error = %first, "stored copy failed verification; re-uploading once");
+                self.backend.reput(bytes, meta).await?;
+                self.verify(&check, bytes, meta).await.map_err(|second| {
+                    Error::Io(format!(
+                        "{second} (also after a re-upload; first attempt: {first})"
+                    ))
+                })?;
+            }
         } else if let Some(u) = uris.iter().find(|u| u.scheme() == Some("ipfs")) {
             // No gateway to re-read through: the backend already matched kubo's CID to a
             // local derivation and confirmed the pin. Re-check the CID here so this path
@@ -411,6 +447,37 @@ pub(crate) mod tests {
 
     fn meta() -> PackMeta {
         PackMeta::for_bytes(b"pack")
+    }
+
+    #[tokio::test]
+    async fn zero_required_or_no_targets_is_an_error() {
+        let a = FakeTarget::new("a", false, false);
+        assert!(replicate(&[&a], b"pack", &meta(), 0).await.is_err());
+        assert!(replicate(&[], b"pack", &meta(), 1).await.is_err());
+        assert_eq!(a.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn manifest_uris_refuse_an_empty_list() {
+        let rep = Replication {
+            replicas: vec![Replica {
+                target: "a".into(),
+                uris: vec![],
+                platform: false,
+            }],
+            failures: vec![],
+        };
+        assert!(rep.manifest_uris(2600).is_err());
+    }
+
+    #[tokio::test]
+    async fn platform_locator_is_recorded_first() {
+        let a = FakeTarget::new("a", false, false);
+        let chain = FakeTarget::new("platform", true, false);
+        let rep = replicate(&[&a, &chain], b"pack", &meta(), 2).await.unwrap();
+        let uris = rep.uris();
+        assert!(uris[0].starts_with("platform://"), "{uris:?}");
+        assert!(uris[1].starts_with("https://"), "{uris:?}");
     }
 
     #[tokio::test]
@@ -496,10 +563,22 @@ pub(crate) mod tests {
         assert!(rep.manifest_uris(10).is_err());
     }
 
-    /// An in-memory backend whose reads can be made to lie.
+    /// An in-memory backend whose reads can be made to lie (`lie`), or whose first stored
+    /// copy is corrupt until a `reput` repairs it (`corrupt_until_reput`).
     struct MemBackend {
         store: std::sync::Mutex<Option<Vec<u8>>>,
         lie: bool,
+        corrupt_until_reput: std::sync::atomic::AtomicBool,
+    }
+
+    impl MemBackend {
+        fn new(lie: bool) -> Self {
+            Self {
+                store: std::sync::Mutex::new(None),
+                lie,
+                corrupt_until_reput: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -514,9 +593,13 @@ pub(crate) mod tests {
             *self.store.lock().unwrap() = Some(bytes.to_vec());
             Ok(vec![Uri("https://mem/x".into())])
         }
+        async fn reput(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
+            self.corrupt_until_reput.store(false, Ordering::SeqCst);
+            self.put(bytes, meta).await
+        }
         async fn get(&self, _uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
             let mut b = self.store.lock().unwrap().clone().ok_or(Error::NotFound)?;
-            if self.lie {
+            if self.lie || self.corrupt_until_reput.load(Ordering::SeqCst) {
                 b[0] ^= 1;
             }
             Ok(match range {
@@ -538,54 +621,31 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn external_target_rejects_a_store_that_serves_other_bytes() {
-        let honest = ExternalTarget::new(
-            "ok",
-            Box::new(MemBackend {
-                store: std::sync::Mutex::new(None),
-                lie: false,
-            }),
-            None,
-            true,
-        );
+        let honest = ExternalTarget::new("ok", Box::new(MemBackend::new(false)), None, true);
         let m = PackMeta::for_bytes(b"pack-bytes");
         assert!(honest.store(b"pack-bytes", &m).await.is_ok());
 
-        let liar = ExternalTarget::new(
-            "liar",
-            Box::new(MemBackend {
-                store: std::sync::Mutex::new(None),
-                lie: true,
-            }),
-            None,
-            true,
-        );
+        let liar = ExternalTarget::new("liar", Box::new(MemBackend::new(true)), None, true);
         let err = liar.store(b"pack-bytes", &m).await.unwrap_err().to_string();
         assert!(err.contains("do not hash"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_same_size_copy_is_repaired_by_one_reput() {
+        let backend = MemBackend::new(false);
+        backend.corrupt_until_reput.store(true, Ordering::SeqCst);
+        let t = ExternalTarget::new("heal", Box::new(backend), None, true);
+        let m = PackMeta::for_bytes(b"pack-bytes");
+        assert!(t.store(b"pack-bytes", &m).await.is_ok());
     }
 
     #[tokio::test]
     async fn large_uploads_verify_by_size_and_edges() {
         let big = vec![3u8; usize::try_from(FULL_VERIFY_MAX).unwrap() + 10];
         let m = PackMeta::for_bytes(&big);
-        let honest = ExternalTarget::new(
-            "ok",
-            Box::new(MemBackend {
-                store: std::sync::Mutex::new(None),
-                lie: false,
-            }),
-            None,
-            true,
-        );
+        let honest = ExternalTarget::new("ok", Box::new(MemBackend::new(false)), None, true);
         assert!(honest.store(&big, &m).await.is_ok());
-        let liar = ExternalTarget::new(
-            "liar",
-            Box::new(MemBackend {
-                store: std::sync::Mutex::new(None),
-                lie: true,
-            }),
-            None,
-            true,
-        );
+        let liar = ExternalTarget::new("liar", Box::new(MemBackend::new(true)), None, true);
         assert!(liar.store(&big, &m).await.is_err());
     }
 }

@@ -42,6 +42,37 @@ pub struct ResolvedPolicy {
     pub platform_fallback: bool,
 }
 
+/// Specificity of a git config scope (higher wins): `-c` on the command line, then the
+/// worktree/repo, then the user's global config, then system.
+fn scope_rank(scope: &str) -> u8 {
+    match scope {
+        "command" => 4,
+        "worktree" => 3,
+        "local" => 2,
+        "global" => 1,
+        _ => 0,
+    }
+}
+
+/// The effective value of a setting that exists both per remote
+/// (`remote.<name>.dash<Key>`) and repo-wide (`dash.<key>`), given each as
+/// `(git config scope, value)`: the more specific SCOPE wins (a repo-local `dash.storage`
+/// beats a global `remote.origin.dashStorage`), and within one scope the per-remote key.
+pub fn pick_scoped(
+    per_remote: Option<(String, String)>,
+    repo_wide: Option<(String, String)>,
+) -> Option<String> {
+    match (per_remote, repo_wide) {
+        (Some((rs, rv)), Some((ws, wv))) => Some(if scope_rank(&rs) >= scope_rank(&ws) {
+            rv
+        } else {
+            wv
+        }),
+        (Some((_, v)), None) | (None, Some((_, v))) => Some(v),
+        (None, None) => None,
+    }
+}
+
 /// Parse a git-config boolean (`true/yes/on/1` and `false/no/off/0`, case-insensitive).
 pub fn parse_git_bool(key: &str, value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {

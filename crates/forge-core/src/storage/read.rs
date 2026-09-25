@@ -13,35 +13,40 @@
 //! corrupt clone. Platform `chunk` documents are the caller's last resort — the reader
 //! never needs a Platform connection.
 
-use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
-use crate::backends::https::http_get;
+use crate::backends::https::http_get_capped;
+use crate::backends::s3::key_has_bad_segment;
 use crate::backends::{sha256, ByteRange, S3Backend, Uri};
 use crate::error::{Error, Result};
 
-use super::profiles::{Profile, StorageProfiles};
+use super::profiles::{Profile, S3Profile, StorageProfiles};
 
 /// Candidates raced concurrently (PRD 04: "≤2 parallel attempts").
 const RACE_WIDTH: usize = 2;
+
+/// Default upper bound on one candidate's whole transfer (connect + body). A host that
+/// trickles bytes forever costs this much, then the next candidate is tried.
+pub const DEFAULT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Default total time the external copies get before a caller with Platform chunks falls
+/// back to them (a mixed repo must not spend minutes per pack on dead gateways).
+pub const DEFAULT_EXTERNAL_BUDGET: Duration = Duration::from_secs(90);
 
 /// One way to fetch the bytes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Candidate {
     /// A plain GET.
     Http(String),
-    /// A (possibly signed) GET through the local S3 profile for `bucket`.
-    S3 {
-        profile: String,
-        bucket: String,
-        key: String,
-    },
+    /// A (possibly signed) GET through the local S3 profile `profile` for `bucket`.
+    S3 { profile: String, key: String },
 }
 
 impl Candidate {
     fn label(&self) -> String {
         match self {
             Candidate::Http(u) => u.clone(),
-            Candidate::S3 { profile, key, .. } => format!("s3 profile {profile}: {key}"),
+            Candidate::S3 { profile, key } => format!("s3 profile {profile}: {key}"),
         }
     }
 }
@@ -50,8 +55,13 @@ impl Candidate {
 pub struct PackReader {
     client: reqwest::Client,
     gateways: Vec<String>,
-    /// Local S3 profiles by bucket, for resolving recorded `s3://` URIs.
-    s3_by_bucket: BTreeMap<String, (String, S3Backend)>,
+    /// Local S3 profiles `(bucket, profile name, profile)`. Secrets are NOT resolved here:
+    /// only when an `s3://` candidate for that bucket is actually tried (so a plain fetch
+    /// of a public repo never runs `security` / pops a keychain prompt). Several profiles
+    /// may name the same bucket (different endpoints); each is tried in turn.
+    s3_profiles: Vec<(String, String, S3Profile)>,
+    candidate_timeout: Duration,
+    budget: Option<Duration>,
 }
 
 impl PackReader {
@@ -61,32 +71,24 @@ impl PackReader {
     }
 
     /// A reader over `gateways`, able to resolve `s3://` URIs through `profiles`.
-    /// Profiles whose secrets do not resolve are skipped (their public URLs still work).
     pub fn new(gateways: Vec<String>, profiles: &StorageProfiles) -> Self {
-        let client = super::http_client();
-        let mut s3_by_bucket = BTreeMap::new();
-        for (name, p) in &profiles.profiles {
-            if let Profile::S3(s3) = p {
-                match s3.to_config() {
-                    Ok(cfg) => {
-                        s3_by_bucket.insert(
-                            cfg.bucket.clone(),
-                            (name.clone(), S3Backend::with_client(cfg, client.clone())),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::debug!(profile = %name, error = %e, "s3 profile unusable for reads");
-                    }
-                }
-            }
-        }
+        let s3_profiles = profiles
+            .profiles
+            .iter()
+            .filter_map(|(name, p)| match p {
+                Profile::S3(s3) => Some((s3.bucket.clone(), name.clone(), s3.clone())),
+                _ => None,
+            })
+            .collect();
         Self {
-            client,
+            client: super::http_client(),
             gateways: gateways
                 .into_iter()
                 .map(|g| g.trim_end_matches('/').to_string())
                 .collect(),
-            s3_by_bucket,
+            s3_profiles,
+            candidate_timeout: DEFAULT_CANDIDATE_TIMEOUT,
+            budget: None,
         }
     }
 
@@ -100,6 +102,20 @@ impl PackReader {
                 Self::with_defaults()
             }
         }
+    }
+
+    /// Bound each candidate's whole transfer.
+    #[must_use]
+    pub fn with_candidate_timeout(mut self, t: Duration) -> Self {
+        self.candidate_timeout = t;
+        self
+    }
+
+    /// Bound the total time [`Self::fetch_verified`] spends before giving up.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Duration) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// The gateway list in use.
@@ -125,12 +141,17 @@ impl PackReader {
                     let Some((bucket, key)) = uri.rest().and_then(|r| r.split_once('/')) else {
                         continue;
                     };
-                    if let Some((profile, _)) = self.s3_by_bucket.get(bucket) {
-                        s3.push(Candidate::S3 {
-                            profile: profile.clone(),
-                            bucket: bucket.to_string(),
-                            key: key.to_string(),
-                        });
+                    // A hostile manifest must not steer a signed request elsewhere.
+                    if key_has_bad_segment(key) {
+                        continue;
+                    }
+                    for (b, profile, _) in &self.s3_profiles {
+                        if b == bucket {
+                            s3.push(Candidate::S3 {
+                                profile: profile.clone(),
+                                key: key.to_string(),
+                            });
+                        }
                     }
                 }
                 Some("ipfs") => {
@@ -153,14 +174,35 @@ impl PackReader {
         out
     }
 
-    async fn fetch(&self, c: &Candidate, range: Option<ByteRange>) -> Result<Vec<u8>> {
-        match c {
-            Candidate::Http(url) => http_get(&self.client, url, range).await,
-            Candidate::S3 { bucket, key, .. } => {
-                let (_, backend) = self.s3_by_bucket.get(bucket).ok_or(Error::NotFound)?;
-                backend.get_object(key, range).await
+    async fn fetch(
+        &self,
+        c: &Candidate,
+        range: Option<ByteRange>,
+        max_bytes: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        let attempt = async {
+            match c {
+                Candidate::Http(url) => http_get_capped(&self.client, url, range, max_bytes).await,
+                Candidate::S3 { profile, key } => {
+                    let (_, _, p) = self
+                        .s3_profiles
+                        .iter()
+                        .find(|(_, name, _)| name == profile)
+                        .ok_or(Error::NotFound)?;
+                    // Resolve secrets now, only because this candidate is being tried.
+                    let backend = S3Backend::with_client(p.to_config()?, S3Backend::client());
+                    backend.get_object_capped(key, range, max_bytes).await
+                }
             }
-        }
+        };
+        tokio::time::timeout(self.candidate_timeout, attempt)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::Io(format!(
+                    "timed out after {}s",
+                    self.candidate_timeout.as_secs()
+                )))
+            })
     }
 
     /// Whether any candidate exists for `uris` (so the caller knows whether to bother).
@@ -169,21 +211,34 @@ impl PackReader {
     }
 
     /// Fetch the whole artifact from the first candidate whose bytes hash to
-    /// `expected_sha256` (lowercase hex). Errors with every candidate's failure when none
-    /// verifies.
-    pub async fn fetch_verified(&self, uris: &[String], expected_sha256: &str) -> Result<Vec<u8>> {
+    /// `expected_sha256` (lowercase hex). `size` (the manifest's `sizeBytes`, when known)
+    /// caps every candidate's body. Errors with every candidate's failure when none
+    /// verifies, or when the budget ([`Self::with_budget`]) runs out.
+    pub async fn fetch_verified(
+        &self,
+        uris: &[String],
+        expected_sha256: &str,
+        size: Option<u64>,
+    ) -> Result<Vec<u8>> {
         let candidates = self.candidates(uris);
         if candidates.is_empty() {
             return Err(Error::NotFound);
         }
+        let started = Instant::now();
         let mut reasons = Vec::new();
         for window in candidates.chunks(RACE_WIDTH) {
             use futures::stream::{FuturesUnordered, StreamExt as _};
+            if let Some(budget) = self.budget {
+                if started.elapsed() >= budget {
+                    reasons.push(format!("gave up after the {}s budget", budget.as_secs()));
+                    break;
+                }
+            }
             let mut race: FuturesUnordered<_> = window
                 .iter()
                 .map(|c| async move {
                     let bytes = self
-                        .fetch(c, None)
+                        .fetch(c, None, size)
                         .await
                         .map_err(|e| (c.label(), e.to_string()))?;
                     if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
@@ -221,7 +276,7 @@ impl PackReader {
     pub async fn fetch_range(&self, uris: &[String], range: ByteRange) -> Result<Vec<u8>> {
         let mut last = Error::NotFound;
         for c in self.candidates(uris) {
-            match self.fetch(&c, Some(range)).await {
+            match self.fetch(&c, Some(range), Some(range.len())).await {
                 Ok(b) if b.len() as u64 == range.len() => return Ok(b),
                 Ok(b) => {
                     last = Error::Io(format!(
@@ -272,7 +327,6 @@ mod tests {
                 Candidate::Http("https://pub.r2.dev/packs/x.pack".into()),
                 Candidate::S3 {
                     profile: "mine".into(),
-                    bucket: "priv".into(),
                     key: "packs/x.pack".into()
                 },
                 Candidate::Http("https://gw1/ipfs/bafyabc".into()),
@@ -298,7 +352,13 @@ mod tests {
     fn hostile_uris_are_ignored() {
         let r = reader();
         assert!(r
-            .candidates(&["ipfs://bafy/../x".into(), "file:///etc/passwd".into()])
+            .candidates(&[
+                "ipfs://bafy/../x".into(),
+                "file:///etc/passwd".into(),
+                "s3://priv/../other-bucket/k".into(),
+                "s3://priv/a/./k".into(),
+                "s3://priv/a//k".into(),
+            ])
             .is_empty());
         assert_eq!(gateway_cid("https://g/ipfs/bafy?x"), Some("bafy".into()));
         assert_eq!(gateway_cid("https://g/ipfs/"), None);
@@ -343,6 +403,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_bodies_and_slow_hosts_cost_one_candidate() {
+        let good = b"the real pack".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let base = serve(vec![("/huge", vec![7u8; 1 << 20]), ("/good", good.clone())]);
+        let r = PackReader::new(vec![], &StorageProfiles::default());
+        // The 1 MiB body is refused against the 13-byte manifest size, then /good wins.
+        let got = r
+            .fetch_verified(
+                &[format!("{base}/huge"), format!("{base}/good")],
+                &hash,
+                Some(good.len() as u64),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        let err = r
+            .fetch_verified(&[format!("{base}/huge")], &hash, Some(13))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("larger than the expected"), "{err}");
+
+        // A host that accepts but never answers is cut off by the candidate timeout.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = silent.incoming().take(4).collect();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let r = PackReader::new(vec![], &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let err = r
+            .fetch_verified(&[format!("http://{addr}/x")], &hash, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn s3_candidates_do_not_resolve_secrets_up_front() {
+        // A profile whose secret reference cannot resolve still yields a candidate; the
+        // failure (if any) happens only when that candidate is tried.
+        let profiles = StorageProfiles::parse(
+            "[profiles.p]\nkind = \"s3\"\nendpoint = \"http://127.0.0.1:9\"\nbucket = \"priv\"\n\
+             access_key_id = \"AK\"\nsecret_access_key = \"env:FORGE_TEST_NEVER_SET_XYZ\"\n",
+        )
+        .unwrap();
+        let r = PackReader::new(vec![], &profiles);
+        assert_eq!(r.candidates(&["s3://priv/k".into()]).len(), 1);
+    }
+
+    #[tokio::test]
     async fn races_past_missing_and_tampered_copies() {
         let good = b"real pack bytes".to_vec();
         let hash = hex::encode(sha256(&good));
@@ -359,6 +474,7 @@ mod tests {
                     "ipfs://bafygood".into(),
                 ],
                 &hash,
+                Some(good.len() as u64),
             )
             .await
             .unwrap();
@@ -373,13 +489,15 @@ mod tests {
             .fetch_verified(
                 &[format!("{base}/tampered"), format!("{base}/gone")],
                 &"0".repeat(64),
+                None,
             )
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("do not match the manifest hash"), "{err}");
         assert!(matches!(
-            r.fetch_verified(&["platform://c/h".into()], "00").await,
+            r.fetch_verified(&["platform://c/h".into()], "00", None)
+                .await,
             Err(Error::NotFound)
         ));
     }
