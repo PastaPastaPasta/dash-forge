@@ -8,15 +8,17 @@ name: Testnet Nightly
 #                               frozen push, no-token push, third-party verify, depth+filter
 #
 # They split by what they need:
-#   * READ-ONLY specs need only a network path to testnet DAPI and the seeded fixture repo,
-#     so they run unconditionally and their failure fails this workflow.
+#   * READ-ONLY specs need only a network path to testnet DAPI and the read fixture repo
+#     (seeded by `seed-read-fixture` when the secrets exist; e2e/README.md reserves it), so
+#     they run unconditionally and their failure fails this workflow.
 #   * The CLI suite and the write specs need FUNDED fixture identities, which cannot live in
 #     a fork's PR context. A separate `fixtures` probe job decides whether they run, so when
 #     the secrets are absent the suite job's conclusion is literally `skipped` rather than a
 #     green job with everything gated out — a distinction any badge or alert rule can see.
 #
 # Fixture identity secrets (e2e/cli/config.sh names the roles):
-#   FORGE_TEST_IDENTITY_DEPLOYER  - owns the reused m1 repo, grants tokens
+#   FORGE_TEST_IDENTITY_DEPLOYER  - owns the CLI suite's repo and the read fixture, grants
+#                                   tokens (which repo each suite may write: e2e/README.md)
 #   FORGE_TEST_IDENTITY_COLLAB    - holds an unfrozen WRITE token
 #   FORGE_TEST_IDENTITY_CONTRIB   - holds no token (negative push case)
 #   FORGE_TEST_IDENTITY_FROZEN    - holds a frozen WRITE token (negative push case)
@@ -35,6 +37,11 @@ concurrency:
 jobs:
   web-read-paths:
     name: playwright (read-only, live testnet)
+    # Reads the dedicated read fixture (e2e/README.md), so it waits for the seed job — but
+    # still runs when that job is skipped (no secrets: the fixture is read as it stands) or
+    # failed (the specs then say what is wrong with it).
+    needs: seed-read-fixture
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -108,6 +115,46 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # Make the browser specs' read fixture exist and hold exactly the expected commit. It is
+  # its own repo, written only by this job, so nothing the CLI suite or an ad-hoc storage run
+  # stores can reach what the browser reads (e2e/README.md). Idempotent: a no-op once seeded.
+  seed-read-fixture:
+    name: seed the read fixture
+    needs: fixtures
+    if: needs.fixtures.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ID_DEPLOYER_JSON: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-cli
+      - name: Materialize the DEPLOYER identity
+        run: |
+          dir="${HOME}/.config/dash-forge/test-identities"
+          mkdir -p "$dir" && chmod 700 "$dir"
+          printf '%s' "$ID_DEPLOYER_JSON" > "$dir/DEPLOYER.identity.json"
+          # harness_init checks for the whole role set; only DEPLOYER signs here.
+          for r in COLLAB CONTRIB; do cp "$dir/DEPLOYER.identity.json" "$dir/$r.identity.json"; done
+          chmod 600 "$dir"/*.identity.json
+      - name: Build CLI binaries
+        timeout-minutes: 30
+        run: cargo build --locked -p dg -p git-remote-dash
+      - name: Seed
+        timeout-minutes: 12
+        run: bash e2e/cli/seed-read-fixture.sh
+
   cli-suite:
     name: cli e2e (live testnet)
     needs: fixtures
@@ -140,6 +187,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-cli
 
       - name: Materialize fixture identities
         run: |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run.sh — Dash Forge CLI end-to-end suite driver.
 #
-# Runs every scenario against LIVE testnet, reusing the DEPLOYER-owned m1 repo
+# Runs every scenario against LIVE testnet, on the CLI suite's reserved DEPLOYER-owned repo
 # (config.sh). Prints a PASS/FAIL/SKIP matrix and exits non-zero if ANY scenario
 # FAILs. A scenario SKIPs only when a check flaked on every retry; one SKIP is reported
 # but tolerated, more than E2E_MAX_SKIPS fails the run.

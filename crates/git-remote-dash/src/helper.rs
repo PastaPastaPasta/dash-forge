@@ -923,6 +923,16 @@ async fn publish_browse_index(
     replication: &Replication,
     externals: &[ExternalTarget],
 ) {
+    // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose: the nightly's read fixture
+    // (e2e/cli/seed-read-fixture.sh) must stay unindexed so the web app's fallback clone is
+    // what the browser specs exercise.
+    if matches!(
+        std::env::var("DASH_FORGE_NO_BROWSE_INDEX").as_deref(),
+        Ok("1" | "true")
+    ) {
+        tracing::info!("DASH_FORGE_NO_BROWSE_INDEX set; not publishing a browse-index fragment");
+        return;
+    }
     let chain = replication.has_platform().then(|| {
         PlatformChunkTarget::new(ctx.svc, ctx.repo, forge_core::storage::PLATFORM_PROFILE)
     });

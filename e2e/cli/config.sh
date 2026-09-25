@@ -12,11 +12,14 @@
 : "${DASH_FORGE_NETWORK:=testnet}"
 export DASH_FORGE_NETWORK
 
-# --- the reused test repo ----------------------------------------------------
-# DEPLOYER is the owner + token granter for this repo.
+# --- the CLI suite's repo ----------------------------------------------------
+# DEPLOYER is the owner + token granter. Reserved for `run.sh` (e2e/README.md): every
+# scenario pushes Platform-stored packs to fresh `e2e/<run-id>/…` refs and deletes them.
+# An ad-hoc run that stores packs anywhere else (local MinIO/kubo) must use its own repo —
+# set E2E_REPO_NAME — so the nightly's clones never depend on someone's laptop.
 export E2E_OWNER_ID="8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
-export E2E_REPO_NAME="m1-75299"
-export E2E_REPO_CONTRACT="5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"
+: "${E2E_REPO_NAME:=m1-75299}"
+export E2E_REPO_NAME
 export E2E_REMOTE="dash://${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 
 # --- dedicated bring-your-own-storage repos (e2e/cli/storage-byo.sh) ------------
@@ -26,6 +29,14 @@ export E2E_REMOTE="dash://${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 : "${STORAGE_E2E_REPO:=storage-e2e-a}"
 : "${STORAGE_E2E_REPO_B:=storage-e2e-b}"
 export STORAGE_E2E_REPO STORAGE_E2E_REPO_B
+
+# --- the nightly's read fixture ----------------------------------------------
+# The repo the browser (Playwright) specs read: DEPLOYER-owned, written ONLY by
+# e2e/cli/seed-read-fixture.sh, which pins `main` to one deterministic commit and publishes
+# no browse index (so the in-browser fallback clone is what gets exercised). forge-web's
+# e2e/helpers.ts names the same repo.
+: "${NIGHTLY_FIXTURE_REPO:=m1-5124}"
+export NIGHTLY_FIXTURE_REPO
 
 # --- fixture identity files --------------------------------------------------
 : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities}"

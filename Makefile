@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e devnet-identities devnet-identities-verify storage-it storage-e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -54,12 +54,16 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE testnet) against the reused m1 repo.
+## e2e: run the CLI end-to-end suite (LIVE testnet) against its reserved repo (e2e/README.md).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
 e2e: build-rust
 	@bash e2e/cli/run.sh
+
+## e2e-fixture: seed the browser specs' read fixture (idempotent; see e2e/README.md).
+e2e-fixture: build-rust
+	@bash e2e/cli/seed-read-fixture.sh
 
 ## devnet-identities: mint (or resume) the 9-role identity pool on a devnet,
 ## funded from the devnet's faucet wallet key, then verify every identity on
