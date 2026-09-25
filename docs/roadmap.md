@@ -147,8 +147,18 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 Organizations (multi-member admin sets, key custody guide), template versioning, audit-log compaction, large files through pointers to the user's bucket, SHA-256 repos, optional user-run indexer for global search.
 
 ### Execution tracker (updated 2026-09-25)
-Landed on master: PR #4 browse index · #5 devnet moutai tooling · #6 honest UI · #7 forge-v2 contracts (registered on moutai) · #8 PR/commit diffs · #9 FORGE_RULES_V2 + authorEvent · #10 nightly green (CLI 7/7) · #11 per-network config · #12 bring-your-own storage on push.
-In flight: SDK 4.2 bump (PR A) → forge-v2 data plane (C) → collab (D) → relay/import/migrate (G); web v2 reads (E) → writes (F); nightly follow-ups.
+Landed on master:
+- **Phase 0:** #4 browse index · #6 honest UI · #8 PR/commit diffs · #10 + #14 nightly green (CLI and Playwright, fixture isolation, keyset ref reads) · #11 per-network config.
+- **Phase 1:** #12 bring-your-own storage on push (SigV4 S3, IPFS/pinning, replication, `dg storage`, `dg reseed --from-local`).
+- **Phase 2 (forge-v2 on devnet moutai):** #5 devnet tooling · #7 forge-v2 contracts · #9 FORGE_RULES_V2 + authorEvent · #15 SDK 4.2 · #18 CLI data plane (repo create ≈0.001 DASH, consensus-enforced membership) · #17 web reads.
+- **Adoption:** #13 release pipeline + install.sh · #16 actionable errors (`docs/errors.md`) · #19 user guides.
+
+The nightly is green on master, and the CLI suite now runs on moutai.
+
+In flight: CLI issues/PRs/releases/forks on v2 (D) · import/relay/migrate + GitHub Mirror Action (G) · web v2 writes + limited-key sign-in + cost UX (F).
+
+Next: private repos (Phase 3) · storage wizard in web · Explore/notifications · docs refresh for v2.
+
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
 
 ## 7. Launch criteria (what "real users would want it" means)
