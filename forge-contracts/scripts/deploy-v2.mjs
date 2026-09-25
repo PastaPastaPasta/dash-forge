@@ -361,9 +361,11 @@ async function main() {
 
   if (forceNew && v2.forgeCollab?.contractId) {
     const old = v2.forgeCollab;
-    // Only a contract that is really there is superseded; a reservation that never landed is
-    // simply retried by registerContract below (it re-reads the nonce from the chain).
-    if (old.status === 'registered' || (await sdk.contracts.fetch(old.contractId))) {
+    // Only a completed registration is superseded. A `broadcasting` record is the new contract
+    // of an interrupted --force-new run (or an interrupted first run): registerContract below
+    // completes it if it landed, or retries its nonce if it did not, so rerunning the same
+    // command after a crash never registers a third copy.
+    if (old.status === 'registered') {
       if (dryRun) {
         log(`forgeCollab: --force-new would supersede ${old.contractId} with a new contract`);
       } else {
