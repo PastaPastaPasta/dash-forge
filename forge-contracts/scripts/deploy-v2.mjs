@@ -300,7 +300,13 @@ async function main() {
     record();
 
     await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
-    const after = await balance();
+    // A node can answer the balance query from the block before the one that applied the
+    // transition (the moutai deploy recorded forge-collab at 0 this way), so wait for it to move
+    let after = await balance();
+    for (let i = 0; after === before && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      after = await balance();
+    }
     const fetched = await sdk.contracts.fetch(id);
     if (!fetched) throw new Error(`${key}: broadcast confirmed but ${id} cannot be fetched`);
     const costCredits = before - after;
