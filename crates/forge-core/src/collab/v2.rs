@@ -1718,18 +1718,21 @@ fn is_hex_color(c: &str) -> bool {
 
 /// Every non-deleted `newOid` of a ref's history, and the newest one by `(createdAt, id)`.
 fn tips_of(updates: &[rules::RefUpdate]) -> (BTreeSet<String>, Option<String>) {
-    let mut tips = BTreeSet::new();
-    let mut newest: Option<&rules::RefUpdate> = None;
-    for u in updates {
-        if u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0') {
-            continue;
-        }
-        tips.insert(u.new_oid.clone());
-        if newest.is_none_or(|n| (n.created_at, &n.id) < (u.created_at, &u.id)) {
-            newest = Some(u);
-        }
-    }
-    (tips, newest.map(|u| u.new_oid.clone()))
+    let deleted =
+        |u: &rules::RefUpdate| u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0');
+    let tips = updates
+        .iter()
+        .filter(|u| !deleted(u))
+        .map(|u| u.new_oid.clone())
+        .collect();
+    // The current tip is the newest update's, and none when that update deleted the ref.
+    let newest = updates
+        .iter()
+        .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    (
+        tips,
+        newest.filter(|u| !deleted(u)).map(|u| u.new_oid.clone()),
+    )
 }
 
 /// Split release revisions into the newest per tag (newest first) and the rest.
@@ -2035,6 +2038,9 @@ mod tests {
         let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero), u("3", 3, "bb")]);
         assert_eq!(tips.len(), 2);
         assert_eq!(tip.as_deref(), Some("bb"));
+        // A branch whose newest update deleted it has no tip (its old tips still count).
+        let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero)]);
+        assert_eq!((tips.len(), tip), (1, None));
     }
 
     #[test]

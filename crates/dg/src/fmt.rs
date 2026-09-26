@@ -38,7 +38,8 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
 
 /// A commit id shortened for display (12 hex digits).
 pub fn short(oid: &str) -> &str {
-    &oid[..oid.len().min(12)]
+    // By character: the value may be untrusted document text, not hex.
+    oid.char_indices().nth(12).map_or(oid, |(i, _)| &oid[..i])
 }
 
 /// How a close / reopen was written, for human output.
@@ -109,6 +110,13 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_never_splits_a_character() {
+        assert_eq!(short(&"a".repeat(40)), "a".repeat(12));
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(&"é".repeat(20)), "é".repeat(12));
+    }
 
     #[test]
     fn terminal_text_loses_escape_sequences() {

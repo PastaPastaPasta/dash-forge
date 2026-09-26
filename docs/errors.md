@@ -59,7 +59,7 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 **Merge has conflicts.** `dg pr merge` tried a three-way merge of the pull request's head into its base locally and the two change the same lines. Nothing was pushed and no merge event was posted.
 
-Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>` and fix the conflicts, push the result to the base branch (a member can) or back to the PR's source branch, then run `dg pr merge` again.
+Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>` and fix the conflicts, push the result to the base branch (a member can), then run `dg pr merge --event-only` to record it. A PR names a fixed head commit, so pushing the resolution to the PR's source branch does not change the PR: open a new one from it instead.
 
 ## E201
 

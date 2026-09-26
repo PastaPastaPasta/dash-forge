@@ -43,7 +43,7 @@ secret_access_key = "env:FORGE_E2E_MINIO_SECRET"
 EOF
 printf '[read]\nipfs_gateways = []\n' >"$READER_CFG"
 head -c 20000 /dev/urandom | gzip -c >"$ASSET"
-SHA="$(shasum -a 256 "$ASSET" | cut -d' ' -f1)"
+SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$ASSET")"
 
 step "COLLAB (not a maintainer) is refused before anything is uploaded"
 if DASH_FORGE_STORAGE_CONFIG="$CFG" dg_as "$ID_COLLAB" --yes --json release create "$REPO" --tag "$TAG-x" \
