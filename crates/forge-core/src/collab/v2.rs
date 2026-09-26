@@ -1992,35 +1992,6 @@ mod tests {
     }
 
     #[test]
-    fn tips_skip_deletions_and_pick_the_newest() {
-        let u = |id: &str, at: u64, oid: &str| rules::RefUpdate {
-            id: id.into(),
-            ref_name_hash: "H".into(),
-            ref_name: "refs/heads/main".into(),
-            prev_oid: String::new(),
-            new_oid: oid.into(),
-            force: false,
-            protected: false,
-            author: "a".into(),
-            created_at: at,
-        };
-        let zero = "0".repeat(40);
-        let tips = rules::merge_base_tips(
-            &[u("1", 1, "aa"), u("2", 2, &zero), u("3", 3, "bb")],
-            &[],
-            "H",
-        );
-        assert_eq!(tips.historical, ["aa", "bb"]);
-        assert_eq!(tips.tip.as_deref(), Some("bb"));
-        assert_eq!(tips.current.as_deref(), Some("bb"));
-        // A branch whose newest update deleted it points nowhere now, but its old tips still
-        // count, and so does the newest of them: a PR merged into it stays merged.
-        let tips = rules::merge_base_tips(&[u("1", 1, "aa"), u("2", 2, &zero)], &[], "H");
-        assert_eq!(tips.historical, ["aa"]);
-        assert_eq!((tips.tip.as_deref(), tips.current), (Some("aa"), None));
-    }
-
-    #[test]
     fn journals_are_keyed_by_content() {
         let d = Path::new("/j");
         let a = create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0b");

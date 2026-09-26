@@ -10,6 +10,10 @@
  * cannot drift apart where they are meant to agree.
  */
 
+import { hmac } from '@noble/hashes/hmac.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+
 import {
   applyIssueEvent,
   applyPrEvent,
@@ -20,11 +24,7 @@ import {
   prStateOf,
   sorted,
 } from './fold'
-import { hmac } from '@noble/hashes/hmac.js'
-import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-
-import { compareKey, compareStrings } from './oid'
+import { compareKey, compareStrings, refNameHashMatches } from './oid'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
 
 /** The versioned rules identifier for forge-v2 repositories. */
@@ -468,12 +468,12 @@ export function isWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
  */
 export function refNameHashesAgree(doc: ContentDoc, refKey: string | null): boolean {
   const key = refKey === null ? null : hexToBytes(refKey)
-  const hashOf = (name: string): string => {
-    const bytes = new TextEncoder().encode(name)
-    return bytesToHex(key === null ? sha256(bytes) : hmac(sha256, key, bytes))
-  }
+  const matches = (name: string, hash: string): boolean =>
+    key === null
+      ? refNameHashMatches(name, hash)
+      : bytesToHex(hmac(sha256, key, new TextEncoder().encode(name))) === hash.toLowerCase()
   const agrees = (name: string | null | undefined, hash: string | null | undefined): boolean =>
-    !present(name) || (present(hash) && hashOf(name as string) === (hash as string).toLowerCase())
+    name == null || name.length === 0 || (hash != null && hash.length > 0 && matches(name, hash))
   switch (doc.kind) {
     case 'refUpdate':
       return agrees(doc.refName, doc.refNameHash)

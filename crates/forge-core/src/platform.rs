@@ -2165,7 +2165,7 @@ where
                         tracing::debug!(
                             document_type,
                             attempt,
-                            ms = elapsed_ms(started),
+                            elapsed_ms = duration_ms(started.elapsed()),
                             "write landed"
                         );
                         return Ok(if sent {
@@ -2180,7 +2180,7 @@ where
                             tracing::warn!(
                                 document_type,
                                 attempt,
-                                elapsed_ms = elapsed_ms(started),
+                                elapsed_elapsed_ms = duration_ms(started.elapsed()),
                                 error = %reason,
                                 "no result, and the write's nonce is spent: it landed or another \
                                  write by this identity took the nonce"
@@ -2202,8 +2202,8 @@ where
                 tracing::warn!(
                     document_type,
                     attempt,
-                    elapsed_ms = elapsed_ms(started),
-                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    elapsed_elapsed_ms = duration_ms(started.elapsed()),
+                    delay_ms = duration_ms(delay),
                     error = %reason,
                     "write not confirmed; re-broadcasting identical signed bytes (same nonce/entropy)"
                 );
@@ -2219,8 +2219,8 @@ where
     }
 }
 
-fn elapsed_ms(since: std::time::Instant) -> u64 {
-    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+fn duration_ms(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Run a proof-verified read, retrying transient node failures with exponential backoff.
@@ -2265,7 +2265,7 @@ where
                 tracing::warn!(
                     op = label,
                     attempt,
-                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    delay_ms = duration_ms(delay),
                     error = %e,
                     "transient Platform read failure; backing off and retrying on a fresh node rotation"
                 );
@@ -2801,15 +2801,8 @@ mod tests {
 
     /// Drive [`super::drive_write`] with scripted broadcast and wait answers (consumed in
     /// order) and no backoff. Returns the outcome and how many of each step ran.
+    /// Scripted `nonce_spent` answers are consumed in order too; missing ones are `false`.
     async fn scripted_write(
-        broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
-        waits: Vec<std::result::Result<(), super::WriteFailure>>,
-    ) -> (Result<super::BroadcastOutcome>, usize, usize) {
-        scripted_write_nonce(broadcasts, waits, vec![]).await
-    }
-
-    /// As [`scripted_write`], with scripted `nonce_spent` answers (missing ones are `false`).
-    async fn scripted_write_nonce(
         broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
         waits: Vec<std::result::Result<(), super::WriteFailure>>,
         spent: Vec<bool>,
@@ -2841,7 +2834,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_write_that_lands_is_applied_after_one_broadcast_and_one_wait() {
-        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Ok(())]).await;
+        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Ok(())], vec![]).await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
         assert_eq!((nb, nw), (1, 1));
     }
@@ -2853,14 +2846,14 @@ mod tests {
     /// waits on seven nodes (before) or four re-broadcasts into the cache (without the check).
     #[tokio::test]
     async fn a_silent_wait_with_a_spent_nonce_hands_over_at_once() {
-        let (out, nb, nw) =
-            scripted_write_nonce(vec![Ok(())], vec![Err(timeout())], vec![true]).await;
+        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Err(timeout())], vec![true]).await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
         assert_eq!((nb, nw), (1, 1));
         // The same when the re-broadcast is the one that learns the nonce is gone.
         let (out, nb, nw) = scripted_write(
             vec![Ok(()), Err(super::WriteFailure::NonceConsumed)],
             vec![Err(timeout())],
+            vec![],
         )
         .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
@@ -2874,6 +2867,7 @@ mod tests {
         let (out, nb, nw) = scripted_write(
             vec![Ok(()), Err(super::WriteFailure::TxKnown)],
             vec![Err(timeout()), Ok(())],
+            vec![],
         )
         .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
@@ -2884,13 +2878,18 @@ mod tests {
     /// broadcast them), so the landing is not a fresh write.
     #[tokio::test]
     async fn bytes_the_node_already_had_report_already_exists() {
-        let (out, _, _) =
-            scripted_write(vec![Err(super::WriteFailure::TxKnown)], vec![Ok(())]).await;
+        let (out, _, _) = scripted_write(
+            vec![Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
         // But a later attempt's TxKnown is our own earlier send landing.
         let (out, _, _) = scripted_write(
             vec![Err(timeout()), Err(super::WriteFailure::TxKnown)],
             vec![Ok(())],
+            vec![],
         )
         .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
@@ -2903,6 +2902,7 @@ mod tests {
             (0..super::MAX_BROADCAST_ATTEMPTS)
                 .map(|_| Err(timeout()))
                 .collect(),
+            vec![],
         )
         .await;
         assert!(matches!(out, Err(Error::Timeout { retryable: true })));
@@ -2911,6 +2911,7 @@ mod tests {
 
         let (out, nb, nw) = scripted_write(
             vec![Err(super::WriteFailure::Fatal(Error::Unauthorized))],
+            vec![],
             vec![],
         )
         .await;

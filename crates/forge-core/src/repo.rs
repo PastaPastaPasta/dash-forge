@@ -37,7 +37,7 @@ use crate::scope::{self, DocScope, RepoRef};
 use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
 
 // Document type names (the git data plane; the same names in forge-core and repo-v1).
-const DOC_CONFIG: &str = "config";
+use crate::refs::DOC_CONFIG;
 use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
 const DOC_PACK_MANIFEST: &str = "packManifest";
 
@@ -413,7 +413,7 @@ impl<'a> RepoService<'a> {
         let hasher = crate::private::Public;
         let ref_name_hash = hasher.hash(ref_name);
 
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
         let doc_type = if protected {
             DOC_PROTECTED_REF_UPDATE
@@ -456,7 +456,7 @@ impl<'a> RepoService<'a> {
     /// deferred to the push-side pipeline that has the object store.
     pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
         let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
 
         let mut out = Vec::with_capacity(by_hash.len());
@@ -477,7 +477,7 @@ impl<'a> RepoService<'a> {
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
         let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         Ok(current_protected_patterns(&configs))
     }
 
@@ -1336,24 +1336,6 @@ impl<'a> RepoService<'a> {
             },
         )
         .await
-    }
-
-    // --- internal read helpers ---
-
-    /// The repo's **complete** `config` history (append-only, non-deletable), as
-    /// [`ConfigDoc`]s ordered by `$createdAt`.
-    ///
-    /// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
-    /// UNPROTECTED, so a truncated history does not merely go stale — it silently
-    /// re-admits plain `refUpdate`s on protected refs that the rules layer had correctly
-    /// rendered inert. forge-web reads the same timeline, and the two clients must fold the
-    /// same input.
-    async fn fetch_config_history(
-        &self,
-        scope: &DocScope,
-        contract: &LoadedContract,
-    ) -> Result<Vec<ConfigDoc>> {
-        crate::refs::read_config_history(self.client, contract, scope).await
     }
 }
 

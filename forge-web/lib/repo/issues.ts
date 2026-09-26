@@ -567,8 +567,8 @@ export function baseRefTips(
 
 /**
  * Read one PR (patch) and fold its state, using the historical-tips merge predicate over the
- * base ref's VALID history. `configHistory` is the repo's config timeline (read here when not
- * given; a list passes one read for every row).
+ * base ref's VALID history. `configHistory` yields the repo's config timeline (read here when
+ * not given; a list shares one read across its rows).
  */
 export async function readPull(
   sdk: EvoSDK,
@@ -576,7 +576,7 @@ export async function readPull(
   patchDoc: PlainDocument,
   authz?: AuthzResolver,
   log?: TargetLog,
-  configHistory?: Promise<readonly ConfigDoc[]>,
+  configHistory?: () => Promise<readonly ConfigDoc[]>,
 ): Promise<PullView> {
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
@@ -590,7 +590,7 @@ export async function readPull(
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
     const [updates, configs] = await Promise.all([
       readRefUpdates(sdk, repo, baseRefNameHashRaw),
-      configHistory ?? readConfigHistory(sdk, repo),
+      configHistory ? configHistory() : readConfigHistory(sdk, repo),
     ])
     tips = baseRefTips(updates, configs, byteFieldToHex(patchDoc, 'baseRefNameHash'), createdAt)
     isAncestor = historicalTipsPredicate(tips.historical)
@@ -643,14 +643,14 @@ export async function listPulls(
 ): Promise<Listed<PullView>> {
   const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
   const { documents, hidden } = await newestTargets(sdk, repo, 'patch', limit)
-  // One config read for the whole page, only if some row needs it.
+  // One config read for the whole page, made by the first row that has a base ref.
   let configs: Promise<readonly ConfigDoc[]> | undefined
   const configHistory = () => (configs ??= readConfigHistory(sdk, repo))
   const rows = await foldRows(
     sdk,
     repo,
     documents,
-    (doc, log) => readPull(sdk, repo, doc, resolver, log, configHistory()),
+    (doc, log) => readPull(sdk, repo, doc, resolver, log, configHistory),
     (doc) => incompletePullView(repo, doc),
   )
   return Object.assign(rows, { hidden })

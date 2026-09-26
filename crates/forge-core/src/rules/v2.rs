@@ -770,35 +770,30 @@ pub fn is_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
 /// ref and acted on as another.
 #[must_use]
 pub fn ref_name_hashes_agree(doc: &ContentDoc, ref_key: Option<&[u8; 32]>) -> bool {
-    let hash_of = |name: &str| -> [u8; 32] {
-        match ref_key {
-            None => {
-                use sha2::{Digest as _, Sha256};
-                Sha256::digest(name.as_bytes()).into()
-            }
-            Some(key) => {
-                use hmac::{Hmac, Mac as _};
-                let mut mac =
-                    Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC takes any key length");
-                mac.update(name.as_bytes());
-                mac.finalize().into_bytes().into()
-            }
+    let matches = |name: &str, hash: &str| match ref_key {
+        None => super::ref_name_hash_matches(name, hash),
+        Some(key) => {
+            use hmac::{Hmac, Mac as _};
+            let mut mac =
+                Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+            mac.update(name.as_bytes());
+            hex::encode(mac.finalize().into_bytes()).eq_ignore_ascii_case(hash)
         }
     };
-    let agrees = |name: Option<&String>, hash: Option<&String>| match name {
-        Some(n) if !n.is_empty() => {
-            hash.is_some_and(|h| hex::encode(hash_of(n)).eq_ignore_ascii_case(h))
-        }
+    let agrees = |name: Option<&str>, hash: Option<&str>| match name {
+        Some(n) if !n.is_empty() => hash.is_some_and(|h| matches(n, h)),
         _ => true,
     };
     match doc.kind {
-        ContentKind::RefUpdate => agrees(doc.ref_name.as_ref(), doc.ref_name_hash.as_ref()),
+        ContentKind::RefUpdate => agrees(doc.ref_name.as_deref(), doc.ref_name_hash.as_deref()),
         ContentKind::Patch => {
-            agrees(doc.base_ref_name.as_ref(), doc.base_ref_name_hash.as_ref())
-                && agrees(
-                    doc.source_ref_name.as_ref(),
-                    doc.source_ref_name_hash.as_ref(),
-                )
+            agrees(
+                doc.base_ref_name.as_deref(),
+                doc.base_ref_name_hash.as_deref(),
+            ) && agrees(
+                doc.source_ref_name.as_deref(),
+                doc.source_ref_name_hash.as_deref(),
+            )
         }
         _ => true,
     }

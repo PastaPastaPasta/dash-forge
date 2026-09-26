@@ -37,7 +37,7 @@ use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
 
 /// The initial `config` document type.
-const DOC_CONFIG: &str = "config";
+use crate::refs::DOC_CONFIG;
 /// How often a just-created repo is looked up through its index, and the pause between.
 const FIND_ATTEMPTS: usize = 6;
 const FIND_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);

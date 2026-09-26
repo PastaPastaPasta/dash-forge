@@ -156,6 +156,7 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
   if (repo.kind === 'v1') return true
   const text = (field: string): string | null => (typeof doc[field] === 'string' ? str(doc, field) : null)
+  const hex = (field: string): string | null => byteFieldToHex(doc, field) || null
   return isWellFormed(
     {
       kind,
@@ -164,12 +165,12 @@ export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument)
       refName: text('refName'),
       baseRefName: text('baseRefName'),
       sourceRefName: text('sourceRefName'),
-      refNameHash: byteFieldToHex(doc, 'refNameHash') || null,
-      baseRefNameHash: byteFieldToHex(doc, 'baseRefNameHash') || null,
-      sourceRefNameHash: byteFieldToHex(doc, 'sourceRefNameHash') || null,
+      refNameHash: hex('refNameHash'),
+      baseRefNameHash: hex('baseRefNameHash'),
+      sourceRefNameHash: hex('sourceRefNameHash'),
       defaultBranch: text('defaultBranch'),
       protectedPatterns: stringArray(doc, 'protectedPatterns'),
-      enc: byteFieldToHex(doc, 'enc') || null,
+      enc: hex('enc'),
       epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
     },
     repo.visibility,

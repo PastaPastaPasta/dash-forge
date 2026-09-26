@@ -30,7 +30,6 @@ import {
   foldPrState,
   holdingsAsOf,
   matchesProtected,
-  mergeBaseContains,
   mergeBaseTips,
   overlayTree,
   resolveRef,
@@ -41,11 +40,11 @@ import type {
   ConfigDoc,
   Event,
   FlatIndex,
+  IsAncestor,
   RefUpdate,
   TokenRecord,
   TreeDiff,
 } from './types'
-import type { IsAncestor } from './types'
 
 interface Vector {
   readonly name: string
@@ -110,7 +109,7 @@ function foldBase(
   const h = inp.baseHistory
   expect(Object.keys(h).filter((k) => !['updates', 'configHistory', 'refNameHash'].includes(k))).toEqual([])
   const tips = mergeBaseTips(h.updates, h.configHistory ?? [], h.refNameHash)
-  return [tips.tip ?? undefined, (oid) => mergeBaseContains(tips, oid)]
+  return [tips.tip ?? undefined, (oid) => tips.historical.includes(oid)]
 }
 
 interface OverlayInput {

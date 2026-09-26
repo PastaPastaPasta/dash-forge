@@ -75,7 +75,7 @@ pub(crate) const DOC_REF_UPDATE: &str = "refUpdate";
 /// The MAINTAIN-gated ref-update document type.
 pub(crate) const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
 /// The repository `config` document type (protected patterns, default branch).
-const DOC_CONFIG: &str = "config";
+pub(crate) const DOC_CONFIG: &str = "config";
 
 /// Both ref-update types, each with the `protected` flag its updates carry into the fold.
 const REF_UPDATE_TYPES: [(&str, bool); 2] =

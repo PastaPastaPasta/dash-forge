@@ -40,6 +40,11 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
   return true
 }
 
+/** The valid updates of the ref keyed `refNameHash`, ascending by (createdAt, id): steps 1–2 of {@link resolveRef}. */
+function validUpdates(updates: readonly RefUpdate[], configHistory: readonly ConfigDoc[], refNameHash: string): RefUpdate[] {
+  return updates.filter((u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory)).sort(compareKey)
+}
+
 /**
  * The base-ref history a PR merge is verified against (§4 routing, §6 merge reachability);
  * ports `merge_base_tips` in `crates/forge-core/src/rules.rs` (vectors `merge_base_tips__*`).
@@ -48,33 +53,26 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
  * its key, and on a ref protected by the config in force when it was written, the
  * MAINTAIN-gated `protectedRefUpdate` type. A plain `refUpdate` naming a protected ref is
  * inert, so the commit it names was never on the branch, and a merge event naming it must
- * not count. Used by both rule versions: the fold takes `tip` as the base tip and
- * {@link mergeBaseContains} as the ancestry predicate.
+ * not count. The fold takes `tip` as the base tip and membership in `historical` as the
+ * ancestry predicate (`historicalTipsPredicate` in `lib/repo/issues.ts`).
  */
 export function mergeBaseTips(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],
   refNameHash: string,
 ): MergeBaseTips {
-  const valid = updates
-    .filter((u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory))
-    .sort(compareKey)
+  const valid = validUpdates(updates, configHistory, refNameHash)
   const historical: string[] = []
   for (const u of valid) {
     if (!isNullOid(u.newOid) && !historical.includes(u.newOid)) historical.push(u.newOid)
   }
-  const newestTip = [...valid].reverse().find((u) => !isNullOid(u.newOid))
-  const newest = valid[valid.length - 1]
+  const newestTip = valid.findLast((u) => !isNullOid(u.newOid))
+  const newest = valid.at(-1)
   return {
     historical,
     tip: newestTip?.newOid ?? null,
     current: newest === undefined || isNullOid(newest.newOid) ? null : newest.newOid,
   }
-}
-
-/** Whether `oid` has been a valid tip of the base (the merge-reachability predicate). */
-export function mergeBaseContains(tips: MergeBaseTips, oid: string): boolean {
-  return tips.historical.includes(oid)
 }
 
 /**
@@ -113,13 +111,8 @@ export function resolveRef(
   refNameHash: string,
   isAncestor: IsAncestor,
 ): RefState {
-  // (1) validity filter, keeping only this ref's updates.
-  const valid = updates.filter(
-    (u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory),
-  )
-
-  // (2) order ascending by (createdAt, id).
-  valid.sort(compareKey)
+  // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+  const valid = validUpdates(updates, configHistory, refNameHash)
 
   // (3) unborn / deleted.
   const newest = valid[valid.length - 1]

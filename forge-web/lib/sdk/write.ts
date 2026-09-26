@@ -393,8 +393,14 @@ function isAffectedStateSnapshot(e: unknown): boolean {
  * node at 30 s each (minutes); {@link settleUnanswered} finds out what happened instead.
  * Same bounds as forge-core's `WriteEngine::execute`.
  */
-export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: 20_000, banFailedAddress: false, waitTimeoutMs: 45_000 }
+const WAIT_REQUEST_MS = 20_000
 const WAIT_DEADLINE_MS = 45_000
+export const WAIT_SETTINGS: WaitSettings = {
+  retries: 0,
+  timeoutMs: WAIT_REQUEST_MS,
+  banFailedAddress: false,
+  waitTimeoutMs: WAIT_DEADLINE_MS,
+}
 
 /**
  * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
@@ -422,7 +428,7 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
   }
 }
 
-const NONCE_REVISIONS_MASK = 0xffffff0000000000n
+const SEQUENCE_MASK = (1n << 40n) - 1n
 const MAX_MISSING_REVISIONS = 24n
 
 /**
@@ -437,9 +443,8 @@ export function isNonceSpent(current: bigint, nonce: bigint): boolean {
   if (nonce === tip) return true
   const behind = tip - nonce
   if (behind > MAX_MISSING_REVISIONS) return true
-  const missing = current & NONCE_REVISIONS_MASK
-  const bit = 1n << (behind - 1n + 40n)
-  return (missing & bit) === 0n
+  // Bit 40 + (behind - 1) marks a skipped nonce that is still free.
+  return (current & (1n << (behind + 39n))) === 0n
 }
 
 /** Whether Platform's nonce says `nonce` is spent; `false` when the read fails. */
@@ -574,7 +579,11 @@ async function documentExists(sdk: EvoSDK, contractId: string, documentType: str
   }
 }
 
-const SEQUENCE_MASK = (1n << 40n) - 1n
+/** A read answered "not there" (a failed read is not an answer). */
+async function definitelyAbsent(sdk: EvoSDK, contractId: string, documentType: string, documentId: string): Promise<boolean> {
+  return (await documentExists(sdk, contractId, documentType, documentId)) === false
+}
+
 
 // ---------------------------------------------------------------------------
 // One writer per identity (tab-wide queue + cross-tab Web Lock)
@@ -745,7 +754,7 @@ async function createDocumentUnlocked(
   const absent = async (documentId: string): Promise<boolean> =>
     params.probe
       ? (await params.probe().catch(() => null)) === false
-      : (await documentExists(sdk, contractId, documentType, documentId)) === false
+      : await definitelyAbsent(sdk, contractId, documentType, documentId)
 
   const wif = auth.getSigningKeyWif()
   const ownerId = auth.identityId
@@ -797,14 +806,12 @@ async function createDocumentUnlocked(
       }
       seen = await landed(documentId, confirmTimeoutMs)
     }
+    const { nonce } = cached
     const lost =
-      !seen &&
-      cached.nonce !== null &&
-      (await nonceSpent(sdk, ownerId, contractId, cached.nonce)) &&
-      (await absent(documentId))
-    if (!lost) return done(documentId, seen)
+      !seen && nonce !== null && (await nonceSpent(sdk, ownerId, contractId, nonce)) && (await absent(documentId))
+    if (!lost || nonce === null) return done(documentId, seen)
     clearPendingST(cacheKey)
-    if (cached.nonce !== null) markNonceUsed(ownerId, contractId, cached.nonce)
+    markNonceUsed(ownerId, contractId, nonce)
   }
 
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
@@ -1018,9 +1025,9 @@ async function deleteDocumentUnlocked(
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
   const indexOnly = params.document !== undefined
-  const gone = params.probeGone ?? (async () => (await documentExists(sdk, contractId, documentType, documentId)) === false)
+  const gone = params.probeGone ?? (() => definitelyAbsent(sdk, contractId, documentType, documentId))
 
-  if (!indexOnly && (await documentExists(sdk, contractId, documentType, documentId)) === false) {
+  if (!indexOnly && (await definitelyAbsent(sdk, contractId, documentType, documentId))) {
     return { result: { deleted: true, actualCredits: 0 }, spend: null }
   }
 
@@ -1051,7 +1058,7 @@ async function deleteDocumentUnlocked(
       identityKey: signing.publicKey,
       signer,
       // The per-request and overall bounds of WAIT_SETTINGS; broadcast retries stay default.
-      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_SETTINGS.timeoutMs, waitTimeoutMs: WAIT_SETTINGS.waitTimeoutMs },
+      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, waitTimeoutMs: WAIT_DEADLINE_MS },
     })
     proven = true
   } catch (e) {

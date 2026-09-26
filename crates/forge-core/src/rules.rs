@@ -256,18 +256,8 @@ pub fn resolve_ref(
     ref_name_hash: &str,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> RefState {
-    // (1) validity filter, keeping only this ref's updates.
-    let mut valid: Vec<&RefUpdate> = updates
-        .iter()
-        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
-        .collect();
-
-    // (2) order ascending by (createdAt, id).
-    valid.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+    let valid = valid_updates(updates, config_history, ref_name_hash);
 
     // (3) unborn / deleted.
     let Some(newest) = valid.last() else {
@@ -482,7 +472,7 @@ pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Op
 }
 
 /// A PR's base ref as merge verification sees it: see [`merge_base_tips`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeBaseTips {
     /// Every commit a VALID update has set the ref to (deletions excluded), oldest first by
@@ -494,7 +484,6 @@ pub struct MergeBaseTips {
     pub tip: Option<Oid>,
     /// Where the ref points now: the newest valid update's `newOid`, `None` when that update
     /// deleted the ref (or there is none). What a merge builds on; not a fold input.
-    #[serde(default)]
     pub current: Option<Oid>,
 }
 
@@ -525,11 +514,7 @@ pub fn merge_base_tips(
     config_history: &[ConfigDoc],
     ref_name_hash: &str,
 ) -> MergeBaseTips {
-    let mut valid: Vec<&RefUpdate> = updates
-        .iter()
-        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
-        .collect();
-    valid.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    let valid = valid_updates(updates, config_history, ref_name_hash);
     let mut historical: Vec<Oid> = Vec::new();
     for u in &valid {
         if !is_null_oid(&u.new_oid) && !historical.contains(&u.new_oid) {
@@ -551,6 +536,21 @@ pub fn merge_base_tips(
         tip,
         current,
     }
+}
+
+/// The valid updates of the ref keyed `ref_name_hash` ([`is_update_valid`]), ascending by
+/// `(created_at, id)`: steps 1 and 2 of [`resolve_ref`], shared with [`merge_base_tips`].
+fn valid_updates<'a>(
+    updates: &'a [RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+) -> Vec<&'a RefUpdate> {
+    let mut valid: Vec<&RefUpdate> = updates
+        .iter()
+        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
+        .collect();
+    valid.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    valid
 }
 
 /// The as-of-time protection check from §4: is update `u` a valid mover of its ref?
@@ -1477,15 +1477,6 @@ mod tests {
         ref_name_hash: String,
     }
 
-    #[derive(Debug, Deserialize, Serialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct MergeBaseTipsInput {
-        updates: Vec<RefUpdate>,
-        #[serde(default)]
-        config_history: Vec<ConfigDoc>,
-        ref_name_hash: String,
-    }
-
     fn vectors_dir() -> PathBuf {
         // crates/forge-core/src/rules.rs -> repo root -> forge-contracts/vectors
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1794,7 +1785,7 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "merge_base_tips" => {
-                let inp: MergeBaseTipsInput = input(v);
+                let inp: BaseHistory = input(v);
                 let got = merge_base_tips(&inp.updates, &inp.config_history, &inp.ref_name_hash);
                 assert_eq!(got, expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
