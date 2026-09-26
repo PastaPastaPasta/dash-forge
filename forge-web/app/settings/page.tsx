@@ -1,6 +1,6 @@
 'use client'
 
-/** `/settings` — account settings: identity, network, running balance/spend, sign out. */
+/** `/settings` — account settings: identity, network, balance, the local spend ledger, sign out. */
 
 import Link from 'next/link'
 import { LogOut, Wallet } from 'lucide-react'
@@ -12,12 +12,14 @@ import { Oid } from '@/components/ui/oid'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { NetworkBadge } from '@/components/ui/network-badge'
+import { SpendPanel } from '@/components/spend-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
 export default function SettingsPage(): JSX.Element {
   const { identity, balance, logout } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
+  const openTopUp = useUiStore((s) => s.openTopUp)
 
   if (!identity) {
     return (
@@ -57,9 +59,14 @@ export default function SettingsPage(): JSX.Element {
           <div className="mt-1 font-mono text-dense text-anvil-400">
             {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
           </div>
-          <a href="https://bridge.thepasta.org" target="_blank" rel="noreferrer noopener" className="mt-3 inline-block text-dense text-forge-600 underline dark:text-forge-400">
-            Top up at the bridge →
-          </a>
+          <button type="button" onClick={() => openTopUp()} className="mt-3 inline-block text-dense text-forge-600 underline dark:text-forge-400">
+            Top up →
+          </button>
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Spend</h2>
+          <SpendPanel />
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
