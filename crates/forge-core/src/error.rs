@@ -120,9 +120,7 @@ pub enum Error {
 
     /// A write was attempted on a forge-v1 repository. v1 (one contract per repo) is read
     /// only now; new writes go to forge-v2.
-    #[error(
-        "{repo} is a v1 repo (read-only); run `dg migrate {repo}` to copy it to forge-v2"
-    )]
+    #[error("{repo} is a v1 repo (read-only); run `dg migrate {repo}` to copy it to forge-v2")]
     V1ReadOnly {
         /// The repo as the user named it (`owner/name` or a contract id).
         repo: String,
