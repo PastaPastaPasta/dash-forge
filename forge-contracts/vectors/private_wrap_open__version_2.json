@@ -1,0 +1,17 @@
+{
+  "name": "version_2",
+  "description": "a wrap plaintext whose version byte is not 0x01: WrapUnreadable.",
+  "case": "private_wrap_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 0,
+    "wrapped": "0f0e0d0c0b0a09080706050403020100e86d5302549428fb78cd82793e2fd71b975c049176d325ed86c110841a5749dc3189e7da05dc56cee29929017caad14b",
+    "readerPriv": "f16baad1b1863c015869f5a6a2db471537d06a31d3bd78d961300f13f6b14239",
+    "counterpartyPub": "03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948",
+    "anchorCommit": "2ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584"
+  },
+  "expected": {
+    "error": "wrapUnreadable"
+  }
+}

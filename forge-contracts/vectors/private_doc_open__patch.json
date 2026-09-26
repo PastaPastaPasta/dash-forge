@@ -1,0 +1,40 @@
+{
+  "name": "patch",
+  "description": "a patch whose base and source names match their hashes.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "patch",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 3,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "d84cb3ab7e73838aa281dc31df409a61ec404c3c5ba7c19eea8ba0f40d3261be",
+      "enc": "01000102030405060708090a0b1f7020b3a756cc0d371934d5a54a897bcb787dc66fb163e82af3f17cbaaaebf5116f42eeb4320c7f6b203e992e07a07aa8b9d23f5ae3dd6ea4a2653ebfd2f7509c7874dcaab00424ed9f72865ab9475935bdd1494572",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "Add the feature",
+      "body": "Closes #7.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/feature"
+    }
+  }
+}

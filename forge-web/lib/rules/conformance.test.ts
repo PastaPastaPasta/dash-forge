@@ -188,7 +188,7 @@ const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
   queries: ['identity', 'at'],
   doc: [
     'kind', 'title', 'body', 'refName', 'baseRefName', 'sourceRefName',
-    'defaultBranch', 'protectedPatterns', 'enc', 'epoch',
+    'defaultBranch', 'protectedPatterns', 'path', 'enc', 'epoch',
   ],
 }
 
@@ -333,12 +333,16 @@ interface V2FoldInput {
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const v1 = vectors.filter((v) => (v.rules ?? 'v1') === 'v1')
-  const v2Vectors = vectors.filter((v) => v.rules === 'v2')
+  // `private_*` cases (private-repos.md §11) run in `lib/private/conformance.test.ts`.
+  const isPrivate = (v: Vector) => v.case.startsWith('private_')
+  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
+  const privateVectors = vectors.filter(isPrivate)
 
   it('loads the full vector corpus', () => {
     expect(v1.length).toBeGreaterThanOrEqual(70)
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
-    expect(v1.length + v2Vectors.length).toBe(vectors.length)
+    expect(privateVectors.length).toBeGreaterThanOrEqual(138)
+    expect(v1.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
   })
 
   for (const v of v1) {

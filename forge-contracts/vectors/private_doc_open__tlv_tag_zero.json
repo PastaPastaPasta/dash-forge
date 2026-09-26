@@ -1,0 +1,32 @@
+{
+  "name": "tlv_tag_zero",
+  "description": "tag 0 is not a field of any kind.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "01000102030405060708090a0b1e702e8ac232fa2b300875c7a50b8966dc3d0caf029c66e93eb6e939e09fc5e1420555aba62946377c3434886e05aa3d1c4b0ad9e4060739b9ef177ea563d90f",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

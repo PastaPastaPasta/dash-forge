@@ -1,0 +1,22 @@
+{
+  "name": "past_end",
+  "description": "a range past plaintextLen is refused.",
+  "case": "private_pack_range",
+  "rules": "v2",
+  "input": {
+    "seal": {
+      "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "epoch": 0,
+      "fileId": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+      "plaintextMod251": 40000
+    },
+    "range": [
+      39990,
+      40001
+    ]
+  },
+  "expected": {
+    "error": "outOfRange"
+  }
+}

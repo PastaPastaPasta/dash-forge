@@ -1,0 +1,32 @@
+{
+  "name": "tlv_title_257_chars",
+  "description": "a title of 257 characters is malformed.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "01000102030405060708090a0b1f712e93a2538d183e1d75d2a14a9c6fd87c1ea704936ee638f7e33df8fca490700151eab32042766f203b8b600ba072a7ddb34c49e7da7ceaab613ebac0b957987861c8b9b42535c013cb7d69c8488beb743aa14c305ce6a817a5251c54395ced835529a4480295a070e2c7993fdd0b17d553502d7da3a52522703a7ec561ef4b76a532b9cc4cbff28dd528885b30a96c1ef39f0b53767204fda12dc3a871d536f052cf33abcde7770bed9240f992e9680e052faff462bc01a5850c5134fe537c415c23ec90c2b57e9d82ef68af0adc9b31c2e89b9f8dbb8caacae09213c36f4bdf6b1c215b88b23cdf83f16f6ebf8cf62bbc60cd13fa35b8215d288e833c536e1c6072d8f795a61bc7663fa1a2322345f364f2",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}
