@@ -85,10 +85,10 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
     let error = match summary.status {
         Status::Ok | Status::DryRun => None,
         Status::Partial => Some(
-            UserError::new(codes::REJECTED, "some items were not mirrored")
+            UserError::new(codes::PARTIAL, "some items were not mirrored")
                 .cause(format!(
-                    "{} item(s) skipped; see the warnings",
-                    summary.counts.skipped
+                    "{} item(s) and {} optional git push(es) skipped; see the warnings",
+                    summary.counts.skipped, summary.counts.git_skipped
                 ))
                 .fix("re-run later: skipped items are retried, and written ones are not written again"),
         ),

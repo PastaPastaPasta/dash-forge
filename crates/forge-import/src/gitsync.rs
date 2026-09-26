@@ -7,14 +7,16 @@
 //!
 //! **The cap reaches into the push.** A push is first priced with a dry run (the helper
 //! builds the pack and estimates, storing nothing); that estimate is charged to the run's
-//! budget, and only then is the real push made, with the helper's own cost guard set to the
-//! run's remaining budget (`dash.costWarnThreshold`; there is no terminal, so above it the
-//! helper refuses before storing anything). The importer reads the helper's JSON progress
-//! events (`GIT_DASH_JSON=1`) for what each push planned and charged.
+//! budget, and only then is the real push made, with the helper's own cost guard set to what
+//! the budget had left before the charge, in the helper's own units (its raw price, without
+//! the forge-v2 index overhead the importer adds), and `dash.confirm=refuse`: the helper
+//! never asks, even on a terminal, and refuses above the threshold before storing anything.
+//! The importer reads the helper's JSON progress events (`GIT_DASH_JSON=1`) for what each
+//! push planned and charged.
 //!
 //! Branches and tags are one push; the heads of **open** PRs (`refs/mirror/pull/<n>/head`)
-//! are a second, so a stranger's large PR can fail only its own push, never the mirror of
-//! branches, tags and issues.
+//! are a second, optional one, so a stranger's large PR can fail only its own push, never the
+//! mirror of branches, tags and issues. It prunes the heads of PRs that closed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,10 +45,11 @@ impl Refs {
                 "+refs/heads/*:refs/heads/*".into(),
                 "+refs/tags/*:refs/tags/*".into(),
             ],
-            Refs::PullHeads(open) => open
-                .iter()
-                .map(|n| format!("+refs/pull/{n}/head:refs/mirror/pull/{n}/head"))
-                .collect(),
+            // One wildcard over the mirror's local `refs/mirror/pull/*`, which
+            // [`sync_pull_heads`] keeps to exactly the open PRs, so `--prune` deletes the
+            // heads of PRs that closed.
+            Refs::PullHeads(open) if open.is_empty() => Vec::new(),
+            Refs::PullHeads(_) => vec!["+refs/mirror/pull/*:refs/mirror/pull/*".into()],
         }
     }
 
@@ -54,7 +57,7 @@ impl Refs {
     fn local_patterns(&self) -> Vec<String> {
         match self {
             Refs::Code => vec!["refs/heads/".into(), "refs/tags/".into()],
-            Refs::PullHeads(open) => open.iter().map(|n| format!("refs/pull/{n}/head")).collect(),
+            Refs::PullHeads(_) => vec!["refs/mirror/pull/".into()],
         }
     }
 }
@@ -68,8 +71,18 @@ pub struct PushReport {
     pub packs: u64,
     /// Bytes in them.
     pub pack_bytes: u64,
-    /// The helper's estimate of what it stores.
+    /// The estimate of what it stores (credits), forge-v2 index overhead included.
     pub est_credits: u64,
+    /// The helper's own price for it (no index overhead): what its cost guard compares
+    /// `dash.costWarnThreshold` against.
+    pub helper_credits: u64,
+}
+
+impl PushReport {
+    /// What [`Self::est_credits`] adds on top of the helper's price.
+    pub fn overhead(&self) -> u64 {
+        self.est_credits.saturating_sub(self.helper_credits)
+    }
 }
 
 /// Fold the helper's JSON events (`stderr`, one object per line) and git's porcelain
@@ -86,7 +99,10 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
                 r.packs += 1;
                 r.pack_bytes += num("bytes");
             }
-            Some("platform") => r.est_credits += num("estCredits"),
+            Some("platform") => {
+                r.est_credits += num("estCredits");
+                r.helper_credits += num("estCredits");
+            }
             _ => {}
         }
     }
@@ -113,48 +129,119 @@ pub struct GitPusher {
     pub refs: Refs,
 }
 
-/// Price the first push into a repository that does not exist yet (so the helper cannot
-/// be asked): build the whole pack locally and price it as Platform chunks, plus a
-/// manifest and browse-index fragment, plus a ref update per ref. An upper bound when the
-/// storage policy puts the pack on your own storage instead.
-pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
-    let patterns = refs.local_patterns();
+/// Make the mirror's local `refs/mirror/pull/<n>/head` exactly the heads of the `open` PRs
+/// it fetched (`refs/pull/<n>/head`); a PR whose head was not fetched is left out.
+pub fn sync_pull_heads(git_dir: &Path, open: &[u64]) -> Result<()> {
+    use std::fmt::Write as _;
+    let git = |args: &[&str]| -> Result<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(git_dir)
+            .args(args)
+            .output()
+            .context("running git")?;
+        if !out.status.success() {
+            bail!(
+                "git {} failed: {}",
+                args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let mut script = String::new();
+    let mut keep = std::collections::BTreeSet::new();
+    for n in open {
+        let src = format!("refs/pull/{n}/head");
+        if let Ok(oid) = git(&["rev-parse", "--verify", "--quiet", &src]) {
+            let dst = format!("refs/mirror/pull/{n}/head");
+            let _ = writeln!(script, "update {dst} {}", oid.trim());
+            keep.insert(dst);
+        }
+    }
+    for name in git(&["for-each-ref", "--format=%(refname)", "refs/mirror/pull/"])?.lines() {
+        if !keep.contains(name) {
+            let _ = writeln!(script, "delete {name}");
+        }
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(git_dir)
+        .args(["update-ref", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("running git update-ref")?;
+    {
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(script.as_bytes())?;
+    }
+    if !child.wait()?.success() {
+        bail!("git update-ref failed in {}", git_dir.display());
+    }
+    Ok(())
+}
+
+/// The tips of the mirror's refs matching `patterns`.
+fn local_tips(git_dir: &Path, patterns: &[String]) -> Result<Vec<String>> {
     if patterns.is_empty() {
-        return Ok(PushReport::default());
+        return Ok(Vec::new());
     }
     let out = Command::new("git")
         .arg("-C")
         .arg(git_dir)
         .args(["for-each-ref", "--format=%(objectname)"])
-        .args(&patterns)
+        .args(patterns)
         .output()
         .context("listing the mirror's refs")?;
     if !out.status.success() {
         bail!("git for-each-ref failed in {}", git_dir.display());
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let tips: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
-    let refs = tips.len() as u64;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Price the first push into a repository that does not exist yet (so the helper cannot
+/// be asked): build the pack locally and price it as Platform chunks, plus a manifest and
+/// browse-index fragment, plus a ref update per ref. The PR heads' pack leaves out what the
+/// branches and tags already carry (it is pushed after them). An upper bound when the
+/// storage policy puts the pack on your own storage instead.
+pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
+    let tips = local_tips(git_dir, &refs.local_patterns())?;
+    let refs_n = tips.len() as u64;
     if tips.is_empty() {
         return Ok(PushReport::default());
     }
-    let mut unique = tips.clone();
+    let mut unique: Vec<&str> = tips.iter().map(String::as_str).collect();
     unique.sort_unstable();
     unique.dedup();
+    let bases = match refs {
+        Refs::Code => Vec::new(),
+        Refs::PullHeads(_) => local_tips(git_dir, &Refs::Code.local_patterns())?,
+    };
+    let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
     let pack =
-        forge_core::pack::build_pack(git_dir, &unique, &[]).context("sizing the first push")?;
+        forge_core::pack::build_pack(git_dir, &unique, &bases).context("sizing the first push")?;
     let bytes = pack.bytes.len() as u64;
     let objects = pack.parsed.object_count() as u64;
     let locator = LOCATOR_HEADER + LOCATOR_ROW * objects;
     let est = chunked_credits(bytes)
         + chunked_credits(locator)
         + 2 * git_doc_credits(MANIFEST_BYTES)
-        + refs * git_doc_credits(REF_UPDATE_BYTES);
+        + refs_n * git_doc_credits(REF_UPDATE_BYTES);
     Ok(PushReport {
-        refs,
+        refs: refs_n,
         packs: 1,
         pack_bytes: bytes,
         est_credits: est,
+        // No helper price for a repo that does not exist yet; the estimate stands in.
+        helper_credits: est,
     })
 }
 
@@ -178,8 +265,9 @@ impl GitPusher {
     }
 
     /// Push for real. The caller has already charged [`Self::estimate`] to its budget.
-    /// `max_credits` (the run's remaining budget) arms the helper's cost guard: a push the
-    /// helper prices above it is refused before anything is stored.
+    /// `max_credits` (in the helper's units: the budget left before that charge, less the
+    /// estimate's index overhead) arms the helper's cost guard: a push the helper prices
+    /// above it is refused before anything is stored.
     pub fn push(&self, max_credits: Option<u64>) -> Result<PushReport> {
         self.run(false, max_credits)
     }
@@ -192,19 +280,17 @@ impl GitPusher {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.git_dir);
         match max_credits {
-            // No terminal: above the threshold the helper refuses (E801), below it proceeds.
+            // Never a prompt (even on a terminal): above the threshold the helper refuses
+            // (E801), below it proceeds.
             Some(max) => cmd.args([
                 "-c".to_string(),
-                "dash.confirm=auto".to_string(),
+                "dash.confirm=refuse".to_string(),
                 "-c".to_string(),
                 format!("dash.costWarnThreshold={}", threshold_dash(max)),
             ]),
             None => cmd.args(["-c", "dash.confirm=never"]),
         };
-        cmd.args(["push", "--porcelain"]);
-        if self.refs == Refs::Code {
-            cmd.arg("--prune");
-        }
+        cmd.args(["push", "--porcelain", "--prune"]);
         if dry_run {
             cmd.arg("--dry-run");
         }
@@ -270,6 +356,7 @@ dash: some human line"#;
                 packs: 1,
                 pack_bytes: 900,
                 est_credits: 1234,
+                helper_credits: 1234,
             }
         );
     }
@@ -289,12 +376,47 @@ dash: some human line"#;
         assert!(code.iter().all(|s| !s.contains("pull")));
         assert_eq!(
             Refs::PullHeads(vec![3, 7]).refspecs(),
-            vec![
-                "+refs/pull/3/head:refs/mirror/pull/3/head",
-                "+refs/pull/7/head:refs/mirror/pull/7/head"
-            ]
+            vec!["+refs/mirror/pull/*:refs/mirror/pull/*"]
         );
         assert!(Refs::PullHeads(Vec::new()).refspecs().is_empty());
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn local_pull_heads_follow_the_open_prs_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-q"]);
+        git(d, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        let oid = git(d, &["rev-parse", "HEAD"]);
+        for n in ["1", "2", "3"] {
+            git(d, &["update-ref", &format!("refs/pull/{n}/head"), &oid]);
+        }
+        sync_pull_heads(d, &[1, 2, 9]).unwrap();
+        let heads = || {
+            git(
+                d,
+                &["for-each-ref", "--format=%(refname)", "refs/mirror/pull/"],
+            )
+        };
+        assert_eq!(heads(), "refs/mirror/pull/1/head\nrefs/mirror/pull/2/head");
+        // PR 1 closed: its head leaves the local namespace, so `--prune` deletes it.
+        sync_pull_heads(d, &[2]).unwrap();
+        assert_eq!(heads(), "refs/mirror/pull/2/head");
     }
 
     #[test]

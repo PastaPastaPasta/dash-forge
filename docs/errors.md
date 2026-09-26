@@ -61,6 +61,12 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>` and fix the conflicts, push the result to the base branch (a member can), then run `dg pr merge` again: it finds the PR head already in the base and only records the merge. A PR names a fixed head commit, so pushing the resolution to the PR's source branch does not change the PR: open a new one from it instead.
 
+## E106
+
+**Partially completed.** `dg import` or `dg migrate` finished, but some items were not mirrored: an issue or PR whose number is held by someone else, a document the destination refused, the optional push of open pull request heads, or (migrate) a ref whose history needs a v1 pack that could not be copied. The warnings name each one, and `counts.skipped` / `counts.gitSkipped` in the `--json` summary count them. Everything else was written.
+
+Fix: run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
+
 ## E201
 
 **Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`.

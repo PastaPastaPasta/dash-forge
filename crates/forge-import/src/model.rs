@@ -217,17 +217,26 @@ pub fn date(secs: u64) -> String {
     crate::github::unix_to_iso8601(secs)[..10].to_string()
 }
 
-/// Whether `uri` is a copy anyone can read, so it may be republished on chain under the
-/// migrator's identity: `https`/`http` on a public host (no credentials, no query, so no
-/// presigned or token URL that expires or leaks), or a content-addressed `ipfs://` CID.
-/// `s3://` depends on the pusher's endpoint profile, and `platform://` names another
-/// contract; both are refused, as is anything on a loopback, private, link-local, CGNAT or
-/// unspecified address, or a `localhost` / `.local` / `.internal` name.
+/// Whether `uri` looks like a copy anyone can read, so it may be republished on chain under
+/// the migrator's identity: `https`/`http` on a public host name (no credentials, query or
+/// fragment, so no presigned or token URL that expires or leaks), or a content-addressed
+/// `ipfs://` CID. `s3://` depends on the pusher's endpoint profile, and `platform://` names
+/// another contract; both are refused, as is anything on a loopback, private, link-local,
+/// CGNAT, multicast, reserved or documentation address (IPv6 forms embedding one included),
+/// or a single-label or internal name (`localhost`, `.local`, `.lan`, `.internal`, ...).
+///
+/// A **name filter, not an SSRF control**: a public DNS name can resolve to a private
+/// address, and a server can redirect. It keeps a private copy from being republished; the
+/// reads themselves go through the storage reader like any other fetch.
 pub fn is_public_uri(uri: &str) -> bool {
     let Ok(u) = url::Url::parse(uri) else {
         return false;
     };
-    if !u.username().is_empty() || u.password().is_some() || u.query().is_some() {
+    if !u.username().is_empty()
+        || u.password().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+    {
         return false;
     }
     match u.scheme() {
@@ -235,40 +244,76 @@ pub fn is_public_uri(uri: &str) -> bool {
             .host_str()
             .is_some_and(|cid| !cid.is_empty() && cid.chars().all(|c| c.is_ascii_alphanumeric())),
         "https" | "http" => match u.host() {
-            Some(url::Host::Domain(d)) => {
-                let d = d.trim_end_matches('.').to_ascii_lowercase();
-                !(d.is_empty()
-                    || d == "localhost"
-                    || [".localhost", ".local", ".internal", ".localdomain"]
-                        .iter()
-                        .any(|s| d.ends_with(s)))
-            }
+            Some(url::Host::Domain(d)) => public_name(d),
             Some(url::Host::Ipv4(ip)) => public_v4(ip),
-            Some(url::Host::Ipv6(ip)) => {
-                if let Some(v4) = ip.to_ipv4_mapped() {
-                    return public_v4(v4);
-                }
-                let first = ip.segments()[0];
-                !(ip.is_loopback()
-                    || ip.is_unspecified()
-                    || (first & 0xfe00) == 0xfc00 // unique local fc00::/7
-                    || (first & 0xffc0) == 0xfe80) // link local fe80::/10
-            }
+            Some(url::Host::Ipv6(ip)) => public_v6(ip),
             None => false,
         },
         _ => false,
     }
 }
 
+/// A host name that can be public: at least one dot, and no internal-only suffix.
+fn public_name(d: &str) -> bool {
+    const INTERNAL: [&str; 10] = [
+        ".localhost",
+        ".local",
+        ".localdomain",
+        ".internal",
+        ".lan",
+        ".home",
+        ".home.arpa",
+        ".corp",
+        ".intranet",
+        ".private",
+    ];
+    let d = d.trim_end_matches('.').to_ascii_lowercase();
+    let dotted = format!(".{d}");
+    d.contains('.') && !INTERNAL.iter().any(|s| dotted.ends_with(s))
+}
+
 fn public_v4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
+    let [a, b, c, _] = ip.octets();
     !(ip.is_loopback()
         || ip.is_private()
         || ip.is_link_local()
         || ip.is_unspecified()
         || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
         || a == 0
-        || (a == 100 && (64..128).contains(&b))) // CGNAT 100.64.0.0/10
+        || a >= 240 // reserved 240.0.0.0/4
+        || (a == 100 && (64..128).contains(&b)) // CGNAT 100.64.0.0/10
+        || (a == 192 && b == 0 && c == 0) // IETF 192.0.0.0/24
+        || (a == 198 && (18..20).contains(&b))) // benchmarking 198.18.0.0/15
+}
+
+fn public_v6(ip: std::net::Ipv6Addr) -> bool {
+    let seg = ip.segments();
+    // IPv4 carried inside IPv6: mapped (::ffff:a.b.c.d), compatible (::a.b.c.d), NAT64
+    // (64:ff9b::a.b.c.d) and 6to4 (2002:AABB:CCDD::) are judged by that IPv4.
+    let v4 = |hi: u16, lo: u16| {
+        let [a, b] = hi.to_be_bytes();
+        let [c, d] = lo.to_be_bytes();
+        std::net::Ipv4Addr::new(a, b, c, d)
+    };
+    if let Some(v) = ip.to_ipv4() {
+        return !ip.is_loopback() && !ip.is_unspecified() && public_v4(v);
+    }
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return public_v4(v4(seg[6], seg[7]));
+    }
+    if seg[0] == 0x2002 {
+        return public_v4(v4(seg[1], seg[2]));
+    }
+    let first = seg[0];
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (first & 0xfe00) == 0xfc00 // unique local fc00::/7
+        || (first & 0xffc0) == 0xfe80 // link local fe80::/10
+        || (first & 0xffc0) == 0xfec0 // site local fec0::/10 (deprecated)
+        || first == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8::/32
 }
 
 /// Hex oid to bytes (`None` unless 20 or 32 bytes).
@@ -289,6 +334,8 @@ mod tests {
             "http://mirror.example.org:8080/x",
             "ipfs://bafybeigdyrzt5",
             "https://8.8.8.8/p",
+            "https://[2606:4700::1111]/p",
+            "https://[2002:808:808::1]/p",
         ] {
             assert!(is_public_uri(ok), "{ok}");
         }
@@ -307,6 +354,22 @@ mod tests {
             "https://[fd00::1]/p",
             "https://[fe80::1]/p",
             "https://[::ffff:192.168.1.1]/p",
+            "http://[::127.0.0.1]/p",
+            "http://[64:ff9b::a00:1]/p",
+            "http://[2002:c0a8:101::1]/p",
+            "http://[fec0::1]/p",
+            "http://[ff02::1]/p",
+            "http://224.0.0.1/p",
+            "http://198.18.0.1/p",
+            "http://192.0.0.8/p",
+            "http://192.0.2.1/p",
+            "http://minio:9000/b/p",
+            "http://nas/p",
+            "http://files.lan/p",
+            "http://nas.home.arpa/p",
+            "http://git.corp/p",
+            "http://git.intranet/p",
+            "https://bucket.example/p#token=abc",
             "s3://bucket/key",
             "platform://C/abcd",
             "file:///etc/passwd",

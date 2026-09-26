@@ -35,6 +35,10 @@ pub struct Counts {
     /// Items that could not be mirrored this run (see the warnings); a run with any is
     /// `partial`, and its state does not advance.
     pub skipped: u64,
+    /// Git pushes skipped this run (the optional open-PR-heads push did not fit or failed);
+    /// the run is `partial`, but the state still advances (git data is compared with the
+    /// destination on every run, whatever `--state` says).
+    pub git_skipped: u64,
 }
 
 impl Counts {

@@ -181,6 +181,12 @@ impl Budget {
         Ok(())
     }
 
+    /// Take back an admitted charge whose write stored nothing (a taken number). The
+    /// measured drop still counts whatever fee was really paid.
+    pub fn refund(&mut self, credits: u64) {
+        self.estimated = self.estimated.saturating_sub(credits);
+    }
+
     /// Fold in the measured balance drop (`balance_now` after some writes).
     pub fn reconcile(&mut self, balance_now: u64) {
         if let Some(start) = self.balance_start {

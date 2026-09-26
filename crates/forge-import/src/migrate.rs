@@ -446,6 +446,14 @@ async fn copy_git(
     let svc = RepoService::new(client, &signer.identity, &signer.bridge);
     let pack_reader = PackReader::from_user_config();
     let mut uncopied = todo.uncopyable.clone();
+    // Only when packs are left out: each copied pack is indexed as it is copied (no second
+    // download), for the per-ref history check below. When the first failure comes mid-way,
+    // the packs copied before it are read again at the end (see `indexed`).
+    let mut scratch = if uncopied.is_empty() {
+        None
+    } else {
+        Some(Scratch::new()?)
+    };
     for p in &todo.packs {
         let hash = hex::encode(p.manifest.pack_hash);
         // Reading is free; charge only a pack that will actually be written.
@@ -453,17 +461,21 @@ async fn copy_git(
             Ok(b) => b,
             // An external pack no URI serves any more: nothing can read it, so there is
             // nothing to copy. Its objects are missing from the v1 repo too.
-            Err(e) if !p.reupload() => {
+            Err(e) => {
                 ledger.warn(format!(
-                    "v1 pack {} is stored externally and no public copy is readable ({e:#}); \
-                     not copied",
+                    "v1 pack {} could not be read ({e:#}); not copied",
                     &hash[..12]
                 ));
                 uncopied.insert(p.manifest.pack_hash);
+                if scratch.is_none() {
+                    scratch = Some(Scratch::new()?);
+                }
                 continue;
             }
-            Err(e) => return Err(e),
         };
+        if let Some(s) = &mut scratch {
+            s.index(p.manifest.pack_hash, &bytes);
+        }
         ledger
             .budget
             .charge(p.credits(), format!("pack {}", &hash[..12]))?;
@@ -502,15 +514,31 @@ async fn copy_git(
         ledger.reconcile().await;
     }
     // A ref must never name history the repository does not store: with packs left out,
-    // write only the refs whose history the copied packs hold in full.
-    let complete = if uncopied.is_empty() {
-        None
-    } else {
-        let tips: Vec<&str> = todo.refs.iter().map(|(_, want, _)| want.as_str()).collect();
-        Some(complete_tips(reader, v1, todo.all, &uncopied, &tips, &pack_reader).await?)
+    // write only the refs whose history the stored packs hold in full.
+    let complete = match scratch {
+        None => None,
+        Some(mut s) => {
+            s.index_rest(reader, v1, todo.all, &uncopied, &pack_reader)
+                .await;
+            let tips: Vec<&str> = todo.refs.iter().map(|(_, want, _)| want.as_str()).collect();
+            Some(s.complete(&tips))
+        }
     };
-    for (name, want, current) in &todo.refs {
-        if complete.as_ref().is_some_and(|c| !c.contains(want)) {
+    write_refs(&svc, repo, role, &todo.refs, complete.as_ref(), ledger).await
+}
+
+/// Write the v1 refs (`(name, wanted tip, current tip)`); with `complete` set, only those
+/// whose tip is in it (their whole history is stored).
+async fn write_refs(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    role: Role,
+    refs: &[(String, String, Option<String>)],
+    complete: Option<&BTreeSet<String>>,
+    ledger: &mut Ledger<'_>,
+) -> Result<()> {
+    for (name, want, current) in refs {
+        if complete.is_some_and(|c| !c.contains(want)) {
             ledger.skip(format!(
                 "ref {name} is not written: its history needs a v1 pack that could not be copied"
             ));
@@ -575,81 +603,155 @@ async fn read_v1_pack(
 /// How long a migrate keeps starting new candidates for one external pack.
 const EXTERNAL_START_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// The whole-read deadline for one external pack: 45 s, or twice the time to stream it at
-/// the reader's minimum rate (1 MiB/s), whichever is longer. A dead mirror costs at most
-/// this; a large pack streaming from a healthy one is not cut off.
+/// The slowest a healthy mirror may stream an external pack at before migrate gives up on
+/// it (256 KiB/s: well below any usable mirror, so only a stalled one is cut off).
+const EXTERNAL_MIN_RATE: u64 = 256 * 1024;
+
+/// The whole-read deadline for one external pack: 45 s, or the time to stream it at
+/// [`EXTERNAL_MIN_RATE`], whichever is longer. A dead mirror costs at most 45 s; a large
+/// pack streaming slowly from a healthy one is not cut off. (Each candidate also keeps the
+/// storage reader's own deadline, and a stalled connection its idle timeout.)
 fn external_deadline(size: Option<u64>) -> std::time::Duration {
-    let stream = size
-        .unwrap_or(0)
-        .div_ceil(forge_core::storage::read::MIN_TRANSFER_RATE)
-        .saturating_mul(2);
+    let stream = size.unwrap_or(0).div_ceil(EXTERNAL_MIN_RATE);
     std::time::Duration::from_secs(45.max(stream))
 }
 
-/// Which of `tips` have their whole history in the live packs outside `skip`: the packs
-/// are indexed into a scratch repository, and a tip counts when `git rev-list --objects`
-/// walks it without a missing object.
-async fn complete_tips(
-    reader: &RepoReader<'_>,
-    v1: &RepoRef,
-    all: &[PackPlan],
-    skip: &BTreeSet<[u8; 32]>,
-    tips: &[&str],
-    pack_reader: &PackReader,
-) -> Result<BTreeSet<String>> {
-    let dir = std::env::temp_dir().join(format!(
-        "forge-migrate-verify-{}-{}",
-        v1.id(),
-        std::process::id()
-    ));
-    let _cleanup = crate::importer::TempDir(dir.clone());
-    git(&dir, &["init", "--bare", "-q", "."], None)?;
-    for p in all.iter().filter(|p| !skip.contains(&p.manifest.pack_hash)) {
-        let bytes = read_v1_pack(reader, v1, p, pack_reader).await?;
-        git(&dir, &["index-pack", "--stdin", "--fix-thin"], Some(&bytes))?;
-    }
-    Ok(tips
-        .iter()
-        .filter(|tip| git(&dir, &["rev-list", "--objects", "--quiet", tip], None).is_ok())
-        .map(|t| (*t).to_string())
-        .collect())
+/// A scratch bare repository the stored packs are indexed into, to check which ref tips
+/// have their whole history: `git rev-list --objects` walks a tip without a missing object.
+/// A pack that fails to index (a thin pack whose base is in a pack left out) is simply
+/// absent, which keeps the check conservative. The directory is private (a random name,
+/// mode 0700) and removed on drop; git runs with the caller's `GIT_*` repository variables
+/// removed, so no outside object store can make a tip look complete.
+struct Scratch {
+    dir: tempfile::TempDir,
+    /// Packs offered to [`Self::index`] (indexed or not).
+    indexed: BTreeSet<[u8; 32]>,
 }
 
-/// Run `git` in `dir` (created if missing), feeding `stdin`; an error on a nonzero exit.
-fn git(dir: &std::path::Path, args: &[&str], stdin: Option<&[u8]>) -> Result<()> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    std::fs::create_dir_all(dir)?;
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git")?;
-    if let Some(bytes) = stdin {
-        child
-            .stdin
-            .take()
-            .expect("piped")
-            .write_all(bytes)
-            .context("writing to git")?;
+impl Scratch {
+    fn new() -> Result<Self> {
+        let dir = tempfile::Builder::new()
+            .prefix("forge-migrate-verify-")
+            .tempdir()
+            .context("creating a scratch repository")?;
+        let s = Self {
+            dir,
+            indexed: BTreeSet::new(),
+        };
+        s.git(&["init", "--bare", "-q", "."], None)?;
+        Ok(s)
     }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.first().unwrap_or(&""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+
+    /// Index one pack; a failure is logged and leaves its objects out.
+    fn index(&mut self, hash: [u8; 32], bytes: &[u8]) {
+        self.indexed.insert(hash);
+        if let Err(e) = self.git(&["index-pack", "--stdin", "--fix-thin"], Some(bytes)) {
+            tracing::info!(pack = %hex::encode(hash), error = %format!("{e:#}"), "pack not indexed for the history check");
+        }
     }
-    Ok(())
+
+    /// Index every live pack not offered yet and not in `skip` (the destination already
+    /// held it, or it was copied before the first failure). One that cannot be read (its
+    /// copy died since) or indexed counts as missing.
+    async fn index_rest(
+        &mut self,
+        reader: &RepoReader<'_>,
+        v1: &RepoRef,
+        all: &[PackPlan],
+        skip: &BTreeSet<[u8; 32]>,
+        pack_reader: &PackReader,
+    ) {
+        for p in all {
+            let hash = p.manifest.pack_hash;
+            if self.indexed.contains(&hash) || skip.contains(&hash) {
+                continue;
+            }
+            match read_v1_pack(reader, v1, p, pack_reader).await {
+                Ok(bytes) => self.index(hash, &bytes),
+                Err(e) => {
+                    self.indexed.insert(hash);
+                    tracing::info!(error = %format!("{e:#}"), "pack unreadable for the history check");
+                }
+            }
+        }
+    }
+
+    /// The `tips` whose whole history is indexed.
+    fn complete(&self, tips: &[&str]) -> BTreeSet<String> {
+        tips.iter()
+            .filter(|tip| {
+                self.git(
+                    &["rev-list", "--objects", "--quiet", "--end-of-options", tip],
+                    None,
+                )
+                .is_ok()
+            })
+            .map(|t| (*t).to_string())
+            .collect()
+    }
+
+    /// Run `git` in the scratch repository, feeding `stdin`; an error on a nonzero exit.
+    /// Blocking, so it runs off the async worker ([`tokio::task::block_in_place`]).
+    fn git(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<()> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| self.git_blocking(args, stdin))
+            }
+            _ => self.git_blocking(args, stdin),
+        }
+    }
+
+    fn git_blocking(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<()> {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut cmd = Command::new("git");
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_NO_REPLACE_OBJECTS",
+            "GIT_SHALLOW_FILE",
+            "GIT_GRAFT_FILE",
+        ] {
+            cmd.env_remove(var);
+        }
+        let mut child = cmd
+            .arg("-C")
+            .arg(self.dir.path())
+            .args(args)
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("running git")?;
+        if let Some(bytes) = stdin {
+            child
+                .stdin
+                .take()
+                .expect("piped")
+                .write_all(bytes)
+                .context("writing to git")?;
+        }
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git {} failed: {}",
+                args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Grant the v1 collaborators their roles (only the repository owner can).
@@ -744,8 +846,8 @@ mod tests {
     fn a_dead_external_pack_costs_under_a_minute_but_a_big_one_may_stream() {
         assert_eq!(external_deadline(None).as_secs(), 45);
         assert_eq!(external_deadline(Some(10_000)).as_secs(), 45);
-        // 200 MiB at 1 MiB/s, doubled.
-        assert_eq!(external_deadline(Some(200 * 1024 * 1024)).as_secs(), 400);
+        // 200 MiB at 256 KiB/s.
+        assert_eq!(external_deadline(Some(200 * 1024 * 1024)).as_secs(), 800);
     }
 
     #[test]

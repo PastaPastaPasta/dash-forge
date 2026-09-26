@@ -263,11 +263,8 @@ pub struct Outcome<'a> {
 pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<()>) -> Summary {
     if let Some(mut ledger) = outcome.ledger {
         ledger.reconcile().await;
-        let dry_counts = std::mem::take(&mut summary.counts);
+        // Only a write phase has a ledger; a dry run's counts are already in `summary`.
         summary.counts = ledger.counts;
-        if summary.status == Status::DryRun {
-            summary.counts = dry_counts;
-        }
         summary.spent_credits = ledger.budget.spent();
         summary.warnings.extend(ledger.warnings);
     }
@@ -289,7 +286,10 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
             };
             summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
         }
-        Ok(()) if summary.status == Status::Ok && summary.counts.skipped > 0 => {
+        Ok(())
+            if summary.status == Status::Ok
+                && (summary.counts.skipped > 0 || summary.counts.git_skipped > 0) =>
+        {
             summary.status = Status::Partial;
         }
         Ok(()) => {}

@@ -22,7 +22,7 @@ use forge_core::repo::credits_to_dash;
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::github::{GithubClient, GithubRepoRef};
-use crate::gitsync::{GitPusher, Refs};
+use crate::gitsync::{GitPusher, PushReport, Refs};
 use crate::sink::Ledger;
 use crate::source_github::{self, Classes};
 use crate::state::{self, SyncState};
@@ -110,6 +110,14 @@ async fn run_inner<'a>(
     let since = sync_state.since();
     let collab_src =
         source_github::collect(&gh, &cfg.source, cfg.classes, since.as_deref(), cfg.limit)?;
+    if collab_src.truncated && cfg.state_path.is_some() {
+        // Every run would take the same first `--limit` items and never reach the rest.
+        summary.warnings.push(format!(
+            "--limit {} left issues or PRs out, so --state does not advance: a recurring run \
+             with --limit never reaches the rest; drop --limit once the trial looks right",
+            cfg.limit
+        ));
+    }
 
     // Git data.
     let work = cfg.work_dir.clone().unwrap_or_else(|| {
@@ -123,10 +131,13 @@ async fn run_inner<'a>(
     let _cleanup = cfg.work_dir.is_none().then(|| TempDir(work.clone()));
     if cfg.classes.code {
         gh.sync_mirror(&work).context("mirroring the git data")?;
+        crate::gitsync::sync_pull_heads(&work, &collab_src.open_pulls)
+            .context("preparing the open pull requests' heads")?;
     }
 
     // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
-    // heads, are separate pushes (see gitsync).
+    // heads, are separate pushes (see gitsync); the second is optional, so it is priced for
+    // the report but kept out of the hard up-front check, and re-priced after the first.
     let create = dest.existing.is_none();
     let pushes: Vec<Refs> = if cfg.classes.code {
         vec![Refs::Code, Refs::PullHeads(collab_src.open_pulls.clone())]
@@ -142,15 +153,23 @@ async fn run_inner<'a>(
     };
     let mut push_estimates = Vec::with_capacity(pushes.len());
     for refs in &pushes {
-        push_estimates.push(if !create && signer.is_some() {
+        let est = if !create && signer.is_some() {
             // The helper prices a push into an existing repo (storage policy included).
-            git_pusher(dest.url(), refs).estimate()?
+            git_pusher(dest.url(), refs).estimate()
         } else {
             // A new repo (or no identity to ask the helper with): price the whole pack.
-            crate::gitsync::estimate_fresh(&work, refs)?
+            crate::gitsync::estimate_fresh(&work, refs)
+        };
+        push_estimates.push(match (refs, est) {
+            (_, Ok(e)) => e,
+            (Refs::Code, Err(e)) => return Err(e),
+            // Optional: a PR head the helper cannot price is skipped at push time.
+            (Refs::PullHeads(_), Err(_)) => PushReport::default(),
         });
     }
-    let git_estimate: u64 = push_estimates.iter().map(|p| p.est_credits).sum();
+    let code_estimate = push_estimates.first().map_or(0, |p| p.est_credits);
+    let heads_estimate = push_estimates.get(1).map_or(0, |p| p.est_credits);
+    let git_estimate = code_estimate + heads_estimate;
     let dry = dest::dry_collab(
         client,
         dest.existing.clone(),
@@ -161,6 +180,8 @@ async fn run_inner<'a>(
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let estimate = create_credits + git_estimate + collab_estimate;
+    // What the run must be able to pay (the optional PR heads left out).
+    let required = estimate - heads_estimate;
     summary.estimate_credits = estimate;
     eprintln!(
         "{} → {}: estimated {:.6} DASH (repo {:.6}, git {:.6}, issues/PRs/releases {:.6})",
@@ -179,15 +200,21 @@ async fn run_inner<'a>(
             summary.counts.add_push(p);
         }
         summary.warnings.extend(dry.warnings);
-        if let Err(e) = budget.check_plan(estimate) {
+        if let Err(e) = budget.check_plan(required) {
             summary.warnings.push(format!("a real run would stop: {e}"));
+        } else if !budget.fits(estimate) {
+            summary.warnings.push(
+                "the open pull requests' heads would not fit under --max-spend; a real run \
+                 would skip them"
+                    .into(),
+            );
         }
         summary.status = Status::DryRun;
         return Ok(());
     }
     let signer = signer.expect("load_opt returns a signer outside a dry run");
     let key_left = signer.key_info(client).await.remaining_credits;
-    budget.check_funds(estimate, signer.identity.balance(), key_left)?;
+    budget.check_funds(required, signer.identity.balance(), key_left)?;
     dest::confirm(cfg.yes, estimate)?;
     budget.start(signer.identity.balance());
     outcome.ledger = Some(Ledger::new(client, Some(signer.id()), false, budget));
@@ -223,33 +250,39 @@ async fn run_inner<'a>(
         sync_state = SyncState::load(cfg.state_path.as_deref(), &scope, repo.id());
     }
 
-    // 2. Git data: each push priced (reusing the estimate for an existing repo), charged,
-    //    then pushed with the helper's guard set to what is left of the budget.
-    for (refs, est) in pushes.iter().zip(push_estimates) {
+    // 2. Git data: branches and tags (required), then the open PRs' heads (optional: a
+    //    stranger's huge or unfetchable PR must not stop the mirror).
+    let mut code_estimate = push_estimates.into_iter().next();
+    for refs in &pushes {
         let p = git_pusher(dest.url(), refs);
-        let est = if create { p.estimate()? } else { est };
-        if est.refs == 0 {
-            continue;
-        }
-        let what = match refs {
-            Refs::Code => "the git push (branches and tags)".to_string(),
-            Refs::PullHeads(_) => "the push of open pull request heads".to_string(),
+        let optional = matches!(refs, Refs::PullHeads(_));
+        let what = if optional {
+            "the push of open pull request heads"
+        } else {
+            "the git push (branches and tags)"
         };
-        if matches!(refs, Refs::PullHeads(_)) && !ledger.budget.fits(est.est_credits) {
-            // Heads of PRs are optional: a stranger's huge PR must not stop the mirror.
-            ledger.skip(format!(
-                "{what} (~{:.6} DASH) does not fit under --max-spend; skipped this run",
-                credits_to_dash(est.est_credits)
-            ));
-            continue;
+        // Priced by the helper against the repo as it is now: the code estimate is reused
+        // for an existing repo; the PR heads are re-priced after the code push landed.
+        let est = match code_estimate.take().filter(|_| !create && !optional) {
+            Some(e) => Ok(e),
+            None => p.estimate(),
+        };
+        let res = match est {
+            Ok(est) => push_one(ledger, &p, est, what).await,
+            Err(e) => Err(e),
+        };
+        match res {
+            Ok(()) => {}
+            Err(e) if optional && e.downcast_ref::<crate::budget::CapExceeded>().is_none() => {
+                ledger.skip_git(format!("{what} skipped this run: {e:#}"));
+            }
+            Err(e) if optional => {
+                ledger.skip_git(format!(
+                    "{what} does not fit under --max-spend; skipped: {e}"
+                ));
+            }
+            Err(e) => return Err(e),
         }
-        ledger.budget.charge(est.est_credits, what)?;
-        let guard = ledger
-            .budget
-            .remaining()
-            .map(|r| r.saturating_add(est.est_credits));
-        ledger.counts.add_push(&p.push(guard)?);
-        ledger.reconcile().await;
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases.
@@ -263,8 +296,34 @@ async fn run_inner<'a>(
     sync_state.save(started)
 }
 
+/// Charge and push one ref set. The helper's guard gets what the budget had left BEFORE
+/// this charge, less the index overhead the estimate adds on top of the helper's own price
+/// (the guard compares the helper's price, which has none).
+async fn push_one(
+    ledger: &mut Ledger<'_>,
+    p: &GitPusher,
+    est: PushReport,
+    what: &str,
+) -> Result<()> {
+    if est.refs == 0 {
+        return Ok(());
+    }
+    let before = ledger.budget.remaining();
+    ledger.budget.charge(est.est_credits, what)?;
+    let guard = before.map(|b| b.saturating_sub(est.overhead()));
+    let pushed = p.push(guard);
+    if pushed.is_err() {
+        // Refused before storing (the guard), or failed part-way: the measured balance
+        // drop, folded in next, still counts whatever was really paid.
+        ledger.budget.refund(est.est_credits);
+    }
+    ledger.reconcile().await;
+    ledger.counts.add_push(&pushed?);
+    Ok(())
+}
+
 /// Removes a temporary directory on drop.
-pub(crate) struct TempDir(pub(crate) PathBuf);
+struct TempDir(PathBuf);
 
 impl Drop for TempDir {
     fn drop(&mut self) {

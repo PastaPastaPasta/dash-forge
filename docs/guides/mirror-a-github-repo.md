@@ -36,7 +36,7 @@ You need:
 
 ## 1. First import
 
-`forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every open PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out; a closed PR's commits are not the mirror's to pay for), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
+`forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every open PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out; a closed PR's head is removed and its commits are not the mirror's to pay for), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
 
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
@@ -73,11 +73,11 @@ Issues and PRs keep their GitHub numbers (Forge numbers issues and PRs separatel
 | Status | `forge-import` exit | `dg import` exit | Meaning |
 |---|---|---|---|
 | `ok` / `dry_run` | 0 | 0 | Finished. |
-| `partial` | 4 | 6 (E604) | Finished, but some items were skipped (their number is taken in the destination, the destination refused them, or the open PRs' heads did not fit the cap). `counts.skipped` and the warnings say which. The `--state` file does not advance, so the next run retries them. |
+| `partial` | 4 | 1 (E106) | Finished, but some items were skipped (their number is taken in the destination, the destination refused them, another identity already mirrored them, or the optional push of open PR heads did not fit the cap or failed). `counts.skipped`, `counts.gitSkipped` and the warnings say which. When issues or PRs were skipped, the `--state` file does not advance, so the next run retries them. A skipped PR-heads push alone does not hold the state back: git data is compared with the destination on every run. |
 | `cap_exceeded` | 3 | 8 (E801) | Stopped before the write that would cross `--max-spend`. |
 | `error` | 1 | by error | Failed. What was spent before the failure is still reported. |
 
-A run with `--limit` that left items out does not advance `--state` either.
+A run with `--limit` that left items out does not advance `--state` either, and warns: every run takes the same first `n` items, so a recurring job with `--limit` never reaches the rest. Use `--limit` for a trial only.
 
 **Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
 

@@ -75,6 +75,12 @@ impl<'a> Ledger<'a> {
         self.warn(msg);
     }
 
+    /// An optional git push skipped this run ([`crate::summary::Counts::git_skipped`]).
+    pub fn skip_git(&mut self, msg: impl Into<String>) {
+        self.counts.git_skipped += 1;
+        self.warn(msg);
+    }
+
     /// One write: charged to the budget first (refused past the cap, before anything is
     /// signed), counted, executed unless this is a dry run, then reconciled with the
     /// measured balance so an estimate that ran low stops the NEXT write.
@@ -120,8 +126,8 @@ pub struct Sink<'a> {
     repo: Option<RepoRef>,
     /// Budget, counts, warnings.
     pub ledger: Ledger<'a>,
-    /// The mirror's own issues and PRs in the destination, `(imported.url, target)`;
-    /// loaded on first use.
+    /// Every imported issue and PR in the destination, `(imported.url, target)`, whoever
+    /// wrote it; loaded on the first miss of a point lookup.
     index: Option<Vec<(String, Target)>>,
 }
 
@@ -129,14 +135,24 @@ pub struct Sink<'a> {
 const MAX_NUMBER_TRIES: usize = 4;
 
 /// Whether `e` concerns one item only (the destination refused its content), so the run
-/// can skip it and carry on.
+/// can skip it and carry on. Only the content checks of one document qualify (a field too
+/// long, an illegal ref name, a malformed oid, a required field missing, a duplicate); a
+/// run-level `Config` error (no identity, not a forge-v2 repo, ...) still fails the run.
 fn item_error(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| {
-        matches!(
-            c.downcast_ref::<forge_core::Error>(),
-            Some(forge_core::Error::Config(_) | forge_core::Error::DuplicateUniqueIndex(_))
-        )
-    })
+    const ITEM: [&str; 6] = [
+        "too long",
+        "illegal PR",
+        "illegal retarget",
+        "head oid must be",
+        "is required",
+        "needs a body",
+    ];
+    e.chain()
+        .any(|c| match c.downcast_ref::<forge_core::Error>() {
+            Some(forge_core::Error::DuplicateUniqueIndex(_)) => true,
+            Some(forge_core::Error::Config(why)) => ITEM.iter().any(|m| why.contains(m)),
+            _ => false,
+        })
 }
 
 /// The state of a target as its events fold today.
@@ -157,6 +173,16 @@ impl Current {
             labels: BTreeSet::new(),
         }
     }
+}
+
+/// What [`Sink::create`] ended with.
+enum Created {
+    /// Written now.
+    New(Target),
+    /// Already mirrored at another number (found once its source number was taken).
+    Found(Target),
+    /// Every candidate number was taken.
+    NoNumber,
 }
 
 /// A member event to write: kind, `value`, `oid`.
@@ -310,21 +336,35 @@ impl<'a> Sink<'a> {
 
     async fn sync_target_inner(&mut self, t: &SrcTarget) -> Result<()> {
         let noun = t.kind.noun();
-        let (target, fresh) = if let Some(target) = self.existing(t).await? {
-            (target, false)
-        } else if let Some(target) = self.create(t, noun).await? {
-            if let Some(idx) = &mut self.index {
-                idx.push((t.imported.url.clone(), target.clone()));
-            }
-            (target, true)
-        } else {
+        let (target, fresh) = match self.existing(t).await? {
+            Some(target) => (target, false),
+            None => match self.create(t, noun).await? {
+                Created::New(target) => {
+                    if let Some(idx) = &mut self.index {
+                        idx.push((t.imported.url.clone(), target.clone()));
+                    }
+                    (target, true)
+                }
+                Created::Found(target) => (target, false),
+                Created::NoNumber => {
+                    self.ledger.skip(format!(
+                        "{noun} #{} could not get a number (every candidate was taken); {} \
+                         not mirrored this run",
+                        t.number, t.imported.url
+                    ));
+                    return Ok(());
+                }
+            },
+        };
+        if !fresh && !self.ledger.is_mine(&target.author) {
+            // Another identity mirrored this item (an earlier mirror identity, or a second
+            // mirror): writing to it, or recreating it at a new number, would duplicate it.
             self.ledger.skip(format!(
-                "{noun} #{} could not get a number (every candidate was taken); {} not \
-                 mirrored this run",
-                t.number, t.imported.url
+                "{noun} #{} is already mirrored by {} (as #{}); not mirrored again",
+                t.number, target.author, target.number
             ));
             return Ok(());
-        };
+        }
         let current = if fresh {
             Current::new_target()
         } else {
@@ -338,11 +378,10 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
-    /// The mirror's own imported issues and PRs already in the destination, by their
-    /// `imported.url` key: every `issue` / `patch` of the repo written by the signer (by
-    /// anyone in a dry run without one) that carries provenance. One complete read per kind,
-    /// so an item is found wherever it landed (its source number, or an allocated one when
-    /// that was taken).
+    /// Every imported issue and PR already in the destination, by its `imported.url` key:
+    /// each `issue` / `patch` of the repo that carries provenance, whoever wrote it. One
+    /// complete read per kind, so an item is found wherever it landed (its source number, or
+    /// an allocated one when that was taken).
     async fn load_index(&mut self) -> Result<()> {
         if self.index.is_some() {
             return Ok(());
@@ -375,11 +414,8 @@ impl<'a> Sink<'a> {
                             (p.target(), p.imported)
                         }
                     };
-                    match imported {
-                        Some(i) if !i.url.is_empty() && self.ledger.is_mine(&target.author) => {
-                            index.push((i.url, target));
-                        }
-                        _ => {}
+                    if let Some(i) = imported.filter(|i| !i.url.is_empty()) {
+                        index.push((i.url, target));
                     }
                 }
             }
@@ -388,33 +424,71 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
-    /// The mirror's existing target for `t`, if any (tolerating a renamed source repo).
+    /// The existing mirrored target for `t`, if any (tolerating a renamed source repo). A
+    /// point lookup at the source number first (the common case: one read); the full index
+    /// only when that number holds something else.
     async fn existing(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
+        if self.index.is_none() {
+            let Some(repo) = self.repo.as_ref() else {
+                return Ok(None);
+            };
+            let at = match t.kind {
+                TargetKind::Issue => self
+                    .collab
+                    .issue(repo, t.number)
+                    .await?
+                    .map(|i| (i.target(), i.imported)),
+                TargetKind::Patch => self
+                    .collab
+                    .patch(repo, t.number)
+                    .await?
+                    .map(|p| (p.target(), p.imported)),
+            };
+            match at {
+                // Nothing there: new, unless it landed elsewhere (a taken number) earlier —
+                // `create` finds out when this number is taken, so skip the full read now.
+                None => return Ok(None),
+                Some((target, Some(i))) if same_item(&i.url, &t.imported.url) => {
+                    return Ok(Some(target));
+                }
+                Some(_) => {}
+            }
+        }
         self.load_index().await?;
-        Ok(self.index.as_ref().and_then(|idx| {
+        Ok(self.indexed(t))
+    }
+
+    /// `t` in the full index, when it is loaded.
+    fn indexed(&self, t: &SrcTarget) -> Option<Target> {
+        self.index.as_ref().and_then(|idx| {
             idx.iter()
                 .find(|(url, target)| target.kind == t.kind && same_item(url, &t.imported.url))
                 .map(|(_, target)| target.clone())
-        }))
+        })
     }
 
     /// Create `t`: at its source number when free, else at the next free number (the body's
     /// header keeps the source number, and `imported.url` finds it again next run). A
     /// squatter on a number therefore costs the mirror nothing but the number. In a dry run
     /// the returned target is a placeholder (nothing reads it).
-    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Option<Target>> {
+    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Created> {
         let mut number = t.number;
         for _ in 0..MAX_NUMBER_TRIES {
             match self.create_at(t, noun, number).await? {
-                Ok(target) => return Ok(Some(target)),
+                Ok(target) => return Ok(Created::New(target)),
                 Err(why) => {
+                    // Mirrored earlier at another number: the full index (loaded on the
+                    // taken number) finds it.
+                    if let Some(found) = self.indexed(t) {
+                        return Ok(Created::Found(found));
+                    }
                     tracing::info!(number, %why, "{noun} number taken; allocating another");
                     let repo = need(self.repo.as_ref())?;
                     number = self.collab.next_number(repo, t.kind).await?;
                 }
             }
         }
-        Ok(None)
+        Ok(Created::NoNumber)
     }
 
     /// Create `t` at `number`. `Err(why)` when the number is taken.
@@ -451,7 +525,7 @@ impl<'a> Sink<'a> {
                     .write(
                         what,
                         credits,
-                        |c| c.prs += 1,
+                        |_| {},
                         || async move {
                             collab
                                 .create_patch_numbered(
@@ -470,7 +544,7 @@ impl<'a> Sink<'a> {
                     .write(
                         what,
                         credits,
-                        |c| c.issues += 1,
+                        |_| {},
                         || async move {
                             collab
                                 .create_issue_numbered(
@@ -486,20 +560,38 @@ impl<'a> Sink<'a> {
                     .await?
             }
         };
+        let created = |c: &mut Counts| match t.kind {
+            TargetKind::Issue => c.issues += 1,
+            TargetKind::Patch => c.prs += 1,
+        };
         Ok(match out {
-            None => Ok(placeholder),
-            Some(Numbered::Created { document_id }) => Ok(Target {
-                id: document_id,
-                ..placeholder
-            }),
+            None => {
+                created(&mut self.ledger.counts);
+                Ok(placeholder)
+            }
+            Some(Numbered::Created { document_id }) => {
+                created(&mut self.ledger.counts);
+                Ok(Target {
+                    id: document_id,
+                    ..placeholder
+                })
+            }
             Some(Numbered::Taken {
                 existing_id,
                 existing_author,
-            }) => Err(format!(
-                "by {} ({})",
-                existing_author.unwrap_or_default(),
-                existing_id.unwrap_or_default()
-            )),
+            }) => {
+                // Nothing was stored (refused before the write, or by consensus, which
+                // charges no storage); the reconcile keeps any fee actually taken.
+                self.ledger.budget.refund(credits);
+                // The number is held by someone else: the full index finds where this
+                // item may already live before another number is allocated.
+                self.load_index().await?;
+                Err(format!(
+                    "by {} ({})",
+                    existing_author.unwrap_or_default(),
+                    existing_id.unwrap_or_default()
+                ))
+            }
         })
     }
 
