@@ -27,7 +27,15 @@ import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
-import { readKeyLimits, registerLimitedKey, revokeLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import {
+  readKeyLimits,
+  registerLimitedKey,
+  revokeLimitedKey,
+  topUpLimitedKey,
+  type LimitedKey,
+  type LimitedKeyRequest,
+  type TopUpRequest,
+} from './limited-key'
 import {
   VaultLockedError,
   forgetVault,
@@ -67,6 +75,9 @@ export interface AuthState {
 }
 
 type Listener = (state: AuthState) => void
+
+/** Where a one-time master key comes from: an identity file, or the recovery phrase. */
+export type MasterInput = { fileText: string } | { mnemonic: string }
 
 /** How the SDK is obtained — injected so the controller stays testable and SSR-safe. */
 export type SdkProvider = () => Promise<EvoSDK>
@@ -366,24 +377,56 @@ export class AuthController {
    * Disable this device's key for `identityId` on chain (the identity file or phrase supplies
    * the master key, used once), then forget it here. Forgetting alone does not revoke.
    */
-  async revokeStored(identityId: string, input: { fileText: string } | { mnemonic: string }): Promise<void> {
+  async revokeStored(identityId: string, input: MasterInput): Promise<void> {
     return this.run(async () => {
       const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       if (!stored) throw new Error('no key for this identity is stored here')
-      let masterWif: string | null
-      if ('fileText' in input) {
-        const m = masterMaterialFromFile(input.fileText)
-        if (m.identityId !== identityId) throw new Error('that identity file is for another identity')
-        this.checkFileNetwork(m.networkKey)
-        masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
-      } else {
-        masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
-      }
-      if (!masterWif) throw new Error('no master key found')
+      let masterWif: string | null = await this.masterWifFor(identityId, input)
       await revokeLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId: stored.keyId })
       masterWif = null
       await this.forget(identityId)
     })
+  }
+
+  /**
+   * Raise the limits of the key this session signs with (`IdentityKeyLimitsUpdate`): the
+   * identity file or phrase supplies the master key, which signs once and is not retained.
+   * The key id and the stored private key do not change. The session's `keyLimits` are
+   * replaced with what the chain now shows.
+   */
+  async topUpKey(input: MasterInput, request: TopUpRequest): Promise<KeyLimits> {
+    return this.run(async () => {
+      const session = this.state.session
+      if (!session || session.storage !== 'vault' || session.keyId === undefined) {
+        throw new Error("only a stored Forge browser key can be topped up; sign in with your identity first")
+      }
+      const { identityId, keyId } = session
+      let masterWif: string | null = await this.masterWifFor(identityId, input)
+      const limits = await topUpLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId, request })
+      masterWif = null
+      const current = this.state.session
+      if (current?.identityId === identityId && current.keyId === keyId) this.setState({ session: { ...current, keyLimits: limits } })
+      return limits
+    })
+  }
+
+  /**
+   * The master key (WIF) of `identityId` from an identity file or recovery phrase. The caller
+   * drops it as soon as it has signed. A file for another identity or network is refused.
+   */
+  private async masterWifFor(identityId: string, input: MasterInput): Promise<string> {
+    let masterWif: string | null
+    if ('fileText' in input) {
+      const m = masterMaterialFromFile(input.fileText)
+      if (m.identityId !== identityId) throw new Error('that identity file is for another identity')
+      this.checkFileNetwork(m.networkKey)
+      masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
+    } else {
+      if (!(await isValidMnemonic(input.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+      masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
+    }
+    if (!masterWif) throw new Error('no master key found')
+    return masterWif
   }
 
   /** Delete the stored key of `identityId` from this device (ending its session if open). */
