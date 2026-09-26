@@ -14,7 +14,7 @@ This guide covers:
 2. [First import: code, issues, PRs and releases](#1-first-import)
 3. [Keep it in sync: push from CI](#2-keep-it-in-sync)
 4. [Check the mirror](#3-check-the-mirror)
-5. [The Forge Mirror Action (coming soon)](#the-forge-mirror-action-coming-soon)
+5. [The Forge Mirror Action](#the-forge-mirror-action)
 
 ---
 
@@ -85,7 +85,7 @@ The import is a one-time copy. To follow new commits, push every branch and tag 
 - Name the repository you already have with `--repo-contract <contract id>` (from `dg repo view`), so the importer adds to it instead of planning a new one. That path imports issues, PRs and releases only; your CI job keeps pushing the code.
 - The printed estimate, and the `--max-spend` check, cover **all** of the GitHub repository's issues, PRs, releases, labels and comments again, not only the new ones. Size the cap for that, or leave it off and read the estimate.
 
-Incremental issue and PR sync is part of the [Mirror Action](#the-forge-mirror-action-coming-soon).
+Incremental issue and PR sync is part of the [Mirror Action](#the-forge-mirror-action).
 
 ### The CI secret
 
@@ -201,19 +201,16 @@ The two ids must match. A commit id is a hash over the commit and everything it 
 
 ---
 
-## The Forge Mirror Action (coming soon)
+## The Forge Mirror Action
 
-A dedicated GitHub Action will replace the hand-written workflow above. It will also sync issues, PRs and releases incrementally, and it will enforce a cost cap per run. A setup wizard at `forge.dashhq.org/mirror` will create the identity, the storage and the runner key in your browser, with no local install.
-
-The Action will sign with a **limited runner key**: a key that can spend at most a set budget (0.5 DASH by default), only on Forge, and only until it expires. If it leaks, the damage is bounded. Limited keys need Platform protocol 14.
-
-The spec'd workflow file. **Not published yet: do not copy this into a real workflow.**
+The [Forge Mirror Action](../../action/README.md) replaces the hand-written workflow above. It pushes code, and it also syncs issues, PRs, releases and labels incrementally. Each run is idempotent, so running it again writes nothing and costs 0, and each run has a cost cap. The [Action's README](../../action/README.md) covers the inputs, the outputs, what is and is not synced, and the security notes.
 
 ```yaml
 name: Forge mirror
 on:
   push: { branches: ['**'], tags: ['**'] }
   issues: { types: [opened, edited, closed, reopened, labeled, unlabeled] }
+  issue_comment: { types: [created] }
   pull_request_target: { types: [opened, edited, closed, reopened, synchronize] }
   release: { types: [published, edited] }
   schedule: [{ cron: '17 3 * * *' }]     # daily reconcile
@@ -224,11 +221,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: dashpay/forge-mirror-action@v1
+      - uses: PastaPastaPasta/dash-forge/action@master
         with:
-          repo: dash://alice/project
+          repo: dash://<owner identity id>/<repo name>
           sync: code,releases,issues,prs
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
@@ -243,9 +238,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-In this future format, `DASH_FORGE_KEY` holds the limited key itself as one pasteable value (`dfk1:<network>:<identity id>:<key id>:<wif>`), not a file path. Planned behavior:
+Before you copy it:
 
-- Every branch and tag is mirrored, force-pushes included.
-- Releases are mirrored with their assets re-uploaded to your bucket and their SHA-256 recorded.
-- Issues, PRs and comments are mirrored with a header naming the GitHub author. A mirrored PR's head is kept at `refs/mirror/pull/<n>/head`, so it can be checked out.
-- The job summary shows what was written, what Platform charged, and how much budget the runner key has left.
+- **No release is published yet.** The Action's default `install: 'true'` downloads a release, so for now it has nothing to install. Build `dg`, `git-remote-dash` and `forge-import` in the job, as in the workflow above, and pass `install: 'false'`. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) shows how. Use `@master` until the Action has a release tag, or pin a reviewed commit id.
+- **`DASH_FORGE_KEY`** is either a limited runner key, as one pasteable value (`dfk1:<network>:<identity id>:<key id>:<wif>`), or the contents of the CI-only identity file from [The CI secret](#the-ci-secret). A limited key can spend at most a set budget (0.5 DASH by default), only on Forge, and only until it expires. Limited keys need Platform protocol 14.
+- **Anyone who can open an issue or a PR can make a run spend**, up to `cost-cap` per event, until the key's budget or the identity's balance runs out. On a busy public repository, drop the event triggers and let the daily schedule do the work.
+- Release assets are not copied. They are recorded by GitHub URL, with a sha256 when GitHub reports one. Edits to an issue or PR body after the first import are not synced yet.
+
+A setup wizard at `forge.dashhq.org/mirror` (coming soon) will create the identity, the storage and the runner key in your browser, with no local install.

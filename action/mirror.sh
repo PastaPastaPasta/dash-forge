@@ -58,9 +58,8 @@ gitcfg() {
     export "GIT_CONFIG_KEY_$n=$1" "GIT_CONFIG_VALUE_$n=$2"
     n=$((n + 1))
 }
-# A push estimated above the cap is refused (there is no terminal to ask on).
-gitcfg dash.confirm auto
-gitcfg dash.costWarnThreshold "$INPUT_COST_CAP"
+# No cost settings here: forge-import enforces --max-spend on every write itself, and
+# runs its pushes with `-c dash.confirm=never` after pricing them.
 
 export DASH_FORGE_STORAGE_CONFIG="$FORGE_STORAGE_CONFIG"
 rm -f "$DASH_FORGE_STORAGE_CONFIG"
