@@ -71,8 +71,10 @@ interface AuthContextValue {
   refreshBalance: () => Promise<void>
   /** Lock: end the session, keep the stored key (unlock to continue). */
   logout: () => void
-  /** Delete the stored key of `identityId` from this device. */
+  /** Delete the stored key of `identityId` from this device (does not revoke it on chain). */
   forget: (identityId: string) => Promise<void>
+  /** Disable this device's key on chain with the master key (file or phrase), then forget it. */
+  revokeStored: (identityId: string, input: { fileText: string } | { mnemonic: string }) => Promise<void>
   reloadVaults: () => void
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
@@ -120,6 +122,7 @@ export function AuthProvider({
       refreshBalance: () => controller.refreshBalance(),
       logout: () => controller.logout(),
       forget: withReload(controller.forget.bind(controller)),
+      revokeStored: withReload(controller.revokeStored.bind(controller)),
     }),
     [controller, withReload],
   )

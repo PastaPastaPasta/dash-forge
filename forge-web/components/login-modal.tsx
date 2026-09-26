@@ -303,7 +303,16 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
   const { importIdentity, isLoading, vaults, identity } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
-  const [fileText, setFileText] = useState<string | null>(null)
+  // The identity file holds every private key: a ref (not React state), dropped on unmount
+  // and after use; state only records that one was chosen.
+  const fileRef = useRef<string | null>(null)
+  const [fileChosen, setFileChosen] = useState(false)
+  useEffect(
+    () => () => {
+      fileRef.current = null
+    },
+    [],
+  )
   const [fileName, setFileName] = useState('')
   const [fileIdentity, setFileIdentity] = useState('')
   const [mnemonic, setMnemonic] = useState('')
@@ -321,21 +330,26 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     try {
       setFileIdentity(masterMaterialFromFile(text).identityId)
     } catch (e) {
+      fileRef.current = null
+      setFileChosen(false)
       setFileIdentity('')
       setError(errorMessage(e))
       return
     }
-    setFileText(text)
+    fileRef.current = text
+    setFileChosen(true)
     setFileName(file.name)
   }
 
-  const ready = protection !== null && !isLoading && (mode === 'file' ? fileText !== null : mnemonic.trim() !== '' && identityId.trim() !== '')
+  const ready = protection !== null && !isLoading && (mode === 'file' ? fileChosen : mnemonic.trim() !== '' && identityId.trim() !== '')
   const submit = async (): Promise<void> => {
     if (!protection || isLoading) return
     setError(null)
     try {
-      await importIdentity(mode === 'file' ? { fileText: fileText as string } : { mnemonic, identityId }, protection)
-      setFileText(null)
+      const text = fileRef.current
+      if (mode === 'file' && text === null) return
+      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection)
+      fileRef.current = null
       setMnemonic('')
       onDone()
     } catch (e) {
@@ -366,7 +380,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           <Field label="Identity ID" htmlFor="import-id">
             <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
           </Field>
-          <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key, then discarded.">
+          <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key; not stored.">
             <Textarea id="import-mnemonic" value={mnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
           </Field>
         </>
@@ -387,7 +401,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
         Create this browser&apos;s key
       </Button>
-      {problem && (fileText !== null || mnemonic !== '') ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
+      {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
       <ErrorBox error={error} />
     </div>
   )

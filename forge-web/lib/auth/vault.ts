@@ -3,7 +3,7 @@
  * rest, unlocked for the session.
  *
  * - What it holds: one record per (network, identity) — the identity id, the limited key's id
- *   and its private key. Never a master key: the import and create flows discard it before
+ *   and its private key. Never a master key: the import and create flows do not retain it past
  *   anything reaches here.
  * - At rest: IndexedDB (`vault` store), the secret sealed with AES-256-GCM under a random
  *   256-bit data key. The data key is itself wrapped (AES-GCM) by one or both of:
@@ -33,6 +33,28 @@ export const ARGON2_PARAMS = { m: 64 * 1024, t: 3, p: 1, dkLen: 32 } as const
 
 /** The minimum passphrase length the vault accepts. */
 export const MIN_PASSPHRASE = 10
+
+/**
+ * Hosts where many sites share one origin — a GitHub Pages project site, an IPFS path gateway.
+ * Every co-hosted site could read this vault's records and ask the browser for the passkey's
+ * PRF output, so the vault refuses to run there. Browsing still works.
+ */
+const SHARED_ORIGIN_HOSTS = [/\.github\.io$/i, /^(ipfs\.io|dweb\.link|gateway\.pinata\.cloud|cloudflare-ipfs\.com|ipfs\.[^.]+\.[^.]+)$/i]
+
+/** Why signing in cannot happen on this origin, or null when it can. */
+export function sharedOriginProblem(location: { hostname: string; pathname: string } | null = typeof window === 'undefined' ? null : window.location): string | null {
+  if (location === null) return null
+  const pathGateway = /^\/ip[fn]s\//.test(location.pathname)
+  if (pathGateway || SHARED_ORIGIN_HOSTS.some((re) => re.test(location.hostname))) {
+    return 'Signing in needs a dedicated origin; use https://forge.dashhq.org or an IPFS subdomain gateway. Browsing works here.'
+  }
+  return null
+}
+
+function assertDedicatedOrigin(): void {
+  const problem = sharedOriginProblem()
+  if (problem) throw new VaultLockedError(problem)
+}
 
 /** What the vault protects. */
 export interface VaultSecret {
@@ -220,6 +242,7 @@ export interface Protection {
  * and keep it unlocked for this session. At least one protection is required.
  */
 export async function storeInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<void> {
+  assertDedicatedOrigin()
   if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
   if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
     throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
@@ -286,16 +309,21 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
 
 /** Unlock with a passphrase. Throws {@link VaultLockedError} on a wrong one. */
 export async function unlockWithPassphrase(network: Network, identityId: string, passphrase: string): Promise<VaultSecret> {
+  assertDedicatedOrigin()
   const record = await idbGet<VaultRecord>('vault', key(network, identityId))
   const slot = record?.slots.find((s) => s.kind === 'passphrase')
   if (!record || !slot || slot.kind !== 'passphrase') throw new VaultLockedError('no passphrase-protected key for this identity here')
-  const secret = await unwrapWith(network, record, await passphraseKey(passphrase, slot.salt, slot.params), slot)
+  // The parameters are pinned, never read from the (unauthenticated) record: a tampered
+  // record cannot make unlock allocate gigabytes.
+  if (JSON.stringify(slot.params) !== JSON.stringify(ARGON2_PARAMS)) throw new VaultLockedError('this key was stored with unsupported settings')
+  const secret = await unwrapWith(network, record, await passphraseKey(passphrase, slot.salt), slot)
   setUnlocked(network, secret)
   return secret
 }
 
 /** Unlock with the enrolled passkey (a WebAuthn assertion with the PRF extension). */
 export async function unlockWithPasskey(network: Network, identityId: string): Promise<VaultSecret> {
+  assertDedicatedOrigin()
   const record = await idbGet<VaultRecord>('vault', key(network, identityId))
   const slot = record?.slots.find((s) => s.kind === 'passkey')
   if (!record || !slot || slot.kind !== 'passkey') throw new VaultLockedError('no passkey-protected key for this identity here')
@@ -313,6 +341,22 @@ export async function unlockWithPasskey(network: Network, identityId: string): P
 export async function forgetVault(network: Network, identityId: string): Promise<void> {
   lockVault()
   await idbDelete('vault', key(network, identityId))
+  clearSignedWrites()
+}
+
+/** Drop signed-but-unconfirmed writes this browser kept for retry (no keys; still, tidy up). */
+export function clearSignedWrites(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const doomed: string[] = []
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i)
+      if (k?.startsWith('forge:pending-st:')) doomed.push(k)
+    }
+    for (const k of doomed) window.localStorage.removeItem(k)
+  } catch {
+    /* storage disabled */
+  }
 }
 
 // The unlocked secret: module memory only.

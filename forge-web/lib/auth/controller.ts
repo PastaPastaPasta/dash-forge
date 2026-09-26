@@ -3,7 +3,7 @@
  *
  * A session is an identity plus the key this browser signs with. The key is one of:
  *   - a PV14 **limited key** (the normal case): registered by importing an identity file or
- *     mnemonic (the master key signs one IdentityUpdate and is dropped), created with a new
+ *     mnemonic (the master key signs one IdentityUpdate and is not retained), created with a new
  *     identity, or granted by a wallet through App Connect. It lives encrypted in the
  *     {@link ./vault} and, unlocked, only in that module's memory;
  *   - an **advanced raw key** pasted by a developer: held for this tab only (never stored),
@@ -21,13 +21,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
-import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
+import { SECURITY_LEVEL, WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
 import { authSdk } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
-import { readKeyLimits, registerLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { readKeyLimits, registerLimitedKey, revokeLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 import {
   VaultLockedError,
   forgetVault,
@@ -35,6 +35,7 @@ import {
   listVaults,
   lockVault,
   onVaultLock,
+  clearSignedWrites,
   storeInVault,
   unlockWithPasskey,
   unlockWithPassphrase,
@@ -127,6 +128,12 @@ export class AuthController {
     return v2.group
   }
 
+  /** forge-core and forge-collab, which the group must hold. */
+  forgeContracts(): readonly string[] {
+    const v2 = NETWORKS[this.network].v2
+    return v2 ? [v2.core, v2.collab] : []
+  }
+
   /** Whether this network supports limited keys (protocol 14 + a forge-v2 group). */
   supportsLimitedKeys(): boolean {
     return NETWORKS[this.network].v2 !== null
@@ -178,7 +185,7 @@ export class AuthController {
       const sdk = await this.getSdk()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
-      const match = await findSigningKey(identity, secret.wif, this.network, 3)
+      const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw new KeyNotUsableError()
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
       const session: AuthSession = {
@@ -223,7 +230,7 @@ export class AuthController {
   /**
    * Import an identity file or mnemonic once: its master key signs one IdentityUpdate that
    * registers a limited key for this browser (disabling the key this device held for it
-   * before, when renewing), and is then dropped. Only the limited key is kept, encrypted under
+   * before, when renewing), and is not retained. Only the limited key is kept, encrypted under
    * `protection`.
    */
   async importIdentity(
@@ -253,6 +260,7 @@ export class AuthController {
         masterWif,
         group: this.group(),
         ...(previous ? { replaceKeyId: previous.keyId } : {}),
+        contracts: this.forgeContracts(),
         ...(request ? { request } : {}),
       })
       masterWif = null
@@ -307,6 +315,12 @@ export class AuthController {
     return this.run(async () => {
       const wif = normalizeToWif(privateKey, this.network)
       const secret: VaultSecret = { identityId: identityId.trim(), keyId: -1, wif }
+      // HIGH or CRITICAL only (the sheet says so): findSigningKey with CRITICAL..HIGH.
+      const sdk = await this.getSdk()
+      const identity = await authSdk(sdk).identities.fetch(secret.identityId)
+      if (!identity || !(await findSigningKey(identity, wif, this.network, SECURITY_LEVEL.HIGH))) {
+        throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
+      }
       holdForSession(this.network, secret)
       try {
         return await this.open(secret, 'session')
@@ -336,7 +350,32 @@ export class AuthController {
   /** Lock (keep the stored key; unlock to continue). The session ends with it. */
   logout(): void {
     lockVault()
+    clearSignedWrites()
     this.setState({ session: null, error: null })
+  }
+
+  /**
+   * Disable this device's key for `identityId` on chain (the identity file or phrase supplies
+   * the master key, used once), then forget it here. Forgetting alone does not revoke.
+   */
+  async revokeStored(identityId: string, input: { fileText: string } | { mnemonic: string }): Promise<void> {
+    return this.run(async () => {
+      const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      if (!stored) throw new Error('no key for this identity is stored here')
+      let masterWif: string | null
+      if ('fileText' in input) {
+        const m = masterMaterialFromFile(input.fileText)
+        if (m.identityId !== identityId) throw new Error('that identity file is for another identity')
+        this.checkFileNetwork(m.networkKey)
+        masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
+      } else {
+        masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
+      }
+      if (!masterWif) throw new Error('no master key found')
+      await revokeLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId: stored.keyId, group: this.group() })
+      masterWif = null
+      await this.forget(identityId)
+    })
   }
 
   /** Delete the stored key of `identityId` from this device (ending its session if open). */

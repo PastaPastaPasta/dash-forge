@@ -10,8 +10,9 @@
  *   - expiring (`expiresAt`, default 90 days).
  *
  * The master key signs the one IdentityUpdate that registers it (and the new key signs its own
- * proof of possession), then is dropped: the WASM signer holding it is freed and the caller's
- * copy is not retained here.
+ * proof of possession) and is not retained: the WASM objects holding it are freed (which
+ * releases, but does not zero, their memory) and no reference to the WIF is kept. JS strings
+ * cannot be zeroed; the design minimizes how long they live.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -47,8 +48,9 @@ export interface LimitedKey {
 
 /**
  * Register a limited key on `identityId`, signed once by `masterWif`. Generates the new key
- * in the WASM (never exposed until returned), registers it, verifies on chain that it landed
- * with exactly the requested bounds, budget and expiry, and returns it.
+ * in the WASM (not retained beyond the returned WIF), registers it, verifies on chain that it
+ * landed with the group bound, the requested budget and expiry, and returns it. The group is
+ * first checked on chain to hold forge-core and forge-collab.
  *
  * `replaceKeyId`: a renewal disables this browser's previous limited key in the same update,
  * so renewing never leaves a live key nobody holds. Only a live group-bound HIGH key is
@@ -63,10 +65,13 @@ export async function registerLimitedKey(
     readonly group: string
     readonly request?: LimitedKeyRequest
     readonly replaceKeyId?: number
+    /** The contracts the group must hold (forge-core, forge-collab), checked on chain first. */
+    readonly contracts?: readonly string[]
   },
 ): Promise<LimitedKey> {
   const { IdentityPublicKeyInCreation, ContractBounds, IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
   const request = params.request ?? defaultLimits()
+  if (params.contracts) await assertGroupHolds(sdk, params.group, params.contracts)
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found on ${params.network}`)
 
@@ -119,7 +124,7 @@ export async function registerLimitedKey(
   }
   const wif = fresh.toWIF()
   fresh.free()
-  const limits = await verifyLimitedKey(sdk, params.identityId, keyId, params.group, params.network, wif)
+  const limits = await verifyLimitedKey(sdk, params.identityId, keyId, params.group, params.network, wif, request)
   return { keyId, wif, limits }
 }
 
@@ -143,6 +148,7 @@ export async function verifyLimitedKey(
   group: string,
   network: Network,
   wif?: string,
+  request?: LimitedKeyRequest,
 ): Promise<KeyLimits> {
   const identity = await authSdk(sdk).identities.fetch(identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === keyId)
@@ -154,6 +160,11 @@ export async function verifyLimitedKey(
     throw new Error(`key ${keyId} is not bound to the dash-forge contract group`)
   }
   if (k.totalBudget === undefined || k.expiresAt === undefined) throw new Error(`key ${keyId} has no budget or expiry`)
+  if (Number(k.expiresAt) <= Date.now()) throw new Error(`key ${keyId} has expired`)
+  if (request) {
+    if (k.totalBudget !== request.budgetCredits) throw new Error(`key ${keyId} has a different budget than requested`)
+    if (Number(k.expiresAt) !== request.expiresAt) throw new Error(`key ${keyId} has a different expiry than requested`)
+  }
   if (wif !== undefined) {
     const { PrivateKey } = await import('@dashevo/evo-sdk')
     const pk = PrivateKey.fromWIF(wif)
@@ -164,6 +175,7 @@ export async function verifyLimitedKey(
     if (!ok) throw new Error(`the stored private key does not control key ${keyId}`)
   }
   const remaining = await readRemainingBudget(sdk, identityId, keyId)
+  if (remaining !== null && remaining <= 0n) throw new Error(`key ${keyId} has no budget left`)
   return { remaining, total: k.totalBudget, expiresAt: Number(k.expiresAt) }
 }
 
@@ -184,5 +196,46 @@ export async function readKeyLimits(sdk: EvoSDK, identityId: string, keyId: numb
     remaining,
     total: k.totalBudget ?? null,
     expiresAt: k.expiresAt === undefined ? null : Number(k.expiresAt),
+  }
+}
+
+/**
+ * Refuse to bind a key to a group the chain does not show holding the forge contracts. The
+ * group id comes from the bundled deployment file; this checks it against state. (Its owner
+ * can add contracts later, which widens every group-bound key: see docs/guides/identity-and-keys.md.)
+ */
+export async function assertGroupHolds(sdk: EvoSDK, group: string, contracts: readonly string[]): Promise<void> {
+  const facade = (sdk as unknown as { contractGroups: { forContract(id: string): Promise<{ toJSON?(): { contract: string[] }; contract?: string[] }> } }).contractGroups
+  for (const id of contracts) {
+    const m = await facade.forContract(id)
+    const groups = (m.toJSON ? m.toJSON() : m).contract ?? []
+    if (!groups.includes(group)) throw new Error(`contract ${id} is not in the dash-forge group on chain; refusing to bind a key to it`)
+  }
+}
+
+/**
+ * Disable `keyId` on chain (an IdentityUpdate signed by the master key, used once and not
+ * retained). Only a group-bound HIGH key — a Forge browser key — may be disabled this way.
+ */
+export async function revokeLimitedKey(
+  sdk: EvoSDK,
+  params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keyId: number; readonly group: string },
+): Promise<void> {
+  const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
+  if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
+  if (k.disabledAt !== undefined) return
+  if (k.securityLevelNumber !== 2 || k.contractBounds?.toJSON().id !== params.group) {
+    throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
+  }
+  const master = PrivateKey.fromWIF(params.masterWif)
+  const signer = new IdentitySigner()
+  try {
+    signer.addKey(master)
+    await authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer })
+  } finally {
+    signer.free()
+    master.free()
   }
 }

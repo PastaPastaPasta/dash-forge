@@ -7,7 +7,7 @@ import * as secp from '@noble/secp256k1'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { idbEntries, resetMemoryStores } from '../idb'
 import {
@@ -16,14 +16,15 @@ import {
   listVaults,
   lockVault,
   prfKey,
+  sharedOriginProblem,
   storeInVault,
   unlockWithPassphrase,
   unlockedSecret,
 } from './vault'
 import { authKeyFromLogin, newRequest, openResponse } from './app-connect'
-import { buildAssetLock, hash160, txid, type Utxo } from './asset-lock'
+import { buildAssetLock, buildPayment, hash160, txid, verifiedUtxos, type Utxo } from './asset-lock'
 import { masterMaterialFromFile } from './identity-file'
-import { base58Decode, base58Encode } from './base58'
+import { base58CheckEncode, base58Decode, base58Encode } from './base58'
 import { encodeWif } from './wif'
 import { purgeLegacyKeystore } from './controller'
 
@@ -78,6 +79,15 @@ describe('vault', () => {
     await forgetVault('devnet', ID)
     expect(await listVaults('devnet')).toEqual([])
   }, 30_000)
+
+  it('refuses shared origins (Pages project sites, IPFS path gateways) but not dedicated ones', () => {
+    expect(sharedOriginProblem({ hostname: 'pastapastapasta.github.io', pathname: '/dash-forge/' })).toMatch(/dedicated origin/)
+    expect(sharedOriginProblem({ hostname: 'ipfs.io', pathname: '/ipfs/bafy/' })).toMatch(/dedicated origin/)
+    expect(sharedOriginProblem({ hostname: 'gw.example', pathname: '/ipns/forge.eth/' })).toMatch(/dedicated origin/)
+    expect(sharedOriginProblem({ hostname: 'forge.dashhq.org', pathname: '/' })).toBeNull()
+    expect(sharedOriginProblem({ hostname: 'bafy.ipfs.dweb.link', pathname: '/' })).toBeNull()
+    expect(sharedOriginProblem({ hostname: '127.0.0.1', pathname: '/settings/' })).toBeNull()
+  })
 
   it('stretches a passkey PRF output per identity', () => {
     const out = new Uint8Array(32).fill(1)
@@ -141,6 +151,8 @@ describe('App Connect envelope (Yappr key exchange)', () => {
 })
 
 describe('asset-lock transaction', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   it('locks the deposit minus the fee into one credit output with a valid signature', () => {
     const priv = new Uint8Array(32).fill(5)
     const pub = secp.getPublicKey(priv, true)
@@ -168,6 +180,54 @@ describe('asset-lock transaction', () => {
       '0300080001abababababababababababababababababababababababababababababababab010000006b483045022100a82f838bc838daf2a4391b133acad5fff55d7daa849467b08cd9897799de565202207d0722d008d64ce8161db287a3bf03fb7b5591e61f2dec7bc125786837cf2b3c01210362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7ffffffff0158474c0000000000026a000000000024010158474c00000000001976a9149d695474a303ac6d74d1796d3752f07895918bd288ac',
     )
     expect(lock.txid).toBe('452aa5a12caf5b23d314ac9ae8ef129a283f9a4c72492cff1fc5bf9cfc6d4fff')
+  })
+
+  describe('a lying block explorer', () => {
+    const priv = new Uint8Array(32).fill(5)
+    const pub = secp.getPublicKey(priv, true)
+    const script = `76a914${bytesToHex(hash160(pub))}88ac`
+    const address = base58CheckEncode(new Uint8Array([140, ...hash160(pub)]))
+    // A funding transaction paying 5 DASH to the deposit address (built with the same code).
+    const funding = buildPayment(
+      [{ txid: 'cd'.repeat(32), vout: 0, satoshis: 600_000_000, scriptPubKey: script, confirmations: 9 }],
+      priv,
+      { address, duffs: 500_000_000 },
+      address,
+    )
+    const ep = { insight: 'https://explorer.invalid', islockRpc: null }
+    const serve = (rawtx: Uint8Array): void => {
+      vi.stubGlobal('fetch', async (url: string) => ({ ok: true, json: async () => ({ rawtx: bytesToHex(rawtx) }), url }))
+    }
+
+    it('cannot make the lock burn the deposit by under-reporting its value', async () => {
+      serve(funding.raw)
+      const listed: Utxo[] = [{ txid: funding.txid, vout: 0, satoshis: 2_000_000, scriptPubKey: script, confirmations: 1 }]
+      const utxos = await verifiedUtxos(ep, address, listed)
+      expect(utxos[0]?.satoshis).toBe(500_000_000)
+      const lock = buildAssetLock(utxos, priv)
+      expect(lock.lockedDuffs).toBe(500_000_000 - 1000)
+    })
+
+    it('rejects a raw transaction that does not hash to the listed txid', async () => {
+      serve(funding.raw)
+      const listed: Utxo[] = [{ txid: 'ee'.repeat(32), vout: 0, satoshis: 500_000_000, scriptPubKey: script, confirmations: 1 }]
+      await expect(verifiedUtxos(ep, address, listed)).rejects.toThrow(/not ee/)
+    })
+
+    it('drops outputs that do not pay the deposit address', async () => {
+      serve(funding.raw)
+      const listed: Utxo[] = [{ txid: funding.txid, vout: 1, satoshis: 500_000_000, scriptPubKey: script, confirmations: 1 }]
+      // Output 1 is the change back to the same address in this fixture: still ours.
+      expect((await verifiedUtxos(ep, address, listed)).length).toBe(1)
+      const other: Utxo[] = [{ txid: funding.txid, vout: 7, satoshis: 1, scriptPubKey: script, confirmations: 1 }]
+      expect(await verifiedUtxos(ep, address, other)).toEqual([])
+    })
+
+    it('refuses to sign inputs whose script is not the deposit key', () => {
+      expect(() => buildAssetLock([{ txid: 'ab'.repeat(32), vout: 0, satoshis: 5_000_000, scriptPubKey: '76a914' + '00'.repeat(20) + '88ac', confirmations: 1 }], priv)).toThrow(
+        /not paid to the deposit key/,
+      )
+    })
   })
 
   it('refuses a deposit that cannot pay its fee', () => {

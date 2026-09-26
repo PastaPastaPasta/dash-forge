@@ -39,7 +39,7 @@ import {
   type LockProof,
 } from './asset-lock'
 import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, deriveMasterKey, identityKeyPath, normalizeMnemonic } from './hd'
-import { defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { assertGroupHolds, defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 
 /** Minimum deposit (spec §2.2: 0.02 DASH; the asset-lock floor is 0.003). */
 export const MIN_DEPOSIT_DUFFS = 2_000_000
@@ -100,6 +100,8 @@ export async function createIdentityFromMnemonic(
     readonly network: Network
     readonly mnemonic: string
     readonly group: string
+    /** forge-core and forge-collab: the group must hold them on chain before a key binds to it. */
+    readonly contracts: readonly string[]
     readonly persistKey: (identityId: string, key: { keyId: number; wif: string }) => Promise<void>
     readonly minDepositDuffs?: number
     readonly limits?: LimitedKeyRequest
@@ -110,6 +112,7 @@ export async function createIdentityFromMnemonic(
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
+  await assertGroupHolds(sdk, group, params.contracts)
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
   const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = await import('@dashevo/evo-sdk')
@@ -217,6 +220,6 @@ export async function createIdentityFromMnemonic(
   }
 
   params.onStage?.('verifying')
-  const verified = await verifyLimitedKey(sdk, identityId, BROWSER_KEY_ID, group, network, wif)
+  const verified = await verifyLimitedKey(sdk, identityId, BROWSER_KEY_ID, group, network, wif, limits)
   return { identityId, key: { keyId: BROWSER_KEY_ID, wif, limits: verified } }
 }

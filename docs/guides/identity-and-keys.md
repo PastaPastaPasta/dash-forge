@@ -8,7 +8,9 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 4. [Where keys live today](#where-keys-live-today)
 5. [Never paste a master key into a web page](#never-paste-a-master-key-into-a-web-page)
 6. [Rotating and disabling keys](#rotating-and-disabling-keys)
-7. [Limited keys (coming with protocol 14)](#limited-keys-coming-with-protocol-14)
+7. [Limited keys and the web app](#limited-keys-and-the-web-app)
+8. [The browser vault and its limits](#the-browser-vault-and-its-limits)
+9. [Trust roots](#trust-roots)
 
 ---
 
@@ -75,15 +77,16 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `dg` | A copy of the identity file in `~/.config/dash-forge/identities/<network>/<id>.identity.json` | `--identity <file>` > `DASH_FORGE_KEY` > the default recorded by `dg auth login` |
 | `git-remote-dash` | The same file | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` |
 | `forge-import` | The same file | `--identity <file>` > `DASH_FORGE_KEY` |
-| Web app | The CRITICAL (or HIGH) key's private key, **unencrypted** in the browser's `localStorage` | Loaded from an identity file or pasted in the **Sign in** dialog |
+| Web app, forge-v2 networks (devnet moutai) | A **limited key** only, encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys-and-the-web-app) |
+| Web app, testnet (v1) | The file's CRITICAL (or HIGH) key, held in the tab's memory only; gone on reload | Loaded from an identity file in the **Sign in** sheet |
 
 Things to know:
 
 - `DASH_FORGE_KEY` holds a **path** to an identity file today, not the key itself.
 - The identity file on disk is plaintext JSON. Protect it with file permissions and full-disk encryption.
-- In the web app, the key stays in that browser (it is never sent anywhere), but any script running on the page could read it. Sign out on shared machines. That removes it.
+- In the web app, the key never leaves that browser, but any script running on the page can use it while it is unlocked ([details](#the-browser-vault-and-its-limits)). Lock or sign out on shared machines.
 
-**Coming soon:** keys in the OS keychain (macOS Keychain, Secret Service, Windows Credential Manager) with a passphrase-encrypted fallback file; `dg auth new` to create an identity from the terminal; a browser key vault encrypted with a passkey or passphrase; `dg auth export` to write a backup file.
+**Coming soon:** keys in the OS keychain (macOS Keychain, Secret Service, Windows Credential Manager) with a passphrase-encrypted fallback file; `dg auth new` to create an identity from the terminal; `dg auth export` to write a backup file.
 
 ---
 
@@ -92,11 +95,12 @@ Things to know:
 A web page is whoever served it. If the page, or a script it loads, is compromised, anything you paste into it is gone.
 
 - **Never paste your MASTER key, your 12 words, or your main identity file into a website.** That includes forge.dashhq.org. Nothing on Forge needs them.
-- The web app's sign-in picks the CRITICAL key (or HIGH) from the file you load. It does not store the MASTER key or the mnemonic, but it does read the whole file you choose. If you want to be careful, give it a copy that contains only the HIGH or CRITICAL key (the `jq` recipe in the [mirror guide](mirror-a-github-repo.md#the-ci-secret) makes one).
+- On forge-v2 networks the web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys-and-the-web-app) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a limited key with `dg` once that lands.
+- On testnet (v1) the sign-in picks the CRITICAL key (or HIGH) from the file you load and keeps it in the tab only. It does not store the MASTER key or the mnemonic, but it does read the whole file you choose. If you want to be careful, give it a copy that contains only the HIGH or CRITICAL key (the `jq` recipe in the [mirror guide](mirror-a-github-repo.md#the-ci-secret) makes one).
 - The same goes for CI: give a pipeline a stripped copy or, better, a separate identity with a small balance.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
-When limited keys arrive (below), the web app will never see anything but a limited key. The master key will be used only in one-time steps, such as registering a limited key.
+With limited keys (below) the web app keeps nothing but a limited key. The master key is used only in one-time steps: registering, renewing or revoking a limited key.
 
 ---
 
@@ -122,28 +126,41 @@ If the **MASTER** key or the 12 words leak, rotating does not help: whoever has 
 
 ---
 
-## Limited keys (coming with protocol 14)
+## Limited keys and the web app
 
-*Available on devnet moutai once client support lands; mainnet after Platform protocol 14 activates.*
+*Live in the web app on devnet moutai (protocol 14). Mainnet after Platform protocol 14 activates. CLI support (`dg auth …`) is coming.*
 
-Protocol 14 adds keys with a **spending budget and an expiry**, bound to the Forge contracts. A limited key can spend at most its budget, only on Forge documents, and only until it expires. It cannot touch your other keys or move credits.
+A limited key is an identity key with four restrictions:
 
-The planned defaults:
+- AUTHENTICATION purpose, HIGH security level;
+- bound to the `dash-forge` **contract group**: it can sign batches on forge-core and forge-collab only. Identity updates, credit transfers and writes to any other contract are refused at consensus;
+- a **budget**: the most its transitions can ever take from your identity;
+- an **expiry**.
 
 | Where | Budget | Expires |
 |---|---|---|
 | Browser | 0.05 DASH | 90 days |
-| CLI | 0.25 DASH | 180 days |
-| CI runner (Mirror Action) | 0.5 DASH | 365 days |
+| CLI (planned) | 0.25 DASH | 180 days |
+| CI runner (Mirror Action, planned) | 0.5 DASH | 365 days |
 
-With limited keys:
+Ways to get one in the web app (**Sign in**):
 
-- the **master key never lives in the browser, on disk unencrypted, or in CI**. It signs only one-time ceremonies: registering a limited key, a username, or an encryption key;
-- losing a device costs nothing beyond that key's remaining budget. Register a new limited key and disable the old one;
-- the web app will show the key's remaining budget and expiry, and warn when either runs low;
-- CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file.
+| Route | What happens |
+|---|---|
+| Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. |
+| Create a new identity | 12 words, a short backup check, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. |
+| Use my Dash wallet (App Connect) | Your wallet registers the limited key and hands it over encrypted. **Check that the identity shown is yours**: a response does not prove who answered, and anyone who saw the QR code could answer. The app refuses if more than one identity answers. |
+| Advanced: paste a key | A HIGH or CRITICAL key, for this tab only. It has no limits Forge set. Never paste a master key. |
 
-The planned commands (**not available yet**):
+The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. **Settings → This browser's key** shows the budget and expiry and has these actions:
+
+- **Renew key** registers a fresh key and disables the previous one in the same update.
+- **Revoke on chain** disables this browser's key. It needs your identity file once.
+- **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
+
+Losing a device costs nothing beyond that key's remaining budget. Register a new key and disable the old one.
+
+The planned CLI (**not available yet**):
 
 ```sh
 dg auth new [--amount 0.05] [--name alice]      # create + fund an identity from the terminal
@@ -152,3 +169,25 @@ dg auth keys add --budget 0.25 --expires 180d --bound dash-forge
 dg auth keys disable <id>
 dg auth name register <label>
 ```
+
+CI will get one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file.
+
+---
+
+## The browser vault and its limits
+
+The limited key is stored in IndexedDB, encrypted with AES-256-GCM. The data key is wrapped by a passkey's PRF output (stretched with HKDF), by Argon2id of your passphrase (64 MiB, 3 passes, 16-byte salt), or by both. Each ciphertext is bound to its network and identity. Unlocked, the key lives only in page memory. It locks after 12 hours, and is cleared when you lock or sign out.
+
+What the vault does **not** protect against:
+
+- **Script running in the page.** The vault protects the key at rest. While it is unlocked, any script running on the page (an XSS) can use it. The page's CSP allows inline scripts, which Next's static bootstrap needs. It does not allow JavaScript `eval`, only `wasm-unsafe-eval` for the SDK's WebAssembly.
+- **Clickjacking where the host cannot send headers.** `frame-ancestors` only works as an HTTP header, and GitHub Pages cannot send one, so the Pages deployment can be framed. Serve the app from a host that sends `Content-Security-Policy: frame-ancestors 'none'` if that matters to you.
+- **A shared origin.** On a GitHub Pages project site (`*.github.io/<repo>`) or an IPFS path gateway (`ipfs.io/ipfs/…`), other sites share the origin and could read the vault or ask the browser for the passkey's PRF output. So the app refuses to create or unlock a vault there. Browsing still works. Use <https://forge.dashhq.org> (the Pages deployment's custom domain, set in the repository's Pages settings) or an IPFS subdomain gateway (`<cid>.ipfs.dweb.link`).
+
+---
+
+## Trust roots
+
+- **The contract group id** comes from `forge-contracts/deployments/<network>.json`, which is built into the app. Before binding a key to the group, the app checks on chain that the group holds forge-core and forge-collab. The group's owner (and any admins) can **add** contracts to it later, and every group-bound key can then sign for those contracts too. Binding a key to the group means trusting its owner. On devnet moutai that is the deployer `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`.
+- **The block explorer** (Insight, changeable in Settings) is used only while creating an identity. Its amounts are not trusted: each deposit output is proven from its raw funding transaction, fetched and hashed against its txid, before the asset lock is signed. A lying explorer can delay you or hide funds, but it cannot redirect or burn them. The asset lock is broadcast through the explorer, because the SDK has no Core broadcast. If the explorer drops it, the signed bytes are kept and sent again.
+- **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read.

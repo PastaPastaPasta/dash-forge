@@ -7,7 +7,7 @@
  * runs only when the user asks for it.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Fingerprint, KeyRound } from 'lucide-react'
 import { enrollPasskey, MIN_PASSPHRASE, passkeysAvailable, type Protection } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -22,7 +22,17 @@ export function useProtection(): {
 } {
   const [passphrase, setPassphrase] = useState('')
   const [confirm, setConfirm] = useState('')
-  const [passkey, setPasskey] = useState<Protection['passkey'] | null>(null)
+  // The passkey's PRF output is key material: a ref (not React state), zeroed on unmount.
+  const passkeyRef = useRef<Protection['passkey'] | null>(null)
+  const [hasPasskey, setHasPasskey] = useState(false)
+  useEffect(
+    () => () => {
+      passkeyRef.current?.output.fill(0)
+      passkeyRef.current = null
+    },
+    [],
+  )
+  const passkey = hasPasskey ? passkeyRef.current : null
   const [enrolling, setEnrolling] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const canPasskey = passkeysAvailable()
@@ -33,7 +43,10 @@ export function useProtection(): {
     try {
       const p = await enrollPasskey(`Dash Forge (${new Date().toISOString().slice(0, 10)})`)
       if (p === null) setPasskeyError("This passkey can't protect keys here (no PRF support). Use a passphrase.")
-      else setPasskey(p)
+      else {
+        passkeyRef.current = p
+        setHasPasskey(true)
+      }
     } catch (e) {
       setPasskeyError(errorMessage(e, 'passkey setup was cancelled'))
     } finally {

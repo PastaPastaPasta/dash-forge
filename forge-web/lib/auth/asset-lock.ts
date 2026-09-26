@@ -10,8 +10,15 @@
  *      (testnet), else a chain-lock proof once Platform's chain-locked Core height reaches the
  *      transaction's block (devnets).
  *
- * The explorer can delay the user but not take funds or keys: it only sees the address and
- * the signed transaction.
+ * The explorer is not trusted with amounts. It lists which outputs pay the deposit address,
+ * but every input is re-derived from its raw funding transaction — fetched, hashed and checked
+ * against the txid, then parsed for the output's value and script — before anything is
+ * signed. (The legacy sighash does not commit to input values: trusting the explorer's
+ * amounts would let a lying one turn the deposit into miner fees.) With that, an explorer can
+ * delay the user or hide funds, but not take them or learn a key.
+ *
+ * Broadcast goes to the explorer: the evo-sdk exposes no DAPI Core broadcast. A lying explorer
+ * can drop the transaction, which only delays; the signed bytes are journaled and re-sent.
  */
 
 import * as secp from '@noble/secp256k1'
@@ -72,6 +79,72 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 export async function getUtxos(ep: CoreEndpoints, address: string): Promise<Utxo[]> {
   const rows = await getJson<Utxo[]>(`${ep.insight}/addr/${address}/utxo`)
   return rows.map((u) => ({ txid: u.txid, vout: u.vout, satoshis: u.satoshis, scriptPubKey: u.scriptPubKey, confirmations: u.confirmations ?? 0 }))
+}
+
+/** The value and script of each output of a raw transaction (Dash; special payload skipped). */
+export function parseOutputs(raw: Uint8Array): { value: bigint; script: Uint8Array }[] {
+  let at = 0
+  const need = (n: number): void => {
+    if (at + n > raw.length) throw new Error('truncated transaction')
+  }
+  const u8 = (): number => {
+    need(1)
+    return raw[at++] as number
+  }
+  const bytes = (n: number): Uint8Array => {
+    need(n)
+    const b = raw.slice(at, at + n)
+    at += n
+    return b
+  }
+  const varint = (): number => {
+    const first = u8()
+    if (first < 0xfd) return first
+    const b = bytes(first === 0xfd ? 2 : first === 0xfe ? 4 : 8)
+    let n = 0
+    for (let i = b.length - 1; i >= 0; i--) n = n * 256 + (b[i] as number)
+    return n
+  }
+  bytes(4) // version | type
+  const inputs = varint()
+  for (let i = 0; i < inputs; i++) {
+    bytes(36)
+    bytes(varint())
+    bytes(4)
+  }
+  const count = varint()
+  const out: { value: bigint; script: Uint8Array }[] = []
+  for (let i = 0; i < count; i++) {
+    const v = bytes(8)
+    let value = 0n
+    for (let j = 7; j >= 0; j--) value = value * 256n + BigInt(v[j] as number)
+    out.push({ value, script: bytes(varint()) })
+  }
+  return out
+}
+
+/**
+ * The deposit's spendable outputs, each proven from its raw funding transaction: the raw
+ * bytes must hash to the txid the explorer named, and the value and script come from those
+ * bytes. Outputs that do not pay `address`'s P2PKH script are dropped.
+ */
+export async function verifiedUtxos(ep: CoreEndpoints, address: string, listed: readonly Utxo[]): Promise<Utxo[]> {
+  const script = bytesToHex(p2pkh(addressHash(address)))
+  const out: Utxo[] = []
+  const rawCache = new Map<string, Uint8Array>()
+  for (const u of listed) {
+    let raw = rawCache.get(u.txid)
+    if (!raw) {
+      raw = hexToBytes((await getJson<{ rawtx: string }>(`${ep.insight}/rawtx/${u.txid}`)).rawtx)
+      if (txid(raw) !== u.txid) throw new Error(`the block explorer returned a transaction that is not ${u.txid}`)
+      rawCache.set(u.txid, raw)
+    }
+    const o = parseOutputs(raw)[u.vout]
+    if (!o || bytesToHex(o.script) !== script) continue
+    if (o.value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('deposit output too large')
+    out.push({ ...u, satoshis: Number(o.value), scriptPubKey: script })
+  }
+  return out
 }
 
 export async function getTxHeight(ep: CoreEndpoints, txid: string): Promise<number | null> {
@@ -222,6 +295,10 @@ export function buildAssetLock(utxos: readonly Utxo[], priv: Uint8Array): { raw:
   const fee = ASSET_LOCK_FEE_PER_INPUT * utxos.length
   const locked = total - fee
   if (locked <= 0) throw new Error('deposit too small to cover the fee')
+  // Every input's script must be the lock key's own P2PKH (verifiedUtxos checked the values).
+  const own = bytesToHex(p2pkh(hash160(secp.getPublicKey(priv, true))))
+  if (utxos.some((u) => u.scriptPubKey !== own)) throw new Error('an input is not paid to the deposit key')
+  if (locked + fee !== total) throw new Error('asset-lock fee mismatch')
   const pubHash = hash160(secp.getPublicKey(priv, true))
   const payload = concatBytes(Uint8Array.of(1), varint(1), serOut({ value: BigInt(locked), script: p2pkh(pubHash) }))
   const tx: Tx = {
@@ -324,10 +401,17 @@ export async function waitForDeposit(
   opts: { signal?: AbortSignal; onSeen?: (duffs: number) => void; intervalMs?: number } = {},
 ): Promise<Utxo[]> {
   for (;;) {
-    const utxos = await getUtxos(ep, address).catch(() => [] as Utxo[])
-    const total = utxos.reduce((s, u) => s + u.satoshis, 0)
-    opts.onSeen?.(total)
-    if (total >= minDuffs && utxos.length > 0) return utxos
+    const listed = await getUtxos(ep, address).catch(() => [] as Utxo[])
+    const claimed = listed.reduce((s, u) => s + u.satoshis, 0)
+    if (claimed >= minDuffs && listed.length > 0) {
+      // The explorer says it is there: prove each output from its raw transaction.
+      const utxos = await verifiedUtxos(ep, address, listed)
+      const total = utxos.reduce((s, u) => s + u.satoshis, 0)
+      opts.onSeen?.(total)
+      if (total >= minDuffs) return utxos
+    } else {
+      opts.onSeen?.(claimed)
+    }
     await sleep(opts.intervalMs ?? 4000, opts.signal)
   }
 }

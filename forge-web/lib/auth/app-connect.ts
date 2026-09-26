@@ -8,8 +8,13 @@
  * derives the shared secret (ECDH x → HKDF-SHA256, salt "dash:key-exchange:v1"), decrypts the
  * 32-byte login key (AES-256-GCM), derives the auth key (HKDF(loginKey, identityId, "auth")),
  * and then **verifies on chain** that a live key on the responder's identity is that key, with
- * AUTHENTICATION/HIGH, the dash-forge group bound, and a budget and expiry — the response
- * alone proves nothing about who answered (`app-connect.md`, "Approval and re-login" step 3).
+ * AUTHENTICATION/HIGH, the dash-forge group bound, and a budget and expiry.
+ *
+ * Who answered is NOT proven by the response (`app-connect.md`, step 3): anyone who saw the QR
+ * can answer from their own identity. So the flow shows the full identity id and DPNS name and
+ * asks the user to confirm it is theirs, and refuses outright when more than one identity
+ * answered validly. (The v1 response schema has no field for a wallet signature over the
+ * request; when one exists, verify it here.)
  *
  * The crypto is the Yappr key-exchange envelope the Dash wallets already speak.
  */
@@ -46,17 +51,19 @@ function networkTag(network: Network): string {
 }
 
 /**
- * A fresh request for `contractId` (forge-core). The payload is the key-exchange request:
- * version(1) ‖ appEphemeralPub(33) ‖ contractId(32) ‖ keyIndex(u32 LE) ‖ labelLen(1) ‖ label.
+ * A fresh request. The payload is the key-exchange request: version(1) ‖ appEphemeralPub(33) ‖
+ * scope(32) ‖ keyIndex(u32 LE) ‖ labelLen(1) ‖ label. `scope` is the dash-forge **contract
+ * group** id: the key Forge accepts is bound to the group, not to one contract, so that is what
+ * the wallet must be asked for.
  */
-export function newRequest(network: Network, contractId: string, label = 'Sign in to Dash Forge'): AppConnectRequest {
+export function newRequest(network: Network, groupId: string, label = 'Sign in to Dash Forge'): AppConnectRequest {
   const priv = secp.utils.randomSecretKey()
   const pub = secp.getPublicKey(priv, true)
   const labelBytes = enc.encode(label).slice(0, 64)
   const body = new Uint8Array(1 + 33 + 32 + 4 + 1 + labelBytes.length)
   body[0] = 1
   body.set(pub, 1)
-  body.set(base58Decode(contractId), 34)
+  body.set(base58Decode(groupId), 34)
   body[70] = labelBytes.length
   body.set(labelBytes, 71)
   const pubHash = hash160(pub)
@@ -128,46 +135,80 @@ export interface WalletLogin {
  * identity with the Forge bounds (then resolve), or the signal aborts. Responses that do not
  * decrypt, or whose key is not verifiably a Forge browser key, are skipped.
  */
+/** More than one identity answered the request with a valid key: refuse (spec: pairing). */
+export class AmbiguousWalletLogin extends Error {
+  constructor(readonly identityIds: readonly string[]) {
+    super(`More than one identity answered this sign-in request (${identityIds.join(', ')}). Someone else saw the QR code. Start again and keep it private.`)
+    this.name = 'AmbiguousWalletLogin'
+  }
+}
+
 export async function awaitWalletLogin(
   sdk: import('@dashevo/evo-sdk').EvoSDK,
   req: AppConnectRequest,
-  params: { network: Network; group: string; signal?: AbortSignal; intervalMs?: number },
+  params: { network: Network; group: string; signal?: AbortSignal; intervalMs?: number; settleMs?: number },
 ): Promise<WalletLogin> {
   // Owners whose response does not decrypt with our key are not answering us: skip them for
   // good. A response that decrypts but whose key is not verifiable yet (the wallet published
   // before its key update was visible, or a read failed) is retried on the next poll.
   const notOurs = new Set<string>()
+  const valid = new Map<string, WalletLogin>()
+  let firstValidAt = 0
   for (;;) {
     if (params.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
-    let rows: Map<string, unknown> = new Map()
-    try {
-      rows = await authSdk(sdk).documents.query({
-        dataContractId: APP_CONNECT_CONTRACT_ID,
-        documentTypeName: 'loginKeyResponse',
-        where: [['appEphemeralPubKeyHash', '==', btoa(String.fromCharCode(...req.appEphemeralPubKeyHash))]],
-        orderBy: [['appEphemeralPubKeyHash', 'asc']],
-        limit: 10,
-      })
-    } catch {
-      /* transient: poll again */
-    }
-    for (const raw of rows.values()) {
-      if (!raw) continue
-      const j = (raw as RawResponse).toJSON()
-      if (notOurs.has(j.$ownerId)) continue
+    for (const j of await allResponses(sdk, req)) {
+      if (notOurs.has(j.$ownerId) || valid.has(j.$ownerId)) continue
       try {
         const wif = await decryptGrant(req, j, params.network)
         const keyId = await findKeyId(sdk, j.$ownerId, wif, params.network)
         if (keyId === null) continue
         const limits = await verifyLimitedKey(sdk, j.$ownerId, keyId, params.group, params.network, wif)
-        disposeRequest(req)
-        return { identityId: j.$ownerId, keyId, wif, limits }
+        valid.set(j.$ownerId, { identityId: j.$ownerId, keyId, wif, limits })
+        if (firstValidAt === 0) firstValidAt = Date.now()
       } catch (e) {
         if (e instanceof NotOurs) notOurs.add(j.$ownerId)
       }
     }
+    if (valid.size > 1) {
+      disposeRequest(req)
+      throw new AmbiguousWalletLogin([...valid.keys()])
+    }
+    // One valid answer: wait one more poll for a competing one before accepting it.
+    if (valid.size === 1 && Date.now() - firstValidAt >= (params.settleMs ?? 3000)) {
+      disposeRequest(req)
+      return [...valid.values()][0] as WalletLogin
+    }
     await sleep(params.intervalMs ?? 3000, params.signal)
   }
+}
+
+/** Every response to `req`, paged by `$ownerId` (junk replies cannot hide the real one). */
+async function allResponses(sdk: import('@dashevo/evo-sdk').EvoSDK, req: AppConnectRequest): Promise<ReturnType<RawResponse['toJSON']>[]> {
+  const hash = btoa(String.fromCharCode(...req.appEphemeralPubKeyHash))
+  const out: ReturnType<RawResponse['toJSON']>[] = []
+  let after: string | null = null
+  for (let page = 0; page < 20; page++) {
+    let rows: Map<string, unknown>
+    try {
+      rows = await authSdk(sdk).documents.query({
+        dataContractId: APP_CONNECT_CONTRACT_ID,
+        documentTypeName: 'loginKeyResponse',
+        where: [['appEphemeralPubKeyHash', '==', hash], ...(after ? [['$ownerId', '>', after]] : [])],
+        orderBy: [
+          ['appEphemeralPubKeyHash', 'asc'],
+          ['$ownerId', 'asc'],
+        ],
+        limit: 50,
+      })
+    } catch {
+      break
+    }
+    const batch = [...rows.values()].filter(Boolean).map((r) => (r as RawResponse).toJSON())
+    out.push(...batch)
+    if (batch.length < 50) break
+    after = batch[batch.length - 1]?.$ownerId ?? null
+  }
+  return out
 }
 
 async function decryptGrant(req: AppConnectRequest, j: ReturnType<RawResponse['toJSON']>, network: Network): Promise<string> {

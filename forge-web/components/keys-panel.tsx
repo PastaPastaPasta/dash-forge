@@ -7,8 +7,9 @@
  * key's limits (`IdentityKeyLimitsUpdate`) is P1. Also: lock now, and sign out + forget.
  */
 
-import { useState } from 'react'
-import { Lock, LogOut, RefreshCw } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Lock, LogOut, RefreshCw, ShieldOff } from 'lucide-react'
+import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
@@ -18,10 +19,21 @@ import { INSIGHT_OVERRIDE_KEY } from '@/lib/auth/asset-lock'
 
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM =
-  "Delete this browser's key? You will need your identity file, recovery phrase or wallet to sign in again here. Its budget stays on the identity until it expires."
+  "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires (use \"Revoke on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
 
 export function KeysPanel(): JSX.Element {
-  const { identity, keyLimits, storage, funds, logout, forget } = useAuth()
+  const { identity, keyLimits, storage, funds, logout, forget, revokeStored, isLoading } = useAuth()
+  const revokeRef = useRef<HTMLInputElement>(null)
+  const [revokeError, setRevokeError] = useState<string | null>(null)
+  const revoke = async (file: File): Promise<void> => {
+    if (!identity) return
+    setRevokeError(null)
+    try {
+      await revokeStored(identity, { fileText: await file.text() })
+    } catch (e) {
+      setRevokeError(errorMessage(e))
+    }
+  }
   const openLogin = useUiStore((s) => s.openLogin)
   const [explorer, setExplorer] = useState(() =>
     typeof window === 'undefined' ? '' : window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) ?? '',
@@ -67,7 +79,30 @@ export function KeysPanel(): JSX.Element {
         >
           <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out &amp; forget key
         </Button>
+        {storage === 'vault' ? (
+          <>
+            <Button variant="danger" size="sm" loading={isLoading} onClick={() => revokeRef.current?.click()}>
+              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Revoke on chain
+            </Button>
+            <input
+              ref={revokeRef}
+              type="file"
+              aria-label="Identity file to revoke with"
+              accept="application/json,.json,.txt"
+              className="sr-only"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f && window.confirm('Disable this browser\'s key on chain? Your identity file\'s master key signs it once and is not stored.')) void revoke(f)
+                e.target.value = ''
+              }}
+            />
+          </>
+        ) : null}
       </div>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
+      </p>
+      {revokeError ? <p role="alert" className="text-[12px] text-danger">{revokeError}</p> : null}
       <Field
         label="Block explorer (used only to watch identity deposits)"
         htmlFor="explorer-url"

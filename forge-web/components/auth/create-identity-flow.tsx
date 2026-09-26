@@ -15,7 +15,7 @@
  * unmounts, and the buttons are disabled while a run is active.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -54,7 +54,15 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const { controller, reloadVaults } = useAuth()
   const network = ACTIVE_NETWORK.network
   const [step, setStep] = useState<Step>('loading')
-  const [mnemonic, setMnemonic] = useState<string | null>(null)
+  // The words are the identity: held in a ref (not React state) and dropped on unmount. They
+  // are rendered once for the backup, which is unavoidable; nothing else keeps them.
+  const mnemonicRef = useRef<string | null>(null)
+  const [wordsShown, setWordsShown] = useState(0)
+  const mnemonic = wordsShown > 0 ? mnemonicRef.current : null
+  const setMnemonic = (m: string | null): void => {
+    mnemonicRef.current = m
+    setWordsShown((n) => n + 1)
+  }
   const [positions, setPositions] = useState<number[]>([])
   const [answers, setAnswers] = useState<string[]>(['', '', ''])
   const [journal, setJournal] = useState<CreationJournal | null>(null)
@@ -64,9 +72,10 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [resumeWords, setResumeWords] = useState('')
+  // Cleared as soon as a run starts (start() empties it).
   const [discardWarning, setDiscardWarning] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
-  const words = useMemo(() => mnemonic?.split(' ') ?? [], [mnemonic])
+  const words = mnemonic?.split(' ') ?? []
   const run = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -89,6 +98,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     return () => {
       cancelled = true
       run.current?.abort()
+      mnemonicRef.current = null
     }
   }, [network])
 
@@ -124,6 +134,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         network,
         mnemonic: m,
         group: v2.group,
+        contracts: [v2.core, v2.collab],
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
         persistKey: (id, k) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection),
@@ -298,7 +309,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       </div>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         To see your deposit this page asks a Dash block explorer ({new URL(coreEndpoints(network).insight).host}, changeable in
-        Settings). It can delay you but cannot take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block
+        Settings). It can delay you, but amounts are checked against the raw transactions, so it cannot take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block
         chain-locks it, which can take a few minutes.
       </p>
       {error ? <ErrorBox error={`${error} — your deposit is recorded on this device; reopen this sheet and type your 12 words to resume.`} /> : null}
