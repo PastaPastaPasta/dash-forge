@@ -16,15 +16,17 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{Collab, Numbered, PatchInput, Target, TargetKind};
-use forge_core::collab::ReleaseInput;
-use forge_core::platform::PlatformClient;
+use forge_core::collab::v2::{
+    issue_from_doc, patch_from_doc, Collab, Numbered, PatchInput, Target, TargetKind,
+};
+use forge_core::collab::{ReleaseInput, Verdict};
+use forge_core::platform::{FieldValue, PlatformClient, QueryFilter, QueryOrder};
 use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2};
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget};
-use crate::model::{SrcCollab, SrcLabel, SrcRelease, SrcTarget};
+use crate::model::{same_item, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
 use crate::summary::Counts;
 
 /// The run's accounting: budget, counts, warnings.
@@ -58,11 +60,19 @@ impl<'a> Ledger<'a> {
         }
     }
 
-    /// Record a warning (also logged).
+    /// Record a warning (also logged). Redacted: warnings are published (the Action's job
+    /// summary), and some quote URLs or errors from the source.
     pub fn warn(&mut self, msg: impl Into<String>) {
-        let msg = msg.into();
+        let msg = forge_core::user_error::redact(&msg.into());
         tracing::warn!("{msg}");
         self.warnings.push(msg);
+    }
+
+    /// An item that could not be mirrored this run (its number is held by someone else,
+    /// or the destination refused it): warned about, counted, never fatal to the run.
+    pub fn skip(&mut self, msg: impl Into<String>) {
+        self.counts.skipped += 1;
+        self.warn(msg);
     }
 
     /// One write: charged to the budget first (refused past the cap, before anything is
@@ -110,6 +120,23 @@ pub struct Sink<'a> {
     repo: Option<RepoRef>,
     /// Budget, counts, warnings.
     pub ledger: Ledger<'a>,
+    /// The mirror's own issues and PRs in the destination, `(imported.url, target)`;
+    /// loaded on first use.
+    index: Option<Vec<(String, Target)>>,
+}
+
+/// Attempts at finding a free number for one item.
+const MAX_NUMBER_TRIES: usize = 4;
+
+/// Whether `e` concerns one item only (the destination refused its content), so the run
+/// can skip it and carry on.
+fn item_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<forge_core::Error>(),
+            Some(forge_core::Error::Config(_) | forge_core::Error::DuplicateUniqueIndex(_))
+        )
+    })
 }
 
 /// The state of a target as its events fold today.
@@ -151,6 +178,7 @@ impl<'a> Sink<'a> {
             collab,
             repo,
             ledger,
+            index: None,
         }
     }
 
@@ -186,7 +214,10 @@ impl<'a> Sink<'a> {
             None => BTreeMap::new(),
         };
         let (collab, repo) = (&self.collab, self.repo.as_ref());
-        for l in labels {
+        // Two source labels that clip to the same name would rewrite one definition on every
+        // run; the first wins.
+        let mut seen = BTreeSet::new();
+        for l in labels.iter().filter(|l| seen.insert(l.name.clone())) {
             if existing.get(&l.name) == Some(&(l.color.clone(), l.description.clone(), false)) {
                 continue;
             }
@@ -263,30 +294,36 @@ impl<'a> Sink<'a> {
 
     // --- issues and pull requests --------------------------------------------------------
 
+    /// Mirror one issue or PR. An error that only concerns this item (the destination
+    /// refused its content) skips it with a warning instead of failing the run, so one bad
+    /// item cannot stop every future run; spend-cap and network errors still stop the run.
     async fn sync_target(&mut self, t: &SrcTarget) -> Result<()> {
-        let noun = match t.kind {
-            TargetKind::Issue => "issue",
-            TargetKind::Patch => "pull request",
-        };
-        let (target, fresh) = match self.existing(t).await? {
-            Some(Ok(target)) => (target, false),
-            Some(Err(why)) => {
-                self.ledger.warn(format!(
-                    "{noun} #{} is taken in the destination ({why}); {} not mirrored",
-                    t.number, t.imported.url
-                ));
-                return Ok(());
+        match self.sync_target_inner(t).await {
+            Err(e) if item_error(&e) => {
+                self.ledger
+                    .skip(format!("{} not mirrored this run: {e:#}", t.imported.url));
+                Ok(())
             }
-            None => match self.create(t, noun).await? {
-                Ok(target) => (target, true),
-                Err(why) => {
-                    self.ledger.warn(format!(
-                        "{noun} #{} was taken while mirroring ({why}); {} not mirrored",
-                        t.number, t.imported.url
-                    ));
-                    return Ok(());
-                }
-            },
+            other => other,
+        }
+    }
+
+    async fn sync_target_inner(&mut self, t: &SrcTarget) -> Result<()> {
+        let noun = t.kind.noun();
+        let (target, fresh) = if let Some(target) = self.existing(t).await? {
+            (target, false)
+        } else if let Some(target) = self.create(t, noun).await? {
+            if let Some(idx) = &mut self.index {
+                idx.push((t.imported.url.clone(), target.clone()));
+            }
+            (target, true)
+        } else {
+            self.ledger.skip(format!(
+                "{noun} #{} could not get a number (every candidate was taken); {} not \
+                 mirrored this run",
+                t.number, t.imported.url
+            ));
+            return Ok(());
         };
         let current = if fresh {
             Current::new_target()
@@ -301,47 +338,96 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
-    /// The destination's target at `t`'s number: `Ok` when it is this mirror's, `Err(why)`
-    /// when the number is held by something else. `None` when the number is free.
-    async fn existing(&self, t: &SrcTarget) -> Result<Option<std::result::Result<Target, String>>> {
-        let Some(repo) = &self.repo else {
-            return Ok(None);
-        };
-        let found = match t.kind {
-            TargetKind::Issue => self
-                .collab
-                .issue(repo, t.number)
-                .await?
-                .map(|i| (i.target(), i.imported)),
-            TargetKind::Patch => self
-                .collab
-                .patch(repo, t.number)
-                .await?
-                .map(|p| (p.target(), p.imported)),
-        };
-        Ok(found.map(|(target, imported)| {
-            let url = imported.map(|i| i.url).unwrap_or_default();
-            if url == t.imported.url && self.ledger.is_mine(&target.author) {
-                Ok(target)
-            } else if url.is_empty() {
-                Err(format!("by {}, not an import", target.author))
-            } else {
-                Err(format!("by {}, imported from {url}", target.author))
+    /// The mirror's own imported issues and PRs already in the destination, by their
+    /// `imported.url` key: every `issue` / `patch` of the repo written by the signer (by
+    /// anyone in a dry run without one) that carries provenance. One complete read per kind,
+    /// so an item is found wherever it landed (its source number, or an allocated one when
+    /// that was taken).
+    async fn load_index(&mut self) -> Result<()> {
+        if self.index.is_some() {
+            return Ok(());
+        }
+        let mut index = Vec::new();
+        if let Some(repo) = &self.repo {
+            let forge = repo.require_v2()?;
+            let client = self.ledger.client;
+            let collab = client.fetch_contract(&forge.collab).await?;
+            let repo_id =
+                FieldValue::identifier(forge_core::platform::decode_identifier(repo.id())?);
+            for kind in [TargetKind::Issue, TargetKind::Patch] {
+                let docs = client
+                    .query_all_documents(
+                        &collab,
+                        kind.doc_type(),
+                        &[QueryFilter::eq("repoId", repo_id.clone())],
+                        &[QueryOrder::asc("$createdAt")],
+                    )
+                    .await
+                    .with_context(|| format!("reading the destination's {}s", kind.noun()))?;
+                for d in &docs {
+                    let (target, imported) = match kind {
+                        TargetKind::Issue => {
+                            let i = issue_from_doc(d);
+                            (i.target(), i.imported)
+                        }
+                        TargetKind::Patch => {
+                            let p = patch_from_doc(d);
+                            (p.target(), p.imported)
+                        }
+                    };
+                    match imported {
+                        Some(i) if !i.url.is_empty() && self.ledger.is_mine(&target.author) => {
+                            index.push((i.url, target));
+                        }
+                        _ => {}
+                    }
+                }
             }
+        }
+        self.index = Some(index);
+        Ok(())
+    }
+
+    /// The mirror's existing target for `t`, if any (tolerating a renamed source repo).
+    async fn existing(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
+        self.load_index().await?;
+        Ok(self.index.as_ref().and_then(|idx| {
+            idx.iter()
+                .find(|(url, target)| target.kind == t.kind && same_item(url, &t.imported.url))
+                .map(|(_, target)| target.clone())
         }))
     }
 
-    /// Create `t` at its number. `Err(why)` when the number was taken meanwhile. In a dry
-    /// run the returned target is a placeholder (nothing reads it).
-    async fn create(
+    /// Create `t`: at its source number when free, else at the next free number (the body's
+    /// header keeps the source number, and `imported.url` finds it again next run). A
+    /// squatter on a number therefore costs the mirror nothing but the number. In a dry run
+    /// the returned target is a placeholder (nothing reads it).
+    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Option<Target>> {
+        let mut number = t.number;
+        for _ in 0..MAX_NUMBER_TRIES {
+            match self.create_at(t, noun, number).await? {
+                Ok(target) => return Ok(Some(target)),
+                Err(why) => {
+                    tracing::info!(number, %why, "{noun} number taken; allocating another");
+                    let repo = need(self.repo.as_ref())?;
+                    number = self.collab.next_number(repo, t.kind).await?;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Create `t` at `number`. `Err(why)` when the number is taken.
+    async fn create_at(
         &mut self,
         t: &SrcTarget,
         noun: &str,
+        number: u32,
     ) -> Result<std::result::Result<Target, String>> {
         let placeholder = Target {
             kind: t.kind,
             id: String::new(),
-            number: t.number,
+            number,
             author: self.ledger.signer.clone().unwrap_or_default(),
         };
         let credits = collab_doc_credits(
@@ -370,7 +456,7 @@ impl<'a> Sink<'a> {
                             collab
                                 .create_patch_numbered(
                                     need(repo)?,
-                                    t.number,
+                                    number,
                                     input,
                                     Some(&t.imported),
                                 )
@@ -389,7 +475,7 @@ impl<'a> Sink<'a> {
                             collab
                                 .create_issue_numbered(
                                     need(repo)?,
-                                    t.number,
+                                    number,
                                     &t.title,
                                     &t.body,
                                     Some(&t.imported),
@@ -537,7 +623,7 @@ impl<'a> Sink<'a> {
         for c in t
             .comments
             .iter()
-            .filter(|c| !done.contains(&c.imported.url))
+            .filter(|c| !done.iter().any(|u| same_item(u, &c.imported.url)))
         {
             let credits = collab_doc_credits(text_doc(&c.body) + c.imported.url.len() as u64);
             self.ledger
@@ -579,7 +665,11 @@ impl<'a> Sink<'a> {
                 .collect()
         };
         let (collab, repo) = (&self.collab, self.repo.as_ref());
-        for r in t.reviews.iter().filter(|r| !done.contains(&r.imported.url)) {
+        for r in t
+            .reviews
+            .iter()
+            .filter(|r| !done.iter().any(|u| same_item(u, &r.imported.url)))
+        {
             let credits = collab_doc_credits(text_doc(&r.body) + r.imported.url.len() as u64 + 40);
             self.ledger
                 .write(
@@ -591,7 +681,10 @@ impl<'a> Sink<'a> {
                             .review(
                                 need(repo)?,
                                 &target.id,
-                                r.verdict,
+                                // Always a comment: the mirror identity is a member, and a
+                                // member's approve / request-changes counts (§6); a source
+                                // reviewer's verdict must not become one. It is in the body.
+                                Verdict::Comment,
                                 &r.commit_oid,
                                 &r.body,
                                 Some(&r.imported),

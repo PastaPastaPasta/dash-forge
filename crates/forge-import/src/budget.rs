@@ -113,6 +113,41 @@ impl Budget {
         self.estimated.max(self.measured)
     }
 
+    /// Whether a write of `credits` would fit under the cap now.
+    pub fn fits(&self, credits: u64) -> bool {
+        self.cap
+            .is_none_or(|cap| self.spent().saturating_add(credits) <= cap)
+    }
+
+    /// What may still be spent (`None`: uncapped).
+    pub fn remaining(&self) -> Option<u64> {
+        self.cap.map(|cap| cap.saturating_sub(self.spent()))
+    }
+
+    /// [`Self::check_plan`], and the signer can pay for it: its balance, and a limited
+    /// key's remaining budget (Platform refuses a transition past either, mid-run).
+    pub fn check_funds(
+        &self,
+        estimate: u64,
+        balance: u64,
+        key_remaining: Option<u64>,
+    ) -> Result<()> {
+        self.check_plan(estimate)?;
+        let (available, what) = match key_remaining {
+            Some(k) if k < balance => (k, "the signing key's remaining budget"),
+            _ => (balance, "the identity's balance"),
+        };
+        if estimate > available {
+            bail!(
+                "this run is estimated at {:.6} DASH, more than {what} ({:.6} DASH); top up or \
+                 renew the key, or narrow the run (--sync, --limit)",
+                credits_to_dash(estimate),
+                credits_to_dash(available)
+            );
+        }
+        Ok(())
+    }
+
     /// Refuse the whole plan up front when its estimate alone exceeds the cap.
     pub fn check_plan(&self, estimate: u64) -> Result<()> {
         if let Some(cap) = self.cap {

@@ -246,16 +246,53 @@ pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &st
     })
 }
 
-/// Close a run: an `Err` becomes the summary's status (`cap_exceeded` for the spend cap,
-/// else `error`) and its redacted message.
-pub fn finish(mut summary: Summary, result: Result<()>) -> Summary {
-    if let Err(e) = result {
-        summary.status = if e.downcast_ref::<CapExceeded>().is_some() {
-            Status::CapExceeded
-        } else {
-            Status::Error
-        };
-        summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
+/// What a write-phase run leaves behind for its summary, whatever path it exits by: the
+/// ledger (spend, counts, warnings) and the signer (balance, key limits).
+#[derive(Default)]
+pub struct Outcome<'a> {
+    /// The write phase's ledger, once it started.
+    pub ledger: Option<Ledger<'a>>,
+    /// The signer and its client, once loaded.
+    pub signer: Option<(&'a PlatformClient, &'a Signer)>,
+}
+
+/// Close a run: record what was written and spent on EVERY exit (a capped or failed run
+/// still spent), then turn an `Err` into the summary's status (`cap_exceeded` for the
+/// spend cap, else `error`) and its redacted message; a run that skipped items is
+/// `partial`.
+pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<()>) -> Summary {
+    if let Some(mut ledger) = outcome.ledger {
+        ledger.reconcile().await;
+        let dry_counts = std::mem::take(&mut summary.counts);
+        summary.counts = ledger.counts;
+        if summary.status == Status::DryRun {
+            summary.counts = dry_counts;
+        }
+        summary.spent_credits = ledger.budget.spent();
+        summary.warnings.extend(ledger.warnings);
+    }
+    if let Some((client, signer)) = outcome.signer {
+        summary.balance_credits = client.get_balance(&signer.id()).await.ok();
+        summary.key = signer.key_info(client).await;
+    }
+    summary.warnings = summary
+        .warnings
+        .iter()
+        .map(|w| forge_core::user_error::redact(w))
+        .collect();
+    match result {
+        Err(e) => {
+            summary.status = if e.downcast_ref::<CapExceeded>().is_some() {
+                Status::CapExceeded
+            } else {
+                Status::Error
+            };
+            summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
+        }
+        Ok(()) if summary.status == Status::Ok && summary.counts.skipped > 0 => {
+            summary.status = Status::Partial;
+        }
+        Ok(()) => {}
     }
     summary
 }
@@ -297,30 +334,39 @@ pub async fn dry_collab<'a>(
     Ok(dry.ledger)
 }
 
-/// Write the collaboration documents missing from `repo`, then fill the summary's counts,
-/// warnings, spend, balance and key limits (also when the sync failed part-way).
-pub async fn write_collab(
-    client: &PlatformClient,
-    signer: &Signer,
+/// Write the collaboration documents missing from `repo` with the run's ledger (taken from
+/// `outcome` and put back, so the summary sees it however this ends). A writer cannot
+/// publish releases, so for one they are left out with a warning rather than failing the run.
+pub async fn write_collab<'a>(
+    client: &'a PlatformClient,
+    signer: &'a Signer,
+    role: Role,
     repo: RepoRef,
-    ledger: Ledger<'_>,
     src: &SrcCollab,
-    summary: &mut Summary,
+    outcome: &mut Outcome<'a>,
 ) -> Result<()> {
+    let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
+    let skip_releases =
+        role == Role::Writer && src.releases.as_ref().is_some_and(|r| !r.is_empty());
+    if skip_releases {
+        ledger.warn(
+            "releases were not mirrored: the mirror identity is a writer, and only maintainers \
+             publish releases (`dg collab add … --role maintainer`)",
+        );
+    }
     let mut sink = Sink::new(
         Collab::new(client, &signer.identity, &signer.bridge),
         Some(repo),
         ledger,
     );
-    let result = sink.sync(src).await;
-    sink.ledger.reconcile().await;
-    summary.counts = sink.ledger.counts;
-    summary
-        .warnings
-        .extend(std::mem::take(&mut sink.ledger.warnings));
-    summary.spent_credits = sink.ledger.budget.spent();
-    summary.balance_credits = client.get_balance(&signer.id()).await.ok();
-    summary.key = signer.key_info(client).await;
+    let result = if skip_releases {
+        let mut without = src.clone();
+        without.releases = None;
+        sink.sync(&without).await
+    } else {
+        sink.sync(src).await
+    };
+    outcome.ledger = Some(sink.ledger);
     result
 }
 

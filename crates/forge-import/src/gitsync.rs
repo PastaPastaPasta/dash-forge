@@ -7,8 +7,14 @@
 //!
 //! **The cap reaches into the push.** A push is first priced with a dry run (the helper
 //! builds the pack and estimates, storing nothing); that estimate is charged to the run's
-//! budget, and only then is the real push made. The importer reads the helper's JSON
-//! progress events (`GIT_DASH_JSON=1`) for what each push planned and charged.
+//! budget, and only then is the real push made, with the helper's own cost guard set to the
+//! run's remaining budget (`dash.costWarnThreshold`; there is no terminal, so above it the
+//! helper refuses before storing anything). The importer reads the helper's JSON progress
+//! events (`GIT_DASH_JSON=1`) for what each push planned and charged.
+//!
+//! Branches and tags are one push; the heads of **open** PRs (`refs/mirror/pull/<n>/head`)
+//! are a second, so a stranger's large PR can fail only its own push, never the mirror of
+//! branches, tags and issues.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,15 +26,37 @@ use forge_core::network::NetworkTarget;
 
 use crate::budget::{chunked_credits, git_doc_credits, GIT_DOC_INDEX_OVERHEAD, REF_UPDATE_BYTES};
 
-/// The refspecs a mirror push sends: branches and tags (forced, so a force-push upstream is
-/// mirrored as one), and PR heads under `refs/mirror/pull/<n>/head` so imported PRs are
-/// checkoutable. Deletions come from `--prune`.
-fn refspecs(pull_heads: bool) -> Vec<&'static str> {
-    let mut v = vec!["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"];
-    if pull_heads {
-        v.push("+refs/pull/*/head:refs/mirror/pull/*/head");
+/// What one push sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refs {
+    /// Branches and tags (forced, so a force-push upstream is mirrored as one); deletions
+    /// come from `--prune`.
+    Code,
+    /// The heads of these open PRs, as `refs/mirror/pull/<n>/head` (checkoutable).
+    PullHeads(Vec<u64>),
+}
+
+impl Refs {
+    fn refspecs(&self) -> Vec<String> {
+        match self {
+            Refs::Code => vec![
+                "+refs/heads/*:refs/heads/*".into(),
+                "+refs/tags/*:refs/tags/*".into(),
+            ],
+            Refs::PullHeads(open) => open
+                .iter()
+                .map(|n| format!("+refs/pull/{n}/head:refs/mirror/pull/{n}/head"))
+                .collect(),
+        }
     }
-    v
+
+    /// `for-each-ref` patterns of what this push sends (the fresh estimate).
+    fn local_patterns(&self) -> Vec<String> {
+        match self {
+            Refs::Code => vec!["refs/heads/".into(), "refs/tags/".into()],
+            Refs::PullHeads(open) => open.iter().map(|n| format!("refs/pull/{n}/head")).collect(),
+        }
+    }
 }
 
 /// What a push did (or would do), from the helper's progress events.
@@ -81,18 +109,18 @@ pub struct GitPusher {
     pub key: PathBuf,
     /// The network (its env vars are handed to the helper).
     pub network: NetworkTarget,
-    /// Mirror PR heads too.
-    pub pull_heads: bool,
+    /// What to push.
+    pub refs: Refs,
 }
 
 /// Price the first push into a repository that does not exist yet (so the helper cannot
 /// be asked): build the whole pack locally and price it as Platform chunks, plus a
 /// manifest and browse-index fragment, plus a ref update per ref. An upper bound when the
 /// storage policy puts the pack on your own storage instead.
-pub fn estimate_fresh(git_dir: &Path, pull_heads: bool) -> Result<PushReport> {
-    let mut patterns = vec!["refs/heads/", "refs/tags/"];
-    if pull_heads {
-        patterns.push("refs/pull/");
+pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
+    let patterns = refs.local_patterns();
+    if patterns.is_empty() {
+        return Ok(PushReport::default());
     }
     let out = Command::new("git")
         .arg("-C")
@@ -139,7 +167,7 @@ impl GitPusher {
     /// Price the push: the helper builds the pack and estimates, storing nothing. The
     /// estimate never counts fewer ref updates than git reports.
     pub fn estimate(&self) -> Result<PushReport> {
-        let mut r = self.run(true)?;
+        let mut r = self.run(true, None)?;
         // The helper prices documents by their bytes; forge-v2 index storage adds about
         // GIT_DOC_INDEX_OVERHEAD per document (measured). Add it for the documents the helper
         // said it would write: two manifests per pack, a chunk per ~14.7 KB, a ref update per ref.
@@ -149,25 +177,38 @@ impl GitPusher {
         Ok(r)
     }
 
-    /// Push for real. The caller has already charged [`Self::estimate`] to its budget; the
-    /// helper's own guard is off (`dash.confirm=never`) so nothing waits on a terminal.
-    pub fn push(&self) -> Result<PushReport> {
-        self.run(false)
+    /// Push for real. The caller has already charged [`Self::estimate`] to its budget.
+    /// `max_credits` (the run's remaining budget) arms the helper's cost guard: a push the
+    /// helper prices above it is refused before anything is stored.
+    pub fn push(&self, max_credits: Option<u64>) -> Result<PushReport> {
+        self.run(false, max_credits)
     }
 
-    fn run(&self, dry_run: bool) -> Result<PushReport> {
+    fn run(&self, dry_run: bool, max_credits: Option<u64>) -> Result<PushReport> {
+        let spec = self.refs.refspecs();
+        if spec.is_empty() {
+            return Ok(PushReport::default());
+        }
         let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&self.git_dir).args([
-            "-c",
-            "dash.confirm=never",
-            "push",
-            "--porcelain",
-            "--prune",
-        ]);
+        cmd.arg("-C").arg(&self.git_dir);
+        match max_credits {
+            // No terminal: above the threshold the helper refuses (E801), below it proceeds.
+            Some(max) => cmd.args([
+                "-c".to_string(),
+                "dash.confirm=auto".to_string(),
+                "-c".to_string(),
+                format!("dash.costWarnThreshold={}", threshold_dash(max)),
+            ]),
+            None => cmd.args(["-c", "dash.confirm=never"]),
+        };
+        cmd.args(["push", "--porcelain"]);
+        if self.refs == Refs::Code {
+            cmd.arg("--prune");
+        }
         if dry_run {
             cmd.arg("--dry-run");
         }
-        cmd.arg(&self.url).args(refspecs(self.pull_heads));
+        cmd.arg(&self.url).args(&spec);
         cmd.env("PATH", helper_path()?)
             .env("DASH_FORGE_KEY", &self.key)
             .env("GIT_DASH_JSON", "1")
@@ -190,6 +231,13 @@ impl GitPusher {
         }
         Ok(parse_push(&stdout, &stderr))
     }
+}
+
+/// A credit amount as the DASH string `dash.costWarnThreshold` takes, rounded DOWN (to
+/// 10⁻⁸ DASH) so the guard never admits more than the budget.
+fn threshold_dash(credits: u64) -> String {
+    let units = credits / 1_000; // 1 DASH = 10¹¹ credits = 10⁸ units of 10³ credits
+    format!("{}.{:08}", units / 100_000_000, units % 100_000_000)
 }
 
 /// `PATH` with the directory of this binary first, so the `git-remote-dash` shipped next
@@ -236,12 +284,22 @@ dash: some human line"#;
     }
 
     #[test]
-    fn pr_heads_are_pushed_only_when_asked() {
-        assert!(refspecs(true)
-            .iter()
-            .any(|s| s.contains("refs/mirror/pull")));
-        assert!(!refspecs(false)
-            .iter()
-            .any(|s| s.contains("refs/mirror/pull")));
+    fn code_and_open_pr_heads_are_separate_pushes() {
+        let code = Refs::Code.refspecs();
+        assert!(code.iter().all(|s| !s.contains("pull")));
+        assert_eq!(
+            Refs::PullHeads(vec![3, 7]).refspecs(),
+            vec![
+                "+refs/pull/3/head:refs/mirror/pull/3/head",
+                "+refs/pull/7/head:refs/mirror/pull/7/head"
+            ]
+        );
+        assert!(Refs::PullHeads(Vec::new()).refspecs().is_empty());
+    }
+
+    #[test]
+    fn the_guard_threshold_never_rounds_up_past_the_budget() {
+        assert_eq!(threshold_dash(123_456_789), "0.00123456");
+        assert_eq!(threshold_dash(0), "0.00000000");
     }
 }

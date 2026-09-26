@@ -59,6 +59,13 @@ impl Ctx {
         let target = resolve_target(flags, config, NetworkSettings::from_env())
             .context("resolving the network (--network / --devnet-name / config.toml)")?;
 
+        if cli
+            .identity
+            .as_deref()
+            .is_some_and(forge_core::keystore::is_inline_key)
+        {
+            tracing::warn!("{}", forge_core::keystore::INLINE_KEY_ON_ARGV);
+        }
         let identity_path = cli
             .identity
             .clone()

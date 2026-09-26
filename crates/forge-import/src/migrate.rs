@@ -33,7 +33,7 @@ use forge_core::scope::RepoRef;
 use forge_core::storage::PackReader;
 
 use crate::budget::{chunked_credits, git_doc_credits, Budget, REF_UPDATE_BYTES};
-use crate::dest::{self, Signer, REPO_CREATE_CREDITS};
+use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::sink::Ledger;
 use crate::source_github::Classes;
 use crate::source_v1::{Collaborator, V1Source};
@@ -106,25 +106,13 @@ fn fit_uris(uris: &mut Vec<String>) {
     }
 }
 
-/// The URIs of a v1 manifest a v2 reader can use: public http(s), `ipfs://` and `s3://`
-/// copies. v1 `platform://` locators name the v1 contract and are dropped.
+/// The URIs of a v1 manifest the v2 manifest may reference: public copies only (see
+/// [`crate::model::is_public_uri`]). v1 `platform://` locators name the v1 contract, and a
+/// private or credentialed copy is either unreadable to others or a leak; both are dropped.
 fn portable_uris(uris: &[String]) -> Vec<String> {
     let mut out: Vec<String> = uris
         .iter()
-        .filter(|u| {
-            let (scheme, rest) = u.split_once("://").unwrap_or_default();
-            let host = rest.split(['/', ':']).next().unwrap_or_default();
-            // A copy on a loopback / private host is only readable on the machine that
-            // pushed it; referencing it would record a pack nobody else can read.
-            let local = host == "localhost"
-                || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
-                    std::net::IpAddr::V4(v4) => {
-                        v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                    }
-                    std::net::IpAddr::V6(v6) => v6.is_loopback(),
-                });
-            matches!(scheme, "https" | "http" | "ipfs" | "s3") && !local
-        })
+        .filter(|u| crate::model::is_public_uri(u))
         .cloned()
         .collect();
     fit_uris(&mut out);
@@ -161,14 +149,31 @@ fn tip(state: &RefState) -> Option<String> {
     }
 }
 
-/// Run a migration. Always returns a summary (a failure is its status and error).
+/// Run a migration. Always returns a summary (a failure is its status and error; what was
+/// spent before it is still reported).
 pub async fn run(cfg: &MigrateConfig) -> Summary {
     let mut summary = Summary::new(
         cfg.network.network.key(),
         format!("{} ({})", cfg.source, cfg.source_network.network.key()),
     );
-    let result = run_inner(cfg, &mut summary).await;
-    dest::finish(summary, result)
+    let client = match PlatformClient::connect(cfg.network.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            let err =
+                anyhow::Error::from(e).context(format!("connecting to {}", cfg.network.network));
+            return dest::finish(summary, Outcome::default(), Err(err)).await;
+        }
+    };
+    let signer = match Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await {
+        Ok(s) => s,
+        Err(e) => return dest::finish(summary, Outcome::default(), Err(e)).await,
+    };
+    let mut outcome = Outcome {
+        ledger: None,
+        signer: signer.as_ref().map(|s| (&client, s)),
+    };
+    let result = run_inner(cfg, &client, signer.as_ref(), &mut summary, &mut outcome).await;
+    dest::finish(summary, outcome, result).await
 }
 
 async fn resolve_v1(client: &PlatformClient, spec: &str) -> Result<RepoRef> {
@@ -239,14 +244,21 @@ async fn todo<'p>(
         .partition(|p| p.reupload() || !p.external.is_empty());
     for p in &unreadable {
         warnings.push(format!(
-            "v1 pack {} is stored only at private or local addresses ({}); nobody else can \
-             read it, so it is not copied",
+            "v1 pack {} has no public copy (only private, local or credentialed addresses); \
+             it is not copied",
             &hex::encode(p.manifest.pack_hash)[..12],
-            p.manifest.uris.join(", ")
+        ));
+    }
+    if !unreadable.is_empty() {
+        warnings.push(format!(
+            "{} v1 pack(s) cannot be copied, so no ref is written: a ref must never name \
+             history the repository does not store",
+            unreadable.len()
         ));
     }
     let refs = refs
         .iter()
+        .filter(|_| unreadable.is_empty())
         .filter_map(|(name, state)| {
             let want = tip(state)?;
             let current = have_refs
@@ -272,7 +284,13 @@ async fn todo<'p>(
 }
 
 #[allow(clippy::too_many_lines)] // one sequential run: read, price, confirm, write
-async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
+async fn run_inner<'a>(
+    cfg: &MigrateConfig,
+    client: &'a PlatformClient,
+    signer: Option<&'a Signer>,
+    summary: &mut Summary,
+    outcome: &mut Outcome<'a>,
+) -> Result<()> {
     // Source (read only, no identity).
     let src_client = PlatformClient::connect(cfg.source_network.clone())
         .await
@@ -309,19 +327,15 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
     let collab_src = source.collect(cfg.classes).await?;
 
     // Destination.
-    let client = PlatformClient::connect(cfg.network.clone())
-        .await
-        .with_context(|| format!("connecting to {}", cfg.network.network))?;
-    let signer = Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await?;
-    let signer_id = signer.as_ref().map(Signer::id);
+    let signer_id = signer.map(Signer::id);
     let spec = cfg
         .dest
         .clone()
         .unwrap_or_else(|| v1.name().to_ascii_lowercase());
-    let mut dest = dest::resolve(&client, signer_id.as_deref(), &spec).await?;
+    let mut dest = dest::resolve(client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
     let todo = todo(
-        &client,
+        client,
         dest.existing.as_ref(),
         &packs,
         &refs,
@@ -332,12 +346,11 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
 
     // Price.
     let create = dest.existing.is_none();
-    let dry = dest::dry_collab(&client, dest.existing.clone(), signer_id, &collab_src).await?;
+    let dry = dest::dry_collab(client, dest.existing.clone(), signer_id, &collab_src).await?;
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let total = create_credits + todo.git_credits() + todo.member_credits() + dry.budget.spent();
     summary.estimate_credits = total;
     let mut budget = Budget::new(cfg.max_spend);
-    budget.check_plan(total)?;
     let reupload = todo.packs.iter().filter(|p| p.reupload()).count();
     eprintln!(
         "{} → {}: {} packs ({} re-uploaded as Platform chunks, {} referenced), {} refs, {} \
@@ -359,15 +372,24 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
         summary.counts.refs = todo.refs.len() as u64;
         summary.counts.members = todo.members.len() as u64;
         summary.warnings.extend(dry.warnings);
+        if let Err(e) = budget.check_plan(total) {
+            summary.warnings.push(format!("a real run would stop: {e}"));
+        }
         summary.status = Status::DryRun;
         return Ok(());
     }
     let signer = signer.expect("load_opt returns a signer outside a dry run");
+    let key_left = signer.key_info(client).await.remaining_credits;
+    budget.check_funds(total, signer.identity.balance(), key_left)?;
     dest::confirm(cfg.yes, total)?;
     budget.start(signer.identity.balance());
+    outcome.ledger = Some(Ledger::new(client, Some(signer.id()), false, budget));
+    let ledger = outcome.ledger.as_mut().expect("just set");
 
     if create {
-        budget.charge(REPO_CREATE_CREDITS, "creating the repository")?;
+        ledger
+            .budget
+            .charge(REPO_CREATE_CREDITS, "creating the repository")?;
         let description = format!(
             "Migrated from forge-v1 {} ({})",
             v1.display(),
@@ -378,36 +400,18 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
             .await
             .unwrap_or_else(|| "main".into());
         let created =
-            dest::create(&client, &signer, &mut dest, &description, &default_branch).await?;
+            dest::create(client, signer, &mut dest, &description, &default_branch).await?;
         summary.repo = dest.info(created);
+        ledger.reconcile().await;
     }
     let repo = dest.existing.clone().expect("created or existing");
-    let role = dest::require_member(&client, &repo, &signer.id()).await?;
-    let mut ledger = Ledger::new(&client, Some(signer.id()), false, budget);
-    ledger.reconcile().await;
+    let role = dest::require_member(client, &repo, &signer.id()).await?;
 
-    copy_git(
-        &reader,
-        &v1,
-        &client,
-        &signer,
-        &repo,
-        role,
-        &todo,
-        &mut ledger,
-    )
-    .await?;
-    add_members(
-        &client,
-        &signer,
-        &repo,
-        &todo.members,
-        &cfg.network,
-        &mut ledger,
-    )
-    .await?;
-    dest::write_collab(&client, &signer, repo, ledger, &collab_src, summary).await?;
-    if summary.counts.packs > 0 {
+    copy_git(&reader, &v1, client, signer, &repo, role, &todo, ledger).await?;
+    add_members(client, signer, &repo, &todo.members, &cfg.network, ledger).await?;
+    let copied_packs = ledger.counts.packs;
+    dest::write_collab(client, signer, role, repo, &collab_src, outcome).await?;
+    if copied_packs > 0 {
         summary.warnings.push(
             "the browse index (objectLocator) is not copied; the web app reads the repository \
              whole-pack until the next push or `dg repack`"
@@ -432,19 +436,31 @@ async fn copy_git(
 ) -> Result<()> {
     let svc = RepoService::new(client, &signer.identity, &signer.bridge);
     let pack_reader = PackReader::from_user_config();
+    let mut missing = 0usize;
     for p in &todo.packs {
         let hash = hex::encode(p.manifest.pack_hash);
         // Reading is free; charge only a pack that will actually be written.
-        let bytes = match reader.fetch_artifact(v1, &p.manifest, &pack_reader).await {
+        // An external pack is verified through the URIs the v2 manifest will record, so a
+        // copy readable only here (a local mirror) cannot vouch for unreachable ones.
+        let read_from = if p.reupload() {
+            p.manifest.clone()
+        } else {
+            PackManifestInfo {
+                uris: p.external.clone(),
+                ..p.manifest.clone()
+            }
+        };
+        let bytes = match reader.fetch_artifact(v1, &read_from, &pack_reader).await {
             Ok(b) => b,
             // An external pack no URI serves any more: nothing can read it, so there is
             // nothing to copy. Its objects are missing from the v1 repo too.
             Err(e) if !p.reupload() => {
                 ledger.warn(format!(
-                    "v1 pack {} is stored externally and no recorded copy is readable ({e}); \
+                    "v1 pack {} is stored externally and no public copy is readable ({e}); \
                      not copied",
                     &hash[..12]
                 ));
+                missing += 1;
                 continue;
             }
             Err(e) => return Err(anyhow::Error::from(e).context(format!("reading v1 pack {hash}"))),
@@ -485,6 +501,13 @@ async fn copy_git(
         ledger.counts.packs += 1;
         ledger.counts.pack_bytes += bytes.len() as u64;
         ledger.reconcile().await;
+    }
+    if missing > 0 {
+        ledger.skip(format!(
+            "{missing} v1 pack(s) could not be read, so no ref is written (a ref must never \
+             name history the repository does not store); re-run when the copies are back"
+        ));
+        return Ok(());
     }
     for (name, want, current) in &todo.refs {
         let prev = current.as_deref().map(hex::decode).transpose();
@@ -618,11 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn local_copies_are_not_referenced() {
+    fn local_and_credentialed_copies_are_not_referenced() {
         assert!(portable_uris(&[
             "http://127.0.0.1:9000/b/p.pack".into(),
             "http://localhost:8080/ipfs/x".into(),
             "https://10.1.2.3/p".into(),
+            "https://user:pw@bucket.example/p".into(),
+            "s3://bucket/p".into(),
         ])
         .is_empty());
     }

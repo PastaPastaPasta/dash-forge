@@ -157,6 +157,16 @@ fn target(net: &NetArgs) -> Result<NetworkTarget> {
 }
 
 fn key(net: &NetArgs) -> Option<PathBuf> {
+    if net
+        .identity
+        .as_deref()
+        .is_some_and(forge_core::keystore::is_inline_key)
+    {
+        eprintln!(
+            "forge-import: warning: {}",
+            forge_core::keystore::INLINE_KEY_ON_ARGV
+        );
+    }
     net.identity.clone().or_else(|| {
         std::env::var_os("DASH_FORGE_KEY")
             .filter(|v| !v.is_empty())
@@ -175,6 +185,7 @@ fn finish(summary: &Summary, json: Option<&PathBuf>) -> ExitCode {
     match summary.status {
         Status::Ok | Status::DryRun => ExitCode::SUCCESS,
         Status::CapExceeded => ExitCode::from(3),
+        Status::Partial => ExitCode::from(4),
         Status::Error => ExitCode::FAILURE,
     }
 }

@@ -20,9 +20,9 @@ use forge_core::platform::PlatformClient;
 use forge_core::repo::credits_to_dash;
 
 use crate::budget::Budget;
-use crate::dest::{self, Signer, REPO_CREATE_CREDITS};
+use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::github::{GithubClient, GithubRepoRef};
-use crate::gitsync::{GitPusher, PushReport};
+use crate::gitsync::{GitPusher, Refs};
 use crate::sink::Ledger;
 use crate::source_github::{self, Classes};
 use crate::state::{self, SyncState};
@@ -54,39 +54,57 @@ pub struct ImportConfig {
     pub key: Option<PathBuf>,
 }
 
-/// Run an import. Always returns a summary (a failure is its status and error).
+/// Run an import. Always returns a summary (a failure is its status and error; what was
+/// spent before it is still reported).
 pub async fn run(cfg: &ImportConfig) -> Summary {
     let mut summary = Summary::new(
         cfg.network.network.key(),
         format!("github.com/{}", cfg.source.slug()),
     );
-    let result = run_inner(cfg, &mut summary).await;
-    dest::finish(summary, result)
+    let client = match PlatformClient::connect(cfg.network.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            let err = anyhow::Error::from(e).context("connecting to Dash Platform");
+            return dest::finish(summary, Outcome::default(), Err(err)).await;
+        }
+    };
+    let signer = match Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await {
+        Ok(s) => s,
+        Err(e) => return dest::finish(summary, Outcome::default(), Err(e)).await,
+    };
+    let mut outcome = Outcome {
+        ledger: None,
+        signer: signer.as_ref().map(|s| (&client, s)),
+    };
+    let result = run_inner(cfg, &client, signer.as_ref(), &mut summary, &mut outcome).await;
+    dest::finish(summary, outcome, result).await
 }
 
 #[allow(clippy::too_many_lines)] // one sequential run: read, price, confirm, write
-async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
+async fn run_inner<'a>(
+    cfg: &ImportConfig,
+    client: &'a PlatformClient,
+    signer: Option<&'a Signer>,
+    summary: &mut Summary,
+    outcome: &mut Outcome<'a>,
+) -> Result<()> {
     let started = state::now();
     let gh = GithubClient::new(cfg.source.clone());
     let meta = gh.repo_meta().context("reading the GitHub repository")?;
-
-    let client = PlatformClient::connect(cfg.network.clone())
-        .await
-        .context("connecting to Dash Platform")?;
-    let signer = Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await?;
-    let signer_id = signer.as_ref().map(Signer::id);
+    let signer_id = signer.map(Signer::id);
     let spec = cfg
         .dest
         .clone()
         .unwrap_or_else(|| cfg.source.repo.to_ascii_lowercase());
-    let mut dest = dest::resolve(&client, signer_id.as_deref(), &spec).await?;
+    let mut dest = dest::resolve(client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
 
     // Collaboration data (diffed on chain; `since` narrows what GitHub is asked for).
+    let scope = state::scope(&summary.source, cfg.classes, cfg.limit);
     let existing_id = dest.existing.as_ref().map(|r| r.id().to_string());
     let mut sync_state = SyncState::load(
         cfg.state_path.as_deref(),
-        &summary.source,
+        &scope,
         existing_id.as_deref().unwrap_or_default(),
     );
     let since = sync_state.since();
@@ -107,53 +125,79 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
         gh.sync_mirror(&work).context("mirroring the git data")?;
     }
 
-    // Price everything, then the up-front cap check.
+    // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
+    // heads, are separate pushes (see gitsync).
     let create = dest.existing.is_none();
-    let git_pusher = |url: String| GitPusher {
+    let pushes: Vec<Refs> = if cfg.classes.code {
+        vec![Refs::Code, Refs::PullHeads(collab_src.open_pulls.clone())]
+    } else {
+        Vec::new()
+    };
+    let git_pusher = |url: String, refs: &Refs| GitPusher {
         git_dir: work.clone(),
         url,
         key: cfg.key.clone().unwrap_or_default(),
         network: cfg.network.clone(),
-        pull_heads: cfg.classes.prs,
+        refs: refs.clone(),
     };
-    let push_estimate = match (cfg.classes.code, create, signer.is_some()) {
-        (false, _, _) => PushReport::default(),
-        // The helper prices a push into an existing repo (storage policy included).
-        (true, false, true) => git_pusher(dest.url()).estimate()?,
-        // A new repo (or no identity to ask the helper with): price the whole pack.
-        _ => crate::gitsync::estimate_fresh(&work, cfg.classes.prs)?,
-    };
-    let dry = dest::dry_collab(&client, dest.existing.clone(), signer_id, &collab_src).await?;
+    let mut push_estimates = Vec::with_capacity(pushes.len());
+    for refs in &pushes {
+        push_estimates.push(if !create && signer.is_some() {
+            // The helper prices a push into an existing repo (storage policy included).
+            git_pusher(dest.url(), refs).estimate()?
+        } else {
+            // A new repo (or no identity to ask the helper with): price the whole pack.
+            crate::gitsync::estimate_fresh(&work, refs)?
+        });
+    }
+    let git_estimate: u64 = push_estimates.iter().map(|p| p.est_credits).sum();
+    let dry = dest::dry_collab(
+        client,
+        dest.existing.clone(),
+        signer_id.clone(),
+        &collab_src,
+    )
+    .await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
-    let estimate = create_credits + push_estimate.est_credits + collab_estimate;
+    let estimate = create_credits + git_estimate + collab_estimate;
     summary.estimate_credits = estimate;
-    let mut budget = Budget::new(cfg.max_spend);
-    budget.check_plan(estimate)?;
     eprintln!(
         "{} → {}: estimated {:.6} DASH (repo {:.6}, git {:.6}, issues/PRs/releases {:.6})",
         summary.source,
         dest.url(),
         credits_to_dash(estimate),
         credits_to_dash(create_credits),
-        credits_to_dash(push_estimate.est_credits),
+        credits_to_dash(git_estimate),
         credits_to_dash(collab_estimate),
     );
+    let mut budget = Budget::new(cfg.max_spend);
 
     if cfg.dry_run {
         summary.counts = dry.counts;
-        summary.counts.add_push(&push_estimate);
+        for p in &push_estimates {
+            summary.counts.add_push(p);
+        }
         summary.warnings.extend(dry.warnings);
+        if let Err(e) = budget.check_plan(estimate) {
+            summary.warnings.push(format!("a real run would stop: {e}"));
+        }
         summary.status = Status::DryRun;
         return Ok(());
     }
     let signer = signer.expect("load_opt returns a signer outside a dry run");
+    let key_left = signer.key_info(client).await.remaining_credits;
+    budget.check_funds(estimate, signer.identity.balance(), key_left)?;
     dest::confirm(cfg.yes, estimate)?;
     budget.start(signer.identity.balance());
+    outcome.ledger = Some(Ledger::new(client, Some(signer.id()), false, budget));
+    let ledger = outcome.ledger.as_mut().expect("just set");
 
     // 1. The repository.
     if create {
-        budget.charge(REPO_CREATE_CREDITS, "creating the repository")?;
+        ledger
+            .budget
+            .charge(REPO_CREATE_CREDITS, "creating the repository")?;
         let description = meta
             .description
             .as_deref()
@@ -163,36 +207,59 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
                 |d| format!("{d} (mirror of github.com/{})", cfg.source.slug()),
             );
         let created = dest::create(
-            &client,
-            &signer,
+            client,
+            signer,
             &mut dest,
             &description,
             &meta.default_branch,
         )
         .await?;
         summary.repo = dest.info(created);
+        ledger.reconcile().await;
     }
     let repo = dest.existing.clone().expect("created or existing");
-    dest::require_member(&client, &repo, &signer.id()).await?;
+    let role = dest::require_member(client, &repo, &signer.id()).await?;
     if existing_id.is_none() {
-        sync_state = SyncState::load(cfg.state_path.as_deref(), &summary.source, repo.id());
+        sync_state = SyncState::load(cfg.state_path.as_deref(), &scope, repo.id());
     }
 
-    // 2. Git data: priced (again, now that the repo exists), charged, pushed.
-    let mut ledger = Ledger::new(&client, Some(signer.id()), false, budget);
-    ledger.reconcile().await;
-    if cfg.classes.code {
-        let pusher = git_pusher(dest.url());
-        let est = pusher.estimate()?;
-        if est.refs > 0 {
-            ledger.budget.charge(est.est_credits, "the git push")?;
-            ledger.counts.add_push(&pusher.push()?);
-            ledger.reconcile().await;
+    // 2. Git data: each push priced (reusing the estimate for an existing repo), charged,
+    //    then pushed with the helper's guard set to what is left of the budget.
+    for (refs, est) in pushes.iter().zip(push_estimates) {
+        let p = git_pusher(dest.url(), refs);
+        let est = if create { p.estimate()? } else { est };
+        if est.refs == 0 {
+            continue;
         }
+        let what = match refs {
+            Refs::Code => "the git push (branches and tags)".to_string(),
+            Refs::PullHeads(_) => "the push of open pull request heads".to_string(),
+        };
+        if matches!(refs, Refs::PullHeads(_)) && !ledger.budget.fits(est.est_credits) {
+            // Heads of PRs are optional: a stranger's huge PR must not stop the mirror.
+            ledger.skip(format!(
+                "{what} (~{:.6} DASH) does not fit under --max-spend; skipped this run",
+                credits_to_dash(est.est_credits)
+            ));
+            continue;
+        }
+        ledger.budget.charge(est.est_credits, what)?;
+        let guard = ledger
+            .budget
+            .remaining()
+            .map(|r| r.saturating_add(est.est_credits));
+        ledger.counts.add_push(&p.push(guard)?);
+        ledger.reconcile().await;
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases.
-    dest::write_collab(&client, &signer, repo, ledger, &collab_src, summary).await?;
+    dest::write_collab(client, signer, role, repo, &collab_src, outcome).await?;
+    // Advance the incremental state only when every item was read and mirrored: items past
+    // `--limit`, or skipped, are retried by the next run.
+    let skipped = outcome.ledger.as_ref().map_or(0, |l| l.counts.skipped);
+    if collab_src.truncated || skipped > 0 {
+        return Ok(());
+    }
     sync_state.save(started)
 }
 

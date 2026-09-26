@@ -32,6 +32,9 @@ pub struct Counts {
     pub labels: u64,
     /// Members granted (migrate).
     pub members: u64,
+    /// Items that could not be mirrored this run (see the warnings); a run with any is
+    /// `partial`, and its state does not advance.
+    pub skipped: u64,
 }
 
 impl Counts {
@@ -51,6 +54,9 @@ pub enum Status {
     Ok,
     /// A dry run finished (counts are an estimate).
     DryRun,
+    /// Finished, but some items were skipped (see `counts.skipped` and the warnings); the
+    /// next run retries them, and the incremental state did not advance.
+    Partial,
     /// Stopped at `--max-spend`.
     CapExceeded,
     /// Failed.
@@ -179,7 +185,8 @@ impl Summary {
             );
         } else {
             eprintln!(
-                "  Platform charged: {:.6} DASH (estimated {:.6})",
+                "  spent: {:.6} DASH (the larger of the estimates charged and the measured \
+                 balance drop; estimated {:.6} up front)",
                 credits_to_dash(self.spent_credits),
                 credits_to_dash(self.estimate_credits)
             );

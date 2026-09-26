@@ -75,24 +75,49 @@ fn max_spend(dash: Option<f64>) -> Result<Option<u64>> {
     })
 }
 
-/// Report a summary: the table (or `--json`), and an error with the right code when the
-/// run did not finish.
+/// Report a summary: the table (or, with `--json`, the summary as the one JSON object on
+/// stdout, carrying an `"error"` block when the run did not finish), and an error with the
+/// right code when it did not.
 fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
-    if ctx.json {
-        crate::errors::print_json(&serde_json::to_value(summary)?);
-    } else {
+    if !ctx.json {
         summary.print();
     }
-    match summary.status {
-        Status::Ok | Status::DryRun => Ok(()),
-        Status::CapExceeded => Err(UserError::new(codes::COST_GUARD, "stopped at --max-spend")
-            .cause(summary.error.clone().unwrap_or_default())
-            .fix("re-run with a higher --max-spend; what was written is not written again")
-            .into()),
-        Status::Error => Err(anyhow::anyhow!(summary
-            .error
-            .clone()
-            .unwrap_or_else(|| "import failed".into()))),
+    let error = match summary.status {
+        Status::Ok | Status::DryRun => None,
+        Status::Partial => Some(
+            UserError::new(codes::REJECTED, "some items were not mirrored")
+                .cause(format!(
+                    "{} item(s) skipped; see the warnings",
+                    summary.counts.skipped
+                ))
+                .fix("re-run later: skipped items are retried, and written ones are not written again"),
+        ),
+        Status::CapExceeded => Some(
+            UserError::new(codes::COST_GUARD, "stopped at --max-spend")
+                .cause(summary.error.clone().unwrap_or_default())
+                .fix("re-run with a higher --max-spend; what was written is not written again"),
+        ),
+        Status::Error => {
+            let e = anyhow::anyhow!(summary
+                .error
+                .clone()
+                .unwrap_or_else(|| "the run failed".into()));
+            Some(forge_core::user_error::classify(
+                e.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            ))
+        }
+    };
+    let body = serde_json::to_value(summary)?;
+    match error {
+        None => {
+            if ctx.json {
+                crate::errors::print_json(&body);
+            }
+            Ok(())
+        }
+        // In human mode the table is already out, and `reported` prints only the error.
+        Some(e) => Err(crate::errors::reported(e, body)),
     }
 }
 

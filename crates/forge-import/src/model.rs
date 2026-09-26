@@ -65,7 +65,8 @@ pub struct SrcComment {
 /// A review to mirror.
 #[derive(Debug, Clone)]
 pub struct SrcReview {
-    /// Approve / request changes / comment.
+    /// The source verdict: recorded in the body header only. The mirror writes every
+    /// review as a comment, so no source reviewer's approval counts as a member's.
     pub verdict: Verdict,
     /// The commit reviewed.
     pub commit_oid: Vec<u8>,
@@ -108,6 +109,30 @@ pub struct SrcCollab {
     pub labels: Option<Vec<SrcLabel>>,
     /// Releases (`None`: releases are not synced).
     pub releases: Option<Vec<SrcRelease>>,
+    /// The source listed more issues/PRs than this run took (`--limit`): the incremental
+    /// state must not advance past items that were never read.
+    pub truncated: bool,
+    /// Open PRs (GitHub numbers) whose heads the git push mirrors.
+    pub open_pulls: Vec<u64>,
+}
+
+/// The part of a GitHub item URL after `github.com/<owner>/<repo>/` (`issues/12`,
+/// `pull/3#pullrequestreview-9`), lower-cased: what survives a renamed or transferred repo.
+fn tail(url: &str) -> String {
+    let path = url
+        .trim_start_matches("https://github.com/")
+        .to_ascii_lowercase();
+    match path.splitn(3, '/').collect::<Vec<_>>().as_slice() {
+        [_, _, rest] => (*rest).to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Whether two item keys name the same source item, tolerating a renamed or transferred
+/// source repository (same `issues/N`, `pull/N`, comment or review anchor).
+pub fn same_item(a: &str, b: &str) -> bool {
+    let gh = |u: &str| u.starts_with("https://github.com/");
+    a == b || (gh(a) && gh(b) && !tail(a).is_empty() && tail(a) == tail(b))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -133,6 +158,15 @@ pub fn title(s: &str, fallback: &str) -> String {
         clip(fallback, 256, 1024)
     } else {
         t
+    }
+}
+
+/// How a source review's verdict reads in its header.
+pub fn verdict_word(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Approve => "approved",
+        Verdict::RequestChanges => "requested changes",
+        _ => "commented",
     }
 }
 
@@ -183,6 +217,60 @@ pub fn date(secs: u64) -> String {
     crate::github::unix_to_iso8601(secs)[..10].to_string()
 }
 
+/// Whether `uri` is a copy anyone can read, so it may be republished on chain under the
+/// migrator's identity: `https`/`http` on a public host (no credentials, no query, so no
+/// presigned or token URL that expires or leaks), or a content-addressed `ipfs://` CID.
+/// `s3://` depends on the pusher's endpoint profile, and `platform://` names another
+/// contract; both are refused, as is anything on a loopback, private, link-local, CGNAT or
+/// unspecified address, or a `localhost` / `.local` / `.internal` name.
+pub fn is_public_uri(uri: &str) -> bool {
+    let Ok(u) = url::Url::parse(uri) else {
+        return false;
+    };
+    if !u.username().is_empty() || u.password().is_some() || u.query().is_some() {
+        return false;
+    }
+    match u.scheme() {
+        "ipfs" => u
+            .host_str()
+            .is_some_and(|cid| !cid.is_empty() && cid.chars().all(|c| c.is_ascii_alphanumeric())),
+        "https" | "http" => match u.host() {
+            Some(url::Host::Domain(d)) => {
+                let d = d.trim_end_matches('.').to_ascii_lowercase();
+                !(d.is_empty()
+                    || d == "localhost"
+                    || [".localhost", ".local", ".internal", ".localdomain"]
+                        .iter()
+                        .any(|s| d.ends_with(s)))
+            }
+            Some(url::Host::Ipv4(ip)) => public_v4(ip),
+            Some(url::Host::Ipv6(ip)) => {
+                if let Some(v4) = ip.to_ipv4_mapped() {
+                    return public_v4(v4);
+                }
+                let first = ip.segments()[0];
+                !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || (first & 0xfe00) == 0xfc00 // unique local fc00::/7
+                    || (first & 0xffc0) == 0xfe80) // link local fe80::/10
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+fn public_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !(ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || a == 0
+        || (a == 100 && (64..128).contains(&b))) // CGNAT 100.64.0.0/10
+}
+
 /// Hex oid to bytes (`None` unless 20 or 32 bytes).
 pub fn oid(hex_oid: &str) -> Option<Vec<u8>> {
     hex::decode(hex_oid)
@@ -193,6 +281,41 @@ pub fn oid(hex_oid: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_uris_are_republished() {
+        for ok in [
+            "https://bucket.example/p.pack",
+            "http://mirror.example.org:8080/x",
+            "ipfs://bafybeigdyrzt5",
+            "https://8.8.8.8/p",
+        ] {
+            assert!(is_public_uri(ok), "{ok}");
+        }
+        for bad in [
+            "https://user:pw@127.0.0.1/p",
+            "https://user@bucket.example/p",
+            "https://bucket.example/p?X-Amz-Signature=abc",
+            "http://127.0.0.1:9000/b/p.pack",
+            "http://localhost:8080/ipfs/x",
+            "http://a.localhost/x",
+            "http://nas.local/x",
+            "https://10.1.2.3/p",
+            "https://100.64.1.1/p",
+            "https://0.0.0.0/p",
+            "https://[::1]/p",
+            "https://[fd00::1]/p",
+            "https://[fe80::1]/p",
+            "https://[::ffff:192.168.1.1]/p",
+            "s3://bucket/key",
+            "platform://C/abcd",
+            "file:///etc/passwd",
+            "ftp://x/y",
+            "not a uri",
+        ] {
+            assert!(!is_public_uri(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn clip_respects_chars_and_bytes() {
@@ -214,6 +337,25 @@ mod tests {
         assert!(b.ends_with("the full text is at https://x/1)"));
         assert_eq!(body("> h\n\n", "short", "u"), "> h\n\nshort");
         assert_eq!(body("> h\n\n", "", "u"), "> h");
+    }
+
+    #[test]
+    fn items_survive_a_repo_rename_but_not_a_different_number() {
+        let a = "https://github.com/old/name/issues/12";
+        assert!(same_item(a, "https://github.com/new/renamed/issues/12"));
+        assert!(!same_item(a, "https://github.com/old/name/issues/13"));
+        assert!(!same_item(a, "https://github.com/old/name/pull/12"));
+        assert!(same_item(
+            "https://github.com/o/r/pull/3#pullrequestreview-9",
+            "https://github.com/x/y/pull/3#pullrequestreview-9"
+        ));
+        assert!(same_item("dash-v1://C/issues/4", "dash-v1://C/issues/4"));
+        assert!(!same_item("dash-v1://C/issues/4", "dash-v1://C/pulls/4"));
+        assert!(!same_item(
+            "https://github.com/o/r/issues/4",
+            "dash-v1://C/issues/4"
+        ));
+        assert!(!same_item("", "https://github.com/o/r/issues/1"));
     }
 
     #[test]

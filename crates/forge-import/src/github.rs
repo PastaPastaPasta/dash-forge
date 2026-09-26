@@ -315,6 +315,16 @@ impl GithubClient {
         )))
     }
 
+    /// The numbers of every open PR (their heads are what the mirror pushes).
+    pub fn open_pulls(&self) -> Result<Vec<u64>> {
+        Ok(
+            api_list::<GhPull>(&self.path("pulls?state=open&per_page=100"))?
+                .into_iter()
+                .map(|p| p.number)
+                .collect(),
+        )
+    }
+
     /// One PR's detail.
     pub fn pull(&self, number: u64) -> Result<GhPull> {
         let out = api_json(&self.path(&format!("pulls/{number}")))?;
@@ -367,9 +377,17 @@ impl GithubClient {
         });
         let mut cmd = Command::new("git");
         if let Some(h) = &header {
-            cmd.env("GIT_CONFIG_COUNT", "1")
-                .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
-                .env("GIT_CONFIG_VALUE_0", h);
+            // Appended after any GIT_CONFIG_* entries the caller already set.
+            let n: usize = std::env::var("GIT_CONFIG_COUNT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+                .env(
+                    format!("GIT_CONFIG_KEY_{n}"),
+                    "http.https://github.com/.extraheader",
+                )
+                .env(format!("GIT_CONFIG_VALUE_{n}"), h);
         }
         if dir.join("HEAD").exists() {
             cmd.arg("-C")

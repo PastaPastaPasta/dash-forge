@@ -36,7 +36,7 @@ You need:
 
 ## 1. First import
 
-`forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
+`forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every open PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out; a closed PR's commits are not the mirror's to pay for), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
 
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
@@ -68,13 +68,26 @@ Issues and PRs keep their GitHub numbers (Forge numbers issues and PRs separatel
 
 **Re-running is safe and cheap.** What is already mirrored is decided on chain (by the GitHub URL recorded in each document), not by a local file. A re-run writes only what is new or changed, and costs nothing when nothing changed. An interrupted or capped run is finished by running it again; nothing is written twice.
 
+**How a run ends.** The summary's `status` (and the exit code) says:
+
+| Status | `forge-import` exit | `dg import` exit | Meaning |
+|---|---|---|---|
+| `ok` / `dry_run` | 0 | 0 | Finished. |
+| `partial` | 4 | 6 (E604) | Finished, but some items were skipped (their number is taken in the destination, the destination refused them, or the open PRs' heads did not fit the cap). `counts.skipped` and the warnings say which. The `--state` file does not advance, so the next run retries them. |
+| `cap_exceeded` | 3 | 8 (E801) | Stopped before the write that would cross `--max-spend`. |
+| `error` | 1 | by error | Failed. What was spent before the failure is still reported. |
+
+A run with `--limit` that left items out does not advance `--state` either.
+
+**Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
+
 **Where the packs go.** The importer pushes through `git-remote-dash`, so it follows the git config the helper reads. To keep packs off Platform, set the storage policy globally before you import:
 
 ```sh
 dg storage use r2-main --global
 ```
 
-**From forge-v1.** `dg migrate <owner>/<name> --from-network testnet` copies a v1 repository into forge-v2. It copies the live packs (packs on your own storage are referenced, Platform chunks are re-uploaded) and every ref. It copies issues, PRs, comments, reviews, labels and releases with their numbers. The v1 token holders become `maintainer` / `writer` members. `--dry-run` prices it first.
+**From forge-v1.** `dg migrate <owner>/<name> --from-network testnet` copies a v1 repository into forge-v2. It copies the live packs and every ref. Platform chunks are re-uploaded. A pack on external storage is referenced by its public copies only: `https://` on a public host without credentials or a query string (no presigned URLs), or `ipfs://`. `s3://` locators, private, local and credentialed addresses are never republished under your identity. A pack with no public copy is not copied, and then no ref is written either, since a ref must never name history the repository does not store. Release asset URIs go through the same filter. It copies issues, PRs, comments, reviews, labels and releases with their numbers. The v1 token holders become `maintainer` / `writer` members. `--dry-run` prices it first.
 
 ---
 

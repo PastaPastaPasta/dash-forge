@@ -29,7 +29,9 @@ pub struct SyncState {
 }
 
 impl SyncState {
-    /// Load `path` for `source` → `repo_id`. A missing file, or one for another source or
+    /// Load `path` for `source` → `repo_id`. `source` names what the run reads, classes and
+    /// limit included (see [`scope`]), so a file saved by a narrower run (`--sync code`) is
+    /// not reused by a wider one. A missing file, or one for another source, scope or
     /// destination, is a fresh state (a full scan).
     pub fn load(path: Option<&Path>, source: &str, repo_id: &str) -> Self {
         let fresh = Self {
@@ -76,6 +78,21 @@ impl SyncState {
             .with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, p).with_context(|| format!("writing {}", p.display()))
     }
+}
+
+/// The state key of a run: its source plus what it reads (`github.com/o/r
+/// [issues,prs,releases,labels,code] limit=0`).
+pub fn scope(source: &str, classes: crate::source_github::Classes, limit: usize) -> String {
+    let c = classes;
+    let on = [
+        (c.code, "code"),
+        (c.issues, "issues"),
+        (c.prs, "prs"),
+        (c.releases, "releases"),
+        (c.labels, "labels"),
+    ];
+    let names: Vec<&str> = on.iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
+    format!("{source} [{}] limit={limit}", names.join(","))
 }
 
 /// Now, unix seconds.

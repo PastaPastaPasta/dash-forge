@@ -89,6 +89,20 @@ impl Classes {
     }
 }
 
+/// The repository's label definitions.
+fn labels(gh: &GithubClient) -> Result<Vec<SrcLabel>> {
+    Ok(gh
+        .labels()?
+        .into_iter()
+        .filter(|l| !l.name.trim().is_empty())
+        .map(|l| SrcLabel {
+            name: model::label_name(&l.name),
+            color: model::color(&l.color),
+            description: model::clip(l.description.as_deref().unwrap_or(""), 200, 400),
+        })
+        .collect())
+}
+
 /// Read GitHub into the model. `limit` caps issues + PRs (0 = all).
 pub fn collect(
     gh: &GithubClient,
@@ -99,17 +113,7 @@ pub fn collect(
 ) -> Result<SrcCollab> {
     let mut out = SrcCollab::default();
     if classes.labels {
-        out.labels = Some(
-            gh.labels()?
-                .into_iter()
-                .filter(|l| !l.name.trim().is_empty())
-                .map(|l| SrcLabel {
-                    name: model::label_name(&l.name),
-                    color: model::color(&l.color),
-                    description: model::clip(l.description.as_deref().unwrap_or(""), 200, 400),
-                })
-                .collect(),
-        );
+        out.labels = Some(labels(gh)?);
     }
     if classes.releases {
         out.releases = Some(
@@ -119,6 +123,9 @@ pub fn collect(
                 .map(|r| release(&r))
                 .collect(),
         );
+    }
+    if classes.code && classes.prs {
+        out.open_pulls = gh.open_pulls()?;
     }
     if !(classes.issues || classes.prs) {
         return Ok(out);
@@ -136,8 +143,9 @@ pub fn collect(
         })
         .collect();
     items.sort_by_key(|i| i.number);
-    if limit > 0 {
+    if limit > 0 && items.len() > limit {
         items.truncate(limit);
+        out.truncated = true;
     }
     let wanted: BTreeSet<u64> = items.iter().map(|i| i.number).collect();
 
@@ -183,11 +191,12 @@ pub fn collect(
             } else {
                 pull.base.ref_name.clone()
             };
+            // Only open PRs' heads are pushed (a closed PR's objects are not the mirror's to
+            // pay for), so only they name a checkoutable source ref.
+            let open_head = classes.code && !i.is_closed();
             t.patch = Some(SrcPatch {
                 base_ref_name: format!("refs/heads/{base}"),
-                source_ref_name: classes
-                    .code
-                    .then(|| format!("refs/mirror/pull/{number}/head")),
+                source_ref_name: open_head.then(|| format!("refs/mirror/pull/{number}/head")),
                 head_oid: head,
             });
             t.reviews = gh
@@ -286,7 +295,13 @@ fn review(src: &GithubRepoRef, number: u32, r: &crate::github::GhReview) -> Opti
         verdict,
         commit_oid,
         body: model::body(
-            &header(src, number, &r.user.login, created, "review"),
+            &header(
+                src,
+                number,
+                &r.user.login,
+                created,
+                &format!("review, {}", model::verdict_word(verdict)),
+            ),
             r.body.as_deref().unwrap_or(""),
             &r.html_url,
         ),

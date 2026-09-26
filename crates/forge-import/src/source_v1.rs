@@ -219,10 +219,7 @@ impl<'a> V1Source<'a> {
                         tag_name,
                         name: d.field_str("name").unwrap_or_default(),
                         notes: d.field_str("notes").unwrap_or_default(),
-                        assets: d
-                            .field_str("assets")
-                            .and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
-                            .unwrap_or_default(),
+                        assets: public_assets(d.field_str("assets")),
                     })
                     .collect(),
             );
@@ -306,7 +303,8 @@ impl<'a> V1Source<'a> {
             let orig = imported_of(&d);
             let created = d.created_at.unwrap_or(0);
             let key = self.key(&format!("comment/{}", d.id));
-            let path = d.field_str("path");
+            // The v2 bound (v1 did not clip it); a longer path would fail the write.
+            let path = d.field_str("path").map(|p| model::clip(&p, 500, 1000));
             out.push(SrcComment {
                 body: model::body(
                     &self.header(
@@ -407,14 +405,20 @@ impl<'a> V1Source<'a> {
             newest_tip.as_deref(),
             |oid, _| tips.contains(oid),
         );
+        // The oid of the merge the fold applied: by a holder as of the event, and on the
+        // base's history (the same test the fold used); the newest such, by (createdAt, id).
         let merged_oid = state
             .merged
             .then(|| {
                 events
                     .iter()
-                    .filter(|e| e.kind == EventKind::Merge)
-                    .filter_map(|e| e.oid.as_deref())
-                    .rfind(|o| tips.contains(*o))
+                    .filter(|e| {
+                        e.kind == EventKind::Merge
+                            && authz.holdings_as_of(&e.actor, e.created_at).any()
+                            && e.oid.as_deref().is_some_and(|o| tips.contains(o))
+                    })
+                    .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+                    .and_then(|e| e.oid.as_deref())
                     .and_then(model::oid)
             })
             .flatten();
@@ -472,7 +476,7 @@ impl<'a> V1Source<'a> {
                 commit_oid,
                 body: model::body(
                     &self.header(
-                        "review on pull request",
+                        &format!("review ({}) on pull request", model::verdict_word(verdict)),
                         number,
                         &r.owner_id,
                         rcreated,
@@ -486,4 +490,18 @@ impl<'a> V1Source<'a> {
         }
         Ok(reviews)
     }
+}
+
+/// A v1 release's assets, with only their public URIs (they are republished under the
+/// migrator's identity, so a private, local or credentialed address must not be); an asset
+/// left without any is dropped.
+fn public_assets(json: Option<String>) -> Vec<ReleaseAsset> {
+    json.and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|mut a| {
+            a.uris.retain(|u| model::is_public_uri(u));
+            (!a.uris.is_empty()).then_some(a)
+        })
+        .collect()
 }

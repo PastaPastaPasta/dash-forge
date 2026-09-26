@@ -123,6 +123,11 @@ pub struct BridgeIdentity {
 /// The prefix of an inline limited key (`dfk1:<network>:<identityId>:<keyId>:<wif>`).
 pub const DFK1_PREFIX: &str = "dfk1:";
 
+/// The warning for a `dfk1:` key passed as a command-line argument: other local users can
+/// read a process's arguments (`ps`), and shells keep them in history.
+pub const INLINE_KEY_ON_ARGV: &str = "an inline dfk1: key on the command line is visible to \
+    other local users (ps) and kept in shell history; set DASH_FORGE_KEY instead";
+
 /// Whether a `DASH_FORGE_KEY` / `--identity` value is an inline `dfk1:` key, not a path.
 pub fn is_inline_key(source: &Path) -> bool {
     source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
