@@ -51,10 +51,14 @@ use crate::ingest::{
     DOC_RELEASE, DOC_REVIEW,
 };
 use crate::payload::RepositoryMeta;
+use crate::queue::RetryQueue;
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 
 /// Wall-clock budget for one repo's poll: past it, the poll stops at the next stream boundary.
 const REPO_BUDGET: Duration = Duration::from_secs(20);
+
+/// How often due retries are handed out from the durable queue.
+const RETRY_TICK: Duration = Duration::from_secs(5);
 
 /// Repos polled at once.
 const MAX_CONCURRENT_REPOS: usize = 8;
@@ -217,10 +221,16 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     let shared = Arc::new(Shared {
         client,
         contracts,
-        dispatcher: Dispatcher::new(Deliverer::new(DeliverConfig {
-            allow_private: cfg.allow_private,
-            ..Default::default()
-        })),
+        dispatcher: Dispatcher::with_queue(
+            Deliverer::new(DeliverConfig {
+                allow_private: cfg.allow_private,
+                ..Default::default()
+            }),
+            Some(Arc::new(RetryQueue::open(
+                &cfg.state_dir,
+                cfg.retry_schedule.clone(),
+            )?)),
+        ),
         started_ms: now_ms(),
         cfg,
     });
@@ -263,6 +273,16 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
 /// Every poll interval, poll each served repo in its own task, at most
 /// [`MAX_CONCURRENT_REPOS`] at once; a repo whose previous poll is still running is skipped.
 async fn poll_loop(shared: &Arc<Shared>, repos: &Repos) -> ! {
+    // Due retries from the durable queue, handed to their hooks' workers every few seconds.
+    let retries = Arc::clone(shared);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(RETRY_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            retries.dispatcher.dispatch_retries();
+        }
+    });
     let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REPOS));
     let mut ticker = tokio::time::interval(shared.cfg.poll_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

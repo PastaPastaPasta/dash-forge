@@ -27,6 +27,7 @@ mod error;
 mod health;
 mod ingest;
 mod payload;
+mod queue;
 mod ssrf;
 mod subscriptions;
 
@@ -51,7 +52,22 @@ struct Cli {
 #[derive(Debug, clap::Subcommand)]
 enum Command {
     /// Run the relay daemon (discover hooks → poll repos → deliver GitHub-shape webhooks).
-    Run(RunArgs),
+    Run(Box<RunArgs>),
+    /// List queued deliveries (pending retries, and dropped ones kept for inspection). Reads
+    /// the state dir only; makes no network calls.
+    Deliveries(DeliveriesArgs),
+}
+
+/// `forge-relay deliveries` arguments.
+#[derive(Debug, Parser)]
+struct DeliveriesArgs {
+    /// The relay's state dir (default: `$FORGE_RELAY_STATE_DIR`, else
+    /// `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay`).
+    #[arg(long = "state-dir")]
+    state_dir: Option<PathBuf>,
+    /// Machine-readable output.
+    #[arg(long)]
+    json: bool,
 }
 
 /// `forge-relay run` arguments (all override the config file).
@@ -110,6 +126,11 @@ struct RunArgs {
     /// forge-web base URL for synthesized html_url / compare links.
     #[arg(long = "web-base-url")]
     web_base_url: Option<String>,
+
+    /// Where the durable delivery queue lives (created 0700; default: `$FORGE_RELAY_STATE_DIR`,
+    /// else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay`).
+    #[arg(long = "state-dir")]
+    state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -140,7 +161,91 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Run(args) => run(args).await,
+        Command::Run(args) => run(*args).await,
+        Command::Deliveries(args) => deliveries(&args),
+    }
+}
+
+/// `forge-relay deliveries`: the queue files, as a table or JSON. No network.
+fn deliveries(args: &DeliveriesArgs) -> anyhow::Result<()> {
+    let state = match &args.state_dir {
+        Some(d) => d.clone(),
+        None => queue::default_state_dir()?,
+    };
+    let mut entries = queue::read_dir(&queue::queue_dir(&state))?;
+    entries.sort_by_key(|e| (e.status == queue::Status::Dropped, e.next_ms));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    if args.json {
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "deliveryId": e.id,
+                    "status": e.status,
+                    "repoId": e.repo_id,
+                    "hookId": e.hook_id,
+                    "event": e.event,
+                    "sourceDocId": e.source_doc_id,
+                    "attempts": e.tries,
+                    "nextAttemptMs": (e.status == queue::Status::Pending).then_some(e.next_ms),
+                    "lastError": e.last_error,
+                    "dropReason": e.drop_reason,
+                    "ageSecs": now.saturating_sub(e.created_ms) / 1000,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "stateDir": state,
+                "pending": entries.iter().filter(|e| e.status == queue::Status::Pending).count(),
+                "dropped": entries.iter().filter(|e| e.status == queue::Status::Dropped).count(),
+                "deliveries": rows,
+            }))?
+        );
+        return Ok(());
+    }
+    if entries.is_empty() {
+        println!(
+            "No queued deliveries in {}.",
+            queue::queue_dir(&state).display()
+        );
+        return Ok(());
+    }
+    println!(
+        "{:<8} {:<14} {:<12} {:<20} {:>5} {:>10} {:>8}  LAST ERROR",
+        "STATUS", "HOOK", "REPO", "EVENT", "TRIES", "NEXT IN", "AGE"
+    );
+    for e in &entries {
+        let (status, next) = match e.status {
+            queue::Status::Pending => ("pending", human(e.next_ms.saturating_sub(now) / 1000)),
+            queue::Status::Dropped => ("dropped", "-".to_string()),
+        };
+        let error = e.drop_reason.as_deref().unwrap_or(&e.last_error);
+        println!(
+            "{:<8} {:<14} {:<12} {:<20} {:>5} {:>10} {:>8}  {}",
+            status,
+            e.hook_id.chars().take(12).collect::<String>(),
+            e.repo_id.chars().take(10).collect::<String>(),
+            e.event,
+            e.tries,
+            next,
+            human(now.saturating_sub(e.created_ms) / 1000),
+            error
+        );
+    }
+    Ok(())
+}
+
+/// Seconds as `42s`, `5m`, `3h`, `2d`.
+fn human(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
     }
 }
 
@@ -159,6 +264,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         lookback: args.lookback,
         listen: args.listen,
         web_base_url: args.web_base_url,
+        state_dir: args.state_dir,
     };
 
     let cfg = RelayConfig::load(args.config.as_deref(), &overrides)?;

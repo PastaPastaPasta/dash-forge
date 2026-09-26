@@ -65,18 +65,23 @@ docker run --rm --read-only \
 | `--lookback <n>` | 0 | At startup, deliver the last n documents of each stream. |
 | `--listen <addr>` | off | Health endpoint (`200 ok`). |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
-| `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing. |
+| `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR`, else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives. In Docker, mount a volume here (`-v relay-state:/state --state-dir /state`) to keep retries across container restarts. |
+| `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
 
 ## Delivery semantics
 
-- **Best effort, with retries inside one window.** Each delivery gets up to 5 attempts with
-  backoff within 30 s; then it is logged as `DEAD-LETTER` and dropped. There is no durable
-  queue: nothing is retried later, and events queued when the relay stops are lost.
+- **At-least-once, with a durable retry queue.** Each delivery gets up to 5 attempts within
+  30 s. If they all fail, the delivery goes to the relay's **retry queue** on local disk and
+  is retried 1 min, 5 min, 30 min, 2 h, 12 h and 24 h later (then every 24 h), across
+  restarts, until it succeeds or is 48 h old; then it is dropped with one `DEAD-LETTER` log
+  line. See [Delivery queue](#delivery-queue).
 - `X-GitHub-Delivery` is derived from the hook id and the source document id, so every relay
-  sends the same id for the same document; dedupe on it.
-- Polling never waits on a receiver. Each hook has its own worker and queue (256 events;
-  beyond that, events are dead-lettered). After 3 failed deliveries in a row a hook's circuit
-  opens for 1 minute, doubling up to an hour while it keeps failing; one success closes it.
+  and every retry sends the same id for the same document; dedupe on it.
+- Polling never waits on a receiver. Each hook has its own worker and in-memory queue (256
+  events; beyond that, events go to the retry queue). After 3 failed deliveries in a row a
+  hook's circuit opens for 1 minute, doubling up to an hour while it keeps failing; one
+  success closes it. While it is open, the hook's new events and retries wait in the retry
+  queue until it closes (they are not spent against it).
   Each attempt takes a slot (2 per destination host and address, 8 per address) and frees it
   before backing off; an attempt that waits 5 s for a slot is retried. Known limit: receivers
   behind one shared CDN/anycast address share its 8 slots, so a few slow tenants there can
@@ -107,3 +112,32 @@ docker run --rm --read-only \
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped
   at 1 MiB.
 - Logs never contain secrets or payload bodies; URLs are logged as scheme and host only.
+
+## Delivery queue
+
+The retry queue is local to your relay: one JSON file per delivery in
+`<state dir>/deliveries/`, the directory mode 0700 and each file 0600. Nothing is sent
+anywhere else.
+
+- **What is stored:** the delivery id, repo id, hook id, event name, source document id, the
+  JSON body (built from public chain data), attempt count, times, and the last error (URLs
+  reduced to scheme and host). **Not** the secret and not the URL.
+- **Retries** go through the hook's *current* subscription: they are signed with its current
+  secret and sent to its current URL, through the same SSRF guard (resolved again and pinned).
+  If the hook was removed or disabled meanwhile, the entry is dropped with a log line and
+  never delivered.
+- **Retention:** pending entries are dropped after 48 h. At most 500 pending entries per hook,
+  5000 in total and 256 MiB of bodies; past a bound the oldest are dropped with a log line.
+  Dropped entries are kept without their body for 7 days (at most 1000) so you can see what
+  was lost.
+- **Inspect it** (reads the files only; no network):
+
+  ```sh
+  forge-relay deliveries [--state-dir <dir>] [--json]
+  ```
+
+  It lists each pending or dropped delivery: status, hook id, repo, event, attempts, time
+  to the next attempt, age, and the last error or drop reason.
+- **Schedule:** the default is 1 min, 5 min, 30 min, 2 h, 12 h, 24 h. `retry-schedule-secs` in
+  the config file, or `FORGE_RELAY_RETRY_SCHEDULE=10,20` (comma-separated seconds, for
+  testing), overrides it.

@@ -74,6 +74,9 @@ struct FileConfig {
     web_base_url: Option<String>,
     use_platform_webhooks: Option<bool>,
     listen: Option<String>,
+    state_dir: Option<PathBuf>,
+    /// Retry delays in seconds (default 60, 300, 1800, 7200, 43200, 86400).
+    retry_schedule_secs: Option<Vec<u64>>,
     #[serde(default)]
     webhook: Vec<StaticWebhook>,
 }
@@ -107,6 +110,10 @@ pub struct RelayConfig {
     pub listen: Option<String>,
     /// Statically configured webhooks (plaintext secrets; local testing).
     pub static_webhooks: Vec<StaticWebhook>,
+    /// Where the durable delivery queue lives (`<state dir>/deliveries`).
+    pub state_dir: PathBuf,
+    /// Retry delays after the 1st, 2nd, ... failed delivery (the last repeats).
+    pub retry_schedule: Vec<Duration>,
 }
 
 /// CLI overrides applied on top of the file config.
@@ -130,6 +137,8 @@ pub struct CliOverrides {
     pub listen: Option<String>,
     /// `--web-base-url`.
     pub web_base_url: Option<String>,
+    /// `--state-dir`.
+    pub state_dir: Option<PathBuf>,
 }
 
 impl RelayConfig {
@@ -195,8 +204,40 @@ impl RelayConfig {
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
             listen: cli.listen.clone().or(file.listen),
             static_webhooks: file.webhook,
+            state_dir: match cli.state_dir.clone().or(file.state_dir) {
+                Some(d) => d,
+                None => crate::queue::default_state_dir()?,
+            },
+            retry_schedule: retry_schedule(file.retry_schedule_secs)?,
         })
     }
+}
+
+/// The retry schedule: `FORGE_RELAY_RETRY_SCHEDULE` (comma-separated seconds; for tests and
+/// live checks), else the config file's `retry-schedule-secs`, else the default.
+fn retry_schedule(file: Option<Vec<u64>>) -> Result<Vec<Duration>> {
+    let secs = match std::env::var("FORGE_RELAY_RETRY_SCHEDULE") {
+        Ok(v) if !v.trim().is_empty() => v
+            .split(',')
+            .map(|s| s.trim().parse::<u64>())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                RelayError::Config(format!(
+                    "FORGE_RELAY_RETRY_SCHEDULE must be comma-separated seconds: {e}"
+                ))
+            })?,
+        _ => file.unwrap_or_default(),
+    };
+    if secs.contains(&0) {
+        return Err(RelayError::Config(
+            "retry delays must be at least 1 second".into(),
+        ));
+    }
+    Ok(if secs.is_empty() {
+        crate::queue::DEFAULT_SCHEDULE.to_vec()
+    } else {
+        secs.into_iter().map(Duration::from_secs).collect()
+    })
 }
 
 #[cfg(test)]
