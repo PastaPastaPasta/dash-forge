@@ -6,10 +6,23 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToHex } from '@noble/hashes/utils.js'
+import { bytesToHex, concatBytes } from '@noble/hashes/utils.js'
 
 import type { ReleaseAssetView } from '../repo/releases'
 import { externalFetchUrls } from './browse-source'
+import { urlHost } from './format'
+
+/** Hand bytes to the browser as a download named `filename` (browser only). */
+export function saveBytes(bytes: Uint8Array, filename: string, type = 'application/octet-stream'): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
+}
 
 /** The bytes one place served did not match the published hash. */
 export class AssetHashMismatchError extends Error {
@@ -28,14 +41,6 @@ export interface DownloadProgress {
   readonly total: number | null
 }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
-}
-
 async function readHashed(
   url: string,
   asset: ReleaseAssetView,
@@ -44,13 +49,13 @@ async function readHashed(
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const resp = await fetchImpl(url, { signal })
-  if (!resp.ok) throw new Error(`${hostOf(url)}: HTTP ${resp.status}`)
+  if (!resp.ok) throw new Error(`${urlHost(url)}: HTTP ${resp.status}`)
   const hash = sha256.create()
   const parts: Uint8Array[] = []
   let total = 0
   const take = (chunk: Uint8Array): void => {
     total += chunk.length
-    if (asset.size !== null && total > asset.size) throw new Error(`${hostOf(url)}: more bytes than the published size`)
+    if (asset.size !== null && total > asset.size) throw new Error(`${urlHost(url)}: more bytes than the published size`)
     hash.update(chunk)
     parts.push(chunk)
     onProgress({ bytes: total, total: asset.size })
@@ -65,14 +70,8 @@ async function readHashed(
     }
   }
   const got = bytesToHex(hash.digest())
-  if (got !== asset.sha256) throw new AssetHashMismatchError(hostOf(url), got, asset.sha256)
-  const out = new Uint8Array(total)
-  let at = 0
-  for (const p of parts) {
-    out.set(p, at)
-    at += p.length
-  }
-  return out
+  if (got !== asset.sha256) throw new AssetHashMismatchError(urlHost(url), got, asset.sha256)
+  return concatBytes(...parts)
 }
 
 /**

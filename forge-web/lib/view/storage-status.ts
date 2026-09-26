@@ -9,6 +9,7 @@ import { z } from 'zod'
 
 import { IPFS_GATEWAYS } from '../constants'
 import type { UnavailablePack } from './browse-source'
+import { urlHost } from './format'
 
 // ---------------------------------------------------------------------------
 // User gateways (localStorage; a list of public URLs, nothing secret)
@@ -23,7 +24,8 @@ export function normalizeGateway(input: string): string | null {
   if (raw === '') return null
   try {
     const url = new URL(/^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`)
-    if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') return null
+    // The app's CSP (`connect-src https:`) blocks anything else.
+    if (url.protocol !== 'https:') return null
     // A gateway serves `<base>/ipfs/<cid>`: accept a pasted `…/ipfs/` and drop it.
     const path = url.pathname.replace(/\/+$/, '').replace(/\/ipfs$/, '')
     return `${url.protocol}//${url.host}${path}`
@@ -67,14 +69,6 @@ export function readGateways(): string[] {
 // Describing an unreadable pack
 // ---------------------------------------------------------------------------
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
-}
-
 type Why = 'timed out' | 'not found' | 'served bad data' | 'missing' | "didn't answer"
 
 function classify(message: string, platform: boolean): Why {
@@ -103,7 +97,7 @@ function reasonsByHost(pack: UnavailablePack): Map<string, string> {
  * Order: Platform chunks, then mirrors, then IPFS.
  */
 export function describePack(pack: UnavailablePack, gateways: readonly string[] = readGateways()): string[] {
-  const gatewayHosts = new Set(gateways.map(hostOf))
+  const gatewayHosts = new Set(gateways.map(urlHost))
   const places: string[] = []
   const ipfs: Why[] = []
   for (const [host, message] of reasonsByHost(pack)) {

@@ -14,9 +14,11 @@
  * reports `single`: one source is all this app could see.
  */
 
+import { bytesToHex } from '@noble/hashes/utils.js'
 import { z } from 'zod'
 
 import { quorumEndpoint, type NetworkConfig } from '../constants'
+import { urlHost } from './format'
 
 /** One quorum's threshold public key, both as lowercase hex. */
 export interface QuorumKey {
@@ -82,10 +84,6 @@ export function protoFields(buf: Uint8Array): Field[] {
   return out
 }
 
-function hex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 /**
  * The first grpc-web DATA frame's message. A trailer frame (flag bit 7) carrying a non-zero
  * `grpc-status` is an error; a response with no data frame at all is one too.
@@ -122,7 +120,7 @@ export function decodeCurrentQuorumsInfo(message: Uint8Array): QuorumKey[] {
     const hash = fields.find((f) => f.no === 1)?.bytes
     const key = fields.find((f) => f.no === 4)?.bytes
     if (hash === undefined || key === undefined || key.length !== 48) continue
-    out.push({ hash: hex(hash), key: hex(key), height: fields.find((f) => f.no === 2)?.int ?? 0 })
+    out.push({ hash: bytesToHex(hash), key: bytesToHex(key), height: fields.find((f) => f.no === 2)?.int ?? 0 })
   }
   return out
 }
@@ -159,21 +157,30 @@ export function parseQuorumService(json: unknown): QuorumKey[] {
 export type QuorumComparison =
   | { readonly kind: 'agree'; readonly overlap: number }
   | { readonly kind: 'mismatch'; readonly quorums: readonly string[] }
-  | { readonly kind: 'no-overlap' }
+  /** Some quorum the primary lists is not in the second list: nothing independent vouches for it. */
+  | { readonly kind: 'unconfirmed'; readonly quorums: readonly string[] }
 
-/** Compare two key lists by quorum hash. */
-export function compareQuorumKeys(a: readonly QuorumKey[], b: readonly QuorumKey[]): QuorumComparison {
-  const byHash = new Map(a.map((q) => [q.hash, q.key]))
-  let overlap = 0
-  const mismatched: string[] = []
-  for (const q of b) {
-    const other = byHash.get(q.hash)
-    if (other === undefined) continue
-    overlap += 1
-    if (other !== q.key) mismatched.push(q.hash)
-  }
+function duplicates(list: readonly QuorumKey[]): string[] {
+  const seen = new Set<string>()
+  return list.filter((q) => seen.size === seen.add(q.hash).size).map((q) => q.hash)
+}
+
+/**
+ * Compare the trust anchor's key list (`primary`, what the SDK is given) with an independent
+ * one. Every primary quorum must appear in the second list with the identical key: a key only
+ * the primary lists is exactly what a lying endpoint would add. Extra quorums on the second
+ * side are harmless (the SDK cannot use a key it was never given). A hash listed twice on
+ * either side is a mismatch: which copy a verifier uses is not defined.
+ */
+export function compareQuorumKeys(primary: readonly QuorumKey[], second: readonly QuorumKey[]): QuorumComparison {
+  const dupes = [...new Set([...duplicates(primary), ...duplicates(second)])]
+  if (dupes.length > 0) return { kind: 'mismatch', quorums: dupes }
+  const byHash = new Map(second.map((q) => [q.hash, q.key]))
+  const mismatched = primary.filter((q) => byHash.has(q.hash) && byHash.get(q.hash) !== q.key).map((q) => q.hash)
   if (mismatched.length > 0) return { kind: 'mismatch', quorums: mismatched }
-  return overlap === 0 ? { kind: 'no-overlap' } : { kind: 'agree', overlap }
+  const unconfirmed = primary.filter((q) => !byHash.has(q.hash)).map((q) => q.hash)
+  if (unconfirmed.length > 0 || primary.length === 0) return { kind: 'unconfirmed', quorums: unconfirmed }
+  return { kind: 'agree', overlap: primary.length }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,52 +192,32 @@ export interface CrossCheckDeps {
   /** Randomness for the DAPI node order (tests pin it). */
   readonly random?: () => number
   readonly timeoutMs?: number
+  /** Pause before re-reading both lists after they disagreed on which quorums exist. */
+  readonly retryDelayMs?: number
 }
 
 /** How many DAPI nodes are asked, one after another, before giving up on a second source. */
 const DAPI_TRIES = 3
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
-}
-
-async function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ms)
-  try {
-    return await run(controller.signal)
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 async function fetchServiceKeys(endpoint: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {
-  return withTimeout(deps.timeoutMs, async (signal) => {
-    const resp = await deps.fetch(`${endpoint.replace(/\/+$/, '')}/quorums`, { signal })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    return parseQuorumService(await resp.json())
-  })
+  const resp = await deps.fetch(`${endpoint.replace(/\/+$/, '')}/quorums`, { signal: AbortSignal.timeout(deps.timeoutMs) })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  return parseQuorumService(await resp.json())
 }
 
 async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {
-  return withTimeout(deps.timeoutMs, async (signal) => {
-    const resp = await deps.fetch(`${address.replace(/\/+$/, '')}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1' },
-      body: QUORUMS_INFO_REQUEST,
-      signal,
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const status = resp.headers.get('grpc-status')
-    if (status !== null && status !== '0') throw new Error(`grpc-status ${status}`)
-    const keys = decodeCurrentQuorumsInfo(grpcWebMessage(new Uint8Array(await resp.arrayBuffer())))
-    if (keys.length === 0) throw new Error('no validator sets')
-    return keys
+  const resp = await deps.fetch(`${address.replace(/\/+$/, '')}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1' },
+    body: QUORUMS_INFO_REQUEST,
+    signal: AbortSignal.timeout(deps.timeoutMs),
   })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+  const status = resp.headers.get('grpc-status')
+  if (status !== null && status !== '0') throw new Error(`grpc-status ${status}`)
+  const keys = decodeCurrentQuorumsInfo(grpcWebMessage(new Uint8Array(await resp.arrayBuffer())))
+  if (keys.length === 0) throw new Error('no validator sets')
+  return keys
 }
 
 function shuffled<T>(items: readonly T[], random: () => number): T[] {
@@ -249,7 +236,7 @@ async function secondSource(
 ): Promise<{ host: string; keys: QuorumKey[] } | null> {
   for (const address of shuffled(addresses, deps.random).slice(0, DAPI_TRIES)) {
     try {
-      return { host: hostOf(address), keys: await fetchDapiKeys(address, deps) }
+      return { host: urlHost(address), keys: await fetchDapiKeys(address, deps) }
     } catch {
       /* next node */
     }
@@ -263,10 +250,11 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
     fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
     random: deps.random ?? Math.random,
     timeoutMs: deps.timeoutMs ?? 6000,
+    retryDelayMs: deps.retryDelayMs ?? 2000,
   }
   const endpoint = quorumEndpoint(config)
   if (endpoint === '') return { state: 'unavailable', reason: 'no quorum key endpoint is configured' }
-  const primary = hostOf(endpoint)
+  const primary = urlHost(endpoint)
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let first: QuorumKey[]
@@ -283,16 +271,19 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
     if (verdict.kind === 'mismatch') {
       return { state: 'mismatch', primary, secondary: second.host, quorums: verdict.quorums }
     }
-    // No shared quorum: a rotation boundary between the two reads. Read both again once.
+    // A quorum only the primary lists: most likely a rotation between the two reads. Read
+    // both again once, a moment later.
+    if (attempt === 0) await new Promise((r) => setTimeout(r, full.retryDelayMs))
   }
-  return { state: 'unavailable', reason: 'the two key sources never listed the same quorum' }
+  return { state: 'unavailable', reason: 'the two key sources listed different quorums' }
 }
 
 const sessionChecks = new Map<string, Promise<QuorumCrossCheck>>()
 
 /**
- * {@link crossCheckQuorumKeys} once per network per session. An `unavailable` outcome is not
- * kept, so a later view (back online) runs the check again.
+ * {@link crossCheckQuorumKeys} once per network per session. An outcome that depends on a
+ * network hiccup (`unavailable`, or no DAPI node answering) is not kept, so a later view runs
+ * the check again.
  */
 export function crossCheckQuorumKeysCached(config: NetworkConfig): Promise<QuorumCrossCheck> {
   const hit = sessionChecks.get(config.key)
@@ -300,7 +291,8 @@ export function crossCheckQuorumKeysCached(config: NetworkConfig): Promise<Quoru
   const run = crossCheckQuorumKeys(config)
   sessionChecks.set(config.key, run)
   void run.then((r) => {
-    if (r.state === 'unavailable' && sessionChecks.get(config.key) === run) sessionChecks.delete(config.key)
+    const transient = r.state === 'unavailable' || (r.state === 'single' && r.reason === 'second-unreachable')
+    if (transient && sessionChecks.get(config.key) === run) sessionChecks.delete(config.key)
   })
   return run
 }

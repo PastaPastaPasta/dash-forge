@@ -60,16 +60,24 @@ describe('decodeCurrentQuorumsInfo (captured moutai response)', () => {
 describe('compareQuorumKeys', () => {
   const q = (hash: string, key: string): QuorumKey => ({ hash, key, height: 1 })
 
-  it('allows a rotation boundary as long as the lists overlap', () => {
-    expect(compareQuorumKeys([q('a', 'k1'), q('b', 'k2')], [q('b', 'k2'), q('c', 'k3')])).toEqual({ kind: 'agree', overlap: 1 })
+  it('accepts extra quorums on the second side only', () => {
+    expect(compareQuorumKeys([q('b', 'k2')], [q('b', 'k2'), q('c', 'k3')])).toEqual({ kind: 'agree', overlap: 1 })
+  })
+
+  it('does not vouch for a quorum only the primary lists (a forged extra key)', () => {
+    expect(compareQuorumKeys([q('a', 'k1'), q('x', 'EVIL')], [q('a', 'k1')])).toEqual({ kind: 'unconfirmed', quorums: ['x'] })
+  })
+
+  it('treats a hash listed twice as a mismatch', () => {
+    expect(compareQuorumKeys([q('a', 'EVIL'), q('a', 'k1')], [q('a', 'k1')])).toEqual({ kind: 'mismatch', quorums: ['a'] })
   })
 
   it('reports every shared quorum whose key differs', () => {
     expect(compareQuorumKeys([q('a', 'k1'), q('b', 'k2')], [q('a', 'k1'), q('b', 'EVIL')])).toEqual({ kind: 'mismatch', quorums: ['b'] })
   })
 
-  it('reports no overlap as its own outcome', () => {
-    expect(compareQuorumKeys([q('a', 'k1')], [q('b', 'k2')])).toEqual({ kind: 'no-overlap' })
+  it('reports disjoint lists as unconfirmed', () => {
+    expect(compareQuorumKeys([q('a', 'k1')], [q('b', 'k2')])).toEqual({ kind: 'unconfirmed', quorums: ['a'] })
   })
 })
 
@@ -146,8 +154,8 @@ describe('crossCheckQuorumKeys', () => {
   it('retries once on a rotation boundary, then gives up', async () => {
     const other = { success: true, data: [{ quorum_hash: 'ff'.repeat(32), key: 'aa'.repeat(48), height: 1 }] }
     const { fetch, calls } = fakeFetch({ [SVC]: () => Response.json(other), [rpc('10.0.0.1')]: dapi() })
-    const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch })
-    expect(r).toEqual({ state: 'unavailable', reason: 'the two key sources never listed the same quorum' })
+    const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch, retryDelayMs: 0 })
+    expect(r).toEqual({ state: 'unavailable', reason: 'the two key sources listed different quorums' })
     expect(calls.filter((c) => c === SVC)).toHaveLength(2)
   })
 

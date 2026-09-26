@@ -93,7 +93,10 @@ export function shortRepoUrl(repo: { readonly owner: string; readonly name: stri
  */
 export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   var p = pathname;
-  if (base && (p === base || p.indexOf(base + '/') === 0)) p = p.slice(base.length);
+  if (base) {
+    if (p !== base && p.indexOf(base + '/') !== 0) return null;
+    p = p.slice(base.length);
+  }
   var parts = p.split('/').filter(function (s) { return s !== ''; });
   if (parts.length < 2) return null;
   var dec = function (s) { try { return decodeURIComponent(s); } catch (e) { return null; } };
@@ -133,5 +136,5 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
 export function shortUrlShimScript(base: string = BASE_PATH): string {
   return `(function(){var expand=${SHORT_URL_EXPAND_SOURCE};var to=expand(location.pathname,${JSON.stringify(
     base,
-  )},${JSON.stringify(RESERVED_SEGMENTS)});if(to){document.documentElement.setAttribute('data-short-url','1');location.replace(to+location.hash);}})();`
+  )},${JSON.stringify(RESERVED_SEGMENTS)});if(to){document.documentElement.setAttribute('data-short-url','1');location.replace(to+(location.search?'&'+location.search.slice(1):'')+location.hash);}})();`
 }

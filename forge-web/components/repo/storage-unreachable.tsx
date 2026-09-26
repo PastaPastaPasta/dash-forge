@@ -13,8 +13,9 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { GatewaysField } from '@/components/gateways-field'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import type { RepoRef } from '@/lib/repo'
-import { describeUnavailable, type UnavailablePack } from '@/lib/view'
+import { repoKey, type RepoRef } from '@/lib/repo'
+import { describeUnavailable, forgetDeadMirrors, type UnavailablePack } from '@/lib/view'
+import { clearUnreachable } from '@/lib/view/content-checks'
 
 export function StorageUnreachableCard({
   repo,
@@ -60,7 +61,14 @@ export function StorageUnreachableCard({
             Branches, issues and pull requests are unaffected.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button variant="primary" onClick={retry}>
+            <Button
+              variant="primary"
+              onClick={() => {
+                forgetDeadMirrors()
+                clearUnreachable(repoKey(repo))
+                retry()
+              }}
+            >
               <RotateCw className="h-4 w-4" aria-hidden /> Try again
             </Button>
             <Button onClick={() => setAdding((a) => !a)} aria-expanded={adding}>

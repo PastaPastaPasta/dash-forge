@@ -16,7 +16,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoRef } from '@/lib/repo'
-import { forgetDeadMirrors, formatBytes, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { formatBytes, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -74,18 +74,7 @@ export function BrowseBoundary({
       return <LoadingBlock label={state.label} />
     case 'error':
       if (state.cause instanceof StorageUnreachableError) {
-        const retry = state.retry
-        return (
-          <StorageUnreachableCard
-            repo={repo}
-            addr={addr}
-            packs={state.cause.packs}
-            retry={() => {
-              forgetDeadMirrors()
-              retry()
-            }}
-          />
-        )
+        return <StorageUnreachableCard repo={repo} addr={addr} packs={state.cause.packs} retry={state.retry} />
       }
       return <ErrorState title={state.title} message={state.message} onRetry={state.retry} />
     case 'no-packs':

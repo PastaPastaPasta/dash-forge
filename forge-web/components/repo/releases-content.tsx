@@ -17,7 +17,7 @@ import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCirc
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, timeAgo } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
-import { AssetHashMismatchError, downloadVerifiedAsset, type DownloadProgress } from '@/lib/view/release-download'
+import { AssetHashMismatchError, downloadVerifiedAsset, saveBytes, type DownloadProgress } from '@/lib/view/release-download'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -157,7 +157,7 @@ function ReleaseCard({
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
         ) : null}
         {r.yanked ? (
-          <span className="inline-flex items-center gap-1 rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution">
+          <span className="inline-flex items-center gap-1 rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution-700 dark:text-caution">
             <AlertTriangle className="h-3 w-3" aria-hidden /> yanked
           </span>
         ) : null}
@@ -179,7 +179,7 @@ function ReleaseCard({
         </ul>
       ) : null}
       {r.badAssets > 0 ? (
-        <p className="mt-2 text-[12px] text-caution">
+        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution">
           {r.badAssets} {r.badAssets === 1 ? 'asset entry is' : 'asset entries are'} unreadable and not shown.
         </p>
       ) : null}
@@ -200,14 +200,7 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
     setState({ kind: 'working', progress: null })
     try {
       const bytes = await downloadVerifiedAsset(asset, (progress) => setState({ kind: 'working', progress }))
-      const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = asset.name
-      document.body.append(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 30_000)
+      saveBytes(bytes, asset.name)
       setState({ kind: 'saved' })
     } catch (e) {
       setState(
@@ -241,7 +234,7 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
             {state.progress ? ` · ${formatBytes(state.progress.bytes)}${state.progress.total ? ` of ${formatBytes(state.progress.total)}` : ''}` : ''}
           </span>
         ) : state.kind === 'saved' ? (
-          <span className="inline-flex items-center gap-1 text-verify">
+          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify">
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the SHA-256 matched, saved.
           </span>
         ) : state.kind === 'mismatch' ? (
@@ -249,7 +242,7 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
             <XCircle className="h-3.5 w-3.5" aria-hidden /> Failed: {state.message}. Not saved.
           </span>
         ) : state.kind === 'error' ? (
-          <span className="inline-flex items-center gap-1 text-caution">
+          <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download: {state.message}
           </span>
         ) : null}

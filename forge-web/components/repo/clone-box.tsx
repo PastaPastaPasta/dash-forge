@@ -16,6 +16,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
+import { saveBytes } from '@/lib/view/release-download'
 import { formatBytes, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
 import {
   compressInWorker,
@@ -72,7 +73,8 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
   const state = useBrowseReader(home.repo)
   const [progress, setProgress] = useState<ZipProgress | null>(null)
   const [message, setMessage] = useState<string | null>(null)
-  const [tooLarge, setTooLarge] = useState(false)
+  // Keyed by ref: another ref may well fit.
+  const [tooLargeRef, setTooLargeRef] = useState<string | null>(null)
   const cancel = useRef<AbortController | null>(null)
   const tip = tipOidOf(selected.ref)
   if (tip === null) return null
@@ -86,24 +88,18 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
     setProgress({ phase: 'listing', files: 0, filesTotal: 0, bytes: 0 })
     try {
       const files = await listFiles(reader, tip)
-      if (storedSize(reader, files) > ZIP_MAX_BYTES) throw new ZipTooLargeError(storedSize(reader, files))
+      const stored = storedSize(reader, files)
+      if (stored > ZIP_MAX_BYTES) throw new ZipTooLargeError(stored)
       const entries = await readZipFiles(reader, files, setProgress, cancel.current.signal)
-      const prefix = `${addr.name}-${selected.name}`.replace(/[^A-Za-z0-9._-]+/g, '-')
+      const name = zipFileName(addr.name, selected.name)
       const rooted: Record<string, Uint8Array> = {}
-      for (const [path, bytes] of Object.entries(entries)) rooted[`${prefix}/${path}`] = bytes
-      const zip = await compressInWorker(rooted, setProgress)
-      const url = URL.createObjectURL(new Blob([zip as BlobPart], { type: 'application/zip' }))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = zipFileName(addr.name, selected.name)
-      document.body.append(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 30_000)
-      setMessage(`Saved ${a.download} (${formatBytes(zip.length)}, ${files.length} files, each hash-checked).`)
+      for (const [path, bytes] of Object.entries(entries)) rooted[`${name.replace(/\.zip$/, '')}/${path}`] = bytes
+      const zip = await compressInWorker(rooted, setProgress, cancel.current.signal)
+      saveBytes(zip, name, 'application/zip')
+      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${files.length} files, each hash-checked).`)
     } catch (e) {
-      if (e instanceof ZipTooLargeError) setTooLarge(true)
-      else setMessage(`The zip could not be built: ${errorMessage(e)}`)
+      if (e instanceof ZipTooLargeError) setTooLargeRef(tip)
+      else setMessage(cancel.current?.signal.aborted ? 'Cancelled.' : `The zip could not be built: ${errorMessage(e)}`)
     } finally {
       setProgress(null)
       cancel.current = null
@@ -121,8 +117,8 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
 
   return (
     <div className="mt-2">
-      {tooLarge ? (
-        <p className="text-[12px] text-caution">This ref is too large for a browser zip; clone instead.</p>
+      {tooLargeRef === tip ? (
+        <p className="text-[12px] text-caution-700 dark:text-caution">This ref is too large for a browser zip; clone instead.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={() => void run()} disabled={busy || state.kind !== 'ready'} loading={busy} data-testid="zip-download">

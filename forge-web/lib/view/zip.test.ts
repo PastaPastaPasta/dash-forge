@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { MODE_GITLINK } from '../browse'
 import { Store } from './diff-fixtures'
-import { listFiles, readZipFiles, ZIP_MAX_BYTES, zipFileName, ZipTooLargeError } from './zip'
+import { isSafeName, listFiles, readZipFiles, ZIP_MAX_BYTES, zipFileName, ZipTooLargeError } from './zip'
 
 describe('zip of a ref', () => {
   it('lists every file under the commit and skips submodules', async () => {
@@ -22,6 +22,28 @@ describe('zip of a ref', () => {
     const entries = await readZipFiles(s.reader(), files, () => undefined)
     const round = unzipSync(zipSync(entries))
     expect(new TextDecoder().decode(round['src/main.rs'])).toBe('fn main() {}\n')
+  })
+
+  it('copies bytes so the worker transfer cannot empty the reader cache', async () => {
+    const s = new Store()
+    const same = s.blob('same\n')
+    const tip = s.commit(s.tree([{ name: 'a', oid: same }, { name: 'b', oid: same }]))
+    // A caching reader: every read of an oid returns the one cached object.
+    const cached = new Map<string, Awaited<ReturnType<ReturnType<Store['reader']>['readObject']>>>()
+    const inner = s.reader()
+    const reader = {
+      readObject: async (oid: string) => cached.get(oid) ?? cached.set(oid, await inner.readObject(oid)).get(oid)!,
+    }
+    const entries = await readZipFiles(reader, await listFiles(reader, tip), () => undefined)
+    expect(entries['a']?.buffer).not.toBe(entries['b']?.buffer)
+    expect(entries['a']?.buffer).not.toBe(cached.get(same)?.bytes.buffer)
+    // Two identical files are two distinct transferables.
+    expect(new Set(Object.values(entries).map((b) => b.buffer)).size).toBe(2)
+  })
+
+  it('skips tree entries that would escape the zip root', () => {
+    for (const bad of ['..', '.', '', 'a/b', 'a\\b', 'a\0b']) expect(isSafeName(bad)).toBe(false)
+    expect(isSafeName('..a')).toBe(true)
   })
 
   it('refuses past the size cap', async () => {

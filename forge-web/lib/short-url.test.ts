@@ -46,8 +46,9 @@ describe('shortRepoPath → shim → canonical route', () => {
 
   it('honors the base path both ways', () => {
     expect(expand('/dash-forge/alice/project/pull/7', '/dash-forge')).toBe('/dash-forge/repo/pull/?owner=alice&name=project&number=7')
-    // The base path alone is not a repo.
+    // The base path alone is not a repo, and a path outside the base is not ours.
     expect(expand('/dash-forge/', '/dash-forge')).toBeNull()
+    expect(expand('/alice/project', '/dash-forge')).toBeNull()
   })
 })
 

@@ -106,6 +106,17 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   for (const l of listeners) l()
 }
 
+/**
+ * "Try again": forget the places that did not answer and the packs they held, so the card
+ * reports what the retry finds rather than the last outage for the rest of the session.
+ */
+export function clearUnreachable(key: string): void {
+  const prev = ledger.get(key)
+  if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0)) return
+  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [] })
+  for (const l of listeners) l()
+}
+
 /** The repo's ledger (a stable reference until the next change). */
 export function contentChecks(key: string): ContentChecks {
   return ledger.get(key) ?? NO_CONTENT_CHECKS

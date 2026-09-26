@@ -190,6 +190,11 @@ describe('where the bytes came from row', () => {
     )
   })
 
+  it('counts bytes from an IPFS gateway as ipfs tried', () => {
+    const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 1, sources: ['ipfs.io'] }), configuredUris: ['ipfs://bafy'] }))
+    expect(r.source.detail).toBe('ipfs.io.')
+  })
+
   it('reads Failed with the list of places when no storage answered', () => {
     const r = deriveTrust(inputs({ checks: checks({ unreachable: ['pub-9a1.r2.dev (timed out)', 'ipfs (not found on 3 gateways)'] }) }))
     expect(r.source.state).toBe('failed')

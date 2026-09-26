@@ -29,21 +29,30 @@ export type ViewerRole = 'maintainer' | 'writer' | null
 
 const MINUTE = 60_000
 
-/** The viewer's role; `unknown` until it is read (signed out resolves to null at once). */
-export function useViewerRole(repo: RepoRef): { readonly role: ViewerRole; readonly known: boolean } {
+/**
+ * The viewer's role; `known` once it is read (signed out resolves to null at once). A read
+ * that failed is `failed`, never "not a member": `readViewerPermissions` answers null then.
+ */
+export function useViewerRole(repo: RepoRef): {
+  readonly role: ViewerRole
+  readonly known: boolean
+  readonly failed: boolean
+  readonly retry: () => void
+} {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity } = useAuth()
   const state = useAsync<ViewerRole>(
     () =>
       sessionCached(`role:${network}:${repoKey(repo)}:${identity}`, 5 * MINUTE, async () => {
         const holdings = await readViewerPermissions(sdk!, repo, identity!, network)
-        return holdings?.maintain ? 'maintainer' : holdings?.write ? 'writer' : null
+        if (holdings === null) throw new Error("couldn't read this repo's members")
+        return holdings.maintain ? 'maintainer' : holdings.write ? 'writer' : null
       }),
     [ready, repoKey(repo), identity ?? '', network],
     { enabled: ready && sdk !== null && identity !== null },
   )
-  if (identity === null) return { role: null, known: true }
-  return { role: state.data ?? null, known: state.settled }
+  if (identity === null) return { role: null, known: true, failed: false, retry: state.reload }
+  return { role: state.data ?? null, known: state.settled && state.error === null, failed: state.error !== null, retry: state.reload }
 }
 
 export function useTargetCounts(repo: RepoRef): { readonly issues: number | null; readonly pulls: number | null } {

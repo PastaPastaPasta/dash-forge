@@ -14,7 +14,7 @@ import Link from 'next/link'
 import { AlertTriangle, FileText, GitCommit, Lock, Rocket, Search } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import type { BrowseReader } from '@/lib/browse'
-import { MODE_TREE } from '@/lib/browse'
+import { walkFiles } from '@/lib/view/zip'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import {
   commitRootTree,
@@ -34,6 +34,8 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
+import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView } from '@/components/markdown-view'
@@ -42,6 +44,9 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+
+/** The ref bar counts at most this many commits (one read each), then shows `100+`. */
+const HOME_COMMIT_COUNT_CAP = 100
 
 interface RootView {
   readonly tree: string
@@ -76,9 +81,10 @@ export function RepoHomeContent({
   addr: RepoAddress
   refParam?: string
 }): JSX.Element {
-  const { role, known } = useViewerRole(home.repo)
+  const { role, known, failed, retry } = useViewerRole(home.repo)
   if (home.repo.kind === 'v2' && home.repo.visibility === 'private') {
     // Nothing of a private repo's contents is read until membership is known.
+    if (failed) return <ErrorState title="Couldn't check membership" message="This repo is private, and its member list could not be read." onRetry={retry} />
     if (!known) return <LoadingBlock label="Checking membership" />
     if (role === null) return <PrivateRepoState repo={home.repo} addr={addr} />
   }
@@ -120,15 +126,19 @@ function RootBody({
   selected: SelectedRef
   refParam: string
 }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
+  const { data, loading, error, cause, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
   // Both load after the list paints and never block it.
   const names = useMemo(() => (data?.entries ?? []).map((e) => e.name), [data])
   const lastCommits = useAsync(() => lastCommitsForDir(reader, tipOid, '', names), [tipOid, names.join('\0')], {
     enabled: data !== null,
   })
-  const commits = useAsync(() => countCommits(reader, tipOid), [tipOid], { enabled: data !== null })
+  const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP), [tipOid], { enabled: data !== null })
 
   if (loading && !data) return <LoadingBlock label="Reading root tree" />
+  if (cause instanceof PackUnavailableError) {
+    // An indexed repo whose storage stopped answering: the same card as the fallback clone's.
+    return <StorageUnreachableCard repo={home.repo} addr={addr} packs={[unavailableOf(cause)]} retry={reload} />
+  }
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />
 
@@ -201,20 +211,6 @@ function CommitCell({ commit, loading, addr }: { commit: LastCommit | undefined;
  */
 const GO_TO_FILE_MAX = 5000
 
-async function walkPaths(reader: BrowseReader, rootTree: string): Promise<{ paths: string[]; truncated: boolean }> {
-  const paths: string[] = []
-  const queue: [string, string][] = [[rootTree, '']]
-  while (queue.length > 0 && paths.length < GO_TO_FILE_MAX) {
-    const [oid, prefix] = queue.shift() as [string, string]
-    for (const e of await readTree(reader, oid)) {
-      const path = prefix ? `${prefix}/${e.name}` : e.name
-      if (e.mode === MODE_TREE) queue.push([e.oid, path])
-      else paths.push(path)
-    }
-  }
-  return { paths, truncated: queue.length > 0 }
-}
-
 function GoToFile({
   reader,
   rootTree,
@@ -228,9 +224,9 @@ function GoToFile({
 }): JSX.Element {
   const [started, setStarted] = useState(false)
   const [query, setQuery] = useState('')
-  const walk = useAsync(() => walkPaths(reader, rootTree), [rootTree], { enabled: started })
+  const walk = useAsync(() => walkFiles(reader, rootTree, GO_TO_FILE_MAX), [rootTree], { enabled: started })
   const q = query.trim().toLowerCase()
-  const hits = q === '' ? [] : (walk.data?.paths ?? []).filter((p) => p.toLowerCase().includes(q)).slice(0, 12)
+  const hits = q === '' ? [] : (walk.data?.files ?? []).map((f) => f.path).filter((p) => p.toLowerCase().includes(q)).slice(0, 12)
   return (
     <div className="relative ml-auto w-full sm:w-56">
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-400" aria-hidden />

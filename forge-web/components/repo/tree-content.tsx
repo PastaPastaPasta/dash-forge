@@ -48,7 +48,7 @@ export function TreeContent({
         <RefSwitcher home={home} addr={addr} current={selected} path={path} />
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
-      <BrowseBoundary repo={home.repo}>
+      <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader) => <DirBody reader={reader} tipOid={tipOid} path={path} addr={addr} refParam={refParam} />}
       </BrowseBoundary>
     </div>

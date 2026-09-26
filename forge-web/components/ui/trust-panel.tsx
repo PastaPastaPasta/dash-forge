@@ -97,7 +97,7 @@ export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
   const [open, setOpen] = useState(false)
   const bodyId = useId()
   const meta = TRUST_META[report.overall]
-  const checking = report.summary === 'Checking…'
+  const checking = report.chain.checking === true
 
   return (
     <section

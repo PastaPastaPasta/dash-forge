@@ -28,6 +28,11 @@ async function expectLanded(page: Page, success: ReturnType<Page['getByText']>):
   if (await readErrorBanner(page).isVisible()) throw new Error(`read error: ${await readErrorBanner(page).innerText()}`)
 }
 
+async function expectNoSeriousA11y(page: Page, label: string): Promise<void> {
+  const serious = await runAxe(page, label)
+  expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
+}
+
 async function openHome(page: Page): Promise<void> {
   await page.goto(url(), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
@@ -81,7 +86,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     }
     await expect(card.getByText(`Refs, issues and members were proven against Dash devnet-${E2E_DEVNET}.`)).toBeVisible()
     // moutai records a DAPI list, so a second key source is asked and must agree.
-    await expect(card.getByText(/quorums\.moutai\.networks\.dash\.org and .*\(a DAPI node\); both agreed on \d+ quor/)).toBeVisible()
+    await expect(card.getByText(/quorums\.moutai\.networks\.dash\.org and .*\(a DAPI node\); both agreed on every one of the \d+ quorums used/)).toBeVisible()
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
     await expect(card.getByText(/FORGE_RULES_V2/)).toBeVisible()
@@ -91,6 +96,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await card.screenshot({ path: join(SCREENSHOT_DIR, 'b-verification-expanded.png') })
     // No "assay" left in the UI copy.
     await expect(page.getByText(/assay/i)).toHaveCount(0)
+    await expectNoSeriousA11y(page, 'b-home-expanded')
   })
 
   test('b-3. five-tab header: Code · Issues (n) · Pull requests (n) · Releases (Settings for maintainers)', async ({ page }) => {
@@ -148,8 +154,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const note = empty.getByRole('note')
     if (await note.count()) await expect(note.getByRole('link', { name: 'Configure storage →' })).toHaveAttribute('href', /\/settings\/storage/)
     await shot(page, 'b-empty-repo')
-    const serious = await runAxe(page, 'b-empty-repo')
-    expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
+    await expectNoSeriousA11y(page, 'b-empty-repo')
   })
 
   test('b-6. short URLs through the 404 shim', async ({ page }) => {
@@ -180,20 +185,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(page.getByText('No releases yet').or(page.getByTestId('release').first())).toBeVisible({ timeout: 45_000 })
     if (await page.getByTestId('release').count()) await expect(page.getByText(/Published by/).first()).toBeVisible()
     await shot(page, 'b-releases')
-    const serious = await runAxe(page, 'b-releases')
-    expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
+    await expectNoSeriousA11y(page, 'b-releases')
   })
 
-  test('b-8. axe: home with the Verification card open', async ({ page }) => {
-    await openHome(page)
-    const card = await settledCard(page)
-    await card.getByRole('button', { name: /verification/i }).click()
-    await expect(card.getByText('Chain data', { exact: true })).toBeVisible()
-    const serious = await runAxe(page, 'b-home-expanded')
-    expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
-  })
-
-  test('b-9. 390px phone: rail under the content, Verification first, dash:// and zip only', async ({ page }) => {
+  test('b-8. 390px phone: rail under the content, Verification first, dash:// and zip only', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await openHome(page)
     const card = page.getByTestId('verification-card')
@@ -209,7 +204,6 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(overflow).toBeLessThanOrEqual(0)
     await settledCard(page)
     await shot(page, 'b-mobile-home')
-    const serious = await runAxe(page, 'b-mobile-home')
-    expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
+    await expectNoSeriousA11y(page, 'b-mobile-home')
   })
 })

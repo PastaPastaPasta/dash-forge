@@ -36,18 +36,39 @@ export class ZipTooLargeError extends Error {
   }
 }
 
-/** Every blob (and symlink) under a commit's tree, depth first. Gitlinks are skipped. */
-export async function listFiles(reader: ObjectReader, commitOid: string): Promise<ZipFile[]> {
-  const out: ZipFile[] = []
-  const walk = async (treeOid: string, prefix: string): Promise<void> => {
-    for (const e of await readTree(reader, treeOid)) {
+/** A tree entry name that is safe as one path segment. */
+export function isSafeName(name: string): boolean {
+  return name !== '' && name !== '.' && name !== '..' && !/[/\\\0]/.test(name)
+}
+
+/**
+ * Every blob (and symlink) under a tree, gitlinks skipped, sorted by path. Stops after `max`
+ * files (`truncated`), so Go to file can list a large repo without walking all of it.
+ */
+export async function walkFiles(
+  reader: ObjectReader,
+  treeOid: string,
+  max = Infinity,
+): Promise<{ files: ZipFile[]; truncated: boolean }> {
+  const files: ZipFile[] = []
+  const queue: [string, string][] = [[treeOid, '']]
+  while (queue.length > 0 && files.length < max) {
+    const [oid, prefix] = queue.shift() as [string, string]
+    for (const e of await readTree(reader, oid)) {
+      // A tree is hash-checked, not sane: a hostile pusher can name an entry `..` (zip-slip).
+      if (!isSafeName(e.name)) continue
       const path = prefix ? `${prefix}/${e.name}` : e.name
-      if (e.mode === MODE_TREE) await walk(e.oid, path)
-      else if (e.mode !== MODE_GITLINK) out.push({ path, oid: e.oid, mode: e.mode })
+      if (e.mode === MODE_TREE) queue.push([e.oid, path])
+      else if (e.mode !== MODE_GITLINK) files.push({ path, oid: e.oid, mode: e.mode })
     }
   }
-  await walk((await readCommit(reader, commitOid)).tree, '')
-  return out
+  files.sort((a, b) => (a.path < b.path ? -1 : 1))
+  return { files, truncated: queue.length > 0 }
+}
+
+/** Every file of a commit (for the zip). */
+export async function listFiles(reader: ObjectReader, commitOid: string): Promise<ZipFile[]> {
+  return (await walkFiles(reader, (await readCommit(reader, commitOid)).tree)).files
 }
 
 /** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */
@@ -72,7 +93,8 @@ export async function readZipFiles(
     const obj = await reader.readObject(f.oid)
     bytes += obj.bytes.length
     if (bytes > ZIP_MAX_BYTES) throw new ZipTooLargeError(bytes)
-    entries[f.path] = obj.bytes
+    // A copy: the reader caches `obj.bytes`, and the worker transfer detaches what it sends.
+    entries[f.path] = obj.bytes.slice()
     done += 1
     onProgress({ phase: 'reading', files: done, filesTotal: files.length, bytes })
   })
@@ -83,6 +105,7 @@ export async function readZipFiles(
 export function compressInWorker(
   entries: Record<string, Uint8Array>,
   onProgress?: (p: ZipProgress) => void,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const count = Object.keys(entries).length
   const bytes = Object.values(entries).reduce((n, b) => n + b.length, 0)
@@ -98,6 +121,10 @@ export function compressInWorker(
       worker.terminate()
       reject(new Error(ev.message || 'the zip worker failed'))
     }
+    signal?.addEventListener('abort', () => {
+      worker.terminate()
+      reject(new Error('cancelled'))
+    })
     worker.postMessage(entries, Object.values(entries).map((b) => b.buffer as ArrayBuffer))
   })
 }

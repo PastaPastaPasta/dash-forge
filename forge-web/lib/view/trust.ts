@@ -23,7 +23,8 @@ import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefHead, RefState } from '../rules'
 import type { ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
-import { shortOid, timeAgo } from './format'
+import { shortOid, timeAgo, urlHost } from './format'
+import { readGateways } from './storage-status'
 
 export type TrustState = 'verified' | 'partial' | 'unverified' | 'pending' | 'failed'
 
@@ -117,16 +118,6 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
-/** A URL's host for display; an `ipfs://` or `platform://` locator by its scheme alone. */
-function hostOf(url: string): string {
-  if (/^(ipfs|platform):/i.test(url)) return url.slice(0, url.indexOf(':')).toLowerCase()
-  try {
-    return new URL(url).host || url
-  } catch {
-    return url
-  }
-}
-
 function deriveChain(
   network: Network,
   connection: ConnectionTrust,
@@ -135,7 +126,7 @@ function deriveChain(
 ): TrustLink {
   // The full key, so a devnet reads `devnet-moutai` rather than a bare `devnet`.
   const label = NETWORKS[network].key
-  const host = hostOf(endpoint)
+  const host = urlHost(endpoint)
   if (connection === 'connecting') {
     return { state: 'pending', checking: true, detail: `Connecting to Dash ${label}. Nothing has been read or checked yet.` }
   }
@@ -161,7 +152,7 @@ function deriveChain(
       return {
         state: 'verified',
         detail: proven,
-        note: `Proofs are checked against quorum keys fetched from ${quorum.primary} and ${quorum.secondary} (a DAPI node); both agreed on ${plural(quorum.overlap, 'quorum')}. ${refetch}`,
+        note: `Proofs are checked against quorum keys fetched from ${quorum.primary} and ${quorum.secondary} (a DAPI node); both agreed on every one of the ${plural(quorum.overlap, 'quorum')} used. ${refetch}`,
       }
     case 'single':
       return {
@@ -303,8 +294,9 @@ function sourceName(source: string): string {
 
 function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   const { sources, unreachable } = input.checks
-  const tried = new Set(sources)
-  const notTried = [...new Set((input.configuredUris ?? []).map(hostOf))].filter((h) => h !== '' && !tried.has(h))
+  const gatewayHosts = new Set(readGateways().map(urlHost))
+  const tried = new Set(sources.map((s) => (gatewayHosts.has(s) ? 'ipfs' : s)))
+  const notTried = [...new Set((input.configuredUris ?? []).map(urlHost))].filter((h) => h !== '' && !tried.has(h))
   const also = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''
   const failedPlaces = unreachable.length > 0 ? `Didn't answer: ${unreachable.join(', ')}.` : undefined
   if (sources.length === 0) {
@@ -353,7 +345,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     network: input.network,
     networkLabel: NETWORKS[input.network].key,
     quorumEndpoint,
-    quorumHost: hostOf(quorumEndpoint),
+    quorumHost: urlHost(quorumEndpoint),
     chain,
     tip,
     content,

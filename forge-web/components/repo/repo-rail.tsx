@@ -29,7 +29,7 @@ import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { useReleases } from '@/hooks/use-repo-chrome'
+import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
@@ -48,6 +48,8 @@ export function RepoRail({
 }): JSX.Element {
   const { ready, trusted, network } = useSdk(repoContractIds(home.repo))
   const quorum = useQuorumCheck(network, ready && trusted)
+  const { role } = useViewerRole(home.repo)
+  const isPrivate = home.repo.kind === 'v2' && home.repo.visibility === 'private'
   const key = repoKey(home.repo)
   const checks = useSyncExternalStore(
     subscribeContentChecks,
@@ -70,10 +72,16 @@ export function RepoRail({
   return (
     <aside className="min-w-0 space-y-4" aria-label="About this repository">
       <TrustPanel report={report} />
-      <CloneBox home={home} addr={addr} selected={selected} />
-      <About home={home} addr={addr} />
-      {home.repo.kind === 'v2' ? <Members repo={home.repo} /> : null}
-      <LatestRelease home={home} addr={addr} />
+      {/* A private repo shows a non-member (or a viewer whose role is still loading) nothing
+          past the card: no clone box (it would start reading packs), no members, no releases. */}
+      {isPrivate && role === null ? null : (
+        <>
+          <CloneBox home={home} addr={addr} selected={selected} />
+          <About home={home} addr={addr} />
+          {home.repo.kind === 'v2' ? <Members repo={home.repo} /> : null}
+          <LatestRelease home={home} addr={addr} />
+        </>
+      )}
     </aside>
   )
 }

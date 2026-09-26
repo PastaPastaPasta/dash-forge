@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { normalizeGateway, setUserGateways, userGateways } from '@/lib/view'
 
-export function GatewaysField({ onChange }: { onChange?: () => void }): JSX.Element {
+export function GatewaysField(): JSX.Element {
   const [list, setList] = useState<string[]>(() => userGateways())
   const [draft, setDraft] = useState('')
   const [bad, setBad] = useState(false)
@@ -20,7 +20,6 @@ export function GatewaysField({ onChange }: { onChange?: () => void }): JSX.Elem
   const save = (next: string[]): void => {
     setUserGateways(next)
     setList(userGateways())
-    onChange?.()
   }
   const add = (e: React.FormEvent): void => {
     e.preventDefault()
