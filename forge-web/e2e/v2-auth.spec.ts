@@ -25,7 +25,10 @@ test.skip(!existsSync(idFile('CI-RUNNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 30 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const GROUP = '23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o'
+/** The group the app binds keys to: the one in the deployment file it is built with. */
+const GROUP: string = E2E_DEVNET
+  ? JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8')).v2.forgeCore.contractGroupId
+  : ''
 
 /** Read an identity's keys straight from Platform (evo-sdk in Node), independent of the app. */
 async function onChainKeys(identityId: string): Promise<{ id: number; level: string; budget: bigint | null; expiresAt: number | null; bound: string | null; remaining: bigint | null }[]> {

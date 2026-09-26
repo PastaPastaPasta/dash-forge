@@ -105,10 +105,7 @@ export async function registerLimitedKey(
       expiresAt: BigInt(request.expiresAt),
     })
     const old = identity.publicKeys.find((k) => k.keyId === params.replaceKeyId)
-    const disable =
-      old && old.disabledAt === undefined && old.securityLevelNumber === 2 && old.contractBounds?.toJSON().id === params.group
-        ? [old.keyId]
-        : []
+    const disable = old && old.disabledAt === undefined && isForgeBrowserKey(old) ? [old.keyId] : []
     try {
       await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.length ? { disablePublicKeys: disable } : {}), signer })
     } catch (e) {
@@ -214,19 +211,28 @@ export async function assertGroupHolds(sdk: EvoSDK, group: string, contracts: re
 }
 
 /**
+ * A key Forge may renew over or revoke: HIGH, bound to a contract group, with a budget. Any
+ * group, not just the current one, so a key left on an old group by a contract
+ * re-registration can still be disabled.
+ */
+function isForgeBrowserKey(k: WasmKey): boolean {
+  return k.securityLevelNumber === 2 && k.contractBounds?.toJSON().$type === 'contractGroup' && k.totalBudget !== undefined
+}
+
+/**
  * Disable `keyId` on chain (an IdentityUpdate signed by the master key, used once and not
  * retained). Only a group-bound HIGH key — a Forge browser key — may be disabled this way.
  */
 export async function revokeLimitedKey(
   sdk: EvoSDK,
-  params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keyId: number; readonly group: string },
+  params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keyId: number },
 ): Promise<void> {
   const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
   if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
   if (k.disabledAt !== undefined) return
-  if (k.securityLevelNumber !== 2 || k.contractBounds?.toJSON().id !== params.group) {
+  if (!isForgeBrowserKey(k)) {
     throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
   }
   const master = PrivateKey.fromWIF(params.masterWif)

@@ -187,6 +187,14 @@ export class AuthController {
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw new KeyNotUsableError()
+      // A vault key is a limited key: bound to a group that no longer holds the forge contracts
+      // (they were re-registered), it would open a session whose every write is refused.
+      if (storage === 'vault') {
+        const bounds = identity.publicKeys.find((k) => k.keyId === match.keyId)?.contractBounds?.toJSON()
+        if (bounds?.$type === 'contractGroup' && bounds.id !== this.group()) {
+          throw new KeyNotUsableError("this browser's key is bound to an old dash-forge contract group — renew it")
+        }
+      }
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
       const session: AuthSession = {
         identityId: secret.identityId,
@@ -372,7 +380,7 @@ export class AuthController {
         masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
       }
       if (!masterWif) throw new Error('no master key found')
-      await revokeLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId: stored.keyId, group: this.group() })
+      await revokeLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId: stored.keyId })
       masterWif = null
       await this.forget(identityId)
     })
@@ -387,8 +395,8 @@ export class AuthController {
 
 /** The key opened no longer controls a usable key on the identity (disabled, expired, wrong). */
 export class KeyNotUsableError extends WriteAuthError {
-  constructor() {
-    super("this browser's key is no longer usable on the identity (disabled or expired) — renew it")
+  constructor(message = "this browser's key is no longer usable on the identity (disabled or expired) — renew it") {
+    super(message)
     this.name = 'KeyNotUsableError'
   }
 }
