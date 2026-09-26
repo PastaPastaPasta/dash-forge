@@ -232,6 +232,18 @@ async function main() {
     });
     const doc = found instanceof Map ? [...found.values()].find((v) => v != null) : null;
     if (doc) {
+      // The last step the seeder writes is the star; a fixture without it was interrupted
+      // on the machine that holds its state file, and must be finished there.
+      const stars = await sdk.documents.count({
+        dataContractId: collab,
+        documentTypeName: 'star',
+        where: [['repoId', '==', String(doc.toJSON?.().$id ?? doc.id)]],
+      });
+      let n = 0n;
+      for (const v of stars.values()) n += v;
+      if (n === 0n) {
+        throw new Error(`${DEMO} exists on ${key} but its seed never finished (no star); finish it where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
+      }
       const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
       log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
       console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId }, seeded: false }, null, 2));

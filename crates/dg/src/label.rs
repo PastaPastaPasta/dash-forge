@@ -60,7 +60,7 @@ async fn define(
     description: &str,
     retired: bool,
 ) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let verb = if retired { "Retire" } else { "Define" };
     ctx.confirm_or_cancel(&format!(
         "{verb} label {name:?} in {}? (one small document; members only)",

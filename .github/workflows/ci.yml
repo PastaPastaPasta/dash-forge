@@ -9,7 +9,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Per-push gate: the web app + the TS FORGE_RULES_V1 conformance suite (the
+# Per-push gate: the web app + the TS FORGE_RULES_V2 conformance suite (the
 # cross-client parity contract). The Rust workspace pulls in the Dash Platform SDK
 # (a git dependency pinned to an immutable tag in Cargo.toml); building that
 # dependency tree does not fit a fast per-push job, so Rust is gated by `rust.yml`

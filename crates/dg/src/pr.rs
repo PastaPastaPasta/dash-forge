@@ -1,4 +1,4 @@
-//! `dg pr` — pull requests on forge-v2 (v1 repositories are read only).
+//! `dg pr` — pull requests on forge-v2.
 //!
 //! * `create` opens a `patch` in the target repo pointing at the repo that holds the head
 //!   commit (`sourceRepoId`): the target itself, or a fork. With no flags it uses the
@@ -118,7 +118,7 @@ fn state_label(v: &PatchView) -> &'static str {
 // ---------------------------------------------------------------------------
 
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
-    let s = Session::open_v2(ctx, &args.repo).await?;
+    let s = Session::open(ctx, &args.repo).await?;
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -447,7 +447,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let v = Verdict::from_code(verdict.code());
@@ -481,7 +481,7 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
 }
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
@@ -533,7 +533,7 @@ async fn merge(
     event_only: bool,
     merge_oid: Option<&str>,
 ) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
@@ -970,7 +970,7 @@ fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> 
 // ---------------------------------------------------------------------------
 
 /// Where a PR's pieces are: the source repo id, the head oid, the base ref, and the target
-/// repo's id (v2), or the v1 equivalents.
+/// repo's id.
 struct Located {
     source: String,
     head: String,

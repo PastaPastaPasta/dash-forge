@@ -103,7 +103,7 @@ pub struct Summary {
     pub status: Status,
     /// `testnet`, `mainnet`, `devnet-<name>`.
     pub network: String,
-    /// The source (`owner/repo`, or the v1 repo).
+    /// The source (`owner/repo`).
     pub source: String,
     /// The destination.
     pub repo: RepoInfo,

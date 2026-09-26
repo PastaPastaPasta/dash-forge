@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_PAGE: u32 = 100;
 
 /// Build a HIGH-key document write/delete engine over `client` for `identity`.
 ///
-/// Document create/delete accept a HIGH auth key (S0.7); only token admin needs CRITICAL.
+/// Document create/delete accept a HIGH auth key (S0.7), falling back to CRITICAL.
 pub(crate) fn doc_engine<'a>(
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,

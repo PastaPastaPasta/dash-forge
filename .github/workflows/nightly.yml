@@ -146,11 +146,6 @@ jobs:
     if: needs.fixtures.outputs.seeder == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      ID_OWNER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
-      ID_MAINTAINER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_MAINTAINER }}
-      ID_COLLAB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
-      ID_CONTRIB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -158,9 +153,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: forge-contracts/sdk-v2/package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
         working-directory: forge-contracts/sdk-v2
+      # The keys live only in this step's environment, not the job's.
       - name: Materialize the fixture identities
+        env:
+          ID_OWNER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+          ID_MAINTAINER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_MAINTAINER }}
+          ID_COLLAB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
+          ID_CONTRIB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
         run: |
           dir="${HOME}/.config/dash-forge/test-identities/devnet-moutai"
           mkdir -p "$dir" && chmod 700 "$dir"
@@ -175,8 +176,10 @@ jobs:
 
   cli-suite:
     name: cli e2e (live devnet moutai)
-    needs: fixtures
-    if: needs.fixtures.outputs.present == 'true'
+    # After the seed job: both sign as OWNER, and two signers on one identity at once
+    # collide on its contract nonce.
+    needs: [fixtures, seed-read-fixture]
+    if: ${{ !cancelled() && needs.fixtures.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     # checkout + protoc + toolchain + cache (~3 min), build (≤30), suite (≤45).
     timeout-minutes: 85

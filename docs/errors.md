@@ -45,7 +45,7 @@ Fix: run the command again with `RUST_LOG=debug` for more detail. If it keeps ha
 
 **Not found.** The repository, issue, pull request, release or document does not exist on the network in use. Platform returned a proof that it is absent.
 
-Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and registry are in use.
+Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
 ## E103
 
@@ -105,7 +105,7 @@ Fix: `dg auth login --identity <file>` records a default identity (use the bridg
 
 ## E302
 
-**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes need a HIGH or CRITICAL AUTHENTICATION key. Token administration (`dg collab add/suspend/remove`, `dg repo create`) needs a CRITICAL one.
+**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key.
 
 Fix: use the identity export that includes that key.
 

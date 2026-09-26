@@ -10,8 +10,6 @@
 //! at another relay is one document. Consumers re-fetch and verify from Platform, so a relay
 //! is trusted for availability only.
 //!
-//! forge-v1 repositories (one contract each) are read-only and not served.
-//!
 //! Module map:
 //!  * [`config`] — TOML + CLI configuration.
 //!  * [`subscriptions`] — discovery of the `webhook` documents addressed to this relay.

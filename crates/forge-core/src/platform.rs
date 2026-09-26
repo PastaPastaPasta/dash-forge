@@ -1733,7 +1733,8 @@ const MAX_PAGES: usize = 1000;
 /// block time, so these ties are real. Protocol 14 bounds the cursor by document id and
 /// does not drop them.
 ///
-/// Every forge-v2 type requires `$createdAt`, so a proved query returns the boundary row's
+/// Every forge-v2 type read with an order ending in `$createdAt` requires it, so a proved
+/// query returns the boundary row's
 /// timestamp.
 fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
     let Some((last, rest)) = order.split_last() else {

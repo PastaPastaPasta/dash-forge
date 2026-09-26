@@ -3,8 +3,7 @@
 //! forge-v2 repositories go through [`forge_core::collab::v2::Collab`]: issues are numbered
 //! by the `forge-v2.md` §6 rule, a create is journaled so a re-run resumes it, and close /
 //! reopen pick their gate automatically (a member's `event`, else the author's
-//! `authorEvent`). v1 repositories are read only: `list` and `view` still read them, every
-//! write is refused (E605) before anything is signed.
+//! `authorEvent`).
 
 use anyhow::Result;
 use serde_json::json;
@@ -152,7 +151,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 }
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     ctx.confirm_or_cancel(&format!(
         "Open issue {title:?} in {}? (one small document, ~0.0001 DASH)",
         s.repo.display()
@@ -201,7 +200,7 @@ async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
 }
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
     ctx.confirm_or_cancel(&format!("Comment on issue #{number}? (one small document)"))?;
     let id = s
@@ -216,7 +215,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
 }
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
     let (verb, prompt) = if close {
         ("close", "Close")
@@ -267,7 +266,7 @@ async fn label(
             ))
         }
     };
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
     ctx.confirm_or_cancel(&format!(
         "Label issue #{number} ({value})? (one small document; members only)"

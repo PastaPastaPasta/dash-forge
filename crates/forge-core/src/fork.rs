@@ -64,12 +64,8 @@ pub fn fork_manifest(
     if !MANIFEST_URIS_V2.fits(&uris) {
         uris.retain(|u| !u.starts_with("s3://"));
     }
-    uris.retain(|u| {
-        MANIFEST_URIS_V2
-            .max_item_len
-            .is_none_or(|max| u.len() <= max)
-    });
-    uris.truncate(MANIFEST_URIS_V2.max_items.unwrap_or(usize::MAX));
+    uris.retain(|u| u.len() <= MANIFEST_URIS_V2.max_item_len);
+    uris.truncate(MANIFEST_URIS_V2.max_items);
     if uris.is_empty() {
         return Ok(None);
     }

@@ -109,7 +109,7 @@ async fn upload_asset(
 }
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
-    let s = Session::open_v2(ctx, &args.repo).await?;
+    let s = Session::open(ctx, &args.repo).await?;
     let collab = s.collab();
     let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.

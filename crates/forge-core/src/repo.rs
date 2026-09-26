@@ -523,8 +523,7 @@ impl<'a> RepoService<'a> {
             if !BACKEND_URIS_V2.fits(list) {
                 return Err(Error::Config(format!(
                     "config.backend.uris holds at most {} URLs of at most {} bytes each",
-                    BACKEND_URIS_V2.max_items.unwrap_or_default(),
-                    BACKEND_URIS_V2.max_item_len.unwrap_or_default()
+                    BACKEND_URIS_V2.max_items, BACKEND_URIS_V2.max_item_len
                 )));
             }
         }

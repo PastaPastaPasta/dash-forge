@@ -167,8 +167,7 @@ fn now_ms() -> u64 {
 pub async fn run(cfg: RelayConfig) -> Result<()> {
     let forge = cfg.target.v2.clone().ok_or_else(|| {
         RelayError::Config(format!(
-            "forge-v2 is not deployed on {}; the relay serves forge-v2 repositories only \
-             (v1 repositories are read-only and have no webhooks)",
+            "forge-v2 is not deployed on {}; the relay serves forge-v2 repositories only",
             cfg.target.network
         ))
     })?;

@@ -40,19 +40,11 @@ pub fn repo_ref_from_doc(forge: &ForgeIds, doc: &FetchedDocument) -> Result<Repo
     })
 }
 
-/// The network's forge-v2 contracts, or [`Error::V2NotDeployed`].
-fn deployed(client: &PlatformClient) -> Result<&ForgeIds> {
-    let target = client.target();
-    target.v2.as_ref().ok_or_else(|| Error::V2NotDeployed {
-        network: target.network.key(),
-    })
-}
-
 /// Resolve `owner/name` (owner a base58 identity id).
 pub async fn resolve_named(client: &PlatformClient, owner: &str, name: &str) -> Result<RepoRef> {
     let slug = repo_slug(name)?;
     let owner_bytes = platform::decode_identifier(owner)?;
-    let forge = deployed(client)?;
+    let forge = client.target().require_v2()?;
     find_v2(client, forge, owner_bytes, &slug)
         .await?
         .ok_or(Error::NotFound)
@@ -87,7 +79,7 @@ pub async fn find_v2(
 /// Resolve a bare id: a forge-core `repo` document id.
 pub async fn resolve_id(client: &PlatformClient, id: &str) -> Result<RepoRef> {
     platform::decode_identifier(id)?;
-    let forge = deployed(client)?;
+    let forge = client.target().require_v2()?;
     if id == forge.core || id == forge.collab {
         return Err(Error::Config(format!(
             "{id} is a forge-v2 contract, not a repository; address a repo as \
@@ -140,7 +132,7 @@ pub async fn fork_parent(client: &PlatformClient, repo: &RepoRef) -> Result<Opti
 /// Every repository `owner` has, by name.
 pub async fn list_owned(client: &PlatformClient, owner: &str) -> Result<Vec<RepoSummary>> {
     let owner_bytes = platform::decode_identifier(owner)?;
-    let forge = deployed(client)?;
+    let forge = client.target().require_v2()?;
     let core = client.fetch_contract(&forge.core).await?;
     let docs = client
         .query_all_documents(

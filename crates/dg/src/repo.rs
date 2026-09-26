@@ -4,8 +4,7 @@
 //! New repositories are forge-v2: a `repo` document plus the owner's `maintainer`
 //! membership and an initial `config` in the network's shared forge-core contract, written
 //! by one resumable session (`forge_core::create`). A fork is the same plus `forkOf`, the
-//! parent's packs recorded by reference and its refs copied (`forge_core::fork`). v1
-//! repositories (one contract each) remain viewable and cloneable but are read only.
+//! parent's packs recorded by reference and its refs copied (`forge_core::fork`).
 //! Repositories cannot be deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,7 +146,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         bridge,
         identity,
         repo: parent,
-    } = Session::open_v2(ctx, repo).await?;
+    } = Session::open(ctx, repo).await?;
     let slug = repo_slug(name.unwrap_or(parent.name()))?;
     if parent.owner_id() == identity.id() && slug == parent.name() {
         return Err(crate::errors::usage(format!(
@@ -267,7 +266,7 @@ fn report_fork(
 /// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
 /// delete).
 async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
     let verb = if on { "Star" } else { "Unstar" };
     ctx.confirm_or_cancel(&format!(

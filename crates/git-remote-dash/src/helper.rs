@@ -872,7 +872,7 @@ async fn store_pack(
         observed.iter().map(|t| t as &dyn StorageTarget).collect();
 
     // No policy (Platform only): keep the pre-policy behaviour exactly — the chunk
-    // upload's own typed error (TokenFrozen, Unauthorized, InsufficientCredits, …) under
+    // upload's own typed error (NotAMember, InsufficientCredits, …) under
     // the familiar context, with no policy/fallback advice that cannot apply.
     if let (true, 1, Some(chain)) = (resolved.external.is_empty(), resolved.total(), &chain) {
         let uris = Observed::new(chain, &report)
@@ -1102,9 +1102,8 @@ async fn publish_browse_index(
     replication: &Replication,
     externals: &[ExternalTarget],
 ) {
-    // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose: the nightly's read fixture
-    // (e2e/cli/seed-read-fixture.sh) must stay unindexed so the web app's fallback clone is
-    // what the browser specs exercise.
+    // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose, for a test repo that must stay
+    // unindexed so the web app's in-browser fallback clone is what gets exercised.
     if matches!(
         std::env::var("DASH_FORGE_NO_BROWSE_INDEX").as_deref(),
         Ok("1" | "true")
