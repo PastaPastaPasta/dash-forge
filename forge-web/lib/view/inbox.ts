@@ -340,7 +340,9 @@ export async function computeSubscriptions(
     listMyTargets(sdk, forge, me, 'pull'),
     listMyCommentTargets(sdk, forge, me),
   ] as const)
-  if (settled.every((r) => r.status === 'rejected')) throw (settled[0] as PromiseRejectedResult).reason
+  // Only sources actually read count: stars are skipped (not read) when the preference is off.
+  const read = settled.filter((_, i) => i !== 1 || prefs.stars)
+  if (read.every((r) => r.status === 'rejected')) throw (read[0] as PromiseRejectedResult).reason
   const [owned, starred, issues, pulls, commented] = settled
   const ok = <T>(r: PromiseSettledResult<T>, fallback: T): T => (r.status === 'fulfilled' ? r.value : fallback)
 

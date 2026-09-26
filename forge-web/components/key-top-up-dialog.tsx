@@ -10,6 +10,7 @@
  */
 
 import { useRef, useState } from 'react'
+import { create } from 'zustand'
 import { CheckCircle2, KeyRound, Upload } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Dialog } from '@/components/ui/dialog'
@@ -38,6 +39,23 @@ function fromIsoDay(v: string): number | null {
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 0).getTime()
 }
 
+interface PendingTopUp {
+  readonly before: KeyLimits | null
+  readonly message: string
+}
+
+/**
+ * Top-ups sent but not yet seen on chain, per identity. Module-level so closing and reopening
+ * the dialog still shows "sent, check again" instead of a form that could send a second
+ * `IdentityKeyLimitsUpdate`. Cleared once the chain shows limits different from `before`.
+ */
+const usePendingTopUps = create<{ byIdentity: Readonly<Record<string, PendingTopUp>> }>(() => ({ byIdentity: {} }))
+
+function setPendingTopUp(identity: string, pending: PendingTopUp | null): void {
+  const { [identity]: _dropped, ...rest } = usePendingTopUps.getState().byIdentity
+  usePendingTopUps.setState({ byIdentity: pending === null ? rest : { ...rest, [identity]: pending } })
+}
+
 export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Element {
   const { identity, keyLimits, topUpKey, refreshBalance, isLoading } = useAuth()
   const [amount, setAmount] = useState(String(TOP_UP_DEFAULTS.addDash))
@@ -55,8 +73,11 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const [phraseTyped, setPhraseTyped] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<{ before: KeyLimits | null; after: KeyLimits } | null>(null)
-  // Sent, but not visible on chain yet: re-read, never re-send.
-  const [pending, setPending] = useState<{ before: KeyLimits | null; message: string } | null>(null)
+  // Sent, but not visible on chain yet: re-read, never re-send (kept across close / reopen).
+  const pending = usePendingTopUps((s) => (identity === null ? null : s.byIdentity[identity] ?? null))
+  const setPending = (p: PendingTopUp | null): void => {
+    if (identity !== null) setPendingTopUp(identity, p)
+  }
   const [checking, setChecking] = useState(false)
 
   let credits: bigint | null = null
@@ -135,11 +156,16 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
     pending !== null &&
     keyLimits !== null &&
     ((keyLimits.total ?? 0n) !== (pending.before?.total ?? 0n) || keyLimits.expiresAt !== (pending.before?.expiresAt ?? null))
+  // Once the chain shows the change, the marker has done its job; this view stays until Close.
+  const closeDialog = (): void => {
+    if (landed) setPending(null)
+    onClose()
+  }
 
   const dash = (c: bigint | null): string => (c === null ? '—' : `${creditsAsDash(Number(c))} DASH`)
 
   return (
-    <Dialog open onClose={onClose} title="Top up this browser's key" description="Same key, more budget or a later expiry.">
+    <Dialog open onClose={closeDialog} title="Top up this browser's key" description="Same key, more budget or a later expiry.">
       {pending !== null && done === null ? (
         <div className="space-y-3 text-dense" data-testid="key-top-up-pending" role="status">
           {landed ? (
@@ -164,7 +190,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
                 Check again
               </Button>
             )}
-            <Button variant="primary" className="flex-1" onClick={onClose}>
+            <Button variant="primary" className="flex-1" onClick={closeDialog}>
               Close
             </Button>
           </div>
