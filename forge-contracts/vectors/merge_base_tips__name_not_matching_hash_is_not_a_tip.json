@@ -1,0 +1,40 @@
+{
+  "name": "name_not_matching_hash_is_not_a_tip",
+  "description": "An update whose refName does not hash to its (real, 64-hex) refNameHash is inert, so it is not a tip.",
+  "case": "merge_base_tips",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+        "refName": "refs/heads/other",
+        "prevOid": "A",
+        "newOid": "X",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 200
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+  },
+  "expected": {
+    "historical": [
+      "A"
+    ],
+    "tip": "A",
+    "current": "A"
+  }
+}

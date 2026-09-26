@@ -1353,23 +1353,7 @@ impl<'a> RepoService<'a> {
         scope: &DocScope,
         contract: &LoadedContract,
     ) -> Result<Vec<ConfigDoc>> {
-        let docs = self
-            .client
-            .query_all_documents(
-                contract,
-                DOC_CONFIG,
-                &scope.filters([]),
-                &[QueryOrder::asc("$createdAt")],
-            )
-            .await?;
-        Ok(docs
-            .iter()
-            .map(|d| ConfigDoc {
-                id: d.id.clone(),
-                created_at: d.created_at.unwrap_or(0),
-                protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
-            })
-            .collect())
+        crate::refs::read_config_history(self.client, contract, scope).await
     }
 }
 

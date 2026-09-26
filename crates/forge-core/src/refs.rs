@@ -67,13 +67,15 @@ use crate::error::{Error, Result};
 use crate::platform::{
     FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
-use crate::rules::RefUpdate;
-use crate::scope::DocScope;
+use crate::rules::{ConfigDoc, MergeBaseTips, RefUpdate};
+use crate::scope::{self, DocScope};
 
 /// The plain ref-update document type.
 pub(crate) const DOC_REF_UPDATE: &str = "refUpdate";
 /// The MAINTAIN-gated ref-update document type.
 pub(crate) const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
+/// The repository `config` document type (protected patterns, default branch).
+const DOC_CONFIG: &str = "config";
 
 /// Both ref-update types, each with the `protected` flag its updates carry into the fold.
 const REF_UPDATE_TYPES: [(&str, bool); 2] =
@@ -181,6 +183,55 @@ pub async fn read_all_ref_updates(
         scope,
     })
     .await
+}
+
+/// The repository's **complete** `config` history (append-only, non-deletable), as
+/// [`ConfigDoc`]s ordered by `$createdAt`.
+///
+/// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
+/// UNPROTECTED, so a truncated history does not merely go stale — it silently re-admits
+/// plain `refUpdate`s on protected refs that the rules had correctly rendered inert.
+/// forge-web reads the same timeline, and the two clients must fold the same input.
+pub async fn read_config_history(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+) -> Result<Vec<ConfigDoc>> {
+    let docs = client
+        .query_all_documents(
+            contract,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::asc("$createdAt")],
+        )
+        .await?;
+    Ok(docs
+        .iter()
+        .map(|d| ConfigDoc {
+            id: d.id.clone(),
+            created_at: d.created_at.unwrap_or(0),
+            protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
+        })
+        .collect())
+}
+
+/// The history of the ref named `ref_name` that a PR merge into it is verified against
+/// ([`crate::rules::merge_base_tips`]): its updates and the config timeline, folded so that a
+/// plain `refUpdate` on a protected ref (inert, §4) never counts as a base tip.
+pub async fn read_merge_base(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    ref_name: &str,
+) -> Result<MergeBaseTips> {
+    let hash = crate::backends::sha256(ref_name.as_bytes());
+    let updates = read_ref_history(client, contract, scope, hash).await?;
+    let configs = read_config_history(client, contract, scope).await?;
+    Ok(crate::rules::merge_base_tips(
+        &updates,
+        &configs,
+        &hex::encode(hash),
+    ))
 }
 
 /// Read one ref's complete history (both types) of the repository `scope` names.

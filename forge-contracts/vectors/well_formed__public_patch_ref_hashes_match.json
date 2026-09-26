@@ -1,6 +1,6 @@
 {
-  "name": "public_patch_plaintext",
-  "description": "A public patch with a title and ref names is well-formed.",
+  "name": "public_patch_ref_hashes_match",
+  "description": "A public patch whose base and source names hash (sha256) to their indexed hashes is well-formed.",
   "case": "well_formed",
   "rules": "v2",
   "input": {
@@ -8,8 +8,8 @@
       "kind": "patch",
       "title": "Fix",
       "baseRefName": "refs/heads/main",
-      "sourceRefName": "refs/heads/fix",
       "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefName": "refs/heads/fix",
       "sourceRefNameHash": "7a6f28df1fbd2e8124f42884b8f363735a757345fc410cbadae1d9d2fcc50bd1"
     },
     "visibility": "public"

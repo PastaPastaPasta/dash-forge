@@ -1,0 +1,57 @@
+{
+  "name": "merge_after_base_deleted_still_counts",
+  "description": "A merge whose commit was a valid tip still counts after the base branch is deleted.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "writer",
+        "value": null,
+        "oid": "A",
+        "createdAt": 300
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "A",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 100
+        },
+        {
+          "id": "u2",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "A",
+          "newOid": "0000000000000000000000000000000000000000",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 200
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H"
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

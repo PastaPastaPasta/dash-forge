@@ -33,6 +33,18 @@ export interface RefUpdate {
   readonly createdAt: number
 }
 
+/**
+ * A PR's base ref as merge verification sees it (`mergeBaseTips`; Rust `MergeBaseTips`).
+ * `historical`: every commit a valid update set the ref to, oldest first, each once.
+ * `tip`: the newest of those (a deletion does not clear it); the fold's base tip.
+ * `current`: where the ref points now (`null` once deleted).
+ */
+export interface MergeBaseTips {
+  readonly historical: readonly Oid[]
+  readonly tip: Oid | null
+  readonly current: Oid | null
+}
+
 /** A `config` document, flattened to what protection resolution needs. */
 export interface ConfigDoc {
   /** Document `$id` — tiebreak when two configs share `createdAt`. */

@@ -149,8 +149,9 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
 
 /**
  * Whether a raw document is well-formed for its repo (`isWellFormed`, `forge-v2.md` §5:
- * plaintext xor `enc`, the visibility says which). v1 has no such rule, so every v1 document
- * passes. Every forge-v2 reader skips a malformed document before any other rule sees it.
+ * plaintext xor `enc`, the visibility says which, and a patch's or ref update's names hash
+ * to their indexed keys). v1 has no such rule, so every v1 document passes. Every forge-v2
+ * reader skips a malformed document before any other rule sees it.
  */
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
   if (repo.kind === 'v1') return true
@@ -163,6 +164,9 @@ export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument)
       refName: text('refName'),
       baseRefName: text('baseRefName'),
       sourceRefName: text('sourceRefName'),
+      refNameHash: byteFieldToHex(doc, 'refNameHash') || null,
+      baseRefNameHash: byteFieldToHex(doc, 'baseRefNameHash') || null,
+      sourceRefNameHash: byteFieldToHex(doc, 'sourceRefNameHash') || null,
       defaultBranch: text('defaultBranch'),
       protectedPatterns: stringArray(doc, 'protectedPatterns'),
       enc: byteFieldToHex(doc, 'enc') || null,

@@ -458,6 +458,9 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         ref_name: d.field_str("refName"),
         base_ref_name: d.field_str("baseRefName"),
         source_ref_name: d.field_str("sourceRefName"),
+        ref_name_hash: d.field_hex("refNameHash"),
+        base_ref_name_hash: d.field_hex("baseRefNameHash"),
+        source_ref_name_hash: d.field_hex("sourceRefNameHash"),
         default_branch: None,
         protected_patterns: None,
         enc: d.field_hex("enc").filter(|h| !h.is_empty()),
@@ -465,25 +468,14 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
     }
 }
 
-/// Whether a fetched document is well-formed for a repo of `visibility` (§5). Readers skip
-/// the rest.
+/// Whether a fetched document is well-formed for a repo of `visibility` (§5, the shared
+/// [`is_well_formed`] rule). Readers skip the rest.
 ///
-/// A patch must also carry ref names that hash to their indexed hashes: readers find the
-/// base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
+/// That includes a patch whose ref names do not hash to their indexed hashes: readers find
+/// the base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
 /// patch whose two disagree would be folded against one ref and merged into another.
 pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibility) -> bool {
     is_well_formed(&content_of(kind, d), visibility)
-        && (kind != ContentKind::Patch || patch_ref_hashes_agree(d))
-}
-
-/// `sha256(baseRefName) == baseRefNameHash`, and the same for the source ref when present
-/// (a private patch carries no plaintext names, so there is nothing to compare).
-fn patch_ref_hashes_agree(d: &FetchedDocument) -> bool {
-    let agrees = |name: &str, hash: &str| match d.field_str(name) {
-        Some(n) if !n.is_empty() => d.field_bytes32(hash) == Some(sha256(n.as_bytes())),
-        _ => true,
-    };
-    agrees("baseRefName", "baseRefNameHash") && agrees("sourceRefName", "sourceRefNameHash")
 }
 
 /// The creator-side properties of a new `issue`.
@@ -1025,42 +1017,37 @@ impl<'a> Collab<'a> {
         Ok(Some(IssueView { issue, state }))
     }
 
-    /// Every oid the base ref has ever pointed at (the monotonic merge-reachability set,
-    /// the same one forge-web uses) and its current tip.
+    /// The base ref as merge verification sees it ([`rules::merge_base_tips`]): every oid it
+    /// has validly pointed at (the monotonic merge-reachability set, the same one forge-web
+    /// uses), its newest tip and where it points now. A plain `refUpdate` on a protected
+    /// branch is inert (§4) and contributes nothing.
     pub async fn base_ref_tips(
         &self,
         repo: &RepoRef,
         base_ref_name: &str,
-    ) -> Result<(BTreeSet<String>, Option<String>)> {
+    ) -> Result<rules::MergeBaseTips> {
         let core = self.core_contract(repo).await?;
-        let updates = crate::refs::read_ref_history(
-            self.client,
-            &core,
-            &repo.scope()?,
-            sha256(base_ref_name.as_bytes()),
-        )
-        .await?;
-        Ok(tips_of(&updates))
+        crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name).await
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a base tip).
     pub async fn patch_view(&self, repo: &RepoRef, patch: V2Patch) -> Result<PatchView> {
         let log = self.target_log(repo, &patch.document_id).await?;
-        let (tips, base_tip) = self.base_ref_tips(repo, &patch.base_ref_name).await?;
+        let base = self.base_ref_tips(repo, &patch.base_ref_name).await?;
         let state = fold_pr_state_v2(
             &log.events,
             &log.author_events,
             &patch.author,
-            base_tip.as_deref(),
-            |oid, _| tips.contains(oid),
+            base.tip.as_deref(),
+            |oid, _| base.contains(oid),
         );
-        let head_on_base = tips.contains(&patch.head_oid);
+        let head_on_base = base.contains(&patch.head_oid);
         Ok(PatchView {
             patch,
             state,
-            base_tip,
+            base_tip: base.current,
             head_on_base,
-            base_tips: tips,
+            base_tips: base.historical.into_iter().collect(),
         })
     }
 
@@ -1718,25 +1705,6 @@ fn is_hex_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Every non-deleted `newOid` of a ref's history, and the newest one by `(createdAt, id)`.
-fn tips_of(updates: &[rules::RefUpdate]) -> (BTreeSet<String>, Option<String>) {
-    let deleted =
-        |u: &rules::RefUpdate| u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0');
-    let tips = updates
-        .iter()
-        .filter(|u| !deleted(u))
-        .map(|u| u.new_oid.clone())
-        .collect();
-    // The current tip is the newest update's, and none when that update deleted the ref.
-    let newest = updates
-        .iter()
-        .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-    (
-        tips,
-        newest.filter(|u| !deleted(u)).map(|u| u.new_oid.clone()),
-    )
-}
-
 /// Split release revisions into the newest per tag (newest first) and the rest.
 fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut by_tag: BTreeMap<String, Vec<Release>> = BTreeMap::new();
@@ -2027,7 +1995,7 @@ mod tests {
     fn tips_skip_deletions_and_pick_the_newest() {
         let u = |id: &str, at: u64, oid: &str| rules::RefUpdate {
             id: id.into(),
-            ref_name_hash: String::new(),
+            ref_name_hash: "H".into(),
             ref_name: "refs/heads/main".into(),
             prev_oid: String::new(),
             new_oid: oid.into(),
@@ -2037,12 +2005,19 @@ mod tests {
             created_at: at,
         };
         let zero = "0".repeat(40);
-        let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero), u("3", 3, "bb")]);
-        assert_eq!(tips.len(), 2);
-        assert_eq!(tip.as_deref(), Some("bb"));
-        // A branch whose newest update deleted it has no tip (its old tips still count).
-        let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero)]);
-        assert_eq!((tips.len(), tip), (1, None));
+        let tips = rules::merge_base_tips(
+            &[u("1", 1, "aa"), u("2", 2, &zero), u("3", 3, "bb")],
+            &[],
+            "H",
+        );
+        assert_eq!(tips.historical, ["aa", "bb"]);
+        assert_eq!(tips.tip.as_deref(), Some("bb"));
+        assert_eq!(tips.current.as_deref(), Some("bb"));
+        // A branch whose newest update deleted it points nowhere now, but its old tips still
+        // count, and so does the newest of them: a PR merged into it stays merged.
+        let tips = rules::merge_base_tips(&[u("1", 1, "aa"), u("2", 2, &zero)], &[], "H");
+        assert_eq!(tips.historical, ["aa"]);
+        assert_eq!((tips.tip.as_deref(), tips.current), (Some("aa"), None));
     }
 
     #[test]

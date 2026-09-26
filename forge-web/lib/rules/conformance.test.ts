@@ -30,6 +30,8 @@ import {
   foldPrState,
   holdingsAsOf,
   matchesProtected,
+  mergeBaseContains,
+  mergeBaseTips,
   overlayTree,
   resolveRef,
   v2,
@@ -43,6 +45,7 @@ import type {
   TokenRecord,
   TreeDiff,
 } from './types'
+import type { IsAncestor } from './types'
 
 interface Vector {
   readonly name: string
@@ -85,6 +88,30 @@ interface FoldPrInput {
   readonly tokenRecords?: readonly TokenRecord[]
   readonly baseTip?: string | null
   readonly ancestry?: Pairs
+  readonly baseHistory?: BaseHistory
+}
+
+/** A PR base ref's raw history: the fold's base tip and predicate come from `mergeBaseTips`. */
+interface BaseHistory {
+  readonly updates: readonly RefUpdate[]
+  readonly configHistory?: readonly ConfigDoc[]
+  readonly refNameHash: string
+}
+
+/** The fold's base tip and merge predicate: from `baseHistory` when given, else as supplied. */
+function foldBase(
+  v: Vector,
+  inp: { readonly baseHistory?: BaseHistory; readonly baseTip?: string | null; readonly ancestry?: Pairs },
+): [string | undefined, IsAncestor] {
+  if (inp.baseHistory === undefined) {
+    return [inp.baseTip ?? undefined, ancestryFromPairs(inp.ancestry ?? [])]
+  }
+  expect(inp.baseTip ?? null, `vector ${v.name}: baseHistory replaces baseTip`).toBeNull()
+  expect(inp.ancestry ?? [], `vector ${v.name}: baseHistory replaces ancestry`).toEqual([])
+  const h = inp.baseHistory
+  expect(Object.keys(h).filter((k) => !['updates', 'configHistory', 'refNameHash'].includes(k))).toEqual([])
+  const tips = mergeBaseTips(h.updates, h.configHistory ?? [], h.refNameHash)
+  return [tips.tip ?? undefined, (oid) => mergeBaseContains(tips, oid)]
 }
 
 interface OverlayInput {
@@ -152,14 +179,14 @@ function runCase(v: Vector): void {
     case 'fold_pr': {
       const inp = v.input as FoldPrInput
       const authz = new AuthzResolver(inp.tokenRecords ?? [])
-      const got = foldPrState(
-        inp.events,
-        inp.targetAuthor,
-        authz,
-        inp.baseTip ?? undefined,
-        ancestryFromPairs(inp.ancestry ?? []),
-      )
+      const [baseTip, isAncestor] = foldBase(v, inp)
+      const got = foldPrState(inp.events, inp.targetAuthor, authz, baseTip, isAncestor)
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'merge_base_tips': {
+      const inp = v.input as BaseHistory
+      expect(mergeBaseTips(inp.updates, inp.configHistory ?? [], inp.refNameHash)).toEqual(v.expected)
       break
     }
     case 'overlay': {
@@ -188,6 +215,7 @@ const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
   queries: ['identity', 'at'],
   doc: [
     'kind', 'title', 'body', 'refName', 'baseRefName', 'sourceRefName',
+    'refNameHash', 'baseRefNameHash', 'sourceRefNameHash',
     'defaultBranch', 'protectedPatterns', 'enc', 'epoch',
   ],
 }
@@ -231,15 +259,14 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'fold_pr': {
-      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry'])
-      const inp = v.input as V2FoldInput & { readonly baseTip?: string | null; readonly ancestry?: Pairs }
-      const got = v2.foldPrStateV2(
-        inp.events ?? [],
-        inp.authorEvents ?? [],
-        inp.targetAuthor,
-        inp.baseTip ?? undefined,
-        ancestryFromPairs(inp.ancestry ?? []),
-      )
+      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry', 'baseHistory'])
+      const inp = v.input as V2FoldInput & {
+        readonly baseTip?: string | null
+        readonly ancestry?: Pairs
+        readonly baseHistory?: BaseHistory
+      }
+      const [baseTip, isAncestor] = foldBase(v, inp)
+      const got = v2.foldPrStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor, baseTip, isAncestor)
       expect(got).toEqual(v.expected)
       break
     }
@@ -294,6 +321,12 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['doc', 'visibility'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }
       expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
+      break
+    }
+    case 'ref_name_hashes': {
+      onlyKeys(v, ['doc', 'refKey'])
+      const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }
+      expect(v2.refNameHashesAgree(inp.doc, inp.refKey ?? null)).toEqual(v.expected)
       break
     }
     case 'repo_name': {

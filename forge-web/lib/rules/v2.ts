@@ -20,6 +20,10 @@ import {
   prStateOf,
   sorted,
 } from './fold'
+import { hmac } from '@noble/hashes/hmac.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+
 import { compareKey, compareStrings } from './oid'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
 
@@ -398,6 +402,12 @@ export interface ContentDoc {
   readonly refName?: string | null
   readonly baseRefName?: string | null
   readonly sourceRefName?: string | null
+  /** `refNameHash` (ref updates), hex: the indexed key `refName` must hash to. */
+  readonly refNameHash?: string | null
+  /** `baseRefNameHash` (patches), hex. */
+  readonly baseRefNameHash?: string | null
+  /** `sourceRefNameHash` (patches), hex. */
+  readonly sourceRefNameHash?: string | null
   /** `config.defaultBranch`. */
   readonly defaultBranch?: string | null
   /** `config.protectedPatterns`. */
@@ -433,14 +443,45 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
 
 /**
  * Plaintext xor `enc`, and the visibility says which (`forge-v2.md` §5): a public repo's
- * document has no `enc` and its kind's required plaintext field, if the kind has one; a
- * private repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields.
+ * document has no `enc`, its kind's required plaintext field, if the kind has one, and ref
+ * names that hash (sha256) to their indexed keys ({@link refNameHashesAgree}); a private
+ * repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields (its
+ * names are checked after decryption).
  */
 export function isWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
   const [required, plaintext] = contentFields(doc)
   const encrypted = present(doc.enc)
-  if (visibility === 'public') return !encrypted && (required === null || present(required))
+  if (visibility === 'public') {
+    return !encrypted && (required === null || present(required)) && refNameHashesAgree(doc, null)
+  }
   return encrypted && doc.epoch != null && !plaintext.some(present)
+}
+
+/**
+ * Whether every ref name a document carries hashes to the key it is indexed under
+ * (`refName`/`refNameHash`, `baseRefName`/`baseRefNameHash`, `sourceRefName`/
+ * `sourceRefNameHash`); ports `ref_name_hashes_agree` (vectors `ref_name_hashes__*`).
+ * `refKey` null: public, `sha256(name)`. Otherwise the epoch's `K_ref` (hex) and `doc` the
+ * decrypted content: `HMAC-SHA256(K_ref, name)` (`docs/security/private-repos.md` §4.5). A
+ * present name needs its hash, and they must agree (hex, case-insensitive); a hash with no
+ * name has nothing to check.
+ */
+export function refNameHashesAgree(doc: ContentDoc, refKey: string | null): boolean {
+  const key = refKey === null ? null : hexToBytes(refKey)
+  const hashOf = (name: string): string => {
+    const bytes = new TextEncoder().encode(name)
+    return bytesToHex(key === null ? sha256(bytes) : hmac(sha256, key, bytes))
+  }
+  const agrees = (name: string | null | undefined, hash: string | null | undefined): boolean =>
+    !present(name) || (present(hash) && hashOf(name as string) === (hash as string).toLowerCase())
+  switch (doc.kind) {
+    case 'refUpdate':
+      return agrees(doc.refName, doc.refNameHash)
+    case 'patch':
+      return agrees(doc.baseRefName, doc.baseRefNameHash) && agrees(doc.sourceRefName, doc.sourceRefNameHash)
+    default:
+      return true
+  }
 }
 
 // ---------------------------------------------------------------------------

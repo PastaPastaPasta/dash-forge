@@ -23,7 +23,7 @@ export * from './types'
 export { compareKey, compareStrings, isLegalRefName, isNullOid } from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
 export { AuthzResolver, holdingsAny, holdingsAsOf } from './holdings'
-export { displayRefName, resolveRef } from './resolveRef'
+export { displayRefName, mergeBaseContains, mergeBaseTips, resolveRef } from './resolveRef'
 export { foldIssueState, foldPrState } from './fold'
 export { overlayTree } from './overlay'
 // FORGE_RULES_V2 (forge-v2 shared-contract repositories)
