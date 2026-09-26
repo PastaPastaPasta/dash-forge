@@ -13,12 +13,6 @@
     "https://68.67.122.199:1443",
     "https://68.67.122.84:1443"
   ],
-  "registry": {
-    "contractId": null,
-    "ownerId": null,
-    "deployedAt": null,
-    "version": 1
-  },
   "v2": {
     "forgeCollabSuperseded": [
       {
