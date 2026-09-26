@@ -1,5 +1,5 @@
 /**
- * OID / ref-name primitives shared by the FORGE_RULES_V1 fold paths.
+ * OID / ref-name primitives shared by the FORGE_RULES fold paths.
  *
  * Ports the free functions at the top of `crates/forge-core/src/rules.rs`
  * (`is_null_oid`, `is_legal_ref_name`, `is_content_hash`, `ref_name_hash_matches`).

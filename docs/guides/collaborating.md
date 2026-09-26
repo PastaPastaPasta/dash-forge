@@ -10,8 +10,6 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 
 The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. DPNS usernames are not resolved yet.
 
-> **Two access models.** Today's **testnet** repositories are **v1**: access is a pair of tokens on each repository's own contract. **forge-v2** uses membership documents in one shared contract instead. Its contracts are registered on devnet moutai, but `dg`, `git-remote-dash` and the web app cannot use them yet; it comes to mainnet after Platform protocol 14 activates. The commands below work on v1 today. The differences on forge-v2 are called out where they matter.
-
 ---
 
 ## Collaborators
@@ -20,49 +18,31 @@ There are two roles:
 
 | Role | `--role` | Can |
 |---|---|---|
-| Writer | `write` | Push to unprotected branches; label, close and reopen any issue or PR; record merges. |
-| Maintainer | `maintain` | Protected branches, releases, labels, webhooks and repository settings, plus the issue and PR actions a writer has. On forge-v2 a maintainer can also push anywhere a writer can. |
+| Writer | `writer` (default) | Push to unprotected branches; label, close and reopen any issue or PR; record merges. |
+| Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`) and webhooks. |
 
-**On v1, give a maintainer both roles.** Pushing needs the WRITE token, even to a protected branch (the pack and manifest are WRITE-gated). A collaborator with only `maintain` cannot push:
-
-```sh
-dg collab add <owner>/<repo> <identity id> --role write
-dg collab add <owner>/<repo> <identity id> --role maintain
-```
+`--role write` and `--role maintain` are accepted as aliases.
 
 Anyone, member or not, can open issues and PRs, comment and review.
 
 ```sh
 dg collab list   <owner>/<repo>
-dg collab add    <owner>/<repo> <identity id> --role write
-dg collab remove <owner>/<repo> <identity id> --role write
+dg collab add    <owner>/<repo> <identity id> --role writer
+dg collab remove <owner>/<repo> <identity id> --role writer
 ```
 
-Adding or removing a collaborator is a write by the repository owner. On v1 it needs the owner's CRITICAL key.
+Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
-### v1 (testnet today): token ACL
+### How access works
 
-Each v1 repository has two tokens, WRITE and MAINTAIN. `dg collab add` mints one to the collaborator. Every push spends one WRITE token and pays it back to the owner, so consensus rejects a push from anyone who holds none. Only the repository owner can mint, freeze or destroy tokens.
-
-v1 also has **suspend**, which freezes the tokens without taking them away:
-
-```sh
-dg collab suspend   <owner>/<repo> <identity id> --role write
-dg collab unsuspend <owner>/<repo> <identity id> --role write
-```
-
-A suspended writer's next push is rejected at consensus ([`E602`](../errors.md#e602)). `dg collab remove` freezes the tokens and then destroys them.
-
-### forge-v2: membership documents
-
-*Contracts registered on devnet moutai, client support in progress; mainnet after Platform protocol 14 activates.*
-
-On forge-v2, a collaborator is a `writer` or `maintainer` document keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
+A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
 - **Add** creates the membership document. **Remove** deletes it. The member's next write is refused.
 - **There is no suspend.** Remove the member, and add them again later.
 - **Past work stays valid.** A document's existence proves its writer was a member at the time it was written. Removing a maintainer later does not undo their past merges or ref updates.
 - The owner is enrolled as a maintainer when the repository is created.
+
+[forge-v2.md](../contracts/forge-v2.md) §2 lists which role each document type needs.
 
 ---
 
@@ -84,7 +64,7 @@ dg issue label  <owner>/<repo> 12 --add bug        # or --remove bug
 
 **Numbers.** Issue numbers are claimed by the client, by a rule every client shares: the count of issues bounds how far ahead a number can be, so someone squatting #4294967295 does not move numbering. If two people take the same number at once, consensus rejects the second one, and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
 
-**No deletes on v2.** Issues, PRs and their state events cannot be deleted on forge-v2, so nobody can rewrite a thread's history. Comments can be deleted by their author.
+**No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author.
 
 ---
 
@@ -107,7 +87,7 @@ dg repo fork <owner>/project            # or --name <another name>
   cost:    ~0.03 DASH ≈ $0.90
 ```
 
-A fork is a new forge-v2 repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork.
+A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork.
 
 **2. Push your branch to it.**
 
@@ -151,7 +131,7 @@ dg pr review   <owner>/project 7 --request-changes --body "Needs a test"
 dg pr review   <owner>/project 7 --comment --body "Why this approach?"
 ```
 
-A review records the commit it was made on, which is the PR's head at the time. **Approvals follow the forge-v2 rule:**
+A review records the commit it was made on, which is the PR's head at the time. **Which approvals count:**
 
 - Only reviews from current writers and maintainers count.
 - Only reviews on the PR's **current** head count. A new push makes older ones stale, and `dg pr view` marks them so.
@@ -195,7 +175,7 @@ A PR shows as merged only when **both** are true: the `merge` event exists (cons
 
 ## Releases
 
-A release names a tag, a title, notes and optionally files. Only maintainers can publish one. On forge-v2 consensus enforces this, and `dg` checks it before uploading anything.
+A release names a tag, a title, notes and optionally files. Only maintainers can publish one. Consensus enforces this, and `dg` checks it before uploading anything.
 
 ```sh
 git tag v1.0.0 && git push dash://<owner>/<repo> v1.0.0
@@ -233,16 +213,17 @@ dg repo unstar <owner>/<repo>
 
 ## From the web app
 
-On forge.dashhq.org, signed in with your identity file:
+On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app)):
 
 | You can | Not yet |
 |---|---|
-| Browse code, commits, branches, tags and PR diffs | Open a PR, or record a review verdict |
+| Browse code, commits, branches, tags and PR diffs | Open a PR |
 | File issues, comment, close and reopen | Merge code (see below) |
-| Create a repository (v1, with a cost preview) | Web editing, private repositories |
-| Grant, suspend and revoke collaborators (owner) | |
+| Review a PR: approve, request changes or comment | Inline review comments |
+| Create a repository, with a cost preview | Web editing, private repositories |
+| Add and remove collaborators (owner) | |
 | Star repositories | |
 
-The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 2 above). It does not merge code. The PR counts as merged only once the head is already on the base branch.
+The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch.
 
-**Coming soon:** open a PR from a branch or fork, inline review comments, approve / request changes, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+**Coming soon:** open a PR from a branch or fork, inline review comments, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).

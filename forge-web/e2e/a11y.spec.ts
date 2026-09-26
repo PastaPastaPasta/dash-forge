@@ -1,36 +1,35 @@
-import { test, expect } from '@playwright/test'
-import { ON_TESTNET, repoUrl, runAxe, waitForRepoResolved, M1 } from './helpers'
-
-// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
-test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
+import { test, expect, type Locator, type Page } from '@playwright/test'
+import { expectLanded, repoUrl, runAxe } from './helpers'
 
 /**
- * Scenario 6 — Accessibility smoke via axe-core.
+ * Accessibility smoke via axe-core, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`).
  *
- * Target: 0 serious/critical violations on the landing + repo home. We report all serious &
- * critical findings; moderate/minor are logged but not gated (v1 acceptance is "0 serious").
+ * Target: 0 serious/critical violations on every page below, each checked once its real
+ * content has landed (not the loading shell). Moderate/minor findings are logged, not gated.
  */
 
-test('6a. landing has no serious/critical axe violations', async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: /no server to trust/i })).toBeVisible()
-  await page.waitForTimeout(3000)
-  const serious = await runAxe(page, 'landing')
-  expect(
-    serious,
-    'serious/critical a11y violations on landing:\n' +
-      serious.map((v) => `${v.id}: ${v.help}`).join('\n'),
-  ).toEqual([])
-})
+const PAGES: [label: string, href: string, ready: (page: Page) => Locator][] = [
+  [
+    'landing',
+    '/',
+    (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"]').first(),
+  ],
+  ['repo-home', repoUrl(), (page) => page.getByRole('link', { name: 'README.md' }).first()],
+  ['blob', repoUrl('blob', '&path=src/main.rs'), (page) => page.getByText('reads are proof-checked').first()],
+  ['issues', repoUrl('issues'), (page) => page.getByText('README should explain the event split')],
+  ['issue', repoUrl('issue', '&number=3'), (page) => page.getByText('Done in docs/rules.md; closing.')],
+  ['pull', repoUrl('pull', '&number=1'), (page) => page.getByRole('region', { name: 'Approvals' })],
+  ['settings', repoUrl('settings'), (page) => page.getByRole('heading', { name: 'Members' })],
+]
 
-test('6b. repo home has no serious/critical axe violations', async ({ page }) => {
-  await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
-  await waitForRepoResolved(page)
-  await page.getByText(M1.name, { exact: false }).first().waitFor({ timeout: 30_000 }).catch(() => {})
-  const serious = await runAxe(page, 'repo-home')
-  expect(
-    serious,
-    'serious/critical a11y violations on repo home:\n' +
-      serious.map((v) => `${v.id}: ${v.help}`).join('\n'),
-  ).toEqual([])
-})
+for (const [label, href, ready] of PAGES) {
+  test(`a11y: ${label} has no serious/critical axe violations`, async ({ page }) => {
+    await page.goto(href, { waitUntil: 'domcontentloaded' })
+    await expectLanded(page, ready(page))
+    const serious = await runAxe(page, label)
+    expect(
+      serious,
+      `serious/critical a11y violations on ${label}:\n` + serious.map((v) => `${v.id}: ${v.help}`).join('\n'),
+    ).toEqual([])
+  })
+}

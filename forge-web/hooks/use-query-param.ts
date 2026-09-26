@@ -16,15 +16,13 @@ export function useParam(name: string, fallback = ''): string {
 
 /**
  * How a route addresses a repo: `(owner, name)` — owner an identity id or DPNS name — plus an
- * optional pin: `repo` (a forge-v2 `repo` document id) or `contract` (a v1 repo contract).
+ * optional pin, `repo` (the `repo` document id).
  */
 export interface RepoAddress {
   readonly owner: string
   readonly name: string
-  /** `?repo=` — pins a forge-v2 repo. */
+  /** `?repo=` — pins the repo by id. */
   readonly repoId?: string
-  /** `?contract=` — pins a v1 repo contract. */
-  readonly contractId?: string
 }
 
 /** Read the repo address from the URL. */
@@ -36,12 +34,10 @@ export function useRepoAddress(): RepoAddress {
 /** The {@link RepoAddress} a query string names. */
 export function addressFromParams(params: { get(name: string): string | null }): RepoAddress {
   const repoId = params.get('repo') ?? ''
-  const contractId = params.get('contract') ?? ''
   return {
     owner: params.get('owner') ?? '',
     name: params.get('name') ?? '',
     ...(repoId !== '' ? { repoId } : {}),
-    ...(contractId !== '' ? { contractId } : {}),
   }
 }
 
@@ -53,7 +49,6 @@ export function repoHref(
 ): string {
   const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
   if (addr.repoId) q.set('repo', addr.repoId)
-  if (addr.contractId) q.set('contract', addr.contractId)
   for (const [k, v] of Object.entries(extra)) q.set(k, v)
   return `${path}?${q.toString()}`
 }

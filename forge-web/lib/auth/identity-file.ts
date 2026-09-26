@@ -13,7 +13,7 @@
  * Login imports one of these (or a manually pasted WIF + identity id). We extract the identity
  * id, the file's declared network, and the single AUTHENTICATION signing key to store —
  * preferring the highest-privilege usable key (CRITICAL, which can sign both HIGH-gated
- * document ops and CRITICAL-gated token-admin ops) and falling back to HIGH.
+ * document ops and CRITICAL-gated identity ops) and falling back to HIGH.
  */
 
 import { isLikelyWif } from './wif'

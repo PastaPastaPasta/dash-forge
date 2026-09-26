@@ -11,9 +11,6 @@
  *  2. **`in`-batches do NOT round-robin** — a single global `limit` is drawn in
  *     orderBy-traversal order, so one hot key starves all siblings (measured 9/9 starved).
  *     So a multi-key read is done per key, in parallel, not as one `in` batch.
- *
- * Plus **skip-scan** distinct-key enumeration ({@link skipScanDistinct}, used for pushers): `> lastKey` orderBy key
- * `limit 1` hops to the next distinct key — O(log n) per distinct ref, not O(total pushes).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -67,7 +64,7 @@ export type WhereOperator =
 export type WhereClause = readonly [field: string, operator: WhereOperator, value: unknown]
 
 /** A single `orderBy` clause: `[field, direction]`. Stored indexes are asc-only; */
-/** `desc` is query-time reverse traversal (data-contracts §0). */
+/** `desc` is query-time reverse traversal of an index. */
 export type OrderByClause = readonly [field: string, direction: 'asc' | 'desc']
 
 /** A raw document query. `byteArray` operands in `where` must already be base64 (see above). */
@@ -173,7 +170,7 @@ export async function queryDocumentsWithProof(
 }
 
 /**
- * Provable O(1) count over a countable index (data-contracts §3). Sums the grouped result
+ * Provable O(1) count over a countable index (`forge-v2.md` §2). Sums the grouped result
  * the SDK returns for `documents.count`. Use for star / follower / issue-total surfaces.
  */
 export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
@@ -192,7 +189,7 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
  * `platform::ascending_equivalent`.
  *
  * A complete read pages with a `startAfter` cursor. The grovedb verifier in evo-sdk 4.2 checks
- * that every proof op matches the walk direction. Protocol-13 nodes (testnet today) answer a
+ * that every proof op matches the walk direction. Protocol-13 nodes answered a
  * descending page after a cursor with a proof that fails that check. It surfaced as
  * `packManifest` reads failing once a repo passed 100 manifests. Ascending pages verify, and
  * Drive's descending walk is the exact reverse of its ascending walk. Reversing also
@@ -224,8 +221,8 @@ export class IncompleteReadError extends Error {
  * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
  * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
  * past the last `$id` of each page, until a **short page** proves the end was reached. Used by
- * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueState`,
- * `foldPrState`) are folds over a whole history, so a silently truncated input does not
+ * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueStateV2`,
+ * `foldPrStateV2`) are folds over a whole history, so a silently truncated input does not
  * degrade the answer — it produces a confidently wrong one (a closed issue that reads open,
  * a branch pinned at its 100th push).
  *
@@ -250,9 +247,8 @@ export class IncompleteReadError extends Error {
  * Documents created in the same block as a page's last row that sort after it would be
  * silently skipped. Protocol 14 bounds the cursor by document id and does not drop them.
  *
- * Limitation: the fix needs the boundary row's `$createdAt`. The history-keeping repo-v1
- * types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return it from a proved
- * query, so their reads keep the protocol-13 gap until they move to forge-v2 on protocol 14.
+ * forge-v2 runs on protocol 14, so this is a safety net there, kept for parity with forge-core.
+ * It needs the boundary row's `$createdAt`, which every forge-v2 history type requires.
  */
 export function tieProbeAllowed(query: DocumentQuery): boolean {
   const orderBy = query.orderBy ?? []
@@ -335,67 +331,5 @@ export async function queryAllDocuments(
     query.documentTypeName,
     out.length,
     `the ${maxPages}-page safety cap was reached before a short page proved the end`,
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Skip-scan distinct-key enumeration (branch/tag listing)
-// ---------------------------------------------------------------------------
-
-/**
- * Enumerate the distinct values of an indexed key via `limit 1` skip hops (S0.8):
- * seek the first row ordered by `keyField asc`, record its key, then seek
- * `keyField > lastKey limit 1` repeatedly. Cost is one cheap seek per distinct key —
- * bounded by real branch/tag counts, NOT by how many times any one ref was pushed.
- *
- * `keyIsBase64` values are compared/advanced as base64 strings (the wasm result form).
- * Returns the distinct key values (base64) in ascending order, with a hard `maxKeys` cap.
- */
-export async function skipScanDistinct(
-  sdk: EvoSDK,
-  params: {
-    readonly dataContractId: string
-    readonly documentTypeName: string
-    readonly keyField: string
-    readonly maxKeys?: number
-  },
-): Promise<string[]> {
-  const { dataContractId, documentTypeName, keyField } = params
-  const maxKeys = params.maxKeys ?? 10_000
-  const keys: string[] = []
-  let last: string | undefined
-
-  // maxKeys + 1 iterations: the extra probe distinguishes "exactly maxKeys keys, and we are
-  // done" from "more keys remain". Without it an enumeration that WAS complete throws.
-  for (let i = 0; i <= maxKeys; i++) {
-    const where: WhereClause[] = last === undefined ? [] : [[keyField, '>', last]]
-    const rows = await queryDocuments(sdk, {
-      dataContractId,
-      documentTypeName,
-      where,
-      orderBy: [[keyField, 'asc']],
-      limit: 1,
-    })
-    const row = rows[0]
-    // No further row: the strictly-increasing cursor has passed the last key. This is the
-    // only way out that proves the enumeration is complete.
-    if (row === undefined) return keys
-    const key = row[keyField]
-    if (typeof key !== 'string') {
-      throw new IncompleteReadError(
-        documentTypeName,
-        keys.length,
-        `a row has no string ${keyField}, so the skip-scan cursor cannot advance`,
-      )
-    }
-    keys.push(key)
-    last = key
-  }
-  // A truncated ref enumeration is the same class of confidently-wrong answer as a
-  // truncated history: the caller would render "these are the branches" from a partial set.
-  throw new IncompleteReadError(
-    documentTypeName,
-    keys.length,
-    `more than ${maxKeys} distinct ${keyField} values exist; the safety cap was reached`,
   )
 }

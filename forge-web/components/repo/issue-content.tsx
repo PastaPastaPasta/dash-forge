@@ -7,14 +7,13 @@
  *
  * Who may do what (`forge-v2.md` §3): the author closes and reopens their own issue with an
  * `authorEvent`; maintainers and writers close, reopen and label with an `event`. Consensus
- * refuses anyone else on forge-v2, so the controls are offered only to them. On v1 the author's
- * or a WRITE/MAINTAIN holder's plain `event` is what the fold honours.
+ * refuses anyone else, so the controls are offered only to them.
  */
 
 import { useState } from 'react'
 import { CheckCircle2, CircleDot, Tag, X } from 'lucide-react'
 import type { RepoHome, IssueThread } from '@/lib/view'
-import { aclName, loadIssueThread, timeAgo } from '@/lib/view'
+import { ACL_NAME, loadIssueThread, timeAgo } from '@/lib/view'
 import { addEvent, createComment, readViewerPermissions, repoContractIds, repoKey, setTargetState } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
@@ -55,7 +54,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
 
-  // v1: WRITE/MAINTAIN token holdings; forge-v2: a current maintainer/writer document.
+  // A current maintainer/writer document.
   const holdings = useAsync<Holdings | null>(
     () => readViewerPermissions(sdk!, home.repo, identity!, network),
     [ready, repoKey(home.repo), identity ?? '', network],
@@ -81,7 +80,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canToggle = identity !== null && (isAuthor || isMember)
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
-      ? `Couldn't read this repo's ${aclName(home.repo.kind)}, so close/reopen permission is unknown.`
+      ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
   const commentCost = previewCreate('comment', { body: comment.trim() })

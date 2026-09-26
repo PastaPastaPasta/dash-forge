@@ -8,7 +8,7 @@
  * manifest. This ledger records those outcomes where they happen so the panel can report
  * what was checked instead of what could be — including "nothing read yet" and a mismatch.
  *
- * Keyed by `repoKey` (the v1 repo contract id or the forge-v2 repo id) and kept for the session, the same lifetime as the browse caches
+ * Keyed by `repoKey` (the repo id) and kept for the session, the same lifetime as the browse caches
  * whose reads it counts. Subscribable for `useSyncExternalStore`: every update replaces the
  * repo's record, so a snapshot is a stable reference until something changes.
  */

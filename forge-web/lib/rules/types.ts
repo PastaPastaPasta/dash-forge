@@ -1,10 +1,10 @@
 /**
- * FORGE_RULES_V1 — shared type definitions.
+ * FORGE_RULES — shared type definitions.
  *
  * These are the TypeScript half of the cross-client-parity contract. Every type here
  * mirrors a struct in `crates/forge-core/src/rules.rs` and deserializes the same
  * `forge-contracts/vectors/*.json` shapes (camelCase, `createdAt` in ms). The rules are
- * PURE: callers fetch documents (refUpdate / config / event / token-history / flatIndex)
+ * PURE: callers fetch documents (refUpdate / config / event / flatIndex)
  * and hand them in as plain objects; the only clock is the consensus `createdAt`.
  */
 
@@ -78,31 +78,13 @@ export type RefState =
     }
   | { readonly state: 'diverged'; readonly heads: readonly RefHead[] }
 
-/** Which repo token a history record concerns (§2.1). */
-export type TokenKind = 'write' | 'maintain'
-
-/** A token-history operation (§2.1 grant/suspend/revoke lifecycle). */
-export type TokenOp = 'mint' | 'freeze' | 'unfreeze' | 'destroy'
-
-/** One record from the system token-history contract. */
-export interface TokenRecord {
-  /** Record `$id` — tiebreak for equal `createdAt`. */
-  readonly id?: string
-  /** The affected identity. */
-  readonly identity: string
-  /** Which token. */
-  readonly token: TokenKind
-  /** What happened. */
-  readonly op: TokenOp
-  /** Consensus `$createdAt` (ms). */
-  readonly createdAt: number
-}
-
-/** Whether an identity can *spend* WRITE / MAINTAIN at a point in time. */
+/**
+ * What an identity may do on a repo now, from its forge-v2 membership: `write` for a writer
+ * or maintainer (push, act on issues and PRs), `maintain` for a maintainer only (protected
+ * refs, config, releases).
+ */
 export interface Holdings {
-  /** Holds an unfrozen WRITE balance (can push). */
   readonly write: boolean
-  /** Holds an unfrozen MAINTAIN balance (can protected-push / configure). */
   readonly maintain: boolean
 }
 
@@ -127,7 +109,7 @@ export interface Event {
   readonly targetId?: string
   /** What happened. */
   readonly kind: EventKind
-  /** Document `$ownerId` — the actor whose authorization is checked as-of `createdAt`. */
+  /** Document `$ownerId` — the actor. */
   readonly actor: string
   /** Kind-dependent payload: label name, assignee id, or retarget base ref. */
   readonly value?: string | null

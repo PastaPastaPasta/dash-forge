@@ -1,9 +1,8 @@
 'use client'
 
 /**
- * Star button — toggles the viewer's star on a repo: a forge-v2 `star` (indexOnly; unstar is
- * an index-only delete that returns its storage) or a v1 registry `star` on the listing. The
- * starred/unstarred state is read from the viewer's own star before the button offers an
+ * Star button — toggles the viewer's star on a repo: a forge-collab `star` (indexOnly; unstar
+ * is an index-only delete that returns its storage). The starred/unstarred state is read from the viewer's own star before the button offers an
  * action, and a failed read or write is shown rather than swallowed.
  */
 
@@ -19,24 +18,20 @@ import { creditsAsDash } from '@/lib/view/format'
 
 export function StarButton({
   repo,
-  listingId,
   count,
 }: {
   repo: RepoRef
-  /** v1: the registry listing (null = no listing, cannot be starred). */
-  listingId: string | null
   /** The public star count; `null` when it could not be read. */
   count: number | null
 }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
-  const target = repo.kind === 'v2' ? repo.repoId : listingId
 
   const star = useRelationToggle({
-    enabled: ready && sdk !== null && identity !== null && target !== null,
-    key: `${network}:${identity ?? ''}:${target ?? ''}`,
-    ...starRelation(sdk!, signer, identity ?? '', repo, listingId, network),
+    enabled: ready && sdk !== null && identity !== null,
+    key: `${network}:${identity ?? ''}:${repo.repoId}`,
+    ...starRelation(sdk!, signer, identity ?? '', repo),
   })
 
   const starred = star.on === true
@@ -49,7 +44,7 @@ export function StarButton({
 
   const signedIn = identity !== null && signer !== null
   // Signed in but the current state is not known yet (or could not be read): no action to offer.
-  const unknown = signedIn && target !== null && star.on === null
+  const unknown = signedIn && star.on === null
 
   return (
     <span className="inline-flex items-center gap-2">
@@ -63,14 +58,8 @@ export function StarButton({
         size="sm"
         onClick={onClick}
         loading={star.busy || (unknown && star.error === null)}
-        disabled={!target || (unknown && star.error !== null) || (!starred && guard.disabledReason !== null)}
-        title={
-          !target
-            ? 'This repo has no registry listing, so it cannot be starred.'
-            : starred
-              ? 'Unstar (returns the star’s storage)'
-              : `Star · ~${creditsAsDash(cost.credits)} DASH`
-        }
+        disabled={(unknown && star.error !== null) || (!starred && guard.disabledReason !== null)}
+        title={starred ? 'Unstar (returns the star’s storage)' : `Star · ~${creditsAsDash(cost.credits)} DASH`}
       >
         <Star className={starred ? 'h-3.5 w-3.5 fill-forge-500 text-forge-500' : 'h-3.5 w-3.5'} aria-hidden />
         {starred ? 'Starred' : 'Star'}

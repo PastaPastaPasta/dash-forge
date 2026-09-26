@@ -4,7 +4,7 @@ Delivers forge-v2 repository activity as GitHub-shaped webhooks (`push`, `issues
 `pull_request`, `issue_comment`, `pull_request_review`, `release`, `check_run`), signed
 with `X-Hub-Signature-256`. A relay is trusted for availability only: consumers verify what a
 webhook says against Platform (see `examples/ci_consumer.rs`, which folds the pushed ref's
-history and checks the tip). forge-v1 repositories are read-only and are not served.
+history and checks the tip).
 
 ## How a hook reaches a relay
 

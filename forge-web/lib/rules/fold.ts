@@ -1,25 +1,13 @@
 /**
- * Event fold — issue / PR state.
+ * Event fold building blocks — issue / PR state.
  *
- * Ports `fold_issue_state` / `fold_pr_state` / `actor_authorized` / `ordered_events`
- * from `crates/forge-core/src/rules.rs`. Events may be unordered and may include spam
- * from non-holders; they are ordered by `(createdAt, id)` and each is applied only if
- * its actor is authorized as-of the event's `createdAt`.
- *
- * The per-kind effects (`applyIssueEvent`, `applyPrEvent`) and merge reachability
- * (`mergeReachable`) are shared with the FORGE_RULES_V2 fold in `./v2`, as in Rust.
+ * The per-kind effects (`applyIssueEvent`, `applyPrEvent`), merge reachability
+ * (`mergeReachable`) and the state accumulators the FORGE_RULES_V2 fold in `./v2` applies,
+ * ported from `crates/forge-core/src/rules.rs`.
  */
 
-import { AuthzResolver, holdingsAny } from './holdings'
-import { compareKey, compareStrings, isLegalRefName } from './oid'
+import { compareStrings, isLegalRefName } from './oid'
 import type { Event, IsAncestor, IssueState, PrState } from './types'
-
-/** Order events deterministically by `(createdAt, id)`. */
-function orderedEvents(events: readonly Event[]): Event[] {
-  return [...events].sort(compareKey)
-}
-
-const NO_ANCESTRY: IsAncestor = () => false
 
 /**
  * Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
@@ -33,26 +21,6 @@ export function mergeReachable(
   const oid = e.oid ?? undefined
   if (oid === undefined || baseTip === undefined) return false
   return isAncestor(oid, baseTip)
-}
-
-/** Is event `e`'s actor authorized to apply it, evaluated as-of `e.createdAt`? */
-function actorAuthorized(
-  e: Event,
-  targetAuthor: string,
-  authz: AuthzResolver,
-  baseTip: string | undefined,
-  isAncestor: IsAncestor,
-): boolean {
-  const holder = holdingsAny(authz.holdingsAsOf(e.actor, e.createdAt))
-  switch (e.kind) {
-    case 'close':
-    case 'reopen':
-      return holder || e.actor === targetAuthor
-    case 'merge':
-      return holder && mergeReachable(e, baseTip, isAncestor)
-    default:
-      return holder
-  }
 }
 
 /** Mutable issue state while folding. */
@@ -77,7 +45,7 @@ export function newPrAcc(): PrAcc {
   return { ...newIssueAcc(), merged: false, draft: false, baseRef: null }
 }
 
-/** Apply one authorized event to an issue (both rule versions). PR-only kinds do nothing. */
+/** Apply one authorized event to an issue. PR-only kinds do nothing. */
 export function applyIssueEvent(s: IssueAcc, e: Event): void {
   switch (e.kind) {
     case 'close':
@@ -106,7 +74,7 @@ export function applyIssueEvent(s: IssueAcc, e: Event): void {
   }
 }
 
-/** Apply one authorized event to a PR (both rule versions). */
+/** Apply one authorized event to a PR. */
 export function applyPrEvent(s: PrAcc, e: Event): void {
   switch (e.kind) {
     case 'reopen':
@@ -145,34 +113,6 @@ export function prStateOf(s: PrAcc): PrState {
     labels: sorted(s.labels),
     assignees: sorted(s.assignees),
   }
-}
-
-/** Fold an issue's `event` log into its {@link IssueState}. */
-export function foldIssueState(
-  events: readonly Event[],
-  targetAuthor: string,
-  authz: AuthzResolver,
-): IssueState {
-  const s = newIssueAcc()
-  for (const e of orderedEvents(events)) {
-    if (actorAuthorized(e, targetAuthor, authz, undefined, NO_ANCESTRY)) applyIssueEvent(s, e)
-  }
-  return issueStateOf(s)
-}
-
-/** Fold a PR's `event` log into its {@link PrState}. */
-export function foldPrState(
-  events: readonly Event[],
-  targetAuthor: string,
-  authz: AuthzResolver,
-  baseTip: string | undefined,
-  isAncestor: IsAncestor,
-): PrState {
-  const s = newPrAcc()
-  for (const e of orderedEvents(events)) {
-    if (actorAuthorized(e, targetAuthor, authz, baseTip, isAncestor)) applyPrEvent(s, e)
-  }
-  return prStateOf(s)
 }
 
 /** Sort + dedupe a set into a stable array (mirrors Rust's BTreeSet ordering: code points). */

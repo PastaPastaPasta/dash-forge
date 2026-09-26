@@ -16,7 +16,7 @@ The helper prints the same block with each line prefixed `dash: `, because git s
 { "error": { "code": "E601", "message": "…", "cause": "…", "fix": ["…"], "note": null, "docs": "…#e601", "exitCode": 6 } }
 ```
 
-Codes never change meaning once shipped, so scripts can match on them. The code's first digit is the process exit code:
+Codes never change meaning once shipped, so scripts can match on them. A code that no longer occurs is marked **retired** below and its number is never reused. The code's first digit is the process exit code:
 
 | Class | Exit code | Meaning |
 |---|---|---|
@@ -45,7 +45,7 @@ Fix: run the command again with `RUST_LOG=debug` for more detail. If it keeps ha
 
 **Not found.** The repository, issue, pull request, release or document does not exist on the network in use. Platform returned a proof that it is absent.
 
-Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and registry are in use.
+Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
 ## E103
 
@@ -105,7 +105,7 @@ Fix: `dg auth login --identity <file>` records a default identity (use the bridg
 
 ## E302
 
-**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes need a HIGH or CRITICAL AUTHENTICATION key. Token administration (`dg collab add/suspend/remove`, `dg repo create`) needs a CRITICAL one.
+**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key.
 
 Fix: use the identity export that includes that key.
 
@@ -176,7 +176,7 @@ Fix: restore that storage, or re-upload the pack from this clone with `dg reseed
 
 ## E601
 
-**Not a writer of this repository.** Platform refused the write at consensus. On a v1 repository your identity holds no WRITE (or MAINTAIN) token (consensus 40700/40701). On a forge-v2 repository there is no current `writer` or `maintainer` document for your identity (40120 on path `$ownerId`, the `ownerRefersTo` gate).
+**Not a writer of this repository.** Platform refused the write at consensus: there is no current `writer` or `maintainer` document for your identity (40120 on path `$ownerId`, the `ownerRefersTo` gate).
 
 Outside a push (collaborator admin, releases, repo config) the headline says your identity "is not authorized for this action", because those need a different role.
 
@@ -184,11 +184,9 @@ The helper checks this before building or paying for anything and refuses early 
 
 Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> --role writer`), or push to a repository of your own.
 
-## E602
+## E602 (retired)
 
-**Write access suspended.** Your WRITE or MAINTAIN token on a v1 repository is frozen (consensus 40702). v1 repositories are read only now, so this only appears for a write attempted against one. forge-v2 has no suspend: removing a member revokes access at once (E601).
-
-Fix: push to a forge-v2 repository instead.
+**Write access suspended.** Retired with forge-v1 (2026-09-26): it reported a frozen WRITE or MAINTAIN token on a per-repository contract. forge-v2 has no suspend; removing a member revokes access at once (E601). The number stays reserved.
 
 ## E603
 
@@ -202,11 +200,9 @@ Fix: pick another name. Issue and PR numbers are retried automatically, so this 
 
 Fix: if the message does not explain it, [open an issue](https://github.com/PastaPastaPasta/dash-forge/issues) with it.
 
-## E605
+## E605 (retired)
 
-**v1 repository is read only.** The repository is a forge-v1 repository (one data contract per repo). v1 repositories can still be cloned, fetched and viewed, but nothing writes to them any more. The refusal happens before anything is signed.
-
-Fix: create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there. `dg migrate`, which moves a v1 repository to forge-v2, is coming soon.
+**v1 repository is read only.** Retired with forge-v1 (2026-09-26), which the tools no longer read or write. The number stays reserved.
 
 ## E701
 
@@ -216,9 +212,9 @@ Fix: check your connection and run the command again after a minute. `dg doctor`
 
 ## E702
 
-**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registry contract, so there is nothing to read or write. The tools never fall back to another network's contract.
+**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Today forge-v2 is deployed on devnet moutai only; testnet and mainnet follow once they run Platform protocol 14.
 
-Fix: use a network with a deployment (`--network testnet`), or point `FORGE_REGISTRY_CONTRACT_ID` (`dg`: `registry_contract_id` in `config.toml`; helper: `git config dash.registryContractId`) at a registry you deployed. See [the mainnet runbook](mainnet-runbook.md).
+Fix: use a network with a deployment (`--network devnet --devnet-name moutai`). See [the mainnet runbook](mainnet-runbook.md).
 
 ## E703
 

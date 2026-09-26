@@ -1,17 +1,17 @@
 /**
- * PR action gating — the merge control is offered only to identities whose merge event the
- * fold would accept, and it says whether the mark counts now.
+ * PR action gating — the merge control is offered only to members (whose `event` consensus
+ * admits), and it says whether the mark counts now.
  *
- * The end-to-end case at the bottom ties the gate to {@link foldPrState}: whenever the gate
- * says a mark "counts now", folding that same merge event really does flip the PR to merged —
- * and a non-holder (to whom the gate never offers the control) would have folded inert.
+ * The end-to-end case at the bottom ties the gate to `foldPrStateV2`: whenever the gate says a
+ * mark "counts now", folding that same merge event really does flip the PR to merged.
  */
 
 import { describe, expect, it } from 'vitest'
 
 import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
-import { AuthzResolver, foldPrState, type Event, type Holdings, type TokenRecord } from '../rules'
+import type { Event, Holdings } from '../rules'
+import { foldPrStateV2 } from '../rules/v2'
 import { pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
@@ -39,21 +39,21 @@ function pull(over: Omit<Partial<Pull>, 'state'> & { state?: Partial<PullView['s
 }
 
 describe('pullActions — who sees "Mark as merged"', () => {
-  it('offers it to WRITE and MAINTAIN holders', () => {
+  it('offers it to writers and maintainers', () => {
     expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE }).canMarkMerged).toBe(true)
     expect(pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN }).canMarkMerged).toBe(true)
   })
 
-  it('withholds it from a signed-in non-holder, with the reason', () => {
+  it('withholds it from a signed-in non-member, with the reason', () => {
     const a = pullActions({ pull: pull(), viewer: STRANGER, holdings: NONE })
     expect(a.canMarkMerged).toBe(false)
-    expect(a.mergeHint).toMatch(/WRITE or MAINTAIN/)
+    expect(a.mergeHint).toMatch(/maintainers and writers/)
   })
 
-  it('withholds it from the PR author who holds no token', () => {
+  it('withholds it from the PR author who is not a member', () => {
     const a = pullActions({ pull: pull(), viewer: AUTHOR, holdings: NONE })
     expect(a.canMarkMerged).toBe(false)
-    // …but the author may still close/reopen their own PR (the fold honors that).
+    // …but the author may still close/reopen their own PR (an authorEvent).
     expect(a.canCloseReopen).toBe(true)
   })
 
@@ -64,14 +64,14 @@ describe('pullActions — who sees "Mark as merged"', () => {
     expect(a.mergeHint).toBeNull()
   })
 
-  it('withholds it silently while holdings load, and explains an unreadable history', () => {
+  it('withholds it silently while membership loads, and explains an unreadable one', () => {
     const loading = pullActions({ pull: pull(), viewer: WRITER, holdings: 'loading' })
     expect(loading.canMarkMerged).toBe(false)
     expect(loading.mergeHint).toBeNull()
 
     const unknown = pullActions({ pull: pull(), viewer: WRITER, holdings: null })
     expect(unknown.canMarkMerged).toBe(false)
-    expect(unknown.mergeHint).toMatch(/token history/)
+    expect(unknown.mergeHint).toMatch(/members/)
   })
 
   it('withholds it on merged, closed, headless, and unverified PRs', () => {
@@ -84,7 +84,7 @@ describe('pullActions — who sees "Mark as merged"', () => {
 })
 
 describe('pullActions — close / reopen', () => {
-  it('offers close on an open PR and reopen on a closed one, to holders and the author', () => {
+  it('offers close on an open PR and reopen on a closed one, to members and the author', () => {
     expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE }).canCloseReopen).toBe(true)
     expect(pullActions({ pull: pull({ state: { open: false } }), viewer: AUTHOR, holdings: NONE }).canCloseReopen).toBe(true)
   })
@@ -97,27 +97,7 @@ describe('pullActions — close / reopen', () => {
   })
 })
 
-describe('pullActions — forge-v2 membership', () => {
-  // On forge-v2 "holdings" come from membership documents (`holdingsOfRole`), so the same gate
-  // applies; only the wording says members rather than token holders.
-  it('offers merge to a maintainer or writer and names members when withholding it', () => {
-    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, model: 'v2' }).canMarkMerged).toBe(true)
-    const stranger = pullActions({ pull: pull(), viewer: STRANGER, holdings: NONE, model: 'v2' })
-    expect(stranger.canMarkMerged).toBe(false)
-    expect(stranger.mergeHint).toMatch(/maintainers and writers/)
-    const unknown = pullActions({ pull: pull(), viewer: WRITER, holdings: null, model: 'v2' })
-    expect(unknown.mergeHint).toMatch(/members/)
-    expect(unknown.mergeHint).not.toMatch(/token/)
-  })
-
-  it('lets the author close their own PR (an authorEvent) without membership', () => {
-    expect(pullActions({ pull: pull(), viewer: AUTHOR, holdings: NONE, model: 'v2' }).canCloseReopen).toBe(true)
-  })
-})
-
 describe('pullActions agrees with the fold', () => {
-  const records: TokenRecord[] = [{ identity: WRITER, token: 'write', op: 'mint', createdAt: 0 }]
-  const authz = new AuthzResolver(records)
   const mergeBy = (actor: string): Event => ({ id: 'e1', kind: 'merge', actor, oid: HEAD, createdAt: 10 })
 
   it('"counts now" iff the head has been a base tip — and the fold then merges', () => {
@@ -132,9 +112,10 @@ describe('pullActions agrees with the fold', () => {
       const a = pullActions({ pull: pull({ headOnBase }), viewer: WRITER, holdings: WRITE })
       expect(a.canMarkMerged).toBe(true)
       expect(a.markCountsNow).toBe(expected)
-      expect(foldPrState([mergeBy(WRITER)], AUTHOR, authz, baseTip, isAncestor).merged).toBe(expected)
-      // A stranger's identical event is inert — which is why they are never offered it.
-      expect(foldPrState([mergeBy(STRANGER)], AUTHOR, authz, baseTip, isAncestor).merged).toBe(false)
+      // A member's `event` (consensus admitted it, so the fold applies it).
+      expect(foldPrStateV2([mergeBy(WRITER)], [], AUTHOR, baseTip, isAncestor).merged).toBe(expected)
+      // An author's merge through `authorEvent` is inert — merge is not an author action.
+      expect(foldPrStateV2([], [mergeBy(AUTHOR)], AUTHOR, baseTip, isAncestor).merged).toBe(false)
     }
   })
 })

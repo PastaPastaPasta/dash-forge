@@ -7,7 +7,7 @@
  *  - {@link useViewerRole}: what the signed-in viewer is on this repo (maintainer / writer /
  *    none), which decides the Settings tab and the member-only hints.
  *  - {@link useTargetCounts}: the Issues / Pull requests tab counts, from the countable
- *    `number` indexes (forge-v2; v1 repos have no countable index and show no number).
+ *    `number` indexes.
  *  - {@link useReleases}: the repo's releases, newest per tag.
  */
 
@@ -16,7 +16,7 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import {
   readReleases,
-  readV2TargetCounts,
+  readTargetCounts,
   readViewerPermissions,
   repoContractIds,
   repoKey,
@@ -58,10 +58,7 @@ export function useViewerRole(repo: RepoRef): {
 export function useTargetCounts(repo: RepoRef): { readonly issues: number | null; readonly pulls: number | null } {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { data } = useAsync(
-    () =>
-      repo.kind === 'v2'
-        ? sessionCached(`counts:${network}:${repo.repoId}`, MINUTE, () => readV2TargetCounts(sdk!, repo.forge, repo.repoId))
-        : Promise.resolve({ issues: null, pulls: null }),
+    () => sessionCached(`counts:${network}:${repo.repoId}`, MINUTE, () => readTargetCounts(sdk!, repo.forge, repo.repoId)),
     [ready, repoKey(repo), network],
     { enabled: ready && sdk !== null },
   )

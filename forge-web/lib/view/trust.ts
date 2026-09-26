@@ -91,9 +91,10 @@ export interface TrustInputs {
   readonly configuredBackend: string
   /** The config's declared storage URIs (hosts not tried are listed as such). */
   readonly configuredUris?: readonly string[]
-  /** Which rules folded the refs (v1 `FORGE_RULES_V1`, forge-v2 `FORGE_RULES_V2`). */
-  readonly model?: 'v1' | 'v2'
 }
+
+/** The rules that fold a repo's refs. */
+const RULES = 'FORGE_RULES_V2'
 
 /**
  * Severity order. `pending` ranks below `verified` so a page that has only read refs so far
@@ -183,7 +184,6 @@ function newest(heads: readonly RefHead[]): RefHead | undefined {
 }
 
 function deriveTip(input: TrustInputs): TipLink {
-  const rules = input.model === 'v2' ? 'FORGE_RULES_V2' : 'FORGE_RULES_V1'
   const name = input.refName ?? ''
   const shown = name === '' ? 'This ref' : `\`${name}\``
   const tip = input.tip
@@ -205,10 +205,10 @@ function deriveTip(input: TrustInputs): TipLink {
       ...base,
       state: 'unverified',
       detail: h ? signed(h) : `${shown} has no commit.`,
-      note: `Folded by ${rules} from an update log that was read without proofs.`,
+      note: `Folded by ${RULES} from an update log that was read without proofs.`,
     }
   }
-  const note = `Folded by ${rules} from the append-only, proof-checked update log.`
+  const note = `Folded by ${RULES} from the append-only, proof-checked update log.`
   if (tip === 'missing') {
     return { ...base, state: 'verified', detail: `No ref named ${shown} exists.`, note }
   }

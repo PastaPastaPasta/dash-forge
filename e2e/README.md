@@ -1,8 +1,10 @@
 # End-to-end suites
 
-- `cli/run.sh`: the CLI suite, run against **live devnet moutai** (forge-v2, protocol 14) with `make e2e`. Configuration is in `cli/config.sh`; fixture identities come from `~/.config/dash-forge/test-identities/devnet-moutai/` (OWNER, COLLAB, CONTRIB). Scenario 08 reads a forge-v1 repo on **testnet** to prove v1 read-compatibility (needs a testnet identity, default `test-identities/CONTRIB.identity.json`).
-- `cli/seed-read-fixture.sh`: checks the testnet read fixture that the browser specs read (`make e2e-fixture`). The nightly runs it before Playwright. The fixture is a forge-v1 repo, which is read only now, so the script verifies it and can no longer reseed it; the fixture moves to forge-v2 together with the web app.
-- `../forge-web/e2e/`: the Playwright specs. The read specs only read the read fixture.
+- `cli/run.sh`: the CLI suite, run against **live devnet moutai** (forge-v2, protocol 14) with `make e2e`. Configuration is in `cli/config.sh`; fixture identities come from `~/.config/dash-forge/test-identities/devnet-moutai/` (OWNER, COLLAB, CONTRIB).
+- `../forge-contracts/scripts/seed-v2-fixture.mjs`: seeds the forge-v2 read fixture that the browser specs read (`make e2e-fixture`; needs `npm ci` in `forge-contracts/sdk-v2` and the moutai OWNER, MAINTAINER, COLLAB and CONTRIB identities). Idempotent: each step's result is recorded in `~/.cache/dash-forge/seed-v2-devnet-moutai.json` and a rerun skips what is recorded. The Devnet Nightly runs it before Playwright.
+- `../forge-web/e2e/`: the Playwright specs, run against a moutai build (`E2E_DEVNET=moutai`, the default). The read specs only read the read fixture.
+
+Everything runs on devnet moutai because forge-v2 needs Platform protocol 14, which testnet and mainnet do not run yet. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is deployed there.
 - `cli/storage-byo.sh`: bring-your-own storage (`make storage-e2e`). A real `git push` / `git clone` whose packs go to the local MinIO + kubo from `infra/docker-compose.yml`.
 
 | Scenario | Proves |
@@ -14,7 +16,6 @@
 | 05 non-member push | a never-member's push is refused at consensus (40120) |
 | 06 third-party verify | refs and manifests read raw from Platform bind to a locally hash-verified clone |
 | 07 depth / filter | `--depth` fails loudly, `--filter=blob:none` works |
-| 08 v1 read-compat | a testnet v1 repo clones by name and by contract id; a push to it is refused as read only |
 | 09 issue lifecycle | a non-member opens an issue (§6 numbering), closes and reopens it as the author (`authorEvent`); a stranger's close is refused by `dg` before signing (E601) and, with the pre-check off, **at consensus** (40120); a maintainer labels, comments and closes it (member `event`) |
 | 10 PR from a fork | `dg repo fork` records the parent's packs by reference (nothing re-uploaded) and the fork clones; a PR opened from the fork with no `--head-repo`; `pr view/diff/checkout` fetch the head from the fork; only a member's approval counts; `dg pr merge` builds a real 3-way merge commit, pushes it to the base and posts the merge event, and a fresh clone shows the merge |
 | 11 release asset | a non-maintainer is refused before uploading; a maintainer publishes a release whose asset goes to local MinIO with its sha256 recorded; a reader without storage credentials downloads and verifies it. SKIPs when MinIO is down (`make infra-up`) |
@@ -38,8 +39,7 @@ The CLI suite's repos are forge-v2 repos owned by the moutai OWNER fixture, crea
 | `storage-e2e-b` (moutai) | `cli/storage-byo.sh` steps 5–6 | the same script | Same, plus the step-5 "copy deleted" scenario. Step 6 restores that copy, so the repo stays clonable. |
 | `relay-e2e` (moutai) | the forge-relay live check (`crates/forge-relay/README.md`) | the same | Repo id `3HKxeeGrJjfVP6msx7yEKUPp9ghev2sAPFHEFLQ1c1x1` (recreated on the re-registered forge-v2 contracts). Webhooks on it point at `127.0.0.1` receivers and are removed after each run; pushes are tiny Platform-stored commits on `main`. Last run 2026-09-26: push delivered with a valid `X-Hub-Signature-256`, secret decrypted from chain by a relay-only key file; none delivered after `dg webhook remove`. |
 | `mirror-ci-dash-faucet` (moutai) | `.github/workflows/mirror-action.yml` | the same | The Mirror Action's live test: a mirror of `PastaPastaPasta/dash-faucet` (code, issues, PRs, releases, labels), Platform-stored packs only. Created on first run; each run mirrors twice and requires the second to write nothing. |
-| `m1-5124` (testnet, v1) | nothing now (v1 is read only); `cli/seed-read-fixture.sh` verifies it | `forge-web/e2e/*` (read-paths, fallback-browse, zero-backend, a11y) | The read fixture: `main` holds one deterministic commit (`README.md`, `src/`, `lib/`) with its pack stored on Platform and no browse index. DEPLOYER-owned (`8hJmcHWT…`). Override with `NIGHTLY_FIXTURE_REPO` (seeder) and `E2E_FIXTURE_NAME` (Playwright). |
-| `m1-75299` (testnet, v1) | nothing now | scenario 08; `forge-web/e2e/auth-write.spec.ts` with `E2E_WRITE=1` (issues only) | The former CLI suite repo, read only now. It still holds seven stale external packs (MinIO/IPFS on `127.0.0.1`) from the 2026-09-25 incident; clones skip them with a warning. |
+| `forge-v2-demo` (moutai, OWNER) and `forge-v2-empty` (moutai, MAINTAINER) | `forge-contracts/scripts/seed-v2-fixture.mjs` | `forge-web/e2e/*` read specs | The browser read fixture: `main` (three commits, `docs/`), a feature branch and tag `v0.1.0` with a published locator; three issues, an open PR with a maintainer approval, a merged PR, a star. `forge-v2-empty` has nothing pushed. Override with `E2E_V2_OWNER` / `E2E_V2_NAME`. |
 | `gh-bvs-mirror` (moutai) | `forge-import PastaPastaPasta/backports-validation-script` (manual, PR G live check) | the same | A GitHub mirror (re-created 2026-09-26 on the re-registered contracts): 2 branches + the open PR's head, 1 issue, 2 PRs, 15 comments, 7 reviews, 9 labels, 0.112 DASH. Branches match GitHub's. Re-running the import is a no-op at cost 0. |
 
 Override the storage repo names with `STORAGE_E2E_REPO` / `STORAGE_E2E_REPO_B`. When you add a suite that writes, give it its own repo and add a row here.

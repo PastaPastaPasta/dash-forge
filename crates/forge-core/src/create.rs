@@ -7,7 +7,7 @@
 //!    (anyone may create one; `(owner, name)` is unique).
 //! 2. the owner's own `maintainer` document — only the repo's owner may create it, and
 //!    without it the owner could not write the M-gated `config` (or push to a protected
-//!    ref). This is the v2 form of v1's "the owner is credited both tokens at creation".
+//!    ref).
 //! 3. the initial `config` — default branch and storage backend.
 //!
 //! **Resumable, never double-paying.** Before each document is broadcast, its signed
@@ -32,7 +32,7 @@ use crate::platform::{
     self, BroadcastOutcome, FieldValue, LoadedContract, LoadedIdentity, PlatformClient,
     WriteEngine, WriteIntent,
 };
-use crate::resolve::{find_v2, repo_slug, DOC_REPO};
+use crate::resolve::{find_named, repo_slug, DOC_REPO};
 use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
 
@@ -316,7 +316,7 @@ pub async fn create_repo(
         &mut journal,
         Step::Repo,
         || async {
-            Ok(find_v2(client, &forge, owner_bytes, &opts.name)
+            Ok(find_named(client, &forge, owner_bytes, &opts.name)
                 .await?
                 .map(|r| r.id().to_string()))
         },
@@ -439,7 +439,7 @@ async fn find_repo_after_create(
     expected_id: &str,
 ) -> Result<RepoRef> {
     for attempt in 0..FIND_ATTEMPTS {
-        if let Some(repo) = find_v2(client, forge, owner, name).await? {
+        if let Some(repo) = find_named(client, forge, owner, name).await? {
             if repo.id() != expected_id {
                 return Err(Error::Platform(format!(
                     "repo {name} resolves to {} but this session wrote {expected_id}",

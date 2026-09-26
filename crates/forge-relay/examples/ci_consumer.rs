@@ -159,7 +159,7 @@ async fn verify_and_check_run(
 
     let client = PlatformClient::connect_network(network.clone()).await?;
     let repo = forge_core::resolve::resolve_id(&client, &repo_id).await?;
-    let forge = repo.require_v2()?.clone();
+    let forge = repo.forge().clone();
     let scope = repo.scope()?;
 
     // Independent verification: did a *valid* update of this ref set it to `after`? forge's

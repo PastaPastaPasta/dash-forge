@@ -201,7 +201,6 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, _bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
     let hooks = newest_per_hook(
         WebhookReader::new(&client)
             .for_repo(handle.id())

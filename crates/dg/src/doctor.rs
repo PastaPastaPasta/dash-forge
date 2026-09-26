@@ -19,12 +19,11 @@ use std::process::Command;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use forge_core::network::{self, ContractSource, NetworkSettings, NetworkTarget};
+use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::platform::{Network, PlatformClient};
 use forge_core::storage::cors::probe_preflight;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{Profile, StoragePolicy, StorageProfiles};
-use forge_core::tokens::TOKEN_HISTORY_CONTRACT_ID;
 use forge_core::user_error::{codes, redact, UserError};
 
 use crate::config::{config_dir, config_path, Config};
@@ -259,11 +258,6 @@ struct Counts {
 
 /// The whole report as JSON.
 fn report_json(ctx: &Ctx, sections: &[Section], applied: &[Value], counts: &Counts) -> Value {
-    let registry = ctx
-        .target
-        .registry
-        .as_ref()
-        .map(|r| json!({ "contractId": r.contract_id, "source": r.source.to_string() }));
     let sections_json: Vec<Value> = sections
         .iter()
         .map(|s| {
@@ -283,7 +277,6 @@ fn report_json(ctx: &Ctx, sections: &[Section], applied: &[Value], counts: &Coun
     json!({
         "ok": counts.failed == 0,
         "network": ctx.network_label(),
-        "registry": registry,
         "forgeV2": ctx.target.v2.as_ref().map(|ids| json!({
             "core": ids.core,
             "collab": ids.collab,
@@ -487,27 +480,15 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     if !forge_core::keystore::is_inline_key(&path) {
         out.push(file_mode_check(&path));
     }
-    out.push(
-        match (
-            bridge.doc_op_key().is_ok(),
-            bridge.token_admin_key().is_ok(),
-        ) {
-            (true, true) => Check::ok(
-                "keys",
-                "HIGH/CRITICAL auth key for writes; CRITICAL for token admin",
-            ),
-            (true, false) => Check::warn(
-                "keys",
-                "writes OK; no CRITICAL key, so `dg repo create` and `dg collab` cannot sign",
-                "use the identity export that includes the CRITICAL AUTHENTICATION key for those",
-            ),
-            (false, _) => Check::fail(
-                "keys",
-                "no HIGH or CRITICAL AUTHENTICATION key: nothing can be signed",
-                "export the identity again from the bridge (it includes the auth keys)",
-            ),
-        },
-    );
+    out.push(if bridge.doc_op_key().is_ok() {
+        Check::ok("keys", "HIGH/CRITICAL auth key for writes")
+    } else {
+        Check::fail(
+            "keys",
+            "no HIGH or CRITICAL AUTHENTICATION key: nothing can be signed",
+            "export the identity again from the bridge (it includes the auth keys)",
+        )
+    });
     out.push(match ctx.connect().await {
         Err(_) => Check::warn(
             "balance",
@@ -638,11 +619,11 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
     };
     let mut out = vec![Check::ok("target", target)];
 
-    // DAPI + proof verification: fetch the registry contract, or — with no registry on this
-    // network (the contracts row fails for that) — the TokenHistory system contract.
-    let (what, contract_id) = match &ctx.target.registry {
-        Some(r) => ("registry contract", r.contract_id.as_str()),
-        None => ("TokenHistory system contract", TOKEN_HISTORY_CONTRACT_ID),
+    // DAPI + proof verification: fetch forge-core, or — with no forge-v2 on this network
+    // (the contracts row fails for that) — the DPNS system contract.
+    let (what, contract_id) = match &ctx.target.v2 {
+        Some(ids) => ("forge-core contract", ids.core.as_str()),
+        None => ("DPNS system contract", DPNS_CONTRACT_ID),
     };
     let client = match ctx.connect().await {
         Ok(c) => c,
@@ -683,14 +664,17 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
     out
 }
 
+/// The DPNS system contract: its id is fixed by rs-dpp and identical on every network.
+const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
+
 /// The forge-v2 contracts recorded for this network: both must fetch with a verified proof
 /// and both must be enrolled, as whole contracts, in the recorded contract group. A network
-/// with no forge-v2 deployment passes with a note — v1 is the live data plane there.
+/// with no forge-v2 deployment is reported by the contracts row, so this one only notes it.
 async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Check {
     let Some(ids) = &target.v2 else {
         return Check::ok(
             "forge-v2",
-            format!("not deployed on {} (v1 repos only)", target.network.key()),
+            format!("not deployed on {} (see contracts)", target.network.key()),
         );
     };
     let mut problems = Vec::new();
@@ -725,42 +709,29 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
         Check::fail(
             "forge-v2",
             problems.join("; "),
-            "the network may not run protocol 14 yet, or the deployment record is stale; v1 repos still work",
+            "the network may not run protocol 14 yet, or the deployment record is stale",
         )
     }
 }
 
-/// The registry id this invocation will use and where it came from. A network with no
-/// deployment fails here with the same actionable message the commands give.
+/// The forge-v2 contracts this invocation will use and where they came from. A network with
+/// no deployment fails here with the same actionable message the commands give.
 fn check_contracts(target: &NetworkTarget) -> Check {
-    let embedded = network::deployed_registry(&target.network);
-    match (target.require_registry(), embedded) {
-        (Ok(r), Ok(embedded)) => {
-            // An override that differs from a real deployment is legitimate (a private
-            // registry) but worth surfacing, since it changes which repos resolve.
-            let note = match (&r.source, embedded) {
-                (ContractSource::Override(_), Some(d)) if d.contract_id != r.contract_id => {
-                    format!("; overrides {} from {}", d.contract_id, d.source)
-                }
-                _ => String::new(),
-            };
-            let v2 = target
-                .v2
-                .as_ref()
-                .map(|v| format!(", forge-v2 core={} collab={}", v.core, v.collab))
-                .unwrap_or_default();
-            Check::ok(
-                "registry",
-                format!(
-                    "registry={} (source: {}{note}), tokenHistory={TOKEN_HISTORY_CONTRACT_ID}{v2}",
-                    r.contract_id, r.source
-                ),
-            )
-        }
-        (Err(e), _) | (_, Err(e)) => Check::fail(
-            "registry",
+    match target.require_v2() {
+        Ok(ids) => Check::ok(
+            "forge-v2",
+            format!(
+                "core={} collab={} group={} (source: forge-contracts/deployments/{}.json)",
+                ids.core,
+                ids.collab,
+                ids.group,
+                target.network.key()
+            ),
+        ),
+        Err(e) => Check::fail(
+            "forge-v2",
             e.to_string(),
-            "use a network with a deployment (`--network testnet`), or set `registry_contract_id` in config.toml",
+            "use a network with a deployment: `--network devnet --devnet-name moutai`",
         ),
     }
 }
@@ -986,46 +957,9 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_core::network::Registry;
 
     #[test]
     fn contracts_check_reports_the_deployment_file_as_the_source() {
-        let target = NetworkSettings::default().resolve().unwrap();
-        let c = check_contracts(&target);
-        assert_eq!(c.status, Status::Ok, "{}", c.detail);
-        assert!(
-            c.detail
-                .contains("source: forge-contracts/deployments/testnet.json"),
-            "{}",
-            c.detail
-        );
-    }
-
-    #[test]
-    fn contracts_check_names_an_override_and_what_it_replaces() {
-        let target = NetworkSettings {
-            registry: Some(Registry::override_from(
-                "PRIVATE",
-                "env FORGE_REGISTRY_CONTRACT_ID",
-            )),
-            ..Default::default()
-        }
-        .resolve()
-        .unwrap();
-        let c = check_contracts(&target);
-        assert_eq!(c.status, Status::Ok);
-        assert!(c.detail.contains("registry=PRIVATE"), "{}", c.detail);
-        assert!(
-            c.detail
-                .contains("override (env FORGE_REGISTRY_CONTRACT_ID)"),
-            "{}",
-            c.detail
-        );
-        assert!(c.detail.contains("overrides "), "{}", c.detail);
-    }
-
-    #[test]
-    fn contracts_check_fails_clearly_on_an_undeployed_devnet() {
         let target = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("moutai".into()),
@@ -1034,10 +968,29 @@ mod tests {
         .resolve()
         .unwrap();
         let c = check_contracts(&target);
+        assert_eq!(c.status, Status::Ok, "{}", c.detail);
+        assert!(
+            c.detail
+                .contains("source: forge-contracts/deployments/devnet-moutai.json"),
+            "{}",
+            c.detail
+        );
+    }
+
+    #[test]
+    fn contracts_check_fails_clearly_on_an_undeployed_devnet() {
+        let target = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("paloma".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let c = check_contracts(&target);
         assert_eq!(c.status, Status::Fail);
         assert!(
             c.detail
-                .contains("no Dash Forge registry is deployed on devnet-moutai yet"),
+                .contains("forge-v2 isn't deployed on devnet-paloma yet"),
             "{}",
             c.detail
         );

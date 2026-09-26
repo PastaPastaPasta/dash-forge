@@ -1,5 +1,7 @@
 # PRD 02 — git-remote-dash & dg
 
+> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility: `dash://<contractId>` URLs, token grants and `dg collab suspend` no longer exist. The current design is [forge-v2](../contracts/forge-v2.md); the current CLI surface is in [ux-dx-spec.md](../design/ux-dx-spec.md) §7 (`dg collab add|remove|list --role writer|maintainer`).
+
 One **Rust workspace** (shared `forge-core` crate on rs-sdk/rs-dpp), multiple binaries. Radicle's remote helper is the reference implementation for helper-protocol mechanics.
 
 ## A. git-remote-dash (remote helper)

@@ -16,7 +16,6 @@ const DEMO_OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
  * gated on E2E_WRITE because signing in registers a key.
  */
 
-test.skip(E2E_DEVNET === '', 'forge-v2 lives on a devnet; set E2E_DEVNET=moutai')
 
 test('x1. explore lists recent repos and says what it cannot know', async ({ page }) => {
   const { errors } = collectPageErrors(page)

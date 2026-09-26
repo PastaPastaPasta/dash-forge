@@ -354,7 +354,7 @@ export async function computeSubscriptions(
     repoSubs.push({ repo, reason })
   }
   const mine = ok(owned, { owned: [], member: [] })
-  for (const r of mine.owned) if (r.kind === 'v2') addRepo(repoLite(r), 'owner')
+  for (const r of mine.owned) addRepo(repoLite(r), 'owner')
   for (const r of mine.member) addRepo(repoLite(r), r.role ?? 'writer')
   const starIds = ok(starred, EMPTY_PAGE).rows.filter((id) => !seen.has(id))
   const commentedTargets = ok(commented, [])

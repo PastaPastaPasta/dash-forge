@@ -21,7 +21,7 @@ import { E2E_DEVNET, SCREENSHOT_DIR, idFile, runAxe, shot, signedIn, unlock } fr
  * writers from one identity collide on nonces.
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!existsSync(idFile('CI-RUNNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 10 * 60_000 })
 

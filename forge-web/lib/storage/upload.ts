@@ -25,7 +25,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { WriteAuth } from '../sdk'
 import { estimateChunkCredits } from '../sdk/cost'
 import { isRecordableUri } from '../net'
-import type { V2RepoRef } from '../repo/contract'
+import type { RepoRef } from '../repo/contract'
 import { manifestUrisProblem, putPlatformChunks } from '../repo/push'
 import { addVerified, gatewayUrl, remotePin } from './ipfs'
 import { artifactKey, profileProblem, publishProblem, type StoragePolicy, type StorageProfile } from './profiles'
@@ -236,7 +236,7 @@ export interface StoreOptions {
 export async function storeArtifact(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: V2RepoRef,
+  repo: RepoRef,
   bytes: Uint8Array,
   opts: StoreOptions,
 ): Promise<StoredArtifact> {

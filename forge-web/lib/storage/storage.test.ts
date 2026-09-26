@@ -40,7 +40,7 @@ import {
 import { ReplicationError, PlatformDeclinedError, fitManifestUris, orderUris, storeArtifact } from './upload'
 import { sha256Hex } from './sigv4'
 import type { WriteAuth } from '../sdk'
-import type { V2RepoRef } from '../repo/contract'
+import type { RepoRef } from '../repo/contract'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
@@ -293,7 +293,7 @@ describe('CORS fix blocks', () => {
 // The replication engine against in-memory S3 and kubo
 // ---------------------------------------------------------------------------
 
-const REPO: V2RepoRef = { kind: 'v2', forge: { core: 'CORE', collab: 'COLLAB', group: 'G' }, repoId: 'REPO', ownerId: ID, name: 'r', visibility: 'public' }
+const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', group: 'G' }, repoId: 'REPO', ownerId: ID, name: 'r', visibility: 'public' }
 const AUTH: WriteAuth = { identityId: ID, network: 'devnet', getSigningKeyWif: () => '' }
 const SDK = {} as EvoSDK
 

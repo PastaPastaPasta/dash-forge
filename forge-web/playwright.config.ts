@@ -5,27 +5,25 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * Tests run headless Chromium against the LOCAL static build (`out/`) served on
  * port 4321 — same bytes deployed to GitHub Pages / IPFS, but local for speed and
- * request-interception control. The app talks to Dash Platform **testnet** (the
- * app default, `DEFAULT_NETWORK`), so read-path specs exercise real on-chain data.
+ * request-interception control. The build targets a forge-v2 **devnet** (`E2E_DEVNET`,
+ * default `moutai`), so the specs exercise real on-chain data: the read fixture that
+ * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds there (e2e/helpers.ts `DEMO`).
+ * Testnet has no forge-v2 deployment, so a testnet build has nothing to read.
  *
- * The WASM SDK loads lazily post-paint and connects to testnet DAPI, so data pages
+ * The WASM SDK loads lazily post-paint and connects to the devnet's DAPI, so data pages
  * need a generous timeout; the per-test timeout is bumped accordingly.
  */
 
 const PORT = Number(process.env.E2E_PORT ?? 4321)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
-/**
- * The network the build under test reads: testnet (default; the v1 read fixture) or a
- * devnet (`E2E_DEVNET=moutai`; the forge-v2 fixture, `v2-reads.spec.ts`). Each spec skips
- * on the network its fixture does not live on, and the build below is made for this one.
- */
-const DEVNET = process.env.E2E_DEVNET ?? ''
-const BUILD_ENV = DEVNET ? `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} ` : ''
+/** The devnet the build under test reads. Keep the default in step with e2e/helpers.ts. */
+const DEVNET = process.env.E2E_DEVNET || 'moutai'
+const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} `
 
 export default defineConfig({
   testDir: './e2e',
-  // Real testnet round-trips (SDK connect + proof-verified reads) are slow; be generous.
+  // Real devnet round-trips (SDK connect + proof-verified reads) are slow; be generous.
   timeout: 90_000,
   expect: { timeout: 30_000 },
   fullyParallel: false,
@@ -49,7 +47,8 @@ export default defineConfig({
   ],
   // Build (if needed) then serve out/ with a hermetic, dependency-free static server
   // (sets COOP/COEP for the WASM SDK and mirrors trailingSlash routing). If you already
-  // have a fresh out/, set E2E_SKIP_BUILD=1 to skip the rebuild and just serve it.
+  // have a fresh out/ built for the same devnet, set E2E_SKIP_BUILD=1 to skip the rebuild
+  // and just serve it.
   webServer: {
     command: process.env.E2E_SKIP_BUILD
       ? `node e2e/static-server.mjs --port ${PORT}`

@@ -7,7 +7,7 @@ import { avatarFill, hslToRgb, whiteContrast } from './avatar'
 /**
  * WCAG 2 AA contrast for the design tokens, checked without a browser.
  *
- * The nightly axe run (e2e/a11y.spec.ts) is the end-to-end check, but it needs live testnet
+ * The nightly axe run (e2e/a11y.spec.ts) is the end-to-end check, but it needs live devnet
  * data to render the elements that fail — the landing only showed the DPNS-name identity
  * pill in dash blue once a repo card resolved its owner's name. These tests pin the token
  * pairs so a regression fails in `pnpm test`, offline.

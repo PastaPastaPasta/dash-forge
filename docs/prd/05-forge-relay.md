@@ -1,5 +1,7 @@
 # PRD 05 — Forge Relay
 
+> **Partly historical.** The design section and the WRITE-token wording come from forge-v1 (one contract per repository, with token access control), removed on 2026-09-26. The "As built" section describes the current [forge-v2](../contracts/forge-v2.md) relay; a CI runner now writes `checkRun` documents as a `writer` or `maintainer` member.
+
 ## Goal
 Bridge Platform's pull-only world to webhook-driven CI and notifications **without becoming a trusted party**. Trust is only availability, never integrity: consumers re-fetch and verify everything from Platform.
 
@@ -15,7 +17,7 @@ Stateless Rust daemon (workspace member alongside dg/helper):
 
 ### As built (forge-v2, protocol 14)
 
-The relay serves forge-v2 repositories only; v1 repositories are read-only and have no webhooks. It polls rather than subscribing to the firehose (item 1): per repo, the `$createdAt`-ending indexes of `refUpdate`/`protectedRefUpdate`, `release`, `issue`, `patch`, `event`/`authorEvent` (feed), `comment` (per target), `review` (per PR) and `checkRun` (per head). Subscriptions are forge-collab `webhook` documents, gated to maintainers at consensus; the relay finds its hooks through the `relay` index, resolves newest per `(repoId, hookId)`, requires the writer to still be a maintainer, and decrypts the `encryptedFor` secret with its ENCRYPTION key (`forge_core::envelope`, `forge_core::webhooks`). Delivery is best effort: up to 5 attempts within 30 s per delivery, then a dead-letter log line; there is no durable retry queue (item 3 is not built). Delivery runs on per-hook workers with a circuit breaker, decoupled from polling. Operator docs: `crates/forge-relay/README.md`.
+The relay serves forge-v2 repositories. It polls rather than subscribing to the firehose (item 1): per repo, the `$createdAt`-ending indexes of `refUpdate`/`protectedRefUpdate`, `release`, `issue`, `patch`, `event`/`authorEvent` (feed), `comment` (per target), `review` (per PR) and `checkRun` (per head). Subscriptions are forge-collab `webhook` documents, gated to maintainers at consensus; the relay finds its hooks through the `relay` index, resolves newest per `(repoId, hookId)`, requires the writer to still be a maintainer, and decrypts the `encryptedFor` secret with its ENCRYPTION key (`forge_core::envelope`, `forge_core::webhooks`). Delivery is best effort: up to 5 attempts within 30 s per delivery, then a dead-letter log line; there is no durable retry queue (item 3 is not built). Delivery runs on per-hook workers with a circuit breaker, decoupled from polling. Operator docs: `crates/forge-relay/README.md`.
 
 ## Deployment
 - Docker one-liner; config = relay identity key + network. DCG/community run public instances; anyone can run their own (per-repo choice via `webhook.relayIdentityId`).

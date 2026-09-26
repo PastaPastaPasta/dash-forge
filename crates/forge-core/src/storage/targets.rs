@@ -37,48 +37,28 @@ pub struct Replica {
     pub platform: bool,
 }
 
-/// What a manifest's `uris` field can hold. v1 stores the list as one JSON string of at
-/// most `max_json_len` bytes; v2 stores a typed array of at most `max_items` strings of at
-/// most `max_item_len` bytes each.
+/// What a manifest's `uris` field can hold: a typed array of at most `max_items` strings of
+/// at most `max_item_len` bytes each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UriBudget {
-    /// The JSON-encoded length limit (v1), if any.
-    pub max_json_len: Option<usize>,
-    /// The item-count limit (v2), if any.
-    pub max_items: Option<usize>,
-    /// The per-item length limit (v2), if any.
-    pub max_item_len: Option<usize>,
+    /// The item-count limit.
+    pub max_items: usize,
+    /// The per-item length limit.
+    pub max_item_len: usize,
 }
 
 impl UriBudget {
-    /// A v1 JSON-string field of `max_json_len` bytes.
-    pub const fn json(max_json_len: usize) -> Self {
-        Self {
-            max_json_len: Some(max_json_len),
-            max_items: None,
-            max_item_len: None,
-        }
-    }
-
-    /// A v2 typed string array.
+    /// A typed string array.
     pub const fn array(max_items: usize, max_item_len: usize) -> Self {
         Self {
-            max_json_len: None,
-            max_items: Some(max_items),
-            max_item_len: Some(max_item_len),
+            max_items,
+            max_item_len,
         }
     }
 
     /// Whether `uris` fits.
     pub fn fits(&self, uris: &[String]) -> bool {
-        let json_ok = self
-            .max_json_len
-            .is_none_or(|max| serde_json::to_string(uris).map_or(usize::MAX, |s| s.len()) <= max);
-        let count_ok = self.max_items.is_none_or(|max| uris.len() <= max);
-        let items_ok = self
-            .max_item_len
-            .is_none_or(|max| uris.iter().all(|u| u.len() <= max));
-        json_ok && count_ok && items_ok
+        uris.len() <= self.max_items && uris.iter().all(|u| u.len() <= self.max_item_len)
     }
 }
 
@@ -560,7 +540,7 @@ pub(crate) mod tests {
             }],
             failures: vec![],
         };
-        assert!(rep.manifest_uris(UriBudget::json(2600)).is_err());
+        assert!(rep.manifest_uris(UriBudget::array(8, 300)).is_err());
     }
 
     #[tokio::test]
@@ -649,12 +629,7 @@ pub(crate) mod tests {
             }],
             failures: vec![],
         };
-        assert_eq!(rep.manifest_uris(UriBudget::json(2600)).unwrap().len(), 2);
-        let trimmed = rep.manifest_uris(UriBudget::json(60)).unwrap();
-        assert_eq!(trimmed.len(), 1);
-        assert!(trimmed[0].starts_with("https://"));
-        assert!(rep.manifest_uris(UriBudget::json(10)).is_err());
-        // v2: a typed array bounded per item and in count.
+        // A typed array bounded per item and in count.
         assert_eq!(
             rep.manifest_uris(UriBudget::array(8, 300)).unwrap().len(),
             2

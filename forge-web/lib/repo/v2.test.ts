@@ -3,7 +3,7 @@
  * every `where` clause (so a reader that forgets `repoId ==` reads another repo's documents
  * and fails here), honours `in`, caps pages at 100 and pages by `startAfter`.
  *
- * Covers: resolution (v2 first, v1 fallback, DPNS owners, `?repo=` pins), the RepoSource
+ * Covers: resolution (the `repo` document, DPNS owners, `?repo=` pins), the RepoSource
  * query shapes, the issue/PR folds over `event` + `authorEvent` (lists read the repo feed once
  * instead of per row), the well-formedness filter, membership-derived permissions and
  * approvals, pack-copy selection, and the chunk reads that must name the uploader.
@@ -31,11 +31,10 @@ import {
   repoSource,
   resolveAnyRepo,
   resolveAnyRepoWith,
-  v2PacksOfKind,
+  packsOfKind,
   wellFormed,
   type PackManifest,
-  type V1RepoRef,
-  type V2RepoRef,
+  type RepoRef,
 } from './index'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
@@ -50,8 +49,7 @@ const OTHER_REPO = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
 const HEAD = 'ab'.repeat(20)
 const REPO_ISSUE2 = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
 
-const V2: V2RepoRef = {
-  kind: 'v2',
+const DEMO: RepoRef = {
   forge: FORGE,
   repoId: REPO,
   ownerId: OWNER,
@@ -107,7 +105,6 @@ function mockSdk(store: Store, seen: DocumentQuery[] = [], dpns: Record<string, 
       query,
       count: async (q: DocumentQuery) => new Map([['', BigInt((await query({ ...q, limit: 100 })).size)]]),
     },
-    contracts: { fetch: async (id: string) => (store[id] ? { ownerId: () => store[id]?.['$owner']?.[0]?.['id'] } : null) },
     dpns: { resolveName: async (name: string) => dpns[name] },
   } as unknown as EvoSDK
 }
@@ -199,7 +196,7 @@ function fixture(): Store {
 
 describe('RepoSource', () => {
   it('scopes v2 list queries by repoId and routes types to their contract', () => {
-    const s = repoSource(V2)
+    const s = repoSource(DEMO)
     expect(s.repoQuery('refUpdate', { orderBy: [['$createdAt', 'asc']] })).toEqual({
       dataContractId: 'CORE',
       documentTypeName: 'refUpdate',
@@ -213,73 +210,49 @@ describe('RepoSource', () => {
     expect(s.targetQuery('comment', { where: [['targetId', '==', 't']] }).where).toEqual([['targetId', '==', 't']])
   })
 
-  it('names the uploader in a v2 chunk read, and not in a v1 one', () => {
-    const v2 = repoSource(V2).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
-    expect(v2.where).toEqual([
+  it('names the uploader in a chunk read', () => {
+    const q = repoSource(DEMO).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
+    expect(q.where).toEqual([
       ['repoId', '==', REPO],
       ['$ownerId', '==', MAINT],
       ['packHash', '==', hexToBase64('aa'.repeat(32))],
       ['seq', 'in', [0, 1]],
     ])
-    const v1: V1RepoRef = { kind: 'v1', contractId: 'C1', ownerId: OWNER, name: 'x' }
-    expect(repoSource(v1).chunkQuery('aa'.repeat(32), MAINT, [0]).where?.map((w) => w[0])).toEqual([
-      'packHash',
-      'seq',
-    ])
   })
 
-  it('keys and preloads by the model', () => {
-    expect(repoKey(V2)).toBe(REPO)
-    expect(repoContractIds(V2)).toEqual(['CORE', 'COLLAB'])
-    expect(repoContractIds({ kind: 'v1', contractId: 'C1', ownerId: OWNER, name: '' })).toEqual(['C1'])
+  it('keys by repo id and preloads both forge contracts', () => {
+    expect(repoKey(DEMO)).toBe(REPO)
+    expect(repoContractIds(DEMO)).toEqual(['CORE', 'COLLAB'])
     expect(repoContractIds(null)).toEqual([])
   })
 })
 
 describe('resolveAnyRepo', () => {
-  const store = (): Store => ({
-    ...fixture(),
-    REG: {
-      repoListing: [
-        doc({ $ownerId: OWNER, normalizedName: 'legacy', name: 'Legacy', repoContractId: 'V1C' }),
-      ],
-    },
-    V1C: { $owner: [{ id: OWNER }] },
-  })
   const params = { network: 'devnet' as const }
 
   // resolveAnyRepo reads the build's NETWORKS; these tests hand resolveAnyRepoWith the ids.
-  it('prefers the forge-v2 repo document, then falls back to the v1 registry', async () => {
-    const sdk = mockSdk(store())
-    const v2 = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'Demo' })
-    expect(v2?.repo).toMatchObject({ kind: 'v2', repoId: REPO, name: 'demo' })
-    const v1 = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'legacy' })
-    expect(v1?.repo).toMatchObject({ kind: 'v1', contractId: 'V1C' })
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'nope' }),
-    ).toBeNull()
+  it('resolves the repo document by (owner, normalized name)', async () => {
+    const sdk = mockSdk(fixture())
+    const found = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'Demo' })
+    expect(found?.repo).toMatchObject({ repoId: REPO, name: 'demo' })
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'nope' })).toBeNull()
   })
 
   it('resolves a DPNS owner name and rejects a repo pin owned by someone else', async () => {
-    const sdk = mockSdk(store(), [], { 'alice.dash': OWNER })
-    const byName = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: 'Alice', name: 'demo' })
-    expect(byName?.repo).toMatchObject({ kind: 'v2', ownerId: OWNER })
-    const pinned = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: OWNER, name: 'x', repoId: REPO })
-    expect(pinned?.repo).toMatchObject({ kind: 'v2', repoId: REPO })
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: MAINT, name: 'x', repoId: REPO }),
-    ).toBeNull()
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: 'nobody', name: 'demo' }),
-    ).toBeNull()
+    const sdk = mockSdk(fixture(), [], { 'alice.dash': OWNER })
+    const byName = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: 'Alice', name: 'demo' })
+    expect(byName?.repo).toMatchObject({ ownerId: OWNER })
+    const pinned = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'x', repoId: REPO })
+    expect(pinned?.repo).toMatchObject({ repoId: REPO })
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: MAINT, name: 'x', repoId: REPO })).toBeNull()
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: 'nobody', name: 'demo' })).toBeNull()
   })
 
-  it('never reads forge-v2 on a network without it', async () => {
+  it('reads nothing on a network without forge-v2', async () => {
     const seen: DocumentQuery[] = []
-    const sdk = mockSdk(store(), seen)
-    const v1 = await resolveAnyRepoWith(sdk, { forge: null, registryId: 'REG' }, { ...params, owner: OWNER, name: 'legacy' })
-    expect(v1?.repo.kind).toBe('v1')
-    expect(seen.some((q) => q.dataContractId === 'CORE')).toBe(false)
+    const sdk = mockSdk(fixture(), seen)
+    expect(await resolveAnyRepoWith(sdk, null, { ...params, owner: OWNER, name: 'demo' })).toBeNull()
+    expect(seen).toEqual([])
     // The exported entry point is the same function over the build's network config.
     expect(typeof resolveAnyRepo).toBe('function')
   })
@@ -288,10 +261,10 @@ describe('resolveAnyRepo', () => {
 describe('forge-v2 refs and config', () => {
   it('folds only this repo’s ref updates, and reads its config', async () => {
     const sdk = mockSdk(fixture())
-    const refs = await readRefs(sdk, V2)
+    const refs = await readRefs(sdk, DEMO)
     expect(refs).toHaveLength(1)
     expect(refs[0]?.state).toMatchObject({ state: 'resolved', oid: HEAD })
-    const { config } = await readConfigBundle(sdk, V2)
+    const { config } = await readConfigBundle(sdk, DEMO)
     expect(config?.protectedPatterns).toEqual(['refs/heads/main'])
   })
 })
@@ -300,7 +273,7 @@ describe('forge-v2 issue and PR folds', () => {
   it('folds event + authorEvent from one feed read for a whole list page', async () => {
     const seen: DocumentQuery[] = []
     const sdk = mockSdk(fixture(), seen)
-    const issues = await listIssues(sdk, V2)
+    const issues = await listIssues(sdk, DEMO)
     const by = new Map(issues.map((i) => [i.number, i]))
     expect([...by.keys()].sort()).toEqual([1, 2, 3]) // #4 (malformed) and the other repo's #1 are skipped
     expect(by.get(1)?.state).toMatchObject({ open: true, labels: ['bug'] }) // the stranger's authorEvent is inert
@@ -310,7 +283,7 @@ describe('forge-v2 issue and PR folds', () => {
     const eventReads = seen.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
     expect(eventReads.every((q) => q.where?.[0]?.[0] === 'repoId')).toBe(true)
     expect(eventReads).toHaveLength(2)
-    // …and no token-history reads either.
+    // …and nothing outside the two forge contracts.
     expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB')).toBe(false)
   })
 
@@ -329,10 +302,10 @@ describe('forge-v2 issue and PR folds', () => {
         kind: 1,
       }),
     ]
-    invalidateRepoFeed(V2)
-    const issues = await listIssues(mockSdk(store), V2)
+    invalidateRepoFeed(DEMO)
+    const issues = await listIssues(mockSdk(store), DEMO)
     expect(issues.find((i) => i.number === 2)?.state.open).toBe(false)
-    invalidateRepoFeed(V2)
+    invalidateRepoFeed(DEMO)
   })
 
   it('pages past hidden rows to fill the page and reports how many it hid', async () => {
@@ -343,16 +316,16 @@ describe('forge-v2 issue and PR folds', () => {
         doc({ $id: `spam${n}`, $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
       )
     }
-    invalidateRepoFeed(V2)
-    const issues = await listIssues(mockSdk(store), V2, undefined, 3)
+    invalidateRepoFeed(DEMO)
+    const issues = await listIssues(mockSdk(store), DEMO, 3)
     expect(issues.map((i) => i.number).sort()).toEqual([1, 2, 3])
     expect(issues.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
-    invalidateRepoFeed(V2)
+    invalidateRepoFeed(DEMO)
   })
 
   it('folds a merge by a member whose oid is the base tip', async () => {
     const sdk = mockSdk(fixture())
-    const [pull] = await listPulls(sdk, V2)
+    const [pull] = await listPulls(sdk, DEMO)
     expect(pull?.state).toMatchObject({ merged: true, open: false })
     expect(pull?.sourceId).toBe(REPO)
     expect(pull?.headOnBase).toBe(true)
@@ -360,10 +333,10 @@ describe('forge-v2 issue and PR folds', () => {
 
   it('builds the issue timeline with author events marked, and counts member approvals only', async () => {
     const sdk = mockSdk(fixture())
-    invalidateMembers(V2)
-    const issue = await loadIssueThread(sdk, V2, 2)
+    invalidateMembers(DEMO)
+    const issue = await loadIssueThread(sdk, DEMO, 2)
     expect(issue?.timeline.filter((t) => t.kind === 'event' && t.byAuthor)).toHaveLength(1)
-    const pr = await loadPullThread(sdk, V2, 1)
+    const pr = await loadPullThread(sdk, DEMO, 1)
     expect(pr?.approvals?.approvers).toEqual([MAINT])
     expect(pr?.approvals?.roles.get(MAINT)).toBe('maintainer')
     // The stranger's review is shown in the timeline, not counted.
@@ -374,35 +347,34 @@ describe('forge-v2 issue and PR folds', () => {
 describe('forge-v2 permissions', () => {
   it('derives the viewer’s controls from membership documents', async () => {
     const sdk = mockSdk(fixture())
-    invalidateMembers(V2)
-    expect(await readViewerPermissions(sdk, V2, MAINT)).toEqual({ write: true, maintain: true })
-    expect(await readViewerPermissions(sdk, V2, WRITER)).toEqual({ write: true, maintain: false })
-    expect(await readViewerPermissions(sdk, V2, STRANGER)).toEqual({ write: false, maintain: false })
+    invalidateMembers(DEMO)
+    expect(await readViewerPermissions(sdk, DEMO, MAINT)).toEqual({ write: true, maintain: true })
+    expect(await readViewerPermissions(sdk, DEMO, WRITER)).toEqual({ write: true, maintain: false })
+    expect(await readViewerPermissions(sdk, DEMO, STRANGER)).toEqual({ write: false, maintain: false })
     expect(holdingsOfRole(null)).toEqual({ write: false, maintain: false })
   })
 
   it('reports unknown (null), not "no access", when the members cannot be read', async () => {
-    invalidateMembers(V2)
+    invalidateMembers(DEMO)
     const broken = {
       documents: { query: () => Promise.reject(new Error('DAPI down')) },
     } as unknown as EvoSDK
-    expect(await readViewerPermissions(broken, V2, MAINT)).toBeNull()
+    expect(await readViewerPermissions(broken, DEMO, MAINT)).toBeNull()
   })
 })
 
 describe('wellFormed', () => {
-  const PRIVATE: V2RepoRef = { ...V2, visibility: 'private' }
+  const PRIVATE: RepoRef = { ...DEMO, visibility: 'private' }
   const enc = bytesToBase64(new Uint8Array(32))
-  it('applies plaintext-xor-enc by visibility, and passes every v1 document', () => {
-    expect(wellFormed(V2, 'issue', { title: 't' })).toBe(true)
-    expect(wellFormed(V2, 'issue', { title: '' })).toBe(false)
+  it('applies plaintext-xor-enc by visibility', () => {
+    expect(wellFormed(DEMO, 'issue', { title: 't' })).toBe(true)
+    expect(wellFormed(DEMO, 'issue', { title: '' })).toBe(false)
     expect(wellFormed(PRIVATE, 'issue', { enc, epoch: 0 })).toBe(true)
     expect(wellFormed(PRIVATE, 'refUpdate', { enc, epoch: 0, refName: 'refs/heads/main' })).toBe(false)
-    expect(wellFormed({ kind: 'v1', contractId: 'c', ownerId: 'o', name: '' }, 'issue', {})).toBe(true)
   })
 })
 
-describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
+describe('packsOfKind (the v2 pack list over raw copies)', () => {
   const copy = (
     id: string,
     uploader: string,
@@ -426,7 +398,7 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
   })
 
   it('reads maintainers’ copies first but keeps the pack at its first upload’s position', () => {
-    const [pack] = v2PacksOfKind([copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)], 0)
+    const [pack] = packsOfKind([copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)], 0)
     expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m', 'w', 's'])
     expect(pack?.uploader).toBe(MAINT)
     expect(pack?.createdAt).toBe(1)
@@ -438,11 +410,11 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
       copy('w', WRITER, 1, { kind: 1, objectCount: 0 }), // an earlier writer claims kind 1
       copy('m', MAINT, 2, { objectCount: 17 }),
     ]
-    const [pack] = v2PacksOfKind(packs, 0)
+    const [pack] = packsOfKind(packs, 0)
     expect(pack?.objectCount).toBe(17)
     expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m'])
     expect(pack?.documentId).toBe('w') // position still pinned to the first upload
-    expect(v2PacksOfKind(packs, 1)).toEqual([])
+    expect(packsOfKind(packs, 1)).toEqual([])
   })
 
   it('numbers packRefs within a kind, so index fragments do not shift git packs', () => {
@@ -451,8 +423,8 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
       copy('l1', MAINT, 2, { packHash: 'l1', kind: 1 }),
       copy('p2', MAINT, 3, { packHash: 'p2' }),
     ]
-    expect(v2PacksOfKind(packs, 0).map((p) => p.packHash)).toEqual(['p1', 'p2'])
-    expect(v2PacksOfKind(packs, 0, { createdAt: 2, id: 'l1' }).map((p) => p.packHash)).toEqual(['p1'])
+    expect(packsOfKind(packs, 0).map((p) => p.packHash)).toEqual(['p1', 'p2'])
+    expect(packsOfKind(packs, 0, { createdAt: 2, id: 'l1' }).map((p) => p.packHash)).toEqual(['p1'])
   })
 })
 
@@ -489,16 +461,16 @@ describe('issue numbering (allocate_number over the live index)', () => {
     COLLAB: { issue: numbers.map((n) => doc({ $ownerId: AUTHOR, repoId: REPO, number: n, title: `#${n}` })) },
   })
   it('claims base + 1, ignoring a far squatter', async () => {
-    const { nextNumberV2 } = await import('./writes')
-    expect(await nextNumberV2(mockSdk(issues(1, 2, 3, 4_294_967_295)), V2, 'issue')).toBe(4)
+    const { nextNumber } = await import('./writes')
+    expect(await nextNumber(mockSdk(issues(1, 2, 3, 4_294_967_295)), DEMO, 'issue')).toBe(4)
   })
   it('starts at 1 in an empty repo', async () => {
-    const { nextNumberV2 } = await import('./writes')
-    expect(await nextNumberV2(mockSdk(issues()), V2, 'issue')).toBe(1)
+    const { nextNumber } = await import('./writes')
+    expect(await nextNumber(mockSdk(issues()), DEMO, 'issue')).toBe(1)
   })
   it('steps over squatters sitting on and just above the ceiling', async () => {
-    const { nextNumberV2 } = await import('./writes')
+    const { nextNumber } = await import('./writes')
     // count 4 → ceiling 108; 108, 109, 110 are taken, 111 is free.
-    expect(await nextNumberV2(mockSdk(issues(1, 108, 109, 110)), V2, 'issue')).toBe(111)
+    expect(await nextNumber(mockSdk(issues(1, 108, 109, 110)), DEMO, 'issue')).toBe(111)
   })
 })

@@ -108,9 +108,8 @@ describe('branch tip row', () => {
     expect(r.tip.heads).toHaveLength(1)
   })
 
-  it('names the rules that folded the refs (v1 or forge-v2)', () => {
-    expect(deriveTrust(inputs()).tip.note).toMatch(/FORGE_RULES_V1/)
-    expect(deriveTrust(inputs({ model: 'v2' })).tip.note).toMatch(/FORGE_RULES_V2/)
+  it('names the rules that folded the refs', () => {
+    expect(deriveTrust(inputs()).tip.note).toMatch(/FORGE_RULES_V2/)
   })
 
   it('is amber for a diverged ref and carries both candidates', () => {

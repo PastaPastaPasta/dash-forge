@@ -24,7 +24,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { readMembershipsCached, repoContractIds, repoKey, type V2RepoRef } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -49,7 +49,7 @@ export function RepoRail({
   const { ready, trusted, network } = useSdk(repoContractIds(home.repo))
   const quorum = useQuorumCheck(network, ready && trusted)
   const { role } = useViewerRole(home.repo)
-  const isPrivate = home.repo.kind === 'v2' && home.repo.visibility === 'private'
+  const isPrivate = home.repo.visibility === 'private'
   const key = repoKey(home.repo)
   const checks = useSyncExternalStore(
     subscribeContentChecks,
@@ -66,7 +66,6 @@ export function RepoRail({
     checks,
     configuredBackend: home.backend.label,
     configuredUris: home.backend.uris,
-    model: home.repo.kind,
   })
 
   return (
@@ -78,7 +77,7 @@ export function RepoRail({
         <>
           <CloneBox home={home} addr={addr} selected={selected} />
           <About home={home} addr={addr} />
-          {home.repo.kind === 'v2' ? <Members repo={home.repo} /> : null}
+          <Members repo={home.repo} />
           <LatestRelease home={home} addr={addr} />
         </>
       )}
@@ -122,7 +121,7 @@ function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Eleme
   )
 }
 
-function Members({ repo }: { repo: V2RepoRef }): JSX.Element {
+function Members({ repo }: { repo: RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),

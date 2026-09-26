@@ -3,7 +3,7 @@
  *
  * Ports `resolve_ref` (+ `is_update_valid`, `config_as_of`) from
  * `crates/forge-core/src/rules.rs`, byte-for-byte behaviorally. Implements
- * data-contracts §4 protected-ref routing plus the §2.3 same-`prevOid` divergence rule,
+ * protected-ref routing (`forge-v2.md` §2, §6) plus the same-`prevOid` divergence rule,
  * with the prevOid causal DAG authoritative over the `(createdAt, id)` clock.
  */
 
@@ -81,7 +81,7 @@ export function mergeBaseTips(
  *
  * A shared rule, not a reader convenience, because the two halves of a ref document are
  * trusted differently: `refNameHash` is the indexed key, while `refName` is caller-supplied
- * content. A token holder may therefore file an update under `main`'s hash carrying any legal
+ * content. A writer may therefore file an update under `main`'s hash carrying any legal
  * name. {@link resolveRef} already ignores such an update when resolving the tip, so a client
  * that named the ref from it would show a different branch name for the same ref than a
  * client that did not. Parity: forge-core `rules::display_ref_name`.
@@ -163,7 +163,7 @@ export function resolveRef(
     const h = heads[0] as RefHead
     return { state: 'resolved', oid: h.oid, author: h.author, createdAt: h.createdAt }
   }
-  // Newest-first by (createdAt, id): heads[0] is the provisional read-only tip (§2.3).
+  // Newest-first by (createdAt, id): heads[0] is the provisional tip a reader shows.
   heads.sort((a, b) => compareKey(b, a))
   return { state: 'diverged', heads }
 }

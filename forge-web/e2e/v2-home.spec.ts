@@ -12,7 +12,6 @@ import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, SCREENSHOT_DIR,
  *   E2E_DEVNET=moutai E2E_PORT=4322 pnpm exec playwright test v2-home.spec.ts
  */
 
-test.skip(E2E_DEVNET === '', 'the forge-v2 fixture lives on a devnet; set E2E_DEVNET=moutai')
 
 const OWNER = process.env['E2E_V2_OWNER'] ?? '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'

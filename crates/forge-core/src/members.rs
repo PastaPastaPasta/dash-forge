@@ -70,12 +70,12 @@ pub fn oracle(members: &[Member]) -> RoleOracle {
     )
 }
 
-/// `repo`'s document scope and the forge-core contract its membership lives in; refuses v1.
+/// `repo`'s document scope and the forge-core contract its membership lives in.
 async fn core(
     client: &PlatformClient,
     repo: &RepoRef,
 ) -> Result<(crate::scope::DocScope, LoadedContract)> {
-    let forge = repo.require_v2()?;
+    let forge = repo.forge();
     Ok((repo.scope()?, client.fetch_contract(&forge.core).await?))
 }
 
@@ -170,7 +170,6 @@ impl<'a> MemberService<'a> {
     /// Only the repo owner can grant or revoke (consensus enforces it; this fails first,
     /// with a message instead of a consensus code).
     fn require_owner(&self, repo: &RepoRef) -> Result<()> {
-        repo.require_v2()?;
         if repo.owner_id() != self.identity.id() {
             return Err(Error::Config(format!(
                 "only the owner of {} ({}) can change its members",
@@ -268,7 +267,7 @@ mod tests {
     use crate::rules::v2::Visibility;
 
     fn repo() -> RepoRef {
-        RepoRef::V2 {
+        RepoRef {
             forge: ForgeIds {
                 core: "C".into(),
                 collab: "L".into(),

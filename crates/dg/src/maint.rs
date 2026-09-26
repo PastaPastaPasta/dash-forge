@@ -35,7 +35,6 @@ pub async fn repack(
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
     let svc = RepoService::new(&client, &identity, &bridge);
     let price = dash_usd_price();
 
@@ -162,7 +161,6 @@ pub async fn reseed(
     };
     let target_label = profile.unwrap_or_else(|| to.map_or("external", Backend::label));
 
-    handle.require_v2()?;
     if !ctx.confirm(&format!(
         "Reseed {} packs to {target_label}? (re-uploads pack bytes for availability)",
         handle.display()

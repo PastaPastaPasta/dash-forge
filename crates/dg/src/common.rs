@@ -52,10 +52,10 @@ impl RepoRef {
         self.owner.as_deref().unwrap_or(default_owner)
     }
 
-    /// The repo id, when the reference is a bare base58 id (a forge-v2 repo id or a v1
-    /// repo contract id, as `dash://<id>` takes). Repo names are lowercase, so a base58
-    /// id — which mixes cases — can never be mistaken for one.
-    pub fn contract_id(&self) -> Option<&str> {
+    /// The repo id, when the reference is a bare base58 id (a forge-v2 repo document id, as
+    /// `dash://<id>` takes). Repo names are lowercase, so a base58 id — which mixes cases —
+    /// can never be mistaken for one.
+    pub fn repo_id(&self) -> Option<&str> {
         (self.owner.is_none()
             && looks_like_identity_id(&self.name)
             && self.name.chars().any(|c| c.is_ascii_uppercase()))
@@ -70,7 +70,7 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
         format!("invalid repository reference {input:?}"),
     )
     .cause(why)
-    .fix("use `<owner identity id>/<name>`, e.g. `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's contract id")
+    .fix("use `<owner identity id>/<name>`, e.g. `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
     .into()
 }
 
@@ -82,14 +82,13 @@ fn looks_like_identity_id(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
 }
 
-/// Resolve a [`RepoRef`]: a bare id as a forge-v2 repo id or a v1 contract id; otherwise
-/// `owner/name` as a forge-v2 repo, falling back to a (read-only) v1 registry listing.
+/// Resolve a [`RepoRef`]: a bare id as a repo document id; otherwise `owner/name`.
 pub async fn resolve(
     client: &PlatformClient,
     identity: &LoadedIdentity,
     repo_ref: &RepoRef,
 ) -> Result<Repo> {
-    if let Some(id) = repo_ref.contract_id() {
+    if let Some(id) = repo_ref.repo_id() {
         return forge_core::resolve::resolve_id(client, id)
             .await
             .with_context(|| format!("resolving repo {id}"));
@@ -126,13 +125,6 @@ impl Session {
             identity,
             repo,
         })
-    }
-
-    /// [`Self::open`], refusing a (read-only) v1 repository before anything is signed.
-    pub async fn open_v2(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
-        let s = Self::open(ctx, repo).await?;
-        s.repo.require_v2()?;
-        Ok(s)
     }
 
     /// The forge-v2 collaboration service, signing as this session's identity.
@@ -180,9 +172,9 @@ mod tests {
 
     #[test]
     fn parses_owner_slash_name() {
-        let r = RepoRef::parse(&format!("{ID}/m1-75299")).unwrap();
+        let r = RepoRef::parse(&format!("{ID}/my-repo")).unwrap();
         assert_eq!(r.owner.as_deref(), Some(ID));
-        assert_eq!(r.name, "m1-75299");
+        assert_eq!(r.name, "my-repo");
     }
 
     #[test]
@@ -196,12 +188,10 @@ mod tests {
     #[test]
     fn a_bare_contract_id_is_a_contract_reference() {
         let r = RepoRef::parse(ID).unwrap();
-        assert_eq!(r.contract_id(), Some(ID));
-        assert_eq!(RepoRef::parse("my-repo").unwrap().contract_id(), None);
+        assert_eq!(r.repo_id(), Some(ID));
+        assert_eq!(RepoRef::parse("my-repo").unwrap().repo_id(), None);
         assert_eq!(
-            RepoRef::parse(&format!("{ID}/my-repo"))
-                .unwrap()
-                .contract_id(),
+            RepoRef::parse(&format!("{ID}/my-repo")).unwrap().repo_id(),
             None
         );
     }

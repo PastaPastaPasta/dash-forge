@@ -1,25 +1,25 @@
 /**
- * packManifest parsing + live-set correctness.
+ * packManifest parsing.
  *
  * On-chain `tips` / `supersedes` are PACKED byteArrays (concatenated 20-/32-byte entries,
- * surfaced as base64 — data-contracts §2.3), not JSON lists; parsing them wrong makes
- * `supersedes` silently empty, which would let superseded packs leak into the fallback
- * clone's live set. `liveGitPackManifests` mirrors forge-core `repo.rs::live_kind0_manifests`.
+ * surfaced as base64), not lists; parsing them wrong makes `supersedes` silently empty, which
+ * would let a superseded pack look current. `uris` is a native string array.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
 import { bytesToBase64 } from '../sdk'
-import {
-  liveGitPackManifests,
-  liveLocatorManifests,
-  readPackManifests,
-  type PackManifest,
-} from './packs'
-import type { V1RepoRef } from './contract'
+import { readPackManifests } from './packs'
+import type { RepoRef } from './contract'
 
-const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
+const REPO: RepoRef = {
+  forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
+  repoId: 'R',
+  ownerId: 'owner',
+  name: 'n',
+  visibility: 'public',
+}
 
 /** A 32-byte (or `len`-byte) hash filled with `seed`, as hex. */
 function hashHex(seed: number, len = 32): string {
@@ -28,24 +28,6 @@ function hashHex(seed: number, len = 32): string {
 
 function hashBytes(seed: number, len = 32): Uint8Array {
   return new Uint8Array(len).fill(seed)
-}
-
-function manifest(overrides: Partial<PackManifest>): PackManifest {
-  return {
-    packHash: 'aa',
-    kind: 0,
-    sizeBytes: 0,
-    objectCount: 0,
-    chunkCount: 0,
-    storage: 0,
-    uris: [],
-    tips: [],
-    supersedes: [],
-    createdAt: 0,
-    documentId: 'd',
-    uploader: 'owner',
-    ...overrides,
-  }
 }
 
 /** A mock SDK whose packManifest query returns the given raw docs. */
@@ -81,10 +63,10 @@ describe('packed byteArray parsing (tips / supersedes)', () => {
     expect(docs[0]?.tips).toEqual([hashHex(0x33, 20)])
   })
 
-  it('falls back to the legacy JSON-list shape and tolerates absent fields', async () => {
+  it('reads native uris and tolerates absent or malformed fields', async () => {
     const docs = await readPackManifests(
       mockSdk([
-        { packHash: bytesToBase64(hashBytes(0xaa)), kind: 0, supersedes: '["deadbeef"]' },
+        { packHash: bytesToBase64(hashBytes(0xaa)), kind: 0, uris: ['https://m/p.pack'], supersedes: bytesToBase64(new Uint8Array(5)) },
         { packHash: bytesToBase64(hashBytes(0xbb)), kind: 0 },
       ]),
       REPO,
@@ -92,71 +74,10 @@ describe('packed byteArray parsing (tips / supersedes)', () => {
     // The read's row order is the reader's concern (it pages ascending and reverses); look
     // the rows up by pack instead of by position.
     const byPack = (b: number) => docs.find((d) => d.packHash === hashHex(b))
-    expect(byPack(0xaa)?.supersedes).toEqual(['deadbeef'])
+    expect(byPack(0xaa)?.uris).toEqual(['https://m/p.pack'])
+    expect(byPack(0xaa)?.supersedes).toEqual([])
     expect(byPack(0xbb)?.supersedes).toEqual([])
     expect(byPack(0xbb)?.tips).toEqual([])
-  })
-})
-
-describe('liveGitPackManifests', () => {
-  it('excludes superseded kind-0 packs and non-kind-0 manifests', () => {
-    const old = manifest({ packHash: hashHex(0x01), documentId: 'a' })
-    const repacked = manifest({
-      packHash: hashHex(0x02),
-      supersedes: [hashHex(0x01)],
-      documentId: 'b',
-      uploader: 'owner',
-    })
-    const locator = manifest({ packHash: hashHex(0x03), kind: 1, documentId: 'c' })
-
-    const live = liveGitPackManifests([locator, repacked, old])
-    expect(live.map((m) => m.packHash)).toEqual([hashHex(0x02)])
-  })
-
-  it('honors supersedes carried on a non-kind-0 manifest', () => {
-    const pack = manifest({ packHash: hashHex(0x01), documentId: 'a' })
-    const locator = manifest({
-      packHash: hashHex(0x03),
-      kind: 1,
-      supersedes: [hashHex(0x01)],
-      documentId: 'c',
-      uploader: 'owner',
-    })
-    expect(liveGitPackManifests([pack, locator])).toEqual([])
-  })
-
-  it('is non-transitive and case-insensitive on hashes', () => {
-    const a = manifest({ packHash: hashHex(0x01).toUpperCase(), documentId: 'a' })
-    const b = manifest({ packHash: hashHex(0x02), supersedes: [hashHex(0x01)], documentId: 'b' })
-    // b supersedes a; nothing supersedes b — b is live even though it references a chain.
-    expect(liveGitPackManifests([a, b]).map((m) => m.documentId)).toEqual(['b'])
-  })
-})
-
-describe('liveLocatorManifests', () => {
-  it('returns live index fragments newest-first, dropping superseded ones', () => {
-    // A repo between repacks has several live fragments — one per push — and the reader
-    // merges them oldest-first, so the order this returns is load-bearing.
-    const first = manifest({ packHash: hashHex(0x01), kind: 1, createdAt: 100, documentId: 'a' })
-    const second = manifest({ packHash: hashHex(0x02), kind: 1, createdAt: 200, documentId: 'b' })
-    const folded = manifest({
-      packHash: hashHex(0x03),
-      kind: 1,
-      createdAt: 300,
-      documentId: 'c',
-      uploader: 'owner',
-      supersedes: [hashHex(0x01)],
-    })
-    const gitPack = manifest({ packHash: hashHex(0x04), createdAt: 400, documentId: 'd' })
-
-    expect(liveLocatorManifests([gitPack, first, second, folded]).map((m) => m.documentId)).toEqual(
-      ['c', 'b'],
-    )
-  })
-
-  it('breaks $createdAt ties by documentId, descending', () => {
-    const a = manifest({ packHash: hashHex(0x01), kind: 1, createdAt: 100, documentId: 'aa' })
-    const b = manifest({ packHash: hashHex(0x02), kind: 1, createdAt: 100, documentId: 'bb' })
-    expect(liveLocatorManifests([a, b]).map((m) => m.documentId)).toEqual(['bb', 'aa'])
+    expect(byPack(0xbb)?.uris).toEqual([])
   })
 })

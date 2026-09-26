@@ -1,8 +1,8 @@
 'use client'
 
 /**
- * RepoCard — a discovery/profile row: a forge-v2 repo (with its provable star and issue
- * counts when read) or a v1 registry listing (marked, since v1 repos are read-only here).
+ * RepoCard — a discovery/profile row: a repo with its provable star and issue counts when
+ * read.
  */
 
 import Link from 'next/link'
@@ -11,16 +11,11 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
-import { V1Badge } from '@/components/ui/v1-badge'
 
 export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
-  // Every card pins the repo it shows (v1 its contract, v2 its repo id), so another repo
-  // answering to the same owner and name can never stand in for it.
-  const href = repoHref('/repo', {
-    owner: repo.ownerId,
-    name: repo.slug,
-    ...(repo.kind === 'v2' ? { repoId: repo.key } : repo.contractId ? { contractId: repo.contractId } : {}),
-  })
+  // Every card pins the repo it shows by its repo id, so another repo answering to the same
+  // owner and name can never stand in for it.
+  const href = repoHref('/repo', { owner: repo.ownerId, name: repo.slug, repoId: repo.key })
   return (
     <div className="group rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
@@ -32,9 +27,7 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
         <Link href={href} className="truncate font-mono text-prose text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
           {repo.name}
         </Link>
-        {repo.kind === 'v1' ? (
-          <V1Badge className="ml-auto" />
-        ) : repo.role ? (
+        {repo.role ? (
           <span className="ml-auto shrink-0 rounded bg-forge-500/10 px-1.5 py-0.5 text-[11px] text-forge-700 dark:text-forge-300">
             {repo.role}
           </span>

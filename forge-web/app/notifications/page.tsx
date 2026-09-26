@@ -13,7 +13,7 @@ import { AppShell } from '@/components/app-shell'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
-import { NotDeployedState, isV2Deployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useInboxActions, useInboxStore } from '@/hooks/use-inbox'
 import { repoHref } from '@/hooks/use-query-param'
@@ -46,7 +46,7 @@ export default function NotificationsPage(): JSX.Element {
   const shown = filter === 'unread' ? items.filter((i) => !i.read) : items
   const unread = items.filter((i) => !i.read).length
 
-  if (!isV2Deployed()) {
+  if (!isForgeDeployed()) {
     return (
       <AppShell>
         <NotDeployedState />

@@ -21,7 +21,7 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from '.
  * Signs in as MAINTAINER (first run: registers one limited key; later runs reuse the vault).
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'needs a devnet build and a signed-in vault: E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')
 test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 

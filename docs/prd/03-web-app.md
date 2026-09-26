@@ -1,5 +1,7 @@
 # PRD 03 — Forge Web (zero backend)
 
+> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility; the token collaborator UI described below no longer exists. The current design is [forge-v2](../contracts/forge-v2.md) and the current web spec is [ux-dx-spec.md](../design/ux-dx-spec.md).
+
 Static SPA deployable to IPFS or any static host, fully replacing github.com browsing and collaboration. Stack: Next.js static export (query-param routing, yappr rules), **wasm/evo-sdk for all Platform reads/writes**, and the zero-backend trick: **in-browser repo materialization** — isomorphic-git + lightning-fs in a web worker, cloning from chunk/CID fetches, never from a git server.
 
 ## Stack (reuse-first, per INIT.md)

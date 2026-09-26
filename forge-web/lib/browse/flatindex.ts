@@ -1,6 +1,6 @@
 /**
  * flatIndex reader — a tip commit's full recursive file listing (GitHub's tree API as one
- * static artifact, data-contracts §2.3).
+ * static artifact, `forge-v2.md` §4).
  *
  * Read-side port of `crates/forge-core/src/pack/flatindex.rs`. gzip-compressed body:
  *   tipOid(20) || varint(nrows) || row*

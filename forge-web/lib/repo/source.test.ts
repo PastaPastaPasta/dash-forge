@@ -9,18 +9,17 @@
 import { describe, expect, it } from 'vitest'
 
 import { ascendingEquivalent, tieProbeAllowed } from '../sdk'
-import type { V2RepoRef } from './contract'
+import type { RepoRef } from './contract'
 import { repoSource } from './source'
 
-const V2: V2RepoRef = {
-  kind: 'v2',
+const DEMO: RepoRef = {
   forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
   repoId: 'R',
   ownerId: 'O',
   name: 'n',
   visibility: 'public',
 }
-const s = repoSource(V2)
+const s = repoSource(DEMO)
 
 describe('repoId-scoped complete reads', () => {
   it('stay tie-safe', () => {

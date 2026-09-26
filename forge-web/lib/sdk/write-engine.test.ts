@@ -51,7 +51,6 @@ vi.mock('@dashevo/evo-sdk', () => {
     },
     BatchTransition: { fromBatchedTransitions: () => ({ toStateTransition: () => new ST() }) },
     PrivateKey: { fromWIF: () => ({ toBytes: () => new Uint8Array(32) }) },
-    TokenPaymentInfo: class {},
     IdentitySigner: class {
       addKeyFromWif(): void {}
       free(): void {}

@@ -1,6 +1,6 @@
 # Quick start
 
-This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **testnet**, where Dash is free, so you can try everything without spending real money.
+This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **devnet moutai**, where Dash is free, so you can try everything without spending real money.
 
 You will:
 
@@ -13,9 +13,9 @@ You will:
 
 Replace every `<…>` placeholder in the commands with your own value before running them; the shell reads a bare `<` or `>` as a redirection.
 
-Allow about 15 minutes. Most of it is the first build, or waiting for testnet to confirm your identity.
+Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** Testnet runs the first version of Forge ("v1": one Platform contract per repository). **forge-v2**, which makes repositories about 1,000× cheaper, has its contracts registered on **devnet moutai**. The tools cannot use them yet: client support is being built now. It comes to mainnet after Platform protocol 14 activates there. Mainnet has no Forge deployment yet. See [the network status table](../../README.md#status).
+> **Which network?** Forge (forge-v2) needs Platform protocol 14, which only devnet **moutai** runs today. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there. On a network without a deployment the tools stop with a "not deployed" error. See [the network status table](../../README.md#status).
 
 ---
 
@@ -63,13 +63,12 @@ dg doctor
 
 A Dash Platform **identity** is your account on Forge. It holds your keys and your credit balance. Nobody issues it to you: you create it yourself by locking some Dash. [Identity and keys](identity-and-keys.md) explains what it is.
 
-**Forge never funds or creates identities for you.** On testnet, free test Dash is available for trying things out:
+**Forge never funds or creates identities for you.** On devnet moutai, free test Dash is available for trying things out:
 
-1. Open the **Dash bridge** in testnet mode: <https://bridge.thepasta.org/?network=testnet>.
-2. Choose **Create New Identity**. On testnet the deposit step has a **Request Testnet Funds** button that sends you 1 free tDASH, so you do not need a wallet.
+1. Open the **Dash bridge** in moutai mode: <https://bridge.thepasta.org/?network=devnet-moutai>.
+2. Choose **Create New Identity**. Fund the deposit address it shows from the moutai faucet at <https://faucet.moutai.networks.dash.org>. A little is enough: a repository costs about 0.001 DASH.
 3. **Write down the 12 words it shows you.** They are the only way to recover the identity.
 4. When the identity is registered, choose **Download Key Backup**. You get a file named `dash-identity-<id>.json`. `dg` reads your keys from it.
-5. **Top up once more.** A testnet repository costs about 1.18 tDASH, which is more than one faucet request. Choose **Top Up Existing Identity**, enter your identity id, and use **Request Testnet Funds** again. The faucet allows 3 requests an hour.
 
 Keep the file private. It holds every private key of the identity. Move it somewhere safe, for example:
 
@@ -79,29 +78,29 @@ mv ~/Downloads/dash-identity-*.json ~/.config/dash-forge/
 chmod 600 ~/.config/dash-forge/dash-identity-*.json
 ```
 
-> **Devnet moutai.** Use `https://bridge.thepasta.org/?network=devnet-moutai`. Fund it from the moutai faucet at <https://faucet.moutai.networks.dash.org>.
->
 > **Mainnet.** Use <https://bridge.thepasta.org/?network=mainnet> (the bridge defaults to testnet) and fund the deposit address from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
 
-**Coming soon:** `dg auth new`, which creates and funds an identity from the terminal (it shows a QR code for the deposit) and stores the keys in your OS keychain. Creating an identity in the web app is coming too.
+You can also create an identity in the web app: choose **Sign in**, then create a new identity there (see [Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app)). The CLI still needs the key backup file.
+
+**Coming soon:** `dg auth new`, which creates and funds an identity from the terminal (it shows a QR code for the deposit) and stores the keys in your OS keychain.
 
 ---
 
 ## 3. Sign in
 
-Point `dg` at the identity file once:
+Point `dg` at the identity file and the network once:
 
 ```sh
-dg auth login --identity ~/.config/dash-forge/dash-identity-<id>.json
+dg auth login --network devnet --devnet-name moutai --identity ~/.config/dash-forge/dash-identity-<id>.json
 ```
 
 ```
-Logged in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on testnet.
-Stored default identity at /home/you/.config/dash-forge/identities/testnet/8hJm….identity.json.
+Logged in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-moutai.
+Stored default identity at /home/you/.config/dash-forge/identities/devnet-moutai/8hJm….identity.json.
 Balance: 199980000000 credits (~1.999800 DASH).
 ```
 
-`dg` copies the file into `~/.config/dash-forge/identities/<network>/` and uses it by default from now on. The copy is created with your default file mode, so make it private:
+`dg` copies the file into `~/.config/dash-forge/identities/<network>/` and records the identity and the network as defaults, so later commands need neither flag. The copy is created with your default file mode, so make it private:
 
 ```sh
 dg doctor --fix      # chmod 700 the directory and 600 the copied key file
@@ -109,11 +108,15 @@ dg doctor --fix      # chmod 700 the directory and 600 the copied key file
 
 `dg doctor --fix` also sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that pushes ask before spending more than 0.01 DASH. Inside a git repository it can also pin `dash.network` in that repository's config to match `dg`. It never spends anything.
 
-**git needs to find the key too.** `git-remote-dash` does not read `dg`'s settings. It reads the `DASH_FORGE_KEY` environment variable. It needs an identity even to **clone**, although cloning spends nothing. Add this line to your shell profile (`~/.zshrc`, `~/.bashrc`):
+**git needs to find the key and the network too.** `git-remote-dash` does not read `dg`'s settings. It reads the `DASH_FORGE_KEY` environment variable for the key, and `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` (or git config `dash.network` / `dash.devnetName`) for the network. It needs an identity even to **clone**, although cloning spends nothing. Add these lines to your shell profile (`~/.zshrc`, `~/.bashrc`):
 
 ```sh
-export DASH_FORGE_KEY="$HOME/.config/dash-forge/identities/testnet/<your identity id>.identity.json"
+export DASH_FORGE_KEY="$HOME/.config/dash-forge/identities/devnet-moutai/<your identity id>.identity.json"
+export DASH_FORGE_NETWORK=devnet
+export DASH_FORGE_DEVNET_NAME=moutai
 ```
+
+Without the network settings the helper uses testnet, which has no Forge deployment, and stops with a "not deployed" error.
 
 Then check everything. `dg doctor` should now show no warnings for your identity:
 
@@ -136,15 +139,16 @@ dg repo create my-project --description "My first Forge repo"
 ```
 
 ```
-Creating repo "my-project" (platform storage) — estimated cost ~1.18 DASH ≈ $35.40
-Create repo "my-project"? This instantiates a contract (~1.18 DASH ≈ $35.40) [y/N] y
-Created 8hJm…/my-project
-  contract: 5rrw…
+Creating my-project on devnet-moutai (platform storage)
+  repo + maintainer + config     ~0.002 DASH ≈ $0.06
+Create my-project? [y/N] y
+✓ created  8hJm…/my-project
+  repo id:  4Fq9…
   remote:   dash://8hJm…/my-project
-  cost:     ~1.18 DASH ≈ $35.40
+  cost:     ~0.00098 DASH ≈ $0.03
 ```
 
-On testnet this costs about **1.18 tDASH**, which is free test money. It is that expensive because a v1 repository is a whole Platform contract. `dg repo create` makes v1 repositories only. On forge-v2 a repository will be three small documents, about **0.001 DASH**. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The estimate is an upper bound; the measured cost, about **0.001 DASH**, is printed after the create lands. See [Costs](costs.md).
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit.
 
@@ -210,7 +214,7 @@ https://forge.dashhq.org/repo?owner=<your identity id>&name=my-project
 
 The web app has no server behind it. Your browser reads the repository straight from Dash Platform, checks the Platform proofs, and re-hashes every file it shows. The **Assay** panel on the right says what was checked. [Verify Forge](verify-forge.md) explains it.
 
-Browsing and cloning are free and need no sign-in. To file an issue from the browser, choose **Sign in** and load your identity file. The browser keeps the signing key in local storage.
+Browsing and cloning are free and need no sign-in. To file an issue from the browser, choose **Sign in**. The web app registers a limited key for this browser (a small budget, an expiry, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app) explains the options.
 
 ---
 

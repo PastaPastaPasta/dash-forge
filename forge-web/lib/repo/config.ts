@@ -1,5 +1,5 @@
 /**
- * Repo config reads — the `config` append-only timeline (data-contracts §2.2/§4).
+ * Repo config reads — the `config` append-only timeline (`forge-v2.md` §2, §5).
  *
  * Current config = newest doc; historical configs resolve protected-ref protection as-of
  * any past update (fed into {@link resolveRef}). `config` is non-deletable, so the history
@@ -10,7 +10,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { compareKey, type ConfigDoc } from '../rules'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, parseJsonList, wellFormed, type RepoRef } from './contract'
+import { DOC, stringArray, wellFormed, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 /** The current repo config surface most views need. */
@@ -26,7 +26,7 @@ function toConfigDoc(doc: PlainDocument): ConfigDoc {
   return {
     id: typeof doc['$id'] === 'string' ? doc['$id'] : '',
     createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
-    protectedPatterns: parseJsonList(doc, 'protectedPatterns'),
+    protectedPatterns: stringArray(doc, 'protectedPatterns') ?? [],
   }
 }
 
@@ -44,7 +44,7 @@ function toRepoConfig(doc: PlainDocument): RepoConfig {
   }
   return {
     defaultBranch: typeof doc['defaultBranch'] === 'string' ? doc['defaultBranch'] : 'main',
-    protectedPatterns: parseJsonList(doc, 'protectedPatterns'),
+    protectedPatterns: stringArray(doc, 'protectedPatterns') ?? [],
     archived: doc['archived'] === true,
     backendUris,
     backendMode,
@@ -117,13 +117,13 @@ export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<Con
  * `resolveRef` considers in force. forge-core `read_default_branch` makes the same trade.
  */
 export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
-  // forge-v2 skips a malformed config (`forge-v2.md` §5), so read a few to find the newest
-  // well-formed one; v1 has no such rule and one row answers.
+  // A malformed config is skipped (`forge-v2.md` §5), so read a few to find the newest
+  // well-formed one.
   const { documents } = await queryDocumentsWithProof(
     sdk,
     repoSource(repo).repoQuery(DOC.config, {
       orderBy: [['$createdAt', 'desc']],
-      limit: repo.kind === 'v1' ? 1 : 10,
+      limit: 10,
     }),
   )
   const doc = documents.find((d) => wellFormed(repo, 'config', d))

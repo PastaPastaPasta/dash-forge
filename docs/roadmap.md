@@ -17,10 +17,13 @@ This document covers three things:
 | 2026-07-22 → 23 | Stages 2–6 built in about 36 hours: `forge-core`, `git-remote-dash` (**M1**: byte-identical `git clone`/`git push` round-trip on testnet), `dg` plus `forge-relay` (**M2**: push → webhook → CI check written back), `forge-web` plus `forge-import` (**M3**: web app live, GitHub import within 1.1% of the cost estimate), backends and repack/GC (**M4**), CLI and Playwright e2e suites. The registry was redeployed to fix a `$createdAt` index defect. `EXECUTION.md` declared "ALL STAGES COMPLETE". |
 | 2026-08-06 → 26 | Maintenance: a watchdog for stalled pushes in the importer, GFM tables, a persistent in-browser clone cache, and moving the web app to `forge.dashhq.org`. A web PR-diff renderer was written on `fix/pull-request-diff` but **never merged**. |
 | 2026-09-10 → 22 | An honesty and correctness pass (PRs #1–#4):<br>• **#1** The Rust workspace did not even parse, and the nightly had been passing without running anything.<br>• **#2** Every read was silently capped at 100 rows. That made folds confidently wrong: issues showed open after being closed, branches froze at push #100, packs were read from the wrong index, and branch protection turned itself off.<br>• **#3** Three PR commands reported success for work they never did, and review verdicts were written but never read.<br>• **#4** No code path ever published the browse index (open). |
+| 2026-09-24 → 26 | forge-v2 (D-A) registered on devnet moutai and built out in the CLI, web app, importer, relay and Mirror Action. forge-v1 removed with no backwards compatibility (D-M); forge.dashhq.org and the nightly moved to moutai. |
 
 **What the history tells us.** The architecture is sound and the hard protocol problems are solved. Consensus-enforced ACLs work: a frozen push is rejected with 40702. Proof-verified reads, resumable pushes, and a cross-client rules engine with 70 conformance vectors are all in place. The build log's "complete", though, meant *demonstrated once on testnet*, not *usable by a stranger*. Every audit since has found product claims the code doesn't back up. The first job is to make the product true. The second is to make it wanted.
 
-## 2. Where it stands today (verified on `master` @ `b0bc7bb`)
+## 2. Where it stood (verified on `master` @ `b0bc7bb`, 2026-09-24)
+
+> This is the forge-v1 baseline the plan started from. Gaps 1 and 2 are closed by forge-v2 (D-A, D-M): contract ids come from per-network deployment records, a repository costs about 0.001 DASH, and v1 no longer exists. The execution tracker (§6) has the current state.
 
 ### Works
 - `git clone`/`git push` over `dash://<ownerId>/<repo>`: resumable push, partial clone, jj compatibility, consensus-rejected unauthorized pushes.
@@ -78,11 +81,12 @@ Every roadmap item must keep all of these true:
 | D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on **devnet moutai** (protocol 14, drive 4.2.0-beta.4) until then. |
 | D-L | **Sign in with a mobile Dash wallet (yappr / App Connect style)** is a launch requirement (owner, 2026-09-26). A user scans a QR (or taps a deep link on mobile) with the Dash Wallet app on iOS or Android, approves on the phone, and is signed in with a limited, contract-group-bound key. No key file and no key paste in the browser. See Phase 4. |
 | D-K | External accounts (Apple signing, pinning services, cloud buckets) are **out of scope for now**. S3 and IPFS are tested against local MinIO and kubo only. |
+| D-M | **2026-09-26: forge-v1 removed, no backwards compatibility; forge-v2 only.** The registry contract, the per-repo contract template, token ACLs, v1 read compatibility (`dash://<contract id>`, `?contract=` routes), the registry overrides and `dg collab suspend/unsuspend` are gone, and there is no migration path. The v1 data on testnet and on forge.dashhq.org was test data only the owner used. The hosted web app is built for devnet moutai until forge-v2 is registered on testnet (when PV14 reaches it) and mainnet. |
 
 ### Still open
 | # | Question | Default until decided |
 |---|---|---|
-| D-D | Who owns the mainnet registry and shared contract (identity and key custody)? | The owner decides before registering. The deploy script takes the owner identity as input. |
+| D-D | Who owns the mainnet forge-v2 contracts and contract group (identity and key custody)? | The owner decides before registering. The deploy script takes the owner identity as input. |
 | D-C | Trust anchor: web app and CLI take quorum keys from a known HTTPS endpoint. | Cross-check ≥2 endpoints, disclose honestly in the trust panel; SPV quorum verification in the CLI later. |
 | D-E | Should opening a PR require a token? | No: anyone may open one, with client-side spam filtering. |
 
@@ -94,8 +98,8 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] Land PR #4 (browse index on push). Rebase and land `fix/pull-request-diff` (PR diff renderer).
 - [ ] Fix the nightly: the landing-page contrast failure; the scenario 07 hang/timeout; transport flakes retried until they give a verdict rather than a SKIP.
 - [ ] Trust panel driven by actual verification state, with "unverified" and "partial" states; remove the hard-coded "verified" chips.
-- [ ] Show "Merge" only to WRITE/MAINTAIN holders and label it for what it does until Phase 4. Star/follow read their initial state; Archive is implemented or removed.
-- [ ] Network config: registry and contract ids per network (testnet, **devnet** with a name such as `moutai`, mainnet) loaded from `forge-contracts/deployments/<network>.json` in forge-core, dg, the relay, doctor and web. No hard-coded ids.
+- [ ] Show "Merge" only to writers and maintainers and label it for what it does until Phase 4. Star/follow read their initial state; Archive is implemented or removed.
+- [ ] Network config: contract ids per network (testnet, **devnet** with a name such as `moutai`, mainnet) loaded from `forge-contracts/deployments/<network>.json` in forge-core, dg, the relay, doctor and web. No hard-coded ids.
 - [ ] Docs: correct the CLI trust mode, the README status and domain, `EXECUTION.md` → this roadmap.
 
 ### Phase 1 — Bring your own storage, for real (L) · *gate: the survivability drill passes*
@@ -112,8 +116,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] `forge-v2` shared contract: `repo`, `writer`/`maintainer` membership docs keyed `(repoId, memberId)`, with the owner-only grant enforced by a `$ownerId` `propertyAgreement` against the repo doc; `ownerRefersTo` writer gates on ref/pack/manifest/release/config types; no moderation; `readonly` once final. Validated offline against rs-dpp beta.4, then registered on moutai.
 - [ ] If the schema exceeds 16 KiB, split it into core and collab contracts that reference each other, joined by a PV14 contract group.
 - [ ] forge-core, the web app and the conformance vectors on the new model. Cross-repo queries arrive for free (my PRs, activity, issue search), and forks point at parent packs.
-- [ ] Migration: the importer copies v1 repos into forge-v2 (history preserved); v1 stays readable.
-- [ ] Remove the per-repo contract (repo-v1 token ACL) write paths once forge-v2 is the default. Keep read compatibility.
+- [x] Remove forge-v1 (registry, per-repo contracts, token ACL) entirely, with no read compatibility and no migration (D-M).
 - [ ] e2e on moutai: grant → push → revoke → the push is rejected at consensus, plus everything from the CLI suite.
 - [ ] `git push` cost guard (`dash.costWarnThreshold`, `dash.confirm`).
 - [ ] PV14 extras: **budget- and expiry-limited keys** bound to the forge contract for web login and CI runners (in place of raw key paste); `encryptedFor` for relay webhook secrets; `indexOnly` stars/follows.
@@ -168,18 +171,16 @@ Work:
 ### Later
 Organizations (multi-member admin sets, key custody guide), template versioning, audit-log compaction, large files through pointers to the user's bucket, SHA-256 repos, optional user-run indexer for global search.
 
-### Execution tracker (updated 2026-09-25)
+### Execution tracker (updated 2026-09-26)
 Landed on master:
 - **Phase 0:** #4 browse index · #6 honest UI · #8 PR/commit diffs · #10 + #14 nightly green (CLI and Playwright, fixture isolation, keyset ref reads) · #11 per-network config.
 - **Phase 1:** #12 bring-your-own storage on push (SigV4 S3, IPFS/pinning, replication, `dg storage`, `dg reseed --from-local`).
-- **Phase 2 (forge-v2 on devnet moutai):** #5 devnet tooling · #7 forge-v2 contracts · #9 FORGE_RULES_V2 + authorEvent · #15 SDK 4.2 · #18 CLI data plane (repo create ≈0.001 DASH, consensus-enforced membership) · #17 web reads.
+- **Phase 2 (forge-v2 on devnet moutai):** #5 devnet tooling · #7 forge-v2 contracts · #9 FORGE_RULES_V2 + authorEvent · #15 SDK 4.2 · #18 CLI data plane (repo create ≈0.001 DASH, consensus-enforced membership) · #17 web reads · #25 moutai re-registration · #22 CLI issues/PRs/releases/forks · #23 web writes · #26 web fork reads · #27 relay (chain-encrypted webhook secrets) · #30 forge-import on v2 (`dg import`).
+- **Phase 4:** #24 web limited-key sign-in, vault and in-browser identity creation · #31 GitHub Mirror Action.
 - **Adoption:** #13 release pipeline + install.sh · #16 actionable errors (`docs/errors.md`) · #19 user guides.
+- **D-M:** forge-v1 removed; forge.dashhq.org and the nightly ("Devnet Nightly") target moutai.
 
-The nightly is green on master, and the CLI suite now runs on moutai.
-
-In flight: CLI issues/PRs/releases/forks on v2 (D) · import/relay/migrate + GitHub Mirror Action (G) · web v2 writes + limited-key sign-in + cost UX (F).
-
-Next: private repos (Phase 3, design: [docs/security/private-repos.md](security/private-repos.md), reviewed; its §13 lists contract changes required before mainnet registration) · storage wizard in web · Explore/notifications · docs refresh for v2.
+Next: private repos (Phase 3, design: [docs/security/private-repos.md](security/private-repos.md), reviewed; its §13 lists contract changes required before mainnet registration) · storage wizard in web · Explore/notifications · register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there.
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
 
@@ -199,7 +200,7 @@ Public beta ships when all of these hold on **mainnet**:
 | Risk | Mitigation |
 |---|---|
 | PV14 semantics shift before mainnet (4.2 is beta), or the devnet is reset | Pin the SDK tag, keep the forge-v2 schema in tests validated against each new 4.2 tag, and script the full moutai deploy so a reset costs minutes. |
-| A revoked writer can still delete the Platform chunks they uploaded (no token cost on delete) | External storage is the default, and repack re-uploads. Documented in the trust model. |
+| A revoked member can still delete their own deletable documents (Platform does not reference-check deletes) | Every history-bearing type (refs, packs, chunks, config, events, issues, PRs) is non-deletable. The residual case is a revoked maintainer deleting a release they published; readers fall back to the next-newest release for that tag ([forge-v2.md §4](contracts/forge-v2.md#4-non-deletable-audit-types)). |
 | Private-repo key handling mistakes | A separate design doc, an independent security review, test vectors, and no "private" label in the UI until it passes. |
 | A user's bucket disappears (unpaid, deleted) | Replication to N targets the user chooses, `packMirror` + reseed by anyone, a storage-status warning when a pack's live copies drop below N, and Platform as a fallback tier. |
 | Testnet instability makes CI flaky | Tell transport flakes apart from real failures, retry with backoff, and record flake rates. |

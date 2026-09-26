@@ -2,11 +2,10 @@
 //! newest definition per name wins). Applying a label to an issue or PR is
 //! `dg issue label` (a member `event`).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::json;
 
 use forge_core::collab::v2::Collab;
-use forge_core::collab::LabelService;
 
 use crate::common::Session;
 use crate::context::Ctx;
@@ -28,14 +27,7 @@ pub async fn run(ctx: &Ctx, cmd: &LabelCommand) -> Result<()> {
 
 async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    let labels = if s.repo.is_v1() {
-        LabelService::new(&s.client, &s.identity, &s.bridge)
-            .list_labels(s.repo.v1_contract_id()?)
-            .await
-            .context("list_labels")?
-    } else {
-        Collab::reader(&s.client).labels(&s.repo).await?
-    };
+    let labels = Collab::reader(&s.client).labels(&s.repo).await?;
     let shown: Vec<_> = labels.iter().filter(|l| all || !l.retired).collect();
     ctx.emit(
         json!({
@@ -68,7 +60,7 @@ async fn define(
     description: &str,
     retired: bool,
 ) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let verb = if retired { "Retire" } else { "Define" };
     ctx.confirm_or_cancel(&format!(
         "{verb} label {name:?} in {}? (one small document; members only)",

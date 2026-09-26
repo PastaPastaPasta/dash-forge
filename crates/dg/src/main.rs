@@ -114,7 +114,7 @@ pub enum Command {
     /// Label definitions (apply one with `dg issue label`).
     #[command(subcommand)]
     Label(LabelCommand),
-    /// Collaborator (token) management.
+    /// Repository members (writers and maintainers).
     #[command(subcommand)]
     Collab(CollabCommand),
     /// Cost estimates and spend audits.
@@ -539,28 +539,6 @@ pub enum CollabCommand {
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
-    /// Not supported on forge-v2 (remove revokes access immediately).
-    #[command(hide = true)]
-    Suspend {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// The collaborator identity id (base58).
-        member: String,
-        /// The role to suspend.
-        #[arg(long, value_enum, default_value = "writer")]
-        role: RoleArg,
-    },
-    /// Not supported on forge-v2 (add restores access).
-    #[command(hide = true)]
-    Unsuspend {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// The collaborator identity id (base58).
-        member: String,
-        /// The role to unsuspend.
-        #[arg(long, value_enum, default_value = "writer")]
-        role: RoleArg,
-    },
     /// Remove a member (the owner deletes their document; their next push is refused).
     Remove {
         /// The repository (`owner/name`).
@@ -799,16 +777,6 @@ impl StateArg {
             StateArg::All => true,
             StateArg::Open => open,
             StateArg::Closed => !open,
-        }
-    }
-}
-
-impl From<StateArg> for forge_core::collab::StateFilter {
-    fn from(s: StateArg) -> Self {
-        match s {
-            StateArg::All => Self::All,
-            StateArg::Open => Self::Open,
-            StateArg::Closed => Self::Closed,
         }
     }
 }
@@ -1088,19 +1056,6 @@ mod tests {
                 assert!(matches!(role, RoleArg::Maintainer));
             }
             _ => panic!("expected collab add"),
-        }
-    }
-
-    #[test]
-    fn parses_collab_unsuspend() {
-        let cli = Cli::parse_from(["dg", "collab", "unsuspend", "o/r", "member123"]);
-        match cli.command {
-            Command::Collab(CollabCommand::Unsuspend { repo, member, role }) => {
-                assert_eq!(repo, "o/r");
-                assert_eq!(member, "member123");
-                assert!(matches!(role, RoleArg::Writer)); // default role
-            }
-            _ => panic!("expected collab unsuspend"),
         }
     }
 

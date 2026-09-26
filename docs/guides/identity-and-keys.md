@@ -38,14 +38,13 @@ An identity file from the bridge has five keys, all ECDSA secp256k1:
 |---|---|---|---|
 | 0 | AUTHENTICATION | **MASTER** | Changing the identity's own keys (add, disable). Nothing on Forge needs it. |
 | 1 | AUTHENTICATION | HIGH | Signing documents: pushes, issues, comments, reviews, releases. |
-| 2 | AUTHENTICATION | CRITICAL | What HIGH does, plus v1 token administration: `dg repo create`, `dg collab …`. |
+| 2 | AUTHENTICATION | CRITICAL | What HIGH does. Forge uses it only when the file has no HIGH key. |
 | 3 | TRANSFER | CRITICAL | Moving credits to another identity, or withdrawing them. |
 | 4 | ENCRYPTION | MEDIUM | Reserved for private repositories (coming soon). |
 
 What each tool signs with:
 
-- `git push` (`git-remote-dash`) and most `dg` commands sign with the **HIGH** key, falling back to CRITICAL.
-- `dg repo create` and `dg collab add/suspend/unsuspend/remove` need the **CRITICAL** key, because on v1 they mint and freeze tokens. Without it they fail with [`E302`](../errors.md#e302). On forge-v2 these become ordinary documents that the HIGH key can sign.
+- `git push` (`git-remote-dash`) and every `dg` command that writes, including `dg repo create` and `dg collab add/remove`, sign with the **HIGH** key, falling back to CRITICAL. They are all ordinary documents. Without either key they fail with [`E302`](../errors.md#e302).
 - No Forge tool ever needs the MASTER key.
 
 ---
@@ -77,8 +76,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `dg` | A copy of the identity file in `~/.config/dash-forge/identities/<network>/<id>.identity.json` | `--identity <file>` > `DASH_FORGE_KEY` > the default recorded by `dg auth login` |
 | `git-remote-dash` | The same file | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` |
 | `forge-import` | The same file | `--identity <file>` > `DASH_FORGE_KEY` |
-| Web app, forge-v2 networks (devnet moutai) | A **limited key** only, encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys-and-the-web-app) |
-| Web app, testnet (v1) | The file's CRITICAL (or HIGH) key, held in the tab's memory only; gone on reload | Loaded from an identity file in the **Sign in** sheet |
+| Web app | A **limited key** only, encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys-and-the-web-app) |
 
 Things to know:
 
@@ -95,9 +93,8 @@ Things to know:
 A web page is whoever served it. If the page, or a script it loads, is compromised, anything you paste into it is gone.
 
 - **Never paste your MASTER key, your 12 words, or your main identity file into a website.** That includes forge.dashhq.org. Nothing on Forge needs them.
-- On forge-v2 networks the web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys-and-the-web-app) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a limited key with `dg` once that lands.
-- On testnet (v1) the sign-in picks the CRITICAL key (or HIGH) from the file you load and keeps it in the tab only. It does not store the MASTER key or the mnemonic, but it does read the whole file you choose. If you want to be careful, give it a copy that contains only the HIGH or CRITICAL key (the `jq` recipe in the [mirror guide](mirror-a-github-repo.md#the-ci-secret) makes one).
-- The same goes for CI: give a pipeline a stripped copy or, better, a separate identity with a small balance.
+- The web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys-and-the-web-app) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a limited key with `dg` once that lands.
+- For CI, give a pipeline a copy of the identity file stripped to its HIGH key (the `jq` recipe in the [mirror guide](mirror-a-github-repo.md#the-ci-secret) makes one) or, better, a separate identity with a small balance.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
 With limited keys (below) the web app keeps nothing but a limited key. The master key is used only in one-time steps: registering, renewing or revoking a limited key.
@@ -110,7 +107,7 @@ Platform lets the MASTER key add new keys to an identity and disable old ones. A
 
 Today you do this in the Dash bridge, not in `dg`:
 
-1. Open <https://bridge.thepasta.org> (it defaults to testnet; add `?network=mainnet` for mainnet) and choose **Manage Identity Keys**.
+1. Open <https://bridge.thepasta.org> (it defaults to testnet; add `?network=devnet-moutai` for moutai or `?network=mainnet` for mainnet) and choose **Manage Identity Keys**.
 2. Sign in with the identity id and the **MASTER** key's private key. This is the one place where the master key is used. Do it on a machine you trust, and check the page address first.
 3. Add a new key (for example a new HIGH authentication key), or disable a key you think is exposed.
 4. Update your identity file: add an `identityKeys` entry for the new key, and **delete the entry for the key you disabled**. The bridge gives you the new key's private key (WIF). Signing uses only `id`, `purpose`, `securityLevel` and `privateKeyWif`, but every field of an entry must be present for the file to load, so set the ones you don't have (`privateKeyHex`, `publicKeyHex`, `derivationPath`, `name`) to `""` and `keyType` to `"ECDSA_SECP256K1"`. `dg` and `git-remote-dash` sign with the first HIGH authentication key in the file, so a disabled key left in it makes every write fail. Then run `dg auth login --identity <file>` again to refresh the copy `dg` uses.
@@ -120,7 +117,7 @@ When to rotate:
 - a laptop or CI secret that held a signing key was lost or leaked: **disable that key**;
 - you gave a CI job the HIGH key and are retiring the job.
 
-If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred on either v1 or forge-v2, and the attacker now controls everything only the owner can do, such as adding and removing members.
+If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred, and the attacker now controls everything only the owner can do, such as adding and removing members.
 
 **Coming soon:** `dg auth keys list | add | disable`.
 
@@ -128,7 +125,7 @@ If the **MASTER** key or the 12 words leak, rotating does not help: whoever has 
 
 ## Limited keys and the web app
 
-*Live in the web app on devnet moutai (protocol 14). Mainnet after Platform protocol 14 activates. CLI support (`dg auth …`) is coming.*
+*Live in the web app. CLI support (`dg auth …`) is coming.*
 
 A limited key is an identity key with four restrictions:
 

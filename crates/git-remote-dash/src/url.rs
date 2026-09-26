@@ -2,11 +2,10 @@
 //!
 //! * `dash://<owner>/<repo>` — the human form. `owner` is a base58 Dash identity id (a DPNS
 //!   label is a later addition, resolved upstream of this parser); a trailing `.git` on the
-//!   repo name is stripped. Resolved as a forge-v2 `repo` by `(owner, name)`, falling back to
-//!   the v1 registry listing (read-only repositories).
-//! * `dash://<id>` — a single segment: a forge-v2 `repo` document id, or a v1 repo contract
-//!   id (both are tried, v2 first; see `forge_core::resolve::resolve_id`). This is how a
-//!   pull request points at the repo holding its head commit.
+//!   repo name is stripped. Resolved as a forge-v2 `repo` by `(owner, name)`.
+//! * `dash://<id>` — a single segment: a forge-v2 `repo` document id (see
+//!   `forge_core::resolve::resolve_id`). This is how a pull request points at the repo
+//!   holding its head commit.
 //!
 //! The two are unambiguous: the human form always has a `/`.
 
@@ -25,7 +24,7 @@ pub enum DashUrl {
         /// The repository name (any trailing `.git` removed).
         repo: String,
     },
-    /// `dash://<id>` — a forge-v2 repo id or a v1 repo contract id.
+    /// `dash://<id>` — a forge-v2 repo document id.
     Id {
         /// The base58 id.
         id: String,

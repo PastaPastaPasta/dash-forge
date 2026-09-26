@@ -55,11 +55,9 @@
 //!
 //! One path does still use a cursor: a ref with more than a page of updates is read with
 //! `refNameHash == h` paged by `startAfter`. That is single-branch, so the sibling-branch
-//! drop cannot happen, but protocol 13 still skips rows sharing the page boundary's
-//! `$createdAt` (docs/BUILDING.md, "same-block ties"), and repo-v1 ref updates do not return
-//! `$createdAt` from a proved query, so the tie probe cannot repair it. That read is the one
-//! `base_ref_tips` always used; it goes away with forge-v2 on protocol 14, whose cursor is
-//! bounded by document id. The mock's `ref_history` is exact, so no test here covers it.
+//! drop cannot happen; on protocol 14 the cursor is bounded by document id, so rows sharing
+//! the page boundary's `$createdAt` are not skipped. The mock's `ref_history` is exact, so
+//! no test here covers it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -118,11 +116,10 @@ pub(crate) trait RefDocSource {
     }
 }
 
-/// Whether `d` is well-formed for the repository `scope` names: forge-v2's §5 rule (this
-/// client reads public v2 repositories only; `RepoRef::require_readable` refuses the rest), and
-/// on v1, which has no such rule, always.
-fn well_formed_in(scope: &DocScope, kind: ContentKind, d: &FetchedDocument) -> bool {
-    !scope.is_v2() || is_well_formed(&content_of(kind, d), Visibility::Public)
+/// Whether `d` is well-formed: forge-v2's §5 rule (this client reads public repositories only;
+/// `RepoRef::require_readable` refuses the rest).
+fn well_formed_in(kind: ContentKind, d: &FetchedDocument) -> bool {
+    is_well_formed(&content_of(kind, d), Visibility::Public)
 }
 
 /// The §5 content view of a ref-update or config row.
@@ -146,10 +143,9 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
     }
 }
 
-/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: on
-/// forge-v2 every query leads with `repoId == R` (the `refState` and `reflog` indexes are
-/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`), on v1 the repo
-/// contract is the scope.
+/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: every
+/// query leads with `repoId == R` (the `refState` and `reflog` indexes are
+/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`).
 pub(crate) struct PlatformRefSource<'a> {
     pub(crate) client: &'a PlatformClient,
     pub(crate) contract: &'a LoadedContract,
@@ -205,12 +201,12 @@ impl RefDocSource for PlatformRefSource<'_> {
     }
 
     fn well_formed(&self, d: &FetchedDocument) -> bool {
-        well_formed_in(self.scope, ContentKind::RefUpdate, d)
+        well_formed_in(ContentKind::RefUpdate, d)
     }
 }
 
 /// Read every ref's complete history of the repository `scope` names, from `contract`
-/// (forge-core on v2, the repo contract on v1). See the module docs.
+/// (forge-core). See the module docs.
 pub async fn read_all_ref_updates(
     client: &PlatformClient,
     contract: &LoadedContract,
@@ -246,7 +242,7 @@ pub async fn read_config_history(
         .await?;
     Ok(docs
         .iter()
-        .filter(|d| well_formed_in(scope, ContentKind::Config, d))
+        .filter(|d| well_formed_in(ContentKind::Config, d))
         .map(crate::repo::config_doc)
         .collect())
 }
@@ -484,7 +480,7 @@ mod tests {
         FetchedDocument {
             id: format!("id{id:06}"),
             owner_id: "pusher".into(),
-            // The deployed repo-v1 type never recorded `$createdAt` (design-freeze-2 §3).
+            // The scan must not depend on `$createdAt` being present.
             created_at: None,
             fields,
         }
@@ -754,10 +750,6 @@ mod tests {
     fn v2_readers_skip_malformed_ref_updates() {
         use crate::backends::sha256;
         use crate::rules::v2::ContentKind;
-        let v2 = crate::scope::DocScope {
-            contract_id: "c".into(),
-            repo_id: Some([1; 32]),
-        };
         let doc = |name: &str, hash: [u8; 32], enc: bool| {
             let mut fields = BTreeMap::new();
             fields.insert("refNameHash".into(), FieldValue::Bytes32(hash));
@@ -776,26 +768,14 @@ mod tests {
         };
         let main = sha256(b"refs/heads/main");
         let ok = doc("refs/heads/main", main, false);
-        assert!(super::well_formed_in(&v2, ContentKind::RefUpdate, &ok));
+        assert!(super::well_formed_in(ContentKind::RefUpdate, &ok));
         assert!(!super::well_formed_in(
-            &v2,
             ContentKind::RefUpdate,
             &doc("refs/heads/main", main, true)
         ));
         assert!(!super::well_formed_in(
-            &v2,
             ContentKind::RefUpdate,
             &doc("refs/heads/other", main, false)
-        ));
-        // v1 has no such rule.
-        let v1 = crate::scope::DocScope {
-            contract_id: "c".into(),
-            repo_id: None,
-        };
-        assert!(super::well_formed_in(
-            &v1,
-            ContentKind::RefUpdate,
-            &doc("refs/heads/main", main, true)
         ));
     }
 

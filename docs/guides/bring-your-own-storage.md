@@ -304,7 +304,7 @@ The command looks for the pack's exact bytes in two places:
 - `.git/dash/packs/<sha256>.pack`: `git-remote-dash` keeps a copy there of every pack it stores on external storage only. This covers the pusher's own clone, including a push that was interrupted before its refs landed.
 - `.git/objects/pack/pack-*.pack`: any clone that fetched the pack holds its exact bytes.
 
-It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest. On contracts with a `packMirror` type they are announced as `packMirror` documents. On repo-v1 (today's testnet repos) they are only printed, so re-upload through the pack's original profile to make the recorded copy readable again.
+It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, and the forge-v2 contracts have no document type to announce them yet, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again.
 
 Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone.
 

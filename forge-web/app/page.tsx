@@ -3,8 +3,8 @@
 /**
  * Landing + discovery. The foundry hero states the thesis (no server to trust), the signature
  * verification chip sits under it — reporting whether this session's Platform connection
- * actually proof-checks reads — and the discovery feed lists recent registry repos from the
- * active network when the SDK connects, a clear empty/error state otherwise.
+ * actually proof-checks reads — and the discovery feed lists recent repos from the active
+ * network's forge-core when the SDK connects, a clear empty/error state otherwise.
  */
 
 import Link from 'next/link'
@@ -15,13 +15,7 @@ import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
-import {
-  NotDeployedState,
-  V2NotDeployedNote,
-  isForgeDeployed,
-  isRegistryDeployed,
-  isV2Deployed,
-} from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
@@ -32,13 +26,11 @@ export default function LandingPage(): JSX.Element {
   const quorum = useQuorumCheck(network, ready && trusted)
   const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted), quorum)
   const deployed = isForgeDeployed()
-  const v2 = isV2Deployed()
   const feed = useAsync(
     () => listRecentRepos(sdk!, { network, limit: 24 }),
     [ready, network],
     { enabled: deployed && ready && sdk !== null },
   )
-  const total = feed.data ? feed.data.v2.length + feed.data.v1.length : 0
 
   return (
     <AppShell wide>
@@ -87,12 +79,10 @@ export default function LandingPage(): JSX.Element {
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-xl">Recent repos</h2>
           <div className="flex items-center gap-3">
-            {feed.loading ? <Spinner label={v2 ? 'Reading forge-core' : 'Reading registry'} /> : null}
-            {v2 ? (
-              <Link href="/explore" className="text-dense text-forge-700 underline dark:text-forge-300">
-                Explore more
-              </Link>
-            ) : null}
+            {feed.loading ? <Spinner label="Reading forge-core" /> : null}
+            <Link href="/explore" className="text-dense text-forge-700 underline dark:text-forge-300">
+              Explore more
+            </Link>
           </div>
         </div>
 
@@ -102,10 +92,10 @@ export default function LandingPage(): JSX.Element {
           <ErrorState title="Could not reach Platform" message={sdkError} />
         ) : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />
-        ) : feed.data && total === 0 ? (
+        ) : feed.data && feed.data.length === 0 ? (
           <EmptyState
             icon={GitBranch}
-            title="The registry is quiet"
+            title="The forge is quiet"
             body="No repos have been created on this network yet. Forge the first one."
             action={
               <Link href="/new">
@@ -116,14 +106,7 @@ export default function LandingPage(): JSX.Element {
             }
           />
         ) : feed.data ? (
-          <div className="space-y-6">
-            {!v2 && isRegistryDeployed() ? <V2NotDeployedNote /> : null}
-            <RepoGrid repos={feed.data.v2} />
-            {feed.data.v1.length > 0 && feed.data.v2.length > 0 ? (
-              <h3 className="text-prose text-anvil-600 dark:text-anvil-300">v1 repos</h3>
-            ) : null}
-            <RepoGrid repos={feed.data.v1} />
-          </div>
+          <RepoGrid repos={feed.data} />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {[0, 1, 2].map((i) => (

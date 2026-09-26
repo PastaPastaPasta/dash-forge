@@ -2,7 +2,7 @@
 //!
 //! Each variant maps to a product-level error class from the PRDs and must, at the
 //! binary boundary, be rendered as an actionable message (e.g. insufficient credits
-//! links to the funding bridge; a frozen token explains the revocation).
+//! links to the funding bridge; a missing membership names who can grant it).
 
 use thiserror::Error;
 
@@ -21,10 +21,6 @@ pub enum Error {
         /// Credits currently available to the identity.
         available: u64,
     },
-
-    /// The identity's WRITE/MAINTAIN token is frozen — access was revoked/suspended.
-    #[error("token frozen: this identity's write access has been suspended")]
-    TokenFrozen,
 
     /// A network / consensus operation timed out.
     ///
@@ -51,10 +47,6 @@ pub enum Error {
         /// Why completeness could not be established.
         reason: String,
     },
-
-    /// The identity lacks the token/key authorization for the requested write.
-    #[error("unauthorized: missing the required WRITE or MAINTAIN token")]
-    Unauthorized,
 
     /// A referenced document, ref, manifest or chunk could not be found.
     #[error("not found")]
@@ -95,37 +87,16 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
-    /// The selected network has no Dash Forge registry deployment (no id in
-    /// `forge-contracts/deployments/<network>.json`, and no override). Returned instead of
-    /// falling back to another network's contract id.
-    #[error(
-        "no Dash Forge registry is deployed on {network} yet; see docs/mainnet-runbook.md \
-         (or set FORGE_REGISTRY_CONTRACT_ID to a registry you deployed there)"
-    )]
-    NotDeployed {
-        /// The network key (`mainnet`, `devnet-moutai`).
-        network: String,
-    },
-
     /// The selected network has no forge-v2 deployment (no fully registered `v2` record in
-    /// its deployment file). v2 writes and v2 lookups fail with this; v1 reads still work.
+    /// its deployment file). Returned instead of falling back to another network's
+    /// contracts.
     #[error(
         "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name moutai \
-         (existing v1 repos there stay readable)"
+         (see docs/mainnet-runbook.md)"
     )]
     V2NotDeployed {
         /// The network key (`testnet`, `mainnet`).
         network: String,
-    },
-
-    /// A write was attempted on a forge-v1 repository. v1 (one contract per repo) is read
-    /// only now; new writes go to forge-v2.
-    #[error(
-        "{repo} is a v1 repo (read-only); run `dg migrate` (coming soon) to move it to forge-v2"
-    )]
-    V1ReadOnly {
-        /// The repo as the user named it (`owner/name` or a contract id).
-        repo: String,
     },
 
     /// Consensus refused a write because the writer has no membership document the

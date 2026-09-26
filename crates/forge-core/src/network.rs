@@ -9,9 +9,9 @@
 //! - [`NetworkSettings`] is one layer of user input (CLI flags, a config file, git config,
 //!   the environment). Binaries stack layers with [`NetworkSettings::overlay`] in their own
 //!   precedence order and call [`NetworkSettings::resolve`] once.
-//! - A network with no registry deployment resolves with `registry: None`; the first
-//!   operation that needs the registry fails with [`Error::NotDeployed`] rather than
-//!   silently talking to another network's contract.
+//! - A network with no forge-v2 deployment resolves with `v2: None`; the first operation
+//!   that needs the contracts fails with [`Error::V2NotDeployed`] rather than silently talking
+//!   to another network's contracts.
 //!
 //! SDK-free: [`crate::platform`] maps [`Network`] onto the SDK's types.
 
@@ -31,8 +31,6 @@ pub const ENV_DEVNET_NAME: &str = "DASH_FORGE_DEVNET_NAME";
 pub const ENV_DAPI_ADDRESSES: &str = "DASH_FORGE_DAPI_ADDRESSES";
 /// Env var: an explicit quorum service base URL for a devnet.
 pub const ENV_QUORUM_URL: &str = "DASH_FORGE_QUORUM_URL";
-/// Env var: a registry contract id that overrides the embedded deployment.
-pub const ENV_REGISTRY_CONTRACT_ID: &str = "FORGE_REGISTRY_CONTRACT_ID";
 
 /// The DAPI port assumed when an address omits one (the Platform HTTPS gateway).
 pub const DEFAULT_DAPI_PORT: u16 = 1443;
@@ -191,8 +189,6 @@ struct DeploymentFile {
     dapi_addresses: Option<Vec<String>>,
     #[serde(default)]
     quorum_base_url: Option<String>,
-    #[serde(default)]
-    registry: Option<ContractRecord>,
     /// The forge-v2 record `deploy-v2.mjs` read-modify-writes (`forge-contracts/scripts`).
     #[serde(default)]
     v2: Option<V2Record>,
@@ -203,7 +199,7 @@ struct DeploymentFile {
 struct ContractRecord {
     #[serde(default)]
     contract_id: Option<String>,
-    /// `registered` once confirmed; `broadcasting` while a deploy is in flight (v2 only).
+    /// `registered` once confirmed; `broadcasting` while a deploy is in flight.
     #[serde(default)]
     status: Option<String>,
 }
@@ -245,7 +241,7 @@ impl DeploymentFile {
 }
 
 impl ContractRecord {
-    /// The id of a confirmed v2 registration; `None` for a missing or in-flight one.
+    /// The id of a confirmed registration; `None` for a missing or in-flight one.
     fn registered_id(&self) -> Option<String> {
         if self.status.as_deref() != Some("registered") {
             return None;
@@ -281,10 +277,8 @@ pub struct ForgeIds {
 /// What an embedded deployment file records for one network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deployment {
-    /// The deployment key (`testnet`, `devnet-moutai`).
+    /// The deployment key (`devnet-moutai`, `mainnet`).
     pub key: String,
-    /// The registry contract id, or `None` when the file records none (not deployed here).
-    pub registry_contract_id: Option<String>,
     /// DAPI addresses recorded for a devnet (normalized); empty for testnet/mainnet.
     pub dapi_addresses: Vec<String>,
     /// A quorum service URL recorded for a devnet.
@@ -297,16 +291,6 @@ impl Deployment {
     /// The repo-relative path of the file this came from.
     pub fn path(&self) -> String {
         format!("forge-contracts/deployments/{}.json", self.key)
-    }
-
-    /// The registry this file records, sourced to the file; `None` when it records none.
-    pub fn registry(&self) -> Option<Registry> {
-        self.registry_contract_id
-            .clone()
-            .map(|contract_id| Registry {
-                contract_id,
-                source: ContractSource::Deployment(self.path()),
-            })
     }
 }
 
@@ -332,115 +316,42 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         .collect::<Result<_>>()?;
     Ok(Some(Deployment {
         key: key.to_string(),
-        registry_contract_id: file
-            .registry
-            .and_then(|r| r.contract_id)
-            .filter(|s| !s.is_empty()),
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
         v2: file.v2.as_ref().and_then(V2Record::ids),
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Registry resolution
-// ---------------------------------------------------------------------------
-
-/// Where a resolved contract id came from (reported by `dg doctor`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContractSource {
-    /// A user override; the string names where it was set (`env FORGE_REGISTRY_CONTRACT_ID`,
-    /// `config registry_contract_id`, `git config dash.registryContractId`).
-    Override(String),
-    /// The embedded deployment file (its repo-relative path).
-    Deployment(String),
-}
-
-impl fmt::Display for ContractSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ContractSource::Override(origin) => write!(f, "override ({origin})"),
-            ContractSource::Deployment(path) => f.write_str(path),
-        }
-    }
-}
-
-/// The registry contract a client uses, and where its id came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Registry {
-    /// The base58 registry contract id.
-    pub contract_id: String,
-    /// Where the id came from.
-    pub source: ContractSource,
-}
-
-impl Registry {
-    /// A user-supplied override, labelled with where it was set.
-    pub fn override_from(contract_id: impl Into<String>, origin: impl Into<String>) -> Self {
-        Self {
-            contract_id: contract_id.into(),
-            source: ContractSource::Override(origin.into()),
-        }
-    }
-}
-
-/// The registry for `network` with no user override: the embedded deployment's id, or
-/// `None` when nothing is deployed there.
-pub fn deployed_registry(network: &Network) -> Result<Option<Registry>> {
-    Ok(deployment(&network.key())?.and_then(|d| d.registry()))
-}
-
-/// A network plus the registry resolved for it — what [`crate::platform::PlatformClient`]
-/// connects to.
+/// A network plus the forge-v2 contracts deployed on it — what
+/// [`crate::platform::PlatformClient`] connects to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkTarget {
     /// The network.
     pub network: Network,
-    /// The registry, or `None` when no registry is deployed on `network` and no override
-    /// was given (registry operations then fail with [`Error::NotDeployed`]).
-    pub registry: Option<Registry>,
-    /// The forge-v2 contracts the embedded deployment records for `network`, if registered.
+    /// The forge-v2 contracts the embedded deployment records for `network`, or `None` when
+    /// none are registered there (repository operations then fail with
+    /// [`Error::V2NotDeployed`]).
     pub v2: Option<ForgeIds>,
 }
 
 impl NetworkTarget {
-    /// `network` with the registry from `FORGE_REGISTRY_CONTRACT_ID` if set, else the
-    /// embedded deployment.
+    /// `network` with the contracts its embedded deployment records.
     pub fn for_network(network: Network) -> Result<Self> {
-        let recorded = deployment(&network.key())?;
-        let registry = match NetworkSettings::from_env().registry {
-            Some(r) => Some(r),
-            None => recorded.as_ref().and_then(Deployment::registry),
-        };
-        let v2 = recorded.and_then(|d| d.v2);
-        Ok(Self {
-            network,
-            registry,
-            v2,
-        })
+        let v2 = deployment(&network.key())?.and_then(|d| d.v2);
+        Ok(Self { network, v2 })
     }
 
-    /// The registry, or the actionable "not deployed here" error.
-    pub fn require_registry(&self) -> Result<&Registry> {
-        self.registry.as_ref().ok_or_else(|| Error::NotDeployed {
+    /// The forge-v2 contracts, or the actionable "not deployed here" error.
+    pub fn require_v2(&self) -> Result<&ForgeIds> {
+        self.v2.as_ref().ok_or_else(|| Error::V2NotDeployed {
             network: self.network.key(),
         })
     }
 
     /// The env vars that hand this exact target to a child process (`git` →
-    /// git-remote-dash): [`Network::env_vars`] plus `FORGE_REGISTRY_CONTRACT_ID` when the
-    /// registry is an override (blank otherwise, so an inherited value cannot leak in).
+    /// git-remote-dash): [`Network::env_vars`].
     pub fn env_vars(&self) -> Vec<(&'static str, String)> {
-        let mut vars = self.network.env_vars();
-        let registry = match &self.registry {
-            Some(Registry {
-                contract_id,
-                source: ContractSource::Override(_),
-            }) => contract_id.clone(),
-            _ => String::new(),
-        };
-        vars.push((ENV_REGISTRY_CONTRACT_ID, registry));
-        vars
+        self.network.env_vars()
     }
 }
 
@@ -456,26 +367,22 @@ pub struct NetworkSettings {
     pub dapi_addresses: Option<String>,
     /// Quorum service base URL (devnet only).
     pub quorum_base_url: Option<String>,
-    /// Registry contract id override.
-    pub registry: Option<Registry>,
 }
 
 /// The env var names, in [`NetworkSettings::from_lookup`] order.
-const ENV_KEYS: [&str; 5] = [
+const ENV_KEYS: [&str; 4] = [
     ENV_NETWORK,
     ENV_DEVNET_NAME,
     ENV_DAPI_ADDRESSES,
     ENV_QUORUM_URL,
-    ENV_REGISTRY_CONTRACT_ID,
 ];
 
 /// The git config keys, in [`NetworkSettings::from_lookup`] order.
-const GIT_CONFIG_KEYS: [&str; 5] = [
+const GIT_CONFIG_KEYS: [&str; 4] = [
     "dash.network",
     "dash.devnetName",
     "dash.dapiAddresses",
     "dash.quorumUrl",
-    "dash.registryContractId",
 ];
 
 /// `Some(trimmed)` for a non-empty value; an empty setting counts as unset, so
@@ -504,37 +411,34 @@ impl NetworkSettings {
     }
 
     /// The layer read from `DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
-    /// `DASH_FORGE_DAPI_ADDRESSES`, `DASH_FORGE_QUORUM_URL` and `FORGE_REGISTRY_CONTRACT_ID`.
+    /// `DASH_FORGE_DAPI_ADDRESSES` and `DASH_FORGE_QUORUM_URL`.
     pub fn from_env() -> Self {
-        Self::from_lookup(|k| std::env::var(k).ok(), ENV_KEYS, "env")
+        Self::from_lookup(|k| std::env::var(k).ok(), ENV_KEYS)
     }
 
-    /// The layer from git config `dash.network`, `dash.devnetName`, `dash.dapiAddresses`,
-    /// `dash.quorumUrl` and `dash.registryContractId`, read through `get` (which returns
-    /// the value of a git config key, if set).
+    /// The layer from git config `dash.network`, `dash.devnetName`, `dash.dapiAddresses`
+    /// and `dash.quorumUrl`, read through `get` (which returns the value of a git config
+    /// key, if set).
     pub fn from_git_config(get: impl Fn(&str) -> Option<String>) -> Self {
-        Self::from_lookup(get, GIT_CONFIG_KEYS, "git config")
+        Self::from_lookup(get, GIT_CONFIG_KEYS)
     }
 
-    /// Build a layer from a key lookup. `keys` names network, devnet name, DAPI list,
-    /// quorum URL and registry id in that order; `origin` labels a registry override.
-    fn from_lookup(get: impl Fn(&str) -> Option<String>, keys: [&str; 5], origin: &str) -> Self {
-        let [network, devnet_name, dapi_addresses, quorum_base_url, registry] = keys;
+    /// Build a layer from a key lookup. `keys` names network, devnet name, DAPI list and
+    /// quorum URL in that order.
+    fn from_lookup(get: impl Fn(&str) -> Option<String>, keys: [&str; 4]) -> Self {
+        let [network, devnet_name, dapi_addresses, quorum_base_url] = keys;
         Self {
             network: non_empty(get(network)),
             devnet_name: non_empty(get(devnet_name)),
             dapi_addresses: non_empty(get(dapi_addresses)),
             quorum_base_url: non_empty(get(quorum_base_url)),
-            registry: non_empty(get(registry))
-                .map(|id| Registry::override_from(id, format!("{origin} {registry}"))),
         }
     }
 
     /// Field-wise: keep each field of `self`, filling unset ones from `lower`.
     ///
     /// A lower layer that names a *different* network (kind or devnet name) contributes
-    /// nothing network-specific: a config file's testnet registry override must not follow
-    /// `--network mainnet`, and a `moutai` DAPI list must not follow `--devnet-name paloma`.
+    /// nothing network-specific: a `moutai` DAPI list must not follow `--devnet-name paloma`.
     #[must_use]
     pub fn overlay(self, lower: Self) -> Self {
         let differs = |a: &Option<String>, b: &Option<String>, fold: bool| match (a, b) {
@@ -557,14 +461,12 @@ impl NetworkSettings {
             devnet_name: self.devnet_name.or(lower.devnet_name),
             dapi_addresses: self.dapi_addresses.or(lower.dapi_addresses),
             quorum_base_url: self.quorum_base_url.or(lower.quorum_base_url),
-            registry: self.registry.or(lower.registry),
         }
     }
 
     /// Resolve to a [`NetworkTarget`]. The kind defaults to testnet, or to devnet when only
     /// a devnet name was given. A devnet needs a name; its DAPI addresses and quorum URL
-    /// fall back to `deployments/devnet-<name>.json`. The registry is the override if any
-    /// layer set one, else the embedded deployment.
+    /// fall back to `deployments/devnet-<name>.json`, as do the forge-v2 contract ids.
     pub fn resolve(self) -> Result<NetworkTarget> {
         let kind = match (&self.network, &self.devnet_name) {
             (Some(kind), _) => kind.as_str(),
@@ -607,15 +509,8 @@ impl NetworkSettings {
                 )))
             }
         };
-        let registry = self
-            .registry
-            .or_else(|| recorded.as_ref().and_then(Deployment::registry));
         let v2 = recorded.and_then(|d| d.v2);
-        Ok(NetworkTarget {
-            network,
-            registry,
-            v2,
-        })
+        Ok(NetworkTarget { network, v2 })
     }
 }
 
@@ -623,16 +518,21 @@ impl NetworkSettings {
 mod tests {
     use super::*;
 
-    /// The testnet registry id as read straight from the file on disk — proves the embedded
-    /// copy is the committed file, without restating the id here.
-    fn testnet_registry_on_disk() -> String {
+    /// moutai's forge-v2 ids as read straight from the file on disk: proves the embedded copy
+    /// is the committed file, without restating the ids here.
+    fn expected_ids() -> ForgeIds {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../forge-contracts/deployments/testnet.json"
+            "/../../forge-contracts/deployments/devnet-moutai.json"
         );
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        v["registry"]["contractId"].as_str().unwrap().to_string()
+        let on_disk = |p: &str| v.pointer(p).unwrap().as_str().unwrap().to_string();
+        ForgeIds {
+            core: on_disk("/v2/forgeCore/contractId"),
+            collab: on_disk("/v2/forgeCollab/contractId"),
+            group: on_disk("/v2/contractGroupId"),
+        }
     }
 
     fn layer(network: &str) -> NetworkSettings {
@@ -645,7 +545,6 @@ mod tests {
     #[test]
     fn every_embedded_deployment_parses() {
         let keys: Vec<_> = deployment_keys().collect();
-        assert!(keys.contains(&"testnet"), "{keys:?}");
         assert!(keys.contains(&"devnet-moutai"), "{keys:?}");
         for key in keys {
             deployment(key).unwrap().expect("listed key has a file");
@@ -653,52 +552,26 @@ mod tests {
     }
 
     #[test]
-    fn testnet_registry_comes_from_the_deployment_file() {
-        let t = NetworkSettings::default().resolve().unwrap();
-        assert_eq!(t.network, Network::Testnet);
-        let r = t.require_registry().unwrap();
-        assert_eq!(r.contract_id, testnet_registry_on_disk());
-        assert_eq!(
-            r.source,
-            ContractSource::Deployment("forge-contracts/deployments/testnet.json".into())
-        );
-    }
-
-    #[test]
-    fn mainnet_without_a_deployment_is_not_deployed_not_testnet() {
-        // deployments/mainnet.json records DAPI seeds but no registry until the runbook deploy;
-        // this becomes vacuous (and should be deleted) once it records one.
-        if deployment("mainnet")
-            .unwrap()
-            .is_some_and(|d| d.registry_contract_id.is_some())
-        {
-            return;
+    fn a_network_without_a_deployment_is_not_deployed_not_another_networks() {
+        for net in ["testnet", "mainnet"] {
+            // Vacuous for a network once its deployment file lands.
+            if deployment(net).unwrap().is_some() {
+                continue;
+            }
+            let t = layer(net).resolve().unwrap();
+            assert_eq!(t.network.key(), net);
+            assert!(t.v2.is_none());
+            let err = t.require_v2().unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("forge-v2 isn't deployed on {net} yet")),
+                "{err}"
+            );
         }
-        let t = layer("mainnet").resolve().unwrap();
-        assert_eq!(t.network, Network::Mainnet);
-        assert!(t.registry.is_none());
-        let err = t.require_registry().unwrap_err().to_string();
-        assert!(
-            err.contains("no Dash Forge registry is deployed on mainnet yet"),
-            "{err}"
-        );
-        assert!(err.contains("docs/mainnet-runbook.md"), "{err}");
     }
 
     #[test]
     fn moutai_exposes_its_forge_v2_ids_from_the_deployment_file() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../forge-contracts/deployments/devnet-moutai.json"
-        );
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let on_disk = |p: &str| v.pointer(p).unwrap().as_str().unwrap().to_string();
-        let expected = ForgeIds {
-            core: on_disk("/v2/forgeCore/contractId"),
-            collab: on_disk("/v2/forgeCollab/contractId"),
-            group: on_disk("/v2/contractGroupId"),
-        };
+        let expected = expected_ids();
 
         let d = deployment("devnet-moutai").unwrap().unwrap();
         assert_eq!(d.v2.as_ref(), Some(&expected));
@@ -713,8 +586,7 @@ mod tests {
             NetworkTarget::for_network(t.network.clone()).unwrap().v2,
             Some(expected)
         );
-        // Testnet has no forge-v2 record yet.
-        assert_eq!(NetworkSettings::default().resolve().unwrap().v2, None);
+        assert_eq!(t.require_v2().unwrap(), &expected_ids());
     }
 
     #[test]
@@ -772,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn moutai_resolves_addresses_from_its_deployment_and_has_no_registry() {
+    fn moutai_resolves_addresses_from_its_deployment() {
         let t = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("moutai".into()),
@@ -796,8 +668,6 @@ mod tests {
             t.network.quorum_base_url(),
             "https://quorums.moutai.networks.dash.org"
         );
-        let err = t.require_registry().unwrap_err().to_string();
-        assert!(err.contains("devnet-moutai"), "{err}");
     }
 
     #[test]
@@ -824,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_devnet_resolves_with_no_addresses_and_no_registry() {
+    fn unknown_devnet_resolves_with_no_addresses_and_no_contracts() {
         let t = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("paloma".into()),
@@ -835,7 +705,7 @@ mod tests {
         assert!(
             matches!(&t.network, Network::Devnet { dapi_addresses, .. } if dapi_addresses.is_empty())
         );
-        assert!(t.registry.is_none());
+        assert!(t.v2.is_none());
     }
 
     #[test]
@@ -895,13 +765,11 @@ mod tests {
             network: Some("devnet".into()),
             devnet_name: Some("moutai".into()),
             dapi_addresses: Some("10.1.1.1".into()),
-            registry: Some(Registry::override_from("CFG", "config")),
             ..Default::default()
         };
         let env = NetworkSettings {
             dapi_addresses: Some("10.9.9.9".into()),
             quorum_base_url: Some("https://q.example".into()),
-            registry: Some(Registry::override_from("ENV", "env")),
             ..Default::default()
         };
         let merged = flags.overlay(config).overlay(env);
@@ -909,22 +777,10 @@ mod tests {
         assert_eq!(merged.devnet_name.as_deref(), Some("moutai"));
         assert_eq!(merged.dapi_addresses.as_deref(), Some("10.1.1.1"));
         assert_eq!(merged.quorum_base_url.as_deref(), Some("https://q.example"));
-        assert_eq!(merged.registry.as_ref().unwrap().contract_id, "CFG");
     }
 
     #[test]
     fn a_layer_for_another_network_contributes_nothing_network_specific() {
-        // `--network mainnet` must not pick up the config file's testnet registry override.
-        let flags = layer("mainnet");
-        let config = NetworkSettings {
-            network: Some("testnet".into()),
-            registry: Some(Registry::override_from("TESTREG", "config")),
-            ..Default::default()
-        };
-        let merged = flags.overlay(config);
-        assert_eq!(merged.registry, None);
-        assert!(merged.resolve().unwrap().registry.is_none());
-
         // `--devnet-name paloma` must not pick up moutai's configured DAPI list.
         let flags = NetworkSettings {
             network: Some("devnet".into()),
@@ -942,42 +798,11 @@ mod tests {
         assert_eq!(merged.dapi_addresses, None);
 
         // A layer that names no network is not "another network": it applies.
-        let merged = layer("mainnet").overlay(NetworkSettings {
-            registry: Some(Registry::override_from("ANY", "env")),
+        let merged = layer("devnet").overlay(NetworkSettings {
+            devnet_name: Some("moutai".into()),
             ..Default::default()
         });
-        assert_eq!(merged.registry.unwrap().contract_id, "ANY");
-    }
-
-    #[test]
-    fn a_registry_override_beats_the_deployment_file() {
-        let t = NetworkSettings {
-            registry: Some(Registry::override_from(
-                "OVERRIDE",
-                "env FORGE_REGISTRY_CONTRACT_ID",
-            )),
-            ..Default::default()
-        }
-        .resolve()
-        .unwrap();
-        let r = t.require_registry().unwrap();
-        assert_eq!(r.contract_id, "OVERRIDE");
-        assert_eq!(
-            r.source.to_string(),
-            "override (env FORGE_REGISTRY_CONTRACT_ID)"
-        );
-    }
-
-    #[test]
-    fn a_registry_override_makes_mainnet_usable() {
-        let t = NetworkSettings {
-            network: Some("mainnet".into()),
-            registry: Some(Registry::override_from("MAIN", "config")),
-            ..Default::default()
-        }
-        .resolve()
-        .unwrap();
-        assert_eq!(t.require_registry().unwrap().contract_id, "MAIN");
+        assert_eq!(merged.devnet_name.as_deref(), Some("moutai"));
     }
 
     #[test]
@@ -986,7 +811,7 @@ mod tests {
             (ENV_NETWORK, "devnet"),
             (ENV_DEVNET_NAME, ""),
             (ENV_DAPI_ADDRESSES, "  "),
-            (ENV_REGISTRY_CONTRACT_ID, "REG"),
+            (ENV_QUORUM_URL, "https://q.example"),
         ];
         let env = NetworkSettings::from_lookup(
             |k| {
@@ -995,18 +820,11 @@ mod tests {
                     .map(|(_, v)| (*v).to_string())
             },
             ENV_KEYS,
-            "env",
         );
         assert_eq!(env.network.as_deref(), Some("devnet"));
         assert_eq!(env.devnet_name, None);
         assert_eq!(env.dapi_addresses, None);
-        assert_eq!(
-            env.registry,
-            Some(Registry::override_from(
-                "REG",
-                "env FORGE_REGISTRY_CONTRACT_ID"
-            ))
-        );
+        assert_eq!(env.quorum_base_url.as_deref(), Some("https://q.example"));
     }
 
     #[test]
@@ -1015,17 +833,12 @@ mod tests {
             "dash.network" => Some("devnet".into()),
             "dash.devnetName" => Some("moutai".into()),
             "dash.dapiAddresses" => Some("10.1.1.1".into()),
-            "dash.registryContractId" => Some("GITREG".into()),
             _ => None,
         });
         let t = git.resolve().unwrap();
         assert_eq!(t.network.key(), "devnet-moutai");
         assert!(
             matches!(&t.network, Network::Devnet { dapi_addresses, .. } if dapi_addresses == &["https://10.1.1.1:1443"])
-        );
-        assert_eq!(
-            t.require_registry().unwrap().source.to_string(),
-            "override (git config dash.registryContractId)"
         );
     }
 
@@ -1043,7 +856,6 @@ mod tests {
         let child = NetworkSettings::from_lookup(
             |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()),
             ENV_KEYS,
-            "env",
         )
         .resolve()
         .unwrap();

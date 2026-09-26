@@ -29,7 +29,7 @@ import {
   type TreeEntry,
 } from '@/lib/view'
 import { countCommits, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
-import { readPublicRepoFacts, repoContractIds, type V2RepoRef } from '@/lib/repo'
+import { readPublicRepoFacts, repoContractIds, type RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
@@ -82,7 +82,7 @@ export function RepoHomeContent({
   refParam?: string
 }): JSX.Element {
   const { role, known, failed, retry } = useViewerRole(home.repo)
-  if (home.repo.kind === 'v2' && home.repo.visibility === 'private') {
+  if (home.repo.visibility === 'private') {
     // Nothing of a private repo's contents is read until membership is known.
     if (failed) return <ErrorState title="Couldn't check membership" message="This repo is private, and its member list could not be read." onRetry={retry} />
     if (!known) return <LoadingBlock label="Checking membership" />
@@ -334,7 +334,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
  * (name, owner, member count, size, last activity). Nothing is decrypted or rendered from
  * encrypted fields, titles included.
  */
-function PrivateRepoState({ repo, addr }: { repo: V2RepoRef; addr: RepoAddress }): JSX.Element {
+function PrivateRepoState({ repo, addr }: { repo: RepoRef; addr: RepoAddress }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(repo))
   const facts = useAsync(() => readPublicRepoFacts(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null })
   return (

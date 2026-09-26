@@ -88,8 +88,6 @@ describe('crossCheckQuorumKeys', () => {
     key: 'devnet-moutai',
     dapiAddresses: dapi,
     quorumBaseUrl: null,
-    registryContractId: null,
-    registrySource: null,
     dpnsContractId: 'dpns',
     v2: null,
   })

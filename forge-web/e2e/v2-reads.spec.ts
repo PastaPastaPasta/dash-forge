@@ -1,9 +1,19 @@
-import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, shot, waitForRepoResolved } from './helpers'
+import { test, expect } from '@playwright/test'
+import {
+  collectPageErrors,
+  DEMO,
+  E2E_DEVNET,
+  EMPTY,
+  expectLanded,
+  MAINTAINER,
+  repoUrl as url,
+  shot,
+  waitForRepoResolved,
+} from './helpers'
 
 /**
  * forge-v2 read paths against a real devnet (protocol 14): the fixture
- * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai. Runs only on a devnet build:
+ * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai (e2e/helpers.ts `DEMO`):
  *
  *   E2E_DEVNET=moutai pnpm exec playwright test v2-reads.spec.ts
  *
@@ -11,33 +21,23 @@ import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, shot, waitForRe
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a
  * writer, #2 closed by its author (`authorEvent`), #3 closed + labelled by a maintainer; PR #1
  * open with a maintainer approval, PR #2 merged; one star. `forge-v2-empty` (MAINTAINER) has
- * nothing pushed.
+ * nothing pushed. The axe checks over these pages live in a11y.spec.ts.
  */
 
-test.skip(E2E_DEVNET === '', 'the forge-v2 fixture lives on a devnet; set E2E_DEVNET=moutai')
-
-const OWNER = process.env['E2E_V2_OWNER'] ?? '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
-const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
-
-function url(path = '', extra = '', owner = OWNER, name = NAME): string {
-  const q = `owner=${owner}&name=${name}${extra}`
-  return path === '' ? `/repo/?${q}` : `/repo/${path}/?${q}`
-}
-
-/** Fail fast with the app's read-error text instead of a bare timeout. */
-async function expectLanded(page: Page, success: ReturnType<Page['getByText']>): Promise<void> {
-  await expect(success.or(readErrorBanner(page))).toBeVisible({ timeout: 45_000 })
-  if (await readErrorBanner(page).isVisible()) {
-    throw new Error(`read error: ${await readErrorBanner(page).innerText()}`)
-  }
-}
+const { owner: OWNER, name: NAME } = DEMO
 
 test.describe('forge-v2 read paths (devnet fixture)', () => {
-  test('v2-1. landing lists forge-v2 repos with provable counts', async ({ page }) => {
+  test('v2-1. landing: hero, header chrome, forge-v2 repos with provable counts', async ({ page }) => {
     const { errors } = collectPageErrors(page)
     await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByText(`devnet-${E2E_DEVNET}`).first()).toBeVisible()
+    // Foundry hero, header chrome (wordmark link, network badge, sign-in, search) and the
+    // verification chip.
+    await expect(page.getByRole('heading', { name: /no server to trust/i })).toBeVisible()
+    await expect(page.locator('header a[href="/"]').first()).toBeVisible()
+    await expect(page.getByTestId('network-badge')).toContainText(E2E_DEVNET)
+    await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
+    await expect(page.getByLabel(/jump to a repo/i).first()).toBeVisible()
+    await expect(page.getByRole('group', { name: /verification status/i })).toBeVisible()
     const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
     // The live write specs keep creating repos, so the fixture may have scrolled off the
     // newest 24: assert on whatever is newest, then on the fixture's counts by name.
@@ -62,13 +62,14 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     const { errors } = collectPageErrors(page)
     await page.goto(url(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByRole('heading', { name: 'forge-v2-demo' }))
+    await expectLanded(page, page.getByRole('heading', { name: NAME }))
     // The published locator serves the root tree and README from Platform chunks.
     for (const entry of ['README.md', 'src', 'lib', 'docs']) {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
     }
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
     await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
+    await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
     // The Verification card attests the ref by FORGE_RULES_V2.
     await page.getByRole('button', { name: /verification/i }).click()
     await expect(page.getByText(/FORGE_RULES_V2/).first()).toBeVisible()
@@ -139,28 +140,37 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-8. profile lists owned and member repos; ?repo= pins; empty repo', async ({ page }) => {
     await page.goto(`/u/?name=${MAINTAINER}`, { waitUntil: 'domcontentloaded' })
     await expectLanded(page, page.getByRole('heading', { name: 'Member of' }))
-    await expect(page.getByRole('link', { name: 'forge-v2-empty' })).toBeVisible()
+    await expect(page.getByRole('link', { name: EMPTY.name })).toBeVisible()
     await expect(page.getByRole('link', { name: 'forge-v2 demo' })).toBeVisible()
     await shot(page, 'v2-08-profile')
 
-    await page.goto(url('', '', MAINTAINER, 'forge-v2-empty'), { waitUntil: 'domcontentloaded' })
+    await page.goto(url('', '', EMPTY), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('region', { name: 'Empty repository' }))
     await expect(page.getByText(/remote add origin dash:\/\//)).toBeVisible()
   })
 
-  test('v2-9. a11y: no serious/critical violations on the v2 pages', async ({ page }) => {
-    const pages: [string, string, ReturnType<Page['getByText']>][] = [
-      ['landing', '/', page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"]').first()],
-      ['repo-home', url(), page.getByRole('link', { name: 'README.md' }).first()],
-      ['issues', url('issues'), page.getByText('README should explain the event split')],
-      ['pull', url('pull', '&number=1'), page.getByRole('region', { name: 'Approvals' })],
-    ]
-    for (const [label, href, ready] of pages) {
-      await page.goto(href, { waitUntil: 'domcontentloaded' })
-      await expectLanded(page, ready)
-      const serious = await runAxe(page, `v2-${label}`)
-      expect(serious, `${label}:\n${serious.map((v) => `${v.id}: ${v.help}`).join('\n')}`).toEqual([])
-    }
+  test('v2-9. landing is usable at a 375px mobile viewport with no horizontal overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: /no server to trust/i })).toBeVisible()
+    // Header stays usable at mobile width: the icon-only home link and sign-in are reachable
+    // (the "Dash Forge" wordmark text is intentionally hidden below the sm breakpoint); a
+    // devnet badge shows at every width.
+    await expect(page.locator('header a[href="/"]').first()).toBeVisible()
+    await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
+    await expect(page.getByTestId('network-badge')).toBeVisible()
+    // Measure once the feed has settled on its terminal state (cards, not the skeleton).
+    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
+    await expectLanded(page, feed.locator('a[href*="/repo"]').first())
+    const overflow = await page.evaluate(() => {
+      const de = document.documentElement
+      return { scrollW: de.scrollWidth, clientW: de.clientWidth }
+    })
+    expect(
+      overflow.scrollW,
+      `horizontal overflow: scrollWidth ${overflow.scrollW} > clientWidth ${overflow.clientW}`,
+    ).toBeLessThanOrEqual(overflow.clientW + 1)
+    await shot(page, 'v2-09-landing-mobile')
   })
 })

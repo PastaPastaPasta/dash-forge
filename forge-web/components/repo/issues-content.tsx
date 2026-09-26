@@ -41,7 +41,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const router = useRouter()
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
-    () => listIssues(sdk!, home.repo, undefined, 100),
+    () => listIssues(sdk!, home.repo, 100),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )

@@ -9,9 +9,6 @@
  * with 4,000 bytes 167.7M; comments 47.6M / 74.3M / 157.2M for 10 / 1,000 / 4,000 bytes.
  * The post-write actual (the balance change) is recorded next to each estimate in the spend
  * ledger, so drift shows up there (`ux-dx-spec.md` §4 rule 2).
- *
- * v1 repos (testnet, protocol 13) use the same model; their token-gated types add one
- * WRITE/MAINTAIN token, shown separately.
  */
 
 /** 1 DASH = 1e11 credits (parity with forge-core `credits_to_dash`). */
@@ -47,8 +44,6 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   review: 34_900_000,
   star: 27_800_000,
   follow: 38_400_000,
-  // v1 registry
-  repoListing: 60_000_000,
 }
 
 const DEFAULT_BASE_CREDITS = 50_000_000
@@ -76,18 +71,11 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
  */
 export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
 
-/** The fee a v1 token-admin action (mint / freeze / destroy) is estimated at. */
-export const TOKEN_ADMIN_CREDITS = 15_000_000
-
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Estimated credits; negative when the action refunds storage. */
   readonly credits: number
   readonly dash: number
-  /** The token spend, when the action is v1 token-gated (1 WRITE/MAINTAIN token), else 0. */
-  readonly tokenAmount: number
-  /** Token position spent (0 WRITE / 1 MAINTAIN), when gated. */
-  readonly tokenPosition?: number
 }
 
 /** Credit → DASH (display). */
@@ -97,7 +85,7 @@ export function creditsToDash(credits: number): number {
 
 /** A preview for a plain credit amount. */
 export function previewCredits(credits: number): CostPreview {
-  return { credits, dash: creditsToDash(credits), tokenAmount: 0 }
+  return { credits, dash: creditsToDash(credits) }
 }
 
 /** UTF-8 bytes of every string in `data` (the text a document stores beyond its fixed shape). */
@@ -118,7 +106,7 @@ export function estimateCreateCredits(documentType: string, data: Readonly<Recor
   return (BASE_CREDITS[documentType] ?? DEFAULT_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * textBytes(data)
 }
 
-/** Preview for creating one document (no token spend: v2, or an ungated v1 type). */
+/** Preview for creating one document. */
 export function previewCreate(documentType: string, data: Readonly<Record<string, unknown>> = {}): CostPreview {
   return previewCredits(estimateCreateCredits(documentType, data))
 }
@@ -145,7 +133,5 @@ export function previewDelete(documentType: string): CostPreview {
 
 /** The sum of several previews (a repo creation is three documents). */
 export function sumPreviews(parts: readonly CostPreview[]): CostPreview {
-  const credits = parts.reduce((s, p) => s + p.credits, 0)
-  const tokenAmount = parts.reduce((s, p) => s + p.tokenAmount, 0)
-  return { credits, dash: creditsToDash(credits), tokenAmount }
+  return previewCredits(parts.reduce((s, p) => s + p.credits, 0))
 }

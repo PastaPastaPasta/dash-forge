@@ -66,7 +66,6 @@ export {
   loadBrowseContext,
   loadBrowseContextCached,
   loadFlatIndex,
-  orderGitPacks,
   peekBrowseState,
   PackUnavailableError,
   StorageUnreachableError,
@@ -107,7 +106,7 @@ export {
   setUserGateways,
   userGateways,
 } from './storage-status'
-export { aclName, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
+export { ACL_NAME, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,
   loadRepoHome,

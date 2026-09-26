@@ -8,7 +8,6 @@
 //! network = "devnet"            # testnet | mainnet | devnet
 //! devnet_name = "moutai"        # devnet only
 //! dapi_addresses = "68.67.122.254,68.67.122.207"   # devnet only; default: deployments file
-//! registry_contract_id = "…"    # optional override of deployments/<network>.json
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -28,10 +27,6 @@ pub struct Config {
     /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dapi_addresses: Option<String>,
-    /// Registry contract id override for `network` (default: the embedded
-    /// `forge-contracts/deployments/<network>.json`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub registry_contract_id: Option<String>,
     /// Absolute path to the default identity file. Overridden by `--identity` / `DASH_FORGE_KEY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_identity: Option<String>,
@@ -66,9 +61,6 @@ impl Config {
             devnet_name: self.devnet_name.clone(),
             dapi_addresses: self.dapi_addresses.clone(),
             quorum_base_url: None,
-            registry: self.registry_contract_id.clone().map(|id| {
-                forge_core::network::Registry::override_from(id, "config registry_contract_id")
-            }),
         }
     }
 
@@ -154,16 +146,18 @@ mod tests {
     fn devnet_config_parses_into_a_network_layer() {
         let cfg: Config = toml::from_str(
             "network = \"devnet\"\ndevnet_name = \"moutai\"\n\
-             dapi_addresses = \"10.0.0.1\"\nregistry_contract_id = \"REG\"\n",
+             dapi_addresses = \"10.0.0.1\"\n",
         )
         .unwrap();
         let target = cfg.network_settings().resolve().unwrap();
         assert_eq!(target.network.key(), "devnet-moutai");
-        let registry = target.require_registry().unwrap();
-        assert_eq!(registry.contract_id, "REG");
-        assert_eq!(
-            registry.source.to_string(),
-            "override (config registry_contract_id)"
-        );
+        assert!(target.require_v2().is_ok());
+    }
+
+    #[test]
+    fn an_old_registry_key_is_ignored() {
+        let cfg: Config =
+            toml::from_str("network = \"testnet\"\nregistry_contract_id = \"REG\"\n").unwrap();
+        assert_eq!(cfg.network.as_deref(), Some("testnet"));
     }
 }

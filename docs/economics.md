@@ -1,6 +1,6 @@
 # Dash Forge — Storage Economics & Fee Minimization
 
-How bytes are compressed before they ever hit Platform, what each byte costs, and how obsolete data is deleted and refunded. Constants verified in `../platform` (protocol v12 era).
+How bytes are compressed before they ever hit Platform, what each byte costs, and which data can be deleted and refunded. Constants verified in `../platform` (protocol v12 era). The on-chain model is forge-v2 ([contracts/forge-v2.md](contracts/forge-v2.md)); the user-facing summary is [guides/costs.md](guides/costs.md).
 
 ## 1. Compression: blobs are never stored raw
 
@@ -23,26 +23,26 @@ Additional levers on top:
 |---|---|---|
 | Aggressive repack (`git repack -F --window=250 --depth=100` equivalent) | typically 10–30% over default packing | `dg repack` always uses max-effort settings — CPU is free, bytes cost 27k credits each |
 | Per-push browse-index fragment | *mandatory* for git packs (36 B per object **in that push** — an incremental push indexes a handful of objects) | it is the only random-access path to objects newer than the last repack; skipping it would break fresh-push browsing |
-| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable — steady-state deposit is one copy; the locator is published as per-push fragments and folded every 16, so a push pays for its own objects rather than republishing the whole index; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
+| Browse artifacts (`objectLocator` ~34–36 B/object, `flatIndex` O(files): ~471 KB @ 10k files, ~4.5 MB @ 100k — S0.5) | *cost*, not saving: ~3.5 MB locator + ~4.5 MB flatIndex ≈ **~8 MB deposit** for a 100k-object repo on platform backend (negligible external) | supersedable, but on the Platform tier a superseded artifact's chunks stay (non-deletable), so each republish adds to the permanent deposit; the locator is published as per-push fragments and folded every 16, so a push pays for its own objects rather than republishing the whole index; flatIndex batched on hyperactive repos (20 pushes / 24 h) |
 | zstd-wrapping chunks | marginal (~3–8%, pack is already deflated) | evaluated in S0.2; only adopted if measured gain beats the added format complexity |
 
 ## 2. What a byte costs (credits; 1 DASH = 10¹¹ credits)
 
 | Component | Credits/byte | Refundable? | Source |
 |---|---|---|---|
-| Storage (prepaid, ~50-year horizon) | **27,000** | **Yes** (see §3) | `fee/storage/v1.rs` |
+| Storage (prepaid, ~50-year horizon) | **27,000** | **Yes, for deletable types** (see §3) | `fee/storage/v1.rs` |
 | Storage processing | 400 | No | same |
 | ST processing | 12 | No | `default_costs/constants.rs` |
 | Per-document bases (write 6,000 + seek 2,000 + ST base 10,000) | ~18k/doc (~1.2 credits/byte at 15 KiB fill) | No | same |
 
 Two headline numbers fall out:
 
-- **A retained byte costs ~27,400 credits** (~$9.30/MiB @ $34/DASH) — almost all of it a refundable deposit.
-- **A churned byte** (stored, then deleted after a repack) permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3) ≈ **~$0.15–0.30/MiB**.
+- **A retained byte costs ~27,400 credits** (~$9.30/MiB @ $34/DASH) — almost all of it a storage deposit.
+- **Pack bytes on the Platform tier are permanent.** `chunk`, `packManifest` and `manifestPart` are non-deletable on forge-v2 (owner decision 2026-09-25: an unbreakable repository outweighs the refund), so their deposit is a one-time cost, never refunded. A byte in a *deletable* document (comment, review, release, label, ...) that is later deleted permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3).
 
-This is why chunk geometry maximizes fill (3 × 4,900 B fields → ~14.4 KiB/doc): per-doc base fees amortize to noise, and why external backends exist: a manifest-only push is a few hundred bytes total.
+This is why chunk geometry maximizes fill (3 × 4,900 B fields → ~14.4 KiB/doc): per-doc base fees amortize to noise, and why external backends exist: a manifest-only push is a few hundred bytes total, and bulky pack bytes in a bucket the user controls can be garbage-collected there.
 
-**Token spend is not a cost — it recirculates.** The WRITE token a push spends (and the MAINTAIN token a protected/config write spends) is **not burned**: `tokenCost` payments flow to the **contract owner's** token balance (S0.7), so the unit spent on a push returns to the repo owner rather than being destroyed. The token is a per-collaborator meter, not a fee — the only real money on a push is the storage deposit (mostly refundable) plus the small non-refundable processing burn above. Don't read the WRITE token as a spam floor that consumes value; it circulates within the repo.
+Writing requires a `maintainer` or `writer` membership document, which consensus checks on create; membership carries no per-write charge. The only money on a push is the storage deposit plus the small non-refundable processing burn above.
 
 ## 3. Refunds: how deletion gives money back
 
@@ -53,40 +53,42 @@ Mechanics (verified: `fee/epoch/distribution.rs::calculate_storage_fee_refund_am
 - Delete within weeks-to-months of writing → recover the overwhelming majority of the deposit (the elapsed slice of a 50-year schedule). The refund lands as identity credits, immediately spendable on the next push.
 - Processing fees (the ~412 credits/byte + bases) are never refunded — that's the true "cost of churn."
 
-Constraints that shape the GC design:
+Constraints:
 
-- **Only the document's owner can delete it** — refunds are per-uploader. Each collaborator prunes (and recoups) their own docs.
-- **Frozen identities can't pay `tokenCost.delete`** — a revoked collaborator's chunks stay put (availability protected); their deposit stays locked with the docs. The repo can re-store those objects in a new pack and simply carry the orphan cost.
-- **Non-deletable audit types** (`refUpdate`, `protectedRefUpdate`, `event`, `config`) forgo refunds deliberately — the rewind-proof audit trail is worth more than the ~0.00008 DASH each. Honesty about aggregates: this line **grows unbounded with activity and is never reclaimed** — ~0.08 DASH per 1,000 pushes, so a monorepo with 50k historical pushes has ~4 DASH (~$135) permanently locked in reflog. The "steady-state ≈ current size" promise (§4) applies to the *pack store*; the audit log is a separate, slow-growing permanent line item. A checkpoint/compaction scheme for ancient reflog is a named open design question (not v1).
+- **Only the document's owner can delete it** — refunds are per-writer. A delete is never reference-checked, so this holds even after the writer's membership is revoked.
+- **Non-deletable types forgo refunds deliberately** ([forge-v2.md §4](contracts/forge-v2.md#4-non-deletable-audit-types)): `refUpdate`, `protectedRefUpdate`, `config`, `packManifest`, `manifestPart`, `chunk`, `event`, `authorEvent`, `issue`, `patch`, `repo`, `repoKey`. Deleting any of them would let a writer rewind a branch, rewrite a thread, or pull pack bytes out from under refs that other people's history points into. Still deletable, and so refundable to their author: `comment`, `review`, `release`, `label`, `checkRun`, `webhook`, `profile`, `star`, `follow`, and the membership documents.
+- Honesty about aggregates: the audit trail **grows unbounded with activity and is never reclaimed** — ~0.08 DASH per 1,000 pushes in ref updates alone, so a monorepo with 50k historical pushes has ~4 DASH (~$135) permanently locked in reflog. A checkpoint/compaction scheme for ancient reflog is a named open design question.
 
-## 4. How old, no-longer-relevant data actually gets deleted
+## 4. Old, no-longer-relevant data
 
-Git never deletes eagerly and neither does Forge — objects become *unreachable* (force-push, branch delete, PR closed unmerged) and are collected at repack:
+Git never deletes eagerly and neither does Forge — objects become *unreachable* (force-push, branch delete, PR closed unmerged). What happens to them depends on where the packs live.
 
-1. **`dg repack`** builds one consolidated max-compression pack of all *currently reachable* objects and uploads it (platform chunks or external).
-2. New `packManifest` lists `supersedes: [old packHashes]` — readers immediately prefer it.
-3. The repacker **deletes their own superseded `chunk`/`packManifest`/`manifestPart` docs** (WRITE-gated deletes) → storage refund flows back to them.
-4. Unreachable objects simply aren't in the new pack — their bytes are gone from Platform and their deposit refunded. Reachable objects were re-stored in step 1 before anything was deleted (no availability gap).
+**Platform tier: repack only consolidates.**
 
-Steady-state result (the INIT.md promise): **a long-lived repo's locked deposit ≈ its current packed size, not its cumulative push history**; the permanent spend is ~1.5% of bytes ever churned plus retained-byte deposits.
+1. **`dg repack`** builds one consolidated max-compression pack of all *currently reachable* objects and uploads it.
+2. The new `packManifest` lists `supersedes: [old packHashes]` — readers prefer it and read fewer packs.
+3. Nothing is deleted: the superseded `chunk`/`packManifest`/`manifestPart` documents are non-deletable, stay readable as a fallback, and keep their deposit. The consolidated pack is an *additional* deposit.
 
-Suggested cadence (`dg doctor` nags): repack when superseded-but-undeleted bytes exceed ~2× current pack size, or before a large history rewrite lands. `dg cost audit` reports: locked deposit, reclaimable-now amount, lifetime non-refundable spend.
+So on the Platform tier **a repo's locked deposit is its cumulative push history plus any repacks**, not its current size. Repack there for read performance, not for cost.
+
+**External tier (S3-compatible, IPFS): garbage collection is the user's.** Only the `packManifest` (a few hundred bytes) is on Platform; the pack bytes are in storage the user controls. After a repack writes a superseding pack, the old objects in the bucket can be deleted to stop paying the provider. This is the tier to use for large or fast-churning repositories.
 
 ## 5. Per-scenario cost sketch (@ $34/DASH)
 
 | Scenario | Platform backend | External backend |
 |---|---|---|
-| Create repo (contract + config + listing) | **~1.18 DASH** one-time (Stage-2 measured: repo-v1 = 2 tokens + 15 doc types + count-trees; registry alone was 0.68). Refundable? No — contract create is not refundable. This is the dominant one-time cost and the main barrier to casual repo creation. | same |
-| Push 100 KiB source delta (~30 KiB packed) | ~$0.28 deposit + ~$0.005 burn | ~$0.01 (manifest + refUpdate only) |
-| 1,000 issues + 5,000 comments over a year | ~$25–60 deposit (refundable on delete) | same (always on Platform) |
-| Force-push away 10 MiB of history, then repack | recover ~$90 deposit; ~$1.50–3 burned | n/a (bytes were external) |
-| Delete whole repo | recover ~all chunk/manifest deposits; audit docs' dust + parked contract remain | recover listing/manifest dust |
+| Create repo (`repo` + owner's `maintainer` + first `config`) | **~0.001 DASH** one-time (estimate from the storage rate; not refundable, all three are kept). The v1 per-repo contract cost ~1.18 DASH. | same |
+| Fork a repo | ~0.001 DASH plus one small manifest per pack and one ref update per branch (measured on moutai: 0.03 DASH for a 36-pack repo); the parent's packs are referenced, never re-uploaded | same |
+| Push 100 KiB source delta (~30 KiB packed) | ~$0.28 deposit (permanent) + ~$0.005 burn | ~$0.01 (manifest + refUpdate only) |
+| 1,000 issues + 5,000 comments over a year | ~$25–60 deposit; issues are permanent, comments refundable on delete | same (always on Platform) |
+| Force-push away 10 MiB of history, then repack | nothing recovered; the repack adds a deposit for the consolidated pack | delete the old objects in your bucket |
+| Deployer: register forge-v2 (once per network) | forge-core 0.60 + forge-collab 0.55 DASH in fees, 1.161234 DASH measured on moutai including storage ([forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)) | same |
 
 ## 6. Fee-minimization checklist (encoded in defaults)
 
 1. External or mixed backend for anything bulky (the biggest lever by 100×).
 2. Store the smaller of the two locator-quality push-pack candidates (`build_pack`); max-effort compression at repack.
 3. Fill chunks to ~14.4 KiB. Each push also publishes its **browse-index fragment** — a locator over just that pack, 36 B per object the push added. It is the only random-access path to objects newer than the last repack, and it replaces the `manifestPart` per-pack offset index the design originally called for: same role, but it is the same artifact and the same reader as the repack-time index, rather than a second format. Nothing writes a `manifestPart`, so `packManifest.offsetIndexParts` is 0 on every kind.
-4. Repack regularly — refunds fund future pushes; surface reclaimable credits in `dg cost audit`.
+4. Repack on the external tier and garbage-collect the bucket; on the Platform tier repack only for read performance (it adds a deposit and refunds nothing).
 5. Keep social docs lean (5 KiB body cap already enforces this); `documentsKeepHistory` means every edit re-deposits the doc — the UI shows edit cost like any write.
-6. Cost engine displays deposit vs burn separately (DASH primary), so users learn that most of a platform push is a *recoverable deposit*, not a fee.
+6. Cost engine displays deposit vs burn separately (DASH primary).

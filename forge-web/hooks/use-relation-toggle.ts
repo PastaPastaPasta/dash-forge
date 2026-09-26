@@ -2,7 +2,7 @@
 
 /**
  * useRelationToggle — the viewer's own on/off relation (a star on a repo, a follow of an
- * identity; forge-collab on v2, the registry on v1) with an honest initial state and honest failures.
+ * identity, in forge-collab) with an honest initial state and honest failures.
  *
  * The initial state is READ, not assumed: until the viewer's own documents have been checked
  * the toggle reports `on: null` and callers must not offer an action. A read failure or a write
