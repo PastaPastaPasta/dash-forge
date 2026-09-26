@@ -12,12 +12,11 @@
 //!    `github` login, plus a `signature` produced by that identity's key over the challenge
 //!    string. The structure is verified here; the cryptographic signature check against the
 //!    identity's public key is the documented mechanism (a full BLS/ECDSA verify needs the
-//!    SDK key material and is folded in `FORGE_RULES_V1` alongside the on-chain claim doc).
-//! 3. On success an `authorClaim` record is produced — the doc a `FORGE_RULES_V1`-aware
-//!    client folds so the placeholder thereafter renders as the claiming identity. The
-//!    `authorClaim` document type is a repo-template v2 addition (the deployed v1 template
-//!    carries no claim type yet), so this command verifies + emits the record and reports
-//!    the write as pending that template bump.
+//!    SDK key material and belongs with the on-chain claim doc's client rule).
+//! 3. On success an `authorClaim` record is produced — the doc a client folds so the
+//!    placeholder thereafter renders as the claiming identity. The contracts carry no
+//!    `authorClaim` document type yet, so this command verifies + emits the record and reports
+//!    the write as pending that contract addition.
 //!
 //! Challenge format (the string the identity signs, one field per line):
 //! ```text
@@ -171,8 +170,8 @@ fn parse_challenge(body: &str) -> Result<Challenge> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow!("challenge missing a non-empty `signature:` line"))?;
     // Structural signature check (base64-ish, non-trivial length). The full cryptographic
-    // verify against the identity's public key is the documented mechanism folded in
-    // FORGE_RULES_V1 with the on-chain authorClaim doc (template v2).
+    // verify against the identity's public key is the documented mechanism, folded with the
+    // on-chain authorClaim doc once the contracts carry it.
     if signature.len() < 16 {
         bail!(
             "challenge `signature:` is implausibly short ({} chars)",

@@ -126,7 +126,7 @@ impl DestRepo {
 }
 
 /// Resolve `spec` (`owner/name`, `dash://owner/name`, a repo id, or a bare name meaning the
-/// signer's) on the destination network. A forge-v1 repository is refused: v1 is read only.
+/// signer's) on the destination network.
 pub async fn resolve(
     client: &PlatformClient,
     signer: Option<&str>,

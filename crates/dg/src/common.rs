@@ -177,9 +177,9 @@ mod tests {
 
     #[test]
     fn parses_owner_slash_name() {
-        let r = RepoRef::parse(&format!("{ID}/m1-75299")).unwrap();
+        let r = RepoRef::parse(&format!("{ID}/my-repo")).unwrap();
         assert_eq!(r.owner.as_deref(), Some(ID));
-        assert_eq!(r.name, "m1-75299");
+        assert_eq!(r.name, "my-repo");
     }
 
     #[test]
