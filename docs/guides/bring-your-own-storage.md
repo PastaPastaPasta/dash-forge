@@ -255,6 +255,8 @@ git config dash.costWarnThreshold 0.01   # DASH
 git config dash.confirm auto             # auto (default): ask only above the threshold
                                          # always: ask before every paid push
                                          # never: print and go
+                                         # refuse: never ask; above the threshold, fail
+                                         #   (for unattended callers, e.g. forge-import)
 ```
 
 Git owns the helper's stdin and stdout, so the question goes to `/dev/tty`. Without a terminal (CI, GUI clients), a push that needs confirmation fails with a message telling you to use `git -c dash.confirm=never push …` or to raise the threshold. It never assumes yes.
