@@ -20,7 +20,7 @@
 //! (without their body) for `forge-relay deliveries` to show, at most [`MAX_DROPPED`] of them
 //! and for [`DROPPED_RETENTION`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -56,9 +56,6 @@ pub const MAX_DROPPED: usize = 1000;
 
 /// How long a dropped entry is kept for inspection.
 pub const DROPPED_RETENTION: Duration = Duration::from_hours(7 * 24);
-
-/// How long a retry handed to a hook's worker is not handed out again.
-const IN_FLIGHT_LEASE_MS: u64 = 30 * 60 * 1000;
 
 /// Longest last-error text kept.
 const MAX_ERROR_LEN: usize = 300;
@@ -162,8 +159,9 @@ pub struct RetryQueue {
     dir: PathBuf,
     schedule: Vec<Duration>,
     entries: Mutex<BTreeMap<String, Entry>>,
-    /// Retries handed to a worker and not finished yet: id → when.
-    in_flight: Mutex<HashMap<String, u64>>,
+    /// Retries handed to a worker and not finished yet. The worker releases the claim on
+    /// every outcome (delivered, failed, dropped, cancelled).
+    claimed: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for RetryQueue {
@@ -202,10 +200,24 @@ pub fn read_dir(dir: &Path) -> Result<Vec<Entry>> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         match std::fs::read(&path)
             .map_err(|e| e.to_string())
             .and_then(|b| serde_json::from_slice::<Entry>(&b).map_err(|e| e.to_string()))
-        {
+            .and_then(|e| {
+                // The id names the file it is written to: it must be the file's own name, and
+                // the shape delivery ids have (no path separators or dots).
+                let shaped =
+                    e.id.len() == 36 && e.id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+                if shaped && e.id == stem {
+                    Ok(e)
+                } else {
+                    Err("its id does not match its file name".to_string())
+                }
+            }) {
             Ok(e) => out.push(e),
             Err(e) => {
                 tracing::warn!(file = %path.display(), error = %e, "skipping an unreadable queue file");
@@ -225,9 +237,22 @@ impl RetryQueue {
                 dir.display()
             ))
         };
+        if !state_dir.exists() {
+            // A state dir we create is private too; an existing one is left as it is.
+            std::fs::create_dir_all(state_dir).map_err(|e| io("creating", e))?;
+            set_mode(state_dir, 0o700).map_err(|e| io("securing", e))?;
+        }
         std::fs::create_dir_all(&dir).map_err(|e| io("creating", e))?;
-        set_mode(state_dir, 0o700).map_err(|e| io("securing", e))?;
         set_mode(&dir, 0o700).map_err(|e| io("securing", e))?;
+        // Temp files left by a crash mid-write.
+        for f in std::fs::read_dir(&dir)
+            .map_err(|e| io("reading", e))?
+            .flatten()
+        {
+            if f.file_name().to_string_lossy().ends_with(".tmp") {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
         let entries = read_dir(&dir)?
             .into_iter()
             .map(|e| (e.id.clone(), e))
@@ -240,7 +265,7 @@ impl RetryQueue {
                 schedule
             },
             entries: Mutex::new(entries),
-            in_flight: Mutex::new(HashMap::new()),
+            claimed: Mutex::new(HashSet::new()),
         };
         Ok(q)
     }
@@ -257,13 +282,14 @@ impl RetryQueue {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn lock_flight(&self) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
-        self.in_flight
+    fn lock_claimed(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.claimed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Write `e` (temp file, mode 0600, then rename).
+    /// Write `e` durably: a temp file (mode 0600) synced to disk, renamed over the entry, then
+    /// the directory synced, so a crash leaves the old or the new entry, never a torn one.
     fn persist(&self, e: &Entry) {
         let path = self.dir.join(format!("{}.json", e.id));
         let tmp = self.dir.join(format!(".{}.tmp", e.id));
@@ -276,8 +302,11 @@ impl RetryQueue {
                 use std::os::unix::fs::OpenOptionsExt;
                 opts.mode(0o600);
             }
-            std::io::Write::write_all(&mut opts.open(&tmp)?, &bytes)?;
-            std::fs::rename(&tmp, &path)
+            let mut f = opts.open(&tmp)?;
+            std::io::Write::write_all(&mut f, &bytes)?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, &path)?;
+            std::fs::File::open(&self.dir)?.sync_all()
         };
         if let Err(err) = write() {
             tracing::error!(id = %e.id, error = %err, "could not write a queued delivery to disk; it lives in memory until the relay stops");
@@ -312,7 +341,7 @@ impl RetryQueue {
     /// after the backoff, or at `defer_until` if given (an open circuit; no try is counted then
     /// if `count` is false). Enforces the bounds.
     pub fn fail(&self, f: &Failure<'_>, now: u64, count: bool, defer_until: Option<u64>) {
-        self.lock_flight().remove(f.id);
+        self.release(f.id);
         let mut entries = self.lock();
         let e = entries.entry(f.id.to_string()).or_insert_with(|| Entry {
             id: f.id.to_string(),
@@ -348,9 +377,11 @@ impl RetryQueue {
     /// Put a due entry back without counting a try (its hook is not being served yet, or its
     /// circuit is open).
     pub fn defer(&self, id: &str, until: u64) {
-        self.lock_flight().remove(id);
         let mut entries = self.lock();
-        if let Some(e) = entries.get_mut(id).filter(|e| e.status == Status::Pending) {
+        if let Some(e) = entries
+            .get_mut(id)
+            .filter(|e| e.status == Status::Pending && e.next_ms != until)
+        {
             e.next_ms = until;
             let e = e.clone();
             self.persist(&e);
@@ -359,7 +390,7 @@ impl RetryQueue {
 
     /// A delivery with this id succeeded: forget it.
     pub fn succeeded(&self, id: &str) {
-        self.lock_flight().remove(id);
+        self.release(id);
         if self.lock().remove(id).is_some() {
             self.remove_file(id);
         }
@@ -367,11 +398,31 @@ impl RetryQueue {
 
     /// Drop a pending entry (hook removed, ...).
     pub fn drop_entry(&self, id: &str, reason: &str, now: u64) {
-        self.lock_flight().remove(id);
+        self.release(id);
         let mut entries = self.lock();
         if let Some(e) = entries.get_mut(id).filter(|e| e.status == Status::Pending) {
             self.mark_dropped(e, reason, now);
         }
+    }
+
+    /// Drop every pending entry whose `(repo id, hook id)` matches (a hook removed or disabled:
+    /// its retries must never reach it, even if it comes back under the same id).
+    pub fn drop_where(&self, matches: impl Fn(&str, &str) -> bool, reason: &str, now: u64) {
+        let mut entries = self.lock();
+        for e in entries.values_mut() {
+            if e.status == Status::Pending && matches(&e.repo_id, &e.hook_id) {
+                self.mark_dropped(e, reason, now);
+            }
+        }
+    }
+
+    /// The repos with pending entries.
+    pub fn pending_repos(&self) -> HashSet<String> {
+        self.lock()
+            .values()
+            .filter(|e| e.status == Status::Pending)
+            .map(|e| e.repo_id.clone())
+            .collect()
     }
 
     /// Whether `id` is still pending (a retry handed out may have been dropped since).
@@ -392,22 +443,23 @@ impl RetryQueue {
             }
         }
         self.prune_dropped(&mut entries, now);
-        let flight = self.lock_flight();
+        let claimed = self.lock_claimed();
         entries
             .values()
             .filter(|e| e.status == Status::Pending && e.next_ms <= now)
-            .filter(|e| {
-                flight
-                    .get(&e.id)
-                    .is_none_or(|t| now.saturating_sub(*t) >= IN_FLIGHT_LEASE_MS)
-            })
+            .filter(|e| !claimed.contains(&e.id))
             .cloned()
             .collect()
     }
 
-    /// Mark a due entry handed to its hook's worker.
-    pub fn claim(&self, id: &str, now: u64) {
-        self.lock_flight().insert(id.to_string(), now);
+    /// Mark a due entry handed to its hook's worker (not handed out again until released).
+    pub fn claim(&self, id: &str) {
+        self.lock_claimed().insert(id.to_string());
+    }
+
+    /// Release a claim (the worker finished with it, or never got it).
+    pub fn release(&self, id: &str) {
+        self.lock_claimed().remove(id);
     }
 
     /// The pending entries of one hook, oldest first; and all pending, oldest first.
@@ -486,6 +538,7 @@ mod tests {
     use super::*;
 
     const H: u64 = 3600 * 1000;
+    const ID1: &str = "b50f124f-72a9-90b7-c943-e486822a82f0";
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("relay-queue-{name}-{}", std::process::id()));
@@ -531,13 +584,13 @@ mod tests {
         let p = serde_json::json!({ "ref": "refs/heads/main" });
         {
             let q = RetryQueue::open(&d, Vec::new()).unwrap();
-            q.fail(&failure("id1", "h", &p), 1000, true, None);
+            q.fail(&failure(ID1, "h", &p), 1000, true, None);
         }
         let q = RetryQueue::open(&d, Vec::new()).unwrap();
         let e = &q.snapshot()[0];
-        assert_eq!((e.id.as_str(), e.tries, e.next_ms), ("id1", 1, 61_000));
+        assert_eq!((e.id.as_str(), e.tries, e.next_ms), (ID1, 1, 61_000));
         assert_eq!(e.payload, p);
-        let raw = std::fs::read_to_string(queue_dir(&d).join("id1.json")).unwrap();
+        let raw = std::fs::read_to_string(queue_dir(&d).join(format!("{ID1}.json"))).unwrap();
         let fields: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(&raw).unwrap();
         for key in fields.keys() {
@@ -551,18 +604,32 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&queue_dir(&d).join("id1.json")), 0o600);
+            assert_eq!(mode(&queue_dir(&d).join(format!("{ID1}.json"))), 0o600);
             assert_eq!(mode(&queue_dir(&d)), 0o700);
             assert_eq!(mode(&d), 0o700);
         }
         // Success forgets it, on disk too.
-        q.succeeded("id1");
+        q.succeeded(ID1);
         assert!(read_dir(&queue_dir(&d)).unwrap().is_empty());
+
+        // A file whose id is not its own name (or not a delivery id) is not loaded; a crash's
+        // temp file is cleaned up on open.
+        let mut forged: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        forged["id"] = serde_json::Value::from("../../escape");
+        std::fs::write(
+            queue_dir(&d).join(format!("{ID1}.json")),
+            forged.to_string(),
+        )
+        .unwrap();
+        std::fs::write(queue_dir(&d).join(".x.tmp"), "half").unwrap();
+        let q = RetryQueue::open(&d, Vec::new()).unwrap();
+        assert!(q.snapshot().is_empty());
+        assert!(!queue_dir(&d).join(".x.tmp").exists());
         std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
-    fn due_entries_expire_after_48h_and_in_flight_ones_are_not_handed_out_twice() {
+    fn due_entries_expire_after_48h_and_claimed_ones_are_not_handed_out_twice() {
         let d = dir("expiry");
         let q = RetryQueue::open(&d, Vec::new()).unwrap();
         let p = serde_json::json!({});
@@ -574,8 +641,13 @@ mod tests {
         assert_eq!(old.status, Status::Dropped);
         assert!(old.drop_reason.unwrap().contains("expired"));
         assert_eq!(old.payload, serde_json::Value::Null, "the body is freed");
-        q.claim("new", 48 * H);
+        q.claim("new");
         assert!(q.due(48 * H + 1).is_empty(), "handed out already");
+        assert!(
+            q.due(60 * H).is_empty(),
+            "no lease expiry: only a release frees it"
+        );
+        q.release("new");
         // Dropped records are pruned after their retention.
         q.due(48 * H + 8 * 24 * H);
         assert!(q.snapshot().iter().all(|e| e.id != "old"));
@@ -614,11 +686,11 @@ mod tests {
         let d = dir("drop");
         let q = RetryQueue::open(&d, Vec::new()).unwrap();
         let p = serde_json::json!({});
-        q.fail(&failure("x", "h", &p), 0, true, None);
-        q.drop_entry("x", "hook removed or disabled", 5);
-        assert!(!q.is_pending("x"));
-        q.fail(&failure("x", "h", &p), 10, true, None);
-        assert!(!q.is_pending("x"), "a later failure does not revive it");
+        q.fail(&failure(ID1, "h", &p), 0, true, None);
+        q.drop_entry(ID1, "hook removed or disabled", 5);
+        assert!(!q.is_pending(ID1));
+        q.fail(&failure(ID1, "h", &p), 10, true, None);
+        assert!(!q.is_pending(ID1), "a later failure does not revive it");
         let on_disk = read_dir(&queue_dir(&d)).unwrap();
         assert_eq!(
             on_disk[0].drop_reason.as_deref(),

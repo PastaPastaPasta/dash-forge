@@ -61,6 +61,9 @@ enum Command {
 /// `forge-relay deliveries` arguments.
 #[derive(Debug, Parser)]
 struct DeliveriesArgs {
+    /// The relay's config file, to use its `state-dir` (the same file as `run --config`).
+    #[arg(long = "config", short = 'c')]
+    config: Option<PathBuf>,
     /// The relay's state dir (default: `$FORGE_RELAY_STATE_DIR`, else
     /// `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay`).
     #[arg(long = "state-dir")]
@@ -168,9 +171,10 @@ async fn main() -> anyhow::Result<()> {
 
 /// `forge-relay deliveries`: the queue files, as a table or JSON. No network.
 fn deliveries(args: &DeliveriesArgs) -> anyhow::Result<()> {
-    let state = match &args.state_dir {
-        Some(d) => d.clone(),
-        None => queue::default_state_dir()?,
+    let state = match (&args.state_dir, &args.config) {
+        (Some(d), _) => d.clone(),
+        (None, Some(path)) => config::state_dir_from_file(path)?,
+        (None, None) => queue::default_state_dir()?,
     };
     let mut entries = queue::read_dir(&queue::queue_dir(&state))?;
     entries.sort_by_key(|e| (e.status == queue::Status::Dropped, e.next_ms));

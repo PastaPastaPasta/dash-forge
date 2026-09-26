@@ -50,7 +50,7 @@ use crate::ingest::{
     DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
     DOC_RELEASE, DOC_REVIEW,
 };
-use crate::payload::RepositoryMeta;
+use crate::payload::{RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 
@@ -82,17 +82,6 @@ const ROTATING_THREADS: usize = 10;
 
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
-
-/// Every GitHub event the relay produces.
-const ALL_EVENTS: [&str; 7] = [
-    "push",
-    "release",
-    "issues",
-    "pull_request",
-    "issue_comment",
-    "pull_request_review",
-    "check_run",
-];
 
 /// The two forge-v2 contracts.
 struct Contracts {
@@ -449,7 +438,19 @@ impl Discovery {
             .cloned()
             .collect();
         subs.retain(|s| served.contains(&s.repo_id));
-        shared.dispatcher.sync(&subs);
+        // Where this pass knows the hooks for sure: the relay index was read (else this returned
+        // an error above), the repo's own hooks were read, and it is served, or has no hook at
+        // all. A repo that failed to read or to set up is not judged (its retries wait).
+        let queued_repos = shared.dispatcher.queued_repos();
+        let authoritative: std::collections::HashSet<String> = served
+            .iter()
+            .chain(queued_repos.iter())
+            .filter(|r| !failed.contains(*r))
+            .filter(|r| served.contains(*r) || !wanted.contains_key(*r))
+            .filter(|r| self.repo_filter.is_empty() || self.repo_filter.contains(*r))
+            .cloned()
+            .collect();
+        shared.dispatcher.sync(&subs, &authoritative);
         for (repo_id, slot) in repos.iter().chain(ready.iter().map(|(k, v)| (k, v))) {
             *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
         }

@@ -213,6 +213,20 @@ impl RelayConfig {
     }
 }
 
+/// The state dir a config file names (`state-dir`), else the default: what
+/// `forge-relay deliveries --config <file>` reads, the same as `run --config <file>` writes.
+/// Reads the file only (no network settings are resolved).
+pub fn state_dir_from_file(path: &std::path::Path) -> Result<PathBuf> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| RelayError::Io(format!("reading config {}: {e}", path.display())))?;
+    let file: FileConfig = toml::from_str(&raw)
+        .map_err(|e| RelayError::Config(format!("parsing config {}: {e}", path.display())))?;
+    match file.state_dir {
+        Some(d) => Ok(d),
+        None => crate::queue::default_state_dir(),
+    }
+}
+
 /// The retry schedule: `FORGE_RELAY_RETRY_SCHEDULE` (comma-separated seconds; for tests and
 /// live checks), else the config file's `retry-schedule-secs`, else the default.
 fn retry_schedule(file: Option<Vec<u64>>) -> Result<Vec<Duration>> {
