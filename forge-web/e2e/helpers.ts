@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright'
-import { type Page, type ConsoleMessage } from '@playwright/test'
+import { expect, type Browser, type Page, type ConsoleMessage } from '@playwright/test'
+import { homedir } from 'node:os'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -136,4 +137,37 @@ export async function runAxe(page: import('@playwright/test').Page, label: strin
   )
 
   return seriousOrCritical
+}
+
+/** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/). */
+export function idFile(name: string): string {
+  return join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+}
+
+export const PASSPHRASE = 'e2e passphrase for the vault'
+
+/**
+ * A fresh browser context signed in as `name`: the identity file is imported once — its master
+ * key registers a limited key for this browser, which the vault keeps under a passphrase.
+ */
+export async function signedIn(browser: Browser, name: string, path = '/'): Promise<Page> {
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  await page.goto(path, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await page.getByTestId('tile-import').click()
+  await page.setInputFiles('input[type="file"]', idFile(name))
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  await page.getByRole('button', { name: /create this browser's key/i }).click()
+  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 120_000 })
+  return page
+}
+
+/** After a reload: unlock the vault this context already holds. */
+export async function unlock(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByRole('button', { name: /^unlock$/i }).click()
+  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
 }
