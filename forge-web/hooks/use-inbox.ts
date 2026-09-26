@@ -64,7 +64,9 @@ export function useUnreadCount(): number {
 
 async function reloadLocal(owner: string, network: Network, me: string): Promise<void> {
   const [items, subs, prefs] = await Promise.all([loadItems(network, me), loadSubs(network, me), loadPrefs(network, me)])
-  if (useInboxStore.getState().owner === owner) set({ items, subs: subs ?? null, prefs })
+  const state = useInboxStore.getState()
+  // Prefs are the store's once loaded: a poll finishing mid-toggle must not revert them.
+  if (state.owner === owner) set({ items, subs: subs ?? null, prefs: state.prefs ?? prefs })
 }
 
 /**
@@ -156,8 +158,9 @@ export function useInboxActions(): {
     setPrefs: useCallback(
       async (prefs: InboxPrefs) => {
         if (identity === null) return
+        set({ prefs })
         await savePrefs(network, identity, prefs)
-        set({ prefs, nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } })
+        set({ nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } })
       },
       [identity, network],
     ),

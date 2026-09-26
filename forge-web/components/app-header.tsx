@@ -238,7 +238,7 @@ function NewMenu(): JSX.Element | null {
         <ChevronDown className="h-3 w-3" aria-hidden />
       </button>
       {open ? (
-        <div role="menu" aria-label="New" className="absolute right-0 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
+        <div role="menu" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
           <Link href="/new" role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <Plus className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
             <span>
@@ -307,7 +307,7 @@ function AccountMenu({
         <IdentityPill identityId={identity} className="max-w-[9rem] overflow-hidden sm:max-w-none" />
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
+        <div role="menu" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
           <div className="rounded-md px-3 py-2.5">
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance

@@ -110,8 +110,8 @@ export default function ExplorePage(): JSX.Element {
         {signedIn ? (
           <div className="space-y-10" data-testid="explore-mine">
             <Section title="My repos" icon={GitBranch} state={mine} empty="You don't own any repos yet." emptyAction={<NewRepoLink />}>
-              {(d) => <RepoGrid repos={d.owned} />}
-              {(d) => d.owned.length === 0}
+              {(d) => <RepoGrid repos={d.owned.filter((r) => r.kind === 'v2')} />}
+              {(d) => !d.owned.some((r) => r.kind === 'v2')}
             </Section>
             <Section title="Repos I maintain or write to" icon={UserCheck} state={mine} empty="No one has added you as a maintainer or writer.">
               {(d) => <RepoGrid repos={d.member} />}
