@@ -43,7 +43,10 @@ export function SpendPanel(): JSX.Element {
     )
   }
   const s = summarize(rows)
-  const rec = reconcile(s.allTime, ledger.data?.baseline?.credits ?? null, balance === null ? null : BigInt(balance))
+  // Only rows since the baseline explain the balance change (earlier ones predate it).
+  const baseline = ledger.data?.baseline ?? null
+  const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
+  const rec = reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance))
   return (
     <div className="space-y-3 text-dense" data-testid="spend-panel">
       <div className="grid grid-cols-2 gap-3">

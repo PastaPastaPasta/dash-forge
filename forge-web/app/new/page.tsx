@@ -109,6 +109,9 @@ export default function NewRepoPage(): JSX.Element {
       result = await createRepoV2(sdk, signer, forge, i, (step, state) =>
         setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
       )
+    } catch (e) {
+      setProgress(null)
+      throw e
     } finally {
       reloadPending()
     }

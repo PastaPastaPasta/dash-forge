@@ -40,7 +40,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
-type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput } | null
+type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
 
 const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
   approve: 'Approve',
@@ -128,7 +128,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         patchId: pull.id,
         verdict: pending.review,
         commitOid: pull.headOid,
-        body: comment.trim(),
+        body: pending.body,
         intent,
       })
       setComment('')
@@ -138,7 +138,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   }
   const pendingCost =
     pending !== null && typeof pending === 'object'
-      ? previewCreate('review', { body: comment.trim() })
+      ? previewCreate('review', { body: pending.body })
       : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
 
   return (
@@ -238,7 +238,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant={v === 'approve' ? 'primary' : 'outline'}
                 disabled={guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits)) setPending({ review: v })
+                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits)) setPending({ review: v, body: comment.trim() })
                 }}
               >
                 {VERDICT_TEXT[v]}
@@ -283,7 +283,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                   : `That commit is not on ${base} yet, so the PR stays open until a push puts it there. If ${base} has moved on, the commit that lands will be a merge commit, not this head; record that merge with the CLI instead (dg pr merge --merge-oid).`
               }`
             : pending !== null && typeof pending === 'object'
-              ? `Records a ${VERDICT_TEXT[pending.review].toLowerCase()} review on ${pull.headOid.slice(0, 9)}${comment.trim() ? ', with your comment as its body' : ''}. New commits make it stale.`
+              ? `Records a ${VERDICT_TEXT[pending.review].toLowerCase()} review on ${pull.headOid.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale.`
               : 'Appends a state event to the append-only log.'
         }
         cost={pendingCost}
