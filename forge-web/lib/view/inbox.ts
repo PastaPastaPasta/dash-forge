@@ -29,13 +29,15 @@ import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from 
 import { listReposByOwner } from './discovery'
 import {
   baseDoc,
-  ident,
+  eventDoc,
+  int,
   listMyCommentTargets,
   listMyTargets,
   listStarredRepoIds,
   parseDocs,
   readReposByIds,
   readTargetsByIds,
+  repoLite,
   targetDoc,
   titleOf,
   type RepoLite,
@@ -85,6 +87,11 @@ export interface Subscriptions {
   /** How many were left out by the caps. */
   readonly droppedRepos: number
   readonly droppedThreads: number
+  /**
+   * Sources that could not be read (or only partly), in words, e.g. "comments you wrote".
+   * What they would have added is not watched this time; the next recompute retries.
+   */
+  readonly incomplete?: readonly string[]
 }
 
 export interface InboxPrefs {
@@ -165,49 +172,65 @@ export function pickRound<T>(feeds: readonly T[], offset: number, budget = ROUND
   return { round, next: (start + budget) % feeds.length }
 }
 
-/** Where a feed starts the first time it is read. */
-export function initialCursor(f: Feed, startedAt: number): number {
-  const floor = startedAt - BACKFILL_MS
-  return f.kind === 'comments' || f.kind === 'reviews' ? Math.max(floor, f.thread.since) : floor
+/**
+ * Where a feed has read to: every document up to `at` (ms), and, when a page ended inside one
+ * block, also the documents at `at` up to and including `afterId` (index order).
+ */
+export interface Cursor {
+  readonly at: number
+  readonly afterId?: string
 }
 
 /**
- * The cursor after reading `docs` (ascending `$createdAt`, `> prev`, `limit` rows). A short page
- * means everything up to now was read. A full page stops one ms before its last timestamp, so
- * documents of the same block that did not fit are read next time (items dedupe by id). A
- * full page all from one block cannot make progress that way and moves past it.
+ * Where a feed starts the first time it is read: a week before the feed was first watched
+ * (not before the inbox started), so a repo added months later does not flood the inbox with
+ * its history. Thread feeds never start before I joined the thread.
  */
-export function advanceCursor(prev: number, createdAts: readonly number[], limit = PAGE): number {
-  const last = createdAts[createdAts.length - 1]
+export function initialCursor(f: Feed, firstSeen: number): Cursor {
+  const floor = firstSeen - BACKFILL_MS
+  return { at: f.kind === 'comments' || f.kind === 'reviews' ? Math.max(floor, f.thread.since) : floor }
+}
+
+/**
+ * The cursor after reading a page (ascending `($createdAt, $id)`, past `prev`, `limit` rows).
+ * A short page read everything so far: the cursor is its last timestamp. A full page may have
+ * stopped inside a block, so the cursor keeps the last `$id` too and the next read continues
+ * after it at the same timestamp: nothing of a busy block is skipped or read twice.
+ */
+export function advanceCursor(prev: Cursor, page: readonly { at: number; id: string }[], limit = PAGE): Cursor {
+  const last = page[page.length - 1]
   if (last === undefined) return prev
-  if (createdAts.length < limit) return Math.max(prev, last)
-  const first = createdAts[0] as number
-  return first === last ? last : Math.max(prev, last - 1)
+  return page.length < limit ? { at: last.at } : { at: last.at, afterId: last.id }
 }
 
 /** The query for a feed after `cursor`. */
-export function feedQuery(forge: ForgeIds, f: Feed, cursor: number): DocumentQuery {
-  const after = ['$createdAt', '>', cursor] as const
-  const asc = ['$createdAt', 'asc'] as const
+export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQuery {
+  const after = cursor.afterId === undefined ? (['$createdAt', '>', cursor.at] as const) : (['$createdAt', '>=', cursor.at] as const)
+  const shape = { orderBy: [['$createdAt', 'asc'] as const], limit: PAGE, ...(cursor.afterId === undefined ? {} : { startAfter: cursor.afterId }) }
   switch (f.kind) {
     case 'new':
     case 'state':
-      return { dataContractId: forge.collab, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], orderBy: [asc], limit: PAGE }
+      return { dataContractId: forge.collab, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'push':
-      return { dataContractId: forge.core, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], orderBy: [asc], limit: PAGE }
+      return { dataContractId: forge.core, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'comments':
-      return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], orderBy: [asc], limit: PAGE }
+      return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
-      return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], orderBy: [asc], limit: PAGE }
+      return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
   }
 }
 
-const eventDoc = baseDoc.extend({
-  targetId: ident,
-  kind: z.union([z.number(), z.bigint()]).transform(Number),
-  value: z.string().optional().catch(undefined),
-})
-const reviewDoc = baseDoc.extend({ verdict: z.union([z.number(), z.bigint()]).transform(Number) })
+/** A stored cursor (an earlier build stored a bare timestamp). */
+function asCursor(v: unknown): Cursor | undefined {
+  if (typeof v === 'number') return { at: v }
+  if (typeof v === 'object' && v !== null && typeof (v as Cursor).at === 'number') {
+    const afterId = (v as Cursor).afterId
+    return typeof afterId === 'string' ? { at: (v as Cursor).at, afterId } : { at: (v as Cursor).at }
+  }
+  return undefined
+}
+
+const reviewDoc = baseDoc.extend({ verdict: int })
 const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined) })
 
 /** What an `event` / `authorEvent` kind means to a reader of the inbox. */
@@ -295,6 +318,8 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
 // Subscriptions (chain reads)
 // ---------------------------------------------------------------------------
 
+const EMPTY_PAGE: { rows: never[]; more: boolean } = { rows: [], more: false }
+
 function threadOf(t: TargetRow, repo: RepoLite, reason: ThreadSub['reason'], since: number): ThreadSub {
   return { id: t.id, kind: t.kind, number: t.number, title: t.title, repo, reason, since }
 }
@@ -310,7 +335,7 @@ export async function computeSubscriptions(
 ): Promise<Subscriptions> {
   const settled = await Promise.allSettled([
     listReposByOwner(sdk, me, { network }),
-    prefs.stars ? listStarredRepoIds(sdk, forge, me) : Promise.resolve({ rows: [], more: false }),
+    prefs.stars ? listStarredRepoIds(sdk, forge, me) : Promise.resolve(EMPTY_PAGE),
     listMyTargets(sdk, forge, me, 'issue'),
     listMyTargets(sdk, forge, me, 'pull'),
     listMyCommentTargets(sdk, forge, me),
@@ -327,17 +352,32 @@ export async function computeSubscriptions(
     repoSubs.push({ repo, reason })
   }
   const mine = ok(owned, { owned: [], member: [] })
-  for (const r of mine.owned) if (r.kind === 'v2') addRepo({ id: r.key, ownerId: r.ownerId, name: r.slug, private: r.visibility === 'private' }, 'owner')
-  for (const r of mine.member) addRepo({ id: r.key, ownerId: r.ownerId, name: r.slug, private: r.visibility === 'private' }, r.role ?? 'writer')
-  const starIds = ok(starred, { rows: [], more: false }).rows.filter((id) => !seen.has(id))
+  for (const r of mine.owned) if (r.kind === 'v2') addRepo(repoLite(r), 'owner')
+  for (const r of mine.member) addRepo(repoLite(r), r.role ?? 'writer')
+  const starIds = ok(starred, EMPTY_PAGE).rows.filter((id) => !seen.has(id))
   const commentedTargets = ok(commented, [])
-  const authored = [...ok(issues, { rows: [], more: false }).rows, ...ok(pulls, { rows: [], more: false }).rows]
+  const myIssues = ok(issues, EMPTY_PAGE)
+  const myPulls = ok(pulls, EMPTY_PAGE)
+  const authored = [...myIssues.rows, ...myPulls.rows]
   const authoredIds = new Set(authored.map((t) => t.id))
-  const commentedRows = await readTargetsByIds(sdk, forge, commentedTargets.map((c) => c.targetId).filter((id) => !authoredIds.has(id))).catch(() => new Map<string, TargetRow>())
+  const incomplete: string[] = []
+  const labels = ['repos you own or belong to', 'your stars', 'issues you opened', 'pull requests you opened', 'comments you wrote'] as const
+  settled.forEach((r, i) => {
+    if (r.status === 'rejected') incomplete.push(labels[i] ?? 'a source')
+  })
+  if (myIssues.more) incomplete.push('issues you opened (more than the first 500)')
+  if (myPulls.more) incomplete.push('pull requests you opened (more than the first 500)')
+  const commentedRows = await readTargetsByIds(sdk, forge, commentedTargets.map((c) => c.targetId).filter((id) => !authoredIds.has(id))).catch(() => {
+    incomplete.push('the threads you commented on')
+    return new Map<string, TargetRow>()
+  })
 
   // Repo rows for stars and for threads whose repo is not one of mine.
   const needed = [...starIds, ...authored.map((t) => t.repoId), ...[...commentedRows.values()].map((t) => t.repoId)].filter((id) => !seen.has(id))
-  const extra = await readReposByIds(sdk, forge, needed).catch(() => new Map<string, RepoLite>())
+  const extra = await readReposByIds(sdk, forge, needed).catch(() => {
+    incomplete.push('the repos of your threads and stars')
+    return new Map<string, RepoLite>()
+  })
   for (const id of starIds) {
     const repo = extra.get(id)
     if (repo) addRepo(repo, 'starred')
@@ -361,6 +401,7 @@ export async function computeSubscriptions(
     threads: threads.slice(0, MAX_THREADS),
     droppedRepos: Math.max(0, repoSubs.length - MAX_REPOS),
     droppedThreads: Math.max(0, threads.length - MAX_THREADS),
+    ...(incomplete.length > 0 ? { incomplete } : {}),
   }
 }
 
@@ -434,17 +475,18 @@ export async function pollOnce(
   const now = opts.now ?? Date.now()
   const p = prefix(network, me)
   const prefs = await loadPrefs(network, me)
-  let startedAt = await idbGet<number>('inbox', `${p}started`)
-  if (startedAt === undefined) {
-    startedAt = now
-    await idbPut('inbox', `${p}started`, now)
-  }
   let subs = await loadSubs(network, me)
   if (subs === undefined || opts.refreshSubs || now - subs.at > SUBS_TTL_MS) {
     subs = await computeSubscriptions(sdk, network, forge, me, prefs, now)
     await idbPut('inbox', `${p}subs`, subs)
   }
   const feeds = planFeeds(subs, prefs)
+  // When each feed was first watched (planned, not first read: a round may reach it minutes
+  // later). One record for all feeds; only feeds still watched are kept.
+  const seenBefore = (await idbGet<Record<string, number>>('inbox', `${p}seen`)) ?? {}
+  const seen: Record<string, number> = {}
+  for (const f of feeds) seen[feedKey(f)] = seenBefore[feedKey(f)] ?? now
+  await idbPut('inbox', `${p}seen`, seen)
   const { round, next } = pickRound(feeds, roundOffsets.get(p) ?? 0)
   roundOffsets.set(p, next)
 
@@ -453,7 +495,7 @@ export async function pollOnce(
   let failed = 0
   for (const f of round) {
     const key = `${p}cursor:${feedKey(f)}`
-    const cursor = (await idbGet<number>('inbox', key)) ?? initialCursor(f, startedAt)
+    const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? initialCursor(f, seen[feedKey(f)] ?? now)
     let docs: PlainDocument[]
     try {
       docs = (await queryDocumentsWithProof(sdk, feedQuery(forge, f, cursor))).documents
@@ -467,8 +509,8 @@ export async function pollOnce(
       await idbPut('inbox', `${p}item:${it.id}`, it)
       added++
     }
-    const times = docs.map((d) => d['$createdAt']).filter((t): t is number => typeof t === 'number')
-    await idbPut('inbox', key, advanceCursor(cursor, times))
+    const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
+    await idbPut('inbox', key, advanceCursor(cursor, page))
   }
   if (added > 0) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)

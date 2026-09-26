@@ -57,6 +57,11 @@ export const useInboxStore = create<InboxState>(() => initial)
 
 const set = (patch: Partial<InboxState>): void => useInboxStore.setState(patch)
 
+/** Ask the poller for a round now, recomputing subscriptions (queued if one is in flight). */
+function nudge(): void {
+  set({ nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } })
+}
+
 /** Unread items, for the header badge. */
 export function useUnreadCount(): number {
   return useInboxStore((s) => s.items.reduce((n, i) => n + (i.read ? 0 : 1), 0))
@@ -70,15 +75,16 @@ async function reloadLocal(owner: string, network: Network, me: string): Promise
 }
 
 /**
- * Run the inbox poller for the signed-in identity. Mount once (the header does). Polls on
- * sign-in, then every {@link POLL_MS} while the document is visible, and at once when the tab
- * becomes visible again or something {@link useInboxActions} nudges.
+ * Run the inbox poller for the signed-in identity. Mount exactly once, app-wide (the
+ * `InboxPoller` in `Providers`), so page navigations never restart it. Polls on sign-in, then
+ * every {@link POLL_MS} while the document is visible, and at once when the tab becomes
+ * visible again or {@link useInboxActions} nudges. A nudge that arrives while a poll is in
+ * flight is queued and runs right after it, never dropped.
  */
 export function useInboxPoller(): void {
   const { identity } = useAuth()
   const network = DEFAULT_NETWORK
   const forge = NETWORKS[network].v2
-  const nudge = useInboxStore((s) => s.nudge)
 
   useEffect(() => {
     if (identity === null || forge === null) {
@@ -88,50 +94,66 @@ export function useInboxPoller(): void {
     const owner = `${network}:${identity}`
     if (useInboxStore.getState().owner !== owner) set({ ...initial, owner })
     void reloadLocal(owner, network, identity)
-  }, [identity, forge, network])
 
-  useEffect(() => {
-    if (identity === null || forge === null) return
-    const owner = `${network}:${identity}`
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
-    let refreshSubs = nudge.refreshSubs
-    const run = async (): Promise<void> => {
-      if (cancelled || useInboxStore.getState().polling) return
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    // Per effect (so a new identity never waits on the old one's poll).
+    let inFlight = false
+    let queued: { refreshSubs: boolean } | null = null
+    const run = async (refreshSubs: boolean): Promise<void> => {
+      if (cancelled) return
+      if (inFlight) {
+        queued = { refreshSubs: refreshSubs || (queued?.refreshSubs ?? false) }
+        return
+      }
+      if (document.visibilityState !== 'visible') return
+      inFlight = true
       set({ polling: true })
       try {
         const sdk = await ensureSdk(network)
         const r = await pollOnce(sdk, network, forge, identity, { refreshSubs })
-        refreshSubs = false
         if (cancelled || useInboxStore.getState().owner !== owner) return
         set({ lastPoll: Date.now(), lastFeeds: { read: r.feedsRead, total: r.feedsTotal, failed: r.failed }, error: null })
         await reloadLocal(owner, network, identity)
       } catch (e) {
         if (!cancelled) set({ error: errorMessage(e) })
       } finally {
-        set({ polling: false })
+        inFlight = false
+        if (!cancelled) set({ polling: false })
+        const next = queued
+        queued = null
+        if (next !== null && !cancelled) void run(next.refreshSubs)
       }
     }
     const schedule = (): void => {
       timer = setTimeout(() => {
-        void run().finally(() => {
+        void run(false).finally(() => {
           if (!cancelled) schedule()
         })
       }, POLL_MS)
     }
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void run()
+      if (document.visibilityState === 'visible') void run(false)
     }
-    void run()
+    const unsubscribe = useInboxStore.subscribe((state, prev) => {
+      if (state.nudge.n !== prev.nudge.n) void run(state.nudge.refreshSubs)
+    })
+    void run(false)
     schedule()
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       cancelled = true
       if (timer !== null) clearTimeout(timer)
+      unsubscribe()
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [identity, forge, network, nudge])
+  }, [identity, forge, network])
+}
+
+/** The app-wide inbox poller as a component, for `Providers` (renders nothing). */
+export function InboxPoller(): null {
+  useInboxPoller()
+  return null
 }
 
 /** Mark read, mark all read, change what is watched, poll now. */
@@ -160,10 +182,10 @@ export function useInboxActions(): {
         if (identity === null) return
         set({ prefs })
         await savePrefs(network, identity, prefs)
-        set({ nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } })
+        nudge()
       },
       [identity, network],
     ),
-    pollNow: useCallback(() => set({ nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } }), []),
+    pollNow: useCallback(() => nudge(), []),
   }
 }

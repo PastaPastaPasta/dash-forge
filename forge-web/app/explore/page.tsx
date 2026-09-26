@@ -27,6 +27,7 @@ import {
   listMyTargets,
   listStarredRepoIds,
   readReposByIds,
+  repoLite,
   scanAssignedAndMentions,
   type RepoLite,
   type TargetRow,
@@ -34,11 +35,11 @@ import {
 
 /** The trending note, verbatim from the spec. */
 const TRENDING = "Trending needs an indexer. Forge doesn't run one; you can"
+/** "My repos" and "maintain or write to" read at most this many each (listReposByOwner's page). */
+const MY_REPOS_MAX = 50
+/** The assignment / mention scan looks at this many repos (one feed read each, 3 at a time). */
+const SCAN_REPOS_MAX = 20
 const INDEXER_DOCS = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/roadmap.md'
-
-function lite(r: DiscoveredRepo): RepoLite {
-  return { id: r.key, ownerId: r.ownerId, name: r.slug, private: r.visibility === 'private' }
-}
 
 export default function ExplorePage(): JSX.Element {
   const { sdk, ready, network, error: sdkError } = useSdk()
@@ -49,13 +50,13 @@ export default function ExplorePage(): JSX.Element {
 
   const recent = useAsync(() => listRecentRepos(sdk!, { network, limit: 24 }), [ready, network], { enabled: on })
   const recentV2 = recent.data?.v2 ?? []
-  const releases = useAsync(() => latestReleases(sdk!, forge!, recentV2.map(lite)), [recentV2.map((r) => r.key).join(',')], {
+  const releases = useAsync(() => latestReleases(sdk!, forge!, recentV2.map(repoLite)), [recentV2.map((r) => r.key).join(',')], {
     enabled: on && recent.data !== null,
   })
 
   const me = identity ?? ''
   const signedIn = on && identity !== null
-  const mine = useAsync(() => listReposByOwner(sdk!, me, { network }), [me, network], { enabled: signedIn })
+  const mine = useAsync(() => listReposByOwner(sdk!, me, { network, limit: MY_REPOS_MAX }), [me, network], { enabled: signedIn })
   const issues = useAsync(() => listMyTargets(sdk!, forge!, me, 'issue'), [me, 'issues'], { enabled: signedIn })
   const pulls = useAsync(() => listMyTargets(sdk!, forge!, me, 'pull'), [me, 'pulls'], { enabled: signedIn })
   const stars = useAsync(
@@ -68,9 +69,11 @@ export default function ExplorePage(): JSX.Element {
     { enabled: signedIn },
   )
   // Assigned / mentioned: no index, so scan the repos I own or belong to (the inbox's set).
-  const watched = [...(mine.data?.owned.filter((r) => r.kind === 'v2') ?? []), ...(mine.data?.member ?? [])].slice(0, 20)
+  const ownedV2 = mine.data?.owned.filter((r) => r.kind === 'v2') ?? []
+  const memberOf = [...ownedV2, ...(mine.data?.member ?? [])]
+  const watched = memberOf.slice(0, SCAN_REPOS_MAX)
   const scan = useAsync(
-    async () => scanAssignedAndMentions(sdk!, forge!, me, await resolveDpnsName(sdk!, me, network), watched.map(lite)),
+    async () => scanAssignedAndMentions(sdk!, forge!, me, await resolveDpnsName(sdk!, me, network), watched.map(repoLite)),
     [me, watched.map((r) => r.key).join(',')],
     { enabled: signedIn && mine.data !== null },
   )
@@ -110,11 +113,21 @@ export default function ExplorePage(): JSX.Element {
         {signedIn ? (
           <div className="space-y-10" data-testid="explore-mine">
             <Section title="My repos" icon={GitBranch} state={mine} empty="You don't own any repos yet." emptyAction={<NewRepoLink />}>
-              {(d) => <RepoGrid repos={d.owned.filter((r) => r.kind === 'v2')} />}
-              {(d) => !d.owned.some((r) => r.kind === 'v2')}
+              {() => (
+                <>
+                  <RepoGrid repos={ownedV2} />
+                  <FirstN shown={ownedV2.length} cap={MY_REPOS_MAX} what="repos" order="by name" />
+                </>
+              )}
+              {() => ownedV2.length === 0}
             </Section>
             <Section title="Repos I maintain or write to" icon={UserCheck} state={mine} empty="No one has added you as a maintainer or writer.">
-              {(d) => <RepoGrid repos={d.member} />}
+              {(d) => (
+                <>
+                  <RepoGrid repos={d.member} />
+                  <FirstN shown={d.member.length} cap={MY_REPOS_MAX} what="memberships" order="newest first" />
+                </>
+              )}
               {(d) => d.member.length === 0}
             </Section>
             <Section title="My issues" icon={CircleDot} state={issues} empty="You haven't opened an issue.">
@@ -134,7 +147,10 @@ export default function ExplorePage(): JSX.Element {
               icon={Info}
               state={scan}
               empty="Nothing assigned to you or mentioning you in the recent activity of your repos."
-              note={`Partial by necessity: assignments and @mentions have no index, so this looks only at the newest activity of the ${watched.length} repos you own or belong to, not everywhere.`}
+              note={`Partial by necessity: assignments and @mentions have no index. This looks only at the newest 100 events and 30 issues and 30 pull requests of ${
+                watched.length < memberOf.length ? `${watched.length} of the ${memberOf.length} repos` : `the ${watched.length} repos`
+              } you own or belong to, and at issue and pull request descriptions only (not comments).`}
+              partial={(d) => (d.failed > 0 ? `${d.failed} of ${d.reposScanned} repos could not be read; results cover the rest.` : null)}
             >
               {(d) => (
                 <div className="space-y-4">
@@ -165,10 +181,11 @@ export default function ExplorePage(): JSX.Element {
           state={releases}
           empty="None of the recent repos above has published a release."
           note="Releases have no cross-repo index, so this lists the newest release of each recent repo above. A full feed needs an indexer."
+          partial={(d) => (d.failed > 0 ? `${d.failed} of ${d.total} repos could not be read; their releases are not shown.` : null)}
         >
           {(d) => (
             <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800">
-              {d.map((r) => (
+              {d.rows.map((r) => (
                 <li key={`${r.repo.id}:${r.tagName}`} className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
                   <Package className="h-4 w-4 text-anvil-500" aria-hidden />
                   <Link href={repoHref('/repo/tags', { owner: r.repo.ownerId, name: r.repo.name, repoId: r.repo.id })} className="font-mono hover:underline">
@@ -180,7 +197,7 @@ export default function ExplorePage(): JSX.Element {
               ))}
             </ul>
           )}
-          {(d) => d.length === 0}
+          {(d) => d.rows.length === 0}
         </Section>
       </div>
     </AppShell>
@@ -203,6 +220,7 @@ function Section<T>({
   empty,
   emptyAction,
   note,
+  partial,
   children: [render, isEmpty],
 }: {
   title: string
@@ -211,6 +229,8 @@ function Section<T>({
   empty: string
   emptyAction?: ReactNode
   note?: string
+  /** A "could not read all of it" line for the data, or null when it is complete. */
+  partial?: (d: T) => string | null
   children: [(d: T) => ReactNode, (d: T) => boolean]
 }): JSX.Element {
   const id = `explore-${title.toLowerCase().replace(/[^a-z]+/g, '-')}`
@@ -226,15 +246,32 @@ function Section<T>({
       {state.error ? (
         <ErrorState message={state.error} onRetry={state.reload} />
       ) : state.data !== null ? (
-        isEmpty(state.data) ? (
+        <>
+          {partial?.(state.data) ? (
+            <p role="note" className="mb-3 rounded-md border border-caution/30 bg-caution/5 px-3 py-1.5 text-[12px] text-anvil-700 dark:text-anvil-200" data-partial="true">
+              {partial(state.data)}
+            </p>
+          ) : null}
+          {isEmpty(state.data) ? (
           <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-4 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-empty="true">
             {empty} {emptyAction}
           </div>
-        ) : (
-          render(state.data)
-        )
+          ) : (
+            render(state.data)
+          )}
+        </>
       ) : null}
     </section>
+  )
+}
+
+/** "Showing the first N" when a capped read came back full. */
+function FirstN({ shown, cap, what, order }: { shown: number; cap: number; what: string; order: string }): JSX.Element | null {
+  if (shown < cap) return null
+  return (
+    <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+      Showing the first {cap} {what} ({order}); there may be more.
+    </p>
   )
 }
 
@@ -263,7 +300,7 @@ function RepoLinks({ repos, more }: { repos: readonly RepoLite[]; more: boolean 
           </li>
         ))}
       </ul>
-      {more ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Showing the first {repos.length}.</p> : null}
+      {more ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Showing the first {repos.length} stars (index order); there may be more.</p> : null}
     </div>
   )
 }
@@ -297,7 +334,11 @@ function TargetList({ rows, more, label }: { rows: readonly TargetRow[]; more: b
           )
         })}
       </ul>
-      {more ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Showing the first {rows.length}.</p> : null}
+      {more ? (
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+          Read the first {rows.length} (in repo order, not by date); any past that are not shown.
+        </p>
+      ) : null}
     </div>
   )
 }

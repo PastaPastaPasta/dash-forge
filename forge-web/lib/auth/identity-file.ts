@@ -95,8 +95,9 @@ function fileHeader(json: unknown): { obj: Record<string, unknown>; identityId: 
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text)
-  } catch (e) {
-    throw new Error(`identity file is not valid JSON: ${(e as Error).message}`)
+  } catch {
+    // Never forward the parser's message: it quotes the input, which may hold a private key.
+    throw new Error('identity file is not valid JSON')
   }
 }
 

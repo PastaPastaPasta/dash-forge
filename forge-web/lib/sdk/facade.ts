@@ -4,7 +4,7 @@
  * site free of `as unknown as` casts.
  */
 
-import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { EvoSDK, IdentityKeyLimitsUpdateOptions, IdentityPublicKey } from '@dashevo/evo-sdk'
 
 /** An identity public key, as the auth layer reads it. */
 export interface WasmKey {
@@ -31,6 +31,11 @@ export interface AuthSdk {
     update(options: unknown): Promise<void>
     create(options: unknown): Promise<void>
     keysRemainingBudgets(id: string, keyIds: number[]): Promise<Map<number, bigint | null>>
+    /**
+     * `IdentityKeyLimitsUpdate` (protocol 14): the key as it now stands. `identity` is the
+     * object `fetch` returned (the wasm Identity, narrowed here to {@link WasmIdentity}).
+     */
+    updateKeyLimits(options: Omit<IdentityKeyLimitsUpdateOptions, 'identity'> & { identity: WasmIdentity }): Promise<IdentityPublicKey>
   }
   documents: { query(q: unknown): Promise<Map<string, unknown>> }
   contracts: { fetch(id: string): Promise<unknown> }

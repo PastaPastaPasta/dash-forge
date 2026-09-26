@@ -13,7 +13,7 @@ import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Plus, Search, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { useInboxPoller, useUnreadCount } from '@/hooks/use-inbox'
+import { useUnreadCount } from '@/hooks/use-inbox'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { IdentityPill } from '@/components/ui/identity-pill'
@@ -33,7 +33,6 @@ export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/b
 export function AppHeader(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
   const { identity, balance, logout } = useAuth()
-  useInboxPoller()
 
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
@@ -95,21 +94,27 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   const [query, setQuery] = useState('')
   const [note, setNote] = useState<ReactNode>(null)
   const [busy, setBusy] = useState(false)
+  // Only the newest #n lookup may act: a slow one must not navigate after the query changed.
+  const request = useRef(0)
   const here = addressFromParams(params)
   const inRepo = pathname.startsWith('/repo') && here.owner !== '' && here.name !== ''
   const id = compact ? 'jump-compact' : 'jump'
 
   const goNumber = async (addr: typeof here, n: number): Promise<void> => {
+    const mine = ++request.current
+    const current = (): boolean => request.current === mine
     setBusy(true)
     setNote(null)
     try {
       const sdk = await ensureSdk(DEFAULT_NETWORK)
       const resolved = await resolveAnyRepo(sdk, { network: DEFAULT_NETWORK, ...addr })
+      if (!current()) return
       if (resolved === null) {
         setNote(`No repo ${addr.owner}/${addr.name} here.`)
         return
       }
       const found = await numberTargets(sdk, resolved.repo, n)
+      if (!current()) return
       const issue = repoHref('/repo/issue', addr, { number: String(n) })
       const pull = repoHref('/repo/pull', addr, { number: String(n) })
       if (found.issue && found.pull) {
@@ -127,9 +132,9 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         setNote(`No issue or PR #${n} in ${addr.name}.`)
       }
     } catch (e) {
-      setNote(errorMessage(e))
+      if (current()) setNote(errorMessage(e))
     } finally {
-      setBusy(false)
+      if (current()) setBusy(false)
     }
   }
 
@@ -172,6 +177,9 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         onChange={(e) => {
           setQuery(e.target.value)
           setNote(null)
+          // Typing supersedes a lookup still in flight.
+          request.current++
+          setBusy(false)
         }}
         placeholder={inRepo ? 'owner/name, @name or #n' : 'owner/name or @name'}
         aria-describedby={note ? `${id}-note` : undefined}
@@ -191,7 +199,10 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   )
 }
 
-/** Close a popover on an outside click or Escape (focus returns to its trigger). */
+/**
+ * A disclosure popover (button with `aria-expanded` + a panel of plain links): closes on an
+ * outside click, on Escape (focus returns to the trigger), and when focus leaves it (Tab).
+ */
 function usePopover(): { open: boolean; setOpen: (v: boolean) => void; ref: React.RefObject<HTMLDivElement>; trigger: React.RefObject<HTMLButtonElement> } {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -207,11 +218,16 @@ function usePopover(): { open: boolean; setOpen: (v: boolean) => void; ref: Reac
         trigger.current?.focus()
       }
     }
+    const onFocus = (e: FocusEvent): void => {
+      if (ref.current && e.target instanceof Node && !ref.current.contains(e.target)) setOpen(false)
+    }
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onKey)
+    document.addEventListener('focusin', onFocus)
     return () => {
       document.removeEventListener('mousedown', onDoc)
       document.removeEventListener('keydown', onKey)
+      document.removeEventListener('focusin', onFocus)
     }
   }, [open])
   return { open, setOpen, ref, trigger }
@@ -229,8 +245,8 @@ function NewMenu(): JSX.Element | null {
         ref={trigger}
         type="button"
         onClick={() => setOpen(!open)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls="new-panel"
         className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
       >
         <Plus className="h-4 w-4" aria-hidden />
@@ -238,22 +254,22 @@ function NewMenu(): JSX.Element | null {
         <ChevronDown className="h-3 w-3" aria-hidden />
       </button>
       {open ? (
-        <div role="menu" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
-          <Link href="/new" role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
+        <nav id="new-panel" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
+          <Link href="/new" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <Plus className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
             <span>
               Repository
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a repo on {ACTIVE_NETWORK.key}</span>
             </span>
           </Link>
-          <a href={MIRROR_GUIDE_URL} role="menuitem" target="_blank" rel="noopener noreferrer" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <a href={MIRROR_GUIDE_URL} target="_blank" rel="noopener noreferrer" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
             <span>
               Mirror a GitHub repo
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Guide on GitHub (opens a new tab)</span>
             </span>
           </a>
-        </div>
+        </nav>
       ) : null}
     </div>
   )
@@ -299,15 +315,15 @@ function AccountMenu({
       <button
         ref={trigger}
         onClick={() => setOpen(!open)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls="account-panel"
         aria-label="Account menu"
         className="flex items-center gap-2 rounded-full py-0.5 pl-0.5 pr-1 hover:bg-anvil-100 dark:hover:bg-anvil-800"
       >
         <IdentityPill identityId={identity} className="max-w-[9rem] overflow-hidden sm:max-w-none" />
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
+        <div id="account-panel" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
           <div className="rounded-md px-3 py-2.5">
             <div className="flex items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Wallet className="h-3.5 w-3.5" aria-hidden /> Balance
@@ -317,20 +333,20 @@ function AccountMenu({
               {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
             </div>
           </div>
-          <Link href="/notifications" role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/notifications" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Notifications
           </Link>
-          <Link href="/explore" role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/explore" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Explore
           </Link>
-          <Link href="/settings" role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/settings" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Settings &amp; spend
           </Link>
-          <Link href={`/u?name=${encodeURIComponent(identity)}`} role="menuitem" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href={`/u?name=${encodeURIComponent(identity)}`} className={MENU_ITEM} onClick={() => setOpen(false)}>
             Your profile
           </Link>
           <button
-            role="menuitem"
+            type="button"
             onClick={() => {
               setOpen(false)
               onLogout(false)

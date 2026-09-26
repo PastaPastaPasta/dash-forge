@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { CREDITS_PER_DASH } from '../sdk/cost'
-import { TOP_UP_MAX_DASH, assertTopUp, isForgeBrowserKey, parseDashAmount, topUpExpiry } from './limited-key'
+import { TOP_UP_MAX_DASH, TOP_UP_MAX_DAYS, assertTopUp, isForgeBrowserKey, parseDashAmount, topUpExpiry } from './limited-key'
 
 const DASH = BigInt(CREDITS_PER_DASH)
 
@@ -44,8 +44,11 @@ describe('topUpExpiry', () => {
     expect(topUpExpiry(now + 10, null, now)).toBeNull()
     expect(topUpExpiry(null, now + 5, now)).toBe(now + 5)
   })
-  it('refuses a date in the past', () => {
+  it('refuses a date in the past, and one more than a year out', () => {
     expect(() => topUpExpiry(now - 100, now - 1, now)).toThrow(/future/)
+    const day = 24 * 60 * 60 * 1000
+    expect(topUpExpiry(now, now + TOP_UP_MAX_DAYS * day, now)).toBe(now + TOP_UP_MAX_DAYS * day)
+    expect(() => topUpExpiry(now, now + TOP_UP_MAX_DAYS * day + 1, now)).toThrow(/at most 365 days/)
   })
 })
 
@@ -60,14 +63,16 @@ describe('assertTopUp', () => {
 
 describe('isForgeBrowserKey', () => {
   const bound = (type: string) => ({ toJSON: () => ({ $type: type, id: 'G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2' }) })
-  it('accepts a HIGH, group-bound, budgeted key', () => {
-    expect(isForgeBrowserKey({ securityLevelNumber: 2, contractBounds: bound('contractGroup'), totalBudget: 5n })).toBe(true)
+  const key = { purposeNumber: 0, securityLevelNumber: 2, contractBounds: bound('contractGroup'), totalBudget: 5n }
+  it('accepts an AUTHENTICATION / HIGH, group-bound, budgeted key', () => {
+    expect(isForgeBrowserKey(key)).toBe(true)
   })
-  it('refuses the master key, unbounded keys, other bounds and unbudgeted keys', () => {
-    expect(isForgeBrowserKey({ securityLevelNumber: 0, contractBounds: bound('contractGroup'), totalBudget: 5n })).toBe(false)
-    expect(isForgeBrowserKey({ securityLevelNumber: 1, contractBounds: bound('contractGroup'), totalBudget: 5n })).toBe(false)
-    expect(isForgeBrowserKey({ securityLevelNumber: 2, totalBudget: 5n })).toBe(false)
-    expect(isForgeBrowserKey({ securityLevelNumber: 2, contractBounds: bound('singleContract'), totalBudget: 5n })).toBe(false)
-    expect(isForgeBrowserKey({ securityLevelNumber: 2, contractBounds: bound('contractGroup') })).toBe(false)
+  it('refuses the master key, other purposes, unbounded keys, other bounds and unbudgeted keys', () => {
+    expect(isForgeBrowserKey({ ...key, securityLevelNumber: 0 })).toBe(false)
+    expect(isForgeBrowserKey({ ...key, securityLevelNumber: 1 })).toBe(false)
+    expect(isForgeBrowserKey({ ...key, purposeNumber: 1 })).toBe(false)
+    expect(isForgeBrowserKey({ ...key, contractBounds: undefined })).toBe(false)
+    expect(isForgeBrowserKey({ ...key, contractBounds: bound('singleContract') })).toBe(false)
+    expect(isForgeBrowserKey({ ...key, totalBudget: undefined })).toBe(false)
   })
 })

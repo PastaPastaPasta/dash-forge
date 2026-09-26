@@ -40,6 +40,8 @@ export {
 export {
   BROWSER_KEY_DEFAULTS,
   TOP_UP_DEFAULTS,
+  TOP_UP_MAX_DAYS,
+  TopUpPendingError,
   defaultLimits,
   parseDashAmount,
   topUpExpiry,

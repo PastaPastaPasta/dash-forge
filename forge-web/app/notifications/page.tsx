@@ -91,13 +91,12 @@ export default function NotificationsPage(): JSX.Element {
           </span>
         </p>
 
-        <div role="tablist" aria-label="Filter" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+        <div role="group" aria-label="Show" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
           {(['unread', 'all'] as const).map((f) => (
             <button
               key={f}
-              role="tab"
               type="button"
-              aria-selected={filter === f}
+              aria-pressed={filter === f}
               onClick={() => setFilter(f)}
               className={cn('rounded px-3 py-1 text-dense font-medium', filter === f ? 'bg-forge-500/15 text-forge-700 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
             >
@@ -119,7 +118,7 @@ export default function NotificationsPage(): JSX.Element {
         ) : (
           <ul className="divide-y divide-anvil-200 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="inbox-list">
             {shown.map((item) => (
-              <InboxRow key={item.id} item={item} onOpen={() => void markRead([item.id])} onRead={() => void markRead([item.id])} />
+              <InboxRow key={item.id} item={item} onRead={() => void markRead([item.id])} />
             ))}
           </ul>
         )}
@@ -137,10 +136,20 @@ export default function NotificationsPage(): JSX.Element {
                 on your pull requests.
               </li>
               {prefs?.stars ? <li>{subs.repos.filter((r) => r.reason === 'starred').length} starred repos: new issues and pull requests.</li> : null}
-              {subs.droppedRepos + subs.droppedThreads > 0 ? (
+              {subs.droppedRepos > 0 ? (
                 <li>
-                  Capped at the newest {MAX_REPOS} repos and {MAX_THREADS} threads; {subs.droppedRepos + subs.droppedThreads} older
-                  ones are not watched.
+                  Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.
+                </li>
+              ) : null}
+              {subs.droppedThreads > 0 ? (
+                <li>
+                  Capped at the {MAX_THREADS} threads you joined most recently: {subs.droppedThreads} older ones are not watched.
+                </li>
+              ) : null}
+              {subs.incomplete && subs.incomplete.length > 0 ? (
+                <li className="text-caution" data-partial="true">
+                  Could not read all of: {subs.incomplete.join('; ')}. What they would add is not watched until the next check
+                  succeeds.
                 </li>
               ) : null}
             </ul>
@@ -170,13 +179,13 @@ export default function NotificationsPage(): JSX.Element {
   )
 }
 
-function InboxRow({ item, onOpen, onRead }: { item: InboxItem; onOpen: () => void; onRead: () => void }): JSX.Element {
+function InboxRow({ item, onRead }: { item: InboxItem; onRead: () => void }): JSX.Element {
   const Icon = ICON[item.kind]
   return (
     <li className={cn('flex items-start gap-3 px-3 py-2.5 sm:px-4', item.read ? 'bg-transparent' : 'bg-forge-500/5')} data-read={item.read}>
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
       <div className="min-w-0 flex-1">
-        <Link href={hrefOf(item)} onClick={onOpen} className="block text-dense hover:underline">
+        <Link href={hrefOf(item)} onClick={onRead} className="block text-dense hover:underline">
           <span className="font-mono text-anvil-500 dark:text-anvil-400">{item.repo.name}</span>
           {item.target ? (
             <>

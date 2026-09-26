@@ -142,13 +142,13 @@ test('t2. inbox: empty first, then items from a starred repo, badge and mark rea
   if (before > 1) await page.getByRole('button', { name: 'Mark all read' }).click()
   await expect(bell).toHaveAttribute('data-unread', '0')
   await expect(page.getByTestId('inbox-empty')).toContainText('All caught up')
-  await page.getByRole('tab', { name: /^All/ }).click()
+  await page.getByRole('button', { name: /^All/ }).click()
   await expect(list.locator('li[data-read="true"]').first()).toBeVisible()
   // Read state survives a reload (IndexedDB), and items link to their thread.
   await page.reload({ waitUntil: 'domcontentloaded' })
   await unlock(page)
   await expect(page.getByTestId('notifications-bell')).toHaveAttribute('data-unread', '0')
-  await page.getByRole('tab', { name: /^All/ }).click()
+  await page.getByRole('button', { name: /^All/ }).click()
   await expect(page.getByTestId('inbox-list').locator('li[data-read="true"]').first()).toBeVisible()
 })
 

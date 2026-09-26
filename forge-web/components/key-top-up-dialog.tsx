@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
-import { TOP_UP_DEFAULTS, masterMaterialFromFile, parseDashAmount, topUpExpiry } from '@/lib/auth'
+import { TOP_UP_DEFAULTS, TOP_UP_MAX_DAYS, TopUpPendingError, masterMaterialFromFile, parseDashAmount, topUpExpiry } from '@/lib/auth'
 import { KEY_LIMITS_UPDATE_CREDITS, previewCredits } from '@/lib/sdk'
 import type { KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
@@ -39,7 +39,7 @@ function fromIsoDay(v: string): number | null {
 }
 
 export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Element {
-  const { identity, keyLimits, topUpKey, isLoading } = useAuth()
+  const { identity, keyLimits, topUpKey, refreshBalance, isLoading } = useAuth()
   const [amount, setAmount] = useState(String(TOP_UP_DEFAULTS.addDash))
   const current = keyLimits?.expiresAt ?? null
   const suggested = Date.now() + TOP_UP_DEFAULTS.days * DAY_MS
@@ -49,9 +49,15 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const fileRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const [fileName, setFileName] = useState('')
-  const [mnemonic, setMnemonic] = useState('')
+  // The recovery phrase never enters React state: an uncontrolled textarea, read at submit
+  // and cleared afterwards. Only "something was typed" is state.
+  const phraseRef = useRef<HTMLTextAreaElement>(null)
+  const [phraseTyped, setPhraseTyped] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<{ before: KeyLimits | null; after: KeyLimits } | null>(null)
+  // Sent, but not visible on chain yet: re-read, never re-send.
+  const [pending, setPending] = useState<{ before: KeyLimits | null; message: string } | null>(null)
+  const [checking, setChecking] = useState(false)
 
   let credits: bigint | null = null
   let amountError: string | null = null
@@ -72,7 +78,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
       expiryError = errorMessage(e)
     }
   }
-  const hasMaster = mode === 'file' ? fileName !== '' : mnemonic.trim() !== ''
+  const hasMaster = mode === 'file' ? fileName !== '' : phraseTyped
   const changes = credits !== null || newExpiry !== null
   const ready = hasMaster && changes && amountError === null && expiryError === null && !isLoading
 
@@ -91,26 +97,79 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
     }
   }
 
+  const clearSecrets = (): void => {
+    fileRef.current = null
+    setFileName('')
+    if (phraseRef.current) phraseRef.current.value = ''
+    setPhraseTyped(false)
+  }
+
   const submit = async (): Promise<void> => {
     if (!ready) return
     setError(null)
     const before = keyLimits
     try {
-      const input = mode === 'file' ? { fileText: fileRef.current ?? '' } : { mnemonic }
+      const input = mode === 'file' ? { fileText: fileRef.current ?? '' } : { mnemonic: phraseRef.current?.value ?? '' }
       const after = await topUpKey(input, { addCredits: credits, expiresAt: newExpiry })
-      fileRef.current = null
-      setMnemonic('')
       setDone({ before, after })
     } catch (e) {
-      setError(errorMessage(e))
+      if (e instanceof TopUpPendingError) setPending({ before, message: e.message })
+      else setError(errorMessage(e))
+    } finally {
+      clearSecrets()
     }
   }
+
+  /** Re-read the key (no signature, no fee): did the sent update land? */
+  const checkAgain = async (): Promise<void> => {
+    if (pending === null) return
+    setChecking(true)
+    try {
+      await refreshBalance()
+    } finally {
+      setChecking(false)
+    }
+  }
+  // After a refresh, the session's limits show whether the update landed.
+  const landed =
+    pending !== null &&
+    keyLimits !== null &&
+    ((keyLimits.total ?? 0n) !== (pending.before?.total ?? 0n) || keyLimits.expiresAt !== (pending.before?.expiresAt ?? null))
 
   const dash = (c: bigint | null): string => (c === null ? '—' : `${creditsAsDash(Number(c))} DASH`)
 
   return (
     <Dialog open onClose={onClose} title="Top up this browser's key" description="Same key, more budget or a later expiry.">
-      {done ? (
+      {pending !== null && done === null ? (
+        <div className="space-y-3 text-dense" data-testid="key-top-up-pending" role="status">
+          {landed ? (
+            <p className="flex items-center gap-2 text-verify">
+              <CheckCircle2 className="h-4 w-4" aria-hidden /> The update landed: this key now has{' '}
+              {dash(keyLimits?.total ?? null)} of budget
+              {keyLimits?.expiresAt ? `, until ${formatDate(keyLimits.expiresAt)}` : ''}.
+            </p>
+          ) : (
+            <>
+              <p className="text-caution">
+                The update was sent, but the chain does not show the new limits yet. Do not send it again: a second top-up would
+                add the budget twice.
+              </p>
+              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{pending.message}</p>
+            </>
+          )}
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Your master key was used once and was not stored.</p>
+          <div className="flex gap-2">
+            {landed ? null : (
+              <Button variant="outline" className="flex-1" loading={checking} onClick={() => void checkAgain()}>
+                Check again
+              </Button>
+            )}
+            <Button variant="primary" className="flex-1" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      ) : done ? (
         <div className="space-y-3 text-dense" data-testid="key-top-up-done">
           <p className="flex items-center gap-2 text-verify">
             <CheckCircle2 className="h-4 w-4" aria-hidden /> Key limits updated on chain.
@@ -157,7 +216,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
             </label>
             {extend ? (
               <Field label="New expiry" htmlFor="topup-expiry">
-                <Input id="topup-expiry" type="date" value={expiry} min={isoDay(Date.now() + DAY_MS)} onChange={(e) => setExpiry(e.target.value)} aria-invalid={expiryError !== null} />
+                <Input id="topup-expiry" type="date" value={expiry} min={isoDay(Date.now() + DAY_MS)} max={isoDay(Date.now() + TOP_UP_MAX_DAYS * DAY_MS)} onChange={(e) => setExpiry(e.target.value)} aria-invalid={expiryError !== null} />
               </Field>
             ) : null}
             {expiryError ? <p className="text-[12px] text-danger">{expiryError}</p> : null}
@@ -167,13 +226,12 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
             <legend className="px-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">
               <KeyRound className="mr-1 inline h-3.5 w-3.5" aria-hidden /> Master key, used once
             </legend>
-            <div role="tablist" aria-label="Master key source" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+            <div role="group" aria-label="Master key source" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
               {(['file', 'mnemonic'] as const).map((m) => (
                 <button
                   key={m}
-                  role="tab"
                   type="button"
-                  aria-selected={mode === m}
+                  aria-pressed={mode === m}
                   onClick={() => setMode(m)}
                   className={cn('rounded px-3 py-1 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-700 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
                 >
@@ -201,7 +259,15 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
               </>
             ) : (
               <Field label="Recovery phrase (12 or 24 words)" htmlFor="topup-mnemonic">
-                <Textarea id="topup-mnemonic" value={mnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
+                <Textarea
+                  id="topup-mnemonic"
+                  ref={phraseRef}
+                  defaultValue=""
+                  onChange={(e) => setPhraseTyped(e.target.value.trim() !== '')}
+                  className="min-h-[64px] font-mono"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
               </Field>
             )}
           </fieldset>

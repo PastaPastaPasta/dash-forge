@@ -215,18 +215,25 @@ export async function assertGroupHolds(sdk: EvoSDK, group: string, contracts: re
 }
 
 /**
- * A key Forge may renew over, revoke or top up: HIGH, bound to a contract group, with a
- * budget. Any group, not just the current one, so a key left on an old group by a contract
+ * A key Forge may renew over, revoke or top up: AUTHENTICATION / HIGH, bound to a contract
+ * group, with a budget. Any group, not just the current one, so a key left on an old group by a contract
  * re-registration can still be disabled.
  */
-export function isForgeBrowserKey(k: Pick<WasmKey, 'securityLevelNumber' | 'contractBounds' | 'totalBudget'>): boolean {
-  return k.securityLevelNumber === 2 && k.contractBounds?.toJSON().$type === 'contractGroup' && k.totalBudget !== undefined
+export function isForgeBrowserKey(k: Pick<WasmKey, 'purposeNumber' | 'securityLevelNumber' | 'contractBounds' | 'totalBudget'>): boolean {
+  return (
+    k.purposeNumber === 0 &&
+    k.securityLevelNumber === 2 &&
+    k.contractBounds?.toJSON().$type === 'contractGroup' &&
+    k.totalBudget !== undefined
+  )
 }
 
 /** The top-up defaults: +0.05 DASH, and an expiry pushed out to 90 days from now if sooner. */
 export const TOP_UP_DEFAULTS = { addDash: 0.05, days: 90 } as const
 /** The most one top-up adds (a typo guard, not a protocol limit). */
 export const TOP_UP_MAX_DASH = 10
+/** The latest expiry a top-up may set, in days from now (a browser key should not live for years). */
+export const TOP_UP_MAX_DAYS = 365
 
 /**
  * Parse a DASH amount typed by a person into credits: a plain decimal, at most 11 decimal
@@ -248,11 +255,12 @@ export function parseDashAmount(input: string): bigint {
 /**
  * The expiry a top-up asks for: `wanted` when it is later than the key's current expiry, else
  * none (the protocol refuses an expiry that is not later, and an unchanged one is not a
- * change). `wanted` must be in the future.
+ * change). `wanted` must be in the future and at most {@link TOP_UP_MAX_DAYS} days out.
  */
 export function topUpExpiry(current: number | null, wanted: number | null, now = Date.now()): number | null {
   if (wanted === null) return null
   if (wanted <= now) throw new Error('the new expiry must be in the future')
+  if (wanted > now + TOP_UP_MAX_DAYS * DAY_MS) throw new Error(`the new expiry can be at most ${TOP_UP_MAX_DAYS} days from now`)
   return current === null || wanted > current ? wanted : null
 }
 
@@ -269,8 +277,15 @@ export function assertTopUp(req: TopUpRequest): void {
   }
 }
 
-interface KeyLimitsFacade {
-  identities: { updateKeyLimits(options: unknown): Promise<unknown> }
+/**
+ * The top-up was broadcast (or may have been), but its effect is not visible yet. Submitting
+ * again could add the budget twice: the caller re-reads instead of retrying.
+ */
+export class TopUpPendingError extends Error {
+  constructor(message = 'the update was sent, but the chain does not show the new limits yet') {
+    super(message)
+    this.name = 'TopUpPendingError'
+  }
 }
 
 /**
@@ -300,11 +315,14 @@ export async function topUpLimitedKey(
   const expiresAt = topUpExpiry(k.expiresAt === undefined ? null : Number(k.expiresAt), params.request.expiresAt)
   const addBudget = params.request.addCredits !== null && params.request.addCredits > 0n ? params.request.addCredits : null
   assertTopUp({ addCredits: addBudget, expiresAt })
-  const before = k.totalBudget ?? 0n
 
-  const master = PrivateKey.fromWIF(params.masterWif)
-  const signer = new IdentitySigner()
+  let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
+  let signer: InstanceType<typeof IdentitySigner> | null = null
+  let sent = false
+  let landed: KeyLimits | null = null
   try {
+    master = PrivateKey.fromWIF(params.masterWif)
+    signer = new IdentitySigner()
     const bytes = master.toBytes()
     const isMaster = identity.publicKeys.some(
       (x) => x.securityLevelNumber === 0 && x.disabledAt === undefined && safeValidate(x, bytes, params.network),
@@ -312,26 +330,40 @@ export async function topUpLimitedKey(
     bytes.fill(0)
     if (!isMaster) throw new Error("that key is not this identity's master key")
     signer.addKey(master)
-    await (sdk as unknown as KeyLimitsFacade).identities.updateKeyLimits({
+    sent = true
+    const updated = await authSdk(sdk).identities.updateKeyLimits({
       identity,
       keyId: params.keyId,
       ...(addBudget !== null ? { addBudget } : {}),
       ...(expiresAt !== null ? { expiresAt: BigInt(expiresAt) } : {}),
       signer,
     })
+    try {
+      if (updated.totalBudget !== undefined || updated.expiresAt !== undefined) {
+        landed = { remaining: null, total: updated.totalBudget ?? null, expiresAt: updated.expiresAt === undefined ? null : Number(updated.expiresAt) }
+      }
+    } finally {
+      updated.free()
+    }
+  } catch (e) {
+    // Past the broadcast, a failure may still have landed: never invite a second top-up.
+    if (sent) throw new TopUpPendingError(`the update may have been sent (${e instanceof Error ? e.message : String(e)}); check the key's limits before trying again`)
+    throw e
   } finally {
-    signer.free()
-    master.free()
+    signer?.free()
+    master?.free()
   }
+  if (landed === null) throw new TopUpPendingError()
 
-  // Read it back: a node a block behind still shows the old limits for a moment.
-  const wantTotal = before + (addBudget ?? 0n)
+  // Read it back until a node shows what the update returned (one a block behind shows the
+  // old limits for a moment); the remaining budget comes only from the chain read.
+  const want = landed
   const limits = await retryWhileMissing(async () => {
     const l = await readKeyLimits(sdk, params.identityId, params.keyId)
-    const landed = l !== null && (l.total ?? 0n) >= wantTotal && (expiresAt === null || (l.expiresAt ?? 0) >= expiresAt)
-    return landed ? l : null
+    const ok = l !== null && l.total === want.total && l.expiresAt === want.expiresAt
+    return ok ? l : null
   }, 6)
-  if (limits === null) throw new Error('the update was sent, but the chain does not show the new limits yet; reload in a minute')
+  if (limits === null) throw new TopUpPendingError()
   return limits
 }
 
@@ -351,13 +383,15 @@ export async function revokeLimitedKey(
   if (!isForgeBrowserKey(k)) {
     throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
   }
-  const master = PrivateKey.fromWIF(params.masterWif)
-  const signer = new IdentitySigner()
+  let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
+  let signer: InstanceType<typeof IdentitySigner> | null = null
   try {
+    master = PrivateKey.fromWIF(params.masterWif)
+    signer = new IdentitySigner()
     signer.addKey(master)
     await authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer })
   } finally {
-    signer.free()
-    master.free()
+    signer?.free()
+    master?.free()
   }
 }

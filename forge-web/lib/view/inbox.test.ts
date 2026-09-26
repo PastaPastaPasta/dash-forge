@@ -99,26 +99,32 @@ describe('pickRound', () => {
 })
 
 describe('cursors', () => {
-  it('starts a thread feed where I joined, others a week back', () => {
-    const started = 10 * BACKFILL_MS
-    expect(initialCursor({ kind: 'comments', thread: thread({ since: started - 5 }) }, started)).toBe(started - 5)
-    expect(initialCursor({ kind: 'comments', thread: thread({ since: 0 }) }, started)).toBe(started - BACKFILL_MS)
-    expect(initialCursor({ kind: 'new', type: 'issue', repo: REPO }, started)).toBe(started - BACKFILL_MS)
+  it('starts a thread feed where I joined, others a week before the feed was first watched', () => {
+    const seen = 10 * BACKFILL_MS
+    expect(initialCursor({ kind: 'comments', thread: thread({ since: seen - 5 }) }, seen)).toEqual({ at: seen - 5 })
+    expect(initialCursor({ kind: 'comments', thread: thread({ since: 0 }) }, seen)).toEqual({ at: seen - BACKFILL_MS })
+    expect(initialCursor({ kind: 'new', type: 'issue', repo: REPO }, seen)).toEqual({ at: seen - BACKFILL_MS })
   })
-  it('moves to the last row on a short page, just before it on a full one', () => {
-    expect(advanceCursor(5, [])).toBe(5)
-    expect(advanceCursor(5, [6, 9])).toBe(9)
-    const full = Array.from({ length: PAGE }, (_, i) => 100 + i)
-    expect(advanceCursor(5, full)).toBe(100 + PAGE - 2)
-    // A full page from one block cannot make progress by stepping back: move past it.
-    expect(advanceCursor(5, Array.from({ length: PAGE }, () => 50))).toBe(50)
+  it('moves to the last row on a short page, and keeps its id on a full one', () => {
+    const row = (at: number, i = at) => ({ at, id: `id${i}` })
+    expect(advanceCursor({ at: 5 }, [])).toEqual({ at: 5 })
+    expect(advanceCursor({ at: 5 }, [row(6), row(9)])).toEqual({ at: 9 })
+    const full = Array.from({ length: PAGE }, (_, i) => row(100 + i))
+    expect(advanceCursor({ at: 5 }, full)).toEqual({ at: 100 + PAGE - 1, afterId: `id${100 + PAGE - 1}` })
+    // A full page from one busy block: continue inside the block, after its last id.
+    const block = Array.from({ length: PAGE }, (_, i) => row(50, i))
+    expect(advanceCursor({ at: 5 }, block)).toEqual({ at: 50, afterId: `id${PAGE - 1}` })
   })
   it('queries past the cursor on the right index', () => {
-    const q = feedQuery(FORGE, { kind: 'comments', thread: thread() }, 42)
+    const q = feedQuery(FORGE, { kind: 'comments', thread: thread() }, { at: 42 })
     expect(q).toMatchObject({ dataContractId: 'COLLAB', documentTypeName: 'comment', orderBy: [['$createdAt', 'asc']], limit: PAGE })
     expect(q.where).toEqual([['targetId', '==', thread().id], ['$createdAt', '>', 42]])
-    expect(feedQuery(FORGE, { kind: 'push', type: 'refUpdate', repo: REPO }, 1).dataContractId).toBe('CORE')
-    expect(feedQuery(FORGE, { kind: 'reviews', thread: thread() }, 1).where?.[0]).toEqual(['patchId', '==', thread().id])
+    expect(q.startAfter).toBeUndefined()
+    const inBlock = feedQuery(FORGE, { kind: 'comments', thread: thread() }, { at: 42, afterId: 'X' })
+    expect(inBlock.where?.[1]).toEqual(['$createdAt', '>=', 42])
+    expect(inBlock.startAfter).toBe('X')
+    expect(feedQuery(FORGE, { kind: 'push', type: 'refUpdate', repo: REPO }, { at: 1 }).dataContractId).toBe('CORE')
+    expect(feedQuery(FORGE, { kind: 'reviews', thread: thread() }, { at: 1 }).where?.[0]).toEqual(['patchId', '==', thread().id])
   })
 })
 
@@ -201,10 +207,13 @@ describe('mentions and assignments (bounded scans)', () => {
     expect(mentions(`cc ${ME}`, ME, null)).toBe(true)
     expect(mentions(undefined, ME, 'alice')).toBe(false)
   })
-  it('folds assign and unassign in time order', () => {
-    const ev = (targetId: string, kind: number, value: string, at: number) => ({ targetId, kind, value, $createdAt: at })
+  it('folds assign and unassign in ($createdAt, $id) order', () => {
+    const ev = (targetId: string, kind: number, value: string, at: number, id = `e${at}`) => ({ $id: id, targetId, kind, value, $createdAt: at })
     const got = assignedTargets([ev('t1', 6, ME, 1), ev('t2', 6, ME, 2), ev('t2', 7, ME, 3), ev('t3', 6, OTHER, 4), ev('t1', 7, OTHER, 5)], ME)
     expect([...got]).toEqual(['t1'])
+    // Same block: ($createdAt, $id) decides, whatever the input order.
+    expect([...assignedTargets([ev('t4', 7, ME, 9, 'B'), ev('t4', 6, ME, 9, 'A')], ME)]).toEqual([])
+    expect([...assignedTargets([ev('t4', 6, ME, 9, 'B'), ev('t4', 7, ME, 9, 'A')], ME)]).toEqual(['t4'])
   })
 })
 

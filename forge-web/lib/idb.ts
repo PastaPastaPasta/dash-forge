@@ -31,7 +31,17 @@ function open(): Promise<IDBDatabase> {
         if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name)
       }
     }
-    req.onsuccess = () => resolve(req.result)
+    // Another tab still holds the old version open: the upgrade waits on it forever.
+    req.onblocked = () => reject(new Error('Close other Dash Forge tabs to finish the update'))
+    req.onsuccess = () => {
+      const db = req.result
+      // A newer tab wants to upgrade: let go so it is not blocked, and reopen on next use.
+      db.onversionchange = () => {
+        db.close()
+        dbPromise = null
+      }
+      resolve(db)
+    }
     req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'))
   })
   dbPromise.catch(() => {
