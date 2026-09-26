@@ -8,7 +8,7 @@
  */
 
 import Link from 'next/link'
-import { GitBranch, Lock, Plus, Search } from 'lucide-react'
+import { Compass, GitBranch, Lock, Plus, Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
@@ -58,6 +58,11 @@ export default function LandingPage(): JSX.Element {
               <Plus className="h-4 w-4" aria-hidden /> New repo
             </Button>
           </Link>
+          <Link href="/explore">
+            <Button variant="outline" size="lg">
+              <Compass className="h-4 w-4" aria-hidden /> Explore
+            </Button>
+          </Link>
           <VerificationChip
             segments={[
               {
@@ -79,9 +84,16 @@ export default function LandingPage(): JSX.Element {
 
       {/* Discovery */}
       <section className="mt-14">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-xl">Recent repos</h2>
-          {feed.loading ? <Spinner label={v2 ? 'Reading forge-core' : 'Reading registry'} /> : null}
+          <div className="flex items-center gap-3">
+            {feed.loading ? <Spinner label={v2 ? 'Reading forge-core' : 'Reading registry'} /> : null}
+            {v2 ? (
+              <Link href="/explore" className="text-dense text-forge-700 underline dark:text-forge-300">
+                Explore more
+              </Link>
+            ) : null}
+          </div>
         </div>
 
         {!deployed ? (
