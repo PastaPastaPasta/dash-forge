@@ -9,10 +9,12 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, V1RepoRef } from '../repo'
+import type { PackManifest, V1RepoRef, V2RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { DOC } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
@@ -20,7 +22,9 @@ import {
   artifactRangeFetch,
   buildPackSource,
   clearChunkCache,
+  loadArtifactBytesProgress,
   loadBrowseContext,
+  PackUnavailableError,
 } from './browse-source'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
@@ -480,5 +484,80 @@ describe('loadBrowseContext', () => {
 
   it('reports no-packs when nothing is stored', async () => {
     expect(await loadBrowseContext(browseSdk([], artifacts), REPO)).toEqual({ kind: 'no-packs' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fork packs — `platform://` locators into the parent's chunk scope
+// ---------------------------------------------------------------------------
+
+describe('fork pack via a platform:// locator', () => {
+  const FORK: V2RepoRef = {
+    kind: 'v2',
+    forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+    repoId: 'FORK',
+    ownerId: 'forker',
+    name: 'proj',
+    visibility: 'public',
+  }
+  const total = CHUNK_PAYLOAD_MAX + 321
+  const bytes = new Uint8Array(total)
+  for (let i = 0; i < total; i++) bytes[i] = (i * 17 + 3) % 251
+  const hash = bytesToHex(sha256(bytes))
+
+  /** A fork's manifest: no chunks of its own, the parent's copy named by locator. */
+  const forkManifest = (uri: string): PackManifest => ({
+    ...gitPack(hash, 0, 'fm'),
+    sizeBytes: total,
+    storage: 1,
+    uris: [uri],
+    uploader: 'forker',
+  })
+
+  /** Chunks exist only in the parent's scope, for the parent-side uploader. */
+  function parentSdk(served: Uint8Array): { sdk: EvoSDK; scopes: string[] } {
+    const inner = mockSdk(() => served) as unknown as {
+      documents: { query: (q: unknown) => Promise<Map<string, unknown>> }
+    }
+    const scopes: string[] = []
+    const sdk = {
+      documents: {
+        query: (q: { dataContractId: string; where?: readonly (readonly unknown[])[] }) => {
+          const field = (f: string): string => String((q.where ?? []).find((w) => w[0] === f)?.[2])
+          const scope = `${q.dataContractId}/${field('repoId')}/${field('$ownerId')}`
+          scopes.push(scope)
+          return scope === 'CORE/PARENT/uploader' ? inner.documents.query(q) : Promise.resolve(new Map())
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk, scopes }
+  }
+
+  it("reads the parent scope's chunks and verifies them against packHash", async () => {
+    const { sdk, scopes } = parentSdk(bytes)
+    const manifest = forkManifest(`platform://CORE/PARENT/uploader/${hash}`)
+    const got = await loadArtifactBytesProgress(sdk, FORK, manifest)
+    expect(bytesToHex(sha256(got))).toBe(hash)
+    expect(new Set(scopes)).toEqual(new Set(['CORE/PARENT/uploader']))
+    // Ranged reads (the indexed browse path) follow the same locator.
+    const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]
+    const range = await artifactRangeFetch(sdk, FORK, manifest)(start, end)
+    expect(Array.from(range)).toEqual(Array.from(bytes.subarray(start, end)))
+  })
+
+  it('rejects chunks that do not hash to the pack', async () => {
+    const tampered = bytes.slice()
+    tampered[CHUNK_PAYLOAD_MAX + 1]! ^= 0xff
+    const { sdk } = parentSdk(tampered)
+    const read = loadArtifactBytesProgress(sdk, FORK, forkManifest(`platform://CORE/PARENT/uploader/${hash}`))
+    await expect(read).rejects.toBeInstanceOf(PackUnavailableError)
+    await expect(read).rejects.toMatchObject({ corrupt: true })
+  })
+
+  it("skips a locator into another network's forge-core", async () => {
+    const { sdk, scopes } = parentSdk(bytes)
+    const read = loadArtifactBytesProgress(sdk, FORK, forkManifest(`platform://OTHER/PARENT/uploader/${hash}`))
+    await expect(read).rejects.toBeInstanceOf(PackUnavailableError)
+    expect(scopes).toEqual([])
   })
 })

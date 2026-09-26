@@ -39,6 +39,7 @@ import {
   repoSource,
   type PackManifest,
   type RepoRef,
+  type V2RepoRef,
 } from '../repo'
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
@@ -272,8 +273,9 @@ export class PackUnavailableError extends Error {
 /**
  * The HTTP(S) URLs an external artifact can be fetched from, in order: the manifest's own
  * `http(s)` mirrors, then each `ipfs://<cid>` through every gateway in `gateways`. Schemes a
- * browser cannot fetch (`s3://`, `platform://`) are skipped — an `s3://` locator always
- * travels with the bucket's public `https` URL, which is listed separately.
+ * browser cannot fetch over HTTP (`s3://`, `platform://`) are skipped — an `s3://` locator
+ * always travels with the bucket's public `https` URL, which is listed separately, and a
+ * `platform://` one is read as chunks by {@link platformLocatorReads}.
  */
 export function externalFetchUrls(
   uris: readonly string[],
@@ -580,6 +582,39 @@ async function firstSequential<T, R>(
   return null
 }
 
+/** A v2 chunk locator: `platform://<core>/<repoId>/<owner>/<packHash>` (forge-core `scope.rs`). */
+const PLATFORM_LOCATOR_V2 = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{64})$/i
+
+/**
+ * The chunk reads a `storage 1` manifest's `platform://` locators name. A fork records each
+ * of its parent's Platform copies this way (forge-core `fork.rs`): the pack's chunks stay in
+ * the parent's scope, keyed `(parentRepoId, uploader, packHash, seq)`. Each read is the
+ * manifest re-pointed at that scope: the parent's `repoId`, the locator's uploader, storage 0.
+ *
+ * Only forge-v2 locators into THIS network's forge-core, and only of this manifest's own pack
+ * (a locator naming another pack would download it in full before the hash check refused
+ * it). The v1 form (`platform://<contract>/<packHash>`) is skipped, like any locator a
+ * browser cannot follow.
+ */
+function platformLocatorReads(
+  repo: RepoRef,
+  manifest: PackManifest,
+): { readonly repo: V2RepoRef; readonly manifest: PackManifest }[] {
+  if (repo.kind !== 'v2') return []
+  const want = manifest.packHash.toLowerCase()
+  const out: { repo: V2RepoRef; manifest: PackManifest }[] = []
+  for (const uri of manifest.uris) {
+    const [, core, repoId, owner, hash] = PLATFORM_LOCATOR_V2.exec(uri) ?? []
+    if (core !== repo.forge.core || repoId === undefined || owner === undefined) continue
+    if (hash?.toLowerCase() !== want) continue
+    out.push({
+      repo: { ...repo, repoId, ownerId: '', name: '' },
+      manifest: { ...manifest, storage: 0, uris: [], uploader: owner },
+    })
+  }
+  return out
+}
+
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
 function noteSource(repo: RepoRef, uri?: string): void {
   noteContentCheck(repoKey(repo), {
@@ -595,6 +630,19 @@ export function artifactRangeFetch(
 ): (start: number, end: number, copy?: number) => Promise<Uint8Array> {
   const readCopy = async (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => {
     if (copy.storage !== 0) {
+      // Chunks a `platform://` locator names first: on-chain, so no mirror can hold a browse
+      // hostage. A range cannot be hashed on its own; the reader re-hashes what it builds.
+      let lastErr: unknown
+      for (const at of platformLocatorReads(repo, copy)) {
+        try {
+          const bytes = await fetchPlatformRange(sdk, at.repo, at.manifest, start, end)
+          noteSource(repo)
+          return bytes
+        } catch (e) {
+          lastErr = e
+        }
+      }
+      if (lastErr !== undefined && externalFetchUrls(copy.uris).length === 0) throw lastErr
       return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
@@ -698,18 +746,63 @@ async function loadOneCopy(
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+    const bytes = await loadExternalCopy(sdk, repo, manifest, onProgress, cancel)
     onProgress?.(total, total)
     return bytes
   }
+  const out = await loadPlatformWhole(sdk, repo, manifest, onProgress)
+  noteSource(repo)
+  return out
+}
+
+/** A whole platform-stored artifact, in {@link DOWNLOAD_WINDOW} strides. */
+async function loadPlatformWhole(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+): Promise<Uint8Array> {
+  const total = manifest.sizeBytes
   const out = new Uint8Array(total)
   for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
     out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
     onProgress?.(end, total)
   }
-  noteSource(repo)
   return out
+}
+
+/**
+ * A whole `storage 1` artifact: first from the chunks its `platform://` locators name (a
+ * fork's parent-scope copy), which must hash to `packHash` like any mirror's body, then from
+ * its external mirrors. Chunks that do not verify are reported `corrupt`, as a mirror is.
+ */
+async function loadExternalCopy(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
+): Promise<Uint8Array> {
+  const reasons: string[] = []
+  let corrupt = false
+  for (const at of platformLocatorReads(repo, manifest)) {
+    try {
+      const bytes = await loadPlatformWhole(sdk, at.repo, at.manifest, onProgress)
+      if (bytesToHex(sha256(bytes)) === manifest.packHash.toLowerCase()) {
+        noteSource(repo)
+        return bytes
+      }
+      corrupt = true
+      reasons.push('platform: chunks do not match the manifest sha256')
+    } catch (e) {
+      reasons.push(`platform: ${errorText(e)}`)
+    }
+  }
+  if (reasons.length > 0 && externalFetchUrls(manifest.uris).length === 0) {
+    throw new PackUnavailableError(manifest.packHash, ['platform'], corrupt, reasons.join('; '))
+  }
+  return fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
 }
 
 /**
