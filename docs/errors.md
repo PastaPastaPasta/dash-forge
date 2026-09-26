@@ -49,7 +49,7 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 ## E103
 
-**Not implemented yet.** The command exists but is not wired yet (for example `dg import`). The output describes the manual workaround.
+**Not implemented yet.** The command exists but is not wired yet. The output describes the manual workaround.
 
 ## E104
 
@@ -200,7 +200,7 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 **v1 repository is read only.** The repository is a forge-v1 repository (one data contract per repo). v1 repositories can still be cloned, fetched and viewed, but nothing writes to them any more. The refusal happens before anything is signed.
 
-Fix: create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there. `dg migrate`, which moves a v1 repository to forge-v2, is coming soon.
+Fix: copy it to forge-v2 with `dg migrate <owner>/<name> --from-network testnet` (refs, packs, issues, PRs, labels, releases and members; `--dry-run` prices it first), or create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there.
 
 ## E701
 

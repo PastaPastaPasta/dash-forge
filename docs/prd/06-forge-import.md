@@ -24,3 +24,10 @@ dg import github.com/org/repo [--repo-name X] [--backend mixed] [--skip issues|p
 - Total cost matches pre-estimate **within 10%**.
 - Interrupt + `--resume` completes without duplicate documents or double fees.
 - Gist-claim flow: a claimed placeholder renders as the claiming identity in forge-web and dg.
+
+## Status (forge-v2, 2026-09)
+- `forge-import <github repo>` / `dg import` mirror into a **forge-v2** repository and are re-runnable: what is already mirrored is decided on chain by `imported.url`, so a re-run writes only the difference (zero cost when nothing changed). `--state` narrows what GitHub is asked for; it is an optimisation, never the source of truth. Numbers are kept (§6 numbering allows gaps). State is replayed as member `event`s by the importing identity (maintainer or writer); authors stay placeholders (`imported.author`) until the claim flow lands.
+- `--max-spend` is checked up front and before **every** write, against the larger of the charged estimates and the measured balance drop. Git data goes through `git-remote-dash` (priced by a helper dry run first).
+- PRs are metadata + the PR head at `refs/mirror/pull/<n>/head`; release assets are referenced (URL + sha256), not re-uploaded; milestones are not mapped yet.
+- `dg migrate <v1 repo> --from-network testnet` copies a forge-v1 repository to forge-v2 (packs, refs, issues/PRs/comments/reviews/labels/releases, token holders as members).
+- The GitHub Mirror Action (`action/`) runs the importer from CI (ux-dx-spec §8).

@@ -358,7 +358,7 @@ impl BackendRegistry {
 }
 
 /// SHA-256 of `bytes`.
-pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
     let mut h = Sha256::new();
     h.update(bytes);

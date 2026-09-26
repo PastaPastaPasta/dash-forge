@@ -335,6 +335,163 @@ pub struct LocalReseed {
     pub restored_recorded_uri: bool,
 }
 
+/// Signer-free reads of a repository's git data (refs, manifests, packs), for callers that
+/// only read on a network, such as `dg migrate` reading a v1 repository on testnet.
+/// [`RepoService`] reads through the same functions.
+pub struct RepoReader<'a> {
+    client: &'a PlatformClient,
+}
+
+impl<'a> RepoReader<'a> {
+    /// A reader over `client`.
+    pub fn new(client: &'a PlatformClient) -> Self {
+        Self { client }
+    }
+
+    async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
+        repo.require_readable()?;
+        let scope = repo.scope()?;
+        let contract = self.client.fetch_contract(&scope.contract_id).await?;
+        Ok((scope, contract))
+    }
+
+    /// Every ref and its resolved [`RefState`] (see [`RepoService::read_refs`]).
+    pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
+        let (scope, contract) = self.readable(repo).await?;
+        let configs = fetch_config_history(self.client, &scope, &contract).await?;
+        let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
+        let mut out = Vec::with_capacity(by_hash.len());
+        for (hash, updates) in &by_hash {
+            let hash_hex = hex::encode(hash);
+            // Shared naming rule (forge-web applies the same one) — never the raw newest
+            // update, which may carry a name that does not hash to this key.
+            let Some(ref_name) = rules::display_ref_name(updates, &hash_hex).map(str::to_owned)
+            else {
+                continue;
+            };
+            let state = rules::resolve_ref(updates, &configs, &hash_hex, |a, b| a == b);
+            out.push((ref_name, state));
+        }
+        Ok(out)
+    }
+
+    /// Every `packManifest` of a repo, newest first (see
+    /// [`RepoService::read_pack_manifests`] for why it must be complete).
+    pub async fn read_pack_manifests(&self, repo: &RepoRef) -> Result<Vec<PackManifestInfo>> {
+        let (scope, contract) = self.readable(repo).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &contract,
+                DOC_PACK_MANIFEST,
+                &scope.filters([]),
+                &[QueryOrder::desc("$createdAt")],
+            )
+            .await?;
+        docs.iter().map(manifest_info).collect()
+    }
+
+    /// The default branch from the newest `config`.
+    pub async fn read_default_branch(&self, repo: &RepoRef) -> Result<Option<String>> {
+        let (scope, contract) = self.readable(repo).await?;
+        Ok(newest_config(self.client, &scope, &contract)
+            .await?
+            .and_then(|d| d.field_str("defaultBranch")))
+    }
+
+    /// One manifest's artifact, SHA-256-verified: external copies first (raced with
+    /// `reader`'s gateways), then the Platform chunks of this manifest's uploader.
+    pub async fn fetch_artifact(
+        &self,
+        repo: &RepoRef,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
+        let (scope, contract) = self.readable(repo).await?;
+        let expected = hex::encode(manifest.pack_hash);
+        let has_chunks = manifest.storage == 0;
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+        if reader.has_candidates(&manifest.uris) {
+            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            match reader
+                .fetch_verified(&manifest.uris, &expected, size, budget)
+                .await
+            {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if !has_chunks => return Err(e),
+                Err(e) => {
+                    tracing::info!(
+                        pack = %expected,
+                        error = %e,
+                        "no external copy verified; reading Platform chunks"
+                    );
+                }
+            }
+        } else if !has_chunks {
+            return Err(Error::Io(format!(
+                "artifact {expected} is stored externally but its manifest records no URI this \
+                 client can read ({:?})",
+                manifest.uris
+            )));
+        }
+        let owner = scope.is_v2().then_some(manifest.owner_id.as_str());
+        let bytes = crate::backends::platform::read_pack(
+            self.client,
+            &contract,
+            &scope,
+            owner,
+            manifest.pack_hash,
+        )
+        .await?;
+        if crate::backends::sha256(&bytes) != manifest.pack_hash {
+            return Err(Error::Integrity);
+        }
+        Ok(bytes)
+    }
+}
+
+/// The newest `config` document in `scope`, if any.
+async fn newest_config(
+    client: &PlatformClient,
+    scope: &DocScope,
+    contract: &LoadedContract,
+) -> Result<Option<FetchedDocument>> {
+    Ok(client
+        .query_documents(
+            contract,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::desc("$createdAt")],
+            1,
+            None,
+        )
+        .await?
+        .into_iter()
+        .next())
+}
+
+/// Every `config` of a repo in `$createdAt` order, paged to exhaustion.
+///
+/// `config_as_of` treats "no config in force at time T" as UNPROTECTED, so a truncated
+/// history does not merely go stale — it silently re-admits plain `refUpdate`s on
+/// protected refs that the rules layer had correctly rendered inert. forge-web reads the
+/// same timeline, and the two clients must fold the same input.
+async fn fetch_config_history(
+    client: &PlatformClient,
+    scope: &DocScope,
+    contract: &LoadedContract,
+) -> Result<Vec<ConfigDoc>> {
+    let docs = client
+        .query_all_documents(
+            contract,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::asc("$createdAt")],
+        )
+        .await?;
+    Ok(docs.iter().map(config_doc).collect())
+}
+
 /// A repository's current members as the pack reader rule needs them (maintainers'
 /// copies first): empty on v1, where every copy is the repo contract's own.
 pub type RoleMap = BTreeMap<String, Role>;
@@ -413,7 +570,7 @@ impl<'a> RepoService<'a> {
         let hasher = crate::private::Public;
         let ref_name_hash = hasher.hash(ref_name);
 
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = fetch_config_history(self.client, &scope, &contract).await?;
         let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
         let doc_type = if protected {
             DOC_PROTECTED_REF_UPDATE
@@ -455,61 +612,20 @@ impl<'a> RepoService<'a> {
     /// fast-forward supersession via `prevOid` still resolves, but descend-detection is
     /// deferred to the push-side pipeline that has the object store.
     pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
-        let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
-        let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
-
-        let mut out = Vec::with_capacity(by_hash.len());
-        for (hash, updates) in &by_hash {
-            let hash_hex = hex::encode(hash);
-            // Shared naming rule (forge-web applies the same one) — never the raw newest
-            // update, which may carry a name that does not hash to this key.
-            let Some(ref_name) = rules::display_ref_name(updates, &hash_hex).map(str::to_owned)
-            else {
-                continue;
-            };
-            let state = rules::resolve_ref(updates, &configs, &hash_hex, |a, b| a == b);
-            out.push((ref_name, state));
-        }
-        Ok(out)
+        RepoReader::new(self.client).read_refs(repo).await
     }
 
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
         let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = fetch_config_history(self.client, &scope, &contract).await?;
         Ok(current_protected_patterns(&configs))
-    }
-
-    /// The newest `config` document in `scope`, if any.
-    async fn newest_config(
-        &self,
-        scope: &DocScope,
-        contract: &LoadedContract,
-    ) -> Result<Option<FetchedDocument>> {
-        Ok(self
-            .client
-            .query_documents(
-                contract,
-                DOC_CONFIG,
-                &scope.filters([]),
-                &[QueryOrder::desc("$createdAt")],
-                1,
-                None,
-            )
-            .await?
-            .into_iter()
-            .next())
     }
 
     /// The repo's current default branch from the newest `config` (e.g. `main`) — the
     /// branch `git-remote-dash` reports as the `HEAD` symref. `None` when there is none.
     pub async fn read_default_branch(&self, repo: &RepoRef) -> Result<Option<String>> {
-        let (scope, contract) = self.readable(repo).await?;
-        Ok(self
-            .newest_config(&scope, &contract)
-            .await?
-            .and_then(|d| d.field_str("defaultBranch")))
+        RepoReader::new(self.client).read_default_branch(repo).await
     }
 
     /// Append a `config` carrying `backend_mode`, optionally replacing the advertised read
@@ -532,7 +648,7 @@ impl<'a> RepoService<'a> {
             }
         }
         let (scope, contract) = self.writable(repo).await?;
-        let newest = self.newest_config(&scope, &contract).await?;
+        let newest = newest_config(self.client, &scope, &contract).await?;
         let default_branch = newest
             .as_ref()
             .and_then(|d| d.field_str("defaultBranch"))
@@ -618,17 +734,7 @@ impl<'a> RepoService<'a> {
     /// a repo passes one page — and the initial import pack, holding the root objects and
     /// the delta bases everything else is built against, falls out of the set.
     pub async fn read_pack_manifests(&self, repo: &RepoRef) -> Result<Vec<PackManifestInfo>> {
-        let (scope, contract) = self.readable(repo).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &contract,
-                DOC_PACK_MANIFEST,
-                &scope.filters([]),
-                &[QueryOrder::desc("$createdAt")],
-            )
-            .await?;
-        docs.iter().map(manifest_info).collect()
+        RepoReader::new(self.client).read_pack_manifests(repo).await
     }
 
     /// Every manifest of `pack_hash` (on v2 each uploader may hold a copy; on v1 the index
@@ -1337,33 +1443,6 @@ impl<'a> RepoService<'a> {
         )
         .await
     }
-
-    // --- internal read helpers ---
-
-    /// The repo's **complete** `config` history (append-only, non-deletable), as
-    /// [`ConfigDoc`]s ordered by `$createdAt`.
-    ///
-    /// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
-    /// UNPROTECTED, so a truncated history does not merely go stale — it silently
-    /// re-admits plain `refUpdate`s on protected refs that the rules layer had correctly
-    /// rendered inert. forge-web reads the same timeline, and the two clients must fold the
-    /// same input.
-    async fn fetch_config_history(
-        &self,
-        scope: &DocScope,
-        contract: &LoadedContract,
-    ) -> Result<Vec<ConfigDoc>> {
-        let docs = self
-            .client
-            .query_all_documents(
-                contract,
-                DOC_CONFIG,
-                &scope.filters([]),
-                &[QueryOrder::asc("$createdAt")],
-            )
-            .await?;
-        Ok(docs.iter().map(config_doc).collect())
-    }
 }
 
 /// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates
@@ -1379,17 +1458,7 @@ pub async fn read_valid_tips(
     repo.require_readable()?;
     let scope = repo.scope()?;
     let contract = client.fetch_contract(&scope.contract_id).await?;
-    let configs: Vec<ConfigDoc> = client
-        .query_all_documents(
-            &contract,
-            DOC_CONFIG,
-            &scope.filters([]),
-            &[QueryOrder::asc("$createdAt")],
-        )
-        .await?
-        .iter()
-        .map(config_doc)
-        .collect();
+    let configs = fetch_config_history(client, &scope, &contract).await?;
     let hash = crate::backends::sha256(ref_name.as_bytes());
     let updates = crate::refs::read_ref_history(client, &contract, &scope, hash).await?;
     Ok(updates

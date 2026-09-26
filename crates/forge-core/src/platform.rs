@@ -220,6 +220,17 @@ impl LoadedIdentity {
             })
             .collect()
     }
+
+    /// The protocol-14 limits of key `key_id`: its total budget (credits) and expiry
+    /// (block time, ms). `None` when the identity has no such key; both fields `None` for a
+    /// key without limits.
+    pub fn key_limits(&self, key_id: u32) -> Option<KeyLimits> {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        self.0.public_keys().get(&key_id).map(|k| KeyLimits {
+            total_budget: k.total_budget(),
+            expires_at: k.expires_at(),
+        })
+    }
 }
 
 /// One public key of an identity, SDK-free ([`LoadedIdentity::public_keys`]).
@@ -252,6 +263,15 @@ impl IdentityKeyInfo {
             && self.key_type == "ECDSA_SECP256K1"
             && self.bound_to.as_deref().is_none_or(|b| b == contract_id)
     }
+}
+
+/// A key's protocol-14 usage limits ([`LoadedIdentity::key_limits`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyLimits {
+    /// Credits the key may ever spend, when it has a budget.
+    pub total_budget: Option<u64>,
+    /// When the key stops signing (ms), when it expires.
+    pub expires_at: Option<u64>,
 }
 
 impl std::fmt::Debug for LoadedIdentity {
@@ -798,6 +818,28 @@ impl PlatformClient {
         .await
         .map_err(|e| Error::Platform(format!("counting {document_type} documents: {e}")))?;
         Ok(count.map_or(0, |c| c.0))
+    }
+
+    /// What is left of key `key_id`'s budget on `identity_id` (protocol 14), proof-verified.
+    /// `None` when the key has no budget (or does not exist); `Some(0)` when it is spent.
+    pub async fn key_remaining_budget(
+        &self,
+        identity_id: &str,
+        key_id: u32,
+    ) -> Result<Option<u64>> {
+        use dash_sdk::platform::identity_keys_remaining_budgets::{
+            IdentityKeysRemainingBudgets, IdentityKeysRemainingBudgetsQuery,
+        };
+        let query = IdentityKeysRemainingBudgetsQuery {
+            identity_id: parse_id(identity_id, "identity id")?,
+            key_ids: vec![key_id],
+        };
+        let budgets = retry_transient_read("key budget", || {
+            IdentityKeysRemainingBudgets::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("reading key {key_id}'s remaining budget: {e}")))?;
+        Ok(budgets.and_then(|b| b.get(&key_id).copied().flatten()))
     }
 }
 

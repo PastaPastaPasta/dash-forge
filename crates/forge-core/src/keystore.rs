@@ -120,6 +120,29 @@ pub struct BridgeIdentity {
     pub asset_lock_key: AssetLockKey,
 }
 
+/// The prefix of an inline limited key (`dfk1:<network>:<identityId>:<keyId>:<wif>`).
+pub const DFK1_PREFIX: &str = "dfk1:";
+
+/// Whether a `DASH_FORGE_KEY` / `--identity` value is an inline `dfk1:` key, not a path.
+pub fn is_inline_key(source: &Path) -> bool {
+    source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
+}
+
+/// How to name a key source in messages: the path of an identity file, or for an inline
+/// `dfk1:` key everything but its WIF.
+pub fn describe_key_source(source: &Path) -> String {
+    match source.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
+        Some(inline) => {
+            let parts: Vec<&str> = inline[DFK1_PREFIX.len()..].splitn(4, ':').collect();
+            match parts[..] {
+                [network, id, key, _] => format!("dfk1:{network}:{id}:{key}:[redacted]"),
+                _ => "dfk1:[redacted]".to_string(),
+            }
+        }
+        None => source.display().to_string(),
+    }
+}
+
 /// Security levels acceptable for signing a document create/delete, in preference
 /// order. Document ops accept HIGH (spike S0.7); CRITICAL also works and is the
 /// fallback when a HIGH key is absent. Token-admin ops (mint/freeze/destroy) require
@@ -132,12 +155,70 @@ impl BridgeIdentity {
         Ok(serde_json::from_str(raw)?)
     }
 
-    /// Load and parse a bridge-format identity export from a file on disk.
+    /// Load a signing identity from `path`: a bridge-format identity export on disk, or an
+    /// inline limited key `dfk1:<network>:<identityId>:<keyId>:<wif>` (the one-value form CI
+    /// secrets use, ux-dx-spec §2.4). Every tool reads `DASH_FORGE_KEY` as a path, so taking
+    /// the inline form here gives all of them the CI format at once.
+    ///
+    /// Never format `path` into a message yourself: use [`describe_key_source`], which keeps
+    /// an inline key's WIF out of it.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        if let Some(inline) = path.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
+            return Self::from_dfk1(inline);
+        }
         let raw = std::fs::read_to_string(path)
             .map_err(|e| Error::Io(format!("reading identity file {}: {e}", path.display())))?;
         Self::from_json(&raw)
+    }
+
+    /// Parse an inline limited key `dfk1:<network>:<identityId>:<keyId>:<wif>` into an
+    /// identity carrying just that key. The key is listed as a HIGH authentication key (what
+    /// document writes sign with); the write engine still matches it against the identity's
+    /// on-chain keys, so a key that is not one of them, or not usable for writes, is refused
+    /// there. No mnemonic, no master key: that is the point of the format.
+    pub fn from_dfk1(value: &str) -> Result<Self> {
+        let bad = |why: &str| {
+            Error::Config(format!(
+                "DASH_FORGE_KEY is not a valid dfk1 key ({why}); expected \
+                 dfk1:<network>:<identityId>:<keyId>:<wif>"
+            ))
+        };
+        let rest = value
+            .trim()
+            .strip_prefix(DFK1_PREFIX)
+            .ok_or_else(|| bad("no dfk1: prefix"))?;
+        let parts: Vec<&str> = rest.splitn(4, ':').collect();
+        let [network, identity_id, key_id, wif] = parts[..] else {
+            return Err(bad("it needs four fields after dfk1:"));
+        };
+        if network.is_empty() || identity_id.is_empty() || wif.is_empty() {
+            return Err(bad("an empty field"));
+        }
+        let id: u32 = key_id
+            .parse()
+            .map_err(|_| bad("the key id is not a number"))?;
+        Ok(Self {
+            network: network.to_string(),
+            identity_id: identity_id.to_string(),
+            identity_keys: vec![IdentityKey {
+                id,
+                name: "dfk1".into(),
+                key_type: "ECDSA_SECP256K1".into(),
+                purpose: "AUTHENTICATION".into(),
+                security_level: "HIGH".into(),
+                private_key_wif: Secret::new(wif),
+                private_key_hex: Secret::new(""),
+                public_key_hex: String::new(),
+                derivation_path: String::new(),
+            }],
+            mnemonic: Secret::new(""),
+            asset_lock_key: AssetLockKey {
+                wif: Secret::new(""),
+                public_key_hex: String::new(),
+                derivation_path: String::new(),
+            },
+        })
     }
 
     /// Find an authentication key at the given security level, if present.
@@ -283,6 +364,42 @@ mod tests {
         assert!(json.contains("[redacted]"));
         // Non-secret fields still serialize normally.
         assert!(json.contains("testnet"));
+    }
+
+    #[test]
+    fn an_inline_dfk1_key_loads_as_one_high_auth_key() {
+        let v = "dfk1:devnet-moutai:FAKEid111:5:cFAKEwifDONOTUSE";
+        let id = BridgeIdentity::load_from_file(v).unwrap();
+        assert_eq!(id.network, "devnet-moutai");
+        assert_eq!(id.identity_id, "FAKEid111");
+        let key = id.doc_op_key().unwrap();
+        assert_eq!(key.id, 5);
+        assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
+        assert!(
+            id.token_admin_key().is_err(),
+            "a limited key is never CRITICAL"
+        );
+        assert!(id.mnemonic.expose().is_empty());
+        // Nothing prints the WIF.
+        assert!(!format!("{id:?}").contains("cFAKEwif"));
+        let shown = super::describe_key_source(std::path::Path::new(v));
+        assert_eq!(shown, "dfk1:devnet-moutai:FAKEid111:5:[redacted]");
+        assert!(super::is_inline_key(std::path::Path::new(v)));
+        assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
+    }
+
+    #[test]
+    fn malformed_dfk1_keys_are_refused_without_echoing_the_wif() {
+        for bad in [
+            "dfk1:",
+            "dfk1:testnet:id:5",
+            "dfk1:testnet:id:five:cWIFsecret",
+            "dfk1::id:5:cWIFsecret",
+        ] {
+            let err = BridgeIdentity::from_dfk1(bad).unwrap_err().to_string();
+            assert!(err.contains("dfk1:<network>"), "{err}");
+            assert!(!err.contains("cWIFsecret"), "{err}");
+        }
     }
 
     #[test]

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 forge-core = { path = "../forge-core" }
+forge-import = { path = "../forge-import" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete = "4"

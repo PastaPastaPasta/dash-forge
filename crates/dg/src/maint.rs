@@ -436,25 +436,3 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
         }
     })
 }
-
-/// `dg import <github-url>` — thin wrapper over `forge-import` (PRD 06), not yet wired.
-///
-/// Fails (E103) rather than exiting 0, so `dg import X && …` does not proceed as if a
-/// repository had been imported.
-#[allow(clippy::unnecessary_wraps)]
-pub fn import(_ctx: &Ctx, url: &str) -> Result<()> {
-    Err(crate::errors::reported(
-        forge_core::user_error::UserError::new(
-            forge_core::user_error::codes::NOT_IMPLEMENTED,
-            "dg import is not wired yet",
-        )
-        .cause(format!("{url} would be delegated to forge-import (PRD 06), which has no callable entry point yet"))
-        .fix("run the forge-import binary directly (`cargo run -p forge-import -- --help`)"),
-        json!({
-            "status": "not_implemented",
-            "command": "import",
-            "url": url,
-            "todo": "delegate to the forge-import crate (Forgejo-semantics mapping, PRD 06); the importer is not yet exposed as a callable entry point",
-        }),
-    ))
-}

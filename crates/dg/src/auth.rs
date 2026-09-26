@@ -28,18 +28,30 @@ async fn login(ctx: &Ctx) -> Result<()> {
         .context("`dg auth login` needs --identity <file> (the bridge identity export)")?
         .clone();
 
-    let bridge = BridgeIdentity::load_from_file(&src)
-        .with_context(|| format!("loading identity from {}", src.display()))?;
+    let bridge = BridgeIdentity::load_from_file(&src).with_context(|| {
+        format!(
+            "loading identity from {}",
+            forge_core::keystore::describe_key_source(&src)
+        )
+    })?;
+    if forge_core::keystore::is_inline_key(&src) {
+        anyhow::bail!(
+            "`dg auth login` stores an identity file; a dfk1: key is used directly via \
+             DASH_FORGE_KEY and is never written to disk"
+        );
+    }
     let network = ctx.network_label();
 
-    // Copy the export into the per-network import directory (private, 0600-ish via the
-    // source's own perms; we do not widen them).
+    // Copy the export into the per-network import directory. The copy holds every private
+    // key, so the directory is 0700 and the file 0600 from the moment it exists (created
+    // with that mode, not chmod-ed after a world-readable write).
     let dir = identities_dir(&network)?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let dest = dir.join(format!("{}.identity.json", bridge.identity_id));
     let raw =
         std::fs::read_to_string(&src).with_context(|| format!("reading {}", src.display()))?;
-    std::fs::write(&dest, raw).with_context(|| format!("writing {}", dest.display()))?;
+    write_private(&dir, &dest, raw.as_bytes())
+        .with_context(|| format!("writing {}", dest.display()))?;
 
     // Record as the config default (network + identity path + id). A devnet also records
     // its name, or the next command could not reconnect to it. Its DAPI list is recorded
@@ -89,6 +101,34 @@ async fn login(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Write `bytes` to `dest` readable by the owner only: `dir` is tightened to 0700, the file
+/// is created 0600 (an existing file is re-tightened before it is overwritten). A no-op
+/// mode change on platforms without Unix permissions.
+fn write_private(dir: &std::path::Path, dest: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        if dest.exists() {
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(dest)?;
+        f.write_all(bytes)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        std::fs::File::create(dest)?.write_all(bytes)?;
+    }
+    Ok(())
+}
+
 /// A devnet's DAPI list worth persisting: `None` when it is empty (discovery) or is exactly
 /// the list in its embedded `deployments/devnet-<name>.json`.
 fn explicit_dapi_addresses(network: &forge_core::platform::Network) -> Option<String> {
@@ -111,7 +151,7 @@ fn status(ctx: &Ctx) -> Result<()> {
     let identity_path = ctx
         .identity_path
         .as_ref()
-        .map(|p| p.to_string_lossy().to_string());
+        .map(|p| forge_core::keystore::describe_key_source(p));
 
     // The identity id from the resolved file, if it loads (kept cheap: no network).
     let identity_id = ctx
@@ -203,5 +243,25 @@ mod tests {
             explicit_dapi_addresses(&forge_core::platform::Network::Testnet),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_imported_identity_copy_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = std::env::temp_dir().join(format!("dg-auth-private-{}", std::process::id()));
+        let dir = tmp.join("identities");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dest = dir.join("x.identity.json");
+        // A pre-existing world-readable copy (what older versions left) is tightened too.
+        std::fs::write(&dest, b"old").unwrap();
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_private(&dir, &dest, b"{}").unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dest), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"{}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

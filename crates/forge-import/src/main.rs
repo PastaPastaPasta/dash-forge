@@ -1,103 +1,110 @@
-//! `forge-import` — one-command GitHub → Dash Forge migration (PRD 06).
-//!
-//! Maps a GitHub repository — git data plus issues, PRs, releases, labels and milestones —
-//! onto Dash Forge contracts. Git data rides the M1-proven `git push dash://…` path;
-//! collaboration artifacts map to repo-contract collab docs stamped with `imported`
-//! provenance (original author / time / URL, since Platform `$createdAt` is consensus time).
-//! A cost gate prints a per-class estimate and requires confirmation; `--dry-run` estimates
-//! with zero writes; `--max-spend` caps spend; `--resume` continues without double-paying.
-//!
-//! `forge-import claim <gh-login> --gist <url>` runs the gist-challenge author-claim flow.
-
-mod claim;
-mod estimate;
-mod github;
-mod importer;
-mod state;
+//! `forge-import`: mirror a GitHub repository into forge-v2 (once, or incrementally from CI),
+//! migrate a forge-v1 repository, or run the gist author-claim check.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
-use clap::Parser;
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 
-use estimate::SkipFlags;
-use forge_core::network::NetworkSettings;
-use github::GithubRepoRef;
-use importer::{Backend, ImportConfig};
+use forge_core::network::{NetworkSettings, NetworkTarget};
+use forge_import::budget::dash_to_credits;
+use forge_import::github::GithubRepoRef;
+use forge_import::importer::{self, ImportConfig};
+use forge_import::migrate::{self, MigrateConfig};
+use forge_import::source_github::Classes;
+use forge_import::summary::{Status, Summary};
 
 /// forge-import CLI.
 #[derive(Debug, Parser)]
 #[command(
     name = "forge-import",
     version = env!("DASH_FORGE_VERSION"),
-    about = "GitHub → Dash Forge importer (PRD 06)"
+    about = "Mirror a GitHub repository into Dash Forge (forge-v2), or migrate a forge-v1 repository",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
-    /// Source GitHub repo `owner/repo` (or a github.com URL). Omit only for `claim`.
+    /// The GitHub repository: `owner/repo`, `github.com/owner/repo` or its https URL.
     source: Option<String>,
 
-    /// Destination Dash Forge repo name (defaults to the source repo name).
-    #[arg(long)]
-    repo_name: Option<String>,
-
-    /// Import collaboration docs into this existing repo contract id (skips repo create +
-    /// git push) — the cheap "import into an existing repo" path.
-    #[arg(long)]
-    repo_contract: Option<String>,
-
-    /// Backend tier for a freshly created repo.
-    #[arg(long, value_enum, default_value_t = BackendArg::Platform)]
-    backend: BackendArg,
-
-    /// Artifact classes to skip (repeatable): issues | prs | releases | comments.
-    #[arg(long, value_enum)]
-    skip: Vec<SkipArg>,
-
-    /// Hard spend cap in DASH — abort before exceeding it.
-    #[arg(long)]
-    max_spend: Option<f64>,
-
-    /// Cap the number of issues / PRs imported (0 = all) — keeps trial runs cheap.
-    #[arg(long, default_value_t = 0)]
-    limit: u64,
-
-    /// Enumerate + estimate only; perform zero writes.
-    #[arg(long)]
-    dry_run: bool,
-
-    /// Skip the confirmation prompt (automation / CI).
-    #[arg(long)]
-    yes: bool,
-
-    /// Resume-state file (records progress so a rerun never duplicates or double-pays).
-    #[arg(long)]
-    resume: Option<PathBuf>,
-
-    /// Dash network (default: `DASH_FORGE_NETWORK`, else testnet).
-    #[arg(long, value_enum)]
-    network: Option<NetworkArg>,
-
-    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
-    #[arg(long)]
-    devnet_name: Option<String>,
-
-    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
-    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
-    #[arg(long)]
-    dapi_addresses: Option<String>,
-
-    /// Signing identity file (bridge JSON). Falls back to `DASH_FORGE_KEY`.
-    #[arg(long)]
-    identity: Option<PathBuf>,
+    #[command(flatten)]
+    run: RunArgs,
 
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-/// Subcommands (the bare form runs an import; `claim` runs the author-claim flow).
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    /// Destination forge-v2 repository: `owner/name`, `dash://owner/name`, a repo id, or a
+    /// bare name (yours). Created when missing and you are the owner. Default: the source's
+    /// name.
+    #[arg(long, alias = "repo-name")]
+    repo: Option<String>,
+
+    /// What to mirror: comma list of code, issues, prs, releases, labels (or all).
+    #[arg(long, default_value = "all")]
+    sync: String,
+
+    /// Incremental state file: only GitHub items updated since the last successful run are
+    /// read. Optional; what is already mirrored is always decided on chain.
+    #[arg(long)]
+    state: Option<PathBuf>,
+
+    /// Keep the bare git mirror here between runs (default: a temporary directory).
+    #[arg(long)]
+    work_dir: Option<PathBuf>,
+
+    /// Hard cap for this run, in DASH: refused up front when the estimate exceeds it, and
+    /// checked again before every write against what the run has spent so far.
+    #[arg(long, value_name = "DASH")]
+    max_spend: Option<f64>,
+
+    /// Read, diff and price only; write nothing.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Do not ask for confirmation.
+    #[arg(long, short = 'y')]
+    yes: bool,
+
+    /// Mirror at most this many issues and PRs (0 = all); for cheap trials.
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+
+    /// Write the run summary as JSON here (the Mirror Action reads it).
+    #[arg(long)]
+    summary_json: Option<PathBuf>,
+
+    #[command(flatten)]
+    net: NetArgs,
+}
+
+#[derive(Debug, clap::Args)]
+struct NetArgs {
+    /// Signing identity: a bridge identity file, or `dfk1:<network>:<id>:<keyId>:<wif>`.
+    /// Default: `DASH_FORGE_KEY`.
+    #[arg(long, global = true)]
+    identity: Option<PathBuf>,
+
+    /// Network (default: `DASH_FORGE_NETWORK`, else testnet).
+    #[arg(long, global = true, value_parser = ["testnet", "mainnet", "devnet"])]
+    network: Option<String>,
+
+    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    #[arg(long, global = true)]
+    devnet_name: Option<String>,
+
+    /// Devnet DAPI addresses, comma-separated.
+    #[arg(long, global = true)]
+    dapi_addresses: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
-    /// Claim a placeholder GitHub author via a signed gist challenge.
+    /// Copy a forge-v1 repository into a forge-v2 repository.
+    Migrate(Box<MigrateArgs>),
+    /// Check a GitHub author claim (signed gist challenge).
     Claim {
         /// The GitHub login being claimed.
         login: String,
@@ -107,154 +114,209 @@ enum Command {
     },
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum BackendArg {
-    Platform,
-    External,
+#[derive(Debug, clap::Args)]
+struct MigrateArgs {
+    /// The v1 repository: `owner/name` or its contract id.
+    source: String,
+    /// The network the v1 repository is on (default: testnet).
+    #[arg(long, default_value = "testnet", value_parser = ["testnet", "mainnet", "devnet"])]
+    from_network: String,
+    /// Its devnet name, when `--from-network devnet`.
+    #[arg(long)]
+    from_devnet_name: Option<String>,
+    /// Destination repository (default: the v1 name, yours).
+    #[arg(long)]
+    repo: Option<String>,
+    /// Skip issues, prs, labels, releases or members (repeatable).
+    #[arg(long, value_parser = ["issues", "prs", "labels", "releases", "members"])]
+    skip: Vec<String>,
+    /// Hard cap, in DASH.
+    #[arg(long, value_name = "DASH")]
+    max_spend: Option<f64>,
+    /// Plan and price only.
+    #[arg(long)]
+    dry_run: bool,
+    /// Do not ask for confirmation.
+    #[arg(long, short = 'y')]
+    yes: bool,
+    /// Write the run summary as JSON here.
+    #[arg(long)]
+    summary_json: Option<PathBuf>,
+    #[command(flatten)]
+    net: NetArgs,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum SkipArg {
-    Issues,
-    Prs,
-    Releases,
-    Comments,
+fn target(net: &NetArgs) -> Result<NetworkTarget> {
+    Ok(NetworkSettings::from_flags(
+        net.network.clone(),
+        net.devnet_name.clone(),
+        net.dapi_addresses.clone(),
+    )
+    .overlay(NetworkSettings::from_env())
+    .resolve()?)
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum NetworkArg {
-    Testnet,
-    Mainnet,
-    Devnet,
+fn key(net: &NetArgs) -> Option<PathBuf> {
+    net.identity.clone().or_else(|| {
+        std::env::var_os("DASH_FORGE_KEY")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
-impl NetworkArg {
-    fn kind(self) -> &'static str {
-        match self {
-            NetworkArg::Testnet => "testnet",
-            NetworkArg::Mainnet => "mainnet",
-            NetworkArg::Devnet => "devnet",
+fn finish(summary: &Summary, json: Option<&PathBuf>) -> ExitCode {
+    summary.print();
+    if let Some(p) = json {
+        if let Err(e) = summary.write_json(p) {
+            eprintln!("forge-import: writing {}: {e}", p.display());
+            return ExitCode::FAILURE;
         }
     }
-}
-
-impl From<BackendArg> for Backend {
-    fn from(value: BackendArg) -> Self {
-        match value {
-            BackendArg::Platform => Backend::Platform,
-            BackendArg::External => Backend::External,
-        }
+    match summary.status {
+        Status::Ok | Status::DryRun => ExitCode::SUCCESS,
+        Status::CapExceeded => ExitCode::from(3),
+        Status::Error => ExitCode::FAILURE,
     }
-}
-
-/// Convert a non-negative DASH amount to whole credits, saturating (the caller has already
-/// rejected negatives).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-fn dash_to_credits(dash: f64) -> u64 {
-    (dash * forge_core::cost::CREDITS_PER_DASH as f64).round() as u64
-}
-
-/// Resolve the identity file path: `--identity` > `DASH_FORGE_KEY`.
-fn resolve_identity_path(cli: &Cli) -> Result<PathBuf> {
-    cli.identity
-        .clone()
-        .or_else(|| std::env::var_os("DASH_FORGE_KEY").map(PathBuf::from))
-        .context("no identity — pass --identity <file> or set DASH_FORGE_KEY")
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .init();
-
-    let cli = Cli::parse();
-
-    // `claim` subcommand: verify a gist author-claim and report the resulting record.
-    if let Some(Command::Claim { login, gist }) = &cli.command {
-        let claimed = claim::verify(login, gist)?;
-        println!("author claim VERIFIED");
-        println!("  github login: {}", claimed.github_login);
-        println!("  dash identity: {}", claimed.identity_id);
-        println!("  gist:          {}", claimed.gist_url);
-        println!(
-            "  signature:     {}…",
-            &claimed.signature[..claimed.signature.len().min(24)]
-        );
-        println!(
-            "\nGitHub control proven (gist owner == login) and the challenge binds the identity.\n\
-             The on-chain `authorClaim` doc (repo-template v2) folds via FORGE_RULES_V1 so every\n\
-             imported.author={:?} placeholder renders as identity {}.",
-            claimed.github_login, claimed.identity_id
-        );
-        return Ok(());
-    }
-
-    // Otherwise: an import. Require a source.
-    let source_raw = cli
-        .source
-        .clone()
-        .context("missing source `owner/repo` (or use `forge-import claim …`)")?;
-    let source = GithubRepoRef::parse(&source_raw)?;
-
-    let mut skip = SkipFlags::default();
-    for s in &cli.skip {
-        match s {
-            SkipArg::Issues => skip.issues = true,
-            SkipArg::Prs => skip.prs = true,
-            SkipArg::Releases => skip.releases = true,
-            SkipArg::Comments => skip.comments = true,
+    match run(Cli::parse()).await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!(
+                "forge-import: {}",
+                forge_core::user_error::redact(&format!("{e:#}"))
+            );
+            ExitCode::FAILURE
         }
     }
+}
 
-    let max_spend_credits = match cli.max_spend {
-        Some(d) if d < 0.0 => bail!("--max-spend must be non-negative"),
-        Some(d) => Some(dash_to_credits(d)),
-        None => None,
-    };
+async fn run(cli: Cli) -> Result<ExitCode> {
+    match cli.command {
+        Some(Command::Claim { login, gist }) => {
+            let c = forge_import::claim::verify(&login, &gist)?;
+            println!(
+                "author claim verified: github {} → dash identity {}",
+                c.github_login, c.identity_id
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Migrate(m)) => {
+            let skip = |what: &str| m.skip.iter().any(|s| s == what);
+            let source_network = NetworkSettings::from_flags(
+                Some(m.from_network.clone()),
+                m.from_devnet_name.clone(),
+                None,
+            )
+            .resolve()
+            .context("resolving --from-network")?;
+            let cfg = MigrateConfig {
+                source: m.source.clone(),
+                source_network,
+                dest: m.repo.clone(),
+                network: target(&m.net)?,
+                classes: Classes {
+                    code: true,
+                    issues: !skip("issues"),
+                    prs: !skip("prs"),
+                    labels: !skip("labels"),
+                    releases: !skip("releases"),
+                },
+                members: !skip("members"),
+                max_spend: m.max_spend.map(dash_to_credits).transpose()?,
+                dry_run: m.dry_run,
+                yes: m.yes,
+                key: key(&m.net),
+            };
+            Ok(finish(&migrate::run(&cfg).await, m.summary_json.as_ref()))
+        }
+        None => {
+            let source = cli
+                .source
+                .context("missing the GitHub repository (owner/repo); see --help")?;
+            let r = cli.run;
+            let cfg = ImportConfig {
+                source: GithubRepoRef::parse(&source)?,
+                dest: r.repo.clone(),
+                classes: Classes::parse(&r.sync)?,
+                state_path: r.state.clone(),
+                work_dir: r.work_dir.clone(),
+                max_spend: r.max_spend.map(dash_to_credits).transpose()?,
+                dry_run: r.dry_run,
+                yes: r.yes,
+                limit: r.limit,
+                network: target(&r.net)?,
+                key: key(&r.net),
+                backend_mode: 0,
+            };
+            Ok(finish(&importer::run(&cfg).await, r.summary_json.as_ref()))
+        }
+    }
+}
 
-    let resume_path = cli.resume.clone().unwrap_or_else(|| {
-        std::env::temp_dir().join(format!(
-            "forge-import-{}-{}.state.json",
-            source.owner, source.repo
-        ))
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
 
-    // A dry-run performs no writes and never connects, so it tolerates a missing identity.
-    let identity_path = if cli.dry_run {
-        resolve_identity_path(&cli).unwrap_or_default()
-    } else {
-        resolve_identity_path(&cli)?
-    };
+    #[test]
+    fn cli_is_consistent() {
+        Cli::command().debug_assert();
+    }
 
-    let cfg = ImportConfig {
-        source,
-        repo_name: cli.repo_name.clone(),
-        repo_contract_id: cli.repo_contract.clone(),
-        backend: cli.backend.into(),
-        skip,
-        max_spend_credits,
-        dry_run: cli.dry_run,
-        yes: cli.yes,
-        limit: cli.limit,
-        resume_path,
-        // Flags > DASH_FORGE_* / FORGE_REGISTRY_CONTRACT_ID env > embedded deployment.
-        network: NetworkSettings::from_flags(
-            cli.network.map(|n| n.kind().to_string()),
-            cli.devnet_name.clone(),
-            cli.dapi_addresses.clone(),
-        )
-        .overlay(NetworkSettings::from_env())
-        .resolve()?,
-        identity_path,
-    };
+    #[test]
+    fn parses_the_action_invocation() {
+        let cli = Cli::try_parse_from([
+            "forge-import",
+            "o/r",
+            "--repo",
+            "mirror",
+            "--sync",
+            "code,issues",
+            "--state",
+            "/tmp/s.json",
+            "--max-spend",
+            "0.05",
+            "--yes",
+            "--summary-json",
+            "/tmp/sum.json",
+            "--network",
+            "devnet",
+            "--devnet-name",
+            "moutai",
+        ])
+        .unwrap();
+        assert_eq!(cli.source.as_deref(), Some("o/r"));
+        assert_eq!(cli.run.max_spend, Some(0.05));
+        assert!(cli.command.is_none());
+    }
 
-    importer::run(&cfg).await
+    #[test]
+    fn parses_migrate() {
+        let cli = Cli::try_parse_from([
+            "forge-import",
+            "migrate",
+            "8hJm/m1",
+            "--from-network",
+            "testnet",
+            "--skip",
+            "members",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Migrate(m)) = cli.command else {
+            panic!("expected migrate")
+        };
+        assert_eq!(m.skip, vec!["members"]);
+        assert!(m.dry_run);
+    }
 }

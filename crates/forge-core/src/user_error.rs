@@ -553,8 +553,10 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
         )
         .cause("forge-v1 repositories (one contract each) can still be cloned and viewed, but no longer written")
-        .fix("create a forge-v2 repository (`dg repo create <name>`) and push there")
-        .note("`dg migrate` (moving a v1 repo to forge-v2) is coming soon"),
+        .fix(format!(
+            "copy it to forge-v2 with `dg migrate {repo} --from-network testnet`, or create a \
+             forge-v2 repository (`dg repo create <name>`) and push there"
+        )),
         CoreError::V2NotDeployed { network } => UserError::new(
             codes::NOT_DEPLOYED,
             ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),

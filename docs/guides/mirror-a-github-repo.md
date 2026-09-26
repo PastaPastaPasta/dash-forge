@@ -30,39 +30,43 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login`. The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.28 DASH/MiB.
 
-> **Network.** Everything here runs on **testnet** today. There, each repository is a v1 contract that costs about **1.18 DASH** to create. On **forge-v2**, the same repository will cost about **0.001 DASH**. forge-v2's contracts are registered on devnet moutai, but `forge-import`, `dg` and `git-remote-dash` cannot use them yet; it comes to mainnet after Platform protocol 14 activates.
+> **Network.** The importer writes **forge-v2** repositories (about **0.001 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`) and come to mainnet after Platform protocol 14 activates. Testnet only has read-only forge-v1 repositories; `dg migrate` copies one to forge-v2.
 
 ---
 
 ## 1. First import
 
-`forge-import` copies a GitHub repository into Forge in one command: every branch and tag, then labels, milestones (as labels), issues with their comments and state, PRs (as metadata: title, body, state and head commit), and releases (tag, title and notes; release assets are not copied).
+`forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
 
-**Always start with a dry run.** It enumerates everything and prints an estimate, and it writes nothing:
+**Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
 ```sh
 forge-import alice/project --dry-run
 ```
 
-Then run it with a spending cap. If the estimate is above the cap, the importer refuses to start:
+Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --max-spend 3 --resume ./alice-project.import.json
+forge-import alice/project --max-spend 0.5 --state ./alice-project.sync.json
 ```
 
-Useful flags (all real; see `forge-import --help`):
+Useful flags (see `forge-import --help`):
 
 | Flag | Effect |
 |---|---|
-| `--repo-name <name>` | Name on Forge. The default is the GitHub name. |
-| `--skip issues` / `prs` / `releases` / `comments` | Leave out a class. Repeat the flag for more than one. |
-| `--limit <n>` | Import at most `n` issues and PRs. Useful for a cheap trial run. |
-| `--max-spend <DASH>` | Refuse to start when the estimate exceeds this. The check is on the up-front estimate: actual spend is not metered write by write yet, so leave some margin. |
-| `--resume <file>` | The progress file. Rerunning with the same file never duplicates a document or pays twice. |
+| `--repo <owner/name or name>` | The destination. The default is the GitHub name, owned by you; it is created when missing. |
+| `--sync code,issues,prs,releases,labels` | What to mirror (default: all). |
+| `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. |
+| `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
+| `--dry-run` | Price only. |
+| `--limit <n>` | At most `n` issues and PRs, for a cheap trial. |
 | `--yes` | No confirmation prompt, for CI. |
-| `--network`, `--devnet-name` | The same network flags as `dg`. |
+| `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. |
+| `--network`, `--devnet-name`, `--identity` | As for `dg`. `DASH_FORGE_KEY` may be a file path or an inline `dfk1:` key. |
 
-Issues and PRs are created by **your** identity, since GitHub users have no Dash identity. Each carries an `imported` record with the GitHub author, creation time and URL. Forge assigns its own issue and PR numbers, so they may differ from GitHub's.
+Issues and PRs keep their GitHub numbers (Forge numbers issues and PRs separately, so each keeps its own). They are written by **your** identity, since GitHub users have no Dash identity: each opens with *"Mirrored from github.com/alice/project#12 by @bob"* and carries an `imported` record with the GitHub author, creation time and URL. Close, reopen, merge, label and draft changes are written as member events, so the importing identity must be a maintainer (or a writer, which cannot publish releases) of the destination.
+
+**Re-running is safe and cheap.** What is already mirrored is decided on chain (by the GitHub URL recorded in each document), not by a local file. A re-run writes only what is new or changed, and costs nothing when nothing changed. An interrupted or capped run is finished by running it again; nothing is written twice.
 
 **Where the packs go.** The importer pushes through `git-remote-dash`, so it follows the git config the helper reads. To keep packs off Platform, set the storage policy globally before you import:
 
@@ -70,22 +74,15 @@ Issues and PRs are created by **your** identity, since GitHub users have no Dash
 dg storage use r2-main --global
 ```
 
-`dg import <url>` exists as a command but is **not wired yet**: it fails with `E103` and points you to `forge-import`.
+**From forge-v1.** `dg migrate <owner>/<name> --from-network testnet` copies a v1 repository into forge-v2. It copies the live packs (packs on your own storage are referenced, Platform chunks are re-uploaded) and every ref. It copies issues, PRs, comments, reviews, labels and releases with their numbers. The v1 token holders become `maintainer` / `writer` members. `--dry-run` prices it first.
 
 ---
 
 ## 2. Keep it in sync
 
-The import is a one-time copy. To follow new commits, push every branch and tag from CI after each push to GitHub. This is plain `git push` to a `dash://` remote.
+Run the same import again whenever you like, from cron or CI, with the same `--state` file. It copies branches and tags (force-pushes and deletions included), plus new issues, PRs, comments, reviews, state changes, labels and releases. Nothing else is written. The Mirror Action below does exactly this on every GitHub event.
 
-**What stays in sync this way:** branches and tags, including force-pushes and deletions (with `--prune`).
-
-**What does not:** new issues, PRs and releases. To copy new ones, rerun `forge-import` with the same `--resume` file: it skips everything it already imported. Two things to know about reruns:
-
-- Name the repository you already have with `--repo-contract <contract id>` (from `dg repo view`), so the importer adds to it instead of planning a new one. That path imports issues, PRs and releases only; your CI job keeps pushing the code.
-- The printed estimate, and the `--max-spend` check, cover **all** of the GitHub repository's issues, PRs, releases, labels and comments again, not only the new ones. Size the cap for that, or leave it off and read the estimate.
-
-Incremental issue and PR sync is part of the [Mirror Action](#the-forge-mirror-action-coming-soon).
+If you only want the code, a plain `git push` of every branch and tag to the `dash://` remote works too.
 
 ### The CI secret
 

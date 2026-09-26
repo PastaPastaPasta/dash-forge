@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "forge-import — GitHub → Dash Forge migrator (Forgejo-semantics mapping)."
+description = "forge-import — mirror GitHub repositories into Dash Forge, and migrate forge-v1 repositories to forge-v2."
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "forge-import"

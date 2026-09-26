@@ -97,8 +97,12 @@ impl Ctx {
     /// Load the signing identity (bridge-format key material) from the resolved path.
     pub fn load_bridge(&self) -> Result<BridgeIdentity> {
         let path = self.require_identity_path()?;
-        BridgeIdentity::load_from_file(path)
-            .with_context(|| format!("loading identity from {}", path.display()))
+        BridgeIdentity::load_from_file(path).with_context(|| {
+            format!(
+                "loading identity from {}",
+                forge_core::keystore::describe_key_source(path)
+            )
+        })
     }
 
     /// Connect to the resolved network.

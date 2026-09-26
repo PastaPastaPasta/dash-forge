@@ -1,13 +1,9 @@
-//! GitHub source layer — a thin wrapper over the `gh` CLI (authenticated out-of-band as
-//! the invoking user) so forge-import never implements GitHub auth itself (PRD 06).
+//! GitHub source layer: a thin wrapper over the `gh` CLI, so forge-import never implements
+//! GitHub auth itself. `gh` reads `GH_TOKEN` / `GITHUB_TOKEN` (CI) or its own login.
 //!
-//! Every read is `gh api <path> --paginate --jq '.[]'`, which streams each array element
-//! as one JSON object per line (JSONL) across all pages — rate-limit- and pagination-aware
-//! for free. Clones go through `gh repo clone`, which injects the token transparently.
-//!
-//! The mapped structs carry only the fields forge-import maps onto Forge collab docs; every
-//! field is `#[serde(default)]` so an unexpected-shape payload degrades gracefully rather
-//! than aborting a long migration.
+//! Every list read is `gh api <path> --paginate --jq '.[]'`, one JSON object per line across
+//! all pages. The structs carry only what the importer maps; every field is
+//! `#[serde(default)]` so an unexpected payload degrades instead of aborting a long import.
 
 use std::path::Path;
 use std::process::Command;
@@ -25,8 +21,9 @@ pub struct GithubRepoRef {
 }
 
 impl GithubRepoRef {
-    /// Parse `owner/repo`, also accepting a full `https://github.com/owner/repo[.git]` or
-    /// `github.com/owner/repo` URL form.
+    /// Parse `owner/repo`, also accepting `https://github.com/owner/repo[.git]` and
+    /// `github.com/owner/repo`. Only GitHub name characters are accepted, so the value is
+    /// safe to put in an API path and a clone URL.
     pub fn parse(s: &str) -> Result<Self> {
         let trimmed = s
             .trim()
@@ -35,15 +32,18 @@ impl GithubRepoRef {
             .trim_start_matches("github.com/")
             .trim_end_matches('/')
             .trim_end_matches(".git");
-        let mut parts = trimmed.split('/').filter(|p| !p.is_empty());
-        let owner = parts
-            .next()
-            .ok_or_else(|| anyhow!("invalid GitHub ref {s:?}: expected owner/repo"))?;
-        let repo = parts
-            .next()
-            .ok_or_else(|| anyhow!("invalid GitHub ref {s:?}: expected owner/repo"))?;
-        if parts.next().is_some() {
-            bail!("invalid GitHub ref {s:?}: expected exactly owner/repo");
+        let parts: Vec<&str> = trimmed.split('/').collect();
+        let [owner, repo] = parts[..] else {
+            bail!("invalid GitHub repository {s:?}: expected owner/repo");
+        };
+        let ok = |p: &str| {
+            !p.is_empty()
+                && !p.starts_with('.')
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        if !ok(owner) || !ok(repo) {
+            bail!("invalid GitHub repository {s:?}: expected owner/repo");
         }
         Ok(Self {
             owner: owner.to_string(),
@@ -57,24 +57,24 @@ impl GithubRepoRef {
     }
 }
 
-/// Repository metadata (default branch, size).
+/// Repository metadata.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RepoMeta {
-    /// Default branch name (e.g. `main` / `master`).
+    /// Default branch name.
     #[serde(default)]
     pub default_branch: String,
-    /// On-disk size reported by GitHub, in KiB.
+    /// GitHub-reported size, KiB.
     #[serde(default)]
     pub size: u64,
-    /// Repository description.
+    /// Description.
     #[serde(default)]
     pub description: Option<String>,
 }
 
-/// A GitHub user reference (author / actor).
+/// A GitHub user.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhUser {
-    /// GitHub login handle.
+    /// Login.
     #[serde(default)]
     pub login: String,
 }
@@ -82,80 +82,21 @@ pub struct GhUser {
 /// A GitHub label.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhLabel {
-    /// Label name.
+    /// Name.
     #[serde(default)]
     pub name: String,
-    /// 6-hex color (no leading `#`).
+    /// 6-hex color, no `#`.
     #[serde(default)]
     pub color: String,
-    /// Optional description.
+    /// Description.
     #[serde(default)]
     pub description: Option<String>,
 }
 
-/// A GitHub milestone.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct GhMilestone {
-    /// Milestone title.
-    #[serde(default)]
-    pub title: String,
-    /// Milestone description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Due date (ISO 8601), if set.
-    #[serde(default)]
-    pub due_on: Option<String>,
-    /// `open` / `closed`.
-    #[serde(default)]
-    pub state: String,
-}
-
-/// A GitHub issue (the issues endpoint also returns PRs — those carry `pull_request`).
+/// An issue as the issues endpoint returns it (PRs included: they carry `pull_request`).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhIssue {
-    /// Issue number.
-    #[serde(default)]
-    pub number: u64,
-    /// Title.
-    #[serde(default)]
-    pub title: String,
-    /// Body (may be null).
-    #[serde(default)]
-    pub body: Option<String>,
-    /// Author.
-    #[serde(default)]
-    pub user: GhUser,
-    /// `open` / `closed`.
-    #[serde(default)]
-    pub state: String,
-    /// Browser URL.
-    #[serde(default)]
-    pub html_url: String,
-    /// Creation time (ISO 8601).
-    #[serde(default)]
-    pub created_at: String,
-    /// Labels attached at import time.
-    #[serde(default)]
-    pub labels: Vec<GhLabel>,
-    /// Comment count (for cost estimation without fetching every thread).
-    #[serde(default)]
-    pub comments: u64,
-    /// Present iff this "issue" is really a pull request (skip in the issue class).
-    #[serde(default)]
-    pub pull_request: Option<serde_json::Value>,
-}
-
-impl GhIssue {
-    /// Whether this record is actually a pull request (returned by the issues endpoint).
-    pub fn is_pull_request(&self) -> bool {
-        self.pull_request.is_some()
-    }
-}
-
-/// A GitHub pull request (from the `pulls` endpoint — carries head/base refs).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct GhPull {
-    /// PR number.
+    /// Number (shared by issues and PRs on GitHub).
     #[serde(default)]
     pub number: u64,
     /// Title.
@@ -170,171 +111,282 @@ pub struct GhPull {
     /// `open` / `closed`.
     #[serde(default)]
     pub state: String,
-    /// Whether the PR was merged.
-    #[serde(default)]
-    pub merged_at: Option<String>,
     /// Browser URL.
     #[serde(default)]
     pub html_url: String,
     /// Creation time (ISO 8601).
     #[serde(default)]
     pub created_at: String,
-    /// Head ref (source branch).
+    /// Labels now.
     #[serde(default)]
-    pub head: GhRef,
-    /// Base ref (target branch).
-    #[serde(default)]
-    pub base: GhRef,
+    pub labels: Vec<GhLabel>,
     /// Comment count.
     #[serde(default)]
     pub comments: u64,
+    /// Present iff this is a pull request.
+    #[serde(default)]
+    pub pull_request: Option<serde_json::Value>,
 }
 
-impl GhPull {
-    /// Whether this PR was merged.
-    pub fn is_merged(&self) -> bool {
-        self.merged_at.is_some()
+impl GhIssue {
+    /// Whether this record is a pull request.
+    pub fn is_pull_request(&self) -> bool {
+        self.pull_request.is_some()
+    }
+
+    /// Whether it is closed.
+    pub fn is_closed(&self) -> bool {
+        self.state.eq_ignore_ascii_case("closed")
     }
 }
 
-/// A PR head/base ref pointer.
+/// A PR head/base pointer.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhRef {
-    /// Branch name (`ref` in the API).
+    /// Branch name.
     #[serde(default, rename = "ref")]
     pub ref_name: String,
-    /// Commit SHA.
+    /// Commit.
     #[serde(default)]
     pub sha: String,
 }
 
-/// A GitHub release.
+/// The pull-request detail (`pulls/{n}`).
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct GhRelease {
-    /// Tag name.
+pub struct GhPull {
+    /// Number.
     #[serde(default)]
-    pub tag_name: String,
-    /// Display name.
+    pub number: u64,
+    /// Head.
     #[serde(default)]
-    pub name: Option<String>,
-    /// Release notes (markdown body).
+    pub head: GhRef,
+    /// Base.
     #[serde(default)]
-    pub body: Option<String>,
-    /// Whether the release is a draft.
+    pub base: GhRef,
+    /// Merge time, when merged.
+    #[serde(default)]
+    pub merged_at: Option<String>,
+    /// The merge (or squash/rebase result) commit.
+    #[serde(default)]
+    pub merge_commit_sha: Option<String>,
+    /// Draft.
     #[serde(default)]
     pub draft: bool,
 }
 
-/// An issue/PR comment.
+/// A release asset.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhAsset {
+    /// File name.
+    #[serde(default)]
+    pub name: String,
+    /// Size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// Download URL.
+    #[serde(default)]
+    pub browser_download_url: String,
+    /// `sha256:<hex>`, when GitHub computed one.
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+/// A release.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhRelease {
+    /// Tag.
+    #[serde(default)]
+    pub tag_name: String,
+    /// Title.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Notes.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Draft (never mirrored).
+    #[serde(default)]
+    pub draft: bool,
+    /// Assets.
+    #[serde(default)]
+    pub assets: Vec<GhAsset>,
+}
+
+/// An issue/PR conversation comment, or a PR review (line) comment.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhComment {
-    /// Comment body.
+    /// Comment id.
+    #[serde(default)]
+    pub id: u64,
+    /// Body.
     #[serde(default)]
     pub body: Option<String>,
     /// Author.
     #[serde(default)]
     pub user: GhUser,
+    /// Browser URL (the idempotency key recorded in `imported.url`).
+    #[serde(default)]
+    pub html_url: String,
+    /// Creation time.
+    #[serde(default)]
+    pub created_at: String,
+    /// `…/issues/{n}` (conversation comments).
+    #[serde(default)]
+    pub issue_url: Option<String>,
+    /// `…/pulls/{n}` (review comments).
+    #[serde(default)]
+    pub pull_request_url: Option<String>,
+    /// Review comments: file path.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Review comments: line in the new file.
+    #[serde(default)]
+    pub line: Option<u64>,
+    /// Review comments: `LEFT` / `RIGHT`.
+    #[serde(default)]
+    pub side: Option<String>,
+    /// Review comments: the commit commented on.
+    #[serde(default)]
+    pub commit_id: Option<String>,
+}
+
+impl GhComment {
+    /// The issue or PR number this comment belongs to.
+    pub fn number(&self) -> Option<u64> {
+        let url = self
+            .issue_url
+            .as_deref()
+            .or(self.pull_request_url.as_deref())?;
+        url.rsplit('/').next()?.parse().ok()
+    }
+}
+
+/// A PR review.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhReview {
+    /// Review id.
+    #[serde(default)]
+    pub id: u64,
+    /// Reviewer.
+    #[serde(default)]
+    pub user: GhUser,
+    /// Body.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, `PENDING`.
+    #[serde(default)]
+    pub state: String,
+    /// The commit reviewed.
+    #[serde(default)]
+    pub commit_id: Option<String>,
     /// Browser URL.
     #[serde(default)]
     pub html_url: String,
-    /// Creation time (ISO 8601).
+    /// Submission time.
     #[serde(default)]
-    pub created_at: String,
+    pub submitted_at: Option<String>,
 }
 
-/// The GitHub source client — every method shells `gh`.
+/// The GitHub client: every method shells `gh`.
 pub struct GithubClient {
     repo: GithubRepoRef,
 }
 
 impl GithubClient {
-    /// Bind a client to a source repo and verify `gh` is installed + authenticated.
-    pub fn connect(repo: GithubRepoRef) -> Result<Self> {
-        let status = Command::new("gh")
-            .args(["auth", "status"])
-            .output()
-            .context("running `gh auth status` — is the GitHub CLI installed?")?;
-        if !status.status.success() {
-            bail!(
-                "`gh` is not authenticated: {}\nrun `gh auth login` first",
-                String::from_utf8_lossy(&status.stderr).trim()
-            );
-        }
-        Ok(Self { repo })
+    /// Bind to a source repo.
+    pub fn new(repo: GithubRepoRef) -> Self {
+        Self { repo }
     }
 
-    /// Fetch repository metadata.
+    fn path(&self, rest: &str) -> String {
+        format!("repos/{}/{rest}", self.repo.slug())
+    }
+
+    /// Repository metadata (also proves the repo exists and `gh` works).
     pub fn repo_meta(&self) -> Result<RepoMeta> {
         let out = api_json(&format!("repos/{}", self.repo.slug()))?;
-        serde_json::from_slice(&out).context("parsing repo metadata")
+        serde_json::from_slice(&out).context("parsing repository metadata")
     }
 
-    /// Fetch every issue (state=all). Includes PR records — callers filter with
-    /// [`GhIssue::is_pull_request`].
-    pub fn issues(&self) -> Result<Vec<GhIssue>> {
-        api_list(&format!(
-            "repos/{}/issues?state=all&per_page=100",
-            self.repo.slug()
-        ))
+    /// Issues and PRs updated since `since` (ISO 8601), or all of them.
+    pub fn issues(&self, since: Option<&str>) -> Result<Vec<GhIssue>> {
+        api_list(&self.path(&with_since(
+            "issues?state=all&per_page=100&sort=updated&direction=asc",
+            since,
+        )))
     }
 
-    /// Fetch every pull request (state=all).
-    pub fn pulls(&self) -> Result<Vec<GhPull>> {
-        api_list(&format!(
-            "repos/{}/pulls?state=all&per_page=100",
-            self.repo.slug()
-        ))
+    /// One PR's detail.
+    pub fn pull(&self, number: u64) -> Result<GhPull> {
+        let out = api_json(&self.path(&format!("pulls/{number}")))?;
+        serde_json::from_slice(&out).with_context(|| format!("parsing PR #{number}"))
     }
 
-    /// Fetch every label.
+    /// Every label.
     pub fn labels(&self) -> Result<Vec<GhLabel>> {
-        api_list(&format!("repos/{}/labels?per_page=100", self.repo.slug()))
+        api_list(&self.path("labels?per_page=100"))
     }
 
-    /// Fetch every milestone (state=all).
-    pub fn milestones(&self) -> Result<Vec<GhMilestone>> {
-        api_list(&format!(
-            "repos/{}/milestones?state=all&per_page=100",
-            self.repo.slug()
-        ))
-    }
-
-    /// Fetch every release.
+    /// Every release.
     pub fn releases(&self) -> Result<Vec<GhRelease>> {
-        api_list(&format!("repos/{}/releases?per_page=100", self.repo.slug()))
+        api_list(&self.path("releases?per_page=100"))
     }
 
-    /// Fetch the comment thread for one issue/PR number.
-    pub fn issue_comments(&self, number: u64) -> Result<Vec<GhComment>> {
-        api_list(&format!(
-            "repos/{}/issues/{number}/comments?per_page=100",
-            self.repo.slug()
-        ))
+    /// Conversation comments on issues and PRs, updated since `since`.
+    pub fn issue_comments(&self, since: Option<&str>) -> Result<Vec<GhComment>> {
+        api_list(&self.path(&with_since(
+            "issues/comments?per_page=100&sort=created&direction=asc",
+            since,
+        )))
     }
 
-    /// Bare-clone the source repo into `dest` (all refs, full history).
-    ///
-    /// Uses an HTTPS clone (no auth for public repos; private repos are reached via the token
-    /// baked into the URL from `gh auth token`) rather than `gh repo clone`, whose SSH default
-    /// depends on a working ssh-agent. The token, when present, is passed as
-    /// `x-access-token:<token>@` — standard for GitHub HTTPS.
-    pub fn clone_bare(&self, dest: &Path) -> Result<()> {
-        let token = gh_token();
-        let url = match &token {
-            Some(t) => format!(
-                "https://x-access-token:{t}@github.com/{}.git",
-                self.repo.slug()
-            ),
-            None => format!("https://github.com/{}.git", self.repo.slug()),
-        };
-        let status = Command::new("git")
-            .args(["clone", "--bare", "--quiet", &url])
-            .arg(dest)
-            .status()
-            .context("running git clone (HTTPS)")?;
+    /// PR review (line) comments, updated since `since`.
+    pub fn review_comments(&self, since: Option<&str>) -> Result<Vec<GhComment>> {
+        api_list(&self.path(&with_since(
+            "pulls/comments?per_page=100&sort=created&direction=asc",
+            since,
+        )))
+    }
+
+    /// One PR's reviews.
+    pub fn reviews(&self, number: u64) -> Result<Vec<GhReview>> {
+        api_list(&self.path(&format!("pulls/{number}/reviews?per_page=100")))
+    }
+
+    /// Mirror-clone (or update) the source into the bare repo at `dir`: branches, tags and
+    /// `refs/pull/*`. An existing mirror is fetched with `--prune`, so deletions and
+    /// force-pushes on GitHub are reflected.
+    pub fn sync_mirror(&self, dir: &Path) -> Result<()> {
+        let url = format!("https://github.com/{}.git", self.repo.slug());
+        // The token rides in an auth header from the environment, never in the URL or argv.
+        let header = gh_token().map(|t| {
+            use base64_lite::encode;
+            format!(
+                "AUTHORIZATION: basic {}",
+                encode(format!("x-access-token:{t}").as_bytes())
+            )
+        });
+        let mut cmd = Command::new("git");
+        if let Some(h) = &header {
+            cmd.env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
+                .env("GIT_CONFIG_VALUE_0", h);
+        }
+        if dir.join("HEAD").exists() {
+            cmd.arg("-C")
+                .arg(dir)
+                .args(["fetch", "--prune", "--quiet", &url])
+                .args([
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
+                    "+refs/pull/*/head:refs/pull/*/head",
+                ]);
+        } else {
+            cmd.args(["clone", "--mirror", "--quiet", &url]).arg(dir);
+        }
+        let status = cmd.status().context("running git")?;
         if !status.success() {
             bail!(
-                "cloning https://github.com/{} failed (private repo? run `gh auth login`)",
+                "fetching https://github.com/{} failed (private repository? set GH_TOKEN)",
                 self.repo.slug()
             );
         }
@@ -342,19 +394,53 @@ impl GithubClient {
     }
 }
 
-/// The GitHub token from `gh auth token`, if available (used only for HTTPS clone auth).
-fn gh_token() -> Option<String> {
-    let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
-    if !out.status.success() {
-        return None;
+fn with_since(path: &str, since: Option<&str>) -> String {
+    match since {
+        Some(s) => format!("{path}&since={s}"),
+        None => path.to_string(),
     }
-    let t = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (!t.is_empty()).then_some(t)
 }
 
-/// Run a `gh` invocation, retrying transient network failures (connection resets, timeouts —
-/// routine over the thousands of paginated calls a large enumeration makes). Non-transient
-/// failures (4xx, auth) fail immediately.
+/// The token `gh` would use: `GH_TOKEN`, `GITHUB_TOKEN`, else `gh auth token`.
+fn gh_token() -> Option<String> {
+    for var in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(t) = std::env::var(var) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    let t = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !t.is_empty()).then_some(t)
+}
+
+/// Minimal standard base64 (for the git auth header); avoids a dependency for 20 lines.
+mod base64_lite {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(input: &[u8]) -> String {
+        let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+        for chunk in input.chunks(3) {
+            let b = [
+                chunk[0],
+                chunk.get(1).copied().unwrap_or(0),
+                chunk.get(2).copied().unwrap_or(0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for (i, shift) in [18u32, 12, 6, 0].iter().enumerate() {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> shift) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Run `gh`, retrying transient network failures; 4xx and auth failures fail at once.
 fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Output> {
     const ATTEMPTS: u32 = 4;
     let mut last_err = String::new();
@@ -362,64 +448,55 @@ fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Outpu
         let out = Command::new("gh")
             .args(args)
             .output()
-            .with_context(|| format!("running `gh {}`", args.join(" ")))?;
+            .context("running `gh` (is the GitHub CLI installed?)")?;
         if out.status.success() {
             return Ok(out);
         }
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let transient = stderr.contains("connection reset")
-            || stderr.contains("timeout")
-            || stderr.contains("TLS handshake")
-            || stderr.contains("temporary failure")
-            || stderr.contains("EOF")
-            || stderr.contains("502")
-            || stderr.contains("503");
+        let transient = [
+            "connection reset",
+            "timeout",
+            "TLS handshake",
+            "temporary failure",
+            "EOF",
+            "502",
+            "503",
+            "504",
+        ]
+        .iter()
+        .any(|m| stderr.contains(m));
         if !transient || attempt == ATTEMPTS {
             bail!("{what} failed: {stderr}");
         }
         let wait = std::time::Duration::from_secs(5 * u64::from(attempt));
-        tracing::warn!(attempt, wait_secs = wait.as_secs(), %stderr, "transient gh failure — retrying");
+        tracing::warn!(attempt, wait_secs = wait.as_secs(), %stderr, "transient gh failure; retrying");
         std::thread::sleep(wait);
         last_err = stderr;
     }
-    bail!("{what} failed: {last_err}")
+    Err(anyhow!("{what} failed: {last_err}"))
 }
 
-/// Run `gh api <path>` and return raw stdout bytes (single object).
 fn api_json(path: &str) -> Result<Vec<u8>> {
-    let out = gh_output_with_retry(&["api", path], &format!("`gh api {path}`"))?;
-    Ok(out.stdout)
+    Ok(gh_output_with_retry(&["api", path], &format!("`gh api {path}`"))?.stdout)
 }
 
-/// Run `gh api <path> --paginate --jq '.[]'` and deserialize the JSONL stream. Each output
-/// line is one array element as a JSON object; blank lines are skipped.
 fn api_list<T: for<'de> Deserialize<'de>>(path: &str) -> Result<Vec<T>> {
     let out = gh_output_with_retry(
         &["api", path, "--paginate", "--jq", ".[]"],
-        &format!("`gh api {path} --paginate`"),
+        &format!("`gh api {path}`"),
     )?;
     let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
-    let mut items = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let item: T = serde_json::from_str(line)
-            .with_context(|| format!("parsing gh api element from {path}"))?;
-        items.push(item);
-    }
-    Ok(items)
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).with_context(|| format!("parsing an element of {path}")))
+        .collect()
 }
 
-/// Parse an ISO 8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`, as GitHub emits) to unix
-/// seconds. Returns `0` for an empty/unparseable value — provenance is best-effort and must
-/// never abort a migration. Uses the Howard Hinnant days-from-civil algorithm (no external
-/// date dependency).
+/// ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`) to unix seconds; `0` when unparseable (provenance
+/// is best-effort and never aborts an import).
 pub fn iso8601_to_unix(s: &str) -> u64 {
-    let bytes = s.as_bytes();
-    // Expect at least "YYYY-MM-DDTHH:MM:SS".
-    if bytes.len() < 19 {
+    if s.len() < 19 {
         return 0;
     }
     let num = |a: usize, b: usize| -> Option<i64> { s.get(a..b)?.parse::<i64>().ok() };
@@ -436,7 +513,6 @@ pub fn iso8601_to_unix(s: &str) -> u64 {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
         return 0;
     }
-    // days_from_civil: days since 1970-01-01.
     let y_adj = if mo <= 2 { y - 1 } else { y };
     let era = (if y_adj >= 0 { y_adj } else { y_adj - 399 }) / 400;
     let yoe = y_adj - era * 400;
@@ -444,44 +520,81 @@ pub fn iso8601_to_unix(s: &str) -> u64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    let total = days * 86_400 + h * 3_600 + mi * 60 + se;
-    u64::try_from(total).unwrap_or(0)
+    u64::try_from(days * 86_400 + h * 3_600 + mi * 60 + se).unwrap_or(0)
+}
+
+/// Unix seconds to ISO 8601 UTC (the `since` parameter).
+pub fn unix_to_iso8601(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    // civil_from_days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{iso8601_to_unix, GithubRepoRef};
+    use super::*;
 
     #[test]
-    fn parses_slug_and_url_forms() {
+    fn parses_slug_and_url_forms_and_refuses_junk() {
         for form in [
             "dashpay/dips",
             "https://github.com/dashpay/dips",
             "https://github.com/dashpay/dips.git",
             "github.com/dashpay/dips/",
         ] {
-            let r = GithubRepoRef::parse(form).unwrap();
-            assert_eq!(r.owner, "dashpay");
-            assert_eq!(r.repo, "dips");
-            assert_eq!(r.slug(), "dashpay/dips");
+            assert_eq!(GithubRepoRef::parse(form).unwrap().slug(), "dashpay/dips");
         }
-        assert!(GithubRepoRef::parse("nope").is_err());
-        assert!(GithubRepoRef::parse("a/b/c").is_err());
+        for bad in ["nope", "a/b/c", "a/b?x=1", "../x", "a/b c", "a/.git"] {
+            assert!(GithubRepoRef::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
-    fn iso8601_parses_known_epochs() {
-        // Verified against `date -u -d ... +%s`.
+    fn iso8601_round_trips() {
         assert_eq!(iso8601_to_unix("1970-01-01T00:00:00Z"), 0);
-        assert_eq!(iso8601_to_unix("2000-01-01T00:00:00Z"), 946_684_800);
         assert_eq!(iso8601_to_unix("2020-01-02T03:04:05Z"), 1_577_934_245);
         assert_eq!(iso8601_to_unix("2026-07-10T20:44:57Z"), 1_783_716_297);
+        for t in [0, 951_782_400, 1_577_934_245, 1_783_716_297] {
+            assert_eq!(iso8601_to_unix(&unix_to_iso8601(t)), t);
+        }
+        assert_eq!(iso8601_to_unix("garbage"), 0);
     }
 
     #[test]
-    fn iso8601_bad_input_is_zero() {
-        assert_eq!(iso8601_to_unix(""), 0);
-        assert_eq!(iso8601_to_unix("garbage"), 0);
-        assert_eq!(iso8601_to_unix("2020-13-01T00:00:00Z"), 0);
+    fn comment_numbers_come_from_the_parent_url() {
+        let c = GhComment {
+            issue_url: Some("https://api.github.com/repos/o/r/issues/12".into()),
+            ..Default::default()
+        };
+        assert_eq!(c.number(), Some(12));
+        let r = GhComment {
+            pull_request_url: Some("https://api.github.com/repos/o/r/pulls/7".into()),
+            ..Default::default()
+        };
+        assert_eq!(r.number(), Some(7));
+    }
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64_lite::encode(b""), "");
+        assert_eq!(base64_lite::encode(b"f"), "Zg==");
+        assert_eq!(base64_lite::encode(b"fo"), "Zm8=");
+        assert_eq!(base64_lite::encode(b"foo"), "Zm9v");
+        assert_eq!(base64_lite::encode(b"foobar"), "Zm9vYmFy");
     }
 }
