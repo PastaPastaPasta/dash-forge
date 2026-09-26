@@ -100,7 +100,7 @@ Packs are content-addressed, and a ref is written only when its tip differs. Eac
 1. **Before writing.** The run lists what it would write and estimates the cost. If the estimate is above the cap, it stops with `status: cap_exceeded` and writes nothing.
 2. **While writing.** If the actual spend reaches the cap, the run stops. What was written so far stays written, and the next run continues from there.
 
-Each `git push` inside the run has the same limit (`dash.costWarnThreshold`), and in CI a push over it is refused rather than prompted. A limited runner key adds a hard limit that Platform itself enforces: whatever happens, a run cannot spend more than the key's remaining budget.
+`forge-import` enforces the cap itself, on every write, including the `git push`es it makes for code. A capped run fails the job with `status: cap_exceeded`. A limited runner key adds a hard limit that Platform itself enforces: whatever happens, a run cannot spend more than the key's remaining budget.
 
 ## The job summary
 
@@ -137,7 +137,7 @@ A failed or capped run shows the error as an annotation.
 - Secrets are passed through `env:` and are never printed. A `dfk1:` key's WIF, and any secret field of an identity JSON, is masked in the log. An identity JSON is written to a `0600` file in `$RUNNER_TEMP` and deleted at the end of the job, even when the job fails.
 - The storage secrets are never written to disk. The storage profile holds `env:S3_SECRET_ACCESS_KEY`-style references, which are resolved when the push runs.
 - Every input is validated before anything runs, and inputs reach the scripts only as environment variables, never as text inside a script.
-- The storage and cost settings are passed to git only for the Action's own step (as git's command-scope config). The runner's `~/.gitconfig` is left unchanged.
+- The storage settings are passed to git only for the Action's own step (as git's command-scope config). The runner's `~/.gitconfig` is left unchanged.
 - `install: 'true'` uses this repository's `install.sh` at the same ref as the Action. It checks the archive's sha256 against the release's `SHA256SUMS`, and checks its build provenance attestation with `gh`.
 
 ## Development
