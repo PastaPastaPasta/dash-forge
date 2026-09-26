@@ -9,12 +9,17 @@
 //! * **Secret**: the HMAC key the relay signs deliveries with, `encryptedFor` the relay
 //!   identity's `ENCRYPTION` key `relayKeyId`, from the writer's `ENCRYPTION` key `senderKeyId`
 //!   ([`crate::envelope`]). Consensus checks both keys exist, are enabled and are encryption
-//!   keys, and that the bytes have the scheme's shape. It cannot check the plaintext, so a
-//!   reader also requires [`SECRET_MIN_LEN`]..=[`SECRET_MAX_LEN`] bytes.
+//!   keys, and that the bytes have the scheme's shape. It cannot check the plaintext, and the
+//!   scheme has no tag, so a secret must be [`SECRET_MIN_LEN`]..=[`SECRET_MAX_LEN`] bytes of
+//!   printable ASCII ([`check_secret`]): a wrong key that slips past the padding check (about
+//!   1 in 256) yields random bytes, and 32 random bytes are all printable with probability
+//!   about 10^-14. (The length alone proves nothing: it is fixed by the ciphertext.)
 //! * **Resolution**: newest per `(repoId, hookId)` by `($createdAt, $id)` wins; a newest
-//!   document with `disabled` stops the hook. A maintainer removes a hook by deleting the
-//!   documents they wrote for it, and supersedes other maintainers' documents with a newer,
-//!   disabled one (a document can only be deleted by its owner).
+//!   document with `disabled` stops the hook. A maintainer removes a hook by writing a newer
+//!   disabled document when any other maintainer's document for it would otherwise still be
+//!   current, then deleting their own (a document can only be deleted by its owner).
+//! * **URL**: public on chain, so it must not carry credentials; `dg webhook add` refuses a
+//!   query string or userinfo unless forced.
 //!
 //! [`WebhookReader`] reads them (by repo, or by the relay they are addressed to, through the
 //! `relay` index); [`WebhookService`] writes them, signed by a maintainer.
@@ -37,13 +42,12 @@ use crate::scope::RepoRef;
 /// The forge-collab document type.
 pub const DOC_WEBHOOK: &str = "webhook";
 
-/// The shortest plaintext secret accepted (a wrong-key decryption that passes the padding
-/// check almost never lands in range, and a short HMAC key is weak anyway).
+/// The shortest secret accepted: a short HMAC key is weak, and the printable-ASCII check that
+/// catches a wrong key needs enough bytes to mean something.
 pub const SECRET_MIN_LEN: usize = 32;
 
-/// The longest plaintext secret: the schema caps the ciphertext at 128 bytes, which holds
-/// at most 111 plaintext bytes; 96 leaves the rest unused on purpose (a round number the
-/// reader checks).
+/// The longest secret: the schema caps the ciphertext at 128 bytes, which holds at most 111
+/// plaintext bytes; 96 is a round bound below that.
 pub const SECRET_MAX_LEN: usize = 96;
 
 /// The longest `url` the schema allows.
@@ -116,10 +120,40 @@ impl Webhook {
         (self.repo_id.clone(), self.hook_id)
     }
 
-    /// Whether this hook wants GitHub event `event` (empty list or `*` = every event).
+    /// Whether this hook wants GitHub event `event` ([`wants_event`]).
     pub fn wants(&self, event: &str) -> bool {
-        self.events.is_empty() || self.events.iter().any(|e| e == event || e == "*")
+        wants_event(&self.events, event)
     }
+}
+
+/// Whether an event filter admits GitHub event `event`: an empty list or `*` means all.
+pub fn wants_event(events: &[String], event: &str) -> bool {
+    events.is_empty() || events.iter().any(|e| e == event || e == "*")
+}
+
+/// The GitHub-style `X-Hub-Signature-256` value (`sha256=<hex>`) of `body` under `secret`.
+pub fn sign_body(secret: &[u8], body: &[u8]) -> String {
+    use hmac::Mac;
+    let mut mac =
+        hmac::Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+}
+
+/// Constant-time check of a `sha256=<hex>` signature over `body` under `secret`: what a
+/// webhook consumer runs before trusting a delivery.
+pub fn verify_signature(secret: &[u8], body: &[u8], signature_header: &str) -> bool {
+    use hmac::Mac;
+    let Some(expected) = signature_header
+        .strip_prefix("sha256=")
+        .and_then(|h| hex::decode(h).ok())
+    else {
+        return false;
+    };
+    let mut mac =
+        hmac::Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    mac.verify_slice(&expected).is_ok()
 }
 
 /// Newest document per `(repoId, hookId)` by `($createdAt, $id)`: the current state of each
@@ -166,20 +200,29 @@ pub fn generate_secret() -> SecretBytes {
     SecretBytes::new(hex::encode(&raw[..]).into_bytes())
 }
 
-/// Refuse a plaintext secret outside [`SECRET_MIN_LEN`]..=[`SECRET_MAX_LEN`].
-pub fn check_secret_len(len: usize) -> Result<()> {
-    if (SECRET_MIN_LEN..=SECRET_MAX_LEN).contains(&len) {
-        Ok(())
-    } else {
-        Err(Error::Config(format!(
+/// Refuse a secret that is not [`SECRET_MIN_LEN`]..=[`SECRET_MAX_LEN`] bytes of printable
+/// ASCII (`0x21..=0x7e`). Enforced when writing and when the relay decrypts: it is what tells
+/// a wrong key from the right one (see the module docs). Never names the secret's bytes.
+pub fn check_secret(secret: &[u8]) -> Result<()> {
+    let len = secret.len();
+    if !(SECRET_MIN_LEN..=SECRET_MAX_LEN).contains(&len) {
+        return Err(Error::Config(format!(
             "a webhook secret must be {SECRET_MIN_LEN}..={SECRET_MAX_LEN} bytes, not {len}"
-        )))
+        )));
     }
+    if !secret.iter().all(|b| (0x21..=0x7e).contains(b)) {
+        return Err(Error::Config(
+            "a webhook secret must be printable ASCII without spaces".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Check a hook's `url` and `events` against the schema (and require http(s)), so a write
-/// fails here with a message instead of at consensus.
-pub fn check_url_and_events(url: &str, events: &[String]) -> Result<()> {
+/// fails here with a message instead of at consensus. With `allow_credentials` false, a URL
+/// with a query string or userinfo is refused: the URL is public on chain, and those are
+/// where tokens usually hide.
+pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: bool) -> Result<()> {
     if url.is_empty() || url.len() > URL_MAX_LEN {
         return Err(Error::Config(format!(
             "a webhook url must be 1..={URL_MAX_LEN} bytes"
@@ -187,9 +230,20 @@ pub fn check_url_and_events(url: &str, events: &[String]) -> Result<()> {
     }
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(Error::Config(format!(
-            "a webhook url must be http:// or https://, not {url:?}"
-        )));
+        return Err(Error::Config(
+            "a webhook url must be http:// or https://".into(),
+        ));
+    }
+    let authority = url.split_once("://").map_or("", |(_, rest)| {
+        rest.split(['/', '?', '#']).next().unwrap_or("")
+    });
+    if !allow_credentials && (url.contains('?') || authority.contains('@')) {
+        return Err(Error::Config(
+            "the webhook url has a query string or user:password@ — it is stored publicly on \
+             chain, so it must not carry credentials (authenticate deliveries with the secret; \
+             pass --force if the query holds nothing secret)"
+                .into(),
+        ));
     }
     if events.len() > EVENTS_MAX {
         return Err(Error::Config(format!(
@@ -218,16 +272,15 @@ pub fn select_recipient_key<'k>(
         .max_by_key(|k| k.id)
 }
 
-/// The keystore `ENCRYPTION` keys whose public key is a usable on-chain `ENCRYPTION` key of
-/// the identity (`on_chain`), by key id: the keys this identity can really encrypt from or
-/// decrypt with. A keystore key that does not match its on-chain key is left out.
+/// The given `ENCRYPTION` private keys (key id → key) whose public key is a usable on-chain
+/// `ENCRYPTION` key of the identity (`on_chain`): the keys this identity can really encrypt
+/// from or decrypt with. A key that does not match its on-chain key is left out.
 pub fn held_encryption_keys(
-    bridge: &BridgeIdentity,
+    keys: Vec<(u32, PrivateKey)>,
     on_chain: &[IdentityKeyInfo],
     contract_id: &str,
 ) -> BTreeMap<u32, PrivateKey> {
-    envelope::encryption_keys(bridge)
-        .into_iter()
+    keys.into_iter()
         .filter(|(id, private)| {
             on_chain.iter().any(|k| {
                 k.id == *id
@@ -247,15 +300,15 @@ pub enum SecretError {
     /// The writer's key the hook names is missing, disabled or not an encryption key.
     #[error("sender key {0} of the writer is missing, disabled or not an encryption key")]
     SenderKeyUnusable(u32),
-    /// Decryption failed, or produced a plaintext of the wrong length (a wrong key).
+    /// Decryption failed, or produced something that is not a secret (a wrong key).
     #[error("the secret does not decrypt with these keys ({0})")]
     Undecryptable(String),
 }
 
 /// Decrypt `hook`'s secret for the relay holding `relay_keys` (from [`held_encryption_keys`]),
 /// given the writer's on-chain keys. Checks that the named relay key is held, that the named
-/// sender key is an enabled `ENCRYPTION` key of the writer, and that the plaintext has a
-/// secret's length (the scheme has no tag, see [`crate::envelope`]).
+/// sender key is an enabled `ENCRYPTION` key of the writer, and that the plaintext passes
+/// [`check_secret`] (the scheme has no tag, see [`crate::envelope`]).
 pub fn decrypt_secret(
     hook: &Webhook,
     relay_keys: &BTreeMap<u32, PrivateKey>,
@@ -271,7 +324,7 @@ pub fn decrypt_secret(
         .ok_or(SecretError::SenderKeyUnusable(hook.sender_key_id))?;
     let secret = envelope::decrypt(relay_key, &sender.public_key, &hook.secret)
         .map_err(|e| SecretError::Undecryptable(e.to_string()))?;
-    check_secret_len(secret.len()).map_err(|e| SecretError::Undecryptable(e.to_string()))?;
+    check_secret(secret.expose()).map_err(|e| SecretError::Undecryptable(e.to_string()))?;
     Ok(secret)
 }
 
@@ -359,6 +412,8 @@ pub struct NewWebhook {
     pub secret: SecretBytes,
     /// Write the hook switched off (a tombstone superseding other maintainers' documents).
     pub disabled: bool,
+    /// Accept a URL with a query string or userinfo (`dg webhook add --force`).
+    pub allow_credentials_in_url: bool,
 }
 
 /// A signed, ready-to-send webhook document: its properties and the key ids it names.
@@ -426,8 +481,8 @@ impl<'a> WebhookService<'a> {
     /// signer's, and encrypt the secret between them. Nothing is sent.
     pub async fn prepare(&self, repo: &RepoRef, input: &NewWebhook) -> Result<PreparedWebhook> {
         let forge = repo.require_v2()?;
-        check_url_and_events(&input.url, &input.events)?;
-        check_secret_len(input.secret.len())?;
+        check_url_and_events(&input.url, &input.events, input.allow_credentials_in_url)?;
+        check_secret(input.secret.expose())?;
 
         let relay = self
             .client
@@ -447,7 +502,11 @@ impl<'a> WebhookService<'a> {
                 input.relay_identity_id
             ))
         })?;
-        let mine = held_encryption_keys(self.bridge, &self.identity.public_keys(), &forge.collab);
+        let mine = held_encryption_keys(
+            envelope::encryption_keys(self.bridge),
+            &self.identity.public_keys(),
+            &forge.collab,
+        );
         let (sender_key_id, sender) = mine.iter().next_back().ok_or_else(|| {
             Error::Config(
                 "the identity file has no ENCRYPTION key matching an enabled on-chain \
@@ -507,45 +566,50 @@ impl<'a> WebhookService<'a> {
             .await
     }
 
-    /// Remove hook `hook_id` of `repo`: delete every document of it the signer wrote, then,
-    /// if another maintainer's document would still deliver, supersede it with a newer
-    /// disabled one addressed to the same relay (only its writer can delete it).
+    /// Remove hook `hook_id` of `repo`.
+    ///
+    /// If another maintainer's document would still be current once the signer's own are gone
+    /// (only its writer can delete it), first write a newer **disabled** document, addressed to
+    /// the signer's own identity and encryption key (no relay can read its secret, and the
+    /// hook's relay stops because the newest document no longer names it). Writing it first
+    /// means there is no moment in which the other maintainer's document is current again.
+    /// Then delete every other document of the hook the signer wrote.
     pub async fn remove(&self, repo: &RepoRef, hook_id: [u8; 32]) -> Result<RemoveReport> {
         let forge = repo.require_v2()?;
         let contract = self.client.fetch_contract(&forge.collab).await?;
-        let reader = WebhookReader::new(self.client);
         let me = self.identity.id();
-        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
-        let mut report = RemoveReport::default();
-        for h in reader.history(repo.id(), hook_id).await? {
-            if h.owner_id == me {
-                engine
-                    .delete_document(&contract, DOC_WEBHOOK, &h.document_id)
-                    .await?;
-                report.deleted.push(h.document_id);
-            }
-        }
-        let remaining: Vec<Webhook> = reader
+        let history = WebhookReader::new(self.client)
             .history(repo.id(), hook_id)
-            .await?
-            .into_iter()
-            .filter(|h| !report.deleted.contains(&h.document_id))
+            .await?;
+        let mut report = RemoveReport::default();
+        let others: Vec<Webhook> = history
+            .iter()
+            .filter(|h| h.owner_id != me)
+            .cloned()
             .collect();
-        if let Some(current) = active_hooks(remaining).into_iter().next() {
+        if let Some(current) = active_hooks(others).into_iter().next() {
             let prepared = self
                 .prepare(
                     repo,
                     &NewWebhook {
                         hook_id,
-                        url: current.url.clone(),
-                        events: current.events.clone(),
-                        relay_identity_id: current.relay_identity_id.clone(),
+                        url: current.url,
+                        events: current.events,
+                        relay_identity_id: me.clone(),
                         secret: generate_secret(),
                         disabled: true,
+                        allow_credentials_in_url: true,
                     },
                 )
                 .await?;
             report.tombstone = Some(self.send(repo, &prepared).await?);
+        }
+        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
+        for h in history.into_iter().filter(|h| h.owner_id == me) {
+            engine
+                .delete_document(&contract, DOC_WEBHOOK, &h.document_id)
+                .await?;
+            report.deleted.push(h.document_id);
         }
         Ok(report)
     }
@@ -641,15 +705,30 @@ mod tests {
 
     #[test]
     fn url_event_and_secret_checks() {
-        assert!(check_url_and_events("https://x.example/h", &["push".into()]).is_ok());
-        assert!(check_url_and_events("ftp://x", &[]).is_err());
-        assert!(check_url_and_events(&format!("https://{}", "a".repeat(300)), &[]).is_err());
-        assert!(check_url_and_events("https://x", &["push".into(), "push".into()]).is_err());
-        assert!(check_url_and_events("https://x", &vec!["e".to_string(); 17]).is_err());
-        assert!(check_secret_len(31).is_err());
-        assert!(check_secret_len(32).is_ok());
-        assert!(check_secret_len(96).is_ok());
-        assert!(check_secret_len(97).is_err());
+        let check = |url: &str, events: &[String]| check_url_and_events(url, events, false);
+        assert!(check("https://x.example/h", &["push".into()]).is_ok());
+        assert!(check("ftp://x", &[]).is_err());
+        assert!(check(&format!("https://{}", "a".repeat(300)), &[]).is_err());
+        assert!(check("https://x", &["push".into(), "push".into()]).is_err());
+        assert!(check("https://x", &vec!["e".to_string(); 17]).is_err());
+        // Credentials in a public URL: refused unless forced.
+        for url in ["https://x/h?token=1", "https://u:p@x/h", "https://u@x/h"] {
+            assert!(check(url, &[]).is_err(), "{url}");
+            assert!(check_url_and_events(url, &[], true).is_ok(), "{url}");
+        }
+        assert!(
+            check("https://x/a@b", &[]).is_ok(),
+            "an @ in the path is not userinfo"
+        );
+
+        assert!(check_secret(&[b'a'; 31]).is_err());
+        assert!(check_secret(&[b'a'; 32]).is_ok());
+        assert!(check_secret(&[b'~'; 96]).is_ok());
+        assert!(check_secret(&[b'a'; 97]).is_err());
+        let mut spaced = [b'a'; 40];
+        spaced[3] = b' ';
+        assert!(check_secret(&spaced).is_err());
+        assert!(check_secret(&[0xc3; 40]).is_err(), "non-ASCII");
         // The largest secret still fits the schema's 128-byte ciphertext.
         assert!(envelope::ciphertext_len(SECRET_MAX_LEN) <= 128);
         let s = generate_secret();
@@ -704,14 +783,37 @@ mod tests {
                 Err(SecretError::SenderKeyUnusable(4))
             );
         }
-        // Another relay's key: fails, or yields a plaintext of the wrong shape almost always;
-        // never the secret.
-        let stranger = BTreeMap::from([(4, PrivateKey::from_slice(&[0x43; 32]).unwrap())]);
-        match decrypt_secret(&h, &stranger, &writer_keys, "C") {
-            Err(SecretError::Undecryptable(_)) => {}
-            Ok(s) => assert_ne!(s.expose(), secret.expose()),
-            Err(e) => panic!("unexpected {e}"),
+        // Other relays' keys: always refused, including the ~1/256 whose padding passes
+        // (their random plaintext is not printable ASCII).
+        for scalar in 0x43..=0xfeu8 {
+            let stranger = BTreeMap::from([(4, PrivateKey::from_slice(&[scalar; 32]).unwrap())]);
+            assert!(matches!(
+                decrypt_secret(&h, &stranger, &writer_keys, "C"),
+                Err(SecretError::Undecryptable(_))
+            ));
         }
+    }
+
+    #[test]
+    fn signatures_round_trip_and_match_githubs_published_value() {
+        let sig = sign_body(b"It's a Secret to Everybody", b"Hello, World!");
+        assert_eq!(
+            sig,
+            "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
+        assert!(verify_signature(
+            b"It's a Secret to Everybody",
+            b"Hello, World!",
+            &sig
+        ));
+        assert!(!verify_signature(b"guess", b"Hello, World!", &sig));
+        assert!(!verify_signature(
+            b"It's a Secret to Everybody",
+            b"Hello",
+            &sig
+        ));
+        assert!(!verify_signature(b"k", b"b", "sha256=zz"));
+        assert!(!verify_signature(b"k", b"b", "nope"));
     }
 
     #[test]

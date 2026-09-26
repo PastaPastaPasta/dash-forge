@@ -20,22 +20,21 @@
 //! 5. Decrypt the secret: the relay's `ENCRYPTION` private key named by `relayKeyId` (which
 //!    must be one of the relay's enabled on-chain keys, with the private key in the identity
 //!    file) and the writer's `ENCRYPTION` public key named by `senderKeyId` (which must still
-//!    be enabled). A plaintext outside 32..=96 bytes is refused: the scheme has no tag, so
-//!    this is what catches a wrong key (`forge_core::webhooks::decrypt_secret`).
+//!    be enabled). The plaintext must be 32..=96 bytes of printable ASCII: the scheme has no
+//!    tag, so this is what rejects a wrong key (`forge_core::webhooks::decrypt_secret`).
 //!
 //! A hook that fails any check is skipped with a warning naming the hook and the reason,
 //! never the secret. Discovery is re-run every `refresh_cycles` poll cycles.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use forge_core::envelope::{PrivateKey, SecretBytes};
-use forge_core::keystore::BridgeIdentity;
+use forge_core::envelope::{EncryptionKeyFile, PrivateKey, SecretBytes};
 use forge_core::members::MemberReader;
 use forge_core::platform::{IdentityKeyInfo, PlatformClient};
 use forge_core::rules::v2::Role;
 use forge_core::scope::RepoRef;
 use forge_core::webhooks::{
-    active_hooks, decrypt_secret, held_encryption_keys, Webhook, WebhookReader,
+    active_hooks, decrypt_secret, held_encryption_keys, wants_event, Webhook, WebhookReader,
 };
 
 use crate::config::StaticWebhook;
@@ -65,7 +64,7 @@ pub struct WebhookSub {
 impl WebhookSub {
     /// Whether this subscription wants `event` (empty filter or `*` = all events).
     pub fn wants(&self, event: &str) -> bool {
-        self.events.is_empty() || self.events.iter().any(|e| e == event || e == "*")
+        wants_event(&self.events, event)
     }
 }
 
@@ -100,26 +99,27 @@ impl std::fmt::Debug for RelayIdentity {
 }
 
 impl RelayIdentity {
-    /// Load the identity file and match its `ENCRYPTION` keys against the identity on chain.
-    /// An identity with no usable key is an error: it could decrypt nothing.
+    /// Load the key file (a full bridge identity file, or a minimal one holding only the
+    /// ENCRYPTION key: `forge_core::envelope::EncryptionKeyFile`) and match its keys against the
+    /// identity on chain. An identity with no usable key is an error: it could decrypt nothing.
     pub async fn load(
         client: &PlatformClient,
         path: &std::path::Path,
         collab_id: &str,
     ) -> Result<Self> {
-        let bridge = BridgeIdentity::load_from_file(path)?;
-        let on_chain = client.fetch_identity(&bridge.identity_id).await?;
-        let keys = held_encryption_keys(&bridge, &on_chain.public_keys(), collab_id);
+        let file = EncryptionKeyFile::load(path)?;
+        let on_chain = client.fetch_identity(&file.identity_id).await?;
+        let keys = held_encryption_keys(file.keys, &on_chain.public_keys(), collab_id);
         if keys.is_empty() {
             return Err(RelayError::Config(format!(
                 "relay identity {} has no ENCRYPTION key in {} matching an enabled on-chain \
                  ENCRYPTION key; it cannot decrypt webhook secrets",
-                bridge.identity_id,
+                file.identity_id,
                 path.display()
             )));
         }
         Ok(Self {
-            id: bridge.identity_id,
+            id: file.identity_id,
             keys,
         })
     }

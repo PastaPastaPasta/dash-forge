@@ -1,40 +1,59 @@
 //! The daemon: discover the repos with hooks addressed to this relay, poll their documents,
-//! translate, and deliver (PRD 05). Stateless across restarts: cursors live in memory and
-//! are re-baselined on startup ([`crate::ingest`]).
+//! translate, and hand events to the delivery workers (PRD 05). Stateless across restarts:
+//! cursors live in memory and are re-baselined on startup ([`crate::ingest`]).
 //!
 //! Each cycle:
-//! 1. every `refresh_cycles` cycles, re-run discovery ([`crate::subscriptions`]): hooks
-//!    appear, move to another relay, get disabled, or lose their writer's maintainer role;
-//!    repos with no hook left are dropped, new ones are added (baselined at their earliest
-//!    hook's `$createdAt`, so nothing written after the hook is missed);
-//! 2. for each repo, read every stream past its cursor and deliver each new document to the
-//!    repo's hooks that want its event. A stream whose read fails keeps its cursor and is
-//!    retried next cycle; one flaky query never blocks the other streams.
+//! 1. every `refresh_cycles` cycles, re-run discovery ([`crate::subscriptions`]) and resync the
+//!    per-hook delivery workers ([`crate::deliver::Dispatcher`]);
+//! 2. for each repo, read its streams past their cursors and enqueue each new document's event.
+//!    Enqueueing never waits for a receiver, so a slow or hostile hook cannot stall polling.
+//!    Each repo also has a time budget per cycle ([`REPO_BUDGET`]): a repo whose reads run
+//!    past it stops for this cycle and resumes next time from its cursors.
+//!
+//! **Baselines.** A repo is first read from "now": at startup with `Tail` (plus `--lookback`),
+//! later with `Since(max(earliest hook $createdAt, relay start))`, so a repo that shows up
+//! late (a failed first read, a maintainer restored, a hook re-enabled) never replays history
+//! from before this relay started. A repo that drops out of discovery keeps a marker of where
+//! it stopped (`resume_at`), and resumes from there when it comes back.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use forge_core::platform::{
     decode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
     QueryOrder,
 };
-use forge_core::rules::v2::Visibility;
+use forge_core::refs::ref_update_from_doc;
+use forge_core::repo::config_doc;
+use forge_core::rules::{self, v2::Visibility, ConfigDoc};
 use forge_core::scope::RepoRef;
 
 use crate::config::RelayConfig;
-use crate::deliver::{DeliverConfig, Deliverer};
+use crate::deliver::{DeliverConfig, Deliverer, Dispatcher};
 use crate::error::{RelayError, Result};
 use crate::ingest::{
-    self, poll_stream, Baseline, Cursor, TargetInfo, DOC_AUTHOR_EVENT, DOC_CHECK_RUN, DOC_COMMENT,
-    DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE, DOC_RELEASE,
-    DOC_REVIEW,
+    self, poll_stream, Baseline, Cursor, LiveStream, TargetInfo, DOC_AUTHOR_EVENT, DOC_CHECK_RUN,
+    DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
+    DOC_RELEASE, DOC_REVIEW,
 };
 use crate::payload::{RepositoryMeta, WebhookEvent};
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 
-/// Deliveries in flight at once for one event across its hooks (each also bounded per host,
-/// [`crate::deliver::MAX_IN_FLIGHT_PER_HOST`], and by the per-delivery overall timeout).
-const MAX_CONCURRENT_DELIVERIES: usize = 8;
+/// Wall-clock budget for one repo's reads in one cycle.
+const REPO_BUDGET: Duration = Duration::from_secs(20);
+
+/// Issues/PRs whose comment and review streams are read: those open (not closed by a seen
+/// event) or active within this window. Comments on a thread quiet for longer are missed
+/// until the thread shows activity again (a new event or comment reported for it).
+const THREAD_ACTIVE_WINDOW_MS: u64 = 7 * 24 * 3600 * 1000;
+
+/// At most this many per-target (comment/review) and per-head (checkRun) streams per repo per
+/// cycle, most recently active first.
+const MAX_THREAD_STREAMS: usize = 50;
+
+/// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
+const MAX_HEADS: usize = 50;
 
 /// The two forge-v2 contracts.
 struct Contracts {
@@ -45,16 +64,22 @@ struct Contracts {
 /// One served repository and its stream cursors.
 struct RepoState {
     meta: RepositoryMeta,
-    /// This repo's hooks (Platform and static).
-    subs: Vec<WebhookSub>,
+    /// Whether any hook wants each event kind (the costly streams are read only if so).
+    wants: BTreeSet<&'static str>,
     /// Where streams that did not exist yet start.
     baseline: Baseline,
     /// Cursor per stream key (`refUpdate`, `comment:<targetId>`, `checkRun:<oid>`, ...).
     cursors: BTreeMap<String, Cursor>,
     /// Issues and PRs by `$id` (for event/comment/review translation).
     targets: BTreeMap<String, TargetInfo>,
-    /// Head oids seen on pushes and PRs (hex): the `checkRun` streams.
-    heads: BTreeSet<String>,
+    /// Closed targets (a close or merge seen; a reopen removes).
+    closed: BTreeSet<String>,
+    /// Head oids (hex) → when seen: the `checkRun` streams.
+    heads: BTreeMap<String, u64>,
+    /// The repo's `config` history (for protected-ref routing).
+    configs: Vec<ConfigDoc>,
+    /// The newest `$createdAt` read on any stream, for resuming after a gap.
+    high_water: u64,
 }
 
 /// Everything the loop holds between cycles.
@@ -62,13 +87,26 @@ struct Relay {
     client: Arc<PlatformClient>,
     contracts: Contracts,
     identity: Option<RelayIdentity>,
-    deliverer: Deliverer,
+    dispatcher: Dispatcher,
     /// `--repos`, resolved to repo ids (empty = every repo with a hook).
     repo_filter: BTreeSet<String>,
     /// Static webhooks with their repo resolved.
     statics: Vec<WebhookSub>,
     repos: BTreeMap<String, RepoState>,
+    /// Hooks per repo from the last discovery.
+    subs: Vec<WebhookSub>,
+    /// Repos that were served and dropped out: where to resume if they come back.
+    resume_at: BTreeMap<String, u64>,
+    /// When this relay started (ms since the epoch).
+    started_ms: u64,
     cfg: RelayConfig,
+}
+
+/// Milliseconds since the epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Run the relay daemon until the process is stopped.
@@ -109,8 +147,8 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     }
     if identity.is_none() && statics.is_empty() {
         return Err(RelayError::Config(
-            "nothing to serve: pass --identity <relay identity file> (webhooks come from \
-             Platform) or add [[webhook]] blocks to the config"
+            "nothing to serve: pass --identity <relay key file> (webhooks come from Platform) \
+             or add [[webhook]] blocks to the config"
                 .into(),
         ));
     }
@@ -127,13 +165,16 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         client,
         contracts,
         identity,
-        deliverer: Deliverer::new(DeliverConfig {
+        dispatcher: Dispatcher::new(Deliverer::new(DeliverConfig {
             allow_private: cfg.allow_private,
             ..Default::default()
-        }),
+        })),
         repo_filter,
         statics,
         repos: BTreeMap::new(),
+        subs: Vec::new(),
+        resume_at: BTreeMap::new(),
+        started_ms: now_ms(),
         cfg,
     };
     tracing::info!(
@@ -145,6 +186,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     );
 
     let mut ticker = tokio::time::interval(relay.cfg.poll_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut cycle: u64 = 0;
     loop {
         ticker.tick().await;
@@ -156,7 +198,13 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         cycle = cycle.wrapping_add(1);
         let ids: Vec<String> = relay.repos.keys().cloned().collect();
         for id in ids {
-            relay.poll_repo(&id).await;
+            let deadline = Instant::now() + REPO_BUDGET;
+            if tokio::time::timeout(REPO_BUDGET, relay.poll_repo(&id, deadline))
+                .await
+                .is_err()
+            {
+                tracing::warn!(repo = %id, budget_s = REPO_BUDGET.as_secs(), "repo ran past its time budget; resuming next cycle");
+            }
         }
     }
 }
@@ -175,8 +223,31 @@ async fn resolve_repo(client: &PlatformClient, r: &str) -> Result<RepoRef> {
     Ok(repo)
 }
 
+/// `repoId == repo_id`, the pinned prefix of every repo-scoped stream.
+fn repo_filter(repo_id: &str) -> Result<QueryFilter> {
+    Ok(QueryFilter::eq(
+        "repoId",
+        FieldValue::identifier(decode_identifier(repo_id)?),
+    ))
+}
+
+/// The baseline of a repo that starts being served now. See the module docs.
+fn baseline_for(
+    startup: bool,
+    lookback: u32,
+    earliest_hook: u64,
+    relay_start: u64,
+    resume: Option<u64>,
+) -> Baseline {
+    match resume {
+        Some(t) => Baseline::Since(t),
+        None if startup => Baseline::Tail { lookback },
+        None => Baseline::Since(earliest_hook.max(relay_start)),
+    }
+}
+
 impl Relay {
-    /// Re-run discovery and reconcile the served repos with it.
+    /// Re-run discovery, reconcile the served repos with it, and resync the delivery workers.
     async fn refresh(&mut self, startup: bool) -> Result<()> {
         let mut subs = self.statics.clone();
         let mut failed = BTreeSet::new();
@@ -191,23 +262,34 @@ impl Relay {
             subs.extend(found.subs);
             failed = found.failed;
         }
+        // A repo whose hooks could not be read this pass keeps its previous Platform hooks.
+        subs.extend(
+            self.subs
+                .iter()
+                .filter(|s| failed.contains(&s.repo_id) && s.document_id.is_some())
+                .cloned(),
+        );
         let wanted = subscriptions::repos_of(&subs);
         let before: BTreeSet<String> = self.repos.keys().cloned().collect();
 
-        // A repo whose hooks could not be read this pass keeps its state and previous hooks.
-        self.repos
-            .retain(|id, _| wanted.contains_key(id) || failed.contains(id));
+        for (id, state) in &self.repos {
+            if !wanted.contains_key(id) {
+                self.resume_at.insert(id.clone(), state.high_water);
+            }
+        }
+        self.repos.retain(|id, _| wanted.contains_key(id));
         for (repo_id, earliest) in &wanted {
             if !self.repos.contains_key(repo_id) {
-                let baseline = if startup {
-                    Baseline::Tail {
-                        lookback: self.cfg.lookback,
-                    }
-                } else {
-                    Baseline::Since(*earliest)
-                };
+                let baseline = baseline_for(
+                    startup,
+                    self.cfg.lookback,
+                    *earliest,
+                    self.started_ms,
+                    self.resume_at.get(repo_id).copied(),
+                );
                 match self.init_repo(repo_id, baseline).await {
                     Ok(state) => {
+                        self.resume_at.remove(repo_id);
                         self.repos.insert(repo_id.clone(), state);
                     }
                     Err(e) => {
@@ -216,29 +298,22 @@ impl Relay {
                 }
             }
             if let Some(state) = self.repos.get_mut(repo_id) {
-                let mut fresh: Vec<WebhookSub> = subs
+                state.wants = ALL_EVENTS
                     .iter()
-                    .filter(|s| &s.repo_id == repo_id)
-                    .cloned()
+                    .copied()
+                    .filter(|e| subs.iter().any(|s| &s.repo_id == repo_id && s.wants(e)))
                     .collect();
-                if failed.contains(repo_id) {
-                    // Keep the Platform hooks read last time; only the static ones are fresh.
-                    fresh.extend(
-                        state
-                            .subs
-                            .iter()
-                            .filter(|s| s.document_id.is_some())
-                            .cloned(),
-                    );
-                }
-                state.subs = fresh;
             }
         }
+        subs.retain(|s| self.repos.contains_key(&s.repo_id));
+        self.dispatcher.sync(&subs);
+        self.subs = subs;
+
         let after: BTreeSet<String> = self.repos.keys().cloned().collect();
         if before != after || startup {
             tracing::info!(
                 repos = after.len(),
-                hooks = subs.len(),
+                hooks = self.subs.len(),
                 added = ?after.difference(&before).collect::<Vec<_>>(),
                 removed = ?before.difference(&after).collect::<Vec<_>>(),
                 "webhook subscriptions refreshed"
@@ -247,7 +322,7 @@ impl Relay {
         Ok(())
     }
 
-    /// Resolve a repo's metadata and preload its issue/PR index.
+    /// Resolve a repo's metadata, config history, issue/PR index and open PR heads.
     async fn init_repo(&self, repo_id: &str, baseline: Baseline) -> Result<RepoState> {
         let repo = forge_core::resolve::resolve_id(&self.client, repo_id).await?;
         let RepoRef::V2 {
@@ -267,54 +342,58 @@ impl Relay {
                 "{repo_id} is a private repository; the relay does not serve private repositories"
             )));
         }
+        let rf = repo_filter(repo_id)?;
+        let all = |contract: &LoadedContract, doc_type: &'static str| {
+            let rf = rf.clone();
+            let contract = contract.clone();
+            let client = Arc::clone(&self.client);
+            async move {
+                client
+                    .query_all_documents(
+                        &contract,
+                        doc_type,
+                        &[rf],
+                        &[QueryOrder::asc("$createdAt")],
+                    )
+                    .await
+            }
+        };
+        let config_docs = all(&self.contracts.core, "config").await?;
+        let configs: Vec<ConfigDoc> = config_docs.iter().map(config_doc).collect();
         let repo_doc = self
             .client
             .fetch_document(&self.contracts.core, "repo", repo_id)
             .await?;
-        let config = self
-            .client
-            .query_documents(
-                &self.contracts.core,
-                "config",
-                &[repo_filter(repo_id)?],
-                &[QueryOrder::desc("$createdAt")],
-                1,
-                None,
-            )
-            .await?;
-        let default_branch = config
-            .first()
-            .and_then(|d| d.field_str("defaultBranch"))
-            .or_else(|| repo_doc.as_ref().and_then(|d| d.field_str("defaultBranch")))
+        // The newest config's default branch, else the repo document's.
+        let default_branch = config_docs
+            .iter()
+            .rev()
+            .chain(repo_doc.as_ref())
+            .find_map(|d| d.field_str("defaultBranch"))
             .map_or_else(
                 || "main".to_string(),
                 |b| b.trim_start_matches("refs/heads/").to_string(),
             );
 
         // Every existing issue and PR, so events on old threads translate. Their comment and
-        // review streams start where the repo's streams do.
+        // review streams start where the repo's streams do; open PR heads seed `heads`.
         let mut targets = BTreeMap::new();
+        let mut heads = BTreeMap::new();
         for (doc_type, is_pr) in [(DOC_ISSUE, false), (DOC_PATCH, true)] {
-            for d in self
-                .client
-                .query_all_documents(
-                    &self.contracts.collab,
-                    doc_type,
-                    &[repo_filter(repo_id)?],
-                    &[QueryOrder::asc("$createdAt")],
-                )
-                .await?
-            {
+            for d in all(&self.contracts.collab, doc_type).await? {
                 let t = if is_pr {
                     TargetInfo::from_patch(&d, baseline)
                 } else {
                     TargetInfo::from_issue(&d, baseline)
                 };
+                if is_pr && !t.head_oid.is_empty() {
+                    heads.insert(t.head_oid.clone(), t.last_activity);
+                }
                 targets.insert(d.id.clone(), t);
             }
         }
         tracing::info!(repo = %repo_id, name = %name, owner = %owner_id, targets = targets.len(), ?baseline, "serving repo");
-        Ok(RepoState {
+        let mut state = RepoState {
             meta: RepositoryMeta {
                 repo_id: repo_id.to_string(),
                 owner_id: owner_id.clone(),
@@ -322,12 +401,20 @@ impl Relay {
                 default_branch,
                 web_base_url: self.cfg.web_base_url.clone(),
             },
-            subs: Vec::new(),
+            wants: BTreeSet::new(),
             baseline,
             cursors: BTreeMap::new(),
             targets,
-            heads: BTreeSet::new(),
-        })
+            closed: BTreeSet::new(),
+            heads,
+            configs,
+            high_water: match baseline {
+                Baseline::Since(t) => t,
+                _ => now_ms(),
+            },
+        };
+        prune_heads(&mut state.heads);
+        Ok(state)
     }
 
     /// Read one stream of `repo_id` past its cursor, committing the cursor only on success.
@@ -353,9 +440,18 @@ impl Relay {
             .get(&key)
             .cloned()
             .unwrap_or_else(|| Cursor::new(baseline));
-        match poll_stream(&self.client, contract, doc_type, &prefix, &mut cursor).await {
+        let source = LiveStream {
+            client: &self.client,
+            contract,
+            doc_type,
+            prefix: &prefix,
+        };
+        match poll_stream(&source, &mut cursor).await {
             Ok(docs) => {
                 state.cursors.insert(key, cursor);
+                if let Some(t) = docs.iter().filter_map(|d| d.created_at).max() {
+                    state.high_water = state.high_water.max(t);
+                }
                 docs
             }
             Err(e) => {
@@ -365,176 +461,268 @@ impl Relay {
         }
     }
 
-    /// One cycle for one repo.
-    async fn poll_repo(&mut self, repo_id: &str) {
-        let Ok(rf) = repo_filter(repo_id) else { return };
-        let Some(base) = self.repos.get(repo_id).map(|s| s.baseline) else {
-            return;
+    /// A repo-scoped stream (`repoId == R` on an index ending in `$createdAt`), keyed by type.
+    async fn repo_stream(
+        &mut self,
+        repo_id: &str,
+        doc_type: &str,
+        collab: bool,
+    ) -> Vec<FetchedDocument> {
+        let (Ok(rf), Some(base)) = (
+            repo_filter(repo_id),
+            self.repos.get(repo_id).map(|s| s.baseline),
+        ) else {
+            return Vec::new();
         };
+        self.stream(repo_id, doc_type.into(), doc_type, collab, vec![rf], base)
+            .await
+    }
 
-        // Pushes (both ref-update types), then releases (forge-core).
-        for doc_type in [DOC_REF_UPDATE, DOC_PROTECTED_REF_UPDATE] {
-            let docs = self
-                .stream(
-                    repo_id,
-                    doc_type.into(),
-                    doc_type,
-                    false,
-                    vec![rf.clone()],
-                    base,
-                )
-                .await;
-            for d in &docs {
-                if !ingest::is_ref_deletion(d) {
-                    if let (Some(oid), Some(s)) =
-                        (d.field_hex("newOid"), self.repos.get_mut(repo_id))
-                    {
-                        s.heads.insert(oid);
-                    }
-                }
-                self.emit(repo_id, d, ingest::translate_ref_update).await;
+    /// One cycle for one repo. Stops early (resuming next cycle) past `deadline`.
+    async fn poll_repo(&mut self, repo_id: &str, deadline: Instant) {
+        let Ok(rf) = repo_filter(repo_id) else { return };
+
+        // Config first, so a push is judged by the patterns in force when it landed.
+        for d in self.repo_stream(repo_id, "config", false).await {
+            if let Some(s) = self.repos.get_mut(repo_id) {
+                s.configs.push(config_doc(&d));
             }
         }
-        for d in &self
-            .stream(
-                repo_id,
-                DOC_RELEASE.into(),
-                DOC_RELEASE,
-                false,
-                vec![rf.clone()],
-                base,
-            )
-            .await
-        {
-            self.emit(repo_id, d, ingest::translate_release).await;
+
+        // Pushes (both ref-update types), valid by forge's routing rule only.
+        for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
+            for d in &self.repo_stream(repo_id, doc_type, false).await {
+                let Some(s) = self.repos.get_mut(repo_id) else {
+                    return;
+                };
+                if !ingest::ref_update_is_valid(d, protected, &s.configs) {
+                    tracing::debug!(repo = %repo_id, source = %d.id, "ref update is inert by the protected-ref rule; not reported");
+                    continue;
+                }
+                if !ingest::is_ref_deletion(d) {
+                    if let Some(oid) = d.field_hex("newOid") {
+                        s.heads.insert(oid, d.created_at.unwrap_or(0));
+                        prune_heads(&mut s.heads);
+                    }
+                }
+                emit(
+                    &self.dispatcher,
+                    repo_id,
+                    ingest::translate_ref_update(&s.meta, d),
+                );
+            }
+        }
+        for d in &self.repo_stream(repo_id, DOC_RELEASE, false).await {
+            let event = self
+                .repos
+                .get(repo_id)
+                .and_then(|s| ingest::translate_release(&s.meta, d));
+            emit(&self.dispatcher, repo_id, event);
         }
 
-        // New issues and PRs: deliver, and add them as targets whose comment/review streams
-        // start at the beginning (everything on them is new).
+        // New issues and PRs: their comment/review streams start at the beginning.
         for (doc_type, is_pr) in [(DOC_ISSUE, false), (DOC_PATCH, true)] {
-            for d in &self
-                .stream(
-                    repo_id,
-                    doc_type.into(),
-                    doc_type,
-                    true,
-                    vec![rf.clone()],
-                    base,
-                )
-                .await
-            {
-                if let Some(s) = self.repos.get_mut(repo_id) {
-                    let t = if is_pr {
-                        if let Some(oid) = d.field_hex("headOid") {
-                            s.heads.insert(oid);
-                        }
-                        TargetInfo::from_patch(d, Baseline::Beginning)
-                    } else {
-                        TargetInfo::from_issue(d, Baseline::Beginning)
-                    };
-                    s.targets.insert(d.id.clone(), t);
-                }
-                let translate = if is_pr {
-                    ingest::translate_patch
-                } else {
-                    ingest::translate_issue
+            for d in &self.repo_stream(repo_id, doc_type, true).await {
+                let Some(s) = self.repos.get_mut(repo_id) else {
+                    return;
                 };
-                self.emit(repo_id, d, translate).await;
+                let (t, event) = if is_pr {
+                    (
+                        TargetInfo::from_patch(d, Baseline::Beginning),
+                        ingest::translate_patch(&s.meta, d),
+                    )
+                } else {
+                    (
+                        TargetInfo::from_issue(d, Baseline::Beginning),
+                        ingest::translate_issue(&s.meta, d),
+                    )
+                };
+                if is_pr && !t.head_oid.is_empty() {
+                    s.heads.insert(t.head_oid.clone(), t.last_activity);
+                    prune_heads(&mut s.heads);
+                }
+                s.targets.insert(d.id.clone(), t);
+                emit(&self.dispatcher, repo_id, event);
             }
         }
 
         // State changes by members and by authors (the repo feed of both types).
         for doc_type in [DOC_EVENT, DOC_AUTHOR_EVENT] {
-            for d in &self
-                .stream(
-                    repo_id,
-                    doc_type.into(),
+            for d in &self.repo_stream(repo_id, doc_type, true).await {
+                let verified = self.merge_verified(repo_id, d).await;
+                let Some(s) = self.repos.get_mut(repo_id) else {
+                    return;
+                };
+                note_activity(s, d);
+                let event = ingest::translate_event(&s.meta, d, &s.targets, verified);
+                emit(&self.dispatcher, repo_id, event);
+            }
+        }
+
+        if Instant::now() < deadline {
+            self.poll_threads(repo_id, deadline).await;
+        }
+        if Instant::now() < deadline {
+            self.poll_check_runs(repo_id, &rf, deadline).await;
+        }
+    }
+
+    /// Whether a merge event's `oid` was the tip of a valid update of the PR's base ref (see
+    /// [`ingest::translate_event`]). `true` for other kinds (nothing to verify).
+    async fn merge_verified(&self, repo_id: &str, d: &FetchedDocument) -> bool {
+        if d.field_u64("kind") != Some(3) {
+            return true;
+        }
+        let (Some(state), Some(target), Some(oid)) = (
+            self.repos.get(repo_id),
+            d.field_bytes32("targetId")
+                .map(forge_core::platform::encode_identifier),
+            d.field_hex("oid"),
+        ) else {
+            return false;
+        };
+        let Some(base_hash) = state
+            .targets
+            .get(&target)
+            .and_then(|t| hex::decode(&t.base_ref_hash).ok())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        else {
+            return false;
+        };
+        let hash_hex = hex::encode(base_hash);
+        let mut valid_tips = Vec::new();
+        for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
+            let filters = [
+                QueryFilter::eq(
+                    "repoId",
+                    FieldValue::identifier(match decode_identifier(repo_id) {
+                        Ok(b) => b,
+                        Err(_) => return false,
+                    }),
+                ),
+                QueryFilter::eq("refNameHash", FieldValue::bytes32(base_hash)),
+            ];
+            match self
+                .client
+                .query_all_documents(
+                    &self.contracts.core,
                     doc_type,
-                    true,
-                    vec![rf.clone()],
-                    base,
+                    &filters,
+                    &[QueryOrder::asc("$createdAt")],
                 )
                 .await
             {
-                self.emit_with_targets(repo_id, d, ingest::translate_event)
-                    .await;
+                Ok(docs) => valid_tips.extend(
+                    docs.iter()
+                        .map(|u| ref_update_from_doc(u, &hash_hex, protected))
+                        .filter(|u| rules::is_update_valid(u, &state.configs))
+                        .map(|u| u.new_oid),
+                ),
+                Err(e) => {
+                    tracing::warn!(repo = %repo_id, error = %e, "cannot read the base ref to verify a merge; reporting it unverified");
+                    return false;
+                }
             }
         }
-
-        self.poll_threads(repo_id).await;
-        self.poll_check_runs(repo_id, &rf).await;
+        valid_tips.iter().any(|t| t == &oid)
     }
 
-    /// Whether any hook of the repo wants `event`: the per-target and per-head streams cost a
-    /// query each per cycle, so they are read only for a hook that wants them.
-    fn wanted(&self, repo_id: &str, event: &str) -> bool {
-        self.repos
-            .get(repo_id)
-            .is_some_and(|s| s.subs.iter().any(|h| h.wants(event)))
-    }
-
-    /// Comments (per issue/PR) and reviews (per PR): their indexes lead with the target.
-    async fn poll_threads(&mut self, repo_id: &str) {
-        let comments = self.wanted(repo_id, "issue_comment");
-        let reviews = self.wanted(repo_id, "pull_request_review");
+    /// Comments (per issue/PR) and reviews (per PR), for open or recently active threads only,
+    /// most recently active first, at most [`MAX_THREAD_STREAMS`].
+    async fn poll_threads(&mut self, repo_id: &str, deadline: Instant) {
+        let Some(s) = self.repos.get(repo_id) else {
+            return;
+        };
+        let comments = s.wants.contains("issue_comment");
+        let reviews = s.wants.contains("pull_request_review");
         if !comments && !reviews {
             return;
         }
-        let targets: Vec<(String, bool, Baseline)> = self
-            .repos
-            .get(repo_id)
-            .map(|s| {
-                s.targets
-                    .iter()
-                    .map(|(id, t)| (id.clone(), t.is_pr, t.baseline))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (tid, is_pr, tbase) in targets {
+        let cutoff = now_ms().saturating_sub(THREAD_ACTIVE_WINDOW_MS);
+        let mut live: Vec<(String, bool, Baseline, u64)> = s
+            .targets
+            .iter()
+            .filter(|(id, t)| !s.closed.contains(*id) || t.last_activity >= cutoff)
+            .map(|(id, t)| (id.clone(), t.is_pr, t.baseline, t.last_activity))
+            .collect();
+        live.sort_by_key(|t| std::cmp::Reverse(t.3));
+        live.truncate(MAX_THREAD_STREAMS);
+        for (tid, is_pr, tbase, _) in live {
+            if Instant::now() >= deadline {
+                return;
+            }
             let Ok(bytes) = decode_identifier(&tid) else {
                 continue;
             };
+            let mut docs = Vec::new();
             if comments {
-                let key = format!("{DOC_COMMENT}:{tid}");
-                let by_target = vec![QueryFilter::eq("targetId", FieldValue::identifier(bytes))];
-                for d in &self
-                    .stream(repo_id, key, DOC_COMMENT, true, by_target, tbase)
+                let filter = vec![QueryFilter::eq("targetId", FieldValue::identifier(bytes))];
+                docs.extend(
+                    self.stream(
+                        repo_id,
+                        format!("{DOC_COMMENT}:{tid}"),
+                        DOC_COMMENT,
+                        true,
+                        filter,
+                        tbase,
+                    )
                     .await
-                {
-                    self.emit_with_targets(repo_id, d, ingest::translate_comment)
-                        .await;
-                }
+                    .into_iter()
+                    .map(|d| (d, false)),
+                );
             }
             if is_pr && reviews {
-                let key = format!("{DOC_REVIEW}:{tid}");
-                let by_patch = vec![QueryFilter::eq("patchId", FieldValue::identifier(bytes))];
-                for d in &self
-                    .stream(repo_id, key, DOC_REVIEW, true, by_patch, tbase)
+                let filter = vec![QueryFilter::eq("patchId", FieldValue::identifier(bytes))];
+                docs.extend(
+                    self.stream(
+                        repo_id,
+                        format!("{DOC_REVIEW}:{tid}"),
+                        DOC_REVIEW,
+                        true,
+                        filter,
+                        tbase,
+                    )
                     .await
-                {
-                    self.emit_with_targets(repo_id, d, ingest::translate_review)
-                        .await;
+                    .into_iter()
+                    .map(|d| (d, true)),
+                );
+            }
+            let Some(s) = self.repos.get_mut(repo_id) else {
+                return;
+            };
+            for (d, is_review) in docs {
+                if let Some(t) = s.targets.get_mut(&tid) {
+                    t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
                 }
+                let event = if is_review {
+                    ingest::translate_review(&s.meta, &d, &s.targets)
+                } else {
+                    ingest::translate_comment(&s.meta, &d, &s.targets)
+                };
+                emit(&self.dispatcher, repo_id, event);
             }
         }
     }
 
-    /// Check runs, per head oid seen on a push or PR.
-    async fn poll_check_runs(&mut self, repo_id: &str, rf: &QueryFilter) {
-        if !self.wanted(repo_id, "check_run") {
+    /// Check runs, per head oid seen on a push or PR (the newest [`MAX_HEADS`]). New
+    /// `checkRun` documents only: a run updated in place (status progression) is not
+    /// observed, because the index is keyed on `$createdAt`.
+    async fn poll_check_runs(&mut self, repo_id: &str, rf: &QueryFilter, deadline: Instant) {
+        let Some(s) = self.repos.get(repo_id) else {
+            return;
+        };
+        if !s.wants.contains("check_run") {
             return;
         }
-        let heads: Vec<String> = self
-            .repos
-            .get(repo_id)
-            .map(|s| s.heads.iter().cloned().collect())
-            .unwrap_or_default();
+        let heads: Vec<String> = s.heads.keys().cloned().collect();
         for oid in heads {
+            if Instant::now() >= deadline {
+                return;
+            }
             let Ok(bytes) = hex::decode(&oid) else {
                 continue;
             };
-            let key = format!("{DOC_CHECK_RUN}:{oid}");
-            let by_head = vec![
+            let filter = vec![
                 rf.clone(),
                 QueryFilter::eq("headOid", FieldValue::bytes(bytes)),
             ];
@@ -542,95 +730,113 @@ impl Relay {
             for d in &self
                 .stream(
                     repo_id,
-                    key,
+                    format!("{DOC_CHECK_RUN}:{oid}"),
                     DOC_CHECK_RUN,
                     true,
-                    by_head,
+                    filter,
                     Baseline::Beginning,
                 )
                 .await
             {
-                self.emit(repo_id, d, ingest::translate_check_run).await;
-            }
-        }
-    }
-
-    /// Translate a document that needs no other context, and deliver.
-    async fn emit(
-        &self,
-        repo_id: &str,
-        d: &FetchedDocument,
-        translate: fn(&RepositoryMeta, &FetchedDocument) -> Option<WebhookEvent>,
-    ) {
-        if let Some(s) = self.repos.get(repo_id) {
-            if let Some(event) = translate(&s.meta, d) {
-                dispatch(&self.deliverer, &s.subs, &event).await;
-            }
-        }
-    }
-
-    /// Translate with the repo's target index, and deliver.
-    async fn emit_with_targets(
-        &self,
-        repo_id: &str,
-        d: &FetchedDocument,
-        translate: fn(
-            &RepositoryMeta,
-            &FetchedDocument,
-            &BTreeMap<String, TargetInfo>,
-        ) -> Option<WebhookEvent>,
-    ) {
-        if let Some(s) = self.repos.get(repo_id) {
-            if let Some(event) = translate(&s.meta, d, &s.targets) {
-                dispatch(&self.deliverer, &s.subs, &event).await;
+                let event = self
+                    .repos
+                    .get(repo_id)
+                    .and_then(|s| ingest::translate_check_run(&s.meta, d));
+                emit(&self.dispatcher, repo_id, event);
             }
         }
     }
 }
 
-/// `repoId == repo_id`, the pinned prefix of every repo-scoped stream.
-fn repo_filter(repo_id: &str) -> Result<QueryFilter> {
-    Ok(QueryFilter::eq(
-        "repoId",
-        FieldValue::identifier(decode_identifier(repo_id)?),
-    ))
+/// Queue a translated event for the repo's hooks (never waits on a receiver).
+fn emit(dispatcher: &Dispatcher, repo_id: &str, event: Option<WebhookEvent>) {
+    if let Some(event) = event {
+        dispatcher.enqueue(repo_id, event);
+    }
 }
 
-/// Deliver one event to every subscription that wants it, concurrently (bounded), so a slow
-/// or dead target cannot hold up the others. Logs (dead-letters) exhausted deliveries; never
-/// logs the secret, the body, or the URL's query.
-async fn dispatch(deliverer: &Deliverer, subs: &[WebhookSub], event: &WebhookEvent) {
-    use futures::stream::StreamExt;
+/// Every GitHub event the relay produces.
+const ALL_EVENTS: [&str; 7] = [
+    "push",
+    "release",
+    "issues",
+    "pull_request",
+    "issue_comment",
+    "pull_request_review",
+    "check_run",
+];
 
-    futures::stream::iter(subs.iter().filter(|s| s.wants(event.event)))
-        .for_each_concurrent(MAX_CONCURRENT_DELIVERIES, |sub| async move {
-            let url = crate::ssrf::redact(&sub.url);
-            match deliverer
-                .deliver(&sub.url, sub.secret.expose(), &sub.hook_id, event)
-                .await
-            {
-                Ok(receipt) => tracing::info!(
-                    repo = %sub.repo_id,
-                    hook = %sub.hook_id,
-                    %url,
-                    event = event.event,
-                    action = event.action.unwrap_or("-"),
-                    delivery_id = %receipt.delivery_id,
-                    status = receipt.status,
-                    attempts = receipt.attempts,
-                    source = %event.source_doc_id,
-                    "delivered webhook"
-                ),
-                Err(e) => tracing::error!(
-                    repo = %sub.repo_id,
-                    hook = %sub.hook_id,
-                    %url,
-                    event = event.event,
-                    source = %event.source_doc_id,
-                    error = %e,
-                    "DEAD-LETTER: webhook delivery failed (at-least-once: not retried across cycles)"
-                ),
-            }
-        })
-        .await;
+/// Record an event's effect on its target: activity time, and open/closed.
+fn note_activity(s: &mut RepoState, d: &FetchedDocument) {
+    let Some(tid) = d
+        .field_bytes32("targetId")
+        .map(forge_core::platform::encode_identifier)
+    else {
+        return;
+    };
+    if let Some(t) = s.targets.get_mut(&tid) {
+        t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
+    }
+    match d.field_u64("kind") {
+        Some(1 | 3) => {
+            s.closed.insert(tid);
+        }
+        Some(2) => {
+            s.closed.remove(&tid);
+        }
+        _ => {}
+    }
+}
+
+/// Keep the newest [`MAX_HEADS`] head oids.
+fn prune_heads(heads: &mut BTreeMap<String, u64>) {
+    if heads.len() <= MAX_HEADS {
+        return;
+    }
+    let mut by_time: Vec<(u64, String)> = heads.iter().map(|(k, v)| (*v, k.clone())).collect();
+    by_time.sort();
+    for (_, k) in by_time.iter().take(heads.len() - MAX_HEADS) {
+        heads.remove(k);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repo_that_appears_late_never_replays_history_before_the_relay_started() {
+        let start = 1_000_000;
+        // Startup: from the tail.
+        assert_eq!(
+            baseline_for(true, 3, 10, start, None),
+            Baseline::Tail { lookback: 3 }
+        );
+        // A hook written long ago, repo first served after startup: from the relay's start.
+        assert_eq!(
+            baseline_for(false, 0, 10, start, None),
+            Baseline::Since(start)
+        );
+        // A hook written after the relay started: from the hook.
+        assert_eq!(
+            baseline_for(false, 0, start + 5, start, None),
+            Baseline::Since(start + 5)
+        );
+        // A repo that dropped out and came back: from where it stopped, even at startup.
+        assert_eq!(
+            baseline_for(false, 0, 10, start, Some(start + 9)),
+            Baseline::Since(start + 9)
+        );
+    }
+
+    #[test]
+    fn heads_are_bounded_newest_first() {
+        let mut heads: BTreeMap<String, u64> = (0..(MAX_HEADS as u64 + 10))
+            .map(|i| (format!("{i:040x}"), i))
+            .collect();
+        prune_heads(&mut heads);
+        assert_eq!(heads.len(), MAX_HEADS);
+        assert!(!heads.contains_key(&format!("{:040x}", 0)));
+        assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));
+    }
 }

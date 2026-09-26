@@ -1337,14 +1337,48 @@ impl<'a> RepoService<'a> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        Ok(docs
-            .iter()
-            .map(|d| ConfigDoc {
-                id: d.id.clone(),
-                created_at: d.created_at.unwrap_or(0),
-                protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
-            })
-            .collect())
+        Ok(docs.iter().map(config_doc).collect())
+    }
+}
+
+/// The folded state of one ref of `repo` (`rules::resolve_ref` over the ref's complete
+/// history and the repo's config timeline), read with no identity: what a verifier checks a
+/// claimed tip against. Returns `Unborn` for a ref that never validly existed.
+pub async fn read_ref_state(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    ref_name: &str,
+) -> Result<RefState> {
+    repo.require_readable()?;
+    let scope = repo.scope()?;
+    let contract = client.fetch_contract(&scope.contract_id).await?;
+    let configs: Vec<ConfigDoc> = client
+        .query_all_documents(
+            &contract,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::asc("$createdAt")],
+        )
+        .await?
+        .iter()
+        .map(config_doc)
+        .collect();
+    let hash = crate::backends::sha256(ref_name.as_bytes());
+    let updates = crate::refs::read_ref_history(client, &contract, &scope, hash).await?;
+    Ok(rules::resolve_ref(
+        &updates,
+        &configs,
+        &hex::encode(hash),
+        |a, b| a == b,
+    ))
+}
+
+/// A `config` document flattened to what protection resolution needs.
+pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
+    ConfigDoc {
+        id: d.id.clone(),
+        created_at: d.created_at.unwrap_or(0),
+        protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
     }
 }
 

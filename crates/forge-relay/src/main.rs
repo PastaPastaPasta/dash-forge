@@ -63,9 +63,9 @@ struct RunArgs {
     #[arg(long = "config", short = 'c')]
     config: Option<PathBuf>,
 
-    /// Path to the relay identity (bridge-format JSON). Its id selects the webhooks addressed
-    /// to this relay and its ENCRYPTION key decrypts their secrets. Mount it read-only; the
-    /// relay never signs or spends.
+    /// Path to the relay key file: a minimal `{identityId, identityKeys: [ENCRYPTION key]}` file
+    /// or a full bridge identity export. Its id selects the webhooks addressed to this relay and
+    /// its ENCRYPTION key decrypts their secrets. Mount it read-only; the relay never signs.
     #[arg(long)]
     identity: Option<PathBuf>,
 

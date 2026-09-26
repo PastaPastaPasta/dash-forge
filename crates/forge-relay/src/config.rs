@@ -83,7 +83,7 @@ struct FileConfig {
 pub struct RelayConfig {
     /// Target network (its forge-v2 contracts are what the relay reads).
     pub target: NetworkTarget,
-    /// Relay identity file (bridge-format JSON). Its id selects the `webhook` documents
+    /// Relay key file (minimal ENCRYPTION-key file or full bridge identity). Its id selects the `webhook` documents
     /// addressed to this relay, and its `ENCRYPTION` key decrypts their secrets. The relay
     /// never writes, so its balance can stay at zero.
     pub identity_path: Option<PathBuf>,

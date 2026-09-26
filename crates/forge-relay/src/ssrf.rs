@@ -154,17 +154,28 @@ pub fn parse_target(url: &str) -> Result<Url> {
     Ok(parsed)
 }
 
-/// The URL with its query and fragment dropped, for logs (a query often carries a token).
+/// The URL as logs show it: scheme, host and port only (a path or query can carry a token).
 pub fn redact(url: &str) -> String {
     match Url::parse(url) {
-        Ok(mut u) => {
-            u.set_query(None);
-            u.set_fragment(None);
-            let _ = u.set_password(None);
-            let _ = u.set_username("");
-            u.to_string()
-        }
+        Ok(u) => match (u.host_str(), u.port()) {
+            (Some(h), Some(p)) => format!("{}://{h}:{p}", u.scheme()),
+            (Some(h), None) => format!("{}://{h}", u.scheme()),
+            _ => "<url without host>".to_string(),
+        },
         Err(_) => "<malformed url>".to_string(),
+    }
+}
+
+impl ValidatedTarget {
+    /// The address the connection goes to (the first pinned one), for per-destination bounds:
+    /// many hostnames that resolve to one server share its pool.
+    pub fn ip_key(&self) -> String {
+        match (&self.pinned_addrs, self.url.host()) {
+            (Some(addrs), _) if !addrs.is_empty() => addrs[0].ip().to_string(),
+            (_, Some(url::Host::Ipv4(ip))) => ip.to_string(),
+            (_, Some(url::Host::Ipv6(ip))) => ip.to_string(),
+            _ => self.host.clone(),
+        }
     }
 }
 
@@ -353,11 +364,28 @@ mod tests {
     }
 
     #[test]
-    fn redaction_drops_query_fragment_and_userinfo() {
+    fn redaction_keeps_only_scheme_host_and_port() {
         assert_eq!(
-            redact("https://u:p@ci.example/hook?token=abc#frag"),
-            "https://ci.example/hook"
+            redact("https://u:p@ci.example/secret-path/hook?token=abc#frag"),
+            "https://ci.example"
         );
+        assert_eq!(redact("http://127.0.0.1:9000/h"), "http://127.0.0.1:9000");
         assert_eq!(redact("::"), "<malformed url>");
+    }
+
+    #[tokio::test]
+    async fn the_pool_key_is_the_address_connected_to() {
+        let t = resolve_and_validate("http://localhost:9/h", true, T)
+            .await
+            .unwrap();
+        assert!(
+            t.ip_key() == "127.0.0.1" || t.ip_key() == "::1",
+            "{}",
+            t.ip_key()
+        );
+        let t = resolve_and_validate("http://127.0.0.1:9/h", true, T)
+            .await
+            .unwrap();
+        assert_eq!(t.ip_key(), "127.0.0.1");
     }
 }

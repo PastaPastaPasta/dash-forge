@@ -395,8 +395,13 @@ pub struct ReleaseObj {
     pub assets: Value,
 }
 
-/// Build a `release` event (`action` = `published`).
-pub fn release_event(repo: &RepositoryMeta, source_doc_id: &str, r: &ReleaseObj) -> WebhookEvent {
+/// Build a `release` event (`action` = `published`, or `unpublished` for a yanked tag).
+pub fn release_event(
+    repo: &RepositoryMeta,
+    source_doc_id: &str,
+    action: &'static str,
+    r: &ReleaseObj,
+) -> WebhookEvent {
     let html_url = format!(
         "{}/{}/{}/releases/tag/{}",
         repo.web_base_url.trim_end_matches('/'),
@@ -405,7 +410,7 @@ pub fn release_event(repo: &RepositoryMeta, source_doc_id: &str, r: &ReleaseObj)
         r.tag_name
     );
     let payload = json!({
-        "action": "published",
+        "action": action,
         "release": {
             "id": r.document_id,
             "node_id": r.document_id,
@@ -424,7 +429,7 @@ pub fn release_event(repo: &RepositoryMeta, source_doc_id: &str, r: &ReleaseObj)
     });
     WebhookEvent {
         event: "release",
-        action: Some("published"),
+        action: Some(action),
         payload,
         source_doc_id: source_doc_id.to_string(),
     }
@@ -687,7 +692,7 @@ mod tests {
             author: "maint".into(),
             assets: serde_json::json!([{"name": "a.tgz"}]),
         };
-        let e = release_event(&repo(), "rel1", &r);
+        let e = release_event(&repo(), "rel1", "published", &r);
         assert_eq!(e.event, "release");
         assert_eq!(e.payload["action"], "published");
         assert_eq!(e.payload["release"]["tag_name"], "v1.0.0");

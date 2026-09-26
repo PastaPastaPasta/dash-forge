@@ -201,6 +201,76 @@ pub fn encryption_keys(bridge: &BridgeIdentity) -> Vec<(u32, PrivateKey)> {
         .collect()
 }
 
+/// An identity id and its `ENCRYPTION` private keys: all a reader of `encryptedFor` data (a
+/// relay) needs. Loaded from a full bridge identity file or from a minimal key file holding
+/// only the encryption key(s), so a relay host never has to hold signing keys or a mnemonic:
+///
+/// ```json
+/// { "identityId": "<base58>",
+///   "identityKeys": [ { "id": 4, "purpose": "ENCRYPTION", "keyType": "ECDSA_SECP256K1",
+///                       "privateKeyHex": "<64 hex>" } ] }
+/// ```
+pub struct EncryptionKeyFile {
+    /// The identity id (base58).
+    pub identity_id: String,
+    /// `(key id, private key)` of every `ECDSA_SECP256K1` `ENCRYPTION` key in the file.
+    pub keys: Vec<(u32, PrivateKey)>,
+}
+
+impl EncryptionKeyFile {
+    /// Parse a full or minimal key file (see the type docs). Other key purposes are ignored.
+    pub fn from_json(raw: &str) -> Result<Self> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct KeyEntry {
+            id: u32,
+            purpose: String,
+            #[serde(default = "secp")]
+            key_type: String,
+            private_key_hex: crate::keystore::Secret,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct File {
+            identity_id: String,
+            identity_keys: Vec<KeyEntry>,
+        }
+        fn secp() -> String {
+            "ECDSA_SECP256K1".into()
+        }
+        let file: File = serde_json::from_str(raw)?;
+        let mut keys = Vec::new();
+        for k in file.identity_keys {
+            if k.purpose == "ENCRYPTION" && k.key_type == "ECDSA_SECP256K1" {
+                keys.push((k.id, PrivateKey::from_hex(k.private_key_hex.expose())?));
+            }
+        }
+        Ok(Self {
+            identity_id: file.identity_id,
+            keys,
+        })
+    }
+
+    /// [`Self::from_json`] of a file on disk.
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| Error::Io(format!("reading key file {}: {e}", path.display())))?;
+        Self::from_json(&raw)
+    }
+}
+
+impl fmt::Debug for EncryptionKeyFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptionKeyFile")
+            .field("identity_id", &self.identity_id)
+            .field(
+                "key_ids",
+                &self.keys.iter().map(|k| k.0).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +376,27 @@ mod tests {
         assert!(encrypt(&k, &[2u8; 10], b"x").is_err());
         assert!(PrivateKey::from_slice(&[0u8; 32]).is_err());
         assert!(PrivateKey::from_hex("zz").is_err());
+    }
+
+    #[test]
+    fn a_minimal_key_file_holds_only_encryption_keys() {
+        let hex_key = hex::encode([0x42u8; 32]);
+        let raw = format!(
+            r#"{{"identityId":"ID","identityKeys":[
+                {{"id":4,"purpose":"ENCRYPTION","privateKeyHex":"{hex_key}"}},
+                {{"id":1,"purpose":"AUTHENTICATION","privateKeyHex":"zz"}}]}}"#
+        );
+        let f = EncryptionKeyFile::from_json(&raw).unwrap();
+        assert_eq!(f.identity_id, "ID");
+        assert_eq!(f.keys.len(), 1);
+        assert_eq!(f.keys[0].0, 4);
+        assert_eq!(f.keys[0].1.public_key(), key(0x42).public_key());
+        assert!(!format!("{f:?}").contains(&hex_key));
+        // A bad encryption key is an error, not a silently empty file.
+        assert!(EncryptionKeyFile::from_json(
+            r#"{"identityId":"ID","identityKeys":[{"id":4,"purpose":"ENCRYPTION","privateKeyHex":"zz"}]}"#
+        )
+        .is_err());
     }
 
     #[test]

@@ -5,10 +5,9 @@
 //!
 //!  1. Receive the webhook and **verify the HMAC-SHA256 signature** (`X-Hub-Signature-256`).
 //!  2. **Re-fetch the referenced state from Platform** and verify it independently — here,
-//!     for a `push`, confirm the `after` oid actually appears in the repo's `refUpdate`
-//!     history on-chain. A tampered relay that altered the payload is detected here (the
-//!     oid it invented is not on Platform), which is the whole trust model: the relay is
-//!     availability-only.
+//!     for a `push`, fold the ref's history (forge's own rules) and confirm `after` is its
+//!     resolved tip. A tampered relay that altered the payload is detected here, which is the
+//!     whole trust model: the relay is availability-only.
 //!  3. **Write a `checkRun` doc back** through the runner's own identity (a writer or
 //!     maintainer of the repo) — closing the CI loop forge-web renders. (Best-effort: if it
 //!     is not a member the write is reported as skipped, not fatal.)
@@ -27,15 +26,13 @@
 use std::collections::BTreeMap;
 use std::env;
 
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{FieldValue, Network, PlatformClient, QueryOrder, WriteEngine};
-
-type HmacSha256 = Hmac<Sha256>;
+use forge_core::platform::{FieldValue, Network, PlatformClient, WriteEngine};
+use forge_core::rules::RefState;
+use forge_core::webhooks::verify_signature as verify;
 
 /// A parsed HTTP request: method/path plus lowercased headers and the raw body.
 struct HttpRequest {
@@ -165,43 +162,31 @@ async fn verify_and_check_run(
     let repo = forge_core::resolve::resolve_id(&client, &repo_id).await?;
     let forge = repo.require_v2()?.clone();
     let scope = repo.scope()?;
-    let core = client.fetch_contract(&forge.core).await?;
 
-    // Independent verification: does the after-oid actually exist in the repo's ref-update
-    // history (the newest 100 of the `reflog` index) on Platform? A tampered relay payload
-    // would fail here.
-    let mut on_chain = false;
-    for doc_type in ["refUpdate", "protectedRefUpdate"] {
-        let docs = client
-            .query_documents(
-                &core,
-                doc_type,
-                &scope.filters([]),
-                &[QueryOrder::desc("$createdAt")],
-                100,
-                None,
-            )
-            .await?;
-        if docs
-            .iter()
-            .any(|d| d.field_hex("newOid").as_deref() == Some(after.as_str()))
-        {
-            on_chain = true;
-            break;
-        }
-    }
+    // Independent verification: fold the ref's complete history the way every forge client
+    // does (protected-ref routing as of each update, divergence, deletions) and check that
+    // `after` is its tip. "The oid appears in some update" is not enough: a writer's plain
+    // refUpdate on a protected branch lands on chain but moves nothing. A tampered relay
+    // payload fails here too.
+    let state = forge_core::repo::read_ref_state(&client, &repo, ref_name).await?;
+    let verified = match &state {
+        RefState::Resolved { oid, .. } => oid == &after,
+        // A race nothing has merged past: the tip is provisional; do not build on it.
+        RefState::Diverged { .. } | RefState::Unborn => false,
+    };
     tracing::info!(
         after,
         ref_name,
-        on_chain,
-        "re-fetched push state from Platform"
+        verified,
+        ?state,
+        "re-fetched ref state from Platform"
     );
 
-    let conclusion = if on_chain { "success" } else { "failure" };
-    let summary = if on_chain {
-        format!("Verified push to {ref_name}: after-oid {after} is present on Platform.")
+    let conclusion = if verified { "success" } else { "failure" };
+    let summary = if verified {
+        format!("Verified push to {ref_name}: {after} is the ref's tip on Platform.")
     } else {
-        format!("REJECTED: after-oid {after} for {ref_name} was NOT found on Platform (possible tampered relay).")
+        format!("REJECTED: {after} is not the resolved tip of {ref_name} on Platform.")
     };
 
     // 3. Write a checkRun doc back (best-effort — needs writer or maintainer on the repo).
@@ -232,19 +217,6 @@ async fn verify_and_check_run(
         }
     }
     Ok(())
-}
-
-/// Constant-time verify a `sha256=<hex>` signature.
-fn verify(secret: &[u8], body: &[u8], signature_header: &str) -> bool {
-    let Some(hex_sig) = signature_header.strip_prefix("sha256=") else {
-        return false;
-    };
-    let Ok(expected) = hex::decode(hex_sig) else {
-        return false;
-    };
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key");
-    mac.update(body);
-    mac.verify_slice(&expected).is_ok()
 }
 
 /// Read an HTTP/1.1 request (headers + Content-Length body) from `stream`.

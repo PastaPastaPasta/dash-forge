@@ -25,29 +25,7 @@ use crate::fmt::{cost_json, cost_line, dash_usd_price};
 #[derive(Debug, Subcommand)]
 pub enum WebhookCommand {
     /// Add (or replace) a webhook: a relay POSTs GitHub-shaped events for the repo to a URL.
-    Add {
-        /// The repository (`owner/name`, a bare name of yours, or a repo id).
-        repo: String,
-        /// Where to deliver (http:// or https://; the relay refuses private addresses
-        /// unless it runs with --allow-private).
-        #[arg(long)]
-        url: String,
-        /// The relay identity (base58) that delivers; the secret is encrypted to its key.
-        #[arg(long)]
-        relay: String,
-        /// GitHub event names to deliver (push, issues, pull_request, issue_comment,
-        /// pull_request_review, release, check_run); default all.
-        #[arg(long, value_delimiter = ',')]
-        events: Vec<String>,
-        /// Read the secret from this environment variable (32..=96 bytes). Without it a
-        /// random secret is generated and printed once.
-        #[arg(long, value_name = "VAR")]
-        secret_env: Option<String>,
-        /// A name for the hook; adding again under the same name replaces it. Default: a
-        /// new random hook id.
-        #[arg(long)]
-        name: Option<String>,
-    },
+    Add(AddArgs),
     /// List the repository's webhooks (the newest document of each).
     List {
         /// The repository.
@@ -62,11 +40,40 @@ pub enum WebhookCommand {
     },
 }
 
+/// `dg webhook add` arguments.
+#[derive(Debug, clap::Args)]
+pub struct AddArgs {
+    /// The repository (`owner/name`, a bare name of yours, or a repo id).
+    repo: String,
+    /// Where to deliver (http:// or https://; the relay refuses private addresses unless it
+    /// runs with --allow-private). The URL is stored publicly on chain.
+    #[arg(long)]
+    url: String,
+    /// The relay identity (base58) that delivers; the secret is encrypted to its key.
+    #[arg(long)]
+    relay: String,
+    /// GitHub event names to deliver (push, issues, pull_request, issue_comment,
+    /// pull_request_review, release, check_run); default all.
+    #[arg(long, value_delimiter = ',')]
+    events: Vec<String>,
+    /// Read the secret from this environment variable (32..=96 printable ASCII characters,
+    /// no spaces). Without it a random secret is generated and printed once.
+    #[arg(long, value_name = "VAR")]
+    secret_env: Option<String>,
+    /// A name for the hook; adding again under the same name replaces it. Default: a new
+    /// random hook id.
+    #[arg(long)]
+    name: Option<String>,
+    /// Accept a URL with a query string or user:password@ (it is public on chain).
+    #[arg(long)]
+    force: bool,
+}
+
 impl WebhookCommand {
     /// The error headline and the repo, for `errors::context_for`.
     pub fn context(&self) -> (&'static str, Option<&String>) {
         match self {
-            WebhookCommand::Add { repo, .. } => ("webhook not added", Some(repo)),
+            WebhookCommand::Add(a) => ("webhook not added", Some(&a.repo)),
             WebhookCommand::List { repo } => ("could not list webhooks", Some(repo)),
             WebhookCommand::Remove { repo, .. } => ("webhook not removed", Some(repo)),
         }
@@ -76,25 +83,7 @@ impl WebhookCommand {
 /// Dispatch a `webhook` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &WebhookCommand) -> Result<()> {
     match cmd {
-        WebhookCommand::Add {
-            repo,
-            url,
-            relay,
-            events,
-            secret_env,
-            name,
-        } => {
-            add(
-                ctx,
-                repo,
-                url,
-                relay,
-                events,
-                secret_env.as_deref(),
-                name.as_deref(),
-            )
-            .await
-        }
+        WebhookCommand::Add(args) => add(ctx, args).await,
         WebhookCommand::List { repo } => list(ctx, repo).await,
         WebhookCommand::Remove { repo, hook } => remove(ctx, repo, hook).await,
     }
@@ -109,17 +98,16 @@ fn parse_hook(input: &str) -> [u8; 32] {
     hook_id_for_label(input)
 }
 
-async fn add(
-    ctx: &Ctx,
-    repo: &str,
-    url: &str,
-    relay: &str,
-    events: &[String],
-    secret_env: Option<&str>,
-    name: Option<&str>,
-) -> Result<()> {
+async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
+    let AddArgs {
+        repo,
+        url,
+        relay,
+        events,
+        ..
+    } = args;
     let repo_ref = RepoRef::parse(repo)?;
-    let (secret, generated) = match secret_env {
+    let (secret, generated) = match &args.secret_env {
         Some(var) => (
             SecretBytes::new(
                 std::env::var(var)
@@ -130,7 +118,10 @@ async fn add(
         ),
         None => (generate_secret(), true),
     };
-    let hook_id = name.map_or_else(random_hook_id, hook_id_for_label);
+    let hook_id = args
+        .name
+        .as_deref()
+        .map_or_else(random_hook_id, hook_id_for_label);
 
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
@@ -141,11 +132,12 @@ async fn add(
             &handle,
             &NewWebhook {
                 hook_id,
-                url: url.to_string(),
-                events: events.to_vec(),
-                relay_identity_id: relay.to_string(),
+                url: url.clone(),
+                events: events.clone(),
+                relay_identity_id: relay.clone(),
                 secret: secret.clone(),
                 disabled: false,
+                allow_credentials_in_url: args.force,
             },
         )
         .await
@@ -155,7 +147,8 @@ async fn add(
     let credits = estimate(prepared.approx_bytes).total();
     if !ctx.json {
         println!(
-            "Adding a webhook to {} → {url} (relay {relay}, key {})\n  webhook document     {}",
+            "Adding a webhook to {} → {url} (relay {relay}, key {})\n  webhook document     {}\n  \
+             note: the URL and event list are public on chain; only the secret is encrypted",
             handle.display(),
             prepared.relay_key_id,
             cost_line(credits, price)

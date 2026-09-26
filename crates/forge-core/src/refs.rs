@@ -346,11 +346,7 @@ pub fn has_missing_parent(updates: &[RefUpdate]) -> bool {
 }
 
 /// Flatten a ref-update document to the [`RefUpdate`] shape the fold consumes.
-pub(crate) fn ref_update_from_doc(
-    d: &FetchedDocument,
-    hash_hex: &str,
-    protected: bool,
-) -> RefUpdate {
+pub fn ref_update_from_doc(d: &FetchedDocument, hash_hex: &str, protected: bool) -> RefUpdate {
     RefUpdate {
         id: d.id.clone(),
         ref_name_hash: hash_hex.to_string(),
