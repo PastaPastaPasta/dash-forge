@@ -209,6 +209,7 @@ pub async fn create(
         },
         // Platform by default; a storage policy on the pushing side decides where packs go.
         backend_mode: 0,
+        backend_uris: Vec::new(),
         visibility: Visibility::Public,
         fork_of: None,
     };

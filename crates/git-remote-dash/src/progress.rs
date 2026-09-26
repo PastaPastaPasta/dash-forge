@@ -20,9 +20,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use forge_core::backends::sigv4::uri_encode;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoreOutcome, PLATFORM_PROFILE};
-use forge_core::user_error::{dash, one_line, redact, WEB_ORIGIN};
+use forge_core::user_error::{dash, one_line, redact, web_url};
 
 /// Width of the name column (the spec's `r2-main      ` / `platform     `).
 const NAME_COL: usize = 12;
@@ -268,15 +267,6 @@ pub fn done_line(
             "remainingCredits": remaining,
             "url": url,
         }),
-    )
-}
-
-/// The repo's page in the web app.
-pub fn web_url(owner_id: &str, name: &str) -> String {
-    format!(
-        "{WEB_ORIGIN}/repo?owner={}&name={}",
-        uri_encode(owner_id, false),
-        uri_encode(name, false)
     )
 }
 
