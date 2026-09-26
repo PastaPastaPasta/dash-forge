@@ -22,6 +22,9 @@ const SECRET_NOTE = 'Stored encrypted in this browser only. Never sent to Forge 
 
 type Values = Record<string, string | boolean>
 
+/** Providers whose suggested profile name is the provider id itself (the rest get `-main`). */
+const BARE_NAMES: readonly ProviderId[] = ['aws', 'minio', 'kubo', 'pinning']
+
 function initialValues(provider: ProviderId, existing: StorageProfile | null): Values {
   const preset = providerPreset(provider)
   if (existing) {
@@ -31,7 +34,7 @@ function initialValues(provider: ProviderId, existing: StorageProfile | null): V
     }
     return out
   }
-  const base: Values = { name: provider === 'aws' ? 'aws' : provider === 'minio' ? 'minio' : provider === 'kubo' ? 'kubo' : provider === 'pinning' ? 'pinning' : `${provider}-main` }
+  const base: Values = { name: BARE_NAMES.includes(provider) ? provider : `${provider}-main` }
   const empty: Values =
     preset.kind === 's3'
       ? { endpoint: '', region: 'us-east-1', bucket: '', pathStyle: true, publicUrl: '', prefix: '', accessKeyId: '', secretAccessKey: '', sessionToken: '' }
@@ -42,6 +45,8 @@ function initialValues(provider: ProviderId, existing: StorageProfile | null): V
 }
 
 const str = (v: string | boolean | undefined): string => (typeof v === 'string' ? v.trim() : '')
+/** A URL field, trimmed and without trailing slashes. */
+const url = (v: string | boolean | undefined): string => str(v).replace(/\/+$/, '')
 
 /** The profile the form's values describe. */
 export function profileFromValues(provider: ProviderId, v: Values): StorageProfile {
@@ -52,11 +57,11 @@ export function profileFromValues(provider: ProviderId, v: Values): StorageProfi
     settings = {
       kind: 's3',
       provider: provider as 'r2' | 'b2' | 'aws' | 'minio',
-      endpoint: str(v['endpoint']).replace(/\/+$/, ''),
+      endpoint: url(v['endpoint']),
       region: str(v['region']) || 'us-east-1',
       bucket: str(v['bucket']),
       pathStyle: v['pathStyle'] !== false,
-      publicUrl: str(v['publicUrl']).replace(/\/+$/, ''),
+      publicUrl: url(v['publicUrl']),
       prefix: str(v['prefix']),
     }
     return { name: str(v['name']), settings, secrets: { ...secret('accessKeyId'), ...secret('secretAccessKey'), ...secret('sessionToken') } }
@@ -65,10 +70,10 @@ export function profileFromValues(provider: ProviderId, v: Values): StorageProfi
   settings = {
     kind: preset.kind === 'ipfs-pinning-service' ? 'ipfs-pinning-service' : 'ipfs-kubo',
     provider: provider as 'kubo' | 'pinning',
-    api: str(v['api']).replace(/\/+$/, ''),
-    gateway: str(v['gateway']).replace(/\/+$/, ''),
-    publicGateway: str(v['publicGateway']).replace(/\/+$/, ''),
-    pinningEndpoint: str(v['pinningEndpoint']).replace(/\/+$/, ''),
+    api: url(v['api']),
+    gateway: url(v['gateway']),
+    publicGateway: url(v['publicGateway']),
+    pinningEndpoint: url(v['pinningEndpoint']),
   }
   return { name: str(v['name']), settings, secrets: { ...secret('apiAuth'), ...secret('pinningToken') } }
 }

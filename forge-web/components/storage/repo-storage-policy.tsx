@@ -11,6 +11,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { HardDrive } from 'lucide-react'
 import { choiceOf, policyFor, policyForRepo, policyProblem, withRepoPolicy, type ReplicationChoice } from '@/lib/storage'
+import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
 
@@ -94,7 +95,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
               await save(withRepoPolicy(config, repoId, policy))
               setMsg('Saved for this repo.')
             } catch (e) {
-              setMsg(e instanceof Error ? e.message : String(e))
+              setMsg(errText(e))
             }
           }}
         >

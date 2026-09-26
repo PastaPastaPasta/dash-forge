@@ -12,11 +12,11 @@
  * host is up.
  */
 
-import { cidV1RawLeaves } from './cid'
 import { S3Error, deleteObject, getObject, publicObjectUrl, putObject, type S3Settings } from './s3'
 import { IpfsError, addVerified, gatewayUrl, kuboVersion, pinningReachable, unpin, type IpfsSettings } from './ipfs'
 import { normalizedPrefix, type ProfileSecrets, type StorageProfile } from './profiles'
 import { sha256Hex } from './sigv4'
+import { bytesEqual, errText } from './util'
 
 export type RowId = 'put' | 'get' | 'public' | 'cors-range' | 'cors-put' | 'delete' | 'api' | 'add' | 'gateway' | 'pinning' | 'unpin'
 export type RowState = 'pending' | 'running' | 'ok' | 'fail' | 'skipped'
@@ -48,7 +48,7 @@ export const IPFS_ROWS: readonly { id: RowId; label: string }[] = [
 ]
 
 /** Whether `url`'s host answers at all (an opaque no-cors request; never readable). */
-export async function reachable(url: string): Promise<boolean> {
+async function reachable(url: string): Promise<boolean> {
   try {
     await fetch(url, { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
     return true
@@ -63,22 +63,12 @@ function probeBody(): Uint8Array {
   return new TextEncoder().encode(`dash-forge web storage probe ${Date.now()} ${nonce}\n`)
 }
 
-function equal(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i])
-}
-
 type Report = (id: RowId, state: RowState, detail: string, cors?: boolean) => void
 
-/** Run the S3 test, reporting each row as it settles. Resolves with whether every row passed. */
-export async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Report): Promise<boolean> {
+/** Run the S3 test, reporting each row as it settles. */
+async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Report): Promise<void> {
   const body = probeBody()
   const key = `${normalizedPrefix(s.prefix)}probe/forge-web-test-${await sha256Hex(body)}.txt`
-  let ok = true
-  const fail = (id: RowId, detail: string, cors = false): void => {
-    ok = false
-    report(id, 'fail', detail, cors)
-  }
-  const skipRest = (from: RowId[], why: string): void => from.forEach((id) => report(id, 'skipped', why))
 
   // 1 + 5: a PUT that lands proves the PUT preflight passed; one refused before any answer is
   // CORS when the endpoint is reachable.
@@ -90,40 +80,41 @@ export async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Re
   } catch (e) {
     const blocked = e instanceof S3Error && e.status === 0 && (await reachable(s.endpoint))
     if (blocked) {
-      fail('put', 'the browser refused to send it (see the CORS row)')
-      fail('cors-put', 'the bucket’s CORS rules do not allow a signed PUT from this origin', true)
+      report('put', 'fail', 'the browser refused to send it (see the CORS row)')
+      report('cors-put', 'fail', 'the bucket’s CORS rules do not allow a signed PUT from this origin', true)
     } else {
-      fail('put', errText(e))
+      report('put', 'fail', errText(e))
       report('cors-put', 'skipped', 'needs a PUT that reaches the bucket')
     }
-    skipRest(['get', 'public', 'cors-range', 'delete'], 'needs the probe object')
-    return false
+    for (const id of ['get', 'public', 'cors-range', 'delete'] as const) report(id, 'skipped', 'needs the probe object')
+    return
   }
 
   report('get', 'running', '')
   try {
     const got = await getObject(s, secrets, key)
-    if (equal(got, body)) report('get', 'ok', 'read back byte for byte')
-    else fail('get', 'the bucket returned different bytes (a cache or proxy in front of it?)')
+    if (bytesEqual(got, body)) report('get', 'ok', 'read back byte for byte')
+    else report('get', 'fail', 'the bucket returned different bytes (a cache or proxy in front of it?)')
   } catch (e) {
-    fail('get', errText(e), e instanceof S3Error && e.status === 0)
+    report('get', 'fail', errText(e), e instanceof S3Error && e.status === 0)
   }
 
   const publicUrl = publicObjectUrl(s, key)
   report('public', 'running', '')
+  const publicHost = new URL(publicUrl).host
   let publicOk = false
   try {
     const resp = await fetch(publicUrl, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
     const got = new Uint8Array(await resp.arrayBuffer())
-    if (!resp.ok) fail('public', `HTTP ${resp.status} from ${new URL(publicUrl).host}: the objects are not publicly readable`)
-    else if (!equal(got, body)) fail('public', `${new URL(publicUrl).host} served different bytes (check the public URL)`)
+    if (!resp.ok) report('public', 'fail', `HTTP ${resp.status} from ${publicHost}: the objects are not publicly readable`)
+    else if (!bytesEqual(got, body)) report('public', 'fail', `${publicHost} served different bytes (check the public URL)`)
     else {
       publicOk = true
-      report('public', 'ok', `anonymous GET ${new URL(publicUrl).host}`)
+      report('public', 'ok', `anonymous GET ${publicHost}`)
     }
   } catch {
     const up = await reachable(publicUrl)
-    fail('public', up ? 'the browser was not allowed to read it: no Access-Control-Allow-Origin on GET' : `${new URL(publicUrl).host} did not answer`, up)
+    report('public', 'fail', up ? 'the browser was not allowed to read it: no Access-Control-Allow-Origin on GET' : `${publicHost} did not answer`, up)
   }
 
   report('cors-range', 'running', '')
@@ -132,11 +123,11 @@ export async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Re
     try {
       const resp = await fetch(publicUrl, { headers: { Range: 'bytes=0-9' }, credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
       const range = resp.headers.get('content-range')
-      if (resp.status !== 206) fail('cors-range', `a ranged GET returned ${resp.status} instead of 206: browsing needs HTTP Range support on the public URL`)
-      else if (range === null) fail('cors-range', 'Content-Range is not exposed to scripts (Access-Control-Expose-Headers)', true)
+      if (resp.status !== 206) report('cors-range', 'fail', `a ranged GET returned ${resp.status} instead of 206: browsing needs HTTP Range support on the public URL`)
+      else if (range === null) report('cors-range', 'fail', 'Content-Range is not exposed to scripts (Access-Control-Expose-Headers)', true)
       else report('cors-range', 'ok', 'Range allowed, Content-Range exposed')
     } catch {
-      fail('cors-range', 'the CORS preflight for a Range request was refused: allow the Range request header', true)
+      report('cors-range', 'fail', 'the CORS preflight for a Range request was refused: allow the Range request header', true)
     }
   }
 
@@ -145,26 +136,20 @@ export async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Re
     await deleteObject(s, secrets, key)
     report('delete', 'ok', 'probe removed')
   } catch (e) {
-    fail('delete', `${errText(e)}. The probe object (a few bytes) stays at ${key}; delete it by hand.`, e instanceof S3Error && e.status === 0)
+    report('delete', 'fail', `${errText(e)}. The probe object (a few bytes) stays at ${key}; delete it by hand.`, e instanceof S3Error && e.status === 0)
   }
-  return ok
 }
 
 /** Run the IPFS test (kubo, plus the pinning service for a pinning profile). */
-export async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report: Report): Promise<boolean> {
-  let ok = true
-  const fail = (id: RowId, detail: string, cors = false): void => {
-    ok = false
-    report(id, 'fail', detail, cors)
-  }
+async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report: Report): Promise<void> {
   report('api', 'running', '')
   try {
     report('api', 'ok', `kubo ${await kuboVersion(s, secrets)}`)
   } catch (e) {
     const up = await reachable(s.api)
-    fail('api', up ? `${errText(e)}` : `${new URL(s.api).host} did not answer`, up)
+    report('api', 'fail', up ? errText(e) : `${new URL(s.api).host} did not answer`, up)
     for (const id of ['add', 'gateway', 'pinning', 'unpin'] as const) report(id, 'skipped', 'needs the kubo API')
-    return false
+    return
   }
 
   const body = probeBody()
@@ -174,7 +159,7 @@ export async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report
     cid = await addVerified(s, secrets, body)
     report('add', 'ok', `${cid} matches the local derivation and is pinned`)
   } catch (e) {
-    fail('add', errText(e))
+    report('add', 'fail', errText(e))
   }
 
   report('gateway', 'running', '')
@@ -184,12 +169,12 @@ export async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report
     try {
       const resp = await fetch(url, { headers: { Range: `bytes=0-${body.length - 1}` }, credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
       const got = new Uint8Array(await resp.arrayBuffer())
-      if (!resp.ok) fail('gateway', `HTTP ${resp.status} from the gateway`)
-      else if (!equal(got, body)) fail('gateway', 'the gateway served different bytes')
+      if (!resp.ok) report('gateway', 'fail', `HTTP ${resp.status} from the gateway`)
+      else if (!bytesEqual(got, body)) report('gateway', 'fail', 'the gateway served different bytes')
       else report('gateway', 'ok', `re-read through ${new URL(url).host}`)
     } catch {
       const up = await reachable(url)
-      fail('gateway', up ? 'the gateway refused this origin (CORS)' : 'the gateway did not answer', up)
+      report('gateway', 'fail', up ? 'the gateway refused this origin (CORS)' : 'the gateway did not answer', up)
     }
   }
 
@@ -200,7 +185,7 @@ export async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report
       await pinningReachable(s, secrets)
       report('pinning', 'ok', 'the service accepted the token')
     } catch (e) {
-      fail('pinning', errText(e), e instanceof IpfsError && /CORS/.test(e.message))
+      report('pinning', 'fail', errText(e), e instanceof IpfsError && /CORS/.test(e.message))
     }
   }
 
@@ -211,23 +196,24 @@ export async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report
       await unpin(s, secrets, cid)
       report('unpin', 'ok', 'probe unpinned (a gc removes it)')
     } catch (e) {
-      fail('unpin', errText(e))
+      report('unpin', 'fail', errText(e))
     }
   }
-  return ok
 }
 
-/** Run the test for any profile kind. A Platform profile needs none. */
+/**
+ * Run the test for any profile kind, reporting each row as it settles. Resolves with whether
+ * every row passed (no row failed). A Platform profile needs none.
+ */
 export async function probeProfile(p: StorageProfile, report: Report): Promise<boolean> {
   const s = p.settings
   if (s.kind === 'platform') return true
-  if (s.kind === 's3') return probeS3(s, p.secrets, report)
-  return probeIpfs(s, p.secrets, report)
+  let ok = true
+  const tracked: Report = (id, state, detail, cors) => {
+    if (state === 'fail') ok = false
+    report(id, state, detail, cors)
+  }
+  if (s.kind === 's3') await probeS3(s, p.secrets, tracked)
+  else await probeIpfs(s, p.secrets, tracked)
+  return ok
 }
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
-
-/** The CID a probe body would get (exposed for tests). */
-export const probeCid = cidV1RawLeaves

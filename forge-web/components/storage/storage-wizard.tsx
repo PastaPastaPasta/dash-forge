@@ -15,6 +15,7 @@ import {
   choiceOf,
   policyFor,
   policyProblem,
+  providerPreset,
   withProfile,
   withoutProfile,
   type ProviderId,
@@ -22,6 +23,7 @@ import {
   type StorageConfig,
   type StorageProfile,
 } from '@/lib/storage'
+import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -136,7 +138,7 @@ function AddProfile({
   save: (c: StorageConfig) => Promise<void>
   onDone: () => void
 }): JSX.Element {
-  const preset = PROVIDERS.find((p) => p.id === provider)
+  const preset = providerPreset(provider)
   const [draft, setDraft] = useState<{ profile: StorageProfile; problem: string | null } | null>(null)
   const [tested, setTested] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
@@ -162,7 +164,7 @@ function AddProfile({
                 await save(withProfile(config, { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} }))
                 onDone()
               } catch (e) {
-                setSaveError(e instanceof Error ? e.message : String(e))
+                setSaveError(errText(e))
               } finally {
                 setSaving(false)
               }
@@ -182,10 +184,10 @@ function AddProfile({
   const blocking = problem ?? (nameTaken ? 'a profile with that name exists' : null)
 
   return (
-    <section className="space-y-4 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label={`${preset?.title ?? ''} settings`}>
+    <section className="space-y-4 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label={`${preset.title} settings`}>
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-prose">{existing ? `Edit ${existing.name}` : preset?.title}</h3>
-        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{preset?.blurb}</span>
+        <h3 className="text-prose">{existing ? `Edit ${existing.name}` : preset.title}</h3>
+        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{preset.blurb}</span>
       </div>
       <ProfileForm
         provider={provider}
@@ -214,7 +216,7 @@ function AddProfile({
               await save(next)
               onDone()
             } catch (e) {
-              setSaveError(e instanceof Error ? e.message : String(e))
+              setSaveError(errText(e))
             } finally {
               setSaving(false)
             }
@@ -355,7 +357,7 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
               await save({ ...config, defaultPolicy: policy })
               setSaved(true)
             } catch (e) {
-              setErr(e instanceof Error ? e.message : String(e))
+              setErr(errText(e))
             }
           }}
         >

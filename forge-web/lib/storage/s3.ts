@@ -115,26 +115,33 @@ async function failed(op: string, resp: Response): Promise<S3Error> {
   } catch {
     /* body unreadable */
   }
-  const hint =
-    resp.status === 403
-      ? ' — check the key, its bucket permissions, the region (R2 wants auto) and the clock'
-      : resp.status === 404
-        ? ' — check the bucket name and endpoint'
-        : resp.status === 301 || resp.status === 307
-          ? ' — the bucket lives in another region; set that endpoint'
-          : ''
-  return new S3Error(op, resp.status, `${op} failed: HTTP ${resp.status}${code ? ` ${code}` : ''}${hint}`)
+  return new S3Error(op, resp.status, `${op} failed: HTTP ${resp.status}${code ? ` ${code}` : ''}${statusHint(resp.status)}`)
+}
+
+/** What an S3 error status usually means, as a suffix for the message ('' when nothing useful). */
+function statusHint(status: number): string {
+  switch (status) {
+    case 403:
+      return ' — check the key, its bucket permissions, the region (R2 wants auto) and the clock'
+    case 404:
+      return ' — check the bucket name and endpoint'
+    case 301:
+    case 307:
+      return ' — the bucket lives in another region; set that endpoint'
+    default:
+      return ''
+  }
 }
 
 /** Signed PUT of `bytes` at `key`. */
 export async function putObject(s: S3Settings, secrets: ProfileSecrets, key: string, bytes: Uint8Array, contentType = 'application/octet-stream', signal?: AbortSignal): Promise<void> {
-  const resp = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, ...(signal ? { signal } : {}) })
+  const resp = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, signal })
   if (!resp.ok) throw await failed('signed PUT', resp)
 }
 
 /** Signed GET of `key` (whole object, or a `Range`). */
 export async function getObject(s: S3Settings, secrets: ProfileSecrets, key: string, range?: string, signal?: AbortSignal): Promise<Uint8Array> {
-  const resp = await send(s, secrets, 'signed GET', 'GET', key, { ...(range ? { range } : {}), ...(signal ? { signal } : {}) })
+  const resp = await send(s, secrets, 'signed GET', 'GET', key, { range, signal })
   if (!resp.ok) throw await failed('signed GET', resp)
   return new Uint8Array(await resp.arrayBuffer())
 }

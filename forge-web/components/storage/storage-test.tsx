@@ -18,6 +18,7 @@ import {
   type RowState,
   type StorageProfile,
 } from '@/lib/storage'
+import { errText } from '@/lib/storage/util'
 import { Button } from '@/components/ui/button'
 import { CopyBlock } from '@/components/storage/copy-block'
 import { cn } from '@/lib/utils'
@@ -51,7 +52,7 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
       onDone(await probeProfile(profile, report))
     } catch (e) {
       onDone(false)
-      setRows((prev) => (prev ?? []).map((r) => (r.state === 'running' || r.state === 'pending' ? { ...r, state: 'fail', detail: e instanceof Error ? e.message : String(e) } : r)))
+      setRows((prev) => (prev ?? []).map((r) => (r.state === 'running' || r.state === 'pending' ? { ...r, state: 'fail', detail: errText(e) } : r)))
     } finally {
       setRunning(false)
     }

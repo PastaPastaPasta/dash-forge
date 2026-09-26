@@ -13,8 +13,9 @@
 import type { ProviderId } from './profiles'
 
 /** The headers a signed browser request sends that are not CORS-safelisted. */
-export const SIGNED_HEADERS = ['authorization', 'content-type', 'range', 'x-amz-content-sha256', 'x-amz-date', 'x-amz-security-token'] as const
+const SIGNED_HEADERS = ['authorization', 'content-type', 'range', 'x-amz-content-sha256', 'x-amz-date', 'x-amz-security-token'] as const
 const EXPOSE = ['Content-Range', 'Content-Length', 'ETag'] as const
+const EXPOSE_LOWER = EXPOSE.map((h) => h.toLowerCase())
 
 /** A fix: where to apply it, and the text to paste or run. */
 export interface CorsFix {
@@ -48,8 +49,8 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
         where: `Save as cors.json, then run: b2 bucket update --cors-rules "$(cat cors.json)" ${b} allPublic`,
         text: JSON.stringify(
           [
-            { corsRuleName: 'dashForgeRead', allowedOrigins: ['*'], allowedOperations: ['s3_get', 's3_head', 'b2_download_file_by_name'], allowedHeaders: ['range'], exposeHeaders: EXPOSE.map((h) => h.toLowerCase()), maxAgeSeconds: 86400 },
-            { corsRuleName: 'dashForgeWrite', allowedOrigins: [origin], allowedOperations: ['s3_put', 's3_get', 's3_head', 's3_delete'], allowedHeaders: [...SIGNED_HEADERS], exposeHeaders: EXPOSE.map((h) => h.toLowerCase()), maxAgeSeconds: 86400 },
+            { corsRuleName: 'dashForgeRead', allowedOrigins: ['*'], allowedOperations: ['s3_get', 's3_head', 'b2_download_file_by_name'], allowedHeaders: ['range'], exposeHeaders: EXPOSE_LOWER, maxAgeSeconds: 86400 },
+            { corsRuleName: 'dashForgeWrite', allowedOrigins: [origin], allowedOperations: ['s3_put', 's3_get', 's3_head', 's3_delete'], allowedHeaders: [...SIGNED_HEADERS], exposeHeaders: EXPOSE_LOWER, maxAgeSeconds: 86400 },
           ],
           null,
           2,
@@ -72,7 +73,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
 }
 
 /** `ipfs config` lines allowing this app to call the RPC API and read the gateway. */
-export function kuboCorsLines(origin: string): string {
+function kuboCorsLines(origin: string): string {
   return [
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["${origin}"]'`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'`,

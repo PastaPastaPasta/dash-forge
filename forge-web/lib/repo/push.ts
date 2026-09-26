@@ -66,6 +66,11 @@ function concatHex(list: readonly string[], width: number): Uint8Array {
   return out
 }
 
+/** The result for a manifest this signer already recorded (nothing spent). */
+function alreadyRecorded(documentId: string): WriteResult {
+  return { documentId, confirmed: true, cost: previewCredits(0), actualCredits: 0 }
+}
+
 function isDuplicate(e: unknown): boolean {
   return e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE
 }
@@ -100,7 +105,7 @@ export async function writePackManifest(
   const problem = manifestUrisProblem(input.uris)
   if (problem) throw new Error(problem)
   const existing = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
-  if (existing !== null) return { documentId: existing, confirmed: true, cost: previewCredits(0), actualCredits: 0 }
+  if (existing !== null) return alreadyRecorded(existing)
   const data: Record<string, unknown> = {
     repoId: decodeIdentifier(repo.repoId),
     packHash: hexToBytes(input.packHash),
@@ -120,7 +125,7 @@ export async function writePackManifest(
     if (!isDuplicate(e)) throw e
     const id = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
     if (id === null) throw e
-    return { documentId: id, confirmed: true, cost: previewCredits(0), actualCredits: 0 }
+    return alreadyRecorded(id)
   }
 }
 

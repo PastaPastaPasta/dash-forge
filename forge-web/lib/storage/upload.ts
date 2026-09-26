@@ -19,11 +19,12 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { WriteAuth } from '../sdk'
 import { estimateChunkCredits } from '../sdk/cost'
 import type { V2RepoRef } from '../repo/contract'
-import { putPlatformChunks } from '../repo/push'
+import { manifestUrisProblem, putPlatformChunks } from '../repo/push'
 import { addVerified, gatewayUrl, remotePin } from './ipfs'
 import { artifactKey, type StoragePolicy, type StorageProfile } from './profiles'
 import { getObject, headObject, publicObjectUrl, putObject, s3Uri, type S3Settings } from './s3'
 import { sha256Hex } from './sigv4'
+import { bytesEqual, errText } from './util'
 
 /** Artifacts up to this size are verified by a full re-download and SHA-256. */
 export const FULL_VERIFY_MAX = 16 * 1024 * 1024
@@ -88,10 +89,6 @@ export class PlatformDeclinedError extends Error {
   }
 }
 
-function equal(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i])
-}
-
 /** Re-read an S3 copy and check it is exactly `bytes`. */
 async function verifyS3(s: S3Settings, p: StorageProfile, key: string, bytes: Uint8Array, hashHex: string): Promise<void> {
   if (bytes.length <= FULL_VERIFY_MAX) {
@@ -106,7 +103,7 @@ async function verifyS3(s: S3Settings, p: StorageProfile, key: string, bytes: Ui
     [Math.max(0, bytes.length - EDGE_WINDOW), bytes.length],
   ] as const) {
     const got = await getObject(s, p.secrets, key, `bytes=${start}-${end - 1}`)
-    if (!equal(got, bytes.subarray(start, end))) throw new Error(`re-read of ${key} bytes ${start}..${end} differ from the artifact`)
+    if (!bytesEqual(got, bytes.subarray(start, end))) throw new Error(`re-read of ${key} bytes ${start}..${end} differ from the artifact`)
   }
 }
 
@@ -126,7 +123,7 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
       try {
         await verifyS3(s, p, key, bytes, hashHex)
       } catch (second) {
-        throw new Error(`${msg(second)} (also after a re-upload; first attempt: ${msg(first)})`)
+        throw new Error(`${errText(second)} (also after a re-upload; first attempt: ${errText(first)})`)
       }
     }
     return [publicObjectUrl(s, key), s3Uri(s, key)]
@@ -144,10 +141,6 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
     return uris
   }
   throw new Error('not an external profile')
-}
-
-function msg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
 }
 
 /**
@@ -172,11 +165,19 @@ export function orderUris(groups: readonly (readonly string[])[]): string[] {
  * (readers without that profile cannot use them); then an error, never a silent truncation.
  */
 export function fitManifestUris(uris: readonly string[]): string[] {
-  const fits = (list: readonly string[]): boolean => list.length > 0 && list.length <= 8 && list.every((u) => new TextEncoder().encode(u).length <= 300)
+  const fits = (list: readonly string[]): boolean => manifestUrisProblem(list) === null
   if (fits(uris)) return [...uris]
   const noS3 = uris.filter((u) => !u.startsWith('s3://'))
   if (fits(noS3)) return noS3
   throw new Error("the confirmed copies' URIs do not fit a manifest (at most 8, each up to 300 bytes); use shorter public URLs or fewer targets")
+}
+
+/** What {@link storeArtifact} needs besides the bytes. */
+export interface StoreOptions {
+  readonly policy: StoragePolicy | null
+  readonly profiles: readonly StorageProfile[]
+  readonly confirmPlatform: (q: PlatformQuestion) => Promise<boolean>
+  readonly onStep?: (e: UploadEvent) => void
 }
 
 /**
@@ -190,18 +191,20 @@ export async function storeArtifact(
   auth: WriteAuth,
   repo: V2RepoRef,
   bytes: Uint8Array,
-  opts: {
-    readonly policy: StoragePolicy | null
-    readonly profiles: readonly StorageProfile[]
-    readonly confirmPlatform: (q: PlatformQuestion) => Promise<boolean>
-    readonly onStep?: (e: UploadEvent) => void
-  },
+  opts: StoreOptions,
 ): Promise<StoredArtifact> {
   const hashHex = await sha256Hex(bytes)
   const step = opts.onStep ?? (() => undefined)
   const confirmed: { target: string; uris: string[]; platform: boolean }[] = []
   const failures: TargetFailure[] = []
   let chunkCount = 0
+
+  const fail = (target: string, e: unknown): void => {
+    failures.push({ target, reason: errText(e) })
+    step({ target, phase: 'failed', reason: errText(e) })
+  }
+  const askPlatform = (reason: string): Promise<boolean> =>
+    opts.confirmPlatform({ bytes: bytes.length, estimateCredits: estimateChunkCredits(bytes.length), reason })
 
   const platformCopy = async (target: string): Promise<void> => {
     step({ target, phase: 'start' })
@@ -211,16 +214,14 @@ export async function storeArtifact(
       confirmed.push({ target, uris: [r.locator], platform: true })
       step({ target, phase: 'done', uris: [r.locator] })
     } catch (e) {
-      failures.push({ target, reason: msg(e) })
-      step({ target, phase: 'failed', reason: msg(e) })
+      fail(target, e)
       throw e
     }
   }
 
   const policy = opts.policy
   if (policy === null || policy.targets.length === 0) {
-    const ok = await opts.confirmPlatform({ bytes: bytes.length, estimateCredits: estimateChunkCredits(bytes.length), reason: 'No storage is configured for browser pushes to this repo.' })
-    if (!ok) throw new PlatformDeclinedError()
+    if (!(await askPlatform('No storage is configured for browser pushes to this repo.'))) throw new PlatformDeclinedError()
     await platformCopy('platform')
   } else {
     const byName = new Map(opts.profiles.map((p) => [p.name, p]))
@@ -236,26 +237,20 @@ export async function storeArtifact(
           confirmed.push({ target: name, uris, platform: false })
           step({ target: name, phase: 'done', uris })
         } catch (e) {
-          failures.push({ target: name, reason: msg(e) })
-          step({ target: name, phase: 'failed', reason: msg(e) })
+          fail(name, e)
         }
       }),
     )
     // Platform targets only if they can still make up the policy: never pay for chunks
     // whose push is about to fail anyway.
-    for (let i = 0; i < onChain.length; i++) {
+    for (const [i, { name }] of onChain.entries()) {
       if (confirmed.length + (onChain.length - i) < policy.replicas) break
-      const t = onChain[i] as { name: string }
-      await platformCopy(t.name).catch(() => undefined)
+      await platformCopy(name).catch(() => undefined)
     }
     if (confirmed.length < policy.replicas) {
-      if (!policy.platformFallback || confirmed.some((c) => c.platform)) throw new ReplicationError(policy.replicas, confirmed.map((c) => c.target), failures)
-      const ok = await opts.confirmPlatform({
-        bytes: bytes.length,
-        estimateCredits: estimateChunkCredits(bytes.length),
-        reason: `Your storage did not confirm (${failures.map((f) => f.target).join(', ')}).`,
-      })
-      if (!ok) throw new ReplicationError(policy.replicas, confirmed.map((c) => c.target), failures)
+      const notMet = (): ReplicationError => new ReplicationError(policy.replicas, confirmed.map((c) => c.target), failures)
+      if (!policy.platformFallback || confirmed.some((c) => c.platform)) throw notMet()
+      if (!(await askPlatform(`Your storage did not confirm (${failures.map((f) => f.target).join(', ')}).`))) throw notMet()
       await platformCopy('platform (fallback)')
     }
   }

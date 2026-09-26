@@ -131,7 +131,7 @@ interface StorageBlob {
 async function deriveStorageKey(dataKey: Uint8Array, network: Network, identityId: string): Promise<CryptoKey> {
   const raw = hkdf(sha256, dataKey, enc.encode('dash-forge vault storage v1'), enc.encode(`${network}|${identityId}`), 32)
   try {
-    return await crypto.subtle.importKey('raw', buf(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+    return await aesKey(raw, ['encrypt', 'decrypt'])
   } finally {
     raw.fill(0)
   }

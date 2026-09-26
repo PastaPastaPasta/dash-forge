@@ -8,13 +8,12 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { WriteAuth, WriteResult } from '../sdk'
 import type { V2RepoRef } from '../repo/contract'
-import { writePackManifest } from '../repo/push'
-import { storeArtifact, type PlatformQuestion, type StoredArtifact, type UploadEvent } from './upload'
-import type { StoragePolicy, StorageProfile } from './profiles'
+import { writePackManifest, type PackManifestInput } from '../repo/push'
+import { storeArtifact, type StoreOptions, type StoredArtifact } from './upload'
 
 export * from './profiles'
 export * from './store'
-export { corsFix, kuboCorsLines, type CorsFix } from './cors'
+export { corsFix, type CorsFix } from './cors'
 export { probeProfile, IPFS_ROWS, S3_ROWS, type ProbeRow, type RowId, type RowState } from './probe'
 export {
   PlatformDeclinedError,
@@ -23,6 +22,7 @@ export {
   orderUris,
   storeArtifact,
   type PlatformQuestion,
+  type StoreOptions,
   type StoredArtifact,
   type TargetFailure,
   type UploadEvent,
@@ -45,32 +45,11 @@ export async function storeAndRecordPack(
   auth: WriteAuth,
   repo: V2RepoRef,
   bytes: Uint8Array,
-  meta: { readonly kind: number; readonly objectCount: number; readonly tips?: readonly string[]; readonly supersedes?: readonly string[] },
-  opts: {
-    readonly policy: StoragePolicy | null
-    readonly profiles: readonly StorageProfile[]
-    readonly confirmPlatform: (q: PlatformQuestion) => Promise<boolean>
-    readonly onStep?: (e: UploadEvent) => void
-    readonly intent?: string
-  },
+  meta: Pick<PackManifestInput, 'kind' | 'objectCount' | 'tips' | 'supersedes'>,
+  opts: StoreOptions & { readonly intent?: string },
 ): Promise<RecordedPack> {
   const stored = await storeArtifact(sdk, auth, repo, bytes, opts)
-  const manifest = await writePackManifest(
-    sdk,
-    auth,
-    repo,
-    {
-      packHash: stored.packHash,
-      kind: meta.kind,
-      sizeBytes: stored.sizeBytes,
-      objectCount: meta.objectCount,
-      chunkCount: stored.chunkCount,
-      storage: stored.storage,
-      uris: stored.uris,
-      ...(meta.tips ? { tips: meta.tips } : {}),
-      ...(meta.supersedes ? { supersedes: meta.supersedes } : {}),
-    },
-    opts.intent,
-  )
+  const { packHash, sizeBytes, chunkCount, storage, uris } = stored
+  const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, opts.intent)
   return { stored, manifest }
 }

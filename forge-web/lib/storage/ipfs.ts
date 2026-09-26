@@ -50,6 +50,12 @@ async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAnd
   return text
 }
 
+/** Let kubo's "not pinned" answer through as '' (nothing pinned); rethrow anything else. */
+function ignoreNotPinned(e: unknown): string {
+  if (e instanceof IpfsError && /not pinned/.test(e.message)) return ''
+  throw e
+}
+
 /** kubo's version (`/api/v0/version`), a cheap reachability check. */
 export async function kuboVersion(s: IpfsSettings, secrets: ProfileSecrets): Promise<string> {
   const text = await rpc(s, secrets, 'version', 'version')
@@ -67,10 +73,7 @@ export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, byte
   if (cid !== expected) {
     throw new IpfsError('ipfs add', `kubo returned CID ${cid || '(none)'} but these bytes derive to ${expected} under the pinned import parameters; refusing to record it`)
   }
-  const pinned = await rpc(s, secrets, 'pin check', `pin/ls?arg=${cid}&type=recursive`).catch((e: unknown) => {
-    if (e instanceof IpfsError && /not pinned/.test(e.message)) return ''
-    throw e
-  })
+  const pinned = await rpc(s, secrets, 'pin check', `pin/ls?arg=${cid}&type=recursive`).catch(ignoreNotPinned)
   if (!pinned.includes(cid)) throw new IpfsError('pin check', `kubo added ${cid} but does not report it pinned; a gc would drop it`)
   return cid
 }
@@ -78,10 +81,7 @@ export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, byte
 /** Unpin `cid` (the wizard's probe cleanup). A CID that is not pinned is fine. */
 export async function unpin(s: IpfsSettings, secrets: ProfileSecrets, cid: string): Promise<void> {
   if (!isCid(cid)) throw new IpfsError('unpin', 'not a CID')
-  await rpc(s, secrets, 'unpin', `pin/rm?arg=${cid}`).catch((e: unknown) => {
-    if (e instanceof IpfsError && /not pinned/.test(e.message)) return ''
-    throw e
-  })
+  await rpc(s, secrets, 'unpin', `pin/rm?arg=${cid}`).catch(ignoreNotPinned)
 }
 
 /** The node's announced multiaddrs, handed to a pinning service as `origins`. */
