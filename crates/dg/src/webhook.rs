@@ -147,13 +147,17 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     let credits = estimate(prepared.approx_bytes).total();
     if !ctx.json {
         println!(
-            "Adding a webhook to {} → {url} (relay {relay}, key {})\n  webhook document     {}\n  \
-             note: the URL and event list are public on chain; only the secret is encrypted",
+            "Adding a webhook to {} → {url} (relay {relay}, key {})\n  webhook document     {}",
             handle.display(),
             prepared.relay_key_id,
             cost_line(credits, price)
         );
     }
+    // On stderr in every mode, so --json output stays parseable and scripts still see it.
+    eprintln!(
+        "note: the webhook URL (including its path) and event list are public on chain; only \
+         the secret is encrypted. Do not put tokens in the URL."
+    );
     if !ctx.confirm(&format!("Add the webhook to {}?", handle.display()))? {
         return Err(crate::errors::cancelled());
     }

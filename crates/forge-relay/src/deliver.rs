@@ -6,14 +6,16 @@
 //! with a `DEAD-LETTER` log line. So a hook pointed at a tar pit (anyone can write a hook in
 //! their own repo and address it to a public relay) holds up only itself:
 //!
-//! * a delivery is bounded by [`DeliverConfig::overall_timeout`] (DNS, a per-destination slot,
-//!   every attempt and backoff);
+//! * a delivery is bounded by [`DeliverConfig::overall_timeout`] (DNS, every attempt and
+//!   backoff);
 //! * after [`BREAKER_THRESHOLD`] deliveries in a row fail, the hook's **circuit opens**: its
 //!   queued and new events are dead-lettered without a connection for a cool-down that doubles
-//!   each time (from [`BREAKER_BASE`] to [`BREAKER_MAX`]); one success closes it;
-//! * at most [`MAX_IN_FLIGHT_PER_DEST`] deliveries go to one destination address at a time,
-//!   across all hooks (a bounded map of pools keyed by the pinned IP, so many hostnames aimed
-//!   at one server share its pool).
+//!   each time (from [`BREAKER_BASE`] to [`BREAKER_MAX`]); one success closes it. A delivery
+//!   that only waited for a busy destination ([`RelayError::DestinationBusy`]) does not count;
+//! * each **attempt** takes a slot of its (address, host) pool ([`MAX_IN_FLIGHT_PER_DEST`])
+//!   and of its address's pool ([`MAX_IN_FLIGHT_PER_IP`]), and releases both when it ends, so
+//!   nothing is held during backoff and tenants sharing an address cannot starve each other;
+//! * a hook removed or disabled by discovery is **cancelled**: its queued events are dropped.
 //!
 //! Delivery is **best effort with retries inside one window**: up to `max_attempts` attempts
 //! within `overall_timeout` (30 s by default), then a `DEAD-LETTER` log line. Nothing is kept
@@ -39,8 +41,16 @@ use crate::subscriptions::WebhookSub;
 /// The largest body the relay will POST (GitHub's own cap is 25 MB; ours are small).
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// Deliveries in flight at once to one destination address, across every hook and repo.
+/// Attempts in flight at once to one (address, host), across every hook and repo.
 pub const MAX_IN_FLIGHT_PER_DEST: usize = 2;
+
+/// Attempts in flight at once to one address, whatever host names it (a CDN or anycast
+/// address serves many tenants, each bounded by [`MAX_IN_FLIGHT_PER_DEST`]).
+pub const MAX_IN_FLIGHT_PER_IP: usize = 8;
+
+/// How long an attempt waits for a slot before giving up with
+/// [`RelayError::DestinationBusy`] (which does not trip the circuit breaker).
+pub const SLOT_WAIT: Duration = Duration::from_secs(10);
 
 /// Events waiting per hook; beyond this they are dropped (dead-lettered).
 pub const QUEUE_PER_HOOK: usize = 256;
@@ -167,9 +177,9 @@ impl Deliverer {
         }
     }
 
-    /// The permit pool for destination `key`. The map is bounded: when full, pools nobody
-    /// holds a permit of are dropped.
-    fn dest_permits(&self, key: &str) -> Arc<Semaphore> {
+    /// The permit pool for `key` with `size` permits. The map is bounded: when full, pools
+    /// nobody holds a permit of are dropped.
+    fn pool(&self, key: &str, size: usize) -> Arc<Semaphore> {
         let mut map = self
             .dests
             .lock()
@@ -179,8 +189,35 @@ impl Deliverer {
         }
         Arc::clone(
             map.entry(key.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT_PER_DEST))),
+                .or_insert_with(|| Arc::new(Semaphore::new(size))),
         )
+    }
+
+    /// Slots for one attempt to `target`: one of the (address, host) pool, then one of the
+    /// address's larger pool. Tenants sharing an address (a CDN, anycast) each get their own
+    /// small pool, so one cannot hold every slot of the address. Waits at most
+    /// [`SLOT_WAIT`]; a timeout is [`RelayError::DestinationBusy`].
+    async fn slots(
+        &self,
+        target: &ssrf::ValidatedTarget,
+    ) -> Result<(
+        tokio::sync::OwnedSemaphorePermit,
+        tokio::sync::OwnedSemaphorePermit,
+    )> {
+        let ip = target.ip_key();
+        let host = target.url.host_str().unwrap_or_default();
+        let tenant = self.pool(&format!("{ip}|{host}"), MAX_IN_FLIGHT_PER_DEST);
+        let address = self.pool(&format!("{ip}|*"), MAX_IN_FLIGHT_PER_IP);
+        let busy =
+            || RelayError::DestinationBusy(format!("{} busy", ssrf::redact(target.url.as_str())));
+        tokio::time::timeout(SLOT_WAIT, async {
+            let a = tenant.acquire_owned().await;
+            let b = address.acquire_owned().await;
+            a.and_then(|a| b.map(|b| (a, b)))
+        })
+        .await
+        .map_err(|_| busy())?
+        .map_err(|_| busy())
     }
 
     /// An HTTP client for one validated target, cached by host and pinned addresses. For a
@@ -262,12 +299,6 @@ impl Deliverer {
             ssrf::resolve_and_validate(url, self.config.allow_private, self.config.dns_timeout)
                 .await?;
         let http = self.client_for(&target)?;
-        let permits = self.dest_permits(&target.ip_key());
-        let _permit = permits
-            .acquire_owned()
-            .await
-            .map_err(|_| RelayError::Config("destination pool closed".into()))?;
-
         let signature = sign_body(secret, &body);
         let delivery = delivery_id(hook_id, &event.source_doc_id);
         let shown = ssrf::redact(url);
@@ -277,8 +308,11 @@ impl Deliverer {
         for attempt in 1..=self.config.max_attempts {
             attempts = attempt;
             if attempt > 1 {
+                // No slot is held while backing off.
                 tokio::time::sleep(self.config.base_backoff * 2u32.pow(attempt - 2)).await;
             }
+            // A slot per attempt, released when the attempt ends.
+            let _slots = self.slots(&target).await?;
             match http
                 .post(target.url.clone())
                 .header("Content-Type", "application/json")
@@ -343,12 +377,22 @@ fn describe(e: &reqwest::Error) -> String {
 struct HookWorker {
     tx: mpsc::Sender<Arc<WebhookEvent>>,
     sub: Arc<Mutex<WebhookSub>>,
+    /// Set when the hook is removed or disabled: the worker drops what is still queued.
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for HookWorker {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The delivery front end: a worker task and bounded queue per hook.
+/// Shared by the poller tasks (`&self` everywhere).
 pub struct Dispatcher {
     deliverer: Arc<Deliverer>,
-    hooks: HashMap<String, HookWorker>,
+    hooks: Mutex<HashMap<String, HookWorker>>,
 }
 
 impl Dispatcher {
@@ -356,7 +400,7 @@ impl Dispatcher {
     pub fn new(deliverer: Deliverer) -> Self {
         Self {
             deliverer: Arc::new(deliverer),
-            hooks: HashMap::new(),
+            hooks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -365,13 +409,17 @@ impl Dispatcher {
         format!("{}:{}", sub.repo_id, sub.hook_id)
     }
 
-    /// Make the running workers exactly `subs`: start new hooks, update changed ones, stop
-    /// (drop the queue of) hooks that are gone.
-    pub fn sync(&mut self, subs: &[WebhookSub]) {
+    /// Make the running workers exactly `subs`: start new hooks, update changed ones, cancel
+    /// hooks that are gone (their queued events are dropped).
+    pub fn sync(&self, subs: &[WebhookSub]) {
         let wanted: HashMap<String, &WebhookSub> = subs.iter().map(|s| (Self::key(s), s)).collect();
-        self.hooks.retain(|k, _| wanted.contains_key(k));
+        let mut hooks = self
+            .hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        hooks.retain(|k, _| wanted.contains_key(k));
         for (key, sub) in wanted {
-            if let Some(w) = self.hooks.get(&key) {
+            if let Some(w) = hooks.get(&key) {
                 *w.sub
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = sub.clone();
@@ -379,19 +427,32 @@ impl Dispatcher {
             }
             let (tx, rx) = mpsc::channel(QUEUE_PER_HOOK);
             let shared = Arc::new(Mutex::new(sub.clone()));
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
             tokio::spawn(run_hook(
                 Arc::clone(&self.deliverer),
                 Arc::clone(&shared),
+                Arc::clone(&cancelled),
                 rx,
             ));
-            self.hooks.insert(key, HookWorker { tx, sub: shared });
+            hooks.insert(
+                key,
+                HookWorker {
+                    tx,
+                    sub: shared,
+                    cancelled,
+                },
+            );
         }
     }
 
     /// Queue `event` for every hook of `repo_id` that wants it. Never waits.
     pub fn enqueue(&self, repo_id: &str, event: WebhookEvent) {
         let event = Arc::new(event);
-        for (key, w) in &self.hooks {
+        let hooks = self
+            .hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (key, w) in hooks.iter() {
             let wants = {
                 let sub = w
                     .sub
@@ -413,10 +474,15 @@ impl Dispatcher {
 async fn run_hook(
     deliverer: Arc<Deliverer>,
     sub: Arc<Mutex<WebhookSub>>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
     mut rx: mpsc::Receiver<Arc<WebhookEvent>>,
 ) {
     let mut breaker = Breaker::default();
     while let Some(event) = rx.recv().await {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            // Removed or disabled: drop the rest of the queue without delivering.
+            return;
+        }
         let sub = sub
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -451,6 +517,9 @@ async fn run_hook(
                 error = %e,
                 "DEAD-LETTER: webhook delivery failed"
             ),
+        }
+        if matches!(result, Err(RelayError::DestinationBusy(_))) {
+            continue; // not the receiver's failure
         }
         if let Some(cool) = breaker.record(result.is_ok(), Instant::now()) {
             tracing::warn!(repo = %sub.repo_id, hook = %sub.hook_id, %url, cool_down_s = cool.as_secs(), "circuit opened after repeated failures");
@@ -521,14 +590,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn destination_pools_are_shared_and_bounded() {
-        let d = Deliverer::new(DeliverConfig::default());
-        let a = d.dest_permits("192.0.2.1");
-        assert!(Arc::ptr_eq(&a, &d.dest_permits("192.0.2.1")));
-        let _p1 = Arc::clone(&a).acquire_owned().await.unwrap();
-        let _p2 = Arc::clone(&a).acquire_owned().await.unwrap();
-        assert!(a.clone().try_acquire_owned().is_err());
-        assert!(d.dest_permits("192.0.2.2").try_acquire_owned().is_ok());
+    async fn tenants_sharing_an_address_each_get_their_own_slots() {
+        let d = Deliverer::new(DeliverConfig {
+            allow_private: true,
+            ..DeliverConfig::default()
+        });
+        let target = |url: &str| ssrf::ValidatedTarget {
+            url: reqwest::Url::parse(url).unwrap(),
+            host: String::new(),
+            pinned_addrs: Some(vec!["192.0.2.1:443".parse().unwrap()]),
+        };
+        let (a, b) = (target("https://a.example/h"), target("https://b.example/h"));
+        // Tenant a takes all of its slots...
+        let _a1 = d.slots(&a).await.unwrap();
+        let _a2 = d.slots(&a).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), d.slots(&a))
+                .await
+                .is_err(),
+            "a third attempt for tenant a waits"
+        );
+        // ...and tenant b, on the same address, still gets its own.
+        let b1 = d.slots(&b).await.unwrap();
+        drop(b1);
+        // The address cap bounds all tenants together.
+        let mut held = Vec::new();
+        for i in 0..3 {
+            let t = target(&format!("https://t{i}.example/h"));
+            held.push(d.slots(&t).await.unwrap());
+            held.push(d.slots(&t).await.unwrap());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), d.slots(&b))
+                .await
+                .is_err(),
+            "the address's {MAX_IN_FLIGHT_PER_IP} slots are all taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_hook_drops_its_queue() {
+        // A receiver that counts requests.
+        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = srv.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = Arc::clone(&hits);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let (mut s, _) = srv.accept().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let mut buf = vec![0u8; 65536];
+                let _ = s.read(&mut buf).await;
+                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+        let d = Dispatcher::new(Deliverer::new(DeliverConfig {
+            allow_private: true,
+            ..DeliverConfig::default()
+        }));
+        d.sync(&[sub(&format!("http://{addr}/h"), &[])]);
+        for i in 0..5 {
+            d.enqueue(
+                "R",
+                WebhookEvent {
+                    event: "push",
+                    action: None,
+                    payload: serde_json::json!({ "i": i }),
+                    source_doc_id: format!("doc{i}"),
+                },
+            );
+        }
+        // The hook disappears while the first delivery is in flight.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.sync(&[]);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            hits.load(std::sync::atomic::Ordering::SeqCst) <= 1,
+            "queued events of a removed hook are not delivered"
+        );
     }
 
     fn sub(url: &str, events: &[&str]) -> WebhookSub {
@@ -574,7 +717,7 @@ mod tests {
             }
         });
 
-        let mut d = Dispatcher::new(Deliverer::new(DeliverConfig {
+        let d = Dispatcher::new(Deliverer::new(DeliverConfig {
             allow_private: true,
             timeout: Duration::from_secs(30),
             overall_timeout: Duration::from_secs(60),

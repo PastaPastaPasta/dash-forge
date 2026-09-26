@@ -215,6 +215,11 @@ pub struct EncryptionKeyFile {
     pub identity_id: String,
     /// `(key id, private key)` of every `ECDSA_SECP256K1` `ENCRYPTION` key in the file.
     pub keys: Vec<(u32, PrivateKey)>,
+    /// Keys of other purposes the file also holds (not parsed): more secret material on the
+    /// host than a reader needs, worth a warning.
+    pub other_keys: usize,
+    /// Whether the file also holds a mnemonic (a full identity export).
+    pub has_mnemonic: bool,
 }
 
 impl EncryptionKeyFile {
@@ -234,27 +239,36 @@ impl EncryptionKeyFile {
         struct File {
             identity_id: String,
             identity_keys: Vec<KeyEntry>,
+            #[serde(default)]
+            mnemonic: Option<crate::keystore::Secret>,
         }
         fn secp() -> String {
             "ECDSA_SECP256K1".into()
         }
         let file: File = serde_json::from_str(raw)?;
         let mut keys = Vec::new();
+        let mut other_keys = 0;
         for k in file.identity_keys {
             if k.purpose == "ENCRYPTION" && k.key_type == "ECDSA_SECP256K1" {
                 keys.push((k.id, PrivateKey::from_hex(k.private_key_hex.expose())?));
+            } else {
+                other_keys += 1;
             }
         }
         Ok(Self {
             identity_id: file.identity_id,
             keys,
+            other_keys,
+            has_mnemonic: file.mnemonic.is_some(),
         })
     }
 
-    /// [`Self::from_json`] of a file on disk.
+    /// [`Self::from_json`] of a file on disk (read into memory that is wiped afterwards).
     pub fn load(path: &std::path::Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::Io(format!("reading key file {}: {e}", path.display())))?;
+        let raw = Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| Error::Io(format!("reading key file {}: {e}", path.display())))?,
+        );
         Self::from_json(&raw)
     }
 }
@@ -267,6 +281,8 @@ impl fmt::Debug for EncryptionKeyFile {
                 "key_ids",
                 &self.keys.iter().map(|k| k.0).collect::<Vec<_>>(),
             )
+            .field("other_keys", &self.other_keys)
+            .field("has_mnemonic", &self.has_mnemonic)
             .finish()
     }
 }
@@ -390,6 +406,8 @@ mod tests {
         assert_eq!(f.identity_id, "ID");
         assert_eq!(f.keys.len(), 1);
         assert_eq!(f.keys[0].0, 4);
+        assert_eq!(f.other_keys, 1);
+        assert!(!f.has_mnemonic);
         assert_eq!(f.keys[0].1.public_key(), key(0x42).public_key());
         assert!(!format!("{f:?}").contains(&hex_key));
         // A bad encryption key is an error, not a silently empty file.

@@ -108,6 +108,15 @@ impl RelayIdentity {
         collab_id: &str,
     ) -> Result<Self> {
         let file = EncryptionKeyFile::load(path)?;
+        if file.other_keys > 0 || file.has_mnemonic {
+            tracing::warn!(
+                path = %path.display(),
+                other_keys = file.other_keys,
+                mnemonic = file.has_mnemonic,
+                "the relay key file holds more than ENCRYPTION keys; the relay needs only those \
+                 (see crates/forge-relay/README.md for a relay-only key file)"
+            );
+        }
         let on_chain = client.fetch_identity(&file.identity_id).await?;
         let keys = held_encryption_keys(file.keys, &on_chain.public_keys(), collab_id);
         if keys.is_empty() {

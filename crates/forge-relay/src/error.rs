@@ -23,6 +23,11 @@ pub enum RelayError {
         reason: String,
     },
 
+    /// No delivery slot to the destination freed up in time: other hooks kept it busy. Not
+    /// the receiver's fault, so it does not count against the hook's circuit breaker.
+    #[error("destination busy: {0}")]
+    DestinationBusy(String),
+
     /// An underlying forge-core error (Platform read/write).
     #[error("forge-core: {0}")]
     Core(#[from] forge_core::error::Error),

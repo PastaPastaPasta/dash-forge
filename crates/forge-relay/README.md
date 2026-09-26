@@ -77,18 +77,27 @@ docker run --rm --read-only \
 - Polling never waits on a receiver. Each hook has its own worker and queue (256 events;
   beyond that, events are dead-lettered). After 3 failed deliveries in a row a hook's circuit
   opens for 1 minute, doubling up to an hour while it keeps failing; one success closes it.
-  At most 2 deliveries are in flight to one destination address at a time.
-- No state on disk. A restart starts from "now" (or `--lookback`). A repo first served while
-  the relay runs is read from its earliest hook's `$createdAt`, but never from before the relay
-  started; a repo that drops out and returns resumes where it stopped.
+  Each attempt takes a slot (2 per destination host and address, 8 per address) and frees it
+  before backing off. A removed or disabled hook's queued events are dropped.
+- Repos are polled concurrently (8 at a time), each within a 20 s budget per cycle, checked
+  between streams; discovery runs in its own task.
+- No state on disk. A restart starts from "now" (or `--lookback` for the repo-level
+  streams). A repo first served while the relay runs is read from its earliest hook's
+  `$createdAt`, never from before the relay started; a repo that drops out and returns
+  resumes where it stopped, but not before its hook's own `$createdAt` (nothing from while a
+  hook was disabled). A stream only some hooks need (comments, reviews, check runs) starts no
+  earlier than the earliest hook that wants it.
 - What is reported: a `push` only for a ref update that moves its ref by forge's rules (a
   plain `refUpdate` on a protected branch is inert and is not reported). A merge is
-  `merged: true` only when its commit was a tip of the base branch; otherwise `merged: false`
-  with `dash_merge_unverified: true`. A yanked release is `release` / `unpublished`.
-- What is not observed: comments and reviews on threads closed and quiet for over 7 days (at
-  most 50 threads per repo are read per cycle, most recent first), and `check_run` status
-  changes made by updating a `checkRun` document in place (only new documents are seen, for
-  the 50 most recent heads).
+  `merged: true` only when a valid update set the PR's base branch to its commit (and the PR's
+  `baseRefNameHash` matches its `baseRefName`); otherwise `merged: false` with
+  `dash_merge_unverified: true`. A yanked release is `release` / `unpublished`.
+- Comments and reviews: per cycle and repo, up to 40 open or recently active threads, plus 10
+  of the others in rotation, so a quiet closed thread is read every few cycles (with N such
+  threads, every N/10 cycles).
+- Check runs: for the 50 most recent heads (pushed commits, PR heads seen live or opened in the
+  last 7 days), runs created after the head was first watched. A `checkRun` updated in place
+  (status progression) is not observed; only new documents are seen.
 - SSRF guard: http(s) only, no userinfo, private/loopback/link-local/CGNAT/multicast and
   IPv6 forms embedding them (mapped, 6to4, NAT64, Teredo) refused, DNS resolved once and the
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped

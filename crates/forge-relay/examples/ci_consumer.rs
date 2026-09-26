@@ -5,8 +5,8 @@
 //!
 //!  1. Receive the webhook and **verify the HMAC-SHA256 signature** (`X-Hub-Signature-256`).
 //!  2. **Re-fetch the referenced state from Platform** and verify it independently — here,
-//!     for a `push`, fold the ref's history (forge's own rules) and confirm `after` is its
-//!     resolved tip. A tampered relay that altered the payload is detected here, which is the
+//!     for a `push`, confirm by forge's own rules that a valid update of the ref set it to
+//!     `after`. A tampered relay that altered the payload is detected here, which is the
 //!     whole trust model: the relay is availability-only.
 //!  3. **Write a `checkRun` doc back** through the runner's own identity (a writer or
 //!     maintainer of the repo) — closing the CI loop forge-web renders. (Best-effort: if it
@@ -31,7 +31,6 @@ use tokio::net::{TcpListener, TcpStream};
 
 use forge_core::keystore::BridgeIdentity;
 use forge_core::platform::{FieldValue, Network, PlatformClient, WriteEngine};
-use forge_core::rules::RefState;
 use forge_core::webhooks::verify_signature as verify;
 
 /// A parsed HTTP request: method/path plus lowercased headers and the raw body.
@@ -163,30 +162,26 @@ async fn verify_and_check_run(
     let forge = repo.require_v2()?.clone();
     let scope = repo.scope()?;
 
-    // Independent verification: fold the ref's complete history the way every forge client
-    // does (protected-ref routing as of each update, divergence, deletions) and check that
-    // `after` is its tip. "The oid appears in some update" is not enough: a writer's plain
-    // refUpdate on a protected branch lands on chain but moves nothing. A tampered relay
-    // payload fails here too.
-    let state = forge_core::repo::read_ref_state(&client, &repo, ref_name).await?;
-    let verified = match &state {
-        RefState::Resolved { oid, .. } => oid == &after,
-        // A race nothing has merged past: the tip is provisional; do not build on it.
-        RefState::Diverged { .. } | RefState::Unborn => false,
-    };
+    // Independent verification: did a *valid* update of this ref set it to `after`? forge's
+    // own rule decides validity (legal name bound to its hash; on a protected ref, only a
+    // maintainer's protectedRefUpdate counts). "The oid appears in some update" is not
+    // enough: a writer's plain refUpdate on a protected branch lands on chain but moves
+    // nothing. Not "is it the current tip" either: a later push must not fail this build. A
+    // tampered relay payload fails here too.
+    let tips = forge_core::repo::read_valid_tips(&client, &repo, ref_name).await?;
+    let verified = tips.contains(&after);
     tracing::info!(
         after,
         ref_name,
         verified,
-        ?state,
-        "re-fetched ref state from Platform"
+        "re-fetched ref history from Platform"
     );
 
     let conclusion = if verified { "success" } else { "failure" };
     let summary = if verified {
-        format!("Verified push to {ref_name}: {after} is the ref's tip on Platform.")
+        format!("Verified push to {ref_name}: a valid update on Platform set it to {after}.")
     } else {
-        format!("REJECTED: {after} is not the resolved tip of {ref_name} on Platform.")
+        format!("REJECTED: no valid update on Platform set {ref_name} to {after}.")
     };
 
     // 3. Write a checkRun doc back (best-effort — needs writer or maintainer on the repo).
