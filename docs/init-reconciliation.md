@@ -1,5 +1,7 @@
 # INIT.md Reconciliation
 
+> **Partly historical.** The contract topology reconciled here (a global registry contract plus one repo contract per repository from a versioned template, with WRITE/MAINTAIN token ACLs) was replaced by [forge-v2](contracts/forge-v2.md): two shared contracts (forge-core, forge-collab) in one contract group, with access granted by `maintainer`/`writer` membership documents and checked at consensus. forge-v1 was removed on 2026-09-26 with no backwards compatibility. Items 2 and 3 below, the token and template parts of D2–D4, the v3 contract refinements, the token findings of Design Freeze #1 and the first two open questions describe that removed design. The other adopted items, D1, D5, D6 and the Platform findings still hold.
+
 `../INIT.md` (the original design path & PRDs) was located after the first planning pass. The docs have been updated to follow it. This file records **where INIT.md's design is adopted verbatim, and the few places where verified platform constraints (see [research](research/platform-constraints.md)) force a deviation** — each deviation is flagged for review.
 
 ## Adopted from INIT.md (now reflected throughout)

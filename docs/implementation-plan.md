@@ -1,5 +1,7 @@
 # Dash Forge — Implementation Plan
 
+> **Historical.** This is the original phase plan for forge-v1 (a global registry contract plus one contract per repository, with token access control). It is not the current plan. forge-v1 was removed on 2026-09-26 with no backwards compatibility; current planning lives in [roadmap.md](roadmap.md) and the current design is [forge-v2](contracts/forge-v2.md).
+
 Phasing per INIT.md's design path, with constraint-forced adjustments (reconciliation D1) folded in. Each phase ends with runnable, tested software.
 
 ## Phase 0 — De-risk (2–4 wks) — the go/no-go gate

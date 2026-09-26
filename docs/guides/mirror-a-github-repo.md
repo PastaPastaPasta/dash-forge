@@ -30,7 +30,7 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login`. The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.28 DASH/MiB.
 
-> **Network.** The importer writes **forge-v2** repositories (about **0.001 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`) and come to mainnet after Platform protocol 14 activates.
+> **Network.** The importer writes **forge-v2** repositories (about **0.001 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`), come to testnet when Platform protocol 14 reaches it, and to mainnet after protocol 14 activates there.
 
 ---
 
@@ -112,7 +112,7 @@ Check that it contains exactly one key:
 jq '.identityKeys | length' ci-identity.json    # 1
 ```
 
-This lowers the risk but does not remove it. A leaked HIGH key can still sign documents and spend the identity's credits until you disable the key. For CI, a cleaner setup is a **separate identity** with a small balance, added to the repository as a collaborator (`dg collab add … --role write`). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
+This lowers the risk but does not remove it. A leaked HIGH key can still sign documents and spend the identity's credits until you disable the key. For CI, a cleaner setup is a **separate identity** with a small balance, added to the repository as a collaborator (`dg collab add … --role writer`). Then a leak costs only that balance. See [Identity and keys](identity-and-keys.md).
 
 Store the file as a GitHub Actions secret named `DASH_FORGE_IDENTITY`: Settings → Secrets and variables → Actions → New repository secret, and paste the file's contents.
 
@@ -134,7 +134,8 @@ jobs:
     permissions: { contents: read }
     env:
       FORGE_REMOTE: dash://<owner identity id>/<repo name>
-      DASH_FORGE_NETWORK: testnet
+      DASH_FORGE_NETWORK: devnet
+      DASH_FORGE_DEVNET_NAME: moutai
       DASH_FORGE_REF: <a dash-forge commit you have reviewed>
     steps:
       - uses: actions/checkout@v4
@@ -230,6 +231,8 @@ jobs:
       - uses: PastaPastaPasta/dash-forge/action@master
         with:
           repo: dash://<owner identity id>/<repo name>
+          network: devnet                 # the default is mainnet, which has no Forge deployment yet
+          devnet-name: moutai
           sync: code,releases,issues,prs
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com

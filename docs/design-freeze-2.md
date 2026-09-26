@@ -1,5 +1,7 @@
 # Dash Forge — Design Freeze #2 (as-built)
 
+> **Historical.** This records the as-built state of forge-v1 (a global registry contract plus one contract per repository, with token access control) on testnet in July 2026. forge-v1 was removed on 2026-09-26 with no backwards compatibility; the testnet contracts named here are no longer used. The current design is [forge-v2](contracts/forge-v2.md) and the current plan is [roadmap.md](roadmap.md). Findings about the Platform SDK, pack format and query behaviour still apply.
+
 Design Freeze #1 (`spike-results.md`) froze decisions from the Phase-0 spikes. Design Freeze #2 records what the **implementation** actually established — the deviations, discoveries, and final decisions that emerged while building every component to a working, testnet-verified product. This is the "as-built" delta.
 
 ## Verified end-to-end on testnet

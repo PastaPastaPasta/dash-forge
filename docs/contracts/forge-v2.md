@@ -1,17 +1,17 @@
 # Dash Forge v2 contracts (protocol 14)
 
-Two shared data contracts, **forge-core** and **forge-collab**, registered once per network and joined by a PV14 contract group. They replace the per-repo contract template (`templates/repo-v1.json`, token ACL) and the global registry (`contracts/registry.json`). Every repository is a set of documents in these two contracts, keyed by the `repo` document's id (`repoId`).
+Two shared data contracts, **forge-core** and **forge-collab**, registered once per network and joined by a PV14 contract group. Every repository is a set of documents in these two contracts, keyed by the `repo` document's id (`repoId`). This is the only data model Dash Forge implements.
 
 - Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`
 - Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.4`, `PlatformVersion` 14)
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.4`)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect)
 
-## 1. Why the model changed
+## 1. Why shared contracts
 
-Under v1 each repository was its own contract. Write access came from two tokens (WRITE, MAINTAIN): a `tokenCost` on each write-path type, with freezing to suspend and destroying to revoke. That worked at consensus, but a repository cost about 1.18 DASH, most of it contract registration fees (base fee, plus a fee per document type, per index and per token), and a fork cost the same again. Nothing could make that cheap.
+Contract registration is priced per contract (a base fee plus a fee per document type, per index and per token). A design where each repository is its own contract therefore pays that fee for every repository and every fork, whatever its size. That was forge-v1: a global registry contract plus one contract per repository, with access control by WRITE/MAINTAIN tokens, at about 1.18 DASH a repository. It was removed on 2026-09-26 with no backwards compatibility; [data-contracts.md](data-contracts.md) keeps its design for the record.
 
-Protocol 14 can express the same access control inside a shared contract:
+Protocol 14 can express per-repository access control inside a shared contract:
 
 - **`ownerRefersTo`**: a document type can require its writer (`$ownerId`) to be found through a unique index of another document type. Consensus checks this on create, and on every replace when the target is a `deletableDocument`.
 - **`lookup`** references resolve a key such as `(repoId, memberId)` through a unique index, so a membership document is enough; the writer does not have to name it.
@@ -87,12 +87,12 @@ Both types are immutable and non-deletable, and the gate is judged at creation. 
 | kind | from `event` (any M/W at write time) | from `authorEvent` |
 |---|---|---|
 | close, reopen | yes | yes |
-| merge | yes, if `oid` is reachable from the base tip (the v1 predicate) | never (consensus refuses the kind) |
+| merge | yes, if `oid` is reachable from the base tip | never (consensus refuses the kind) |
 | label+, label−, assign, unassign, retarget, draft, ready | yes | never |
 
-An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway, and ignores one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, the v1 order, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened, as in v1.
+An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway, and ignores one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
 
-**Known design choices, kept from v1.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
+**Known design choices.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
 
 ## 4. Non-deletable audit types
 
@@ -108,7 +108,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 **Platform-tier storage is permanent.** A chunk once written stays, so bring-your-own storage (S3-compatible, IPFS) is the cheap default and Platform chunks are the tier you pick for packs that must outlive every bucket. Consequences:
 
 - **Repack on the Platform tier only consolidates.** It writes a superseding pack (a new `packManifest` with `supersedes`, new chunks) and deletes nothing. Readers prefer the consolidated pack; the old one stays readable.
-- **`dg repack` / GC must change**: today they delete superseded chunks and manifests for the refund (`crates/dg`, `forge-core::pack`). On v2 those deletes are refused at consensus, so the delete step goes, and GC applies only to external storage the user controls.
+- **`dg repack` deletes nothing on Platform**: deleting superseded chunks and manifests would be refused at consensus. GC applies only to external storage the user controls.
 
 **Front-running.** Every pack-write unique index includes `$ownerId` (`packManifest (repoId, $ownerId, packHash)`, `manifestPart (…, partSeq)`, `chunk (…, seq)`). Without it, the first writer to claim a `(repoId, packHash)` would own that slot forever: a hostile writer could post a manifest with the right hash and wrong content, or one chunk, and block the honest upload. With it, each writer has its own slot. **Reader rule** (`FORGE_RULES_V2`: `order_pack_copies`, `select_pack_copy`, `pack_read_order`, vectors `pack_copies__*`): for a `packHash`, gather every writer's manifest (`(repoId, packHash)` index) and try them in order: uploaders who are currently maintainers, then current writers, then everyone else (members since revoked), each group by `$createdAt` then `$id`. Read the first copy whose reassembled bytes verify against `packHash`; a copy that fails verification is ignored, and a pack with no verifying copy is unreadable. A `supersedes` list is honoured only from the copy actually read, and only when it verifies. A superseded pack is read after the others as a fallback, never dropped: a hash proves a pack's bytes, not that it holds everything it claims to replace.
 
@@ -120,7 +120,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 4. `packRef` is the pack's index, by first upload, **among the packs of its kind**: kind-0 git packs are numbered 0..n regardless of interleaved kind-1 index fragments.
 5. A pack is superseded when another listed pack's representative names it in `supersedes` **and that representative verified**; an unchecked claim supersedes nothing. Superseded packs keep their `packRef` (positions never shift); readers skip them only when fetching whole packs, and read them as a fallback.
 
-The function is kind-agnostic: callers pass every copy and select a kind from its output (the locator space is the kind-0 packs). It is not the v1 rule: v1 drops superseded packs from the packRef space (live kind-0 packs, oldest first), while v2 keeps them in place. The two agree only when nothing is superseded. v2 manifests are permanent, and a position that never moves means no locator ever needs renumbering; locators of v1 repositories keep the v1 rule.
+The function is kind-agnostic: callers pass every copy and select a kind from its output (the locator space is the kind-0 packs). Superseded packs keep their place in the packRef space. Manifests are permanent, and a position that never moves means no locator ever needs renumbering.
 
 **Chunks referenced across repositories (forks).** A `platform://` locator names whose chunks it reads: `platform://<core>/<repoId>/<uploader>/<packHash>`. A fork records its parent's Platform-stored packs without re-uploading them: its `packManifest` has `storage = 1`, `chunkCount = 0`, and in `uris` the parent's chunk locators (`<repoId>` = the parent), members' copies first, followed by any external URIs the parent's copies record. A reader of such a manifest reads the chunks from the named repo's scope, within the same forge-core contract only, and accepts only bytes that hash to the manifest's `packHash`; a locator naming another pack hash or another contract is ignored. `chunk` and `packManifest` are non-deletable, so the parent cannot pull the bytes out from under the fork. (Rust: `repo::fetch_artifact_from`, `fork.rs`; the web reader must follow these locators the same way, or a fork of a Platform-stored repository does not browse.)
 
@@ -149,17 +149,17 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
 
 The concrete AEAD layout, key derivation and test vectors are Phase 3 work and need their own security review (roadmap Phase 3). The contract fields above are what that design writes into.
 
-## 6. What moves from client rules to consensus
+## 6. What consensus enforces and what stays a client rule
 
-| v1 (client rules / `FORGE_RULES_V1`) | v2 |
+| Concern | Enforced by |
 |---|---|
-| Push authorization: WRITE token spend | consensus: `ownerRefersTo` M or W |
-| Protected refs: MAINTAIN spend on `protectedRefUpdate` | consensus: M gate. **Routing stays a rule**: consensus cannot read `protectedPatterns`, so a plain `refUpdate` naming a protected ref still exists and is inert by the as-of config rule |
-| Revocation: freeze (+ destroy) | delete the `maintainer`/`writer` document; the next write is refused (40120) |
-| Event actor authorization, reconstructed as-of from token history | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability stays a rule**: `merge` needs `oid` reachable from the base tip |
-| Listing authenticity (listing owner == repo contract owner) | gone: `repo` is the listing |
-| Owner lock-out prevention (`baseSupply`) | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
-| Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | unchanged, still rules |
+| Push authorization | consensus: `ownerRefersTo` M or W |
+| Protected refs | consensus: M gate on `protectedRefUpdate`. **Routing is a rule**: consensus cannot read `protectedPatterns`, so a plain `refUpdate` naming a protected ref can exist, and it is inert by the as-of config rule |
+| Revocation | delete the `maintainer`/`writer` document; the next write is refused (40120) |
+| Event actor authorization | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability is a rule**: `merge` needs `oid` reachable from the base tip |
+| Repository listing | the `repo` document is the listing; its `$ownerId` is the owner |
+| Owner lock-out prevention | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
+| Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | client rules (the base rules, shared by every client) |
 | Issue and PR numbering | client rule, see below |
 | PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current `headOid` and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3) and unknown verdicts neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
 
@@ -175,7 +175,7 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 
 **Repository names** (`is_valid_repo_name`, `normalize_repo_name`, vectors `repo_name__*`). A name is valid when it matches the contract's pattern `^[a-z0-9][a-z0-9._-]{0,62}$` in full; a trailing newline does not match. Clients lowercase ASCII `A`–`Z` in user input before checking, and change nothing else, so `Dash-Forge` names `dash-forge`. Other characters are not folded: `é`, or the Kelvin sign that Unicode lowercases to `k`, leaves the name invalid.
 
-**Conformance.** `FORGE_RULES_V2` is `forge-core::rules::v2` (Rust) and `forge-web/lib/rules/v2.ts` (TypeScript). The shared vectors in `forge-contracts/vectors/` carry `"rules": "v2"`; a vector without `rules` is v1, and both harnesses dispatch on the field. The v2 rules are:
+**Conformance.** `FORGE_RULES_V2` is `forge-core::rules::v2` (Rust) and `forge-web/lib/rules/v2.ts` (TypeScript). The shared vectors in `forge-contracts/vectors/` are dispatched on their `rules` field: a vector without one tests a base rule (ref resolution, protected-pattern matching, display ref name, overlay, verdict mapping), which `FORGE_RULES_V2` builds on, and `"rules": "v2"` tests one of the rules below:
 
 | Rule | Functions | Vectors |
 |---|---|---|
@@ -189,8 +189,6 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
 
 The v2 fold takes no membership input: an `event`'s existence is its authorization. `RoleOracle` answers "was X a member at time t" from the repo's *current* `maintainer`/`writer` documents, so a revoked member (whose document was deleted) is not a member at any time, and a re-added member counts from their new document. The repoKey reader rule of §5 is Phase 3 work and has no vectors yet.
-
-**Holdings vectors.** The `holdings__*` conformance vectors (token-history reconstruction) and the v1 `fold_issue__*` / `fold_pr__*` vectors do not apply to v2 repos. They stay, unchanged, for reading v1 repos.
 
 ## 7. Measured size and cost
 
@@ -206,7 +204,7 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.15 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
+Total one-time registration fees are **1.15 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
 
 **Measured on devnet moutai (2026-09-25)**, as the deployer's balance change:
 

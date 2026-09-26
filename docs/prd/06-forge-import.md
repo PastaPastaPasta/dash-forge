@@ -1,5 +1,7 @@
 # PRD 06 — Forge Import
 
+> **Historical.** Written for forge-v1 (one contract per repository from the `repo-v1` template), removed on 2026-09-26 with no backwards compatibility. Imported data now lands in the shared [forge-v2](../contracts/forge-v2.md) contracts.
+
 ## Goal
 `dg import github.com/org/repo` migrates code + issues + PRs + releases + labels + milestones in one command. Launch adoption depends on this.
 

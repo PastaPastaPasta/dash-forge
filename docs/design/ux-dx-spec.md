@@ -258,7 +258,7 @@ Footer, always: *"This app is served by GitHub Pages. If you don't trust that, p
 ### 6.3 Degraded states
 - **Storage unreachable** (refs fine, no pack readable): a card, not a spinner: *"Code unavailable right now. The places this repo stores its files didn't answer: `pub-9a1.r2.dev` (timed out), `ipfs` (not found on 3 gateways). Branches, issues and pull requests are unaffected."* Buttons **Try again** · **Add a gateway**; for members: *"Have a clone? `dg reseed alice/project --from-local` restores it."* Rail row 4 reads *Failed* with the same list.
 - **Partial data**: show what arrived plus a sticky footer *"Showing 340 of 512 — Platform answered slowly. Loading the rest…"*; totals come from countable indexes so they stay honest.
-- **Network not deployed** (mainnet before PV14): read-only chrome and one card: *"Dash Forge isn't on mainnet yet (waiting for Platform v14). Browse testnet → · Follow progress →"*. No "New repo" button exists in that state.
+- **Network not deployed** (a network with no forge-v2 deployment, e.g. mainnet or testnet before PV14): read-only chrome and one card: *"Dash Forge isn't on mainnet yet (waiting for Platform v14). Browse the devnet build → · Follow progress →"*. No "New repo" button exists in that state, and the app never falls back to another network's contracts.
 - **Private repo, non-member**: name, owner, size, last activity, member count, and *"Private: contents are encrypted for members. You're not one."* No decrypted string ever renders, titles included.
 
 ---
