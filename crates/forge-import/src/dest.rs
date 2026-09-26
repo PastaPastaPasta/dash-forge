@@ -150,9 +150,6 @@ pub async fn resolve(
         let repo = resolve_id(client, spec)
             .await
             .with_context(|| format!("resolving repo {spec}"))?;
-        if repo.is_v1() {
-            bail!("{spec} is a forge-v1 repository (read only); mirror into a forge-v2 repository");
-        }
         return Ok(DestRepo {
             owner: repo.owner_id().to_string(),
             name: repo.name().to_string(),

@@ -55,7 +55,7 @@ impl std::fmt::Debug for StaticWebhook {
     }
 }
 
-/// The on-disk TOML shape (all optional; CLI flags override). Unknown keys (such as the v1
+/// The on-disk TOML shape (all optional; CLI flags override). Unknown keys (such as an older
 /// relay's `secrets` map or `registry-contract-id`) are ignored.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -161,7 +161,6 @@ impl RelayConfig {
             devnet_name: file.devnet_name.clone(),
             dapi_addresses: file.dapi_addresses.clone(),
             quorum_base_url: file.quorum_url.clone(),
-            registry: None,
         };
         let target = cli
             .network

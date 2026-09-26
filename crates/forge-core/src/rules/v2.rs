@@ -1,7 +1,7 @@
 //! `FORGE_RULES_V2` — the client rules for forge-v2 repositories (the shared forge-core /
 //! forge-collab contracts, `docs/contracts/forge-v2.md`).
 //!
-//! On v2, consensus does most of what v1's rules reconstructed: an `event` exists only if its
+//! Consensus does most of the authorization: an `event` exists only if its
 //! writer held a `maintainer`/`writer` document for the repo when it was written, and an
 //! `authorEvent` exists only if its writer authored the target and its kind is close or
 //! reopen. What is left client-side, and must be identical in every client, is here:
@@ -17,12 +17,11 @@
 //! * [`is_well_formed`] — plaintext xor `enc`, and no plaintext in a private repo (§5).
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
 //!
-//! v1 rules (the parent module) are untouched: v1 repositories stay readable with them. The
-//! event ordering and per-kind state changes are v1's own (`apply_issue_event`,
-//! `apply_pr_event`, `event_order`, `merge_reachable` in the parent module), so the two
-//! versions cannot drift apart where they are meant to agree.
+//! The event ordering and per-kind state changes are the parent module's base rules
+//! (`apply_issue_event`, `apply_pr_event`, `event_order`, `merge_reachable`), alongside ref
+//! resolution and protected-pattern matching.
 //!
-//! Like v1, every function is pure. The conformance vectors with `"rules": "v2"` in
+//! Every function is pure. The conformance vectors with `"rules": "v2"` in
 //! `forge-contracts/vectors/` are the parity suite, shared with `forge-web/lib/rules/v2.ts`.
 
 use std::collections::BTreeSet;
@@ -120,7 +119,7 @@ fn author_event_applies(e: &Event, target_author: &str) -> bool {
     matches!(e.kind, EventKind::Close | EventKind::Reopen) && e.actor == target_author
 }
 
-/// The applicable documents of both types, in v1's `(createdAt, id)` order. `events` come
+/// The applicable documents of both types, in `(createdAt, id)` order. `events` come
 /// first in the input, so two documents with the same key keep that order (the sort is
 /// stable; real `$id`s never collide across document types).
 fn merged_log<'a>(
@@ -145,7 +144,7 @@ fn merged_log<'a>(
 /// * Every `event` applies, whoever wrote it and whatever has happened to their membership
 ///   since (PR-only kinds do nothing to an issue).
 /// * An `authorEvent` applies only if it is a close or reopen by `target_author`.
-/// * Both are applied as one log ordered by `(createdAt, id)`, with v1's per-kind effects.
+/// * Both are applied as one log ordered by `(createdAt, id)`, with the base per-kind effects.
 #[must_use]
 pub fn fold_issue_state_v2(
     events: &[Event],
@@ -162,7 +161,7 @@ pub fn fold_issue_state_v2(
 /// Fold a PR's `event` and `authorEvent` documents into its [`PrState`].
 ///
 /// As [`fold_issue_state_v2`], and a `merge` (which can only come from `event`) applies only
-/// if its `oid` is reachable from `base_tip`, v1's predicate. A merged PR cannot be reopened.
+/// if its `oid` is reachable from `base_tip`. A merged PR cannot be reopened.
 #[must_use]
 pub fn fold_pr_state_v2(
     events: &[Event],

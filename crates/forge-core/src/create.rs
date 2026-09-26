@@ -7,7 +7,7 @@
 //!    (anyone may create one; `(owner, name)` is unique).
 //! 2. the owner's own `maintainer` document — only the repo's owner may create it, and
 //!    without it the owner could not write the M-gated `config` (or push to a protected
-//!    ref). This is the v2 form of v1's "the owner is credited both tokens at creation".
+//!    ref).
 //! 3. the initial `config` — default branch and storage backend.
 //!
 //! **Resumable, never double-paying.** Before each document is broadcast, its signed

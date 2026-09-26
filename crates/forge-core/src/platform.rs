@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 
 use dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::dapi_client::{Address, AddressList, CanRetry};
-use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::consensus::basic::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
@@ -43,7 +42,6 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -56,23 +54,13 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBat
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_sdk::dpp::tokens::calculate_token_id;
-use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
-use dash_sdk::dpp::tokens::info::IdentityTokenInfo;
-use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
-use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
-use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::contract_groups::ContractGroupMembershipsForContract;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::tokens::identity_token_balances::IdentitiesTokenBalancesQuery;
-use dash_sdk::platform::tokens::token_info::IdentitiesTokenInfosQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
-use drive_proof_verifier::types::identity_token_balance::IdentitiesTokenBalances;
-use drive_proof_verifier::types::token_info::IdentitiesTokenInfos;
 use drive_proof_verifier::DocumentCount;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
@@ -108,7 +96,7 @@ const DAPI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// quickly, and a connect timeout is now cheap enough to allow more.
 const DAPI_RETRIES: usize = 6;
 
-pub use crate::network::{Network, NetworkTarget, Registry};
+pub use crate::network::{Network, NetworkTarget};
 
 /// The `dashcore` network the SDK and its context provider use for `network`.
 fn to_dashcore(network: &Network) -> DashcoreNetwork {
@@ -133,9 +121,7 @@ impl LoadedContract {
         self.0.id().to_string(Encoding::Base58)
     }
 
-    /// The contract owner's base58 identity id. The owner is auto-credited both tokens'
-    /// `baseSupply` at creation, so it is always a WRITE+MAINTAIN holder even though no
-    /// `mint` history document records that crediting (data-contracts §2.1).
+    /// The contract owner's base58 identity id.
     pub fn owner_id(&self) -> String {
         self.0.owner_id().to_string(Encoding::Base58)
     }
@@ -284,7 +270,7 @@ impl std::fmt::Debug for LoadedIdentity {
 }
 
 /// An rs-sdk-backed Platform client: a connected `Sdk` plus the network it targets and the
-/// registry resolved for that network.
+/// forge-v2 contracts deployed there.
 ///
 /// Construct with [`PlatformClient::connect`]. Proof verification is always on (the
 /// trusted context provider supplies quorum public keys over HTTPS); there is no
@@ -316,9 +302,8 @@ impl PlatformClient {
     /// DAPI addresses; when it has none they are discovered from the devnet's quorum
     /// service (`/masternodes`), the same trusted source the quorum keys come from.
     ///
-    /// The target's registry is not fetched here: a network with no deployment still
-    /// connects (identity/balance reads work), and registry operations fail with
-    /// [`Error::NotDeployed`] when they need it.
+    /// A network with no forge-v2 deployment still connects (identity/balance reads work);
+    /// repository operations fail with [`Error::V2NotDeployed`] when they need it.
     pub async fn connect(target: NetworkTarget) -> Result<Self> {
         let network = &target.network;
         let dashcore_network = to_dashcore(network);
@@ -381,9 +366,8 @@ impl PlatformClient {
         })
     }
 
-    /// Connect to `network` with the registry from its embedded deployment (or the
-    /// `FORGE_REGISTRY_CONTRACT_ID` override). For callers without a config layer of their
-    /// own — tests and examples.
+    /// Connect to `network` with the contracts its embedded deployment records. For callers
+    /// without a config layer of their own — tests and examples.
     pub async fn connect_network(network: Network) -> Result<Self> {
         Self::connect(NetworkTarget::for_network(network)?).await
     }
@@ -393,21 +377,9 @@ impl PlatformClient {
         &self.target.network
     }
 
-    /// The resolved network + registry this client was connected with.
+    /// The resolved network + forge-v2 contracts this client was connected with.
     pub fn target(&self) -> &NetworkTarget {
         &self.target
-    }
-
-    /// The registry contract id for this network, or [`Error::NotDeployed`] when no registry
-    /// is deployed on it (never another network's id).
-    pub fn registry_contract_id(&self) -> Result<&str> {
-        Ok(self.target.require_registry()?.contract_id.as_str())
-    }
-
-    /// Fetch the registry contract for this network (see [`Self::registry_contract_id`]).
-    pub async fn fetch_registry(&self) -> Result<LoadedContract> {
-        let id = self.registry_contract_id()?.to_string();
-        self.fetch_contract(&id).await
     }
 
     /// The Platform protocol version the SDK currently encodes and verifies with.
@@ -656,7 +628,7 @@ impl PlatformClient {
     /// Query **every** matching document, paginating past Platform's ≤100-row page cap.
     ///
     /// [`PlatformClient::query_documents`] returns a single page (≤100 rows); an
-    /// authorization-bearing fold (events, token history) MUST see all rows or a stranger
+    /// authorization-bearing fold (events, memberships) MUST see all rows or a stranger
     /// can bury real state-changing docs past row 100 with un-gated spam and freeze the
     /// displayed state. This loops on the `$id` cursor (`start_after` = the last row's id)
     /// until a short page is returned. `order` must be a stable traversal so the cursor
@@ -707,88 +679,6 @@ impl PlatformClient {
             documents.reverse();
         }
         Ok(documents)
-    }
-
-    // === Token reads (the v1 collaborator ACL, read-only) ==================
-    //
-    // forge-v1 repositories granted access with two tokens per repo contract (WRITE at
-    // position 0, MAINTAIN at position 1). v1 is read-only now: these reads remain so a v1
-    // repo's collaborators and token history still render, but nothing mints, freezes or
-    // destroys any more. forge-v2 membership is documents (`crate::members`).
-
-    /// The base58 token id for `position` (0 = WRITE, 1 = MAINTAIN) of `contract`,
-    /// derived as `hash("dash_token" || contractId || position)` (rs-dpp `calculate_token_id`).
-    pub fn token_id(&self, contract: &LoadedContract, position: u16) -> String {
-        let raw = calculate_token_id(&contract.0.id().to_buffer(), position);
-        Identifier::from(raw).to_string(Encoding::Base58)
-    }
-
-    /// The token balances (`identity → amount`, absent = 0) of `token_id_b58` across
-    /// `identities` (base58). This is the authoritative on-chain collaborator holding
-    /// check — a positive balance means the token is held.
-    pub async fn token_balances(
-        &self,
-        token_id_b58: &str,
-        identities: &[String],
-    ) -> Result<BTreeMap<String, u64>> {
-        if identities.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let token_id = parse_id(token_id_b58, "token id")?;
-        let identity_ids = identities
-            .iter()
-            .map(|s| parse_id(s, "identity id"))
-            .collect::<Result<Vec<_>>>()?;
-        let query = IdentitiesTokenBalancesQuery {
-            identity_ids,
-            token_id,
-        };
-        let balances: IdentitiesTokenBalances =
-            retry_transient_read("query token balances", || {
-                TokenAmount::fetch_many(&self.sdk, query.clone())
-            })
-            .await
-            .map_err(|e| Error::Platform(format!("querying token balances: {e}")))?;
-        Ok(balances
-            .iter()
-            .map(|(id, amt)| (id.to_string(Encoding::Base58), amt.unwrap_or(0)))
-            .collect())
-    }
-
-    /// The frozen status (`identity → frozen`, absent = false) of `token_id_b58` across
-    /// `identities` (base58) — the suspend state included in a collaborator listing.
-    pub async fn token_frozen(
-        &self,
-        token_id_b58: &str,
-        identities: &[String],
-    ) -> Result<BTreeMap<String, bool>> {
-        if identities.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let token_id = parse_id(token_id_b58, "token id")?;
-        let identity_ids = identities
-            .iter()
-            .map(|s| parse_id(s, "identity id"))
-            .collect::<Result<Vec<_>>>()?;
-        let query = IdentitiesTokenInfosQuery {
-            identity_ids,
-            token_id,
-        };
-        let infos: IdentitiesTokenInfos = retry_transient_read("query token infos", || {
-            IdentityTokenInfo::fetch_many(&self.sdk, query.clone())
-        })
-        .await
-        .map_err(|e| Error::Platform(format!("querying token infos: {e}")))?;
-        Ok(infos
-            .iter()
-            .map(|(id, info)| {
-                (
-                    id.to_string(Encoding::Base58),
-                    info.as_ref()
-                        .is_some_and(IdentityTokenInfoV0Accessors::frozen),
-                )
-            })
-            .collect())
     }
 
     /// An O(1) provable count of `document_type` documents in `contract` matching
@@ -1217,11 +1107,6 @@ impl<'a> WriteEngine<'a> {
             contract_version: None,
         });
 
-        // For a token-gated create the transition must carry payment info matching the
-        // doc type's declared `tokenCost.create` (else consensus rejects with "Required
-        // token payment info not set"). Ungated types → `None` (platform fee only).
-        let token_payment = token_payment_for(doc_type_ref.document_creation_token_cost());
-
         let state_transition = BatchTransition::new_document_creation_transition_from_document(
             document,
             doc_type_ref,
@@ -1229,7 +1114,8 @@ impl<'a> WriteEngine<'a> {
             &self.signing_key,
             nonce,
             0,
-            token_payment,
+            // No forge-v2 type is token-gated: no token payment.
+            None,
             &self.signer,
             platform_version,
             None,
@@ -1312,17 +1198,13 @@ impl<'a> WriteEngine<'a> {
             .await
             .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
 
-        // A token-gated delete (chunk/packManifest refund) carries payment info matching
-        // the doc type's `tokenCost.delete`; non-deletable/ungated types → `None`.
-        let token_payment = token_payment_for(doc_type_ref.document_deletion_token_cost());
-
         let state_transition = BatchTransition::new_document_deletion_transition_from_document(
             document,
             doc_type_ref,
             &self.signing_key,
             nonce,
             0,
-            token_payment,
+            None,
             &self.signer,
             self.client.sdk().version(),
             None,
@@ -1851,10 +1733,8 @@ const MAX_PAGES: usize = 1000;
 /// block time, so these ties are real. Protocol 14 bounds the cursor by document id and
 /// does not drop them.
 ///
-/// Limitation: the fix needs the boundary row's `$createdAt`. A proved query returns it
-/// for registry types, but not for the history-keeping repo-v1 types (`packManifest`,
-/// `event`, `refUpdate`, `issue`, ...), under either SDK version. Their reads keep the
-/// protocol-13 gap until they move to forge-v2 contracts on protocol 14.
+/// Every forge-v2 type requires `$createdAt`, so a proved query returns the boundary row's
+/// timestamp.
 fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
     let Some((last, rest)) = order.split_last() else {
         return false;
@@ -1982,25 +1862,6 @@ fn minimal_uint(n: u64) -> Value {
     }
 }
 
-/// Build the [`TokenPaymentInfo`] a gated document create/delete must carry from the
-/// doc type's declared [`DocumentActionTokenCost`], or `None` for an ungated action.
-///
-/// `maximum_token_cost` is pinned to the contract-declared amount so a later
-/// owner-side price change cannot silently overcharge the actor (the SDK's stated
-/// rationale for the field); `payment_token_contract_id` / `token_contract_position` /
-/// `gas_fees_paid_by` mirror the declaration exactly, which is what consensus checks.
-fn token_payment_for(cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
-    cost.map(|c| {
-        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-            payment_token_contract_id: c.contract_id,
-            token_contract_position: c.token_contract_position,
-            minimum_token_cost: None,
-            maximum_token_cost: Some(c.token_amount),
-            gas_fees_paid_by: c.gas_fees_paid_by,
-        })
-    })
-}
-
 /// Select the identity's on-chain AUTHENTICATION key that (a) the signer can sign with
 /// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
 /// levels document create/delete accept (spike S0.7).
@@ -2054,13 +1915,13 @@ fn consensus_error_of(e: &dash_sdk::Error) -> Option<&ConsensusError> {
 /// Document types whose UNIQUE index makes a same-content re-upload an idempotent no-op:
 /// `chunk` (unique `(packHash, seq)`) and `packManifest` (unique `packHash`). A resumed
 /// push re-broadcasts these and a `DuplicateUniqueIndexError` means "already stored" =
-/// success — NOT for e.g. `repoListing` (unique `(ownerId, normalizedName)`), where a
+/// success — NOT for e.g. `repo` (unique `($ownerId, name)`), where a
 /// duplicate is a genuine name collision and must stay fatal.
 const CONTENT_ADDRESSED_UNIQUE_DOC_TYPES: [&str; 2] = ["chunk", "packManifest"];
 
 /// Classify a `dash_sdk::Error` from a document broadcast by matching structured enum
-/// variants (not lowercased Display substrings). Frozen-token (consensus 40702) and
-/// unauthorized (40701) map to distinct, non-retryable crate errors; retryability comes
+/// variants (not lowercased Display substrings). A missing membership (consensus 40120 on
+/// `$ownerId`) maps to a distinct, non-retryable crate error; retryability comes
 /// from the SDK's authoritative [`CanRetry::can_retry`]. `document_type` scopes the
 /// unique-index idempotency (see [`CONTENT_ADDRESSED_UNIQUE_DOC_TYPES`]).
 fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailure {
@@ -2095,20 +1956,12 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                 return WriteFailure::AlreadyLanded
             }
             // A unique-index collision on any OTHER type is a genuine clash (an `issue`
-            // /`patch` `number` already taken, a `repoListing` name collision). Surface it
+            // /`patch` `number` already taken, a `repo` name collision). Surface it
             // as a distinct, non-retryable error so the optimistic-numbering allocator can
             // catch it and retry with the next number (a name collision stays fatal at the
             // caller). NOT idempotent success — the content differs from what landed.
             StateError::DuplicateUniqueIndexError(err) => {
                 return WriteFailure::Fatal(Error::DuplicateUniqueIndex(format!("{err:?}")))
-            }
-            // 40702: the identity's token account is frozen → write access revoked.
-            StateError::IdentityTokenAccountFrozenError(_) => {
-                return WriteFailure::Fatal(Error::TokenFrozen)
-            }
-            // 40701: not authorized for this token action.
-            StateError::UnauthorizedTokenActionError(_) => {
-                return WriteFailure::Fatal(Error::Unauthorized)
             }
             // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
             // membership document for the writer (forge-v2: never granted, or revoked; or a

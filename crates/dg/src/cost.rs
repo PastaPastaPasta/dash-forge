@@ -114,7 +114,6 @@ async fn audit(ctx: &Ctx, repo: Option<&str>) -> Result<()> {
         json!({
             "mode": "repo_storage_tally",
             "repoId": handle.id(),
-            "generation": handle.generation(),
             "packCount": manifests.len(),
             "packBytes": total_bytes,
             "depositLocked": cost_json(deposit_locked, price),
@@ -126,9 +125,7 @@ async fn audit(ctx: &Ctx, repo: Option<&str>) -> Result<()> {
                 manifests.len()
             );
             println!("  deposit locked:  {}", cost_line(deposit_locked, price));
-            if !handle.is_v1() {
-                println!("  (forge-v2 packs are permanent: the deposit is not refundable)");
-            }
+            println!("  (packs are permanent: the deposit is not refundable)");
         },
     );
     Ok(())

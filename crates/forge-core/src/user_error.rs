@@ -88,10 +88,8 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::STORAGE_TEST, "storage profile failed its checks"),
     (codes::RECORDED_COPY_LOST, "recorded pack copy unreachable"),
     (codes::NOT_A_WRITER, "not a writer of this repository"),
-    (codes::SUSPENDED, "write access suspended"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
-    (codes::READ_ONLY, "v1 repository is read only"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -152,16 +150,14 @@ pub mod codes {
     pub const STORAGE_TEST: &str = "E506";
     /// A re-push found the pack already recorded, with no copy readable.
     pub const RECORDED_COPY_LOST: &str = "E507";
-    /// Consensus refused a write: no WRITE token (v1) / no writer document (v2, 40120).
+    /// Consensus refused a write: no `writer`/`maintainer` document (40120).
     pub const NOT_A_WRITER: &str = "E601";
-    /// Consensus refused a write: the WRITE/MAINTAIN token is frozen (40702).
-    pub const SUSPENDED: &str = "E602";
+    // E602 (token suspended) is retired with forge-v1 and stays reserved.
     /// A unique index collision (a name or number already taken).
     pub const ALREADY_EXISTS: &str = "E603";
     /// Any other consensus rejection.
     pub const REJECTED: &str = "E604";
-    /// A write to a forge-v1 repository, which is read only.
-    pub const READ_ONLY: &str = "E605";
+    // E605 (v1 repository is read only) is retired with forge-v1 and stays reserved.
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.
@@ -538,7 +534,6 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
                 dash(*available)
             ),
         ),
-        CoreError::TokenFrozen => suspended(ctx, &format!("40702 {core}")),
         CoreError::NotAMember {
             document_type,
             detail,
@@ -551,13 +546,6 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             reason,
             needs,
         } => not_permitted(ctx, action, reason, needs),
-        CoreError::V1ReadOnly { repo } => UserError::new(
-            codes::READ_ONLY,
-            ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
-        )
-        .cause("forge-v1 repositories (one contract each) can still be cloned and viewed, but no longer written")
-        .fix("create a forge-v2 repository (`dg repo create <name>`) and push there")
-        .note("`dg migrate` (moving a v1 repo to forge-v2) is coming soon"),
         CoreError::V2NotDeployed { network } => UserError::new(
             codes::NOT_DEPLOYED,
             ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),
@@ -565,9 +553,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         .cause(format!(
             "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
         ))
-        .fix("use a network where it is: `--network devnet --devnet-name moutai`")
-        .note("existing v1 repositories on this network stay readable"),
-        CoreError::Unauthorized => not_a_writer(ctx, &format!("40700/40701 {core}")),
+        .fix("use a network where it is: `--network devnet --devnet-name moutai`"),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
         CoreError::IncompleteRead {
             document_type,
@@ -612,15 +598,6 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         .fix("if you know another IPFS gateway with the pack, add it to `[read] ipfs_gateways` in storage.toml and retry"),
         CoreError::Io(msg) if mentions_identity(chain) => identity_unreadable(msg),
         CoreError::Config(msg) => from_config(msg, chain, ctx),
-        CoreError::NotDeployed { network } => UserError::new(
-            codes::NOT_DEPLOYED,
-            ctx.headline(&format!("Dash Forge is not deployed on {network}")),
-        )
-        .cause(format!(
-            "forge-contracts/deployments/{network}.json records no registry contract"
-        ))
-        .fix("use a network with a deployment: `--network testnet`")
-        .fix("point FORGE_REGISTRY_CONTRACT_ID (dg: `registry_contract_id` in config.toml) at a registry you deployed; `dg doctor` shows what is configured"),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
         _ => return None,
     })
@@ -704,19 +681,6 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         );
         return Some(insufficient(ctx, &detail));
     }
-    // 40702 IdentityTokenAccountFrozen.
-    if m.contains("account is frozen for token") || m.contains("token frozen") {
-        return Some(suspended(ctx, &format!("40702: {}", one_line(msg))));
-    }
-    // 40700 IdentityDoesNotHaveEnoughTokenBalance / 40701 UnauthorizedTokenAction.
-    if m.contains("does not have enough balance for token")
-        || m.contains("is not authorized to perform action")
-    {
-        return Some(not_a_writer(
-            ctx,
-            &format!("40700/40701: no WRITE token: {}", one_line(msg)),
-        ));
-    }
     // 40120 ReferencedEntityNotFound. On path `$ownerId` it is forge-v2's writer gate
     // (`ownerRefersTo`): no current `writer`/`maintainer` document for the signer. On any
     // other path a referenced document, contract or identity is missing — a rejection,
@@ -762,9 +726,9 @@ fn not_found(chain: &str, ctx: &ErrorContext<'_>) -> UserError {
     let repo = ctx.repo_or("the repository");
     if chain.contains("resolving") || chain.contains("fetching contract") {
         return UserError::new(codes::NOT_FOUND, ctx.headline(&format!("{repo} was not found")))
-            .cause("the registry has no repository with that owner and name on this network")
+            .cause("there is no repository with that owner and name on this network")
             .fix("check the owner id and name: `dg repo list --owner <owner identity id>` lists an owner's repositories")
-            .fix("check the network: `dg doctor` shows which network and registry are in use");
+            .fix("check the network: `dg doctor` shows which network and contracts are in use");
     }
     UserError::new(codes::NOT_FOUND, ctx.headline("not found"))
         .cause("Platform returned a proof that it does not exist")
@@ -781,21 +745,6 @@ fn insufficient(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
         "top up the identity from any Dash wallet at {TOP_UP_URL} (`dg auth balance` shows the balance)"
     ))
     .note("reads, clones and browsing are free and unaffected")
-}
-
-fn suspended(ctx: &ErrorContext<'_>, why: &str) -> UserError {
-    let repo = ctx.repo_or("<owner>/<repo>");
-    UserError::new(
-        codes::SUSPENDED,
-        ctx.rejected_headline(&format!(
-            "your write access to {} is suspended",
-            ctx.repo_or("this repo")
-        )),
-    )
-    .cause(format!("Platform refused the write at consensus ({why})"))
-    .fix(format!(
-        "ask a maintainer to run `dg collab unsuspend {repo} <your identity id>`"
-    ))
 }
 
 /// forge-core document types only a `maintainer` may create (forge-v2.md §2).
@@ -1351,13 +1300,17 @@ mod tests {
                 "docs/errors.md has no `## {code}` section ({title})"
             );
         }
-        // …and documents nothing that is not in the catalogue.
+        // …and documents nothing that is not in the catalogue, except retired codes, whose
+        // numbers stay reserved and must not come back.
         for line in docs.lines().filter(|l| l.starts_with("## E")) {
-            let code = line.trim_start_matches("## ").trim();
-            assert!(
-                seen.contains(code),
-                "docs/errors.md documents unknown {code}"
-            );
+            let heading = line.trim_start_matches("## ").trim();
+            match heading.strip_suffix(" (retired)") {
+                Some(code) => assert!(!seen.contains(code), "retired {code} is in the catalogue"),
+                None => assert!(
+                    seen.contains(heading),
+                    "docs/errors.md documents unknown {heading}"
+                ),
+            }
         }
     }
 
@@ -1463,14 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_writes_and_undeployed_v2_have_their_own_codes() {
-        let u = core_chain(
-            CoreError::V1ReadOnly {
-                repo: "alice/old".into(),
-            },
-            &PUSH,
-        );
-        assert_eq!((u.code, u.exit_code()), ("E605", 6));
+    fn undeployed_v2_has_its_own_code() {
         let u = core_chain(
             CoreError::V2NotDeployed {
                 network: "testnet".into(),
@@ -1515,41 +1461,6 @@ mod tests {
             "push rejected: a document it refers to at assignee does not exist"
         );
         assert!(u.cause.unwrap().starts_with("40120: "));
-    }
-
-    #[test]
-    fn maps_v1_token_errors() {
-        assert_eq!(core_chain(CoreError::Unauthorized, &PUSH).code, "E601");
-        assert_eq!(core_chain(CoreError::TokenFrozen, &PUSH).code, "E602");
-        let frozen = core_chain(
-            CoreError::Platform("token freeze failed: Identity X account is frozen for token Y. Action attempted: Document create token payment".into()),
-            &PUSH,
-        );
-        assert_eq!(frozen.code, "E602");
-        assert!(frozen.fix[0].contains("dg collab unsuspend alice/project"));
-        // The e2e suite recognizes a consensus freeze by these words; a local pre-check by
-        // "token on this repo is frozen", which must NOT appear here.
-        let typed = core_chain(CoreError::TokenFrozen, &PUSH);
-        let text = typed.render("", false);
-        assert!(
-            text.contains("token frozen") && text.contains("access has been suspended"),
-            "{text}"
-        );
-        assert!(!text.contains("on this repo is frozen"), "{text}");
-        let unauthorized = core_chain(CoreError::Unauthorized, &PUSH).render("", false);
-        assert!(
-            unauthorized.contains("WRITE or MAINTAIN token"),
-            "{unauthorized}"
-        );
-        assert!(
-            !unauthorized.contains("no WRITE token on this repo"),
-            "{unauthorized}"
-        );
-        let no_token = core_chain(
-            CoreError::Platform("Identity X does not have enough balance for token Y: required 1, actual 0, action: Document create token payment".into()),
-            &PUSH,
-        );
-        assert_eq!(no_token.code, "E601");
     }
 
     #[test]
@@ -1640,7 +1551,7 @@ mod tests {
         );
         assert_eq!(pushed.message, "push failed: could not reach Dash Platform");
         let u = core_chain(
-            CoreError::NotDeployed {
+            CoreError::V2NotDeployed {
                 network: "mainnet".into(),
             },
             &ErrorContext::default(),
@@ -1653,9 +1564,7 @@ mod tests {
         assert_eq!(u.code, "E202");
         assert_eq!(u.exit_code(), 2);
         let u = core_chain(
-            CoreError::Config(
-                "no CRITICAL AUTHENTICATION key in identity file (required for token admin)".into(),
-            ),
+            CoreError::Config("no HIGH or CRITICAL AUTHENTICATION key in identity file".into()),
             &ErrorContext::default(),
         );
         assert_eq!(u.code, "E302");

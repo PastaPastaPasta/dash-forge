@@ -2,9 +2,8 @@
 //! `list` / `fetch` / `push` operations against `forge-core`'s [`RepoService`].
 //!
 //! Data flow (architecture §6):
-//! - **resolve** → `dash://owner/name` is a forge-v2 `repo` (else a v1 registry listing,
-//!   read only); `dash://<id>` a v2 repo id or a v1 repo contract id
-//!   (`forge_core::resolve`).
+//! - **resolve** → `dash://owner/name` is a forge-v2 `repo` by `($ownerId, name)`;
+//!   `dash://<id>` a repo document id (`forge_core::resolve`).
 //! - **list** → `read_refs` (proof-verified, folded by the ref rules) → `<oid> <ref>` lines
 //!   + the `HEAD` symref from the repo's default branch.
 //! - **fetch** → every kind-0 pack's copies → the first copy that verifies, in the
@@ -18,7 +17,7 @@
 //!   `write_pack_manifest` (every confirmed URI + the SHA-256) → `write_ref_update`
 //!   (prevOid recorded; non-FF refused without `+`) → post-push ref re-read for a
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
-//!   met and the manifest has landed. A v1 repository refuses every push (read only).
+//!   met and the manifest has landed.
 
 use std::path::PathBuf;
 
@@ -165,7 +164,6 @@ impl Helper {
             repo.require_readable()?;
             tracing::info!(
                 repo = %repo.id(),
-                generation = repo.generation(),
                 owner = %repo.owner_id(),
                 "resolved dash:// repo"
             );
@@ -284,7 +282,7 @@ impl Helper {
             // `storage = 0` copy must not turn an unreadable pack into a failed clone (git's
             // connectivity check still fails the fetch if a wanted object was in it).
             let on_chain = copies.iter().any(|m| {
-                m.storage == 0 && (repo.is_v1() || roles.contains_key(&m.owner_id))
+                m.storage == 0 && roles.contains_key(&m.owner_id)
             });
             let bytes = match got {
                 Ok((bytes, _)) => bytes,
@@ -363,8 +361,6 @@ impl Helper {
             None
         };
         let conn = self.ensure_conn().await?;
-        // v1 repositories are read only: refuse before building or paying for anything.
-        conn.repo.require_v2()?;
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
         let repo_label = conn.repo.display();
         let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
@@ -1214,11 +1210,11 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
     Ok(raw)
 }
 
-/// Resolve the network and registry. Precedence, field by field: the environment
-/// (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`,
-/// `DASH_FORGE_QUORUM_URL`, `FORGE_REGISTRY_CONTRACT_ID` — what `dg` and forge-import set
-/// per invocation) > git config (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`,
-/// `dash.quorumUrl`, `dash.registryContractId`) > the embedded deployment > testnet.
+/// Resolve the network and its forge-v2 contracts. Precedence, field by field: the
+/// environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`,
+/// `DASH_FORGE_QUORUM_URL` — what `dg` and forge-import set per invocation) > git config
+/// (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`, `dash.quorumUrl`) > the embedded
+/// deployment > testnet.
 pub(crate) fn network_target() -> Result<NetworkTarget> {
     resolve_network(
         NetworkSettings::from_env(),
@@ -1461,7 +1457,6 @@ mod tests {
     fn nothing_configured_is_testnet() {
         let t = resolve_network(NetworkSettings::default(), NetworkSettings::default()).unwrap();
         assert_eq!(t.network.key(), "testnet");
-        assert!(t.registry.is_some());
     }
 
     #[test]

@@ -55,11 +55,9 @@
 //!
 //! One path does still use a cursor: a ref with more than a page of updates is read with
 //! `refNameHash == h` paged by `startAfter`. That is single-branch, so the sibling-branch
-//! drop cannot happen, but protocol 13 still skips rows sharing the page boundary's
-//! `$createdAt` (docs/BUILDING.md, "same-block ties"), and repo-v1 ref updates do not return
-//! `$createdAt` from a proved query, so the tie probe cannot repair it. That read is the one
-//! `base_ref_tips` always used; it goes away with forge-v2 on protocol 14, whose cursor is
-//! bounded by document id. The mock's `ref_history` is exact, so no test here covers it.
+//! drop cannot happen; on protocol 14 the cursor is bounded by document id, so rows sharing
+//! the page boundary's `$createdAt` are not skipped. The mock's `ref_history` is exact, so
+//! no test here covers it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -109,10 +107,9 @@ pub(crate) trait RefDocSource {
     async fn full_scan(&self, doc_type: &str) -> Result<Vec<FetchedDocument>>;
 }
 
-/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: on
-/// forge-v2 every query leads with `repoId == R` (the `refState` and `reflog` indexes are
-/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`), on v1 the repo
-/// contract is the scope.
+/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: every
+/// query leads with `repoId == R` (the `refState` and `reflog` indexes are
+/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`).
 pub(crate) struct PlatformRefSource<'a> {
     pub(crate) client: &'a PlatformClient,
     pub(crate) contract: &'a LoadedContract,
@@ -169,7 +166,7 @@ impl RefDocSource for PlatformRefSource<'_> {
 }
 
 /// Read every ref's complete history of the repository `scope` names, from `contract`
-/// (forge-core on v2, the repo contract on v1). See the module docs.
+/// (forge-core). See the module docs.
 pub async fn read_all_ref_updates(
     client: &PlatformClient,
     contract: &LoadedContract,
@@ -389,7 +386,7 @@ mod tests {
         FetchedDocument {
             id: format!("id{id:06}"),
             owner_id: "pusher".into(),
-            // The deployed repo-v1 type never recorded `$createdAt` (design-freeze-2 §3).
+            // The scan must not depend on `$createdAt` being present.
             created_at: None,
             fields,
         }

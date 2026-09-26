@@ -300,16 +300,10 @@ fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
 
 /// `owner/name` or a repo id → the forge-v2 repo.
 async fn resolve_repo(client: &PlatformClient, r: &str) -> Result<RepoRef> {
-    let repo = match r.split_once('/') {
+    Ok(match r.split_once('/') {
         Some((owner, name)) => forge_core::resolve::resolve_named(client, owner, name).await?,
         None => forge_core::resolve::resolve_id(client, r).await?,
-    };
-    if repo.is_v1() {
-        return Err(RelayError::Config(format!(
-            "{r} is a forge-v1 repository; the relay serves forge-v2 repositories only"
-        )));
-    }
-    Ok(repo)
+    })
 }
 
 /// `repoId == repo_id`, the pinned prefix of every repo-scoped stream.
@@ -577,17 +571,12 @@ async fn prime_ref_streams(
 /// opened PR heads.
 async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result<RepoState> {
     let repo = forge_core::resolve::resolve_id(&shared.client, repo_id).await?;
-    let RepoRef::V2 {
+    let RepoRef {
         owner_id,
         name,
         visibility,
         ..
-    } = &repo
-    else {
-        return Err(RelayError::Config(format!(
-            "{repo_id} is not a forge-v2 repo"
-        )));
-    };
+    } = &repo;
     if *visibility == Visibility::Private {
         // A private repo's content is encrypted to its members; the relay is not one.
         return Err(RelayError::Config(format!(

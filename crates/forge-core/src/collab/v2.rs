@@ -16,9 +16,6 @@
 //! number by the §6 rule and are resumable: the signed create is journaled before it is
 //! broadcast, so re-running an interrupted create re-broadcasts the same bytes instead of
 //! opening a second issue.
-//!
-//! v1 repositories are read by the services in the parent module and refused here
-//! ([`crate::Error::V1ReadOnly`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -725,11 +722,10 @@ impl<'a> Collab<'a> {
         doc_engine(self.client, identity, bridge)
     }
 
-    /// The forge-v2 contracts of `repo`, refusing v1 and private repos.
+    /// The forge-v2 contracts of `repo`, refusing private repos.
     fn forge(repo: &RepoRef) -> Result<&ForgeIds> {
-        let forge = repo.require_v2()?;
         repo.require_readable()?;
-        Ok(forge)
+        Ok(repo.forge())
     }
 
     async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
@@ -759,10 +755,7 @@ impl<'a> Collab<'a> {
     }
 
     fn visibility(repo: &RepoRef) -> Visibility {
-        match repo {
-            RepoRef::V2 { visibility, .. } => *visibility,
-            RepoRef::V1 { .. } => Visibility::Public,
-        }
+        repo.visibility
     }
 
     /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.

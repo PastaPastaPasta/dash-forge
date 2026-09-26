@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::collab::v2::{Collab, PatchInput, PatchView, V2Patch};
-use forge_core::collab::{PullRequest, PullRequestService, Verdict};
+use forge_core::collab::Verdict;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::Role;
 use forge_core::rules::EventKind;
@@ -120,7 +120,7 @@ fn state_label(v: &PatchView) -> &'static str {
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let s = Session::open_v2(ctx, &args.repo).await?;
     let handle = &s.repo;
-    let forge = handle.require_v2()?;
+    let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
 
     // Where the branch may live: --head-repo, else the signer's forks of the target, then the
@@ -230,7 +230,6 @@ async fn resolve_head(
         };
     let mut found = None;
     for repo in &candidates {
-        repo.require_v2()?;
         let refs = svc.read_refs(repo).await?;
         if let Some(tip) = refs
             .iter()
@@ -287,24 +286,6 @@ async fn resolve_head(
 async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
-    if handle.is_v1() {
-        let prs = PullRequestService::new(&s.client, &s.identity, &s.bridge)
-            .list_prs(handle.v1_contract_id()?, limit, None)
-            .await
-            .context("list_prs")?;
-        let rows: Vec<_> = prs.iter().map(v1_row).collect();
-        ctx.emit(json!({ "count": rows.len(), "prs": rows }), || {
-            for p in &prs {
-                println!(
-                    "#{:<4} {}  ({})",
-                    p.number,
-                    safe(&p.title),
-                    short(&p.head_oid)
-                );
-            }
-        });
-        return Ok(());
-    }
     let collab = Collab::reader(&s.client);
     let page = collab.list_patches(handle, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
@@ -370,40 +351,9 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     Ok(())
 }
 
-fn v1_row(p: &PullRequest) -> serde_json::Value {
-    json!({
-        "number": p.number,
-        "title": p.title,
-        "author": p.author,
-        "baseRef": p.base_ref_name,
-        "headOid": p.head_oid,
-        "sourceContractId": p.source_contract_id,
-    })
-}
-
-fn view_v1(ctx: &Ctx, pw: &forge_core::collab::PullRequestWithState) {
-    let mut row = v1_row(&pw.pr);
-    row["body"] = json!(pw.pr.body);
-    row["state"] = serde_json::to_value(&pw.state).unwrap_or_default();
-    ctx.emit(row, || {
-        println!("#{} {}", pw.pr.number, safe(&pw.pr.title));
-        println!("base: {}  head: {}", pw.pr.base_ref_name, pw.pr.head_oid);
-        println!("(v1 repository, read only)");
-    });
-}
-
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
-    if handle.is_v1() {
-        let pw = PullRequestService::new(client, &s.identity, &s.bridge)
-            .pr_state(handle.v1_contract_id()?, number, None)
-            .await
-            .context("pr_state")?
-            .ok_or_else(|| not_found(repo, number))?;
-        view_v1(ctx, &pw);
-        return Ok(());
-    }
     let collab = Collab::reader(client);
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
@@ -1031,16 +981,8 @@ struct Located {
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let s = Session::open(ctx, repo).await?;
     let target = s.repo.id().to_string();
-    let (source, head, base_ref) = if s.repo.is_v1() {
-        let pr = PullRequestService::new(&s.client, &s.identity, &s.bridge)
-            .get_pr(s.repo.v1_contract_id()?, number)
-            .await?
-            .ok_or_else(|| not_found(repo, number))?;
-        (pr.source_contract_id, pr.head_oid, pr.base_ref_name)
-    } else {
-        let p = patch(&Collab::reader(&s.client), &s.repo, repo, number).await?;
-        (p.source_repo_id, p.head_oid, p.base_ref_name)
-    };
+    let p = patch(&Collab::reader(&s.client), &s.repo, repo, number).await?;
+    let (source, head, base_ref) = (p.source_repo_id, p.head_oid, p.base_ref_name);
     // Every field came from a document anyone could have written: check the shapes before
     // any of them reaches git.
     if !git::is_oid(&head) {

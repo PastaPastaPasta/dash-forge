@@ -1,6 +1,6 @@
-//! `FORGE_RULES_V1` — the cross-client-parity heart of Dash Forge.
+//! The shared client rules — the cross-client-parity heart of Dash Forge.
 //!
-//! Dash Platform enforces token spend, schema, and uniqueness at consensus, but it
+//! Dash Platform enforces membership, schema, and uniqueness at consensus, but it
 //! has **no CAS**, cannot read glob patterns, and cannot fold an append-only event log
 //! into "is this issue open". Those decisions are made *client-side*, and every
 //! conforming client must make them **identically** — otherwise two people looking at
@@ -8,7 +8,7 @@
 //! different protected-ref verdicts. This module is the Rust half of that shared
 //! logic; a TypeScript port (`forge-web`) is the other half.
 //!
-//! Parity is held by a versioned spec (`docs/contracts/data-contracts.md` §4) plus
+//! Parity is held by a versioned spec (`docs/contracts/forge-v2.md` §6) plus
 //! **shared JSON conformance vectors** in `forge-contracts/vectors/`. Both language
 //! ports run the exact same vectors and must produce the exact same `expected`. The
 //! test at the bottom of this file is that suite for the Rust side.
@@ -18,10 +18,10 @@
 //! input. It does not establish that each client FETCHES identical input. A divergence in
 //! the read layer — one client paging a history to exhaustion while the other stops at
 //! Drive's 100-row default — yields two different answers from two green conformance runs.
-//! That class of bug belongs to the readers (`repo.rs`, `collab.rs`) and their own tests.
+//! That class of bug belongs to the readers (`repo.rs`, `collab/`) and their own tests.
 //!
 //! Everything here is **pure**: no SDK, no network, no funds, no clock. Callers fetch
-//! the documents (refUpdate / config / event / token-history / flatIndex) and hand
+//! the documents (refUpdate / config / event / flatIndex) and hand
 //! them in as plain structs; these functions resolve. The only "clock" available is
 //! the consensus `$createdAt` carried on every document (data-contracts §0), so every
 //! as-of-time decision is a comparison of those timestamps.
@@ -32,29 +32,21 @@
 //!   [`RefState`], honoring as-of-time protected-pattern config and same-`prevOid`
 //!   divergence (§2.3, §4).
 //! * [`matches_protected`] — git-fnmatch protected-pattern matching (§2.3).
-//! * [`fold_issue_state`] / [`fold_pr_state`] — fold the `event` log into issue/PR
-//!   state, with actor authorization evaluated **as-of** each event's `$createdAt`.
-//! * [`holdings_as_of`] — reconstruct a WRITE/MAINTAIN holding from token-history
-//!   mint/freeze/destroy records at a point in time.
+//! * the event model ([`Event`], [`IssueState`], [`PrState`]) and the per-kind effects the
+//!   issue/PR folds in [`v2`] apply.
 //! * [`overlay_tree`] — apply the tree diffs of the ≤ 20 commits since a flatIndex's
 //!   indexed tip on top of it, so browse views stay fresh without a full re-walk
 //!   (the S0.5 cold-load correction).
 //!
-//! [`v2`] holds `FORGE_RULES_V2`, the rules for repositories on the shared forge-v2
-//! contracts. It reuses this module's event order and per-kind effects; everything here stays
-//! the v1 rule set, so v1 repositories remain readable.
+//! [`v2`] holds the rest of `FORGE_RULES_V2`: membership, the issue/PR folds, numbering,
+//! approvals, pack-copy selection and well-formedness. The base-rule vectors (no `rules` field)
+//! and the `"rules": "v2"` vectors together are its conformance suite.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 pub mod v2;
-
-/// The versioned rules identifier shared with forge-web and the conformance vectors.
-///
-/// Any behavioral change to the functions in this module is a new version: bump this,
-/// re-freeze the vectors, and port both sides together.
-pub const FORGE_RULES_V1: &str = "FORGE_RULES_V1";
 
 /// A git object id, hex-encoded (the JSON-friendly representation the vectors use).
 ///
@@ -82,7 +74,7 @@ fn is_null_oid(oid: &str) -> bool {
 /// commit *A*") is an **input**: a precomputed set of `(ancestor, descendant)` pairs
 /// (typically the transitive closure over the relevant commits). This keeps ref
 /// resolution and merge-reachability pure and lets the vectors pin exactly which
-/// ancestry facts are in play. [`resolve_ref`]/[`fold_pr_state`] also accept any
+/// ancestry facts are in play. [`resolve_ref`]/[`v2::fold_pr_state_v2`] also accept any
 /// `Fn(&str, &str) -> bool` directly for callers that have a real graph.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -220,7 +212,7 @@ pub fn tip_of(state: &RefState) -> Option<String> {
 /// timeline (append-only, so order-independent). `is_ancestor(a, b)` reports whether
 /// commit `a` is an ancestor of (or equal to) commit `b`.
 ///
-/// ## Algorithm (normative — `FORGE_RULES_V1`)
+/// ## Algorithm (normative)
 ///
 /// This implements data-contracts §4's protected-ref pseudocode plus the §2.3
 /// divergence rule, generalized so that a merge/force "supersedes both" heads exactly
@@ -372,7 +364,7 @@ pub fn resolve_ref(
 /// Whether a ref name is legal to advertise on the git wire protocol.
 ///
 /// `refName` is stored as an arbitrary Platform string (≤255 chars) and never passed
-/// `git check-ref-format`, so a hostile WRITE holder could store a name containing a
+/// `git check-ref-format`, so a hostile writer could store a name containing a
 /// newline (`refs/heads/x\n<oid> refs/heads/main`) to **inject a spoofed
 /// ref-advertisement line** into every clone/fetch, or a NUL/space to corrupt parsing.
 /// The security-critical rule (shared by the write guard, the fold side, and the helper
@@ -395,7 +387,7 @@ fn is_content_hash(h: &str) -> bool {
 ///
 /// Public because callers that only want to *display* a ref must apply the same predicate
 /// the fold does. `refName` is caller-supplied content and only `refNameHash` is indexed, so
-/// a token holder can post an update carrying a name that does not hash to the key it is
+/// a writer can post an update carrying a name that does not hash to the key it is
 /// filed under. `resolve_ref` already ignores such an update, and any client naming a ref
 /// from one would show a different branch name for the same ref than a client that does not.
 pub fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
@@ -460,7 +452,7 @@ impl Verdict {
 ///
 /// This is a shared rule, not a reader convenience, because the two halves of the ref
 /// document are trusted differently: `refNameHash` is the indexed key, while `refName` is
-/// caller-supplied content. A token holder may therefore file an update under `main`'s hash
+/// caller-supplied content. A writer may therefore file an update under `main`'s hash
 /// carrying any legal name. [`resolve_ref`] already ignores such an update when resolving the
 /// tip, so a client that named the ref from it would show a different branch name for the
 /// same ref than a client that did not — and `git ls-remote` would advertise the tip under a
@@ -507,7 +499,7 @@ pub fn is_update_valid(u: &RefUpdate, config_history: &[ConfigDoc]) -> bool {
         // Protected ref: only a MAINTAIN-gated protectedRefUpdate moves it.
         u.protected
     } else {
-        // Unprotected: either type is fine (MAINTAIN holders may protect-push anywhere).
+        // Unprotected: either type is fine (maintainers may protect-push anywhere).
         true
     }
 }
@@ -534,7 +526,7 @@ fn config_as_of(config_history: &[ConfigDoc], at: u64) -> Option<&ConfigDoc> {
 
 /// Whether `ref_name` matches **any** protected glob in `patterns`.
 ///
-/// ## Pinned glob semantics (`FORGE_RULES_V1`)
+/// ## Pinned glob semantics
 ///
 /// Matching is git **`wildmatch`** with the `WM_PATHNAME` flag — the same behavior
 /// `git for-each-ref <pattern>` uses. Precisely:
@@ -598,151 +590,6 @@ fn neutralize_wildmatch(pattern: &str) -> String {
 }
 
 // ===========================================================================
-// Token-history authorization (as-of-time)
-// ===========================================================================
-
-/// Which repo token a history record concerns (§2.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TokenKind {
-    /// Position 0 — push / upload / CI.
-    Write,
-    /// Position 1 — protected refs / releases / labels / webhooks / config.
-    Maintain,
-}
-
-/// A token-history operation (§2.1 grant/suspend/revoke lifecycle).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TokenOp {
-    /// Grant (or re-grant) the token to an identity.
-    Mint,
-    /// Suspend: the identity keeps the balance but a frozen identity cannot spend, so
-    /// gated actions fail at consensus — hence it cannot act, as-of the freeze.
-    Freeze,
-    /// Lift a freeze (identity can spend again).
-    Unfreeze,
-    /// Revoke: destroy the frozen balance. The holding is gone from here forward.
-    Destroy,
-}
-
-/// One record from the system token-history contract: identity *X* had operation *op*
-/// applied to token *token* at `created_at`. These reconstruct authorization as-of any
-/// past moment (§4: "reconstructed deterministically from the token-history contract").
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenRecord {
-    /// Record `$id` — tiebreak for equal `created_at`.
-    #[serde(default)]
-    pub id: String,
-    /// The affected identity.
-    pub identity: String,
-    /// Which token.
-    pub token: TokenKind,
-    /// What happened.
-    pub op: TokenOp,
-    /// Consensus `$createdAt` (ms).
-    pub created_at: u64,
-}
-
-/// Whether an identity can *spend* WRITE / MAINTAIN at a point in time.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Holdings {
-    /// Holds an unfrozen WRITE balance (can push).
-    pub write: bool,
-    /// Holds an unfrozen MAINTAIN balance (can protected-push / configure).
-    pub maintain: bool,
-}
-
-impl Holdings {
-    /// Holder of either token — the "WRITE/MAINTAIN holder" the enforcement matrix
-    /// authorizes for every event kind.
-    #[must_use]
-    pub fn any(self) -> bool {
-        self.write || self.maintain
-    }
-}
-
-/// Reconstruct an identity's **spendable** WRITE/MAINTAIN holdings as-of time `at`.
-///
-/// Replays that identity's token-history records with `created_at <= at` (tie at equal
-/// `created_at`: the record applies, ordered by `$id`) through a per-token state
-/// machine: `Mint` → held & unfrozen, `Freeze` → held but suspended, `Unfreeze` →
-/// spendable again, `Destroy` → not held. A token is *spendable* only when held and not
-/// frozen — a frozen identity cannot spend at consensus (S0.7: rejected 40702), so it
-/// cannot authorize an action at that time.
-///
-/// Because this is evaluated *as-of the event's* `created_at`, a maintainer who was
-/// frozen *after* acting still holds at the earlier moment: their past action stays
-/// valid, exactly as §4 requires ("current balances alone would retroactively
-/// invalidate a since-revoked maintainer's legitimate past actions").
-#[must_use]
-pub fn holdings_as_of(records: &[TokenRecord], identity: &str, at: u64) -> Holdings {
-    Holdings {
-        write: token_spendable_as_of(records, identity, TokenKind::Write, at),
-        maintain: token_spendable_as_of(records, identity, TokenKind::Maintain, at),
-    }
-}
-
-fn token_spendable_as_of(
-    records: &[TokenRecord],
-    identity: &str,
-    token: TokenKind,
-    at: u64,
-) -> bool {
-    let mut relevant: Vec<&TokenRecord> = records
-        .iter()
-        .filter(|r| r.identity == identity && r.token == token && r.created_at <= at)
-        .collect();
-    relevant.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-
-    let (mut held, mut frozen) = (false, false);
-    for r in relevant {
-        match r.op {
-            TokenOp::Mint => {
-                held = true;
-                frozen = false;
-            }
-            TokenOp::Freeze => frozen = true,
-            TokenOp::Unfreeze => frozen = false,
-            TokenOp::Destroy => {
-                held = false;
-                frozen = false;
-            }
-        }
-    }
-    held && !frozen
-}
-
-/// A token-history-backed authorization resolver, as named in the module spec. Thin
-/// wrapper over [`holdings_as_of`] so callers can pass one `&AuthzResolver` around
-/// instead of threading the record slice.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthzResolver {
-    /// The token-history records (mint/freeze/unfreeze/destroy).
-    pub records: Vec<TokenRecord>,
-}
-
-impl AuthzResolver {
-    /// Build from token-history records.
-    #[must_use]
-    pub fn new(records: Vec<TokenRecord>) -> Self {
-        Self { records }
-    }
-
-    /// [`holdings_as_of`] against the wrapped records.
-    #[must_use]
-    pub fn holdings_as_of(&self, identity: &str, at: u64) -> Holdings {
-        holdings_as_of(&self.records, identity, at)
-    }
-}
-
-// ===========================================================================
 // Event fold (issue / PR state)
 // ===========================================================================
 
@@ -784,7 +631,7 @@ pub struct Event {
     pub target_id: String,
     /// What happened.
     pub kind: EventKind,
-    /// Document `$ownerId` — the actor whose authorization is checked as-of `created_at`.
+    /// Document `$ownerId`: the actor (a member for `event`, the author for `authorEvent`).
     pub actor: String,
     /// Kind-dependent payload: label name, assignee id, or retarget base ref.
     #[serde(default)]
@@ -849,35 +696,8 @@ impl Default for PrState {
     }
 }
 
-/// Is event `e`'s actor authorized to apply it, evaluated as-of `e.created_at`?
-///
-/// Per the §4 enforcement matrix: any WRITE/MAINTAIN holder is authorized for every
-/// kind; the target's author may additionally close/reopen their own issue/PR; a
-/// `merge` additionally requires the merge `oid` to be reachable from the base tip
-/// (an ancestor of it). Everything else from a non-holder is **inert** — the event
-/// exists on-chain (the spammer paid fees) but the fold ignores it.
-///
-/// This is the v1 rule only. forge-v2 splits events by gate (`event` for members,
-/// `authorEvent` for the target's author, close/reopen only), so its fold
-/// ([`v2::fold_issue_state_v2`], [`v2::fold_pr_state_v2`]) needs no actor check.
-fn actor_authorized(
-    e: &Event,
-    target_author: &str,
-    authz: &AuthzResolver,
-    base_tip: Option<&str>,
-    is_ancestor: &impl Fn(&str, &str) -> bool,
-) -> bool {
-    let holder = authz.holdings_as_of(&e.actor, e.created_at).any();
-    match e.kind {
-        EventKind::Close | EventKind::Reopen => holder || e.actor == target_author,
-        EventKind::Merge => holder && merge_reachable(e, base_tip, is_ancestor),
-        _ => holder,
-    }
-}
-
 /// Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
 /// tip. No merge oid or no base tip means reachability cannot be proven, so the merge is inert.
-/// Shared by both rule versions.
 fn merge_reachable(
     e: &Event,
     base_tip: Option<&str>,
@@ -889,31 +709,7 @@ fn merge_reachable(
     }
 }
 
-/// Fold an issue's `event` log into its [`IssueState`].
-///
-/// `events` may be unordered and may include spam from non-holders; they are ordered by
-/// `(createdAt, id)` and each is applied only if [`actor_authorized`] passes as-of its
-/// `createdAt`. Only close/reopen/label/assign kinds affect an issue; PR-only kinds
-/// (merge/retarget/draft/ready) are ignored here.
-#[must_use]
-pub fn fold_issue_state(
-    events: &[Event],
-    target_author: &str,
-    authz: &AuthzResolver,
-) -> IssueState {
-    let ordered = ordered_events(events);
-    let mut state = IssueState::default();
-    let no_ancestry = |_: &str, _: &str| false;
-
-    for e in ordered {
-        if actor_authorized(e, target_author, authz, None, &no_ancestry) {
-            apply_issue_event(&mut state, e);
-        }
-    }
-    state
-}
-
-/// Apply one authorized event to an issue's state (both rule versions). PR-only kinds
+/// Apply one authorized event to an issue's state. PR-only kinds
 /// (merge/retarget/draft/ready) do not apply to issues.
 fn apply_issue_event(state: &mut IssueState, e: &Event) {
     match e.kind {
@@ -943,32 +739,7 @@ fn apply_issue_event(state: &mut IssueState, e: &Event) {
     }
 }
 
-/// Fold a PR's `event` log into its [`PrState`].
-///
-/// Like [`fold_issue_state`], plus: `merge` (holder + reachable `oid`) sets
-/// `merged`+closed; `retarget` (holder) updates `base_ref`; `draft`/`ready` (holder)
-/// toggle the draft flag. `base_tip` is the current tip of the PR's base ref, used for
-/// merge reachability; `is_ancestor` is the commit-graph predicate.
-#[must_use]
-pub fn fold_pr_state(
-    events: &[Event],
-    target_author: &str,
-    authz: &AuthzResolver,
-    base_tip: Option<&str>,
-    is_ancestor: impl Fn(&str, &str) -> bool,
-) -> PrState {
-    let ordered = ordered_events(events);
-    let mut state = PrState::default();
-
-    for e in ordered {
-        if actor_authorized(e, target_author, authz, base_tip, &is_ancestor) {
-            apply_pr_event(&mut state, e);
-        }
-    }
-    state
-}
-
-/// Apply one authorized event to a PR's state (both rule versions).
+/// Apply one authorized event to a PR's state.
 fn apply_pr_event(state: &mut PrState, e: &Event) {
     match e.kind {
         EventKind::Close => state.open = false,
@@ -1015,13 +786,6 @@ fn apply_pr_event(state: &mut PrState, e: &Event) {
         EventKind::Draft => state.draft = true,
         EventKind::Ready => state.draft = false,
     }
-}
-
-/// Order events deterministically by `(createdAt, id)`.
-fn ordered_events(events: &[Event]) -> Vec<&Event> {
-    let mut v: Vec<&Event> = events.iter().collect();
-    v.sort_by(|a, b| event_order(a, b));
-    v
 }
 
 /// The `(createdAt, id)` total order every fold applies events in.
@@ -1159,24 +923,12 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        display_ref_name, fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name,
-        matches_protected, overlay_tree, resolve_ref, v2, Ancestry, AuthzResolver, ConfigDoc,
-        Event, EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
-        TokenOp, TokenRecord, TreeDiff, Verdict,
+        display_ref_name, is_legal_ref_name, matches_protected, overlay_tree, resolve_ref, v2,
+        Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState, PrState, RefState, RefUpdate,
+        TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
-
-    /// A minted-at-genesis WRITE holder record (the common authz fixture).
-    fn write_mint(identity: &str) -> TokenRecord {
-        TokenRecord {
-            id: format!("mint-{identity}"),
-            identity: identity.into(),
-            token: TokenKind::Write,
-            op: TokenOp::Mint,
-            created_at: 0,
-        }
-    }
 
     /// A merge event by `actor` on `target` with merge commit `oid`.
     fn merge_event(actor: &str, target: &str, oid: &str, created_at: u64) -> Event {
@@ -1197,23 +949,21 @@ mod tests {
     /// to open the instant `base_tip != merge_oid`.
     #[test]
     fn pr_merge_stays_merged_after_base_advances() {
-        let holder = "maint1";
-        let authz = AuthzResolver::new(vec![write_mint(holder)]);
-        let events = vec![merge_event(holder, "pr1", "M", 10)];
+        let events = vec![merge_event("maint1", "pr1", "M", 10)];
 
         // The merge oid `M` and a later base commit `T` are both historical base tips.
         let historical: std::collections::BTreeSet<String> =
             ["M".to_string(), "T".to_string()].into_iter().collect();
 
         // Base has advanced to `T` (T != M). Monotonic predicate keeps the PR merged.
-        let good = fold_pr_state(&events, "author1", &authz, Some("T"), |oid, _tip| {
+        let good = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |oid, _tip| {
             historical.contains(oid)
         });
         assert!(good.merged, "merge stays merged after base advances");
         assert!(!good.open, "a merged PR is closed");
 
         // The buggy reflexive stand-in rejects the merge once base_tip != merge_oid.
-        let bad = fold_pr_state(&events, "author1", &authz, Some("T"), |a, b| a == b);
+        let bad = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |a, b| a == b);
         assert!(
             !bad.merged,
             "reflexive a==b wrongly un-merges once the base advances (the fixed bug)"
@@ -1225,7 +975,6 @@ mod tests {
     #[test]
     fn fold_pr_illegal_retarget_is_inert() {
         let holder = "m1";
-        let authz = AuthzResolver::new(vec![write_mint(holder)]);
         let legal = Event {
             id: "e1".into(),
             target_id: "pr".into(),
@@ -1244,42 +993,14 @@ mod tests {
             oid: None,
             created_at: 10,
         };
-        let s1 = fold_pr_state(std::slice::from_ref(&legal), "a", &authz, None, |_, _| {
-            false
-        });
+        let s1 = v2::fold_pr_state_v2(std::slice::from_ref(&legal), &[], "a", None, |_, _| false);
         assert_eq!(s1.base_ref.as_deref(), Some("refs/heads/dev"));
         // The newer illegal retarget must NOT overwrite with the injection payload.
-        let s2 = fold_pr_state(&[legal, illegal], "a", &authz, None, |_, _| false);
+        let s2 = v2::fold_pr_state_v2(&[legal, illegal], &[], "a", None, |_, _| false);
         assert_eq!(
             s2.base_ref.as_deref(),
             Some("refs/heads/dev"),
             "illegal retarget value is inert"
-        );
-    }
-
-    /// MAJOR-3 support: `holdings_as_of` must observe a freeze applied to the repo OWNER —
-    /// the service now fetches the owner's freeze history unconditionally, so a frozen owner
-    /// reads as un-spendable as-of the freeze (not perpetually unfrozen).
-    #[test]
-    fn holdings_observes_owner_freeze() {
-        let owner = "owner1";
-        let records = vec![
-            write_mint(owner),
-            TokenRecord {
-                id: "freeze".into(),
-                identity: owner.into(),
-                token: TokenKind::Write,
-                op: TokenOp::Freeze,
-                created_at: 100,
-            },
-        ];
-        assert!(
-            holdings_as_of(&records, owner, 50).write,
-            "owner is spendable before the freeze"
-        );
-        assert!(
-            !holdings_as_of(&records, owner, 150).write,
-            "owner is NOT spendable after the freeze (must be observed)"
         );
     }
 
@@ -1291,7 +1012,8 @@ mod tests {
         #[allow(dead_code)]
         description: String,
         case: String,
-        /// `"v1"` or `"v2"`; absent means v1 (every vector written before v2).
+        /// `"v2"` for the forge-v2 cases; absent for the base rules (ref resolution,
+        /// protected-pattern matching, display names, overlay, verdicts).
         #[serde(default)]
         rules: Option<String>,
         input: serde_json::Value,
@@ -1316,36 +1038,6 @@ mod tests {
     struct MatchesProtectedInput {
         ref_name: String,
         patterns: Vec<String>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct HoldingsInput {
-        records: Vec<TokenRecord>,
-        identity: String,
-        at: u64,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct FoldIssueInput {
-        events: Vec<Event>,
-        target_author: String,
-        #[serde(default)]
-        token_records: Vec<TokenRecord>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct FoldPrInput {
-        events: Vec<Event>,
-        target_author: String,
-        #[serde(default)]
-        token_records: Vec<TokenRecord>,
-        #[serde(default)]
-        base_tip: Option<String>,
-        #[serde(default)]
-        ancestry: Ancestry,
     }
 
     #[derive(Debug, Deserialize)]
@@ -1415,38 +1107,6 @@ mod tests {
                     serde_json::from_value(v.expected.clone()).expect("matches_protected expected");
                 assert_eq!(got, want, "vector `{ctx}`");
             }
-            "holdings" => {
-                let inp: HoldingsInput =
-                    serde_json::from_value(v.input.clone()).expect("holdings input");
-                let got = holdings_as_of(&inp.records, &inp.identity, inp.at);
-                let want: Holdings =
-                    serde_json::from_value(v.expected.clone()).expect("holdings expected");
-                assert_eq!(got, want, "vector `{ctx}`");
-            }
-            "fold_issue" => {
-                let inp: FoldIssueInput =
-                    serde_json::from_value(v.input.clone()).expect("fold_issue input");
-                let authz = AuthzResolver::new(inp.token_records);
-                let got = fold_issue_state(&inp.events, &inp.target_author, &authz);
-                let want: IssueState =
-                    serde_json::from_value(v.expected.clone()).expect("fold_issue expected");
-                assert_eq!(got, want, "vector `{ctx}`");
-            }
-            "fold_pr" => {
-                let inp: FoldPrInput =
-                    serde_json::from_value(v.input.clone()).expect("fold_pr input");
-                let authz = AuthzResolver::new(inp.token_records);
-                let got = fold_pr_state(
-                    &inp.events,
-                    &inp.target_author,
-                    &authz,
-                    inp.base_tip.as_deref(),
-                    |a, d| inp.ancestry.is_ancestor(a, d),
-                );
-                let want: PrState =
-                    serde_json::from_value(v.expected.clone()).expect("fold_pr expected");
-                assert_eq!(got, want, "vector `{ctx}`");
-            }
             "overlay" => {
                 let inp: OverlayInput =
                     serde_json::from_value(v.input.clone()).expect("overlay input");
@@ -1460,7 +1120,7 @@ mod tests {
     }
 
     // --- FORGE_RULES_V2 input envelopes. Unknown keys are refused at every depth (see
-    // `input`), so a vector cannot carry a field, such as v1's `tokenRecords` or a misspelt
+    // `input`), so a vector cannot carry a field, such as a token-era `tokenRecords` or a misspelt
     // `authorEvent` key, that the v2 rules would silently ignore -----------------------------
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1683,7 +1343,7 @@ mod tests {
     }
 
     /// Load every `forge-contracts/vectors/*.json` and assert the rules reproduce
-    /// `expected`, dispatching on the vector's `rules` (absent means v1). This is the suite the
+    /// `expected`, dispatching on the vector's `rules` (absent means a base rule). This is the suite the
     /// TypeScript port also runs.
     #[test]
     fn conformance_vectors() {
@@ -1700,15 +1360,15 @@ mod tests {
             files.len()
         );
 
-        let (mut ran_v1, mut ran_v2) = (0usize, 0usize);
+        let (mut ran_base, mut ran_v2) = (0usize, 0usize);
         for path in files {
             let bytes = std::fs::read(&path).expect("read vector");
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             match v.rules.as_deref() {
-                None | Some("v1") => {
+                None => {
                     run_case(&v);
-                    ran_v1 += 1;
+                    ran_base += 1;
                 }
                 Some("v2") => {
                     run_case_v2(&v);
@@ -1717,9 +1377,9 @@ mod tests {
                 Some(other) => panic!("vector `{}`: unknown rules `{other}`", v.name),
             }
         }
-        assert!(ran_v1 >= 70, "ran {ran_v1} v1 vectors, expected 70+");
+        assert!(ran_base >= 45, "ran {ran_base} base vectors, expected 45+");
         assert!(ran_v2 >= 110, "ran {ran_v2} v2 vectors, expected 110+");
-        println!("conformance_vectors: {ran_v1} v1 + {ran_v2} v2 vectors green");
+        println!("conformance_vectors: {ran_base} base + {ran_v2} v2 vectors green");
     }
 
     // --- targeted unit tests for the pinned glob semantics ----------------

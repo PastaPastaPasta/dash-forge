@@ -171,9 +171,8 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
 ) -> Result<ForkResult> {
-    parent.require_v2()?;
     parent.require_readable()?;
-    let forge = parent.require_v2()?;
+    let forge = parent.forge();
     let mut opts = opts.clone();
     opts.name = crate::resolve::repo_slug(&opts.name)?;
     opts.fork_of = Some(platform::decode_identifier(parent.id())?);
@@ -272,7 +271,7 @@ mod tests {
     const UPLOADER: &str = "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD";
 
     fn parent() -> RepoRef {
-        RepoRef::V2 {
+        RepoRef {
             forge: ForgeIds {
                 core: "CORE".into(),
                 collab: "COLLAB".into(),

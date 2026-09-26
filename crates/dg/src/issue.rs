@@ -6,11 +6,10 @@
 //! `authorEvent`). v1 repositories are read only: `list` and `view` still read them, every
 //! write is refused (E605) before anything is signed.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::json;
 
 use forge_core::collab::v2::{Collab, Target};
-use forge_core::collab::IssueService;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::{EventKind, IssueState};
 
@@ -54,29 +53,17 @@ fn labels_of(state: &IssueState) -> String {
 async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
 
+    let collab = Collab::reader(&s.client);
+    let page = collab.list_issues(&s.repo, limit).await?;
+    let (hidden, more) = (page.hidden, page.more);
     // (number, title, author, state)
-    let (rows, hidden, more): (Vec<Row>, usize, bool) = if s.repo.is_v1() {
-        let issues = IssueService::new(&s.client, &s.identity, &s.bridge)
-            .list_issues(s.repo.v1_contract_id()?, state.into(), limit, None)
-            .await
-            .context("list_issues")?;
-        let rows = issues
-            .into_iter()
-            .map(|iw| (iw.issue.number, iw.issue.title, iw.issue.author, iw.state))
-            .collect();
-        (rows, 0, false)
-    } else {
-        let collab = Collab::reader(&s.client);
-        let page = collab.list_issues(&s.repo, limit).await?;
-        let mut rows = Vec::new();
-        for issue in page.rows {
-            let st = collab.issue_state(&s.repo, &issue).await?;
-            if state.matches(st.open) {
-                rows.push((u64::from(issue.number), issue.title, issue.author, st));
-            }
+    let mut rows: Vec<Row> = Vec::new();
+    for issue in page.rows {
+        let st = collab.issue_state(&s.repo, &issue).await?;
+        if state.matches(st.open) {
+            rows.push((u64::from(issue.number), issue.title, issue.author, st));
         }
-        (rows, page.hidden, page.more)
-    };
+    }
 
     let json_rows: Vec<_> = rows
         .iter()
@@ -120,44 +107,21 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
 
-    // (id, title, body, author, state, comments [(author, body)])
-    let (id, title, body, author, state, comments) = if s.repo.is_v1() {
-        let iw = IssueService::new(&s.client, &s.identity, &s.bridge)
-            .issue_state(s.repo.v1_contract_id()?, number)
-            .await
-            .context("issue_state")?
-            .ok_or_else(|| not_found(repo, number))?;
-        let i = iw.issue;
-        (
-            i.document_id,
-            i.title,
-            i.body,
-            i.author,
-            iw.state,
-            Vec::new(),
-        )
-    } else {
-        let collab = Collab::reader(&s.client);
-        let view = collab
-            .issue_view(&s.repo, number_arg(number)?)
-            .await?
-            .ok_or_else(|| not_found(repo, number))?;
-        let comments = collab
-            .comments(&s.repo, &view.issue.document_id)
-            .await?
-            .into_iter()
-            .map(|c| (c.author, c.body))
-            .collect::<Vec<_>>();
-        let i = view.issue;
-        (
-            i.document_id,
-            i.title,
-            i.body,
-            i.author,
-            view.state,
-            comments,
-        )
-    };
+    let collab = Collab::reader(&s.client);
+    let view = collab
+        .issue_view(&s.repo, number_arg(number)?)
+        .await?
+        .ok_or_else(|| not_found(repo, number))?;
+    // [(author, body)]
+    let comments = collab
+        .comments(&s.repo, &view.issue.document_id)
+        .await?
+        .into_iter()
+        .map(|c| (c.author, c.body))
+        .collect::<Vec<_>>();
+    let state = view.state;
+    let i = view.issue;
+    let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
 
     ctx.emit(
         json!({

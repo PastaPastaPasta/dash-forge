@@ -457,7 +457,7 @@ impl<'a> Sink<'a> {
         }
         let mut index = Vec::new();
         if let Some(repo) = &self.repo {
-            let forge = repo.require_v2()?;
+            let forge = repo.forge();
             let client = self.ledger.client;
             let collab = client.fetch_contract(&forge.collab).await?;
             let repo_id =
