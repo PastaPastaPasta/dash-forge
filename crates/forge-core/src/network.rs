@@ -666,8 +666,12 @@ mod tests {
 
     #[test]
     fn mainnet_without_a_deployment_is_not_deployed_not_testnet() {
-        // Becomes vacuous (and should be deleted) once deployments/mainnet.json lands.
-        if deployment("mainnet").unwrap().is_some() {
+        // deployments/mainnet.json records DAPI seeds but no registry until the runbook deploy;
+        // this becomes vacuous (and should be deleted) once it records one.
+        if deployment("mainnet")
+            .unwrap()
+            .is_some_and(|d| d.registry_contract_id.is_some())
+        {
             return;
         }
         let t = layer("mainnet").resolve().unwrap();

@@ -9,6 +9,7 @@
  */
 
 import devnetMoutai from '../../forge-contracts/deployments/devnet-moutai.json'
+import mainnet from '../../forge-contracts/deployments/mainnet.json'
 import testnet from '../../forge-contracts/deployments/testnet.json'
 
 /** One contract's record: `status` is `registered` once confirmed (v2 records only). */
@@ -71,5 +72,6 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
 /** Deployment key (`testnet`, `mainnet`, `devnet-<name>`) → file contents. */
 export const DEPLOYMENTS: Readonly<Record<string, DeploymentFile>> = {
   testnet,
+  mainnet,
   'devnet-moutai': devnetMoutai,
 }
