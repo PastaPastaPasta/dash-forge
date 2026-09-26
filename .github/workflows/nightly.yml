@@ -1,34 +1,38 @@
-name: Testnet Nightly
+name: Devnet Nightly
 
-# Nightly certification against LIVE Dash Platform testnet.
+# Nightly certification against LIVE devnet moutai, where forge-v2 (Platform protocol 14) is
+# deployed. Testnet and mainnet still run protocol 13 and have no forge-v2 deployment;
+# testnet runs resume here once protocol 14 reaches testnet and forge-v2 is deployed there.
 #
-# The suites this drives are implemented and live in the repo:
-#   * forge-web/e2e/          — Playwright: read paths, fallback browse, zero-backend, a11y
-#   * e2e/cli/run.sh          — 12 CLI scenarios on devnet moutai (forge-v2): clone/push
-#                               round-trip, non-ff, ref delete, revoked-writer push, non-member
-#                               push, third-party verify, depth+filter, issue lifecycle, PR from
-#                               a fork with a real merge, release asset (SKIPs: no MinIO on the
-#                               runner), star/unstar; plus a testnet v1 read-compat clone
+# The suites this drives:
+#   * forge-web/e2e/          — Playwright on a moutai build: v2 read paths, fallback browse,
+#                               zero-backend, a11y, against the forge-v2 read fixture
+#   * e2e/cli/run.sh          — 11 CLI scenarios on moutai: clone/push round-trip, non-ff,
+#                               ref delete, revoked-writer push, non-member push, third-party
+#                               verify, depth+filter, issue lifecycle, PR from a fork with a
+#                               real merge, release asset (SKIPs: no MinIO on the runner),
+#                               star/unstar
 #
 # They split by what they need:
-#   * READ-ONLY specs need only a network path to testnet DAPI and the read fixture repo
-#     (seeded by `seed-read-fixture` when the secrets exist; e2e/README.md reserves it), so
-#     they run unconditionally and their failure fails this workflow.
-#   * The CLI suite and the write specs need FUNDED fixture identities, which cannot live in
-#     a fork's PR context. A separate `fixtures` probe job decides whether they run, so when
-#     the secrets are absent the suite job's conclusion is literally `skipped` rather than a
-#     green job with everything gated out — a distinction any badge or alert rule can see.
+#   * The READ-ONLY browser specs need only a network path to moutai DAPI and the read
+#     fixture (`forge-v2-demo`, seeded by forge-contracts/scripts/seed-v2-fixture.mjs;
+#     e2e/README.md reserves it), so they run unconditionally and their failure fails this
+#     workflow. The seed job runs first when the fixture secrets exist; it is idempotent (an
+#     existing fixture is left alone).
+#   * The CLI suite needs FUNDED fixture identities, which cannot live in a fork's PR
+#     context. A separate `fixtures` probe job decides whether it runs, so when the secrets
+#     are absent the suite job's conclusion is literally `skipped` rather than a green job
+#     with everything gated out — a distinction any badge or alert rule can see.
+#   * The browser WRITE specs (v2-writes, v2-auth) spend real devnet funds and v2-auth needs
+#     the devnet faucet key; they run by hand (`E2E_WRITE=1`, see forge-web/e2e/).
 #
 # Fixture identity secrets (e2e/cli/config.sh names the roles):
-#   FORGE_MOUTAI_IDENTITY_OWNER   - owns the forge-v2 e2e-cli repo, adds/removes members
-#   FORGE_MOUTAI_IDENTITY_COLLAB  - added as a writer, then removed (scenario 04)
-#   FORGE_MOUTAI_IDENTITY_CONTRIB - never a member (scenario 05)
-#   FORGE_TEST_IDENTITY_CONTRIB   - any testnet identity, for the v1 read-compat clone (08)
-#   FORGE_TEST_IDENTITY_DEPLOYER  - testnet: owns the browser specs' read fixture (v1),
-#                                   verified by the seed job
+#   FORGE_MOUTAI_IDENTITY_OWNER      - owns the e2e-cli repo and the read fixture's demo repo
+#   FORGE_MOUTAI_IDENTITY_MAINTAINER - maintainer of the demo repo, owner of forge-v2-empty
+#   FORGE_MOUTAI_IDENTITY_COLLAB     - added as a writer, then removed (scenario 04)
+#   FORGE_MOUTAI_IDENTITY_CONTRIB    - never a member (scenario 05)
 # Each holds the bridge-format identity JSON that `dg` reads from
-# ~/.config/dash-forge/test-identities/devnet-moutai/<ROLE>.identity.json (moutai) or
-# ~/.config/dash-forge/test-identities/<ROLE>.identity.json (testnet).
+# ~/.config/dash-forge/test-identities/devnet-moutai/<ROLE>.identity.json.
 
 on:
   workflow_dispatch:
@@ -36,15 +40,15 @@ on:
     - cron: "0 6 * * *"
 
 concurrency:
-  group: testnet-nightly
+  group: devnet-nightly
   cancel-in-progress: false
 
 jobs:
   web-read-paths:
-    name: playwright (read-only, live testnet)
-    # Reads the dedicated read fixture (e2e/README.md), so it waits for the seed job — but
-    # still runs when that job is skipped (no secrets: the fixture is read as it stands) or
-    # failed (the specs then say what is wrong with it).
+    name: playwright (read-only, live devnet moutai)
+    # Reads the read fixture (e2e/README.md), so it waits for the seed job — but still runs
+    # when that job is skipped (no secrets: the fixture is read as it stands) or failed (the
+    # specs then say what is wrong with it).
     needs: seed-read-fixture
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -52,6 +56,8 @@ jobs:
     defaults:
       run:
         working-directory: forge-web
+    env:
+      E2E_DEVNET: moutai
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -64,14 +70,17 @@ jobs:
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm build
-      # auth-write needs a funded identity; everything else is a read against live testnet.
+      - name: Build for devnet moutai
+        env:
+          NEXT_PUBLIC_NETWORK: devnet
+          NEXT_PUBLIC_DEVNET_NAME: moutai
+        run: pnpm build
       # E2E_SKIP_BUILD reuses the `out/` just built — the Playwright webServer would
       # otherwise run `pnpm build` a second time before serving it.
       - name: Playwright read-path + a11y specs
         env:
           E2E_SKIP_BUILD: '1'
-        run: pnpm exec playwright test read-paths.spec.ts fallback-browse.spec.ts zero-backend.spec.ts a11y.spec.ts
+        run: pnpm exec playwright test v2-reads.spec.ts fallback-browse.spec.ts zero-backend.spec.ts a11y.spec.ts
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -88,27 +97,27 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       present: ${{ steps.probe.outputs.present }}
-      # The read-fixture seeder signs with DEPLOYER alone.
-      deployer: ${{ steps.probe.outputs.deployer }}
+      # The read-fixture seeder signs with all four roles.
+      seeder: ${{ steps.probe.outputs.seeder }}
     steps:
       - name: Probe
         id: probe
         env:
           FORGE_MOUTAI_IDENTITY_OWNER: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+          FORGE_MOUTAI_IDENTITY_MAINTAINER: ${{ secrets.FORGE_MOUTAI_IDENTITY_MAINTAINER }}
           FORGE_MOUTAI_IDENTITY_COLLAB: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
           FORGE_MOUTAI_IDENTITY_CONTRIB: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
-          FORGE_TEST_IDENTITY_CONTRIB: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
-          FORGE_TEST_IDENTITY_DEPLOYER: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
         run: |
-          if [ -n "$FORGE_TEST_IDENTITY_DEPLOYER" ]; then
-            echo "deployer=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$FORGE_MOUTAI_IDENTITY_OWNER" ] && [ -n "$FORGE_MOUTAI_IDENTITY_MAINTAINER" ] \
+             && [ -n "$FORGE_MOUTAI_IDENTITY_COLLAB" ] && [ -n "$FORGE_MOUTAI_IDENTITY_CONTRIB" ]; then
+            echo "seeder=true" >> "$GITHUB_OUTPUT"
           else
-            echo "deployer=false" >> "$GITHUB_OUTPUT"
+            echo "seeder=false" >> "$GITHUB_OUTPUT"
           fi
           missing=()
           # Report the SECRET names an operator has to create, not internal aliases.
           for name in FORGE_MOUTAI_IDENTITY_OWNER FORGE_MOUTAI_IDENTITY_COLLAB \
-                      FORGE_MOUTAI_IDENTITY_CONTRIB FORGE_TEST_IDENTITY_CONTRIB; do
+                      FORGE_MOUTAI_IDENTITY_CONTRIB; do
             [ -z "${!name}" ] && missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
@@ -118,8 +127,8 @@ jobs:
               echo
               echo "Missing repository secrets: \`${missing[*]}\`."
               echo
-              echo "These identities must exist and be funded (moutai; testnet for 08) for the CLI suite"
-              echo "to run. The suite job below reports SKIPPED — it is **not** a passing"
+              echo "These identities must exist and be funded on devnet moutai for the CLI"
+              echo "suite to run. The suite job below reports SKIPPED — it is **not** a passing"
               echo "run. See \`e2e/cli/config.sh\` for the role pool and"
               echo "\`docs/testing/e2e-test-plan.md\` for provisioning."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -128,45 +137,41 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Make the browser specs' read fixture exist and hold exactly the expected commit. It is
-  # its own repo, written only by this job, so nothing the CLI suite or an ad-hoc storage run
-  # stores can reach what the browser reads (e2e/README.md). Idempotent: a no-op once seeded.
+  # Make sure the browser specs' read fixture exists. It is its own pair of repos, written only
+  # by this job, so nothing the CLI suite or an ad-hoc storage run stores can reach what the
+  # browser reads (e2e/README.md). Idempotent: a no-op once the fixture is on chain.
   seed-read-fixture:
     name: seed the read fixture
     needs: fixtures
-    if: needs.fixtures.outputs.deployer == 'true'
+    if: needs.fixtures.outputs.seeder == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
-      ID_DEPLOYER_JSON: ${{ secrets.FORGE_TEST_IDENTITY_DEPLOYER }}
+      ID_OWNER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
+      ID_MAINTAINER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_MAINTAINER }}
+      ID_COLLAB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
+      ID_CONTRIB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
     steps:
       - uses: actions/checkout@v5
-      - name: Install protoc
-        env:
-          PROTOC_VERSION: '28.3'
-        run: |
-          curl -sSLo /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-          sudo chmod +x /usr/local/bin/protoc
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
         with:
-          shared-key: e2e-cli
-      - name: Materialize the DEPLOYER identity
+          node-version: 22
+          cache: npm
+          cache-dependency-path: forge-contracts/sdk-v2/package-lock.json
+      - run: npm ci
+        working-directory: forge-contracts/sdk-v2
+      - name: Materialize the fixture identities
         run: |
-          dir="${HOME}/.config/dash-forge/test-identities"
+          dir="${HOME}/.config/dash-forge/test-identities/devnet-moutai"
           mkdir -p "$dir" && chmod 700 "$dir"
-          printf '%s' "$ID_DEPLOYER_JSON" > "$dir/DEPLOYER.identity.json"
-          # harness_init checks for the whole role set; only DEPLOYER signs here.
-          for r in COLLAB CONTRIB; do cp "$dir/DEPLOYER.identity.json" "$dir/$r.identity.json"; done
+          printf '%s' "$ID_OWNER_JSON"      > "$dir/OWNER.identity.json"
+          printf '%s' "$ID_MAINTAINER_JSON" > "$dir/MAINTAINER.identity.json"
+          printf '%s' "$ID_COLLAB_JSON"     > "$dir/COLLAB.identity.json"
+          printf '%s' "$ID_CONTRIB_JSON"    > "$dir/CONTRIB.identity.json"
           chmod 600 "$dir"/*.identity.json
-      - name: Build CLI binaries
-        timeout-minutes: 30
-        run: cargo build --locked -p dg -p git-remote-dash
       - name: Seed
-        timeout-minutes: 12
-        run: bash e2e/cli/seed-read-fixture.sh
+        timeout-minutes: 15
+        run: node forge-contracts/scripts/seed-v2-fixture.mjs --network devnet --devnet-name moutai
 
   cli-suite:
     name: cli e2e (live devnet moutai)
@@ -179,7 +184,6 @@ jobs:
       ID_OWNER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
       ID_COLLAB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
       ID_CONTRIB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_CONTRIB }}
-      ID_TESTNET_JSON: ${{ secrets.FORGE_TEST_IDENTITY_CONTRIB }}
     steps:
       - uses: actions/checkout@v5
 
@@ -210,8 +214,7 @@ jobs:
           printf '%s' "$ID_OWNER_JSON"    > "$dir/devnet-moutai/OWNER.identity.json"
           printf '%s' "$ID_COLLAB_JSON"   > "$dir/devnet-moutai/COLLAB.identity.json"
           printf '%s' "$ID_CONTRIB_JSON"  > "$dir/devnet-moutai/CONTRIB.identity.json"
-          printf '%s' "$ID_TESTNET_JSON"  > "$dir/CONTRIB.identity.json"
-          chmod 600 "$dir"/*.identity.json "$dir"/devnet-moutai/*.identity.json
+          chmod 600 "$dir"/devnet-moutai/*.identity.json
 
       # Built in its own step so a slow (cache-miss) build cannot eat into the suite's time
       # budget below; run.sh picks the binaries up from target/debug.

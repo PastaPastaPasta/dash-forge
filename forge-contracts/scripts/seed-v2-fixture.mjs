@@ -26,8 +26,10 @@
 // (fanout || 36-byte rows, deltaChainSpan = the sentinel so readers walk each base).
 //
 // Idempotent: the result of every step is recorded in
-// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. Delete that
-// file (and pick new repo names) to seed from scratch.
+// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. Without that
+// file (a fresh CI runner), a fixture that already exists on chain is left alone: the run
+// checks `forge-v2-demo` resolves and exits. Delete the file (and pick new repo names) to
+// seed from scratch.
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -216,6 +218,26 @@ async function main() {
 
   const statePath = join(homedir(), '.cache/dash-forge', `seed-v2-${key}.json`);
   mkdirSync(dirname(statePath), { recursive: true });
+  if (!existsSync(statePath)) {
+    // No local record: if the fixture is already on chain (seeded from another machine),
+    // there is nothing to do. Re-seeding would fail on the unique `($ownerId, name)` index.
+    const found = await sdk.documents.query({
+      dataContractId: core,
+      documentTypeName: 'repo',
+      where: [
+        ['$ownerId', '==', OWNER.id],
+        ['name', '==', DEMO],
+      ],
+      limit: 1,
+    });
+    const doc = found instanceof Map ? [...found.values()].find((v) => v != null) : null;
+    if (doc) {
+      const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
+      log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
+      console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId }, seeded: false }, null, 2));
+      return;
+    }
+  }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 

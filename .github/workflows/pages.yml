@@ -1,5 +1,11 @@
 name: Deploy forge-web to Pages
 
+# The hosted build (forge.dashhq.org) targets devnet moutai: forge-v2 needs Platform
+# protocol 14, which only the devnet runs today. The network is a build-time choice
+# (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
+# PAGES_NETWORK / PAGES_DEVNET_NAME (e.g. PAGES_NETWORK=testnet once forge-v2 is deployed
+# there) without editing this file. The header badge names the network the build reads.
+
 on:
   push:
     branches: [master]
@@ -36,7 +42,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - name: Build (${{ vars.PAGES_NETWORK || 'devnet' }})
+        env:
+          NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
+          NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'moutai') || '' }}
+        run: pnpm build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

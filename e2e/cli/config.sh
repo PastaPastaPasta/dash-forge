@@ -5,9 +5,8 @@
 #
 # The CLI suite runs against devnet MOUTAI, where forge-v2 (protocol 14) is deployed. A v2
 # repo costs ~0.001 DASH, so the suite's repo is created on the first run (by
-# `harness_ensure_repo`, resumably) rather than hard-coded. Two things stay on TESTNET,
-# where every repo is forge-v1 (read only now): scenario 08 (v1 read-compat) and the
-# browser specs' read fixture (seed-read-fixture.sh), which move to forge-v2 with the web.
+# `harness_ensure_repo`, resumably) rather than hard-coded. Testnet runs resume once
+# testnet runs protocol 14 and forge-v2 is deployed there.
 
 # --- network -----------------------------------------------------------------
 : "${DASH_FORGE_NETWORK:=devnet}"
@@ -15,7 +14,7 @@
 export DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME
 
 # --- fixture identity files --------------------------------------------------
-# Per-network directory (tools/devnet-identities provisions devnet-moutai). The testnet
+# Per-network directory (`make devnet-identities` provisions devnet-moutai). The testnet
 # pool lives directly under test-identities/.
 if [[ "$DASH_FORGE_NETWORK" == devnet ]]; then
   : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities/devnet-${DASH_FORGE_DEVNET_NAME}}"
@@ -55,18 +54,3 @@ export E2E_REMOTE="dash://${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 : "${STORAGE_E2E_REPO:=storage-e2e-a}"
 : "${STORAGE_E2E_REPO_B:=storage-e2e-b}"
 export STORAGE_E2E_REPO STORAGE_E2E_REPO_B
-
-# --- the nightly's read fixture (TESTNET, forge-v1) ---------------------------
-# The repo the browser (Playwright) specs read: DEPLOYER-owned on testnet, written ONLY by
-# e2e/cli/seed-read-fixture.sh (which runs with DASH_FORGE_NETWORK=testnet). forge-web's
-# e2e/helpers.ts names the same repo. v1 is read only now, so the seeder verifies it.
-: "${NIGHTLY_FIXTURE_REPO:=m1-5124}"
-export NIGHTLY_FIXTURE_REPO
-
-# --- the testnet v1 repo for read-compat (scenario 08) ------------------------
-# The DEPLOYER-owned M1 repo contract on testnet: read-only now, cloned by 08.
-export V1_TESTNET_OWNER="8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
-export V1_TESTNET_REPO="m1-75299"
-export V1_TESTNET_CONTRACT="5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"
-: "${V1_TESTNET_IDENTITY:=${HOME}/.config/dash-forge/test-identities/CONTRIB.identity.json}"
-export V1_TESTNET_IDENTITY
