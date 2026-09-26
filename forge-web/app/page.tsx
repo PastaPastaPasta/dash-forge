@@ -24,11 +24,13 @@ import {
 } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { connectionTrust, deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, trusted, error: sdkError, network } = useSdk()
-  const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted))
+  const quorum = useQuorumCheck(network, ready && trusted)
+  const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted), quorum)
   const deployed = isForgeDeployed()
   const v2 = isV2Deployed()
   const feed = useAsync(
@@ -61,7 +63,7 @@ export default function LandingPage(): JSX.Element {
               {
                 label: `${network} reads`,
                 state: proofs.state,
-                detail: proofs.state === 'verified' ? 'proof-checked' : undefined,
+                detail: proofs.checking ? 'Checking…' : undefined,
               },
             ]}
           />
@@ -71,7 +73,7 @@ export default function LandingPage(): JSX.Element {
       {/* Capability strip */}
       <section className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3">
         <Feature icon={<Search className="h-4 w-4 text-forge-500" aria-hidden />} title="Size-independent browse" body="With a published browse index, tree, blob, and commit views fetch only the bytes they show, at any repo size." />
-        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's assay panel shows what this session actually checked." />
+        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's Verification card shows what this session actually checked." />
         <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Issues & threads in-browser" body="Open issues, comment, close and reopen, and grant collaborators — each write signed by your Platform identity." />
       </section>
 

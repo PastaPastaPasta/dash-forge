@@ -171,3 +171,80 @@ export async function loadCommitChanges(reader: ObjectReader, oid: string): Prom
   const diff = await diffTrees({ base: reader, head: reader }, parentTree, commit.tree)
   return { commit, ...diff }
 }
+
+/** The commit that last changed a directory entry, for the file list's lazy commit column. */
+export interface LastCommit {
+  readonly oid: string
+  readonly subject: string
+  /** Author time (ms). */
+  readonly when: number
+}
+
+/** How far back the commit column looks (first parent) before leaving an entry blank. */
+const LAST_COMMIT_WALK = 60
+
+/**
+ * For each entry of the tree at `dirPath` (`''` = root), the newest first-parent commit whose
+ * change touched it, walking at most {@link LAST_COMMIT_WALK} commits. Names no commit in the
+ * window changed are absent (older history is not guessed at). Each step reads one commit
+ * and the trees along `dirPath`; the reader memoizes objects, so shared subtrees cost once.
+ */
+export async function lastCommitsForDir(
+  reader: ObjectReader,
+  tipOid: string,
+  dirPath: string,
+  names: readonly string[],
+  limit = LAST_COMMIT_WALK,
+): Promise<Map<string, LastCommit>> {
+  const segments = dirPath.split('/').filter((s) => s !== '')
+  const dirOf = async (treeOid: string): Promise<Map<string, string> | null> => {
+    let oid = treeOid
+    for (const seg of segments) {
+      const next = (await readTree(reader, oid)).find((e) => e.name === seg && e.mode === MODE_TREE)
+      if (!next) return null
+      oid = next.oid
+    }
+    return new Map((await readTree(reader, oid)).map((e) => [e.name, `${e.mode}:${e.oid}`]))
+  }
+  const out = new Map<string, LastCommit>()
+  const open = new Set(names)
+  let oid = tipOid
+  let commit = await readCommit(reader, tipOid)
+  let here = await dirOf(commit.tree)
+  for (let steps = 0; here !== null && open.size > 0 && steps < limit; steps++) {
+    const parentOid = commit.parents[0]
+    const parent = parentOid !== undefined ? await readCommit(reader, parentOid) : null
+    const there = parent !== null ? await dirOf(parent.tree) : null
+    for (const name of [...open]) {
+      if (here.get(name) !== there?.get(name)) {
+        out.set(name, { oid, subject: commitSubject(commit.message), when: commit.author.when })
+        open.delete(name)
+      }
+    }
+    if (parent === null || parentOid === undefined) break
+    oid = parentOid
+    commit = parent
+    here = there
+  }
+  return out
+}
+
+/**
+ * First-parent commits reachable from `tipOid`, counting at most `cap` (the ref bar's
+ * `n commits`; `capped` means there are at least that many).
+ */
+export async function countCommits(
+  reader: ObjectReader,
+  tipOid: string,
+  cap = 1000,
+): Promise<{ count: number; capped: boolean }> {
+  let count = 0
+  let oid: string | undefined = tipOid
+  const seen = new Set<string>()
+  while (oid !== undefined && count < cap && !seen.has(oid)) {
+    seen.add(oid)
+    count += 1
+    oid = (await readCommit(reader, oid)).parents[0]
+  }
+  return { count, capped: oid !== undefined && count >= cap }
+}

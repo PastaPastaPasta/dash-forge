@@ -32,6 +32,8 @@ export interface AsyncState<T> {
   readonly data: T | null
   readonly loading: boolean
   readonly error: string | null
+  /** The thrown value behind `error` (a view can tell one failure kind from another). */
+  readonly cause: unknown
   /** True once data/error reflect a settled (seeded or fetched) result for the current deps. */
   readonly settled: boolean
   reload: () => void
@@ -41,6 +43,7 @@ interface KeyedState<T> {
   readonly key: string
   readonly data: T | null
   readonly error: string | null
+  readonly cause?: unknown
   readonly settled: boolean
 }
 
@@ -100,7 +103,7 @@ export function useAsync<T>(
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setState({ key: depKey, data: null, error: errorMessage(e), settled: true })
+        setState({ key: depKey, data: null, error: errorMessage(e), cause: e, settled: true })
         setLoading(false)
       })
     return () => {
@@ -108,5 +111,5 @@ export function useAsync<T>(
     }
   }, [enabled, nonce, depKey])
 
-  return { data: current.data, loading, error: current.error, settled: current.settled, reload }
+  return { data: current.data, loading, error: current.error, cause: current.cause, settled: current.settled, reload }
 }

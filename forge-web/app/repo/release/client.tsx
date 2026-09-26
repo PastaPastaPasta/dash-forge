@@ -1,15 +1,15 @@
 'use client'
 
 import { RepoScaffold } from '@/components/repo/repo-scaffold'
-import { IssueContent } from '@/components/repo/issue-content'
+import { ReleaseContent } from '@/components/repo/releases-content'
 import { useParam, useRepoAddress } from '@/hooks/use-query-param'
 
-export function IssueClient(): JSX.Element {
+export function ReleaseClient(): JSX.Element {
   const addr = useRepoAddress()
-  const number = Number.parseInt(useParam('number'), 10)
+  const tag = useParam('tag')
   return (
     <RepoScaffold addr={addr} rail={false}>
-      {(home) => <IssueContent home={home} addr={addr} number={number} />}
+      {(home) => <ReleaseContent home={home} addr={addr} tag={tag} />}
     </RepoScaffold>
   )
 }

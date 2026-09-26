@@ -43,7 +43,7 @@ export function AppHeader(): JSX.Element {
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-3 px-4 sm:px-6">
-        <Link href="/" className="flex shrink-0 items-center gap-2">
+        <Link href="/" aria-label="Dash Forge home" className="flex shrink-0 items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-forge-500/15">
             <Hammer className="h-4 w-4 text-forge-500" aria-hidden />
           </span>

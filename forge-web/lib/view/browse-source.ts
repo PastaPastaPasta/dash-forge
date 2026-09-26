@@ -18,7 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { CHUNK_PAYLOAD_MAX, IPFS_GATEWAYS, PACK_KIND } from '../constants'
+import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import {
   BrowseReader,
   FlatIndex,
@@ -43,6 +43,7 @@ import {
 } from '../repo'
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
+import { describePack, readGateways } from './storage-status'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -195,10 +196,11 @@ async function fetchPlatformRange(
   end: number,
 ): Promise<Uint8Array> {
   const packHashHex = manifest.packHash
-  // Keyed by repo and uploader, not the pack hash alone: on forge-v2 every writer has its own
-  // copy of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for
-  // an honest one — nor one repo's for another's.
-  const cachePrefix = `${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
+  // Keyed by network, repo and uploader, not the pack hash alone: on forge-v2 every writer has
+  // its own copy of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served
+  // for an honest one — nor one repo's for another's, nor one network's for another's. A fork
+  // reads its parent's chunks under the parent's repo id, so the two share entries.
+  const cachePrefix = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
   const firstSeq = Math.floor(start / CHUNK_PAYLOAD_MAX)
   const lastSeq = Math.floor((end - 1) / CHUNK_PAYLOAD_MAX)
   const seqs: number[] = []
@@ -259,7 +261,8 @@ export class PackUnavailableError extends Error {
     readonly hosts: readonly string[],
     /** Whether some mirror answered with bytes that failed the sha256 check. */
     readonly corrupt: boolean,
-    reason: string,
+    /** Why, per host where known (`host: message; …`). */
+    readonly reason: string,
   ) {
     super(
       `pack ${packHash.slice(0, 12)}… could not be fetched from its storage (${
@@ -279,7 +282,7 @@ export class PackUnavailableError extends Error {
  */
 export function externalFetchUrls(
   uris: readonly string[],
-  gateways: readonly string[] = IPFS_GATEWAYS,
+  gateways: readonly string[] = readGateways(),
 ): string[] {
   const out: string[] = []
   for (const uri of uris) {
@@ -346,6 +349,11 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
  * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
  */
 const deadUrls = new Set<string>()
+
+/** "Try again": ask every mirror afresh, including the ones that failed this session. */
+export function forgetDeadMirrors(): void {
+  deadUrls.clear()
+}
 
 /** Test hook: forget the dead-URL list and the per-origin queues. */
 export function resetExternalFetchState(): void {
@@ -622,6 +630,26 @@ function platformLocatorReads(
   return out
 }
 
+/**
+ * A repo whose stored packs no place could serve: the refs are fine, the code is not
+ * readable right now. Carries every pack and where it was looked for, so the view can list
+ * the places tried instead of a spinner or a bare error.
+ */
+export class StorageUnreachableError extends Error {
+  constructor(readonly packs: readonly UnavailablePack[]) {
+    super(
+      `none of this repo's ${packs.length} live packs could be fetched from their storage: ` +
+        packs.map((u) => u.reason).join('; '),
+    )
+    this.name = 'StorageUnreachableError'
+  }
+}
+
+/** The {@link UnavailablePack} a {@link PackUnavailableError} describes. */
+export function unavailableOf(e: PackUnavailableError): UnavailablePack {
+  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt }
+}
+
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
 function noteSource(repo: RepoRef, uri?: string): void {
   noteContentCheck(repoKey(repo), {
@@ -675,6 +703,10 @@ export function artifactRangeFetch(
       } catch (e) {
         lastErr = e
       }
+    }
+    // The rail's "where the bytes came from" row lists the places that did not answer.
+    if (lastErr instanceof PackUnavailableError) {
+      noteContentCheck(repoKey(repo), { unreachable: describePack(unavailableOf(lastErr)) })
     }
     throw lastErr
   }

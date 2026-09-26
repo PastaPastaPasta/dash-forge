@@ -16,7 +16,9 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoRef } from '@/lib/repo'
-import { formatBytes, type UnavailablePack } from '@/lib/view'
+import { forgetDeadMirrors, formatBytes, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
+import type { RepoAddress } from '@/hooks/use-query-param'
 
 /**
  * The honest caveat for a partial in-browser clone: some live packs live in external storage
@@ -58,9 +60,11 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
 
 export function BrowseBoundary({
   repo,
+  addr,
   children,
 }: {
   repo: RepoRef
+  addr?: RepoAddress
   children: (reader: BrowseReader) => ReactNode
 }): JSX.Element {
   const state = useBrowseReader(repo)
@@ -69,6 +73,20 @@ export function BrowseBoundary({
     case 'loading':
       return <LoadingBlock label={state.label} />
     case 'error':
+      if (state.cause instanceof StorageUnreachableError) {
+        const retry = state.retry
+        return (
+          <StorageUnreachableCard
+            repo={repo}
+            addr={addr}
+            packs={state.cause.packs}
+            retry={() => {
+              forgetDeadMirrors()
+              retry()
+            }}
+          />
+        )
+      }
       return <ErrorState title={state.title} message={state.message} onRetry={state.retry} />
     case 'no-packs':
       return (
