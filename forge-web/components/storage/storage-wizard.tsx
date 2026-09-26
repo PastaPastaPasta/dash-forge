@@ -8,7 +8,7 @@
  * Everything saved is sealed in the vault with this browser's key (`lib/storage/store.ts`).
  */
 
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Cloud, Database, HardDrive, Link2, Pencil, Server, Trash2, Waypoints } from 'lucide-react'
 import {
   PROVIDERS,
@@ -16,7 +16,10 @@ import {
   policyFor,
   policyProblem,
   providerPreset,
+  PLATFORM_PROFILE,
+  profileProblem,
   withProfile,
+  withRenamedProfile,
   withoutProfile,
   type ProviderId,
   type ReplicationChoice,
@@ -27,8 +30,8 @@ import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
-import { ProfileForm } from '@/components/storage/profile-form'
-import { StorageTest } from '@/components/storage/storage-test'
+import { ProfileForm, initialDraft } from '@/components/storage/profile-form'
+import { StorageTest, profileSnapshot } from '@/components/storage/storage-test'
 import { CostCard } from '@/components/storage/cost-card'
 import { cn } from '@/lib/utils'
 import { formatDate } from '@/lib/view/format'
@@ -44,12 +47,12 @@ const TILE_ICON: Readonly<Record<ProviderId, typeof Cloud>> = {
 }
 
 export function StorageWizard(): JSX.Element {
-  const { config, loading, error, storable, save, reload } = useStorageConfig()
+  const { config, loading, error, storable, save, reload, discard } = useStorageConfig()
   const [provider, setProvider] = useState<ProviderId | null>(null)
   const [editing, setEditing] = useState<StorageProfile | null>(null)
 
   if (loading && !config) return <LoadingBlock label="Opening your storage settings" />
-  if (error) return <ErrorState title="Could not open your storage settings" message={error} onRetry={reload} />
+  if (error) return <UnreadableSettings message={error} onRetry={reload} onDiscard={discard} />
   if (!config) return <LoadingBlock />
 
   const start = (p: ProviderId, existing: StorageProfile | null = null): void => {
@@ -123,6 +126,37 @@ export function StorageWizard(): JSX.Element {
   )
 }
 
+/**
+ * The stored settings could not be opened (sealed under an earlier key, or unreadable). Offer a
+ * retry and, since nothing else can open them, a way to discard them and start again.
+ */
+function UnreadableSettings({ message, onRetry, onDiscard }: { message: string; onRetry: () => void; onDiscard: () => Promise<void> }): JSX.Element {
+  const [err, setErr] = useState<string | null>(null)
+  return (
+    <div className="space-y-3">
+      <ErrorState title="Could not open your storage settings" message={message} onRetry={onRetry} />
+      <div className="flex flex-wrap items-center justify-center gap-2 text-dense">
+        <span className="text-anvil-600 dark:text-anvil-300">If they were sealed with an earlier key, they cannot be opened any more.</span>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={async () => {
+            if (!window.confirm('Delete the storage settings this browser cannot open? Your storage profiles are lost here and must be added again. Nothing stored in your buckets is touched.')) return
+            try {
+              await onDiscard()
+            } catch (e) {
+              setErr(errText(e))
+            }
+          }}
+        >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden /> Discard unreadable storage settings
+        </Button>
+      </div>
+      {err ? <p role="alert" className="text-center text-dense text-danger-700 dark:text-danger-400">{err}</p> : null}
+    </div>
+  )
+}
+
 function AddProfile({
   provider,
   existing,
@@ -139,10 +173,17 @@ function AddProfile({
   onDone: () => void
 }): JSX.Element {
   const preset = providerPreset(provider)
-  const [draft, setDraft] = useState<{ profile: StorageProfile; problem: string | null } | null>(null)
-  const [tested, setTested] = useState<boolean | null>(null)
+  // An edit starts from the saved profile, so it can be tested before any field changes.
+  const [draft, setDraft] = useState<{ profile: StorageProfile; problem: string | null } | null>(() => {
+    if (existing === null || provider === 'platform') return null
+    const profile = initialDraft(provider, existing)
+    return { profile, problem: profileProblem(profile) }
+  })
+  // A test result counts only for the exact values it ran against.
+  const [tested, setTested] = useState<{ ok: boolean; snapshot: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const statusId = useId()
 
   if (provider === 'platform') {
     const has = config.profiles.some((p) => p.settings.kind === 'platform')
@@ -161,7 +202,7 @@ function AddProfile({
             onClick={async () => {
               setSaving(true)
               try {
-                await save(withProfile(config, { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} }))
+                await save(withProfile(config, { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }))
                 onDone()
               } catch (e) {
                 setSaveError(errText(e))
@@ -182,6 +223,10 @@ function AddProfile({
   const nameTaken = draft !== null && existing?.name !== draft.profile.name && config.profiles.some((p) => p.name === draft.profile.name)
   const problem = draft?.problem ?? (draft ? null : 'fill in the fields')
   const blocking = problem ?? (nameTaken ? 'a profile with that name exists' : null)
+  const snapshot = draft ? profileSnapshot(draft.profile) : ''
+  const result = tested !== null && tested.snapshot === snapshot ? tested.ok : null
+  const status =
+    blocking ?? (!storable ? 'Sign in with a stored key to save.' : result === null ? 'Run the test first.' : result ? 'All checks passed.' : 'Some checks failed: you can still save, but browser pushes need them all.')
 
   return (
     <section className="space-y-4 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label={`${preset.title} settings`}>
@@ -192,27 +237,25 @@ function AddProfile({
       <ProfileForm
         provider={provider}
         existing={existing}
-        onChange={(profile, p) => {
-          setDraft({ profile, problem: p })
-          setTested(null)
-        }}
+        onChange={(profile, p) => setDraft({ profile, problem: p })}
       />
-      {blocking && draft ? <p className="text-[12px] text-caution">{blocking}</p> : null}
-      {draft && !blocking ? <StorageTest profile={draft.profile} onDone={setTested} /> : null}
+      {draft && !blocking ? (
+        <StorageTest key={snapshot} profile={draft.profile} onDone={(ok, snap) => setTested({ ok, snapshot: snap })} />
+      ) : null}
       <div className="flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
         <Button
           variant="primary"
           size="sm"
-          disabled={blocking !== null || tested === null || !storable}
+          disabled={blocking !== null || result === null || !storable}
+          aria-describedby={statusId}
           loading={saving}
           onClick={async () => {
-            if (!draft) return
+            if (!draft || result === null) return
             setSaving(true)
             setSaveError(null)
             try {
-              let next = existing && existing.name !== draft.profile.name ? withoutProfile(config, existing.name) : config
-              next = withProfile(next, draft.profile)
-              next = { ...next, lastTests: { ...next.lastTests, [draft.profile.name]: { at: Date.now(), ok: tested === true } } }
+              let next = existing ? withRenamedProfile(config, existing.name, draft.profile) : withProfile(config, draft.profile)
+              next = { ...next, lastTests: { ...next.lastTests, [draft.profile.name]: { at: Date.now(), ok: result } } }
               await save(next)
               onDone()
             } catch (e) {
@@ -225,8 +268,8 @@ function AddProfile({
           Save profile
         </Button>
         <Button variant="ghost" size="sm" onClick={onDone}>Cancel</Button>
-        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          {tested === null ? 'Run the test first.' : tested ? 'All checks passed.' : 'Some checks failed: you can still save, but browser pushes need them all.'}
+        <span id={statusId} role="status" aria-live="polite" className={cn('text-[12px]', blocking && draft ? 'text-caution' : 'text-anvil-500 dark:text-anvil-400')}>
+          {status}
         </span>
       </div>
       {saveError ? <p role="alert" className="text-dense text-danger-700 dark:text-danger-400">{saveError}</p> : null}
@@ -235,8 +278,22 @@ function AddProfile({
 }
 
 function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; storable: boolean; save: (c: StorageConfig) => Promise<void>; onEdit: (p: StorageProfile) => void }): JSX.Element {
+  const [error, setError] = useState<string | null>(null)
+  const remove = async (name: string): Promise<void> => {
+    setError(null)
+    try {
+      await save(withoutProfile(config, name))
+    } catch (e) {
+      setError(`Could not remove ${name}: ${errText(e)}`)
+    }
+  }
   return (
     <section aria-labelledby="profiles-title" className="space-y-2">
+      {error ? (
+        <p role="alert" className="text-dense text-danger-700 dark:text-danger-400">
+          {error}
+        </p>
+      ) : null}
       <h2 id="profiles-title" className="text-dense font-medium text-anvil-500 dark:text-anvil-400">
         Your storage
       </h2>
@@ -272,7 +329,7 @@ function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; s
                     disabled={!storable}
                     aria-label={`Remove ${p.name}`}
                     onClick={() => {
-                      if (window.confirm(`Remove ${p.name} from this browser? Packs already stored there stay; repos that point at it will ask for another place on their next browser push.`)) void save(withoutProfile(config, p.name))
+                      if (window.confirm(`Remove ${p.name} from this browser? Packs already stored there stay; repos that point at it will ask for another place on their next browser push.`)) void remove(p.name)
                     }}
                   >
                     <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove
@@ -363,8 +420,9 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
         >
           Save default
         </Button>
-        {problem && targets.length > 0 ? <span className="text-[12px] text-caution">{problem}</span> : null}
-        {saved ? <span className="text-[12px] text-verify">Saved.</span> : null}
+        <span role="status" aria-live="polite" className={cn('text-[12px]', saved ? 'text-verify' : 'text-caution')}>
+          {saved ? 'Saved.' : problem && targets.length > 0 ? problem : ''}
+        </span>
         {err ? <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{err}</span> : null}
       </div>
     </section>

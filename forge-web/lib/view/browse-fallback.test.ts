@@ -163,7 +163,7 @@ describe('startFallback with external-storage packs', () => {
     const external = manifestFor(ext.pack, 1, {
       storage: 1,
       chunkCount: 0,
-      uris: ['http://127.0.0.1:9000/forge-byo/pack', 's3://forge-byo/pack'],
+      uris: ['https://mirror.example/forge-byo/pack', 's3://forge-byo/pack'],
       createdAt: 2,
       documentId: 'b',
       uploader: 'owner',
@@ -172,16 +172,16 @@ describe('startFallback with external-storage packs', () => {
     const calls = stubFetch({})
     const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
 
-    expect(calls).toEqual(['http://127.0.0.1:9000/forge-byo/pack']) // s3:// is not browser-fetchable
+    expect(calls).toEqual(['https://mirror.example/forge-byo/pack']) // s3:// is not browser-fetchable
     expect(ctx.unavailable).toHaveLength(1)
     expect(ctx.unavailable?.[0]?.packHash).toBe(external.packHash)
-    expect(ctx.unavailable?.[0]?.hosts).toEqual(['127.0.0.1:9000'])
+    expect(ctx.unavailable?.[0]?.hosts).toEqual(['mirror.example'])
     expect(Array.from((await ctx.reader.readObject(plat.oid)).bytes)).toEqual(
       Array.from(new TextEncoder().encode('on-chain content\n')),
     )
     // A needed object from the skipped pack gets a per-view error naming pack and storage.
     await expect(ctx.reader.readObject(ext.oid)).rejects.toThrow(
-      new RegExp(`${external.packHash.slice(0, 12)}.*127\\.0\\.0\\.1:9000`),
+      new RegExp(`${external.packHash.slice(0, 12)}.*mirror\\.example`),
     )
     // The trust ledger reports the gap: content is partial, never verified.
     const checks = contentChecks(repo.contractId)
@@ -234,7 +234,7 @@ describe('startFallback with external-storage packs', () => {
     const ext = blobPack('gone\n')
     const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
     const external = (documentId: string): PackManifest =>
-      manifestFor(ext.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'], createdAt: 2, documentId })
+      manifestFor(ext.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: 2, documentId })
     stubFetch({})
     const ctx = await startFallback(
       mockSdk(new Map([[platform.packHash, plat.pack]])),
@@ -283,7 +283,7 @@ describe('startFallback with external-storage packs', () => {
 
   it('fails with the reasons when no live pack at all could be fetched', async () => {
     const ext = blobPack('x\n')
-    const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'] })
+    const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://mirror.example/p'] })
     stubFetch({})
     await expect(
       startFallback(mockSdk(new Map()), { kind: 'v1', contractId: 'fallback-none', ownerId: 'owner', name: '' }, [external]),
@@ -338,13 +338,13 @@ describe('startFallback with external-storage packs', () => {
     const platform = manifestFor(plat.pack, 1, { createdAt: 0, documentId: 'a' })
     const dead = (i: number): PackManifest => {
       const p = blobPack(`gone ${i}\n`)
-      return manifestFor(p.pack, 1, { storage: 1, uris: ['http://127.0.0.1:9000/p'], createdAt: i + 1, documentId: `x${i}` })
+      return manifestFor(p.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: i + 1, documentId: `x${i}` })
     }
     const calls = stubFetch({})
     const sdk = mockSdk(new Map([[platform.packHash, plat.pack]]))
     await startFallback(sdk, { kind: 'v1', contractId: 'fallback-dead', ownerId: 'o', name: '' }, [platform, dead(1)])
     await startFallback(sdk, { kind: 'v1', contractId: 'fallback-dead-2', ownerId: 'o', name: '' }, [platform, dead(2)])
-    expect(calls).toEqual(['http://127.0.0.1:9000/p'])
+    expect(calls).toEqual(['https://mirror.example/p'])
   })
 
   it('cancels external downloads when an on-chain pack fails', async () => {
@@ -378,12 +378,12 @@ describe('startFallback with external-storage packs', () => {
     const packA = packFrame(concat(objHeader(T_BLOB, base.length), zlibSync(base)))
     const delta = copyInsertDelta(base.length, target.length, 40, new TextEncoder().encode('cat\n'))
     const packB = packFrame(concat(objHeader(T_REF_DELTA, delta.length), hexToBytes(baseOid), zlibSync(delta)))
-    const a = manifestFor(packA, 1, { storage: 1, uris: ['http://127.0.0.1:9000/a'], createdAt: 0, documentId: 'a' })
+    const a = manifestFor(packA, 1, { storage: 1, uris: ['https://mirror.example/a'], createdAt: 0, documentId: 'a' })
     const b = manifestFor(packB, 1, { createdAt: 1, documentId: 'b' })
     stubFetch({})
     await expect(
       startFallback(mockSdk(new Map([[b.packHash, packB]])), { kind: 'v1', contractId: 'fallback-thin', ownerId: 'o', name: '' }, [a, b]),
-    ).rejects.toThrow(new RegExp(`${a.packHash.slice(0, 12)}.*127\\.0\\.0\\.1:9000`))
+    ).rejects.toThrow(new RegExp(`${a.packHash.slice(0, 12)}.*mirror\\.example`))
   })
 
   it('expires a partial clone so a later view retries the mirrors', async () => {

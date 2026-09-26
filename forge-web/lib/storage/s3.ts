@@ -12,11 +12,9 @@
 
 import { EMPTY_PAYLOAD_SHA256, amzDate, keyHasBadSegment, sha256Hex, signRequest, uriEncode } from './sigv4'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
+import { TimeoutError, isHeaderSafe, timedFetch, type TimedResponse } from './util'
 
 export type S3Settings = Extract<ProfilePublic, { kind: 's3' }>
-
-/** How long one S3 request may take before it is abandoned. */
-export const S3_TIMEOUT_MS = 60_000
 
 /** An S3 request that failed: the operation, the HTTP status (0: no response) and why. */
 export class S3Error extends Error {
@@ -60,15 +58,18 @@ async function send(
   op: string,
   method: 'GET' | 'PUT' | 'HEAD' | 'DELETE',
   key: string,
-  opts: { body?: Uint8Array; contentType?: string; range?: string; signal?: AbortSignal } = {},
-): Promise<Response> {
+  opts: { body?: Uint8Array; contentType?: string; range?: string; signal?: AbortSignal | undefined } = {},
+): Promise<TimedResponse> {
   const url = objectUrl(s, key)
   const payloadHash = opts.body ? await sha256Hex(opts.body) : EMPTY_PAYLOAD_SHA256
   const extra: [string, string][] = []
   if (opts.contentType) extra.push(['content-type', opts.contentType])
   if (opts.range) extra.push(['range', opts.range])
-  const headers = new Headers(extra)
   if (!secrets.accessKeyId || !secrets.secretAccessKey) throw new S3Error(op, 0, 'no credentials: add the access key id and secret')
+  // A header value fetch refuses would be quoted in its error: refuse it here, without echoing it.
+  if (![secrets.accessKeyId, secrets.sessionToken ?? ''].every(isHeaderSafe)) {
+    throw new S3Error(op, 0, 'the access key id or session token holds characters an HTTP header cannot carry; paste it again')
+  }
   const signed = await signRequest(
     {
       method,
@@ -87,30 +88,33 @@ async function send(
     },
     amzDate(),
   )
-  for (const [k, v] of signed) headers.set(k, v)
-  const timeout = AbortSignal.timeout(S3_TIMEOUT_MS)
-  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
+  const headers = new Headers([...extra, ...signed])
   try {
-    return await fetch(url, {
-      method,
-      headers,
-      ...(opts.body ? { body: new Uint8Array(opts.body) } : {}),
-      redirect: 'error',
-      credentials: 'omit',
-      cache: 'no-store',
-      signal,
-    })
+    return await timedFetch(
+      url,
+      {
+        method,
+        headers,
+        ...(opts.body ? { body: new Uint8Array(opts.body) } : {}),
+        redirect: 'error',
+        credentials: 'omit',
+        cache: 'no-store',
+      },
+      { uploadBytes: opts.body?.length ?? 0, signal: opts.signal },
+    )
   } catch (e) {
-    // A CORS refusal and a network failure look the same to a page: say which is likely.
-    const why = timeout.aborted ? `no answer within ${S3_TIMEOUT_MS / 1000}s` : 'the request was blocked or the host is unreachable (a CORS rule missing for this origin, or the endpoint is down)'
-    throw new S3Error(op, 0, `${op} ${url.host}: ${why}${e instanceof Error && !timeout.aborted ? ` (${e.message})` : ''}`)
+    if (e instanceof TimeoutError) throw new S3Error(op, 0, `${op} ${url.host}: ${e.message}`)
+    // A CORS refusal, a redirect (refused: a signed request is never replayed elsewhere) and a
+    // network failure all look the same to a page; the probe tells them apart.
+    throw new S3Error(op, 0, `${op} ${url.host}: the request was blocked, redirected or the host is unreachable`)
   }
 }
 
-async function failed(op: string, resp: Response): Promise<S3Error> {
+async function failed(op: string, r: TimedResponse): Promise<S3Error> {
+  const resp = r.resp
   let code = ''
   try {
-    const text = (await resp.text()).slice(0, 2000)
+    const text = (await r.text()).slice(0, 2000)
     code = /<Code>([^<]{1,64})<\/Code>/.exec(text)?.[1] ?? ''
   } catch {
     /* body unreadable */
@@ -133,30 +137,40 @@ function statusHint(status: number): string {
   }
 }
 
+/**
+ * An anonymous GET of `key` through the bucket's public URL (what every reader uses), whole or
+ * a `Range`: the check that a copy is readable by anyone, not just by the credential holder.
+ */
+export async function getPublic(s: S3Settings, key: string, range?: string): Promise<{ status: number; bytes: Uint8Array; contentRange: string | null }> {
+  const r = await timedFetch(publicObjectUrl(s, key), { credentials: 'omit', cache: 'no-store', ...(range ? { headers: { Range: range } } : {}) })
+  return { status: r.resp.status, contentRange: r.resp.headers.get('content-range'), bytes: await r.bytes() }
+}
+
 /** Signed PUT of `bytes` at `key`. */
 export async function putObject(s: S3Settings, secrets: ProfileSecrets, key: string, bytes: Uint8Array, contentType = 'application/octet-stream', signal?: AbortSignal): Promise<void> {
-  const resp = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, signal })
-  if (!resp.ok) throw await failed('signed PUT', resp)
+  const r = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, signal })
+  if (!r.resp.ok) throw await failed('signed PUT', r)
+  await r.bytes()
 }
 
 /** Signed GET of `key` (whole object, or a `Range`). */
 export async function getObject(s: S3Settings, secrets: ProfileSecrets, key: string, range?: string, signal?: AbortSignal): Promise<Uint8Array> {
-  const resp = await send(s, secrets, 'signed GET', 'GET', key, { range, signal })
-  if (!resp.ok) throw await failed('signed GET', resp)
-  return new Uint8Array(await resp.arrayBuffer())
+  const r = await send(s, secrets, 'signed GET', 'GET', key, { range, signal })
+  if (!r.resp.ok) throw await failed('signed GET', r)
+  return r.bytes()
 }
 
 /** Signed HEAD: the object's size, or null when it does not exist. */
 export async function headObject(s: S3Settings, secrets: ProfileSecrets, key: string): Promise<number | null> {
-  const resp = await send(s, secrets, 'signed HEAD', 'HEAD', key)
-  if (resp.status === 404) return null
-  if (!resp.ok) throw await failed('signed HEAD', resp)
-  const len = Number(resp.headers.get('content-length'))
+  const r = await send(s, secrets, 'signed HEAD', 'HEAD', key)
+  if (r.resp.status === 404) return null
+  if (!r.resp.ok) throw await failed('signed HEAD', r)
+  const len = Number(r.resp.headers.get('content-length'))
   return Number.isFinite(len) ? len : 0
 }
 
 /** Signed DELETE of `key` (idempotent: a missing object is fine). */
 export async function deleteObject(s: S3Settings, secrets: ProfileSecrets, key: string): Promise<void> {
-  const resp = await send(s, secrets, 'delete', 'DELETE', key)
-  if (!resp.ok && resp.status !== 404) throw await failed('delete', resp)
+  const r = await send(s, secrets, 'delete', 'DELETE', key)
+  if (!r.resp.ok && r.resp.status !== 404) throw await failed('delete', r)
 }

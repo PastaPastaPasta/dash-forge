@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
 import { Providers } from '@/components/providers'
+import { LOCAL_HTTP_ALLOWED } from '@/lib/net'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -15,9 +16,11 @@ export const metadata: Metadata = {
 //   inline bootstrap scripts.
 // - frame-ancestors is ignored in a <meta> CSP; the host must send it as a header (GitHub
 //   Pages cannot; see docs/guides/identity-and-keys.md).
-// - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http only to
-//   this machine (a local kubo node or MinIO, the storage guide's defaults); storage profiles
-//   refuse http anywhere else (`lib/storage/profiles.ts`).
+// - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http to this
+//   machine is allowed ONLY in devnet and dev builds (`LOCAL_HTTP_ALLOWED`: a local MinIO or
+//   kubo while developing); production builds never open it, for any page. Readers never
+//   fetch loopback or private hosts anyway (`lib/net.ts`), and nothing loopback is ever
+//   recorded on chain.
 // - worker-src blob:: materialization / search / pack workers run off-main-thread.
 const CSP = [
   "default-src 'self'",
@@ -25,7 +28,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https: blob:",
   "font-src 'self'",
-  "connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:*",
+  `connect-src 'self' https: wss:${LOCAL_HTTP_ALLOWED ? ' http://127.0.0.1:* http://localhost:*' : ''}`,
   "worker-src 'self' blob:",
   "child-src 'self' blob:",
   "frame-ancestors 'none'",

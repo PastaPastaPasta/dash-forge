@@ -28,7 +28,7 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 import type { Network } from '../constants'
-import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
+import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 
 /** Unlocked vaults lock themselves after this long (spec §2.3). */
 export const AUTO_LOCK_MS = 12 * 60 * 60 * 1000
@@ -289,11 +289,22 @@ export interface Protection {
   readonly passkey?: { credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array }
 }
 
+/** What {@link storeInVault} did with storage settings sealed under the record it replaced. */
+export interface StoreOutcome {
+  /**
+   * Storage settings existed but could not be carried across (the vault was locked when the
+   * key was renewed, so they could not be opened). They are deleted; the user must add them
+   * again, and the UI says so.
+   */
+  readonly storageSettingsDropped: boolean
+}
+
 /**
  * Seal `secret` into the vault for `network`, replacing any earlier record for its identity,
- * and keep it unlocked for this session. At least one protection is required.
+ * and keep it unlocked for this session. At least one protection is required. The record and
+ * the (re-sealed or deleted) storage settings are written in one transaction.
  */
-export async function storeInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<void> {
+export async function storeInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<StoreOutcome> {
   assertDedicatedOrigin()
   if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
   if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
@@ -302,7 +313,8 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
   const { identityId } = secret
   // A renewal replaces the record (and its data key): carry the storage settings across when
   // this session can open them; otherwise they cannot be opened any more and are dropped.
-  const carried = await readStorageBlob(network, identityId).catch(() => null)
+  const hadBlob = (await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))) !== undefined
+  const carried = hadBlob ? await readStorageBlob(network, identityId).catch(() => null) : null
   const dataKey = random(32)
   let storageKey: CryptoKey
   try {
@@ -332,13 +344,26 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
       slots,
     }
     storageKey = await deriveStorageKey(dataKey, network, identityId)
-    await idbPut('vault', key(network, identityId), record)
-    if (carried !== null) await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(storageKey, network, identityId, carried))
-    else await idbDelete('vault', storageBlobKey(network, identityId))
+    const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
+    // One transaction: a crash between the two writes must not leave settings sealed under a
+    // data key no record holds any more.
+    await idbBatch('vault', [
+      [key(network, identityId), record],
+      [storageBlobKey(network, identityId), blob],
+    ])
   } finally {
     dataKey.fill(0)
   }
   setUnlocked(network, secret, storageKey)
+  return { storageSettingsDropped: hadBlob && carried === null }
+}
+
+/**
+ * Delete storage settings that cannot be opened (sealed under an earlier key, or unreadable),
+ * so the user can start over instead of being stuck on an error.
+ */
+export async function discardStorageBlob(network: Network, identityId: string): Promise<void> {
+  await idbDelete('vault', storageBlobKey(network, identityId))
 }
 
 /**

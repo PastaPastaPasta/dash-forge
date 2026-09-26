@@ -6,10 +6,16 @@
  *
  * kubo's RPC API refuses cross-origin calls unless `API.HTTPHeaders.Access-Control-Allow-Origin`
  * lists this origin (it answers 403 otherwise); the wizard prints the `ipfs config` lines.
+ *
+ * The RPC API is kubo's ADMIN interface. Allowing a web origin to call it hands that origin
+ * the node, unless kubo's `API.Authorizations` limits the token it uses to the few paths Forge
+ * needs ({@link FORGE_RPC_PATHS}); the wizard says so and prints that configuration, and the
+ * token goes into the profile's `apiAuth`.
  */
 
 import { cidV1RawLeaves, isCid } from './cid'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
+import { TimeoutError, isHeaderSafe, timedFetch } from './util'
 
 export type IpfsSettings = Extract<ProfilePublic, { kind: 'ipfs-kubo' | 'ipfs-pinning-service' }>
 
@@ -17,7 +23,9 @@ export type IpfsSettings = Extract<ProfilePublic, { kind: 'ipfs-kubo' | 'ipfs-pi
 export const ADD_PARAMS =
   'cid-version=1&raw-leaves=true&chunker=size-262144&hash=sha2-256&trickle=false&max-file-links=174&pin=true&quieter=true'
 
-const RPC_TIMEOUT_MS = 60_000
+/** The RPC paths Forge calls: what a restricted `API.Authorizations` entry must allow. */
+export const FORGE_RPC_PATHS = ['/api/v0/add', '/api/v0/pin/ls', '/api/v0/pin/rm', '/api/v0/id', '/api/v0/version'] as const
+
 const PIN_TIMEOUT_MS = 120_000
 const PIN_POLL_MS = 2_000
 
@@ -31,20 +39,32 @@ export class IpfsError extends Error {
   }
 }
 
-async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAndQuery: string, body?: FormData): Promise<string> {
+async function rpc(s: IpfsSettings, secrets: ProfileSecrets, op: string, pathAndQuery: string, body?: FormData, uploadBytes = 0): Promise<string> {
   const headers = new Headers()
-  if (secrets.apiAuth) headers.set('authorization', secrets.apiAuth)
+  if (secrets.apiAuth) {
+    // A value fetch refuses would be quoted in its error: refuse it here, without echoing it.
+    if (!isHeaderSafe(secrets.apiAuth)) throw new IpfsError(op, 'the API Authorization value holds characters an HTTP header cannot carry; paste it again')
+    headers.set('authorization', secrets.apiAuth)
+  }
   const url = `${s.api.replace(/\/+$/, '')}/api/v0/${pathAndQuery}`
+  let text: string
   let resp: Response
   try {
-    resp = await fetch(url, { method: 'POST', headers, ...(body ? { body } : {}), redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(RPC_TIMEOUT_MS) })
+    const r = await timedFetch(url, { method: 'POST', headers, ...(body ? { body } : {}), redirect: 'error', credentials: 'omit' }, { uploadBytes })
+    resp = r.resp
+    text = await r.text()
   } catch (e) {
-    throw new IpfsError(op, `${op}: the kubo API at ${new URL(url).host} is unreachable or refused this origin (CORS)${e instanceof Error ? ` (${e.message})` : ''}`)
+    const why = e instanceof TimeoutError ? e.message : 'unreachable, or it refused this origin (CORS)'
+    throw new IpfsError(op, `${op}: the kubo API at ${new URL(url).host}: ${why}`)
   }
-  const text = await resp.text()
   if (!resp.ok) {
     const msg = /"Message"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1] ?? text.slice(0, 200)
-    const hint = resp.status === 403 ? ' — kubo refuses this origin: allow it in API.HTTPHeaders (see the fix below)' : ''
+    const hint =
+      resp.status === 403
+        ? ' — kubo refuses this origin: allow it in API.HTTPHeaders (see the fix below)'
+        : resp.status === 401
+          ? ' — kubo wants an API Authorization token (see API.Authorizations)'
+          : ''
     throw new IpfsError(op, `${op} failed: HTTP ${resp.status} ${msg}${hint}`)
   }
   return text
@@ -66,7 +86,7 @@ export async function kuboVersion(s: IpfsSettings, secrets: ProfileSecrets): Pro
 export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, bytes: Uint8Array): Promise<string> {
   const form = new FormData()
   form.append('file', new Blob([new Uint8Array(bytes)]), 'pack')
-  const text = await rpc(s, secrets, 'ipfs add', `add?${ADD_PARAMS}`, form)
+  const text = await rpc(s, secrets, 'ipfs add', `add?${ADD_PARAMS}`, form, bytes.length)
   const line = text.trim().split('\n').pop() ?? ''
   const cid = /"Hash"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? ''
   const expected = cidV1RawLeaves(bytes)
@@ -103,24 +123,32 @@ interface PinStatus {
 
 async function psa(s: IpfsSettings, secrets: ProfileSecrets, op: string, path: string, init: RequestInit = {}): Promise<unknown> {
   if (!secrets.pinningToken) throw new IpfsError(op, 'the pinning service needs an access token')
+  if (!isHeaderSafe(secrets.pinningToken)) throw new IpfsError(op, 'the pinning token holds characters an HTTP header cannot carry; paste it again')
   const url = `${s.pinningEndpoint.replace(/\/+$/, '')}${path}`
   let resp: Response
+  let text: string
   try {
-    resp = await fetch(url, {
+    const r = await timedFetch(url, {
       ...init,
       headers: { authorization: `Bearer ${secrets.pinningToken}`, 'content-type': 'application/json' },
       redirect: 'error',
       credentials: 'omit',
-      signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
     })
+    resp = r.resp
+    text = await r.text()
   } catch (e) {
-    throw new IpfsError(op, `${op}: the pinning service is unreachable or refused this origin (CORS)${e instanceof Error ? ` (${e.message})` : ''}`)
+    const why = e instanceof TimeoutError ? e.message : 'unreachable, or it refused this origin (CORS)'
+    throw new IpfsError(op, `${op}: the pinning service: ${why}`)
   }
   if (!resp.ok) {
     const hint = resp.status === 401 || resp.status === 403 ? ' — check the access token' : ''
     throw new IpfsError(op, `${op} failed: HTTP ${resp.status}${hint}`)
   }
-  return resp.json() as Promise<unknown>
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new IpfsError(op, `${op}: the pinning service did not answer with JSON`)
+  }
 }
 
 function pinStatus(v: unknown): PinStatus {

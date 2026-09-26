@@ -10,8 +10,9 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from '.
  *   docker compose -f infra/docker-compose.yml up -d minio minio-init static-http
  *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test storage-wizard.spec.ts
  *
- * s1. every row of the browser test passes on MinIO; the profile is saved into the vault, never
- *     into localStorage; it survives a reload + unlock; a default policy is set.
+ * s1. on MinIO every write, read, range and CORS row passes, and the public-read row fails with
+ *     the reason a loopback address cannot be published; the profile is saved into the vault,
+ *     never into localStorage; it survives a reload + unlock; a default policy is set.
  * s2. a reachable host with no CORS (the static nginx) fails the CORS rows and shows the
  *     copy-paste fix, prefilled with the bucket and this origin.
  * s3. a repo's own policy (its Settings → Your browser pushes).
@@ -51,14 +52,19 @@ test('s1. MinIO passes every browser check, and the profile is sealed in the vau
   await page.getByTestId('tile-minio').click()
   await fillS3(page, { name: 'minio-e2e', ...MINIO })
   await page.getByRole('button', { name: /^test$/i }).click()
-  for (const row of ['put', 'get', 'public', 'cors-range', 'cors-put', 'delete']) {
+  for (const row of ['put', 'get', 'range', 'cors-put', 'delete']) {
     await expect(page.getByTestId(`probe-${row}`)).toHaveAttribute('data-state', 'ok', { timeout: 60_000 })
   }
+  // The anonymous read works from here, but 127.0.0.1 is not an address anyone else can read:
+  // it would be recorded on chain, so the row fails and says why (uploads refuse it too).
+  const publicRow = page.getByTestId('probe-public')
+  await expect(publicRow).toHaveAttribute('data-state', 'fail')
+  await expect(publicRow).toContainText(/Readable from here, but 127\.0\.0\.1:9000 is only reachable from this machine/)
   await expect(page.getByTestId('cors-fix')).toHaveCount(0)
-  await shot(page, 'a-02-minio-all-passed')
+  await shot(page, 'a-02-minio-tested')
   await page.getByRole('button', { name: /save profile/i }).click()
   await expect(page.getByTestId('profile-list')).toContainText('minio-e2e')
-  await expect(page.getByTestId('profile-list')).toContainText('passed')
+  await expect(page.getByTestId('profile-list')).toContainText('failed some checks')
 
   // Default policy: this profile, one copy.
   await page.getByRole('checkbox', { name: 'minio-e2e' }).first().check()

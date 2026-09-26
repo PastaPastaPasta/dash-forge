@@ -10,6 +10,7 @@
  *    because not every provider accepts a wildcard there.
  */
 
+import { FORGE_RPC_PATHS } from './ipfs'
 import type { ProviderId } from './profiles'
 
 /** The headers a signed browser request sends that are not CORS-safelisted. */
@@ -58,13 +59,15 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
       }
     case 'minio':
       return {
-        where: 'MinIO answers CORS for every origin by default. If it was restricted, allow this app, then make the bucket publicly readable (not writable):',
-        text: [`mc admin config set <alias> api cors_allow_origin="${origin}"`, 'mc admin service restart <alias>', `mc anonymous set download <alias>/${b}`].join('\n'),
+        where:
+          'MinIO answers CORS for every origin by default (cors_allow_origin="*", which reads need: every Forge web app and mirror reads the objects). If it was restricted, restore it, then make the bucket publicly readable (not writable):',
+        text: ['mc admin config set <alias> api cors_allow_origin="*"', 'mc admin service restart <alias>', `mc anonymous set download <alias>/${b}`].join('\n'),
       }
     case 'kubo':
     case 'pinning':
       return {
-        where: 'kubo refuses RPC calls from web pages unless their origin is allowed. Run, then restart the daemon:',
+        where:
+          'kubo refuses RPC calls from web pages unless their origin is allowed. The RPC API is the node’s admin interface, so give this app a token limited to what Forge calls (below), put that token in the profile’s API Authorization field, and add this origin to the allowed list. Run, then restart the daemon:',
         text: kuboCorsLines(origin),
       }
     case 'platform':
@@ -72,12 +75,23 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
   }
 }
 
-/** `ipfs config` lines allowing this app to call the RPC API and read the gateway. */
-function kuboCorsLines(origin: string): string {
+/**
+ * Shell lines that (1) create a kubo API token limited to the paths Forge calls, (2) ADD this
+ * app's origin to the RPC API's allowed origins without dropping existing ones (IPFS WebUI's,
+ * for instance), and (3) let any origin read the gateway. `jq` merges the list.
+ */
+export function kuboCorsLines(origin: string): string {
+  const paths = JSON.stringify(FORGE_RPC_PATHS)
   return [
-    `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["${origin}"]'`,
+    '# 1. A token that can only add, pin-check, unpin and identify (not the whole admin API):',
+    `TOKEN=$(openssl rand -hex 24)`,
+    `ipfs config --json API.Authorizations.dash-forge "{\\"AuthSecret\\": \\"bearer:$TOKEN\\", \\"AllowedPaths\\": ${paths.replace(/"/g, '\\"')}}"`,
+    'echo "API Authorization for the profile: Bearer $TOKEN"',
+    '# 2. Allow this app (keeping the origins already allowed):',
+    `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin "$(ipfs config API.HTTPHeaders.Access-Control-Allow-Origin 2>/dev/null | jq -c '(. // []) + ["${origin}"] | unique' || echo '["${origin}"]')"`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'`,
+    '# 3. Let any origin read the gateway (the content is public):',
     `ipfs config --json Gateway.HTTPHeaders.Access-Control-Allow-Origin '["*"]'`,
     `ipfs config --json Gateway.HTTPHeaders.Access-Control-Expose-Headers '["Content-Range", "Content-Length", "ETag"]'`,
   ].join('\n')

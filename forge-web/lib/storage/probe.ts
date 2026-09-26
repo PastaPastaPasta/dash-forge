@@ -2,23 +2,27 @@
  * The storage wizard's live test (`ux-dx-spec.md` §3.1 step 3), run from this page, so it
  * checks exactly what the browser will do later — including CORS, which a CLI test cannot see.
  *
- * S3 rows: signed PUT → signed GET → anonymous GET via the public URL → CORS for ranged reads
- * (GET + Range, `Content-Range` visible) → CORS for browser pushes (PUT) → delete probe.
- * IPFS rows: kubo API → add + CID + pin → gateway re-read (Range) → pinning service → unpin.
+ * S3 rows: signed PUT → signed GET → anonymous GET via the public URL → ranged read with
+ * `Content-Range` visible → CORS for browser pushes (PUT) → delete probe.
+ * IPFS rows: kubo API → add + CID + pin → gateway re-read (Range) → public gateway →
+ * pinning service → unpin.
  *
- * A page cannot see WHY a cross-origin request failed: a CORS refusal and a dead host both
- * reject `fetch`. {@link reachable} tells them apart with an opaque `no-cors` request, which
- * resolves whenever the host answers at all, so a red row says "blocked by CORS" only when the
- * host is up.
+ * A page cannot see WHY a cross-origin request failed: a CORS refusal, a refused redirect and a
+ * dead host all reject `fetch`. {@link reachable} tells a dead host apart with an opaque
+ * `no-cors` request to the same origin, which resolves whenever the host answers at all; a
+ * `manual`-redirect probe then tells a redirect (wrong region or endpoint) from CORS.
+ *
+ * The public address is what everyone else reads, and it is recorded on chain: a row fails
+ * when it is only reachable from this machine or its network, even if it answers here.
  */
 
-import { S3Error, deleteObject, getObject, publicObjectUrl, putObject, type S3Settings } from './s3'
+import { S3Error, deleteObject, getObject, getPublic, objectUrl, publicObjectUrl, putObject, type S3Settings } from './s3'
 import { IpfsError, addVerified, gatewayUrl, kuboVersion, pinningReachable, unpin, type IpfsSettings } from './ipfs'
-import { normalizedPrefix, type ProfileSecrets, type StorageProfile } from './profiles'
+import { normalizedPrefix, publishProblem, type ProfileSecrets, type StorageProfile } from './profiles'
 import { sha256Hex } from './sigv4'
-import { bytesEqual, errText } from './util'
+import { bytesEqual, errText, timedFetch } from './util'
 
-export type RowId = 'put' | 'get' | 'public' | 'cors-range' | 'cors-put' | 'delete' | 'api' | 'add' | 'gateway' | 'pinning' | 'unpin'
+export type RowId = 'put' | 'get' | 'public' | 'range' | 'cors-put' | 'delete' | 'api' | 'add' | 'gateway' | 'public-gateway' | 'pinning' | 'unpin'
 export type RowState = 'pending' | 'running' | 'ok' | 'fail' | 'skipped'
 
 /** One row of the live test. `cors` marks a failure the CORS fix block addresses. */
@@ -34,7 +38,7 @@ export const S3_ROWS: readonly { id: RowId; label: string }[] = [
   { id: 'put', label: 'signed PUT' },
   { id: 'get', label: 'signed GET' },
   { id: 'public', label: 'anonymous GET via public URL' },
-  { id: 'cors-range', label: 'CORS preflight (GET, Range)' },
+  { id: 'range', label: 'ranged read (Content-Range visible)' },
   { id: 'cors-put', label: 'CORS preflight (PUT) for browser pushes' },
   { id: 'delete', label: 'delete probe' },
 ]
@@ -43,18 +47,35 @@ export const IPFS_ROWS: readonly { id: RowId; label: string }[] = [
   { id: 'api', label: 'kubo API' },
   { id: 'add', label: 'add + CID check + pin' },
   { id: 'gateway', label: 'gateway re-read (Range)' },
+  { id: 'public-gateway', label: 'anonymous read via public gateway' },
   { id: 'pinning', label: 'pinning service' },
   { id: 'unpin', label: 'unpin probe' },
 ]
 
-/** Whether `url`'s host answers at all (an opaque no-cors request; never readable). */
-async function reachable(url: string): Promise<boolean> {
+/** Whether `url`'s origin answers at all (an opaque no-cors request; never readable). */
+async function reachable(url: string | URL): Promise<boolean> {
   try {
-    await fetch(url, { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
+    await fetch(new URL(url).origin, { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
     return true
   } catch {
     return false
   }
+}
+
+/** Whether `url` answers with a redirect (opaque, so only its type is visible). */
+async function redirects(url: string | URL): Promise<boolean> {
+  try {
+    const r = await fetch(url, { mode: 'no-cors', redirect: 'manual', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
+    return r.type === 'opaqueredirect'
+  } catch {
+    return false
+  }
+}
+
+/** Why a request to `url` never got an answer: down, redirected elsewhere, or CORS. */
+async function whyBlocked(url: string | URL): Promise<'down' | 'redirect' | 'cors'> {
+  if (!(await reachable(url))) return 'down'
+  return (await redirects(url)) ? 'redirect' : 'cors'
 }
 
 /** A unique probe body, so a stale cached object can never pass for this run's upload. */
@@ -66,27 +87,36 @@ function probeBody(): Uint8Array {
 type Report = (id: RowId, state: RowState, detail: string, cors?: boolean) => void
 
 /** Run the S3 test, reporting each row as it settles. */
-async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Report): Promise<void> {
+async function probeS3(p: StorageProfile & { settings: S3Settings }, report: Report): Promise<void> {
+  const s = p.settings
+  const secrets = p.secrets
   const body = probeBody()
   const key = `${normalizedPrefix(s.prefix)}probe/forge-web-test-${await sha256Hex(body)}.txt`
+  const apiUrl = objectUrl(s, key)
 
   // 1 + 5: a PUT that lands proves the PUT preflight passed; one refused before any answer is
-  // CORS when the endpoint is reachable.
+  // CORS when the bucket's host answers and does not redirect.
   report('put', 'running', '')
   try {
     await putObject(s, secrets, key, body, 'text/plain')
     report('put', 'ok', `wrote ${key}`)
     report('cors-put', 'ok', 'the browser was allowed to send a signed PUT from this origin')
   } catch (e) {
-    const blocked = e instanceof S3Error && e.status === 0 && (await reachable(s.endpoint))
-    if (blocked) {
+    const why = e instanceof S3Error && e.status === 0 ? await whyBlocked(apiUrl) : null
+    if (why === 'cors') {
       report('put', 'fail', 'the browser refused to send it (see the CORS row)')
       report('cors-put', 'fail', 'the bucket’s CORS rules do not allow a signed PUT from this origin', true)
+    } else if (why === 'redirect') {
+      report('put', 'fail', `${apiUrl.host} answered with a redirect: the bucket lives in another region or behind another endpoint; set that endpoint`)
+      report('cors-put', 'skipped', 'needs a PUT that reaches the bucket')
+    } else if (why === 'down') {
+      report('put', 'fail', `${apiUrl.host} did not answer (check the endpoint${s.pathStyle ? '' : ', and that the bucket subdomain resolves'})`)
+      report('cors-put', 'skipped', 'needs a PUT that reaches the bucket')
     } else {
       report('put', 'fail', errText(e))
       report('cors-put', 'skipped', 'needs a PUT that reaches the bucket')
     }
-    for (const id of ['get', 'public', 'cors-range', 'delete'] as const) report(id, 'skipped', 'needs the probe object')
+    for (const id of ['get', 'public', 'range', 'delete'] as const) report(id, 'skipped', 'needs the probe object')
     return
   }
 
@@ -96,38 +126,45 @@ async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Report): 
     if (bytesEqual(got, body)) report('get', 'ok', 'read back byte for byte')
     else report('get', 'fail', 'the bucket returned different bytes (a cache or proxy in front of it?)')
   } catch (e) {
-    report('get', 'fail', errText(e), e instanceof S3Error && e.status === 0)
+    report('get', 'fail', errText(e))
   }
 
   const publicUrl = publicObjectUrl(s, key)
-  report('public', 'running', '')
   const publicHost = new URL(publicUrl).host
+  const unpublishable = publishProblem(p)
+  report('public', 'running', '')
+  // Whether an anonymous read worked from here (the range row builds on it), apart from whether
+  // the address is one others can use (a local MinIO answers here and nowhere else).
   let publicOk = false
   try {
-    const resp = await fetch(publicUrl, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
-    const got = new Uint8Array(await resp.arrayBuffer())
-    if (!resp.ok) report('public', 'fail', `HTTP ${resp.status} from ${publicHost}: the objects are not publicly readable`)
-    else if (!bytesEqual(got, body)) report('public', 'fail', `${publicHost} served different bytes (check the public URL)`)
+    const got = await getPublic(s, key)
+    if (got.status !== 200) report('public', 'fail', `HTTP ${got.status} from ${publicHost}: the objects are not publicly readable`)
+    else if (!bytesEqual(got.bytes, body)) report('public', 'fail', `${publicHost} served different bytes (check the public URL)`)
     else {
       publicOk = true
-      report('public', 'ok', `anonymous GET ${publicHost}`)
+      if (unpublishable) report('public', 'fail', `Readable from here, but ${unpublishable}`)
+      else report('public', 'ok', `anonymous GET ${publicHost}`)
     }
   } catch {
-    const up = await reachable(publicUrl)
-    report('public', 'fail', up ? 'the browser was not allowed to read it: no Access-Control-Allow-Origin on GET' : `${publicHost} did not answer`, up)
+    const why = await whyBlocked(publicUrl)
+    report(
+      'public',
+      'fail',
+      why === 'cors' ? 'the browser was not allowed to read it: no Access-Control-Allow-Origin on GET' : why === 'redirect' ? `${publicHost} redirected the read elsewhere` : `${publicHost} did not answer`,
+      why === 'cors',
+    )
   }
 
-  report('cors-range', 'running', '')
-  if (!publicOk) report('cors-range', 'skipped', 'needs a public read')
+  report('range', 'running', '')
+  if (!publicOk) report('range', 'skipped', 'needs a public read')
   else {
     try {
-      const resp = await fetch(publicUrl, { headers: { Range: 'bytes=0-9' }, credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
-      const range = resp.headers.get('content-range')
-      if (resp.status !== 206) report('cors-range', 'fail', `a ranged GET returned ${resp.status} instead of 206: browsing needs HTTP Range support on the public URL`)
-      else if (range === null) report('cors-range', 'fail', 'Content-Range is not exposed to scripts (Access-Control-Expose-Headers)', true)
-      else report('cors-range', 'ok', 'Range allowed, Content-Range exposed')
+      const got = await getPublic(s, key, 'bytes=0-9')
+      if (got.status !== 206) report('range', 'fail', `a ranged GET returned ${got.status} instead of 206: browsing needs HTTP Range support on the public URL`)
+      else if (got.contentRange === null) report('range', 'fail', 'Content-Range is not exposed to scripts (Access-Control-Expose-Headers)', true)
+      else report('range', 'ok', 'Range honoured, Content-Range exposed')
     } catch {
-      report('cors-range', 'fail', 'the CORS preflight for a Range request was refused: allow the Range request header', true)
+      report('range', 'fail', 'the ranged read was refused: allow the Range request header in the bucket’s CORS rules', true)
     }
   }
 
@@ -136,19 +173,36 @@ async function probeS3(s: S3Settings, secrets: ProfileSecrets, report: Report): 
     await deleteObject(s, secrets, key)
     report('delete', 'ok', 'probe removed')
   } catch (e) {
-    report('delete', 'fail', `${errText(e)}. The probe object (a few bytes) stays at ${key}; delete it by hand.`, e instanceof S3Error && e.status === 0)
+    const cors = e instanceof S3Error && e.status === 0 && (await whyBlocked(apiUrl)) === 'cors'
+    report('delete', 'fail', `${errText(e)}. The probe object (a few bytes) stays at ${key}; delete it by hand.`, cors)
+  }
+}
+
+/** Read `url` anonymously and require exactly `body`: a row's verdict. */
+async function readBack(url: string, body: Uint8Array, range: boolean): Promise<{ ok: true } | { ok: false; detail: string; cors: boolean }> {
+  try {
+    const r = await timedFetch(url, { ...(range ? { headers: { Range: `bytes=0-${body.length - 1}` } } : {}), credentials: 'omit', cache: 'no-store' })
+    const got = await r.bytes()
+    if (!r.resp.ok) return { ok: false, detail: `HTTP ${r.resp.status}`, cors: false }
+    if (!bytesEqual(got, body)) return { ok: false, detail: 'served different bytes', cors: false }
+    return { ok: true }
+  } catch {
+    const why = await whyBlocked(url)
+    return { ok: false, detail: why === 'cors' ? 'refused this origin (CORS)' : why === 'redirect' ? 'redirected elsewhere (use 127.0.0.1, not localhost, for a local gateway)' : 'did not answer', cors: why === 'cors' }
   }
 }
 
 /** Run the IPFS test (kubo, plus the pinning service for a pinning profile). */
-async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report: Report): Promise<void> {
+async function probeIpfs(p: StorageProfile & { settings: IpfsSettings }, report: Report): Promise<void> {
+  const s = p.settings
+  const secrets: ProfileSecrets = p.secrets
   report('api', 'running', '')
   try {
     report('api', 'ok', `kubo ${await kuboVersion(s, secrets)}`)
   } catch (e) {
-    const up = await reachable(s.api)
-    report('api', 'fail', up ? errText(e) : `${new URL(s.api).host} did not answer`, up)
-    for (const id of ['add', 'gateway', 'pinning', 'unpin'] as const) report(id, 'skipped', 'needs the kubo API')
+    const why = await whyBlocked(s.api)
+    report('api', 'fail', why === 'down' ? `${new URL(s.api).host} did not answer` : errText(e), why === 'cors')
+    for (const id of ['add', 'gateway', 'public-gateway', 'pinning', 'unpin'] as const) report(id, 'skipped', 'needs the kubo API')
     return
   }
 
@@ -165,17 +219,20 @@ async function probeIpfs(s: IpfsSettings, secrets: ProfileSecrets, report: Repor
   report('gateway', 'running', '')
   if (cid === '' || s.gateway === '') report('gateway', 'skipped', s.gateway === '' ? 'no gateway configured: uploads are verified by CID and pin only' : 'needs the probe')
   else {
-    const url = gatewayUrl(s.gateway, cid)
-    try {
-      const resp = await fetch(url, { headers: { Range: `bytes=0-${body.length - 1}` }, credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
-      const got = new Uint8Array(await resp.arrayBuffer())
-      if (!resp.ok) report('gateway', 'fail', `HTTP ${resp.status} from the gateway`)
-      else if (!bytesEqual(got, body)) report('gateway', 'fail', 'the gateway served different bytes')
-      else report('gateway', 'ok', `re-read through ${new URL(url).host}`)
-    } catch {
-      const up = await reachable(url)
-      report('gateway', 'fail', up ? 'the gateway refused this origin (CORS)' : 'the gateway did not answer', up)
-    }
+    const r = await readBack(gatewayUrl(s.gateway, cid), body, true)
+    if (r.ok) report('gateway', 'ok', `re-read through ${new URL(s.gateway).host}`)
+    else report('gateway', 'fail', `the gateway ${r.detail}`, r.cors)
+  }
+
+  report('public-gateway', 'running', '')
+  if (s.publicGateway === '') report('public-gateway', 'skipped', 'no public gateway: readers race public IPFS gateways, which may not find content only your node holds')
+  else if (cid === '') report('public-gateway', 'skipped', 'needs the probe')
+  else {
+    const unpublishable = publishProblem(p)
+    const r = await readBack(gatewayUrl(s.publicGateway, cid), body, false)
+    if (!r.ok) report('public-gateway', 'fail', `the public gateway ${r.detail}`, r.cors)
+    else if (unpublishable) report('public-gateway', 'fail', `Readable from here, but ${unpublishable}`)
+    else report('public-gateway', 'ok', `anonymous read through ${new URL(s.publicGateway).host}`)
   }
 
   report('pinning', 'running', '')
@@ -213,7 +270,7 @@ export async function probeProfile(p: StorageProfile, report: Report): Promise<b
     if (state === 'fail') ok = false
     report(id, state, detail, cors)
   }
-  if (s.kind === 's3') await probeS3(s, p.secrets, tracked)
-  else await probeIpfs(s, p.secrets, tracked)
+  if (s.kind === 's3') await probeS3({ ...p, settings: s }, tracked)
+  else await probeIpfs({ ...p, settings: s }, tracked)
   return ok
 }

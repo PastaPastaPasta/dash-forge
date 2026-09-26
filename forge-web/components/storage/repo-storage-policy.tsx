@@ -107,17 +107,20 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
             variant="ghost"
             disabled={!storable}
             onClick={async () => {
-              await save(withRepoPolicy(config, repoId, null))
-              setTargets(null)
-              setChoice(null)
-              setMsg('Back to your default.')
+              try {
+                await save(withRepoPolicy(config, repoId, null))
+                setTargets(null)
+                setChoice(null)
+                setMsg('Back to your default.')
+              } catch (e) {
+                setMsg(e instanceof Error ? e.message : String(e))
+              }
             }}
           >
             Use my default
           </Button>
         ) : null}
-        {problem && shown.length > 0 ? <span className="text-[12px] text-caution">{problem}</span> : null}
-        {msg ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400" role="status">{msg}</span> : null}
+        <span className="text-[12px] text-anvil-500 dark:text-anvil-400" role="status" aria-live="polite">{msg ?? (problem && shown.length > 0 ? problem : '')}</span>
       </div>
     </div>
   )

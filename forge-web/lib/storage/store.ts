@@ -14,9 +14,10 @@
 import { z } from 'zod'
 
 import type { Network } from '../constants'
-import { readStorageBlob, writeStorageBlob } from '../auth/vault'
+import { discardStorageBlob, readStorageBlob, writeStorageBlob } from '../auth/vault'
 import {
   policySchema,
+  renameInPolicy,
   profilePublicSchema,
   profileSecretsSchema,
   type StoragePolicy,
@@ -66,6 +67,36 @@ export async function loadStorageConfig(network: Network, identityId: string): P
 export async function saveStorageConfig(network: Network, identityId: string, config: StorageConfig): Promise<void> {
   const parsed = configSchema.parse(config)
   await writeStorageBlob(network, identityId, parsed)
+}
+
+/**
+ * Delete stored storage settings this key cannot open (sealed under an earlier key, or in a
+ * shape this app does not understand). The profiles in them are lost: add them again.
+ */
+export function discardStorageConfig(network: Network, identityId: string): Promise<void> {
+  return discardStorageBlob(network, identityId)
+}
+
+/**
+ * `config` with the profile `from` replaced by `profile`: every policy that named it follows
+ * a rename, as does its last test result.
+ */
+export function withRenamedProfile(config: StorageConfig, from: string, profile: StorageProfile): StorageConfig {
+  const to = profile.name
+  const repoPolicies: Record<string, StoragePolicy> = {}
+  for (const [repo, p] of Object.entries(config.repoPolicies)) repoPolicies[repo] = renameInPolicy(p, from, to)
+  const lastTests = { ...config.lastTests }
+  delete lastTests[from]
+  return withProfile(
+    {
+      ...config,
+      profiles: config.profiles.filter((p) => p.name !== from),
+      defaultPolicy: config.defaultPolicy ? renameInPolicy(config.defaultPolicy, from, to) : null,
+      repoPolicies,
+      lastTests,
+    },
+    profile,
+  )
 }
 
 /** `config` with `profile` added or replaced (by name). */

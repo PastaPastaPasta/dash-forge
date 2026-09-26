@@ -6,7 +6,7 @@
  * the provider, prefilled with the bucket and this app's origin, with a Re-test button.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, CircleDashed, Loader2, MinusCircle, RotateCw, XCircle } from 'lucide-react'
 import {
   IPFS_ROWS,
@@ -36,26 +36,51 @@ function rowsFor(p: StorageProfile): ProbeRow[] {
   return spec.map((r) => ({ ...r, state: 'pending', detail: '' }))
 }
 
-/** Run and show the live test for `profile`; `onDone` gets whether every row passed. */
-export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDone: (ok: boolean) => void }): JSX.Element {
+/** A stable fingerprint of what a test ran against (settings and secrets). */
+export function profileSnapshot(p: StorageProfile): string {
+  return JSON.stringify([p.name, p.settings, p.secrets])
+}
+
+/**
+ * Run and show the live test for `profile`. `onDone(ok, snapshot)` reports whether every row
+ * passed, with the {@link profileSnapshot} the run tested, so the caller credits the result only
+ * to those exact values. The parent keys this component by the snapshot, so an edit remounts it
+ * (no stale green rows); a run still in flight when that happens reports into the unmounted
+ * copy and is dropped.
+ */
+export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDone: (ok: boolean, snapshot: string) => void }): JSX.Element {
   const [rows, setRows] = useState<ProbeRow[] | null>(null)
   const [running, setRunning] = useState(false)
+  const [summary, setSummary] = useState('')
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const origin = typeof window === 'undefined' ? 'https://forge.dashhq.org' : window.location.origin
 
   const run = async (): Promise<void> => {
     if (running) return
+    const snapshot = profileSnapshot(profile)
     setRunning(true)
+    setSummary('Testing…')
     setRows(rowsFor(profile))
-    const report = (id: RowId, state: RowState, detail: string, cors?: boolean): void =>
+    const report = (id: RowId, state: RowState, detail: string, cors?: boolean): void => {
+      if (!mounted.current) return
       setRows((prev) => (prev ?? []).map((r) => (r.id === id ? { ...r, state, detail, ...(cors ? { cors } : {}) } : r)))
-    try {
-      onDone(await probeProfile(profile, report))
-    } catch (e) {
-      onDone(false)
-      setRows((prev) => (prev ?? []).map((r) => (r.state === 'running' || r.state === 'pending' ? { ...r, state: 'fail', detail: errText(e) } : r)))
-    } finally {
-      setRunning(false)
     }
+    let ok = false
+    try {
+      ok = await probeProfile(profile, report)
+    } catch (e) {
+      if (mounted.current) setRows((prev) => (prev ?? []).map((r) => (r.state === 'running' || r.state === 'pending' ? { ...r, state: 'fail', detail: errText(e) } : r)))
+    }
+    if (!mounted.current) return
+    setRunning(false)
+    setSummary(ok ? 'Test finished: every check passed.' : 'Test finished: some checks failed.')
+    onDone(ok, snapshot)
   }
 
   const corsFailed = rows?.some((r) => r.state === 'fail' && r.cors) ?? false
@@ -72,7 +97,7 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
         </span>
       </div>
       {rows ? (
-        <ol className="divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" aria-live="polite">
+        <ol className="divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" aria-label="Storage test results">
           {rows.map((r) => {
             const m = META[r.state]
             return (
@@ -86,6 +111,9 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
           })}
         </ol>
       ) : null}
+      <p role="status" aria-live="polite" className="sr-only">
+        {summary}
+      </p>
       {corsFailed && fix.text ? (
         <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 p-3" data-testid="cors-fix">
           <p className="flex items-start gap-2 text-dense text-anvil-800 dark:text-anvil-100">

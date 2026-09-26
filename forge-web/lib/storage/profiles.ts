@@ -12,6 +12,9 @@
 
 import { z } from 'zod'
 
+import { LOCAL_HTTP_ALLOWED, isPublicHttpsUrl } from '../net'
+import { isHeaderSafe } from './util'
+
 /** The kinds a profile can be (parity with forge-core `Profile`). */
 export type ProfileKind = 's3' | 'ipfs-kubo' | 'ipfs-pinning-service' | 'platform'
 
@@ -178,8 +181,21 @@ export function validProfileName(name: string): boolean {
   return /^[A-Za-z0-9._-]{1,64}$/.test(name)
 }
 
+/** The profile name reserved for on-chain `chunk` storage (forge-core `PLATFORM_PROFILE`). */
+export const PLATFORM_PROFILE = 'platform'
+
+/**
+ * Where a URL is used:
+ *  - `local`: only this browser talks to it (the S3 API endpoint, the kubo API and gateway).
+ *    https, or plain http to this machine.
+ *  - `published`: recorded on chain, read by everyone (the public URL, the public gateway).
+ *    A public https URL only (`lib/net.ts`): a loopback or private address would be a copy only
+ *    its uploader can read, and would point every reader's browser at their own local services.
+ */
+type UrlUse = 'local' | 'published'
+
 /** An http(s) origin or URL with no userinfo, query or fragment (they could smuggle a token). */
-function checkUrl(field: string, value: string, opts: { originOnly?: boolean } = {}): string | null {
+function checkUrl(field: string, value: string, use: UrlUse, opts: { originOnly?: boolean } = {}): string | null {
   let url: URL
   try {
     url = new URL(value)
@@ -190,13 +206,35 @@ function checkUrl(field: string, value: string, opts: { originOnly?: boolean } =
   if (url.username || url.password) return `${field} must not carry a user name or password`
   if (url.search || url.hash) return `${field} must not carry a query or fragment`
   if (opts.originOnly && url.pathname !== '/' && url.pathname !== '') return `${field} must be an origin (scheme://host[:port]) with no path`
-  if (url.protocol === 'http:' && !isLoopback(url.hostname)) return `${field} must be https (plain http is allowed only for a node on this machine)`
+  // A published URL may point at this machine while testing (a local MinIO): the test runs and
+  // its public row fails with the reason ({@link publishProblem}); uploads refuse it.
+  if (url.protocol === 'http:' && !(LOCAL_HTTP_ALLOWED && isLoopback(url.hostname))) {
+    return use === 'published'
+      ? `${field} must be https: it is recorded on chain for everyone to read`
+      : LOCAL_HTTP_ALLOWED
+        ? `${field} must be https (plain http is allowed only for a node on this machine, at 127.0.0.1 or localhost)`
+        : `${field} must be https`
+  }
   return null
 }
 
 /** Whether a hostname is this machine (the only place a browser may reach over plain http). */
 export function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+  return hostname === 'localhost' || hostname === '127.0.0.1'
+}
+
+/** Why a profile's secrets cannot be used, or null (header values must be printable ASCII). */
+function secretsProblem(secrets: ProfileSecrets): string | null {
+  for (const [field, label] of [
+    ['accessKeyId', 'The access key id'],
+    ['sessionToken', 'The session token'],
+    ['apiAuth', 'The API Authorization value'],
+    ['pinningToken', 'The pinning token'],
+  ] as const) {
+    const v = secrets[field]
+    if (v !== undefined && !isHeaderSafe(v)) return `${label} holds characters an HTTP header cannot carry (a stray line break or a non-ASCII character); paste it again`
+  }
+  return null
 }
 
 /** Why a profile is not usable, or null. Parity with forge-core `S3Config::validate`. */
@@ -204,37 +242,64 @@ export function profileProblem(p: StorageProfile): string | null {
   if (!validProfileName(p.name)) return "use a name of letters, digits, '.', '_' and '-' (max 64)"
   const s = p.settings
   if (s.kind === 'platform') return null
+  if (p.name === PLATFORM_PROFILE) return `the name "${PLATFORM_PROFILE}" is reserved for Dash Platform storage`
+  const secrets = secretsProblem(p.secrets)
+  if (secrets) return secrets
   if (s.kind === 's3') {
-    const e = checkUrl('the endpoint', s.endpoint, { originOnly: true })
+    const e = checkUrl('the endpoint', s.endpoint, 'local', { originOnly: true })
     if (e) return e
-    if (!/^[a-z0-9._-]+$/.test(s.bucket)) return "the bucket name must be lowercase letters, digits, '-', '.', '_'"
+    if (!BUCKET.test(s.bucket)) return "the bucket name must be lowercase letters, digits, '-', '.', '_'"
     const host = new URL(s.endpoint).hostname
     if (!s.pathStyle && (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.startsWith('['))) return 'an IP-address endpoint needs path-style addressing'
     if (!s.pathStyle && s.bucket.includes('.') && s.endpoint.startsWith('https:')) return "a bucket name with '.' breaks TLS for virtual-hosted addressing; use path-style"
     const prefix = s.prefix.replace(/\/+$/, '')
     if (prefix !== '' && prefix.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return "the prefix has an empty, '.' or '..' segment"
     if (s.publicUrl === '') return 'a public URL is needed: browsers read packs anonymously from it'
-    const pu = checkUrl('the public URL', s.publicUrl)
+    const pu = checkUrl('the public URL', s.publicUrl, 'published')
     if (pu) return pu
     if (!p.secrets.accessKeyId || !p.secrets.secretAccessKey) return 'an access key id and secret are needed to sign uploads'
     return null
   }
-  const api = checkUrl('the kubo API', s.api, { originOnly: true })
+  const api = checkUrl('the kubo API', s.api, 'local', { originOnly: true })
   if (api) return api
   if (s.gateway !== '') {
-    const gw = checkUrl('the gateway', s.gateway, { originOnly: true })
+    const gw = checkUrl('the gateway', s.gateway, 'local', { originOnly: true })
     if (gw) return gw
+    if (new URL(s.gateway).hostname === 'localhost') {
+      return 'use http://127.0.0.1:<port> for a local gateway: kubo redirects localhost to <cid>.ipfs.localhost subdomains, which the browser blocks'
+    }
   }
   if (s.publicGateway !== '') {
-    const pg = checkUrl('the public gateway', s.publicGateway, { originOnly: true })
+    const pg = checkUrl('the public gateway', s.publicGateway, 'published', { originOnly: true })
     if (pg) return pg
   }
   if (s.kind === 'ipfs-pinning-service') {
-    const pe = checkUrl('the pinning endpoint', s.pinningEndpoint)
+    const pe = checkUrl('the pinning endpoint', s.pinningEndpoint, 'local')
     if (pe) return pe
     if (!p.secrets.pinningToken) return 'the pinning service needs an access token'
   }
   return null
+}
+
+const BUCKET = /^[a-z0-9._-]{1,63}$/
+
+/**
+ * Why this profile's published addresses (the S3 public URL, the IPFS public gateway) cannot
+ * be recorded on chain, or null. They are what every reader fetches, so they must be public
+ * https: an address on this machine or a private network works only for its uploader, and would
+ * point other readers' browsers at their own local services.
+ */
+export function publishProblem(p: StorageProfile): string | null {
+  const s = p.settings
+  const published = s.kind === 's3' ? s.publicUrl : s.kind === 'platform' ? '' : s.publicGateway
+  if (published === '' || isPublicHttpsUrl(published)) return null
+  let host = published
+  try {
+    host = new URL(published).host
+  } catch {
+    /* keep the raw value */
+  }
+  return `${host} is only reachable from this machine or its network, so other people cannot read what is stored there. The public address is recorded on chain for everyone: use a public https URL (a bucket domain, a CDN, or a tunnel).`
 }
 
 /** The key prefix normalized: '' or ending in exactly one `/` (parity with forge-core). */
@@ -254,35 +319,45 @@ export function artifactKey(settings: Extract<ProfilePublic, { kind: 's3' }>, sh
 
 const httpString = z.string().max(300)
 
-export const profilePublicSchema: z.ZodType<ProfilePublic> = z.discriminatedUnion('kind', [
-  z.object({
+const s3Schema = z
+  .object({
     kind: z.literal('s3'),
     provider: z.enum(['r2', 'b2', 'aws', 'minio']),
     endpoint: httpString,
-    region: z.string().max(64),
-    bucket: z.string().max(63),
+    region: z.string().regex(/^[a-z0-9-]{1,64}$/),
+    bucket: z.string().regex(BUCKET),
     pathStyle: z.boolean(),
     publicUrl: httpString,
     prefix: z.string().max(200),
-  }),
-  z.object({
+  })
+  .strict()
+
+const ipfsSchema = z
+  .object({
     kind: z.enum(['ipfs-kubo', 'ipfs-pinning-service']),
     provider: z.enum(['kubo', 'pinning']),
     api: httpString,
     gateway: httpString,
     publicGateway: httpString,
     pinningEndpoint: httpString,
-  }),
-  z.object({ kind: z.literal('platform'), provider: z.literal('platform') }),
-]) as z.ZodType<ProfilePublic>
+  })
+  .strict()
+  // The kind and the tile must agree: a kubo tile is never a pinning profile, and back.
+  .refine((v) => (v.kind === 'ipfs-kubo') === (v.provider === 'kubo'), 'the IPFS kind and provider disagree')
 
-export const profileSecretsSchema: z.ZodType<ProfileSecrets> = z
+const platformSchema = z.object({ kind: z.literal('platform'), provider: z.literal('platform') }).strict()
+
+export const profilePublicSchema = z.union([s3Schema, ipfsSchema, platformSchema])
+
+const headerValue = (max: number) => z.string().max(max).refine(isHeaderSafe).optional()
+
+export const profileSecretsSchema = z
   .object({
-    accessKeyId: z.string().max(256).optional(),
+    accessKeyId: headerValue(256),
     secretAccessKey: z.string().max(512).optional(),
-    sessionToken: z.string().max(4096).optional(),
-    apiAuth: z.string().max(1024).optional(),
-    pinningToken: z.string().max(4096).optional(),
+    sessionToken: headerValue(4096),
+    apiAuth: headerValue(1024),
+    pinningToken: headerValue(4096),
   })
   .strict()
 
@@ -296,7 +371,7 @@ export interface StoragePolicy {
   readonly platformFallback: boolean
 }
 
-export const policySchema: z.ZodType<StoragePolicy> = z.object({
+export const policySchema = z.object({
   targets: z.array(z.string().max(64)).max(8),
   replicas: z.number().int().min(1).max(8),
   platformFallback: z.boolean(),
@@ -312,6 +387,11 @@ export function policyFor(targets: readonly string[], choice: ReplicationChoice)
     replicas: choice === 'all' ? Math.max(1, targets.length) : 1,
     platformFallback: choice === 'fallback',
   }
+}
+
+/** `policy` with the profile `from` renamed to `to` (a renamed profile keeps its place). */
+export function renameInPolicy(policy: StoragePolicy, from: string, to: string): StoragePolicy {
+  return { ...policy, targets: policy.targets.map((t) => (t === from ? to : t)) }
 }
 
 /** Which replication choice a policy corresponds to (for the radio). */

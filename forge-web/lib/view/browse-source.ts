@@ -42,6 +42,7 @@ import {
   type V2RepoRef,
 } from '../repo'
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
+import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
 import { describePack, readGateways } from './storage-status'
 
@@ -286,8 +287,10 @@ export function externalFetchUrls(
 ): string[] {
   const out: string[] = []
   for (const uri of uris) {
-    if (/^https?:\/\//i.test(uri)) out.push(uri)
-    const ipfs = /^ipfs:\/\/(.+)$/i.exec(uri)
+    // A manifest is written by whoever pushed: a URL at this machine, a private network or
+    // over plain http would have every reader's browser request its own local services.
+    if (isPublicHttpsUrl(uri)) out.push(uri)
+    const ipfs = /^ipfs:\/\/([A-Za-z0-9]+)$/.exec(uri)
     if (ipfs !== null) {
       for (const gw of gateways) out.push(`${gw.replace(/\/+$/, '')}/ipfs/${ipfs[1]}`)
     }

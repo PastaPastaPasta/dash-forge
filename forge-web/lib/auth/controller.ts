@@ -72,6 +72,8 @@ export interface AuthState {
   readonly session: AuthSession | null
   readonly isLoading: boolean
   readonly error: string | null
+  /** Something the user should know after a sign-in step succeeded (null when nothing). */
+  readonly notice?: string | null
 }
 
 type Listener = (state: AuthState) => void
@@ -230,7 +232,12 @@ export class AuthController {
    */
   private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
-    await storeInVault(this.network, secret, protection)
+    const { storageSettingsDropped } = await storeInVault(this.network, secret, protection)
+    if (storageSettingsDropped) {
+      this.setState({
+        notice: 'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
+      })
+    }
     try {
       return await this.open(secret, 'vault', key.limits)
     } catch (e) {

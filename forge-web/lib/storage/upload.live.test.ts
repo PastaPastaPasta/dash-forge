@@ -2,7 +2,7 @@
  * Live browser-upload path — SKIPPED by default (devnet writes + a local MinIO).
  *
  *   docker compose -f infra/docker-compose.yml up -d minio minio-init
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
  *     pnpm exec vitest run lib/storage/upload.live.test.ts
  *
  * As the moutai MAINTAINER (a maintainer of its own `forge-v2-empty`, the fixture no push has
@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
+import { isPublicHttpsUrl } from '../net'
 import { evoSdkService, type WriteAuth } from '../sdk'
 import { parseIdentityFileText } from '../auth'
 import { readV2PackCopies } from '../repo'
@@ -30,7 +31,13 @@ import type { V2RepoRef } from '../repo/contract'
 import { storeAndRecordPack, policyFor, type StorageProfile } from './index'
 import { sha256Hex } from './sigv4'
 
-const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
+/**
+ * The bucket's PUBLIC https address: a manifest records only addresses anyone can read, so a
+ * bare local MinIO does not qualify. Expose it for the run, e.g.
+ * `cloudflared tunnel --url http://127.0.0.1:9000` → FORGE_LIVE_PUBLIC_URL=https://<name>.trycloudflare.com/forge-byo
+ */
+const PUBLIC_URL = (process.env['FORGE_LIVE_PUBLIC_URL'] ?? '').replace(/\/+$/, '')
+const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && isPublicHttpsUrl(PUBLIC_URL)
 const MAINTAINER_FILE = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai/MAINTAINER.identity.json')
 const EMPTY_REPO = 'F9puk5NBQyySFbgj9yUfubdXAVv1YV7Zk2KDvfyHzxLU'
 
@@ -43,7 +50,7 @@ const MINIO: StorageProfile = {
     region: 'us-east-1',
     bucket: 'forge-byo',
     pathStyle: true,
-    publicUrl: 'http://127.0.0.1:9000/forge-byo',
+    publicUrl: PUBLIC_URL,
     prefix: 'web-live',
   },
   secrets: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
@@ -61,7 +68,9 @@ describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on moutai', () =
       const sdk = evoSdkService.getSdk()
       const repo: V2RepoRef = { kind: 'v2', forge: v2, repoId: EMPTY_REPO, ownerId: parsed.identityId, name: 'forge-v2-empty', visibility: 'public' }
 
-      const bytes = new TextEncoder().encode(`forge-web live upload artifact ${EMPTY_REPO}\n`)
+      // One artifact per public URL: the signer's manifest slot for a pack is permanent, so a
+      // rerun with the same bytes and URL finds its own manifest and writes nothing.
+      const bytes = new TextEncoder().encode(`forge-web live upload artifact ${EMPTY_REPO} ${PUBLIC_URL}\n`)
       const hash = await sha256Hex(bytes)
       const events: string[] = []
       const { stored, manifest } = await storeAndRecordPack(
@@ -81,7 +90,7 @@ describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on moutai', () =
       // eslint-disable-next-line no-console
       console.log('stored', { uris: stored.uris, manifest: manifest.documentId, cost: manifest.cost.dash, events })
       expect(stored.storage).toBe(1)
-      expect(stored.uris[0]).toBe(`http://127.0.0.1:9000/forge-byo/web-live/packs/${hash}.pack`)
+      expect(stored.uris[0]).toBe(`${PUBLIC_URL}/web-live/packs/${hash}.pack`)
       expect(stored.uris[1]).toBe(`s3://forge-byo/web-live/packs/${hash}.pack`)
       expect(events).toEqual(['minio:start', 'minio:done'])
 
