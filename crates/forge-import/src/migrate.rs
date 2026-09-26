@@ -197,7 +197,13 @@ async fn resolve_v1(client: &PlatformClient, spec: &str) -> Result<RepoRef> {
 
 /// What the migration has left to write (everything the destination does not hold yet).
 struct Todo<'p> {
+    /// Every live v1 pack.
+    all: &'p [PackPlan],
+    /// Those the destination does not hold yet (and can be copied).
     packs: Vec<&'p PackPlan>,
+    /// Live packs with no public copy: not copied. Refs are then written only where their
+    /// history is complete without them (checked in [`copy_git`]).
+    uncopyable: BTreeSet<[u8; 32]>,
     /// `(ref name, wanted tip, current tip)`.
     refs: Vec<(String, String, Option<String>)>,
     members: Vec<Collaborator>,
@@ -238,6 +244,7 @@ async fn todo<'p>(
         }
         None => Default::default(),
     };
+    let packs_all = packs;
     let (packs, unreadable): (Vec<&PackPlan>, Vec<&PackPlan>) = packs
         .iter()
         .filter(|p| !have_packs.contains(&p.manifest.pack_hash))
@@ -251,14 +258,14 @@ async fn todo<'p>(
     }
     if !unreadable.is_empty() {
         warnings.push(format!(
-            "{} v1 pack(s) cannot be copied, so no ref is written: a ref must never name \
-             history the repository does not store",
+            "{} v1 pack(s) cannot be copied; a ref is written only when its whole history is \
+             stored without them (often the case: a later push re-sent their objects)",
             unreadable.len()
         ));
     }
+    let uncopyable = unreadable.iter().map(|p| p.manifest.pack_hash).collect();
     let refs = refs
         .iter()
-        .filter(|_| unreadable.is_empty())
         .filter_map(|(name, state)| {
             let want = tip(state)?;
             let current = have_refs
@@ -277,7 +284,9 @@ async fn todo<'p>(
         })
         .collect();
     Ok(Todo {
+        all: packs_all,
         packs,
+        uncopyable,
         refs,
         members,
     })
@@ -436,34 +445,24 @@ async fn copy_git(
 ) -> Result<()> {
     let svc = RepoService::new(client, &signer.identity, &signer.bridge);
     let pack_reader = PackReader::from_user_config();
-    let mut missing = 0usize;
+    let mut uncopied = todo.uncopyable.clone();
     for p in &todo.packs {
         let hash = hex::encode(p.manifest.pack_hash);
         // Reading is free; charge only a pack that will actually be written.
-        // An external pack is verified through the URIs the v2 manifest will record, so a
-        // copy readable only here (a local mirror) cannot vouch for unreachable ones.
-        let read_from = if p.reupload() {
-            p.manifest.clone()
-        } else {
-            PackManifestInfo {
-                uris: p.external.clone(),
-                ..p.manifest.clone()
-            }
-        };
-        let bytes = match reader.fetch_artifact(v1, &read_from, &pack_reader).await {
+        let bytes = match read_v1_pack(reader, v1, p, &pack_reader).await {
             Ok(b) => b,
             // An external pack no URI serves any more: nothing can read it, so there is
             // nothing to copy. Its objects are missing from the v1 repo too.
             Err(e) if !p.reupload() => {
                 ledger.warn(format!(
-                    "v1 pack {} is stored externally and no public copy is readable ({e}); \
+                    "v1 pack {} is stored externally and no public copy is readable ({e:#}); \
                      not copied",
                     &hash[..12]
                 ));
-                missing += 1;
+                uncopied.insert(p.manifest.pack_hash);
                 continue;
             }
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("reading v1 pack {hash}"))),
+            Err(e) => return Err(e),
         };
         ledger
             .budget
@@ -502,14 +501,21 @@ async fn copy_git(
         ledger.counts.pack_bytes += bytes.len() as u64;
         ledger.reconcile().await;
     }
-    if missing > 0 {
-        ledger.skip(format!(
-            "{missing} v1 pack(s) could not be read, so no ref is written (a ref must never \
-             name history the repository does not store); re-run when the copies are back"
-        ));
-        return Ok(());
-    }
+    // A ref must never name history the repository does not store: with packs left out,
+    // write only the refs whose history the copied packs hold in full.
+    let complete = if uncopied.is_empty() {
+        None
+    } else {
+        let tips: Vec<&str> = todo.refs.iter().map(|(_, want, _)| want.as_str()).collect();
+        Some(complete_tips(reader, v1, todo.all, &uncopied, &tips, &pack_reader).await?)
+    };
     for (name, want, current) in &todo.refs {
+        if complete.as_ref().is_some_and(|c| !c.contains(want)) {
+            ledger.skip(format!(
+                "ref {name} is not written: its history needs a v1 pack that could not be copied"
+            ));
+            continue;
+        }
         let prev = current.as_deref().map(hex::decode).transpose();
         let (Ok(new_oid), Ok(prev)) = (hex::decode(want), prev) else {
             ledger.warn(format!("ref {name} has an unreadable tip; skipped"));
@@ -531,6 +537,95 @@ async fn copy_git(
             Err(e) => return Err(anyhow::Error::from(e).context(format!("writing ref {name}"))),
         }
         ledger.reconcile().await;
+    }
+    Ok(())
+}
+
+/// Read one v1 pack, hash-verified. An external pack is read through the public URIs the v2
+/// manifest will record only, so a copy readable just here (a local mirror) cannot vouch
+/// for unreachable ones.
+async fn read_v1_pack(
+    reader: &RepoReader<'_>,
+    v1: &RepoRef,
+    p: &PackPlan,
+    pack_reader: &PackReader,
+) -> Result<Vec<u8>> {
+    let manifest = if p.reupload() {
+        p.manifest.clone()
+    } else {
+        PackManifestInfo {
+            uris: p.external.clone(),
+            ..p.manifest.clone()
+        }
+    };
+    reader
+        .fetch_artifact(v1, &manifest, pack_reader)
+        .await
+        .with_context(|| format!("reading v1 pack {}", hex::encode(p.manifest.pack_hash)))
+}
+
+/// Which of `tips` have their whole history in the live packs outside `skip`: the packs
+/// are indexed into a scratch repository, and a tip counts when `git rev-list --objects`
+/// walks it without a missing object.
+async fn complete_tips(
+    reader: &RepoReader<'_>,
+    v1: &RepoRef,
+    all: &[PackPlan],
+    skip: &BTreeSet<[u8; 32]>,
+    tips: &[&str],
+    pack_reader: &PackReader,
+) -> Result<BTreeSet<String>> {
+    let dir = std::env::temp_dir().join(format!(
+        "forge-migrate-verify-{}-{}",
+        v1.id(),
+        std::process::id()
+    ));
+    let _cleanup = crate::importer::TempDir(dir.clone());
+    git(&dir, &["init", "--bare", "-q", "."], None)?;
+    for p in all.iter().filter(|p| !skip.contains(&p.manifest.pack_hash)) {
+        let bytes = read_v1_pack(reader, v1, p, pack_reader).await?;
+        git(&dir, &["index-pack", "--stdin", "--fix-thin"], Some(&bytes))?;
+    }
+    Ok(tips
+        .iter()
+        .filter(|tip| git(&dir, &["rev-list", "--objects", "--quiet", tip], None).is_ok())
+        .map(|t| (*t).to_string())
+        .collect())
+}
+
+/// Run `git` in `dir` (created if missing), feeding `stdin`; an error on a nonzero exit.
+fn git(dir: &std::path::Path, args: &[&str], stdin: Option<&[u8]>) -> Result<()> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    std::fs::create_dir_all(dir)?;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running git")?;
+    if let Some(bytes) = stdin {
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(bytes)
+            .context("writing to git")?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }

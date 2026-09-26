@@ -264,7 +264,7 @@ async fn run_inner<'a>(
 }
 
 /// Removes a temporary directory on drop.
-struct TempDir(PathBuf);
+pub(crate) struct TempDir(pub(crate) PathBuf);
 
 impl Drop for TempDir {
     fn drop(&mut self) {
