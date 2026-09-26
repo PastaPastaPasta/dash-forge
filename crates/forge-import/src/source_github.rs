@@ -167,6 +167,13 @@ pub fn collect(
         }
     }
 
+    // PR details from the listing (one call per 100 PRs); a PR the listing missed (it
+    // changed mid-read) falls back to its own call.
+    let mut pulls = if classes.prs && items.iter().any(GhIssue::is_pull_request) {
+        gh.pulls(since)?
+    } else {
+        BTreeMap::new()
+    };
     for i in &items {
         let Ok(number) = u32::try_from(i.number) else {
             continue;
@@ -177,7 +184,10 @@ pub fn collect(
         thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
         if i.is_pull_request() {
-            let pull = gh.pull(i.number)?;
+            let pull = match pulls.remove(&i.number) {
+                Some(p) => p,
+                None => gh.pull(i.number)?,
+            };
             t.kind = TargetKind::Patch;
             t.draft = pull.draft;
             t.merged_oid = pull

@@ -172,6 +172,9 @@ pub struct GhPull {
     /// Draft.
     #[serde(default)]
     pub draft: bool,
+    /// Last update (ISO 8601), for the incremental listing.
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// A release asset.
@@ -331,6 +334,34 @@ impl GithubClient {
         serde_json::from_slice(&out).with_context(|| format!("parsing PR #{number}"))
     }
 
+    /// Every pull request's detail (head, base, merge, draft) from the paginated listing,
+    /// by number: one call per 100 PRs instead of one per PR. Newest updated first, so with
+    /// `since` the listing stops at the first PR not updated since.
+    pub fn pulls(&self, since: Option<&str>) -> Result<std::collections::BTreeMap<u64, GhPull>> {
+        let path = self.path("pulls?state=all&sort=updated&direction=desc&per_page=100");
+        let all: Vec<GhPull> = match since {
+            None => api_list(&path)?,
+            Some(since) => {
+                let mut out = Vec::new();
+                let mut page = 1;
+                loop {
+                    let batch: Vec<GhPull> =
+                        serde_json::from_slice(&api_json(&format!("{path}&page={page}"))?)
+                            .context("parsing the pull request listing")?;
+                    let done = batch.len() < 100
+                        || batch.last().is_some_and(|p| p.updated_at.as_str() < since);
+                    out.extend(batch.into_iter().filter(|p| p.updated_at.as_str() >= since));
+                    if done {
+                        break;
+                    }
+                    page += 1;
+                }
+                out
+            }
+        };
+        Ok(all.into_iter().map(|p| (p.number, p)).collect())
+    }
+
     /// Every label.
     pub fn labels(&self) -> Result<Vec<GhLabel>> {
         api_list(&self.path("labels?per_page=100"))
@@ -471,6 +502,25 @@ fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Outpu
             return Ok(out);
         }
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.contains("rate limit") {
+            // Primary or secondary rate limit: wait for the reset (bounded), then retry. A
+            // run that keeps hitting it fails with a clear message rather than a raw 403.
+            if attempt == ATTEMPTS {
+                bail!(
+                    "{what} failed: the GitHub API rate limit was reached; re-run after it \
+                     resets (`gh api rate_limit`), or with a token that has a higher limit"
+                );
+            }
+            let wait = rate_limit_wait(attempt);
+            tracing::warn!(
+                attempt,
+                wait_secs = wait.as_secs(),
+                "GitHub rate limit; waiting"
+            );
+            std::thread::sleep(wait);
+            last_err = stderr;
+            continue;
+        }
         let transient = [
             "connection reset",
             "timeout",
@@ -492,6 +542,36 @@ fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Outpu
         last_err = stderr;
     }
     Err(anyhow!("{what} failed: {last_err}"))
+}
+
+/// How long to wait out a rate limit: until the core limit resets (from `gh api
+/// rate_limit`, capped at 15 minutes), else a growing default (a secondary limit asks for
+/// a minute or so).
+fn rate_limit_wait(attempt: u32) -> std::time::Duration {
+    let fallback = std::time::Duration::from_secs(60 * u64::from(attempt));
+    let reset = Command::new("gh")
+        .args([
+            "api",
+            "rate_limit",
+            "--jq",
+            ".resources.core | [.remaining, .reset] | @tsv",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let (remaining, reset) = text.split_once('\t')?;
+            let (remaining, reset) = (remaining.parse::<u64>().ok()?, reset.parse::<u64>().ok()?);
+            (remaining == 0).then_some(reset)
+        });
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    match reset {
+        Some(at) if at > now => std::time::Duration::from_secs((at - now + 5).min(15 * 60)),
+        _ => fallback,
+    }
 }
 
 fn api_json(path: &str) -> Result<Vec<u8>> {

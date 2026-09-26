@@ -5,7 +5,9 @@
 //!   hash-verified. A pack stored externally is *referenced*: the v2 manifest records the
 //!   same public URIs, costing one document. A pack stored as v1 Platform chunks is
 //!   *re-uploaded* as v2 chunks (priced before anything is written). Then each v1 ref is
-//!   written at its tip. Packs and refs already in the destination are skipped.
+//!   written at its tip. Packs already in the destination are skipped, and so are refs:
+//!   a ref the destination already has is never moved, since after a first migration the
+//!   destination is where work continues. One that differs from v1 is reported instead.
 //! * **Members.** The v1 token holders become `maintainer` (MAINTAIN) or `writer` (WRITE)
 //!   documents. Frozen holdings are not carried over; identities that do not exist on the
 //!   destination network are reported and skipped.
@@ -264,17 +266,27 @@ async fn todo<'p>(
         ));
     }
     let uncopyable = unreadable.iter().map(|p| p.manifest.pack_hash).collect();
-    let refs = refs
-        .iter()
-        .filter_map(|(name, state)| {
-            let want = tip(state)?;
-            let current = have_refs
-                .iter()
-                .find(|(n, _)| n == name)
-                .and_then(|(_, s)| tip(s));
-            (current.as_deref() != Some(want.as_str())).then(|| (name.clone(), want, current))
-        })
-        .collect();
+    // Only refs the destination lacks are written. An existing ref is left alone: after a
+    // first migration the destination is where work continues, and v1 is read only, so a
+    // different tip means the branch moved on (or was reset) there, not that v1 is newer.
+    let mut new_refs = Vec::new();
+    for (name, state) in refs {
+        let Some(want) = tip(state) else { continue };
+        let current = have_refs
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, s)| tip(s));
+        match current {
+            None => new_refs.push((name.clone(), want, None)),
+            Some(c) if c == want => {}
+            Some(c) => warnings.push(format!(
+                "{name} already exists in the destination at {} (v1 has {}); left as it is",
+                &c[..c.len().min(12)],
+                &want[..want.len().min(12)]
+            )),
+        }
+    }
+    let refs = new_refs;
     let members = collaborators
         .into_iter()
         .filter(|c| {
@@ -553,7 +565,7 @@ async fn write_refs(
             .budget
             .charge(git_doc_credits(REF_UPDATE_BYTES), format!("ref {name}"))?;
         match svc
-            .write_ref_update(repo, name, &new_oid, prev.as_deref(), true)
+            .write_ref_update(repo, name, &new_oid, prev.as_deref(), false)
             .await
         {
             Ok(_) => ledger.counts.refs += 1,
