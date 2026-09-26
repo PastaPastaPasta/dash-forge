@@ -25,7 +25,7 @@ use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2};
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef;
 
-use crate::budget::{collab_doc_credits, Budget};
+use crate::budget::{collab_doc_credits, Budget, CollabDoc};
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
 use crate::summary::Counts;
 
@@ -100,9 +100,44 @@ impl<'a> Ledger<'a> {
         if self.dry_run {
             return Ok(None);
         }
+        let before = self.traced_balance().await;
         let out = f().await.with_context(|| format!("writing {what}"))?;
         self.reconcile().await;
+        self.trace_cost(&what, credits, before).await;
         Ok(Some(out))
+    }
+
+    /// The signer's balance, read only when the per-write cost trace is on
+    /// (`RUST_LOG=forge_import::cost=debug`): it costs a query per write.
+    pub async fn traced_balance(&self) -> Option<u64> {
+        if !tracing::enabled!(target: "forge_import::cost", tracing::Level::DEBUG) {
+            return None;
+        }
+        self.balance(self.signer.as_deref()?).await
+    }
+
+    /// Log one write's estimate against its measured balance drop (calibration). Nodes can
+    /// answer from a height before the write landed, so the balance is re-read (up to ~10 s)
+    /// until it moves; every write costs something.
+    pub async fn trace_cost(&self, what: &str, estimated: u64, before: Option<u64>) {
+        let Some(before) = before else { return };
+        let mut after = self.traced_balance().await;
+        for _ in 0..10 {
+            if after.is_some_and(|a| a != before) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            after = self.traced_balance().await;
+        }
+        if let Some(after) = after {
+            tracing::debug!(
+                target: "forge_import::cost",
+                what,
+                estimated,
+                measured = before.saturating_sub(after),
+                "write cost"
+            );
+        }
     }
 
     /// Pull the measured balance drop into the budget; whether the balance could be read.
@@ -315,6 +350,7 @@ impl<'a> Sink<'a> {
                 continue;
             }
             let credits = collab_doc_credits(
+                CollabDoc::Label,
                 (l.name.len() + l.color.len() + l.description.len() + 60) as u64,
             );
             self.ledger
@@ -370,6 +406,7 @@ impl<'a> Sink<'a> {
                 assets: r.assets.clone(),
             };
             let credits = collab_doc_credits(
+                CollabDoc::Release,
                 (r.tag_name.len() + r.name.len() + r.notes.len() + assets.len() + 40) as u64,
             );
             let input = &input;
@@ -587,6 +624,7 @@ impl<'a> Sink<'a> {
             author: self.ledger.signer.clone().unwrap_or_default(),
         };
         let credits = collab_doc_credits(
+            CollabDoc::Target,
             text_doc(&t.title) + t.body.len() as u64 + t.imported.url.len() as u64 + 90,
         );
         let (collab, repo) = (&self.collab, self.repo.as_ref());
@@ -758,7 +796,10 @@ impl<'a> Sink<'a> {
     ) -> Result<()> {
         let (collab, repo) = (&self.collab, self.repo.as_ref());
         for (kind, value, oid) in Self::state_events(t, current) {
-            let credits = collab_doc_credits(120 + value.as_deref().map_or(0, str::len) as u64);
+            let credits = collab_doc_credits(
+                CollabDoc::Event,
+                120 + value.as_deref().map_or(0, str::len) as u64,
+            );
             let what = format!("{kind:?} event on #{}", t.number);
             let (value, oid) = (value.as_deref(), oid.as_deref());
             self.ledger
@@ -799,7 +840,10 @@ impl<'a> Sink<'a> {
             .iter()
             .filter(|c| !done.iter().any(|u| same_item_renamed(u, &c.imported.url)))
         {
-            let credits = collab_doc_credits(text_doc(&c.body) + c.imported.url.len() as u64);
+            let credits = collab_doc_credits(
+                CollabDoc::Comment,
+                text_doc(&c.body) + c.imported.url.len() as u64,
+            );
             self.ledger
                 .write(
                     format!("comment on #{}", t.number),
@@ -844,7 +888,10 @@ impl<'a> Sink<'a> {
             .iter()
             .filter(|r| !done.iter().any(|u| same_item_renamed(u, &r.imported.url)))
         {
-            let credits = collab_doc_credits(text_doc(&r.body) + r.imported.url.len() as u64 + 40);
+            let credits = collab_doc_credits(
+                CollabDoc::Review,
+                text_doc(&r.body) + r.imported.url.len() as u64 + 40,
+            );
             self.ledger
                 .write(
                     format!("review on #{}", t.number),
