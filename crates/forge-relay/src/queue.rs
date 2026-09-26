@@ -450,34 +450,47 @@ fn write_entry(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()> {
 
 /// `dir` must be a real directory (not a symlink) owned by this user; its mode is tightened
 /// to 0700 if it is looser (the directory is ours, so that is safe; a symlink or a directory
-/// someone else owns is refused).
+/// someone else owns is refused). The checks and the chmod act on one handle opened without
+/// following symlinks, so a swap of the path in between cannot redirect them.
+#[cfg(unix)]
 fn check_private_dir(dir: &Path) -> std::io::Result<()> {
-    let md = std::fs::symlink_metadata(dir)?;
-    if !md.file_type().is_dir() {
-        return Err(std::io::Error::other(
-            "it is not a directory (a symlink is refused)",
-        ));
+    use rustix::fs::{Mode, OFlags};
+    let fd = rustix::fs::open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| {
+        std::io::Error::other(format!(
+            "it is not a directory, or it is a symlink (refused): {e}"
+        ))
+    })?;
+    let st = rustix::fs::fstat(&fd)?;
+    let uid = rustix::process::geteuid().as_raw();
+    if st.st_uid != uid {
+        return Err(std::io::Error::other(format!(
+            "it is owned by uid {}, not by this user (uid {uid})",
+            st.st_uid
+        )));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let uid = rustix::process::geteuid().as_raw();
-        if md.uid() != uid {
-            return Err(std::io::Error::other(format!(
-                "it is owned by uid {}, not by this user (uid {uid})",
-                md.uid()
-            )));
-        }
-        let mode = md.mode() & 0o777;
-        if mode != 0o700 {
-            use std::os::unix::fs::PermissionsExt;
-            tracing::warn!(dir = %dir.display(), mode = format!("{mode:o}"), "tightening the delivery queue directory to mode 700");
-            // `set_permissions` follows symlinks; the entry was checked to be a real
-            // directory just above, in a parent only this user can replace it in.
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+    let mode = u32::from(st.st_mode) & 0o777;
+    if mode != 0o700 {
+        tracing::warn!(dir = %dir.display(), mode = format!("{mode:o}"), "tightening the delivery queue directory to mode 700");
+        rustix::fs::fchmod(&fd, Mode::RWXU)?;
     }
     Ok(())
+}
+
+/// Elsewhere: a real directory.
+#[cfg(not(unix))]
+fn check_private_dir(dir: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(dir)?.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "it is not a directory (a symlink is refused)",
+        ))
+    }
 }
 
 /// Read every entry file of `dir` (a missing dir is empty). Only regular `<id>.json` files
@@ -928,6 +941,12 @@ impl RetryQueue {
     /// own past its bound, then, past a global bound, the oldest of the repo holding the most
     /// (entries past the count bound, bytes past the byte bound). Incremental: no full scan.
     fn enforce_bounds(&self, st: &mut State, repo: &str, hook: &str, now: u64) {
+        self.enforce_hook_bound(st, repo, hook, now);
+        self.enforce_repo_bound(st, repo, now);
+        self.enforce_global_bounds(st, now);
+    }
+
+    fn enforce_hook_bound(&self, st: &mut State, repo: &str, hook: &str, now: u64) {
         let key = (repo.to_string(), hook.to_string());
         while let Some(id) = st
             .hooks
@@ -937,6 +956,9 @@ impl RetryQueue {
         {
             self.mark_dropped(st, &id, "queue full for this hook (oldest dropped)", now);
         }
+    }
+
+    fn enforce_repo_bound(&self, st: &mut State, repo: &str, now: u64) {
         while let Some(id) = st
             .repos
             .get(repo)
@@ -945,6 +967,9 @@ impl RetryQueue {
         {
             self.mark_dropped(st, &id, "queue full for this repo (oldest dropped)", now);
         }
+    }
+
+    fn enforce_global_bounds(&self, st: &mut State, now: u64) {
         loop {
             let by_count = st.aged.len() > self.limits.total;
             if !by_count && st.bytes <= self.limits.bytes {
@@ -968,15 +993,23 @@ impl RetryQueue {
     }
 
     /// Enforce every bound (a queue loaded from disk, possibly written under other limits).
+    /// Every hook's bound first, then every repo's, then the global ones, so a global
+    /// eviction never takes an entry a narrower bound would have spared.
     fn enforce_all(&self, st: &mut State, now: u64) {
         let hooks: Vec<(String, String)> = st.hooks.keys().cloned().collect();
         for (repo, hook) in hooks {
-            self.enforce_bounds(st, &repo, &hook, now);
+            self.enforce_hook_bound(st, &repo, &hook, now);
         }
         let repos: Vec<String> = st.repos.keys().cloned().collect();
         for repo in repos {
-            // The hook bound was enforced above; this runs the repo and global bounds.
-            self.enforce_bounds(st, &repo, "", now);
+            self.enforce_repo_bound(st, &repo, now);
+        }
+        self.enforce_global_bounds(st, now);
+        while st.dropped.len() > MAX_DROPPED {
+            if let Some((_, old)) = st.dropped.pop_first() {
+                st.entries.remove(&old);
+                self.unlink(&old);
+            }
         }
     }
 

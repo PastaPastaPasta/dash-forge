@@ -67,7 +67,8 @@ directory of the relay user's with looser permissions is tightened to 0700):
 
 - when it was set explicitly (`--state-dir`, or `state-dir` in the config file) the relay
   exits with an error;
-- when it is the default (including `FORGE_RELAY_STATE_DIR`), the relay starts on an
+- when it is the default (including `FORGE_RELAY_STATE_DIR`, which the images set, so a
+  container without a usable `/state` still runs), the relay starts on an
   in-memory queue: retries work but are lost on restart. It logs a warning on every start, and
   the health endpoint reports `"durable": false`.
 
@@ -108,8 +109,9 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
   the events still waiting in a hook's in-memory queue, or in flight; a crash or `kill -9`
   loses them, and documents not yet polled are not replayed either (cursors are not persisted;
   see "No cursor state" below). A failure retrying cannot fix is not queued: a body over
-  1 MiB, a receiver answering 4xx other than 408 or 429, or a URL the SSRF guard refuses, is
-  logged as `DEAD-LETTER` at once. See [Delivery queue](#delivery-queue).
+  1 MiB, a receiver answering 4xx other than 408 or 429, or a URL the SSRF guard refuses (also
+  when its host resolves to a private address, even briefly), is logged as `DEAD-LETTER` at
+  once; a host that does not resolve is retried. See [Delivery queue](#delivery-queue).
 - `X-GitHub-Delivery` is derived from the hook id and the source document id, so every relay
   and every retry sends the same id for the same document; dedupe on it.
 - Polling never waits on a receiver. Each hook has its own worker and in-memory queue (256

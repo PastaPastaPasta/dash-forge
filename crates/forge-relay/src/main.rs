@@ -132,7 +132,8 @@ struct RunArgs {
     web_base_url: Option<String>,
 
     /// Where the durable delivery queue lives (created 0700; default: `$FORGE_RELAY_STATE_DIR`,
-    /// else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay`).
+    /// else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay`). Set
+    /// here or as `state-dir`, an unusable dir is fatal; the default falls back to memory.
     #[arg(long = "state-dir")]
     state_dir: Option<PathBuf>,
 }

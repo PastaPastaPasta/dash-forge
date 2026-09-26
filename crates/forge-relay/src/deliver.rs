@@ -524,6 +524,8 @@ impl Dispatcher {
                 break;
             }
         }
+        // Events enqueued after this (a poll still finishing) go straight to the queue as
+        // well; they reach disk when the queue is dropped at exit, which drains the writer.
         if let Some(q) = &self.queue {
             let q = Arc::clone(q);
             let _ = tokio::task::spawn_blocking(move || q.flush()).await;
@@ -811,7 +813,8 @@ fn drain_cancelled(t: &mut HookTask, first: Option<Job>, hook_id: &str) {
 
 /// The relay is stopping: write `first` (an abandoned in-flight delivery) and the rest of the
 /// hook's in-memory queue to the durable queue, due at once and without counting a try, so a
-/// graceful stop loses none of them.
+/// graceful stop loses none of them. A retry from the queue is already on disk with its own
+/// schedule and last error: its claim is only released.
 fn persist_backlog(t: &mut HookTask, first: Option<Job>) {
     let sub = t
         .sub
@@ -827,11 +830,13 @@ fn persist_backlog(t: &mut HookTask, first: Option<Job>) {
     let mut kept = 0usize;
     for j in &jobs {
         let id = delivery_id(&sub.hook_id, &j.event.source_doc_id);
-        let queued = t.queue.as_ref().is_some_and(|q| {
-            if j.retry && !q.is_pending(&id) {
+        if j.retry {
+            if let Some(q) = &t.queue {
                 q.release(&id);
-                return true; // dropped or delivered meanwhile: nothing to keep
             }
+            continue;
+        }
+        let queued = t.queue.as_ref().is_some_and(|q| {
             q.fail(
                 &Failure {
                     id: &id,
