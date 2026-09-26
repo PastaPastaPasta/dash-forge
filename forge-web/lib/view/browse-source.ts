@@ -319,10 +319,15 @@ async function withOriginSlot<T>(url: string, run: () => Promise<T>): Promise<T>
   } catch {
     origin = url
   }
-  let slot = originSlots.get(origin)
+  return withSlot(origin, run)
+}
+
+/** At most {@link PER_ORIGIN_CONCURRENCY} `run`s in flight per `key`. */
+async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
+  let slot = originSlots.get(key)
   if (slot === undefined) {
     slot = { active: 0, waiting: [] }
-    originSlots.set(origin, slot)
+    originSlots.set(key, slot)
   }
   const s = slot
   if (s.active >= PER_ORIGIN_CONCURRENCY) await new Promise<void>((resolve) => s.waiting.push(resolve))
@@ -602,11 +607,13 @@ function platformLocatorReads(
 ): { readonly repo: V2RepoRef; readonly manifest: PackManifest }[] {
   if (repo.kind !== 'v2') return []
   const want = manifest.packHash.toLowerCase()
+  const seen = new Set<string>()
   const out: { repo: V2RepoRef; manifest: PackManifest }[] = []
   for (const uri of manifest.uris) {
     const [, core, repoId, owner, hash] = PLATFORM_LOCATOR_V2.exec(uri) ?? []
     if (core !== repo.forge.core || repoId === undefined || owner === undefined) continue
-    if (hash?.toLowerCase() !== want) continue
+    if (hash?.toLowerCase() !== want || seen.has(`${repoId}/${owner}`)) continue
+    seen.add(`${repoId}/${owner}`)
     out.push({
       repo: { ...repo, repoId, ownerId: '', name: '' },
       manifest: { ...manifest, storage: 0, uris: [], uploader: owner },
@@ -642,7 +649,9 @@ export function artifactRangeFetch(
           lastErr = e
         }
       }
-      if (lastErr !== undefined && externalFetchUrls(copy.uris).length === 0) throw lastErr
+      if (lastErr !== undefined && externalFetchUrls(copy.uris).length === 0) {
+        throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
+      }
       return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
@@ -761,10 +770,12 @@ async function loadPlatformWhole(
   repo: RepoRef,
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
+  cancel?: AbortSignal,
 ): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   const out = new Uint8Array(total)
   for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
+    if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
     out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
     onProgress?.(end, total)
@@ -776,6 +787,9 @@ async function loadPlatformWhole(
  * A whole `storage 1` artifact: first from the chunks its `platform://` locators name (a
  * fork's parent-scope copy), which must hash to `packHash` like any mirror's body, then from
  * its external mirrors. Chunks that do not verify are reported `corrupt`, as a mirror is.
+ *
+ * The fallback clone starts every `storage 1` pack at once (they are usually mirror races),
+ * so the chunk reads share one {@link withSlot} queue rather than all running in parallel.
  */
 async function loadExternalCopy(
   sdk: EvoSDK,
@@ -787,8 +801,11 @@ async function loadExternalCopy(
   const reasons: string[] = []
   let corrupt = false
   for (const at of platformLocatorReads(repo, manifest)) {
+    if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
     try {
-      const bytes = await loadPlatformWhole(sdk, at.repo, at.manifest, onProgress)
+      const bytes = await withSlot('platform://', () =>
+        loadPlatformWhole(sdk, at.repo, at.manifest, onProgress, cancel),
+      )
       if (bytesToHex(sha256(bytes)) === manifest.packHash.toLowerCase()) {
         noteSource(repo)
         return bytes
@@ -796,13 +813,21 @@ async function loadExternalCopy(
       corrupt = true
       reasons.push('platform: chunks do not match the manifest sha256')
     } catch (e) {
+      if (cancel?.aborted) throw e
       reasons.push(`platform: ${errorText(e)}`)
     }
   }
-  if (reasons.length > 0 && externalFetchUrls(manifest.uris).length === 0) {
-    throw new PackUnavailableError(manifest.packHash, ['platform'], corrupt, reasons.join('; '))
+  if (reasons.length === 0) return fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+  const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
+    new PackUnavailableError(manifest.packHash, ['platform', ...hosts], corrupt || bad, [...reasons, ...why].join('; '))
+  if (externalFetchUrls(manifest.uris).length === 0) throw unavailable([], [], false)
+  try {
+    return await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+  } catch (e) {
+    // Report the chunk failures alongside the mirrors', not only the mirrors'.
+    if (e instanceof PackUnavailableError) throw unavailable(e.hosts, [errorText(e)], e.corrupt)
+    throw e
   }
-  return fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
 }
 
 /**

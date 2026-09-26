@@ -11,7 +11,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, V1RepoRef, V2RepoRef } from '../repo'
@@ -25,6 +25,7 @@ import {
   loadArtifactBytesProgress,
   loadBrowseContext,
   PackUnavailableError,
+  resetExternalFetchState,
 } from './browse-source'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
@@ -554,10 +555,32 @@ describe('fork pack via a platform:// locator', () => {
     await expect(read).rejects.toMatchObject({ corrupt: true })
   })
 
-  it("skips a locator into another network's forge-core", async () => {
+  it.each([
+    ["another network's forge-core", `platform://OTHER/PARENT/uploader/${hash}`],
+    ['the v1 form', `platform://CORE/${hash}`],
+    ['another pack', `platform://CORE/PARENT/uploader/${'0'.repeat(64)}`],
+  ])('skips a locator into %s', async (_what, uri) => {
     const { sdk, scopes } = parentSdk(bytes)
-    const read = loadArtifactBytesProgress(sdk, FORK, forkManifest(`platform://OTHER/PARENT/uploader/${hash}`))
+    const read = loadArtifactBytesProgress(sdk, FORK, forkManifest(uri))
     await expect(read).rejects.toBeInstanceOf(PackUnavailableError)
     expect(scopes).toEqual([])
+  })
+
+  it('falls back to an https mirror when the chunks do not verify', async () => {
+    const tampered = bytes.slice()
+    tampered[0]! ^= 0xff
+    const { sdk } = parentSdk(tampered)
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(bytes.slice())))
+    try {
+      const manifest = {
+        ...forkManifest(`platform://CORE/PARENT/uploader/${hash}`),
+        uris: [`platform://CORE/PARENT/uploader/${hash}`, 'https://mirror.example/pack'],
+      }
+      const got = await loadArtifactBytesProgress(sdk, FORK, manifest)
+      expect(bytesToHex(sha256(got))).toBe(hash)
+    } finally {
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+    }
   })
 })
