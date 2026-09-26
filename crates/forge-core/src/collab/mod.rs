@@ -946,40 +946,25 @@ impl<'a> PullRequestService<'a> {
         Ok(Some(PullRequestWithState { pr, state }))
     }
 
-    /// Collect every oid that was ever a tip of `base_ref_name` (the monotonic merge-
-    /// reachability set) plus the newest such tip. Walks the ref's full `refUpdate` +
-    /// `protectedRefUpdate` history — [`crate::refs::read_ref_history`], an equality read on
-    /// one `refNameHash`, so its cost is this ref's pushes, not the repo's — taking every
-    /// non-null `newOid`.
+    /// Every oid `base_ref_name` has validly pointed at (the monotonic merge-reachability
+    /// set) plus the newest such tip ([`rules::merge_base_tips`]): the ref's full `refUpdate` +
+    /// `protectedRefUpdate` history — an equality read on one `refNameHash`, so its cost is this
+    /// ref's pushes, not the repo's — folded with the repo's config timeline, so a plain
+    /// `refUpdate` on a protected branch (inert, §4) never makes a merge count.
     async fn base_ref_tips(
         &self,
         contract: &LoadedContract,
         base_ref_name: &str,
     ) -> Result<(std::collections::BTreeSet<String>, Option<String>)> {
-        let ref_name_hash = sha256(base_ref_name.as_bytes());
         // Issues and PRs still live in v1 repo contracts: the contract is the whole scope.
         let scope = crate::scope::DocScope {
             contract_id: contract.id(),
             repo_id: None,
         };
-        let updates =
-            crate::refs::read_ref_history(self.client, contract, &scope, ref_name_hash).await?;
-        let mut tips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut newest: Option<(u64, String, String)> = None; // (created_at, id, oid)
-        for u in updates {
-            if u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0') {
-                continue; // null oid = ref deletion, never a reachable tip
-            }
-            tips.insert(u.new_oid.clone());
-            let better = match &newest {
-                None => true,
-                Some(n) => (n.0, &n.1) < (u.created_at, &u.id),
-            };
-            if better {
-                newest = Some((u.created_at, u.id, u.new_oid));
-            }
-        }
-        Ok((tips, newest.map(|(_, _, oid)| oid)))
+        let base =
+            crate::refs::read_merge_base(self.client, contract, &scope, base_ref_name).await?;
+        // v1 folds against the newest valid tip, deletions ignored, as it always has.
+        Ok((base.historical.into_iter().collect(), base.tip))
     }
 
     /// Post a `review` verdict on a PR (`1` approve, `2` request-changes, `3` comment).

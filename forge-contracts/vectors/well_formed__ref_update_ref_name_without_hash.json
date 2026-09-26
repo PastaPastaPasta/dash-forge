@@ -1,0 +1,14 @@
+{
+  "name": "ref_update_ref_name_without_hash",
+  "description": "A public ref update with a refName and no refNameHash is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

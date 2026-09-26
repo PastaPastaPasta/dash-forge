@@ -9,7 +9,7 @@
 
 import { matchesProtected } from './matchesProtected'
 import { compareKey, isContentHash, isLegalRefName, isNullOid, refNameHashMatches } from './oid'
-import type { ConfigDoc, IsAncestor, RefHead, RefState, RefUpdate } from './types'
+import type { ConfigDoc, IsAncestor, MergeBaseTips, RefHead, RefState, RefUpdate } from './types'
 
 /** The `config` in force at time `at`: newest config with `createdAt <= at` (tie: greatest id). */
 function configAsOf(configHistory: readonly ConfigDoc[], at: number): ConfigDoc | undefined {
@@ -38,6 +38,41 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
   }
   // Unprotected: either type is fine.
   return true
+}
+
+/** The valid updates of the ref keyed `refNameHash`, ascending by (createdAt, id): steps 1–2 of {@link resolveRef}. */
+function validUpdates(updates: readonly RefUpdate[], configHistory: readonly ConfigDoc[], refNameHash: string): RefUpdate[] {
+  return updates.filter((u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory)).sort(compareKey)
+}
+
+/**
+ * The base-ref history a PR merge is verified against (§4 routing, §6 merge reachability);
+ * ports `merge_base_tips` in `crates/forge-core/src/rules.rs` (vectors `merge_base_tips__*`).
+ *
+ * Only a VALID update moves a ref ({@link resolveRef} step 1): a legal name that hashes to
+ * its key, and on a ref protected by the config in force when it was written, the
+ * MAINTAIN-gated `protectedRefUpdate` type. A plain `refUpdate` naming a protected ref is
+ * inert, so the commit it names was never on the branch, and a merge event naming it must
+ * not count. The fold takes `tip` as the base tip and membership in `historical` as the
+ * ancestry predicate (`historicalTipsPredicate` in `lib/repo/issues.ts`).
+ */
+export function mergeBaseTips(
+  updates: readonly RefUpdate[],
+  configHistory: readonly ConfigDoc[],
+  refNameHash: string,
+): MergeBaseTips {
+  const valid = validUpdates(updates, configHistory, refNameHash)
+  const historical: string[] = []
+  for (const u of valid) {
+    if (!isNullOid(u.newOid) && !historical.includes(u.newOid)) historical.push(u.newOid)
+  }
+  const newestTip = valid.findLast((u) => !isNullOid(u.newOid))
+  const newest = valid.at(-1)
+  return {
+    historical,
+    tip: newestTip?.newOid ?? null,
+    current: newest === undefined || isNullOid(newest.newOid) ? null : newest.newOid,
+  }
 }
 
 /**
@@ -76,13 +111,8 @@ export function resolveRef(
   refNameHash: string,
   isAncestor: IsAncestor,
 ): RefState {
-  // (1) validity filter, keeping only this ref's updates.
-  const valid = updates.filter(
-    (u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory),
-  )
-
-  // (2) order ascending by (createdAt, id).
-  valid.sort(compareKey)
+  // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+  const valid = validUpdates(updates, configHistory, refNameHash)
 
   // (3) unborn / deleted.
   const newest = valid[valid.length - 1]

@@ -256,18 +256,8 @@ pub fn resolve_ref(
     ref_name_hash: &str,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> RefState {
-    // (1) validity filter, keeping only this ref's updates.
-    let mut valid: Vec<&RefUpdate> = updates
-        .iter()
-        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
-        .collect();
-
-    // (2) order ascending by (createdAt, id).
-    valid.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+    let valid = valid_updates(updates, config_history, ref_name_hash);
 
     // (3) unborn / deleted.
     let Some(newest) = valid.last() else {
@@ -479,6 +469,88 @@ pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Op
                 .then_with(|| a.id.cmp(&b.id))
         })
         .map(|u| u.ref_name.as_str())
+}
+
+/// A PR's base ref as merge verification sees it: see [`merge_base_tips`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeBaseTips {
+    /// Every commit a VALID update has set the ref to (deletions excluded), oldest first by
+    /// `(createdAt, id)`, each once. A merge counts iff its `oid` is one of them.
+    pub historical: Vec<Oid>,
+    /// The newest of `historical`, or `None` when the ref never had a valid tip. A deletion
+    /// does not clear it: a PR merged into a branch stays merged after the branch is deleted.
+    /// This is the base tip the PR fold takes.
+    pub tip: Option<Oid>,
+    /// Where the ref points now: the newest valid update's `newOid`, `None` when that update
+    /// deleted the ref (or there is none). What a merge builds on; not a fold input.
+    pub current: Option<Oid>,
+}
+
+impl MergeBaseTips {
+    /// Whether `oid` has been a valid tip of the base (the merge-reachability predicate).
+    #[must_use]
+    pub fn contains(&self, oid: &str) -> bool {
+        self.historical.iter().any(|t| t == oid)
+    }
+}
+
+/// The base-ref history a PR merge is verified against (§4 routing, §6 merge reachability).
+///
+/// Only a *valid* update moves a ref ([`resolve_ref`] step 1): its `refName` is legal and
+/// hashes to its key, and on a ref protected by the config in force when it was written,
+/// it came through the MAINTAIN-gated `protectedRefUpdate` type. A plain `refUpdate`
+/// naming a protected ref is inert, so the commit it names was never on the branch and a
+/// merge event naming that commit must not count. Without this filter, a writer (or on v1
+/// any WRITE holder) could flip any PR to "merged" on a protected branch they cannot push
+/// to: post a plain update to it naming the PR head, then a merge event.
+///
+/// `updates` may hold other refs' updates; only those keyed `ref_name_hash` count. Used by
+/// both rule versions (the fold then takes `tip` as the base tip and [`MergeBaseTips::contains`]
+/// as the ancestry predicate).
+#[must_use]
+pub fn merge_base_tips(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+) -> MergeBaseTips {
+    let valid = valid_updates(updates, config_history, ref_name_hash);
+    let mut historical: Vec<Oid> = Vec::new();
+    for u in &valid {
+        if !is_null_oid(&u.new_oid) && !historical.contains(&u.new_oid) {
+            historical.push(u.new_oid.clone());
+        }
+    }
+    // `valid` is ascending: the newest non-null tip, and the newest update's own tip.
+    let tip = valid
+        .iter()
+        .rev()
+        .find(|u| !is_null_oid(&u.new_oid))
+        .map(|u| u.new_oid.clone());
+    let current = valid
+        .last()
+        .filter(|u| !is_null_oid(&u.new_oid))
+        .map(|u| u.new_oid.clone());
+    MergeBaseTips {
+        historical,
+        tip,
+        current,
+    }
+}
+
+/// The valid updates of the ref keyed `ref_name_hash` ([`is_update_valid`]), ascending by
+/// `(created_at, id)`: steps 1 and 2 of [`resolve_ref`], shared with [`merge_base_tips`].
+fn valid_updates<'a>(
+    updates: &'a [RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+) -> Vec<&'a RefUpdate> {
+    let mut valid: Vec<&RefUpdate> = updates
+        .iter()
+        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
+        .collect();
+    valid.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    valid
 }
 
 /// The as-of-time protection check from §4: is update `u` a valid mover of its ref? A legal
@@ -1160,9 +1232,9 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 mod tests {
     use super::{
         display_ref_name, fold_issue_state, fold_pr_state, holdings_as_of, is_legal_ref_name,
-        matches_protected, overlay_tree, resolve_ref, v2, Ancestry, AuthzResolver, ConfigDoc,
-        Event, EventKind, FlatIndex, Holdings, IssueState, PrState, RefState, RefUpdate, TokenKind,
-        TokenOp, TokenRecord, TreeDiff, Verdict,
+        matches_protected, merge_base_tips, overlay_tree, resolve_ref, v2, Ancestry, AuthzResolver,
+        ConfigDoc, Event, EventKind, FlatIndex, Holdings, IssueState, MergeBaseTips, PrState,
+        RefState, RefUpdate, TokenKind, TokenOp, TokenRecord, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1348,6 +1420,46 @@ mod tests {
         ancestry: Ancestry,
     }
 
+    /// A PR base ref's raw history: the fold's base tip and merge predicate then come from
+    /// [`merge_base_tips`] instead of a vector-supplied `baseTip` / `ancestry`.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct BaseHistory {
+        updates: Vec<RefUpdate>,
+        #[serde(default)]
+        config_history: Vec<ConfigDoc>,
+        ref_name_hash: String,
+    }
+
+    /// The fold's base tip and ancestry for a vector: as supplied, or from `base_history`
+    /// (then `baseTip` / `ancestry` must be absent) as the readers build them — the tip is
+    /// [`MergeBaseTips::tip`], and an oid is "an ancestor of the tip" iff it is one of
+    /// [`MergeBaseTips::historical`].
+    fn fold_base(
+        ctx: &str,
+        base_history: Option<&BaseHistory>,
+        base_tip: Option<&str>,
+        ancestry: &Ancestry,
+    ) -> (Option<String>, Ancestry) {
+        let Some(h) = base_history else {
+            return (base_tip.map(str::to_owned), ancestry.clone());
+        };
+        assert!(
+            base_tip.is_none() && ancestry.pairs.is_empty(),
+            "vector `{ctx}`: baseHistory replaces baseTip and ancestry"
+        );
+        let tips = merge_base_tips(&h.updates, &h.config_history, &h.ref_name_hash);
+        let pairs = match &tips.tip {
+            Some(tip) => tips
+                .historical
+                .iter()
+                .map(|oid| (oid.clone(), tip.clone()))
+                .collect(),
+            None => Vec::new(),
+        };
+        (tips.tip, Ancestry { pairs })
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct OverlayInput {
@@ -1485,6 +1597,17 @@ mod tests {
         base_tip: Option<String>,
         #[serde(default)]
         ancestry: Ancestry,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_history: Option<BaseHistory>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct RefNameHashesInput {
+        doc: v2::ContentDoc,
+        /// The epoch's `K_ref`, hex; absent for a public repo (`sha256`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ref_key: Option<String>,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1579,6 +1702,43 @@ mod tests {
             .unwrap_or_else(|e| panic!("vector `{}`: {} expected: {e}", v.name, v.case))
     }
 
+    /// `pack_copies`: `expected` names any non-empty subset of the three results; each named
+    /// one is checked.
+    fn run_pack_copies(v: &Vector) {
+        let ctx = &v.name;
+        let inp: PackCopiesInput = input(v);
+        let want = v
+            .expected
+            .as_object()
+            .expect("pack_copies expected is an object");
+        assert!(
+            !want.is_empty()
+                && want
+                    .keys()
+                    .all(|k| ["order", "selected", "readOrder"].contains(&k.as_str())),
+            "vector `{ctx}`: expected must name some of order / selected / readOrder"
+        );
+        if let Some(order) = want.get("order") {
+            let got: Vec<&str> = v2::order_pack_copies(&inp.copies)
+                .into_iter()
+                .map(|c| c.id.as_str())
+                .collect();
+            assert_eq!(serde_json::json!(got), *order, "vector `{ctx}` order");
+        }
+        if let Some(selected) = want.get("selected") {
+            let got = v2::select_pack_copy(&inp.copies).map(|c| c.id.as_str());
+            assert_eq!(serde_json::json!(got), *selected, "vector `{ctx}` selected");
+        }
+        if let Some(read_order) = want.get("readOrder") {
+            let got = v2::pack_read_order(&inp.copies);
+            assert_eq!(
+                serde_json::json!(got),
+                *read_order,
+                "vector `{ctx}` readOrder"
+            );
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -1590,12 +1750,18 @@ mod tests {
             }
             "fold_pr" => {
                 let inp: FoldPrV2Input = input(v);
+                let (base_tip, ancestry) = fold_base(
+                    ctx,
+                    inp.base_history.as_ref(),
+                    inp.base_tip.as_deref(),
+                    &inp.ancestry,
+                );
                 let got = v2::fold_pr_state_v2(
                     &inp.events,
                     &inp.author_events,
                     &inp.target_author,
-                    inp.base_tip.as_deref(),
-                    |a, d| inp.ancestry.is_ancestor(a, d),
+                    base_tip.as_deref(),
+                    |a, d| ancestry.is_ancestor(a, d),
                 );
                 assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
             }
@@ -1604,40 +1770,7 @@ mod tests {
                 let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc);
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
             }
-            "pack_copies" => {
-                // `expected` names any non-empty subset of the three results; each named is checked
-                let inp: PackCopiesInput = input(v);
-                let want = v
-                    .expected
-                    .as_object()
-                    .expect("pack_copies expected is an object");
-                assert!(
-                    !want.is_empty()
-                        && want
-                            .keys()
-                            .all(|k| ["order", "selected", "readOrder"].contains(&k.as_str())),
-                    "vector `{ctx}`: expected must name some of order / selected / readOrder"
-                );
-                if let Some(order) = want.get("order") {
-                    let got: Vec<&str> = v2::order_pack_copies(&inp.copies)
-                        .into_iter()
-                        .map(|c| c.id.as_str())
-                        .collect();
-                    assert_eq!(serde_json::json!(got), *order, "vector `{ctx}` order");
-                }
-                if let Some(selected) = want.get("selected") {
-                    let got = v2::select_pack_copy(&inp.copies).map(|c| c.id.as_str());
-                    assert_eq!(serde_json::json!(got), *selected, "vector `{ctx}` selected");
-                }
-                if let Some(read_order) = want.get("readOrder") {
-                    let got = v2::pack_read_order(&inp.copies);
-                    assert_eq!(
-                        serde_json::json!(got),
-                        *read_order,
-                        "vector `{ctx}` readOrder"
-                    );
-                }
-            }
+            "pack_copies" => run_pack_copies(v),
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
@@ -1652,6 +1785,22 @@ mod tests {
             "well_formed" => {
                 let inp: WellFormedInput = input(v);
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
+                assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
+            }
+            "merge_base_tips" => {
+                let inp: BaseHistory = input(v);
+                let got = merge_base_tips(&inp.updates, &inp.config_history, &inp.ref_name_hash);
+                assert_eq!(got, expected::<MergeBaseTips>(v), "vector `{ctx}`");
+            }
+            "ref_name_hashes" => {
+                let inp: RefNameHashesInput = input(v);
+                let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {
+                    hex::decode(k)
+                        .ok()
+                        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                        .unwrap_or_else(|| panic!("vector `{ctx}`: refKey must be 32 bytes hex"))
+                });
+                let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "repo_name" => {

@@ -1,15 +1,15 @@
 {
-  "name": "public_ref_update_plaintext",
-  "description": "A public ref update needs its refName.",
+  "name": "ref_update_ref_hash_mismatch",
+  "description": "A public ref update filed under main's hash while naming another branch is malformed.",
   "case": "well_formed",
   "rules": "v2",
   "input": {
     "doc": {
       "kind": "refUpdate",
-      "refName": "refs/heads/main",
+      "refName": "refs/heads/other",
       "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
     },
     "visibility": "public"
   },
-  "expected": true
+  "expected": false
 }

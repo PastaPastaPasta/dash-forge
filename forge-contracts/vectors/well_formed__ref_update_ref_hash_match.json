@@ -1,6 +1,6 @@
 {
-  "name": "public_ref_update_plaintext",
-  "description": "A public ref update needs its refName.",
+  "name": "ref_update_ref_hash_match",
+  "description": "A public ref update whose refName hashes to refNameHash is well-formed.",
   "case": "well_formed",
   "rules": "v2",
   "input": {

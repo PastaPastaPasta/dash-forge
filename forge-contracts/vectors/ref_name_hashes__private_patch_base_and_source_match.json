@@ -1,0 +1,17 @@
+{
+  "name": "private_patch_base_and_source_match",
+  "description": "Private patch: base and source names each verify under the epoch key.",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefName": "refs/heads/fix",
+      "sourceRefNameHash": "d52ca122162668c13212a7775a4a4dc6716d5a465cf4edee61c4cc1ba6cbafcb"
+    },
+    "refKey": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e"
+  },
+  "expected": true
+}

@@ -14,7 +14,10 @@
 //! * [`order_pack_copies`] / [`select_pack_copy`] / [`pack_read_order`] — the pack reader
 //!   rule (§4), over copies whose hash the caller has already checked.
 //! * [`count_approvals`] — PR approvals from members only (§6).
-//! * [`is_well_formed`] — plaintext xor `enc`, and no plaintext in a private repo (§5).
+//! * [`is_well_formed`] — plaintext xor `enc`, no plaintext in a private repo, and ref names
+//!   that hash to their indexed keys (§5).
+//! * [`ref_name_hashes_agree`] — the ref-name / hash binding, public (`sha256`) or private
+//!   (`HMAC-SHA256(K_ref,e, name)`, applied after decryption).
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
 //!
 //! v1 rules (the parent module) are untouched: v1 repositories stay readable with them. The
@@ -615,7 +618,8 @@ pub enum Visibility {
 pub enum ContentKind {
     /// `issue`: plaintext `title` (required), `body`.
     Issue,
-    /// `patch`: plaintext `title` (required), `body`, `baseRefName`, `sourceRefName`.
+    /// `patch`: plaintext `title` (required), `body`, `baseRefName`, `sourceRefName`; the two
+    /// names are bound to the indexed `baseRefNameHash` / `sourceRefNameHash`.
     Patch,
     /// `comment`: plaintext `body` (required) and `path` (an inline comment's file, a content
     /// field so it is encrypted in a private repo: `docs/security/private-repos.md` §8.1).
@@ -623,7 +627,8 @@ pub enum ContentKind {
     /// `review`: plaintext `body` (optional: a review's content is its verdict and
     /// `commitOid`, which are never encrypted).
     Review,
-    /// `refUpdate` or `protectedRefUpdate`: plaintext `refName` (required).
+    /// `refUpdate` or `protectedRefUpdate`: plaintext `refName` (required), bound to the
+    /// indexed `refNameHash`.
     RefUpdate,
     /// `config`: plaintext `defaultBranch`, `protectedPatterns` (neither required).
     Config,
@@ -651,6 +656,15 @@ pub struct ContentDoc {
     /// `sourceRefName` (patches).
     #[serde(default)]
     pub source_ref_name: Option<String>,
+    /// `refNameHash` (ref updates), hex. Not content: the indexed key `refName` must hash to.
+    #[serde(default)]
+    pub ref_name_hash: Option<String>,
+    /// `baseRefNameHash` (patches), hex.
+    #[serde(default)]
+    pub base_ref_name_hash: Option<String>,
+    /// `sourceRefNameHash` (patches), hex.
+    #[serde(default)]
+    pub source_ref_name_hash: Option<String>,
     /// `path` (inline comments).
     #[serde(default)]
     pub path: Option<String>,
@@ -727,19 +741,68 @@ impl ContentDoc {
 ///
 /// Plaintext xor `enc`, and the repository's visibility says which:
 ///
-/// * **public**: no `enc`, and the kind's required plaintext field, if it has one
-///   ([`ContentKind`]);
+/// * **public**: no `enc`, the kind's required plaintext field, if it has one
+///   ([`ContentKind`]), and ref names that hash to their keys ([`ref_name_hashes_agree`]
+///   with `sha256`);
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
+///   The names are inside `enc`, so their binding is checked after decryption
+///   ([`ref_name_hashes_agree`] with the epoch's `K_ref`).
 ///
 /// So plaintext in a private repo (including a private ref update's `refName`) and ciphertext
-/// in a public one are malformed, as is an issue, patch, comment or ref update with neither.
+/// in a public one are malformed, as is an issue, patch, comment or ref update with neither,
+/// and a patch or ref update filed under one ref's hash while naming another.
 #[must_use]
 pub fn is_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
     let plaintext = doc.plaintext();
     let encrypted = present(doc.enc.as_ref());
     match visibility {
-        Visibility::Public => !encrypted && !plaintext.required_missing,
+        Visibility::Public => {
+            !encrypted && !plaintext.required_missing && ref_name_hashes_agree(doc, None)
+        }
         Visibility::Private => encrypted && doc.epoch.is_some() && !plaintext.any,
+    }
+}
+
+/// Whether every ref name a document carries hashes to the key it is indexed under
+/// (`forge-v2.md` §5, `docs/security/private-repos.md` §4.5): `refName` / `refNameHash` on a
+/// ref update, `baseRefName` / `baseRefNameHash` and `sourceRefName` / `sourceRefNameHash` on
+/// a patch.
+///
+/// The hash is `sha256(name)` in a public repo (`ref_key` `None`) and
+/// `HMAC-SHA256(K_ref,e, name)` in a private one, with `ref_key` the `K_ref` of the epoch the
+/// document was written under and `doc` the decrypted content. A name that is present must
+/// have its hash, and they must agree (hex, case-insensitive); a hash with no name has
+/// nothing to check. Readers find a base's history and a ref's updates by the hash, and git
+/// and `dg pr merge` act on the name, so a document whose two disagree would be read as one
+/// ref and acted on as another.
+#[must_use]
+pub fn ref_name_hashes_agree(doc: &ContentDoc, ref_key: Option<&[u8; 32]>) -> bool {
+    let matches = |name: &str, hash: &str| match ref_key {
+        None => super::ref_name_hash_matches(name, hash),
+        Some(key) => {
+            use hmac::{Hmac, Mac as _};
+            let mut mac =
+                Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+            mac.update(name.as_bytes());
+            hex::encode(mac.finalize().into_bytes()).eq_ignore_ascii_case(hash)
+        }
+    };
+    let agrees = |name: Option<&str>, hash: Option<&str>| match name {
+        Some(n) if !n.is_empty() => hash.is_some_and(|h| matches(n, h)),
+        _ => true,
+    };
+    match doc.kind {
+        ContentKind::RefUpdate => agrees(doc.ref_name.as_deref(), doc.ref_name_hash.as_deref()),
+        ContentKind::Patch => {
+            agrees(
+                doc.base_ref_name.as_deref(),
+                doc.base_ref_name_hash.as_deref(),
+            ) && agrees(
+                doc.source_ref_name.as_deref(),
+                doc.source_ref_name_hash.as_deref(),
+            )
+        }
+        _ => true,
     }
 }
 

@@ -1,0 +1,16 @@
+{
+  "name": "private_patch_hashes_without_names",
+  "description": "A private patch carries only its hashes and enc: nothing plaintext to compare, well-formed (the names are checked after decryption).",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

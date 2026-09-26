@@ -1,0 +1,15 @@
+{
+  "name": "private_hmac_match",
+  "description": "Private, epoch 0: after decryption refs/heads/main hashes to refNameHash under K_ref,0 (private-repos.md §11 private_ref_hash).",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main",
+      "refNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579"
+    },
+    "refKey": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e"
+  },
+  "expected": true
+}

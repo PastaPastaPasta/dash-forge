@@ -149,12 +149,14 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
 
 /**
  * Whether a raw document is well-formed for its repo (`isWellFormed`, `forge-v2.md` §5:
- * plaintext xor `enc`, the visibility says which). v1 has no such rule, so every v1 document
- * passes. Every forge-v2 reader skips a malformed document before any other rule sees it.
+ * plaintext xor `enc`, the visibility says which, and a patch's or ref update's names hash
+ * to their indexed keys). v1 has no such rule, so every v1 document passes. Every forge-v2
+ * reader skips a malformed document before any other rule sees it.
  */
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
   if (repo.kind === 'v1') return true
   const text = (field: string): string | null => (typeof doc[field] === 'string' ? str(doc, field) : null)
+  const hex = (field: string): string | null => byteFieldToHex(doc, field) || null
   return isWellFormed(
     {
       kind,
@@ -163,10 +165,13 @@ export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument)
       refName: text('refName'),
       baseRefName: text('baseRefName'),
       sourceRefName: text('sourceRefName'),
+      refNameHash: hex('refNameHash'),
+      baseRefNameHash: hex('baseRefNameHash'),
+      sourceRefNameHash: hex('sourceRefNameHash'),
       defaultBranch: text('defaultBranch'),
       protectedPatterns: stringArray(doc, 'protectedPatterns'),
       path: text('path'),
-      enc: byteFieldToHex(doc, 'enc') || null,
+      enc: hex('enc'),
       epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
     },
     repo.visibility,

@@ -1,0 +1,16 @@
+{
+  "name": "patch_ref_hash_of_private_key_in_public_repo",
+  "description": "A public patch whose base hash is a private repo's HMAC of the name, not its sha256, is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}
