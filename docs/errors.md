@@ -49,11 +49,17 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 ## E103
 
-**Not implemented yet.** The command exists but is not wired yet (for example `dg repo fork`, `dg import`). The output describes the manual workaround.
+**Not implemented yet.** The command exists but is not wired yet (for example `dg import`). The output describes the manual workaround.
 
 ## E104
 
 **Checks failed.** `dg doctor` found at least one failing check. Each `✗` row carries its own fix, and `dg doctor --fix` applies the safe ones.
+
+## E105
+
+**Merge has conflicts.** `dg pr merge` tried a three-way merge of the pull request's head into its base locally and the two change the same lines. Nothing was pushed and no merge event was posted.
+
+Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>` and fix the conflicts, push the result to the base branch (a member can) or back to the PR's source branch, then run `dg pr merge` again.
 
 ## E201
 

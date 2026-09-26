@@ -203,6 +203,16 @@ pub enum RefState {
     },
 }
 
+/// The tip a ref points at: its resolved oid, a diverged ref's provisional tip
+/// (`heads[0]`), or `None` when unborn.
+pub fn tip_of(state: &RefState) -> Option<String> {
+    match state {
+        RefState::Resolved { oid, .. } => Some(oid.clone()),
+        RefState::Diverged { heads } => heads.first().map(|h| h.oid.clone()),
+        RefState::Unborn => None,
+    }
+}
+
 /// Fold a ref's `refUpdate`/`protectedRefUpdate` history into its [`RefState`].
 ///
 /// `updates` may contain updates for *other* refs; only those whose `refNameHash`

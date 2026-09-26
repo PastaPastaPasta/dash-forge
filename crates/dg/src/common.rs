@@ -102,6 +102,13 @@ pub async fn resolve(
         .with_context(|| format!("resolving {owner}/{}", repo_ref.name))
 }
 
+/// An issue / PR number as the contract stores it (1..=2^32-1), or a usage error.
+pub fn number_arg(n: u64) -> Result<u32> {
+    u32::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+        crate::errors::usage(format!("{n} is not an issue or PR number (1-4294967295)"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{looks_like_identity_id, RepoRef};

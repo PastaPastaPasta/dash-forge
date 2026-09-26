@@ -163,6 +163,45 @@ pub async fn resolve_id(client: &PlatformClient, id: &str) -> Result<RepoRef> {
     })
 }
 
+/// The forks of the forge-v2 repo `parent_id` (the `forkOf` index), optionally only those
+/// `owner` holds.
+pub async fn find_forks(
+    client: &PlatformClient,
+    forge: &ForgeIds,
+    parent_id: &str,
+    owner: Option<&str>,
+) -> Result<Vec<RepoRef>> {
+    let core = client.fetch_contract(&forge.core).await?;
+    let docs = client
+        .query_all_documents(
+            &core,
+            DOC_REPO,
+            &[QueryFilter::eq(
+                "forkOf",
+                FieldValue::identifier(platform::decode_identifier(parent_id)?),
+            )],
+            &[QueryOrder::asc("forkOf")],
+        )
+        .await?;
+    docs.iter()
+        .filter(|d| owner.is_none_or(|o| d.owner_id == o))
+        .map(|d| repo_ref_from_doc(forge, d))
+        .collect()
+}
+
+/// The `forkOf` of a forge-v2 repo, if it is a fork.
+pub async fn fork_parent(client: &PlatformClient, repo: &RepoRef) -> Result<Option<String>> {
+    let RepoRef::V2 { forge, repo_id, .. } = repo else {
+        return Ok(None);
+    };
+    let core = client.fetch_contract(&forge.core).await?;
+    Ok(client
+        .fetch_document(&core, DOC_REPO, repo_id)
+        .await?
+        .and_then(|d| d.field_bytes32("forkOf"))
+        .map(platform::encode_identifier))
+}
+
 /// Every repository `owner` has: forge-v2 repos (when deployed), then v1 registry listings
 /// (when a registry is deployed), each by name.
 pub async fn list_owned(client: &PlatformClient, owner: &str) -> Result<Vec<RepoSummary>> {

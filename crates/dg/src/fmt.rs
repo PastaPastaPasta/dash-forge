@@ -18,6 +18,10 @@ pub const FALLBACK_DASH_USD: f64 = 30.0;
 /// An upper bound; the measured cost is reported after the create lands.
 pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 200_000_000;
 
+/// The pre-write estimate per extra document a fork writes (a pack manifest or a ref
+/// update, each a few hundred bytes), in credits. An upper bound.
+pub const FORK_PER_DOC_CREDITS: u64 = 20_000_000;
+
 /// The DASH/USD price to use: `DASH_USD` env override, else the offline fallback.
 pub fn dash_usd_price() -> f64 {
     std::env::var("DASH_USD")

@@ -57,6 +57,8 @@ pub struct CreateRepoOpts {
     pub backend_mode: u8,
     /// The visibility. Only public is supported until the private-repo release.
     pub visibility: Visibility,
+    /// The parent repository's id when this is a fork (`repo.forkOf`, immutable).
+    pub fork_of: Option<[u8; 32]>,
 }
 
 impl CreateRepoOpts {
@@ -69,6 +71,7 @@ impl CreateRepoOpts {
             default_branch: "main".into(),
             backend_mode: 0,
             visibility: Visibility::Public,
+            fork_of: None,
         }
     }
 }
@@ -219,6 +222,9 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     }
     if !opts.display_name.is_empty() {
         p.insert("displayName".into(), FieldValue::text(&opts.display_name));
+    }
+    if let Some(parent) = opts.fork_of {
+        p.insert("forkOf".into(), FieldValue::identifier(parent));
     }
     p
 }

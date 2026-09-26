@@ -62,6 +62,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::NOT_FOUND, "not found"),
     (codes::NOT_IMPLEMENTED, "not implemented yet"),
     (codes::CHECKS_FAILED, "checks failed"),
+    (codes::MERGE_CONFLICT, "merge has conflicts"),
     (codes::USAGE, "invalid arguments"),
     (codes::INVALID_REPO_NAME, "invalid repository name"),
     (
@@ -112,6 +113,8 @@ pub mod codes {
     pub const NOT_IMPLEMENTED: &str = "E103";
     /// A diagnostic (`dg doctor`) found failing checks.
     pub const CHECKS_FAILED: &str = "E104";
+    /// `dg pr merge` cannot merge without a person: the head and base conflict.
+    pub const MERGE_CONFLICT: &str = "E105";
     /// Arguments that do not make sense together.
     pub const USAGE: &str = "E201";
     /// A repository name outside `^[a-z0-9][a-z0-9._-]{0,62}$`.

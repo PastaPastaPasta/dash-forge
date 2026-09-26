@@ -1,23 +1,28 @@
-//! `dg repo` — repository lifecycle: create / view / list / backend set (+ clone/fork).
+//! `dg repo` — repository lifecycle: create / fork / view / list / star / backend set
+//! (+ clone).
 //!
 //! New repositories are forge-v2: a `repo` document plus the owner's `maintainer`
 //! membership and an initial `config` in the network's shared forge-core contract, written
-//! by one resumable session (`forge_core::create`). v1 repositories (one contract each)
-//! remain viewable and cloneable but are read only. Repositories cannot be deleted.
+//! by one resumable session (`forge_core::create`). A fork is the same plus `forkOf`, the
+//! parent's packs recorded by reference and its refs copied (`forge_core::fork`). v1
+//! repositories (one contract each) remain viewable and cloneable but are read only.
+//! Repositories cannot be deleted.
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use forge_core::collab::v2::Collab;
 use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
 use forge_core::tokens::TokenService;
-use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::fmt::{
+    cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
+};
 use crate::{RepoBackendCommand, RepoCommand};
 
 /// Dispatch a `repo` subcommand.
@@ -40,7 +45,9 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             create(ctx, &opts, storage.label()).await
         }
         RepoCommand::Clone { repo } => clone(ctx, repo),
-        RepoCommand::Fork { repo } => fork(ctx, repo),
+        RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
+        RepoCommand::Star { repo } => star(ctx, repo, true).await,
+        RepoCommand::Unstar { repo } => star(ctx, repo, false).await,
         RepoCommand::View { repo } => view(ctx, repo).await,
         RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
@@ -131,28 +138,142 @@ fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fork — not yet wired (`repo.forkOf` + copied refs; the collab PR).
-///
-/// Fails rather than returning success, so `dg repo fork X && dg pr create ...` does not
-/// proceed as though a fork existed.
-#[allow(clippy::unnecessary_wraps)]
-fn fork(_ctx: &Ctx, repo: &str) -> Result<()> {
-    Err(crate::errors::reported(
-        UserError::new(
-            codes::NOT_IMPLEMENTED,
-            "dg repo fork is not implemented yet",
-        )
-        .cause("forking needs `repo.forkOf` and copied refs (the collaboration release)")
-        .fix("`dg repo create <name>` (a forge-v2 repo costs about 0.001 DASH)")
-        .fix(format!(
-            "`git push dash://<you>/<name> <branch>`, then point reviewers of {repo} at it"
-        )),
+/// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs
+/// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
+/// into the parent's scope), and the parent's refs copied. Resumable.
+async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
+    let repo_ref = RepoRef::parse(repo)?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let parent = resolve(&client, &identity, &repo_ref).await?;
+    parent.require_v2()?;
+    let slug = repo_slug(name.unwrap_or(parent.name()))?;
+    if parent.owner_id() == identity.id() && slug == parent.name() {
+        return Err(crate::errors::usage(format!(
+            "{} is yours already; pass --name <new name> to fork it under another name",
+            parent.display()
+        )));
+    }
+    let price = dash_usd_price();
+    let packs = RepoService::new(&client, &identity, &bridge)
+        .read_pack_manifests(&parent)
+        .await
+        .map_or(0, |m| {
+            forge_core::fork::plan_manifests(&m, &std::collections::BTreeSet::new()).len()
+        });
+    // repo + maintainer + config, one manifest per pack, and a few ref updates.
+    let estimate = REPO_CREATE_ESTIMATE_CREDITS + FORK_PER_DOC_CREDITS * (packs as u64 + 4);
+    if !ctx.json {
+        println!(
+            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + refs   {}",
+            parent.display(),
+            identity.id(),
+            ctx.network_label(),
+            cost_line(estimate, price)
+        );
+    }
+    if !ctx.confirm(&format!("Fork {}?", parent.display()))? {
+        return Err(crate::errors::cancelled());
+    }
+    let opts = CreateRepoOpts {
+        description: format!("fork of {}", parent.display()),
+        ..CreateRepoOpts::public(slug)
+    };
+    let result = forge_core::fork::fork_repo(
+        &client,
+        &identity,
+        &bridge,
+        &parent,
+        &opts,
+        &default_journal_dir()?,
+    )
+    .await
+    .context("forking the repository")?;
+    let fork = &result.created.repo;
+    let nothing_new = result.created.already_existed()
+        && result.manifests_written == 0
+        && result.refs_written.is_empty();
+    ctx.emit(
         json!({
-            "status": "not_implemented",
-            "repo": repo,
-            "workaround": "dg repo create <name>, then push your branch to it",
+            "status": if nothing_new { "exists" } else { "forked" },
+            "repoId": fork.id(),
+            "ownerId": fork.owner_id(),
+            "name": fork.name(),
+            "forkOf": parent.id(),
+            "parent": parent.display(),
+            "remoteUrl": fork.remote_url(),
+            "manifestsWritten": result.manifests_written,
+            "platformPacksReferenced": result.platform_referenced,
+            "manifestsExisting": result.manifests_existing,
+            "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
+            "refsWritten": result.refs_written,
+            "cost": cost_json(result.cost_credits, price),
         }),
-    ))
+        || {
+            println!("✓ forked {} → {}", parent.display(), fork.display());
+            println!(
+                "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
+                result.manifests_written, result.platform_referenced
+            );
+            if !result.unreferenceable.is_empty() {
+                println!(
+                    "  warning: {} pack(s) have no copy a fork can reference; push those objects to the fork",
+                    result.unreferenceable.len()
+                );
+            }
+            println!("  refs:    {} copied", result.refs_written.len());
+            println!("  remote:  {}", fork.remote_url());
+            println!("  cost:    {}", cost_line(result.cost_credits, price));
+            println!(
+                "  next:    push a branch to {}, then `dg pr create {}`",
+                fork.remote_url(),
+                parent.display()
+            );
+        },
+    );
+    Ok(())
+}
+
+/// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
+/// delete).
+async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
+    let repo_ref = RepoRef::parse(repo)?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    handle.require_v2()?;
+    let verb = if on { "Star" } else { "Unstar" };
+    if !ctx.confirm(&format!(
+        "{verb} {}? (one small document)",
+        handle.display()
+    ))? {
+        return Err(crate::errors::cancelled());
+    }
+    let collab = Collab::new(&client, &identity, &bridge);
+    let changed = if on {
+        collab.star(&handle).await?
+    } else {
+        collab.unstar(&handle).await?
+    };
+    let starred = collab.is_starred(&handle).await.unwrap_or(on);
+    let count = collab.star_count(&handle).await.ok();
+    let (status, what) = match (on, changed) {
+        (true, true) => ("starred", "starred"),
+        (true, false) => ("already_starred", "already starred"),
+        (false, true) => ("unstarred", "unstarred"),
+        (false, false) => ("not_starred", "was not starred"),
+    };
+    ctx.emit(
+        json!({
+            "status": status,
+            "repo": handle.display(),
+            "starred": starred,
+            "stars": count,
+        }),
+        || {
+            let n = count.map(|c| format!(" ({c} star(s))")).unwrap_or_default();
+            println!("✓ {} {what}{n}", handle.display());
+        },
+    );
+    Ok(())
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, members.

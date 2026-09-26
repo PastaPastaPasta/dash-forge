@@ -314,6 +314,7 @@ async fn resolve_or_create(
         default_branch,
         backend_mode: cfg.backend.mode(),
         visibility: forge_core::rules::v2::Visibility::Public,
+        fork_of: None,
     };
     tracing::info!(name = %opts.name, "creating destination repo (forge-v2)");
     let result = create_repo(client, identity, bridge, &opts, &default_journal_dir()?)

@@ -25,6 +25,8 @@ toml = "0.8"
 hex = "0.4"
 # `dg storage test` drives the storage probes over the same rustls client forge-core uses.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# `dg pr merge` builds the merge in a throwaway repository.
+tempfile = "3"
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
 # publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level

@@ -14,7 +14,9 @@ mod cost;
 mod doctor;
 mod errors;
 mod fmt;
+mod git;
 mod issue;
+mod label;
 mod maint;
 mod pr;
 mod release;
@@ -107,6 +109,9 @@ pub enum Command {
     /// Releases.
     #[command(subcommand)]
     Release(ReleaseCommand),
+    /// Label definitions (apply one with `dg issue label`).
+    #[command(subcommand)]
+    Label(LabelCommand),
     /// Collaborator (token) management.
     #[command(subcommand)]
     Collab(CollabCommand),
@@ -209,8 +214,22 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Fork a repo (not yet wired).
+    /// Fork a repo: a new repo with `forkOf`, the parent's packs recorded by reference
+    /// (nothing re-uploaded) and its refs copied.
     Fork {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The fork's name (default: the parent's).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Star a repo.
+    Star {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Remove your star from a repo.
+    Unstar {
         /// The repository (`owner/name`).
         repo: String,
     },
@@ -313,84 +332,116 @@ pub enum IssueCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum PrCommand {
-    /// Create a pull request.
-    Create {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// PR title.
-        #[arg(long)]
-        title: String,
-        /// PR body.
-        #[arg(long, default_value = "")]
-        body: String,
-        /// Base ref name in the target repo (e.g. `refs/heads/main`).
-        #[arg(long, default_value = "refs/heads/main")]
-        base: String,
-        /// The source (fork) contract id (base58) where the PR objects live.
-        #[arg(long = "source-contract")]
-        source_contract: String,
-        /// Head commit oid (hex) — the PR tip.
-        #[arg(long = "head-oid")]
-        head_oid: String,
-        /// Source ref name in the fork (e.g. `refs/heads/feature`).
-        #[arg(long = "source-ref")]
-        source_ref: Option<String>,
-    },
+    /// Open a pull request from a branch of this repo or of your fork.
+    Create(Box<PrCreateArgs>),
     /// List pull requests.
     List {
         /// The repository (`owner/name`).
         repo: String,
-        /// Max results (0 = server default).
+        /// Max results (0 = one page of 100).
         #[arg(long, default_value_t = 0)]
         limit: u32,
+        /// State filter.
+        #[arg(long, value_enum, default_value = "open")]
+        state: StateArg,
     },
-    /// View a pull request.
+    /// View a pull request: state, approvals, reviews, comments.
     View {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
     },
-    /// Check out a pull request's branch, fetching its head from the source repo first.
+    /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo.
     Checkout {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
     },
-    /// Review a pull request.
+    /// Review a pull request (on its current head).
     Review {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
-        /// The review verdict.
+        /// Approve.
+        #[arg(long)]
+        approve: bool,
+        /// Request changes.
+        #[arg(long)]
+        request_changes: bool,
+        /// Comment without a verdict.
+        #[arg(long)]
+        comment: bool,
+        /// The verdict (alternative to the flags above).
         #[arg(long, value_enum)]
-        verdict: VerdictArg,
+        verdict: Option<VerdictArg>,
         /// Review body.
         #[arg(long, default_value = "")]
         body: String,
-        /// The reviewed commit oid (hex); defaults to the PR head.
-        #[arg(long)]
-        commit: Option<String>,
     },
-    /// Merge a pull request (posts the merge event; the git merge is client-side).
+    /// Merge a pull request: fast-forward or merge commit, push to the base, post the event.
     Merge {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
-        /// The merge-commit oid (hex); defaults to the PR head oid.
-        #[arg(long = "merge-oid")]
+        /// Only post the merge event (the merge was pushed some other way).
+        #[arg(long)]
+        event_only: bool,
+        /// With --event-only: the commit the event names (default: the PR head, or the base
+        /// tip when the head is already in it).
+        #[arg(long = "merge-oid", requires = "event_only")]
         merge_oid: Option<String>,
     },
-    /// Show a pull request's diff, fetching its head from the source repo first.
+    /// Close a pull request without merging.
+    Close {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
+    /// Reopen a closed pull request.
+    Reopen {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
+    /// Show a pull request's diff against its base, fetching both first.
     Diff {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
     },
+}
+
+/// `dg pr create` arguments.
+#[derive(Debug, clap::Args)]
+pub struct PrCreateArgs {
+    /// The target repository (`owner/name`).
+    pub repo: String,
+    /// PR title (default: the head commit's subject).
+    #[arg(long)]
+    pub title: Option<String>,
+    /// PR body.
+    #[arg(long, default_value = "")]
+    pub body: String,
+    /// Base branch in the target repo (default: its default branch).
+    #[arg(long)]
+    pub base: Option<String>,
+    /// The branch holding the change (default: the current branch).
+    #[arg(long)]
+    pub head: Option<String>,
+    /// The repository holding that branch, `owner/name` or repo id (default: your fork of
+    /// the target, else the target itself).
+    #[arg(long = "head-repo")]
+    pub head_repo: Option<String>,
+    /// The head commit (default: where the branch points in the head repo).
+    #[arg(long = "head-oid")]
+    pub head_oid: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -411,6 +462,12 @@ pub enum ReleaseCommand {
         /// Mark the release yanked.
         #[arg(long)]
         yanked: bool,
+        /// A file to attach (repeatable): uploaded to your storage, sha256 recorded.
+        #[arg(long = "asset", value_name = "FILE")]
+        assets: Vec<PathBuf>,
+        /// Storage profiles for the assets (default: this repository's `dash.storage`).
+        #[arg(long)]
+        storage: Option<String>,
     },
     /// List releases.
     List {
@@ -429,6 +486,38 @@ pub enum ReleaseCommand {
         /// Output path (defaults to the asset name in the cwd).
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LabelCommand {
+    /// List a repository's labels.
+    List {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Include retired labels.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Define (or redefine) a label.
+    Create {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The label name.
+        name: String,
+        /// Color, `#rrggbb`.
+        #[arg(long, default_value = "")]
+        color: String,
+        /// Description.
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Retire a label (a newer definition marked retired).
+    Retire {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The label name.
+        name: String,
     },
 }
 
@@ -698,7 +787,7 @@ pub enum StateArg {
 }
 
 /// PR review verdict.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum VerdictArg {
     Approve,
     RequestChanges,
@@ -827,8 +916,9 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Auth(cmd) => auth::run(ctx, cmd).await,
         Command::Repo(cmd) => repo::run(ctx, cmd).await,
         Command::Issue(cmd) => issue::run(ctx, cmd).await,
-        Command::Pr(cmd) => pr::run(ctx, cmd).await,
+        Command::Pr(cmd) => Box::pin(pr::run(ctx, cmd)).await,
         Command::Release(cmd) => release::run(ctx, cmd).await,
+        Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,

@@ -1105,14 +1105,17 @@ pub(crate) fn review_from_doc(d: &platform::FetchedDocument) -> Review {
 // Releases
 // ===========================================================================
 
-/// A release asset (serialized into the `assets` JSON-string field, §0/§2.3).
+/// A release asset (serialized into the `assets` JSON-string field, §0/§2.3):
+/// `{name, sha256, sizeBytes, uris}` (`size_bytes`, written by earlier clients, still reads).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReleaseAsset {
     /// Asset file name.
     pub name: String,
     /// Hex SHA-256 of the asset.
     pub sha256: String,
     /// Size in bytes.
+    #[serde(alias = "size_bytes", default)]
     pub size_bytes: u64,
     /// Mirror URIs (≤ 4).
     pub uris: Vec<String>,

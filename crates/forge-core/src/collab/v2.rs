@@ -41,7 +41,8 @@ use crate::platform::{
 };
 use crate::rules::v2::{
     allocate_number, count_approvals, fold_issue_state_v2, fold_pr_state_v2, is_well_formed,
-    number_ceiling, Approvals, ContentDoc, ContentKind, Review as RuleReview, Role, Visibility,
+    number_ceiling, Approvals, ContentDoc, ContentKind, Review as RuleReview, Role, RoleOracle,
+    Visibility,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -1014,8 +1015,25 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         patch: &V2Patch,
     ) -> Result<(Approvals, Vec<V2Review>)> {
+        let oracle = self.member_oracle(repo).await?;
+        self.approvals_with(repo, patch, &oracle).await
+    }
+
+    /// The repo's current membership as the rules take it (read once for a whole list).
+    pub async fn member_oracle(&self, repo: &RepoRef) -> Result<RoleOracle> {
+        Ok(members::oracle(
+            &MemberReader::new(self.client).list(repo).await?,
+        ))
+    }
+
+    /// [`Self::approvals`] against a membership the caller already read.
+    pub async fn approvals_with(
+        &self,
+        repo: &RepoRef,
+        patch: &V2Patch,
+        oracle: &RoleOracle,
+    ) -> Result<(Approvals, Vec<V2Review>)> {
         let reviews = self.reviews(repo, &patch.document_id).await?;
-        let members = MemberReader::new(self.client).list(repo).await?;
         let rule: Vec<RuleReview> = reviews
             .iter()
             .map(|r| RuleReview {
@@ -1026,10 +1044,7 @@ impl<'a> Collab<'a> {
                 created_at: r.created_at,
             })
             .collect();
-        Ok((
-            count_approvals(&rule, &members::oracle(&members), &patch.head_oid),
-            reviews,
-        ))
+        Ok((count_approvals(&rule, oracle, &patch.head_oid), reviews))
     }
 
     // --- numbering --------------------------------------------------------------------

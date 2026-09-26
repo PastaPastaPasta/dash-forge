@@ -1,181 +1,398 @@
-//! `dg pr` — pull requests (patches).
+//! `dg pr` — pull requests on forge-v2 (v1 repositories are read only).
 //!
-//! `create`/`list`/`view`/`review`/`merge` are wired to `forge-core`'s
-//! [`PullRequestService`].
-//!
-//! `merge` posts the `merge` event; it does NOT perform a git merge. The event is
-//! authoritative only if the fold accepts it — the actor holds WRITE or MAINTAIN, and the
-//! oid has already reached the base ref — so the command re-reads the PR afterwards and
-//! reports what the fold says rather than assuming success (PRD 02 §B).
-//!
-//! `checkout`/`diff` fetch the PR head from the repo that holds it before touching git. A
-//! PR's objects usually live in a different contract from the repo it targets, addressed by
-//! `patch.sourceContractId`; the remote helper's `dash://<contractId>` form makes that
-//! fetchable without a registry lookup.
+//! * `create` opens a `patch` in the target repo pointing at the repo that holds the head
+//!   commit (`sourceRepoId`): the target itself, or a fork. With no flags it uses the
+//!   current branch, and finds where it lives: the signer's fork of the target when one
+//!   exists (`forkOf`), else the target.
+//! * `list` / `view` fold the PR's `event` + `authorEvent` log (§3) and count approvals from
+//!   members' reviews on the current head (§6).
+//! * `review` posts a `review` on the current head.
+//! * `merge` does the merge locally, in a throwaway repository: fetch base and head over
+//!   `dash://`, fast-forward or build a clean merge commit (`git merge-tree`), push it to the
+//!   base branch (the helper routes a protected branch to `protectedRefUpdate`, which needs a
+//!   maintainer), then post the `merge` event. Each step is reported; a failure names what
+//!   already happened. `--event-only` just posts the event.
+//! * `checkout` / `diff` fetch the head from the source repo (`dash://<repoId>`).
 
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::{PullRequestInput, PullRequestService};
+use forge_core::collab::v2::{Collab, PatchInput, PatchView, StateRoute, V2Patch};
+use forge_core::collab::{PullRequest, PullRequestService, Verdict};
+use forge_core::create::default_journal_dir;
+use forge_core::rules::EventKind;
+use forge_core::scope::RepoRef as Repo;
+use forge_core::user_error::{codes, UserError};
 
-use crate::common::{resolve, RepoRef};
+use crate::common::{number_arg, resolve, RepoRef};
 use crate::context::Ctx;
+use crate::git::{self, MergePlan};
 use crate::{PrCommand, VerdictArg};
 
 /// Dispatch a `pr` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     match cmd {
-        PrCommand::Create {
-            repo,
-            title,
-            body,
-            base,
-            source_contract,
-            head_oid,
-            source_ref,
-        } => {
-            create(
-                ctx,
-                repo,
-                title,
-                body,
-                base,
-                source_contract,
-                head_oid,
-                source_ref.as_deref(),
-            )
-            .await
-        }
-        PrCommand::List { repo, limit } => list(ctx, repo, *limit).await,
+        PrCommand::Create(args) => create(ctx, args).await,
+        PrCommand::List { repo, limit, state } => list(ctx, repo, *limit, *state).await,
         PrCommand::View { repo, number } => view(ctx, repo, *number).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review {
             repo,
             number,
             verdict,
+            approve,
+            request_changes,
+            comment,
             body,
-            commit,
-        } => review(ctx, repo, *number, *verdict, body, commit.as_deref()).await,
+        } => {
+            let v = pick_verdict(*verdict, *approve, *request_changes, *comment)?;
+            review(ctx, repo, *number, v, body).await
+        }
         PrCommand::Merge {
             repo,
             number,
+            event_only,
             merge_oid,
-        } => merge(ctx, repo, *number, merge_oid.as_deref()).await,
+        } => Box::pin(merge(ctx, repo, *number, *event_only, merge_oid.as_deref())).await,
+        PrCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
+        PrCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         PrCommand::Diff { repo, number } => diff(ctx, repo, *number).await,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn create(
-    ctx: &Ctx,
-    repo: &str,
-    title: &str,
-    body: &str,
-    base: &str,
-    source_contract: &str,
-    head_oid_hex: &str,
-    source_ref: Option<&str>,
-) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let head_oid = hex::decode(head_oid_hex).context("--head-oid must be hex")?;
-    if !ctx.confirm(&format!("Open PR {title:?}? (a small ungated write)"))? {
-        return Err(crate::errors::cancelled());
+/// `--verdict X` or exactly one of `--approve` / `--request-changes` / `--comment`.
+fn pick_verdict(
+    verdict: Option<VerdictArg>,
+    approve: bool,
+    request_changes: bool,
+    comment: bool,
+) -> Result<VerdictArg> {
+    let flags: Vec<VerdictArg> = [
+        (approve, VerdictArg::Approve),
+        (request_changes, VerdictArg::RequestChanges),
+        (comment, VerdictArg::Comment),
+    ]
+    .into_iter()
+    .filter_map(|(on, v)| on.then_some(v))
+    .chain(verdict)
+    .collect();
+    match flags.as_slice() {
+        [one] => Ok(*one),
+        _ => Err(crate::errors::usage(
+            "pass exactly one of --approve, --request-changes or --comment",
+        )),
     }
+}
+
+fn not_found(repo: &str, number: u64) -> anyhow::Error {
+    crate::errors::not_found(
+        format!("pull request #{number} not found in {repo}"),
+        format!("`dg pr list {repo} --state all` lists its pull requests"),
+    )
+}
+
+/// The v2 PR `number` of `handle`, or E102.
+async fn patch(collab: &Collab<'_>, handle: &Repo, repo: &str, number: u64) -> Result<V2Patch> {
+    collab
+        .patch(handle, number_arg(number)?)
+        .await?
+        .ok_or_else(|| not_found(repo, number))
+}
+
+fn state_label(v: &PatchView) -> &'static str {
+    if v.state.merged {
+        "merged"
+    } else if v.state.open {
+        "open"
+    } else {
+        "closed"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// create
+// ---------------------------------------------------------------------------
+
+async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
+    let repo_ref = RepoRef::parse(&args.repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let input = PullRequestInput {
-        title: title.to_string(),
-        body: body.to_string(),
-        base_ref_name: base.to_string(),
-        source_listing_id: None,
-        source_contract_id: source_contract.to_string(),
-        source_ref_name: source_ref.map(str::to_string),
-        head_oid,
+    let forge = handle.require_v2()?.clone();
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+
+    // The source repo: --head-repo, else the signer's fork of the target, else the target.
+    let source = match &args.head_repo {
+        Some(r) => resolve(&client, &identity, &RepoRef::parse(r)?).await?,
+        None => forge_core::resolve::find_forks(&client, &forge, handle.id(), Some(&identity.id()))
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| handle.clone()),
+    };
+    source.require_v2()?;
+    let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
+    let (head_ref, head_oid) = resolve_head(args, &cwd, &svc, &source).await?;
+    // The base branch: --base, else the target's default branch.
+    let base = if let Some(b) = &args.base {
+        git::full_ref(b)
+    } else {
+        let d = svc
+            .read_default_branch(&handle)
+            .await?
+            .unwrap_or_else(|| "main".into());
+        git::full_ref(&d)
+    };
+    let title = match &args.title {
+        Some(t) => t.clone(),
+        None => git::git(&cwd, &["log", "-1", "--format=%s", &head_oid], &[])
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| crate::errors::usage("pass --title (the head commit is not local)"))?,
+    };
+
+    let input = PatchInput {
+        title: title.clone(),
+        body: args.body.clone(),
+        base_ref_name: base.clone(),
+        source_repo_id: source.id().to_string(),
+        source_ref_name: Some(head_ref.clone()),
+        head_oid: hex::decode(&head_oid).context("head oid")?,
         patch_manifest_hash: None,
     };
-    let pr = svc
-        .create_pr(handle.v1_contract_id()?, &input)
-        .await
-        .context("create_pr")?;
-
+    if !ctx.json {
+        println!(
+            "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
+            handle.display(),
+            source.display(),
+            &head_oid[..12]
+        );
+    }
+    if !ctx.confirm("Open it? (one small document, ~0.0001 DASH)")? {
+        return Err(crate::errors::cancelled());
+    }
+    let before = client.get_balance(&identity.id()).await.unwrap_or(0);
+    let created = Collab::new(&client, &identity, &bridge)
+        .create_patch(&handle, &input, &default_journal_dir()?)
+        .await?;
+    let spent = crate::issue::spent(&client, &identity.id(), before).await;
     ctx.emit(
         json!({
             "status": "created",
-            "number": pr.number,
-            "documentId": pr.document_id,
-            "title": pr.title,
-            "baseRef": pr.base_ref_name,
-            "headOid": pr.head_oid,
+            "number": created.number,
+            "documentId": created.document_id,
+            "title": title,
+            "baseRef": base,
+            "headRef": head_ref,
+            "headOid": head_oid,
+            "sourceRepoId": source.id(),
+            "sourceRepo": source.display(),
+            "resumed": created.resumed,
+            "cost": crate::fmt::cost_json(spent, crate::fmt::dash_usd_price()),
         }),
-        || println!("Opened PR #{}: {}", pr.number, pr.title),
+        || {
+            println!(
+                "✓ opened PR #{} in {} · {}",
+                created.number,
+                handle.display(),
+                crate::fmt::cost_line(spent, crate::fmt::dash_usd_price())
+            );
+        },
     );
     Ok(())
 }
 
-async fn list(ctx: &Ctx, repo: &str, limit: u32) -> Result<()> {
+/// The PR's source branch and head commit: `--head` (else the current branch) and
+/// `--head-oid` (else where that branch points in the source repo now, so the PR names a
+/// commit reviewers can fetch).
+async fn resolve_head(
+    args: &crate::PrCreateArgs,
+    cwd: &Path,
+    svc: &forge_core::repo::RepoService<'_>,
+    source: &Repo,
+) -> Result<(String, String)> {
+    let head_ref =
+        match (&args.head, git::current_branch(cwd)) {
+            (Some(h), _) => git::full_ref(h),
+            (None, Some(b)) => git::full_ref(&b),
+            (None, None) => return Err(crate::errors::usage(
+                "no --head given and not on a branch: pass --head <branch> (in the source repo)",
+            )),
+        };
+    let refs = svc.read_refs(source).await?;
+    let remote_tip = refs
+        .iter()
+        .find(|(n, _)| *n == head_ref)
+        .and_then(|(_, s)| forge_core::rules::tip_of(s));
+    let head_oid = match (&args.head_oid, &remote_tip) {
+        (Some(o), _) => o.to_ascii_lowercase(),
+        (None, Some(t)) => t.clone(),
+        (None, None) => {
+            return Err(UserError::new(
+                codes::NOT_FOUND,
+                format!(
+                    "pull request not created: {head_ref} is not in {}",
+                    source.display()
+                ),
+            )
+            .cause("the PR must name a commit reviewers can fetch from the source repository")
+            .fix(format!(
+                "push it first: `git push {} {head_ref}`",
+                source.remote_url()
+            ))
+            .into())
+        }
+    };
+    if !git::is_oid(&head_oid) {
+        return Err(crate::errors::usage(
+            "--head-oid must be a full hex commit id",
+        ));
+    }
+    if let (Some(given), Some(tip)) = (&args.head_oid, &remote_tip) {
+        if !given.eq_ignore_ascii_case(tip) {
+            eprintln!(
+                "warning: {head_ref} in {} is at {}, not {given}; the PR names {given}",
+                source.display(),
+                short(tip)
+            );
+        }
+    }
+    Ok((head_ref, head_oid))
+}
+
+// ---------------------------------------------------------------------------
+// list / view
+// ---------------------------------------------------------------------------
+
+async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let prs = svc
-        .list_prs(handle.v1_contract_id()?, limit, None)
-        .await
-        .context("list_prs")?;
-
-    let rows: Vec<_> = prs
+    if handle.is_v1() {
+        let prs = PullRequestService::new(&client, &identity, &bridge)
+            .list_prs(handle.v1_contract_id()?, limit, None)
+            .await
+            .context("list_prs")?;
+        let rows: Vec<_> = prs.iter().map(v1_row).collect();
+        ctx.emit(json!({ "count": rows.len(), "prs": rows }), || {
+            for p in &prs {
+                println!("#{:<4} {}  ({})", p.number, p.title, short(&p.head_oid));
+            }
+        });
+        return Ok(());
+    }
+    let collab = Collab::reader(&client);
+    let (patches, hidden) = collab.list_patches(&handle, limit).await?;
+    let oracle = collab.member_oracle(&handle).await?;
+    let mut rows = Vec::new();
+    for p in patches {
+        let v = collab.patch_view(&handle, p).await?;
+        let keep = match state {
+            crate::StateArg::All => true,
+            crate::StateArg::Open => v.state.open,
+            crate::StateArg::Closed => !v.state.open,
+        };
+        if !keep {
+            continue;
+        }
+        let (approvals, _) = collab.approvals_with(&handle, &v.patch, &oracle).await?;
+        rows.push((v, approvals));
+    }
+    let json_rows: Vec<_> = rows
         .iter()
-        .map(|p| {
+        .map(|(v, a)| {
             json!({
-                "number": p.number,
-                "title": p.title,
-                "author": p.author,
-                "baseRef": p.base_ref_name,
-                "headOid": p.head_oid,
+                "number": v.patch.number,
+                "title": v.patch.title,
+                "author": v.patch.author,
+                "state": state_label(v),
+                "baseRef": v.patch.base_ref_name,
+                "headOid": v.patch.head_oid,
+                "sourceRepoId": v.patch.source_repo_id,
+                "approvals": a.approvers.len(),
+                "changesRequested": a.changes_requested.len(),
             })
         })
         .collect();
-
-    ctx.emit(json!({ "count": rows.len(), "prs": rows }), || {
-        for p in &prs {
-            println!(
-                "#{:<4} {}  ({})",
-                p.number,
-                p.title,
-                p.head_oid.chars().take(12).collect::<String>()
-            );
-        }
-    });
+    ctx.emit(
+        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden }),
+        || {
+            if rows.is_empty() {
+                println!("no pull requests");
+            }
+            for (v, a) in &rows {
+                let count = |mark: &str, n: usize| {
+                    if n == 0 {
+                        String::new()
+                    } else {
+                        format!("  {mark}{n}")
+                    }
+                };
+                let extra = count("✓", a.approvers.len()) + &count("✗", a.changes_requested.len());
+                println!(
+                    "#{:<4} {:<6} {}  ({}){extra}",
+                    v.patch.number,
+                    state_label(v),
+                    v.patch.title,
+                    short(&v.patch.head_oid)
+                );
+            }
+            if hidden > 0 {
+                println!("({hidden} malformed document(s) hidden)");
+            }
+        },
+    );
     Ok(())
+}
+
+fn short(oid: &str) -> &str {
+    &oid[..oid.len().min(12)]
+}
+
+fn v1_row(p: &PullRequest) -> serde_json::Value {
+    json!({
+        "number": p.number,
+        "title": p.title,
+        "author": p.author,
+        "baseRef": p.base_ref_name,
+        "headOid": p.head_oid,
+        "sourceContractId": p.source_contract_id,
+    })
+}
+
+fn view_v1(ctx: &Ctx, pw: &forge_core::collab::PullRequestWithState) {
+    let mut row = v1_row(&pw.pr);
+    row["body"] = json!(pw.pr.body);
+    row["state"] = serde_json::to_value(&pw.state).unwrap_or_default();
+    ctx.emit(row, || {
+        println!("#{} {}", pw.pr.number, pw.pr.title);
+        println!("base: {}  head: {}", pw.pr.base_ref_name, pw.pr.head_oid);
+        println!("(v1 repository, read only)");
+    });
 }
 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let pw = svc
-        .pr_state(handle.v1_contract_id()?, number, None)
+    if handle.is_v1() {
+        let pw = PullRequestService::new(&client, &identity, &bridge)
+            .pr_state(handle.v1_contract_id()?, number, None)
+            .await
+            .context("pr_state")?
+            .ok_or_else(|| not_found(repo, number))?;
+        view_v1(ctx, &pw);
+        return Ok(());
+    }
+    let collab = Collab::reader(&client);
+    let p = patch(&collab, &handle, repo, number).await?;
+    let v = collab.patch_view(&handle, p).await?;
+    let (approvals, reviews) = collab.approvals(&handle, &v.patch).await?;
+    let comments = collab.comments(&handle, &v.patch.document_id).await?;
+    let source = forge_core::resolve::resolve_id(&client, &v.patch.source_repo_id)
         .await
-        .context("pr_state")?
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("pull request #{number} not found in {repo}"),
-                format!("`dg pr list {repo}` lists its pull requests"),
-            )
-        })?;
-    // Reviews were write-only: `dg pr review` created documents nothing ever read back, so
-    // a requested change was invisible to the contributor it was addressed to.
-    // Distinguish "no reviews" from "could not read the reviews". Collapsing the two with
-    // `unwrap_or_default()` would print "no reviews" on a failed read — reintroducing the
-    // exact invisibility that made reviews worth surfacing in the first place.
-    let reviews_result = svc
-        .list_reviews(handle.v1_contract_id()?, &pw.pr.document_id)
-        .await;
-    let reviews = reviews_result.as_deref().unwrap_or(&[]);
-    let reviews_error = reviews_result.as_ref().err().map(ToString::to_string);
+        .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display());
 
     let reviews_json: Vec<_> = reviews
         .iter()
@@ -185,272 +402,276 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 "verdict": r.verdict.code(),
                 "verdictLabel": r.verdict.label(),
                 "commitOid": r.commit_oid,
+                "stale": r.commit_oid != v.patch.head_oid,
                 "body": r.body,
                 "createdAt": r.created_at,
             })
         })
         .collect();
-
     ctx.emit(
         json!({
-            "number": pw.pr.number,
-            "title": pw.pr.title,
-            "body": pw.pr.body,
-            "author": pw.pr.author,
-            "baseRef": pw.pr.base_ref_name,
-            "headOid": pw.pr.head_oid,
-            "sourceContractId": pw.pr.source_contract_id,
-            "sourceListingId": pw.pr.source_listing_id,
-            "sourceRefName": pw.pr.source_ref_name,
-            "patchManifestHash": pw.pr.patch_manifest_hash,
-            "state": serde_json::to_value(&pw.state).unwrap_or_default(),
+            "number": v.patch.number,
+            "title": v.patch.title,
+            "body": v.patch.body,
+            "author": v.patch.author,
+            "state": state_label(&v),
+            "fold": serde_json::to_value(&v.state).unwrap_or_default(),
+            "baseRef": v.patch.base_ref_name,
+            "baseTip": v.base_tip,
+            "headOid": v.patch.head_oid,
+            "headOnBase": v.head_on_base,
+            "sourceRepoId": v.patch.source_repo_id,
+            "sourceRepo": source,
+            "sourceRefName": v.patch.source_ref_name,
+            "approvedBy": approvals.approvers,
+            "changesRequestedBy": approvals.changes_requested,
             "reviews": reviews_json,
-            "reviewsError": reviews_error,
+            "comments": comments.iter().map(|c| json!({"author": c.author, "body": c.body})).collect::<Vec<_>>(),
         }),
         || {
-            let mark = if pw.state.merged {
-                "merged"
-            } else if pw.state.open {
-                "open"
-            } else {
-                "closed"
-            };
-            println!("#{} [{mark}] {}", pw.pr.number, pw.pr.title);
-            println!("author: {}", pw.pr.author);
-            println!("base:   {}", pw.pr.base_ref_name);
-            println!("head:   {}", pw.pr.head_oid);
-            // The source pointer is what a reviewer needs to fetch the PR at all; without
-            // it, `head` names a commit with no stated home.
-            if !pw.pr.source_contract_id.is_empty() {
-                print!("source: contract {}", pw.pr.source_contract_id);
-                match &pw.pr.source_ref_name {
-                    Some(r) => println!(" ref {r}"),
-                    None => println!(),
+            println!("#{} [{}] {}", v.patch.number, state_label(&v), v.patch.title);
+            println!("author: {}", v.patch.author);
+            println!(
+                "{} {} ({}) → {}",
+                source,
+                v.patch.source_ref_name.as_deref().unwrap_or("(no branch)"),
+                short(&v.patch.head_oid),
+                v.patch.base_ref_name
+            );
+            if !approvals.approvers.is_empty() {
+                let who: Vec<_> = approvals.approvers.iter().cloned().collect();
+                println!("approved by {} on {}: {}", who.len(), short(&v.patch.head_oid), who.join(", "));
+            }
+            if !approvals.changes_requested.is_empty() {
+                let who: Vec<_> = approvals.changes_requested.iter().cloned().collect();
+                println!("changes requested by {}", who.join(", "));
+            }
+            if !v.patch.body.is_empty() {
+                println!("\n{}", v.patch.body);
+            }
+            for r in &reviews {
+                let stale = if r.commit_oid == v.patch.head_oid {
+                    ""
+                } else {
+                    " (stale — new commits since)"
+                };
+                println!("\n{} — {}{stale}", r.verdict.label(), r.reviewer);
+                if !r.body.is_empty() {
+                    println!("  {}", r.body);
                 }
             }
-            if !pw.pr.body.is_empty() {
-                println!("\n{}", pw.pr.body);
-            }
-            if let Some(err) = &reviews_error {
-                println!("\nreviews: COULD NOT BE READ — {err}");
-            } else if reviews.is_empty() {
-                println!("\nno reviews");
-            } else {
-                println!("\nreviews:");
-                for r in reviews {
-                    println!("  {} — {}", r.verdict.label(), r.reviewer);
-                    if !r.body.is_empty() {
-                        println!("      {}", r.body);
-                    }
-                }
+            for c in &comments {
+                println!("\n— {}:\n{}", c.author, c.body);
             }
         },
     );
     Ok(())
 }
 
-async fn review(
-    ctx: &Ctx,
-    repo: &str,
-    number: u64,
-    verdict: VerdictArg,
-    body: &str,
-    commit: Option<&str>,
-) -> Result<()> {
+// ---------------------------------------------------------------------------
+// review / close / reopen
+// ---------------------------------------------------------------------------
+
+async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    handle.require_v2()?;
+    let collab = Collab::new(&client, &identity, &bridge);
+    let p = patch(&collab, &handle, repo, number).await?;
     if !ctx.confirm(&format!(
-        "Post {verdict:?} review on PR #{number}? (a small ungated write)"
+        "Post a {} review on PR #{number} at {}? (one small document)",
+        Verdict::from_code(verdict.code()).label(),
+        short(&p.head_oid)
     ))? {
         return Err(crate::errors::cancelled());
     }
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let pr = svc
-        .get_pr(handle.v1_contract_id()?, number)
-        .await?
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("pull request #{number} not found in {repo}"),
-                format!("`dg pr list {repo}` lists its pull requests"),
-            )
-        })?;
-    let commit_hex = commit.unwrap_or(&pr.head_oid);
-    let commit_oid = hex::decode(commit_hex).context("--commit must be hex")?;
-    let doc_id = svc
+    let head = hex::decode(&p.head_oid).context("PR head oid")?;
+    let id = collab
         .review(
-            handle.v1_contract_id()?,
-            &pr.document_id,
-            verdict.code(),
-            &commit_oid,
+            &handle,
+            &p.document_id,
+            Verdict::from_code(verdict.code()),
+            &head,
             body,
+            None,
         )
-        .await
-        .context("review")?;
-
+        .await?;
+    let counts = collab.signer_role(&handle).await?.is_some();
     ctx.emit(
         json!({
             "status": "reviewed",
             "pr": number,
             "verdict": verdict.code(),
-            "reviewId": doc_id,
+            "commitOid": p.head_oid,
+            "reviewId": id,
+            "counts": counts,
         }),
-        || println!("Reviewed PR #{number} ({verdict:?}) — review {doc_id}."),
+        || {
+            println!(
+                "✓ {} PR #{number} at {}",
+                Verdict::from_code(verdict.code()).label(),
+                short(&p.head_oid)
+            );
+            if !counts && verdict != VerdictArg::Comment {
+                println!("  note: you are not a member of {}, so this review does not count toward approvals", handle.display());
+            }
+        },
     );
     Ok(())
 }
 
-/// Post the `merge` event closing a PR.
-///
-/// This command does NOT perform a git merge, and the event it posts is inert unless two
-/// things hold: the caller holds WRITE or MAINTAIN, and the oid has already been pushed to
-/// the base ref (`fold_pr_state` only accepts a merge whose oid was a base-ref tip). It used
-/// to report `"status": "merged"` unconditionally, so a caller holding no token on a repo
-/// saw a successful merge, exited 0, and the PR stayed open forever — and `--json`
-/// consumers keyed off that. Now the state is re-read afterwards and reported as it is.
-async fn merge(ctx: &Ctx, repo: &str, number: u64, merge_oid: Option<&str>) -> Result<()> {
+async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
-    if !ctx.confirm(&format!("Merge PR #{number}? (posts a merge event)"))? {
-        return Err(crate::errors::cancelled());
-    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let pr = svc
-        .get_pr(handle.v1_contract_id()?, number)
-        .await?
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("pull request #{number} not found in {repo}"),
-                format!("`dg pr list {repo}` lists its pull requests"),
-            )
-        })?;
-    let oid_hex = merge_oid.unwrap_or(&pr.head_oid);
-    let oid = hex::decode(oid_hex).context("--merge-oid must be hex")?;
-    let event_id = svc
-        .merge_event(handle.v1_contract_id()?, &pr.document_id, &oid)
-        .await
-        .context("merge_event")?;
-
-    // Re-read the fold. A merge event is only authoritative if the fold accepts it, so
-    // asking the same question a reader would ask is the only honest way to report the
-    // outcome.
-    let merged = svc
-        .pr_state(handle.v1_contract_id()?, number, None)
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|pw| pw.state.merged);
-
-    let (status, reason) = if merged {
-        ("merged", None)
-    } else {
-        (
-            "merge_event_posted",
-            Some(
-                "the event is not authoritative yet: it counts only once you hold WRITE or \
-                 MAINTAIN on this repo AND the merge oid has been pushed to the base ref",
-            ),
-        )
-    };
-
+    handle.require_v2()?;
+    let collab = Collab::new(&client, &identity, &bridge);
+    let p = patch(&collab, &handle, repo, number).await?;
+    let verb = if close { "Close" } else { "Reopen" };
+    if !ctx.confirm(&format!("{verb} PR #{number}? (one small document)"))? {
+        return Err(crate::errors::cancelled());
+    }
+    let (route, id) = collab.set_open(&handle, &p.target(), close).await?;
     ctx.emit(
         json!({
-            "status": status,
+            "status": if close { "closed" } else { "reopened" },
             "pr": number,
-            "mergeOid": oid_hex,
+            "via": route,
+            "eventId": id,
+        }),
+        || {
+            let via = match route {
+                StateRoute::Member => "as a member (event)",
+                StateRoute::Author => "as the author (authorEvent)",
+            };
+            println!("✓ {}d PR #{number} {via}", verb.to_lowercase());
+        },
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// merge
+// ---------------------------------------------------------------------------
+
+/// One reported step of a merge.
+struct Steps {
+    json: bool,
+    done: Vec<serde_json::Value>,
+}
+
+impl Steps {
+    fn ok(&mut self, step: &str, detail: impl Into<String>) {
+        let detail = detail.into();
+        if !self.json {
+            eprintln!("  ✓ {step:<9} {detail}");
+        }
+        self.done
+            .push(json!({ "step": step, "ok": true, "detail": detail }));
+    }
+}
+
+async fn merge(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    event_only: bool,
+    merge_oid: Option<&str>,
+) -> Result<()> {
+    let repo_ref = RepoRef::parse(repo)?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    handle.require_v2()?;
+    let collab = Collab::new(&client, &identity, &bridge);
+    let p = patch(&collab, &handle, repo, number).await?;
+    let view = collab.patch_view(&handle, p).await?;
+    if view.state.merged {
+        return Err(UserError::new(codes::USAGE, format!("PR #{number} is already merged")).into());
+    }
+    require_member(&collab, &handle, number).await?;
+    let mut steps = Steps {
+        json: ctx.json,
+        done: Vec::new(),
+    };
+    if !ctx.json {
+        eprintln!(
+            "Merging PR #{number} of {} into {}",
+            handle.display(),
+            view.patch.base_ref_name
+        );
+    }
+    if !ctx.confirm(&format!(
+        "Merge PR #{number}? ({}; ~0.0003 DASH plus the pack if new objects are stored)",
+        if event_only {
+            "posts the merge event only"
+        } else {
+            "pushes to the base branch, then posts the merge event"
+        }
+    ))? {
+        return Err(crate::errors::cancelled());
+    }
+
+    let merge_oid = if event_only {
+        let oid = merge_oid.map_or_else(
+            || {
+                view.base_tip
+                    .clone()
+                    .filter(|_| view.head_on_base)
+                    .unwrap_or(view.patch.head_oid.clone())
+            },
+            str::to_ascii_lowercase,
+        );
+        steps.ok("plan", format!("event only, naming {}", short(&oid)));
+        oid
+    } else {
+        match push_merge(ctx, &handle, &view, &identity.id(), &mut steps) {
+            Ok(oid) => oid,
+            Err(e) => {
+                return Err(crate::errors::reported(
+                    merge_failure(&e, number),
+                    json!({ "status": "failed", "pr": number, "steps": steps.done }),
+                ))
+            }
+        }
+    };
+
+    let event_id = post_merge_event(&collab, &handle, &view, &merge_oid, event_only, repo)
+        .await
+        .map_err(|u| {
+            crate::errors::reported(
+                *u,
+                json!({ "status": "pushed_no_event", "pr": number, "mergeOid": merge_oid, "steps": steps.done }),
+            )
+        })?;
+    steps.ok("event", format!("merge event {}", short(&event_id)));
+
+    // Re-read the fold: "merged" is what readers will say, not what we hoped.
+    let merged = match collab.patch(&handle, view.patch.number).await? {
+        Some(p) => collab
+            .patch_view(&handle, p)
+            .await
+            .is_ok_and(|v| v.state.merged),
+        None => false,
+    };
+    ctx.emit(
+        json!({
+            "status": if merged { "merged" } else { "merge_event_posted" },
+            "pr": number,
+            "mergeOid": merge_oid,
             "eventId": event_id,
             "merged": merged,
-            "reason": reason,
+            "steps": steps.done,
         }),
         || {
             if merged {
-                println!("Merged PR #{number} (merge {oid_hex}, event {event_id}).");
+                println!("✓ merged PR #{number} ({})", short(&merge_oid));
             } else {
                 println!(
-                    "Posted merge event for PR #{number} (merge {oid_hex}, event {event_id}), \
-                     but the PR does not read as merged."
-                );
-                println!(
-                    "The event counts only once you hold WRITE or MAINTAIN on this repo AND \
-                     {oid_hex} has been pushed to {}.",
-                    pr.base_ref_name
-                );
-                println!("  git push <dash-remote> {oid_hex}:{}", pr.base_ref_name);
-            }
-        },
-    );
-    Ok(())
-}
-
-/// Check a PR out: fetch its head from the repo that actually holds it, then create a
-/// local `pr/<n>` branch at it.
-///
-/// This used to do no network I/O at all — it ran `git branch` only if the head object
-/// happened to be in the local odb, which for a PR opened from a fork it never is, and told
-/// the user to "fetch it first" without naming a remote that could deliver it. The PR
-/// document does carry that pointer (`sourceContractId`), and the helper can now address a
-/// repo by contract id, so the fetch it was describing can just be performed.
-async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let pr = svc
-        .get_pr(handle.v1_contract_id()?, number)
-        .await?
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("pull request #{number} not found in {repo}"),
-                format!("`dg pr list {repo}` lists its pull requests"),
-            )
-        })?;
-
-    let branch = format!("pr/{number}");
-    let mut fetched = false;
-    if !git_object_present(&pr.head_oid) {
-        fetched = fetch_pr_head(ctx, &pr)?;
-    }
-
-    let present = git_object_present(&pr.head_oid);
-    let mut created = false;
-    if present {
-        created = Command::new("git")
-            .args(["branch", "-f", &branch, &pr.head_oid])
-            .status()
-            .is_ok_and(|s| s.success());
-    }
-
-    ctx.emit(
-        json!({
-            "pr": number,
-            "headOid": pr.head_oid,
-            "branch": branch,
-            "sourceContractId": pr.source_contract_id,
-            "sourceRefName": pr.source_ref_name,
-            "fetched": fetched,
-            "objectPresent": present,
-            "branchCreated": created,
-        }),
-        || {
-            if created {
-                println!("Created branch {branch} at {}.", pr.head_oid);
-            } else if present {
-                println!(
-                    "PR head present but `git branch` failed; run: git branch -f {branch} {}",
-                    pr.head_oid
-                );
-            } else {
-                println!(
-                    "Could not obtain PR #{number} head {} from its source repo.",
-                    pr.head_oid
-                );
-                println!("Fetch it by hand, then re-run checkout:");
-                // A contract-addressed URL names no owner, so the helper cannot pick a
-                // default identity file — spell out the variable it needs.
-                println!(
-                    "  DASH_FORGE_KEY=<identity.json> git fetch dash://{}",
-                    pr.source_contract_id
+                    "Posted the merge event for PR #{number}, but it does not read as merged: \
+                     {} is not (yet) a tip of {}.",
+                    short(&merge_oid),
+                    view.patch.base_ref_name
                 );
             }
         },
@@ -458,126 +679,405 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     Ok(())
 }
 
-/// Fetch a PR's objects from the repo that holds them, returning whether the fetch ran.
-///
-/// Addresses the source repo by contract id (`dash://<contractId>`), because that is the
-/// only pointer a `patch` document carries and nothing indexes a contract back to its
-/// registry listing.
-///
-/// **The PR's `sourceRefName` is deliberately NOT passed to `git fetch`.** It is
-/// attacker-chosen: `patch` carries no `tokenCost`, so any identity can open a PR against
-/// any repo, and the field has no schema pattern. A positional `git fetch` argument is a
-/// *refspec*, not a ref name — a value of `+refs/heads/evil:refs/heads/release` would
-/// silently force-update a branch in the maintainer's own working repo the moment they ran
-/// `dg pr checkout` (git refuses only the currently checked-out branch; every other local
-/// branch is fair game — verified against git 2.43). `rules::is_legal_ref_name` does not
-/// save us here: it permits both `:` and `+`, and being a write-side check it binds no
-/// other client anyway.
-///
-/// Naming the ref bought nothing in the first place: the helper's fetch downloads the
-/// union of the repo's kind-0 packs whatever refspec it is handed, so the default refspec
-/// delivers exactly the same objects — including the head commit.
-///
-/// `source_contract_id` is safe to interpolate: it is re-encoded base58 from a decoded
-/// `[u8; 32]`, and the empty case returns early.
-fn fetch_pr_head(ctx: &Ctx, pr: &forge_core::collab::PullRequest) -> Result<bool> {
-    if pr.source_contract_id.is_empty() {
-        return Ok(false);
-    }
-    let url = format!("dash://{}", pr.source_contract_id);
-
-    let mut cmd = Command::new("git");
-    cmd.arg("fetch").arg(&url);
-    // A contract-addressed URL names no owner, so the helper cannot derive a default key
-    // path from it; hand it the identity this invocation already resolved. The network
-    // (devnet name, DAPI list, registry override) must travel too, or the helper falls
-    // back to its own default and a `--network mainnet` checkout would quietly query
-    // testnet.
-    if let Some(path) = &ctx.identity_path {
-        cmd.env("DASH_FORGE_KEY", path);
-    }
-    cmd.envs(ctx.target.env_vars());
-
-    let status = cmd.status().context("running git fetch for the PR head")?;
-    Ok(status.success())
-}
-
-/// `diff`: run `git diff <base>...<head>`, fetching the PR head from its source repo first
-/// when it is not already local.
-async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = PullRequestService::new(&client, &identity, &bridge);
-    let pr = svc
-        .get_pr(handle.v1_contract_id()?, number)
-        .await?
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("pull request #{number} not found in {repo}"),
-                format!("`dg pr list {repo}` lists its pull requests"),
-            )
-        })?;
-
-    if !git_object_present(&pr.head_oid) {
-        fetch_pr_head(ctx, &pr)?;
-    }
-
-    if !git_object_present(&pr.head_oid) {
-        ctx.emit(
-            json!({
-                "pr": number,
-                "headOid": pr.head_oid,
-                "sourceContractId": pr.source_contract_id,
-                "diffAvailable": false,
-                "note": "could not obtain the PR head from its source repo",
-            }),
-            || {
-                println!(
-                    "Could not obtain PR #{number} head {} from its source repo.",
-                    pr.head_oid
-                );
-                if !pr.source_contract_id.is_empty() {
-                    println!(
-                        "  DASH_FORGE_KEY=<identity.json> git fetch dash://{}",
-                        pr.source_contract_id
-                    );
-                }
-            },
-        );
+/// Only members can merge (the merge event is member-gated at consensus): refuse before any
+/// git work. [`forge_core::collab::v2::SKIP_PRECHECK_ENV`] turns it off to prove the gate.
+async fn require_member(collab: &Collab<'_>, handle: &Repo, number: u64) -> Result<()> {
+    if std::env::var(forge_core::collab::v2::SKIP_PRECHECK_ENV).is_ok()
+        || collab.signer_role(handle).await?.is_some()
+    {
         return Ok(());
     }
+    Err(forge_core::Error::NotPermitted {
+        action: format!("merge pull request #{number}"),
+        reason: format!("you are not a member of {}", handle.display()),
+        needs: "writer".into(),
+    }
+    .into())
+}
 
-    // base...head against the PR head. The base ref name maps to a local ref if present.
-    let range = format!("{}...{}", pr.base_ref_name, pr.head_oid);
-    let out = Command::new("git")
-        .args(["--no-pager", "diff", &range])
+/// Post the `merge` event naming `merge_oid`; on failure, the user error saying what
+/// already happened.
+async fn post_merge_event(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    merge_oid: &str,
+    event_only: bool,
+    repo: &str,
+) -> std::result::Result<String, Box<UserError>> {
+    let posted = async {
+        let oid = hex::decode(merge_oid).context("merge oid")?;
+        Ok::<_, anyhow::Error>(
+            collab
+                .post_event(
+                    handle,
+                    &view.patch.target(),
+                    EventKind::Merge,
+                    None,
+                    Some(&oid),
+                )
+                .await?,
+        )
+    }
+    .await;
+    posted.map_err(|e| {
+        Box::new(
+            forge_core::user_error::classify(
+                e.chain(),
+                &forge_core::user_error::ErrorContext {
+                    goal: Some("merge event not posted"),
+                    repo: Some(repo),
+                    ..Default::default()
+                },
+            )
+            .note(if event_only {
+                "nothing else was written".to_string()
+            } else {
+                format!(
+                "the base branch already holds {}; re-run with `--event-only` to record the merge",
+                short(merge_oid)
+            )
+            }),
+        )
+    })
+}
+
+/// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
+fn merge_failure(e: &anyhow::Error, number: u64) -> UserError {
+    if let Some(u) = e.downcast_ref::<UserError>() {
+        return u.clone();
+    }
+    forge_core::user_error::classify(
+        e.chain(),
+        &forge_core::user_error::ErrorContext {
+            goal: Some("merge failed"),
+            ..Default::default()
+        },
+    )
+    .note(format!("no merge event was posted for PR #{number}"))
+}
+
+/// Do the git side of a merge in a throwaway repository and push the result to the base
+/// branch. Returns the oid the merge event names.
+fn push_merge(
+    ctx: &Ctx,
+    handle: &Repo,
+    view: &PatchView,
+    signer: &str,
+    steps: &mut Steps,
+) -> Result<String> {
+    let env = git::dash_env(ctx);
+    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    let dir = scratch.path();
+    git::git(dir, &["init", "-q", "--bare"], &[])?;
+    let base_ref = &view.patch.base_ref_name;
+    let head = &view.patch.head_oid;
+
+    // Fetch base (its whole history) and head (from the source repo).
+    let base_url = format!("dash://{}", handle.id());
+    let base_tip = view.base_tip.clone();
+    if base_tip.is_some() {
+        git::git(
+            dir,
+            &[
+                "fetch",
+                "-q",
+                &base_url,
+                &format!("+{base_ref}:refs/remotes/base/tip"),
+            ],
+            &env,
+        )
+        .context("fetching the base branch")?;
+    }
+    if !git::has_object(dir, head) {
+        let source_url = format!("dash://{}", view.patch.source_repo_id);
+        // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
+        // as a refspec. The helper downloads the repo's packs whatever is asked for.
+        git::git(
+            dir,
+            &[
+                "fetch",
+                "-q",
+                &source_url,
+                "+refs/heads/*:refs/remotes/source/*",
+            ],
+            &env,
+        )
+        .context("fetching the PR head from its source repository")?;
+    }
+    if !git::has_object(dir, head) {
+        anyhow::bail!(
+            "the PR head {} is not in its source repository (it may have been force-pushed away)",
+            short(head)
+        );
+    }
+    steps.ok(
+        "fetch",
+        format!(
+            "base {} · head {}",
+            base_tip.as_deref().map_or("(empty)", short),
+            short(head)
+        ),
+    );
+
+    let Some(target) = build_merge(dir, handle, view, signer, steps)? else {
+        return Ok(base_tip.unwrap_or_default());
+    };
+
+    // Push to the base. The helper refuses a writer's push to a protected ref before paying
+    // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut argv: Vec<String> = Vec::new();
+    for kv in git::storage_overrides(&cwd) {
+        argv.push("-c".into());
+        argv.push(kv);
+    }
+    argv.extend([
+        "push".into(),
+        "-q".into(),
+        base_url.clone(),
+        format!("{target}:{base_ref}"),
+    ]);
+    push_to(dir, &argv, &env)?;
+    steps.ok("push", format!("{base_ref} → {}", short(&target)));
+    Ok(target)
+}
+
+/// Decide and build the merge in `dir` (holding base and head): the commit to push to the
+/// base, or `None` when the head is already in the base (nothing to push).
+fn build_merge(
+    dir: &Path,
+    handle: &Repo,
+    view: &PatchView,
+    signer: &str,
+    steps: &mut Steps,
+) -> Result<Option<String>> {
+    let base_ref = &view.patch.base_ref_name;
+    let head = &view.patch.head_oid;
+    let base_tip = view.base_tip.as_deref();
+    let plan = git::plan_merge(
+        base_tip,
+        head,
+        base_tip.is_some_and(|b| git::is_ancestor(dir, head, b)),
+        base_tip.is_some_and(|b| git::is_ancestor(dir, b, head)),
+    );
+    Ok(Some(match &plan {
+        MergePlan::AlreadyMerged { .. } => {
+            steps.ok("merge", format!("already in {base_ref}; nothing to push"));
+            return Ok(None);
+        }
+        MergePlan::FastForward { oid } => {
+            steps.ok("merge", format!("fast-forward to {}", short(oid)));
+            oid.clone()
+        }
+        MergePlan::MergeCommit { base, head } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let message = format!(
+                "Merge pull request #{} from {}\n\n{}",
+                view.patch.number,
+                view.patch.source_ref_name.as_deref().unwrap_or(head),
+                view.patch.title
+            );
+            let author = git::merge_author(&cwd, signer);
+            let Some(c) = git::merge_commit(dir, base, head, &message, &author)? else {
+                return Err(UserError::new(
+                    codes::MERGE_CONFLICT,
+                    format!(
+                        "merge failed: PR #{} conflicts with {base_ref}",
+                        view.patch.number
+                    ),
+                )
+                .cause(format!(
+                    "a three-way merge of {} into {} has conflicts",
+                    short(head),
+                    short(base)
+                ))
+                .fix(format!(
+                    "`dg pr checkout {} {}`, merge {base_ref} into it and resolve, push, then run `dg pr merge` again",
+                    handle.display(),
+                    view.patch.number
+                ))
+                .note("nothing was pushed and no merge event was posted")
+                .into());
+            };
+            steps.ok("merge", format!("merge commit {}", short(&c)));
+            c
+        }
+    }))
+}
+
+/// Run the push, surfacing the helper's own E-coded error when it refused.
+fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(argv)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
         .output()
-        .context("running git diff")?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
+        .context("running git push")?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The helper prints `dash: error: … [E601]` blocks; keep the code for the classifier.
+    let mut lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("dash: ") || l.starts_with("error:") || l.contains(" ! "))
+        .collect();
+    if lines.is_empty() {
+        lines = stderr.lines().rev().take(4).collect::<Vec<_>>();
+        lines.reverse();
+    }
+    let text = lines.join("\n");
+    if let Some(code) = text
+        .split(['[', ']'])
+        .find(|t| t.len() == 4 && t.starts_with('E') && t[1..].bytes().all(|b| b.is_ascii_digit()))
+    {
+        let headline = text
+            .lines()
+            .find(|l| l.contains(code))
+            .map_or("push to the base branch rejected", |l| {
+                l.trim_start_matches("dash: ").trim_start_matches("error: ")
+            })
+            .replace(&format!("[{code}]"), "")
+            .trim()
+            .to_string();
+        let code: &'static str = forge_core::user_error::CATALOGUE
+            .iter()
+            .find(|(c, _)| *c == code)
+            .map_or(codes::REJECTED, |(c, _)| c);
+        return Err(UserError::new(code, format!("merge failed: {headline}"))
+            .cause(text.replace("dash: ", ""))
+            .note("no merge event was posted")
+            .into());
+    }
+    anyhow::bail!("git push to the base branch failed: {text}")
+}
 
+// ---------------------------------------------------------------------------
+// checkout / diff
+// ---------------------------------------------------------------------------
+
+/// The (v2 source repo id, head oid, base ref) of a PR, or the v1 equivalents.
+async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<(String, String, String)> {
+    let repo_ref = RepoRef::parse(repo)?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    if handle.is_v1() {
+        let pr = PullRequestService::new(&client, &identity, &bridge)
+            .get_pr(handle.v1_contract_id()?, number)
+            .await?
+            .ok_or_else(|| not_found(repo, number))?;
+        return Ok((pr.source_contract_id, pr.head_oid, pr.base_ref_name));
+    }
+    let p = patch(&Collab::reader(&client), &handle, repo, number).await?;
+    Ok((p.source_repo_id, p.head_oid, p.base_ref_name))
+}
+
+/// Fetch a PR head into the repository at `cwd` from `dash://<source>` (fixed refspec —
+/// the PR's own `sourceRefName` is attacker-chosen and never used as one).
+fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
+    if git::has_object(cwd, head) {
+        return Ok(false);
+    }
+    if source.is_empty() {
+        return Ok(false);
+    }
+    let url = format!("dash://{source}");
+    git::git(
+        cwd,
+        &[
+            "fetch",
+            "-q",
+            &url,
+            &format!("+refs/heads/*:refs/remotes/dash-pr/{source}/*"),
+        ],
+        &git::dash_env(ctx),
+    )
+    .context("fetching the PR head from its source repository")?;
+    Ok(true)
+}
+
+async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
+    let (source, head, _) = locate(ctx, repo, number).await?;
+    let cwd = std::env::current_dir()?;
+    let fetched = fetch_head(ctx, &cwd, &source, &head)?;
+    if !git::has_object(&cwd, &head) {
+        return Err(crate::errors::not_found(
+            format!(
+                "PR #{number} head {} is not in its source repository",
+                short(&head)
+            ),
+            format!("try `git fetch dash://{source}` by hand"),
+        ));
+    }
+    let branch = format!("pr/{number}");
+    git::git(&cwd, &["branch", "-f", &branch, &head], &[])
+        .with_context(|| format!("creating branch {branch} (is it checked out?)"))?;
     ctx.emit(
         json!({
             "pr": number,
-            "range": range,
-            "diffAvailable": out.status.success(),
-            "diff": text,
+            "headOid": head,
+            "branch": branch,
+            "sourceRepoId": source,
+            "fetched": fetched,
+            "branchCreated": true,
         }),
         || {
-            if out.status.success() {
-                print!("{text}");
-            } else {
-                println!("git diff {range} failed (is the base ref present locally?)");
-            }
+            println!(
+                "✓ branch {branch} at {} (git switch {branch})",
+                short(&head)
+            );
         },
     );
     Ok(())
 }
 
-/// Whether git can resolve `oid` to an object in the local odb.
-fn git_object_present(oid: &str) -> bool {
-    Command::new("git")
-        .args(["cat-file", "-e", oid])
-        .status()
-        .is_ok_and(|s| s.success())
+async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
+    let repo_ref = RepoRef::parse(repo)?;
+    let (source, head, base_ref) = locate(ctx, repo, number).await?;
+    let cwd = std::env::current_dir()?;
+    fetch_head(ctx, &cwd, &source, &head)?;
+    // The base as the target repo has it now, fetched fresh.
+    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
+    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let base_local = format!("refs/remotes/dash-pr/base-{number}");
+    git::git(
+        &cwd,
+        &[
+            "fetch",
+            "-q",
+            &format!("dash://{}", handle.id()),
+            &format!("+{base_ref}:{base_local}"),
+        ],
+        &git::dash_env(ctx),
+    )
+    .context("fetching the base branch")?;
+    let range = format!("{base_local}...{head}");
+    let text = git::git(&cwd, &["--no-pager", "diff", &range], &[])?;
+    ctx.emit(
+        json!({ "pr": number, "range": range, "diffAvailable": true, "diff": text }),
+        || println!("{text}"),
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exactly_one_verdict() {
+        assert_eq!(
+            pick_verdict(None, true, false, false).unwrap(),
+            VerdictArg::Approve
+        );
+        assert_eq!(
+            pick_verdict(Some(VerdictArg::Comment), false, false, false).unwrap(),
+            VerdictArg::Comment
+        );
+        assert!(pick_verdict(None, false, false, false).is_err());
+        assert!(pick_verdict(None, true, true, false).is_err());
+        assert!(pick_verdict(Some(VerdictArg::Approve), true, false, false).is_err());
+    }
 }
