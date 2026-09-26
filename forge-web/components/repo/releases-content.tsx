@@ -7,11 +7,11 @@
  * through SHA-256 and saved only on a match; a mismatch turns the row red and nothing is
  * saved.
  *
- * Creating a release (with asset upload) is added separately: the list header keeps a slot
- * for a maintainer's "New release" button.
+ * A maintainer publishes one from the header ({@link NewReleaseButton}): assets go to their own
+ * storage, hashed and verified, then one `release` document names them.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -25,11 +25,28 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { NewReleaseButton } from '@/components/repo/new-release'
+import { useSdk } from '@/hooks/use-sdk'
+import { invalidateSessionCache } from '@/lib/view/session-cache'
+import { repoKey } from '@/lib/repo'
 import { errorMessage, cn } from '@/lib/utils'
 
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const [showPrevious, setShowPrevious] = useState(false)
+  const { network } = useSdk()
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
+  // After a publish the node answering may be a block behind: re-read a few times.
+  const refreshAfterPublish = (): void => {
+    timers.current.forEach(clearTimeout)
+    timers.current = [0, 3000, 8000].map((delay) =>
+      setTimeout(() => {
+        invalidateSessionCache(`releases:${network}:${repoKey(home.repo)}`)
+        reload()
+      }, delay),
+    )
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -37,7 +54,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
           <CopyLinkButton repo={addr} target={{ kind: 'releases' }} />
-          {/* NewReleaseButton slot: a maintainer's "New release" (upload + createRelease). */}
+          <NewReleaseButton home={home} releases={data} onPublished={refreshAfterPublish} />
         </div>
       </div>
       {error ? (

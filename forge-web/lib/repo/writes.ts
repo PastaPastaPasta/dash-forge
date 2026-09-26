@@ -375,10 +375,15 @@ export async function createReview(
 /** A release asset (hash-verified download; stored as a JSON string). */
 export interface ReleaseAsset {
   readonly name: string
+  /** Hex SHA-256 of the file. */
   readonly sha256: string
-  readonly size: number
-  readonly uri: string
+  readonly sizeBytes: number
+  /** Where it can be downloaded (≤ 4): public https first. The CLI's shape (`collab::ReleaseAsset`). */
+  readonly uris: readonly string[]
 }
+
+/** The `assets` field's byte limit (the `release` schema's `maxBytes`). */
+export const RELEASE_ASSETS_MAX_BYTES = 4096
 
 /** Create a `release`: newest per tag wins. Maintainers only (consensus-gated). */
 export async function createRelease(
@@ -390,8 +395,18 @@ export async function createRelease(
   const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
   if (input.name && input.name.length > 0) data['name'] = input.name
   if (input.notes && input.notes.length > 0) data['notes'] = input.notes
-  if (input.assets && input.assets.length > 0) data['assets'] = JSON.stringify(input.assets)
+  if (input.assets && input.assets.length > 0) data['assets'] = releaseAssetsJson(input.assets)
   return writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
+}
+
+/** The `assets` field for `assets`, refusing a list the document cannot hold (4096 bytes). */
+export function releaseAssetsJson(assets: readonly ReleaseAsset[]): string {
+  const json = JSON.stringify(assets)
+  const bytes = new TextEncoder().encode(json).length
+  if (bytes > RELEASE_ASSETS_MAX_BYTES) {
+    throw new Error(`the asset list takes ${bytes} bytes and a release holds ${RELEASE_ASSETS_MAX_BYTES}: use fewer assets, or shorter names and URLs`)
+  }
+  return json
 }
 
 // ---------------------------------------------------------------------------
