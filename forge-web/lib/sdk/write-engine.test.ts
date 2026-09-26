@@ -62,8 +62,10 @@ vi.mock('@dashevo/evo-sdk', () => {
 import {
   ConsensusRefusal,
   UnconfirmedWriteError,
+  WAIT_SETTINGS,
   createDocumentIdempotent,
   deleteDocumentIdempotent,
+  isNonceSpent,
   type SpendEvent,
   type WriteAuth,
 } from './write'
@@ -73,7 +75,7 @@ const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 interface Script {
   platformNonce: bigint
   broadcast: (st: { nonce: bigint }) => void
-  wait: () => Promise<unknown>
+  wait: (settings?: unknown) => Promise<unknown>
   exists: (id: string) => Promise<unknown>
   del?: () => Promise<void>
 }
@@ -99,7 +101,7 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
         s.broadcast(st)
         balance -= 1000n
       },
-      waitForResponse: async () => s.wait(),
+      waitForResponse: async (_st: unknown, settings?: unknown) => s.wait(settings),
     },
     epoch: { current: async () => undefined },
     version: () => 14,
@@ -238,5 +240,84 @@ describe('write engine', () => {
     const r = await deleteDocumentIdempotent(sdkOf(script, []), auth([]), { contractId: 'N6', documentType: 'writer', documentId: 'X', confirmTimeoutMs: 0 })
     expect(deleted).toBe(true)
     expect(r.deleted).toBe(true)
+  })
+
+  /**
+   * The moutai hang, in the browser: another writer (the CLI, another browser) signed with the
+   * same nonce and won the block, and Tenderdash dropped this transition from its mempool, so
+   * its result never comes and every re-broadcast only hears "tx already exists in cache".
+   * After one bounded wait the engine sees the nonce is spent and the document absent, and
+   * signs the action once more with the next nonce: it lands, and nothing waits for minutes.
+   */
+  it('a transition dropped after a same-nonce race is re-signed, not waited on', async () => {
+    const signed: bigint[] = []
+    const waits: unknown[] = []
+    const landedIds = new Set<string>()
+    let nonceOnChain = 1n
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: (st) => {
+        if (st.nonce === 2n && signed.filter((n) => n === 2n).length > 1) {
+          throw new Error('tx already exists in cache')
+        }
+        if (st.nonce === 3n) landedIds.add('ours-3')
+      },
+      wait: async (settings) => {
+        waits.push(settings)
+        // Our nonce-2 transition: the other writer takes nonce 2 meanwhile; ours is dropped.
+        if (signed[signed.length - 1] === 2n) {
+          nonceOnChain = 2n
+          throw new Error('Timeout expired')
+        }
+        nonceOnChain = 3n
+        return {}
+      },
+      exists: async () => undefined,
+    }
+    const sdk = sdkOf(script, signed)
+    ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () =>
+      nonceOnChain
+    const r = await createDocumentIdempotent(sdk, auth([]), { ...write, contractId: 'N8' })
+    expect(r.confirmed).toBe(true)
+    // Nonce 2 once (dropped, never re-broadcast into the cache), then 3, which landed.
+    expect(signed).toEqual([2n, 3n])
+    // Every wait was the bounded one.
+    expect(waits.every((w) => w === WAIT_SETTINGS)).toBe(true)
+  })
+
+  it('a silent wait whose nonce is still free re-broadcasts the same bytes and waits again', async () => {
+    const signed: bigint[] = []
+    let waited = 0
+    const script: Script = {
+      platformNonce: 4n,
+      broadcast: () => undefined,
+      wait: async () => {
+        waited += 1
+        if (waited === 1) throw new Error('Timeout expired') // a slow block
+        return {}
+      },
+      exists: async () => undefined,
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'N9' })
+    expect(r.confirmed).toBe(true)
+    expect(signed).toEqual([5n, 5n])
+  })
+})
+
+describe('isNonceSpent (Drive validate_identity_nonce_update)', () => {
+  const skipped = (behind: bigint) => 1n << (behind - 1n + 40n)
+  it('is free above the tip and spent at it', () => {
+    expect(isNonceSpent(10n, 11n)).toBe(false)
+    expect(isNonceSpent(10n, 10n)).toBe(true)
+  })
+  it('is spent below the tip unless it is a skipped one', () => {
+    expect(isNonceSpent(10n, 9n)).toBe(true)
+    expect(isNonceSpent(10n | skipped(1n), 9n)).toBe(false)
+    expect(isNonceSpent(10n | skipped(2n), 9n)).toBe(true)
+    expect(isNonceSpent(10n | skipped(2n), 8n)).toBe(false)
+  })
+  it('is spent more than 24 behind the tip', () => {
+    expect(isNonceSpent(100n | skipped(24n), 76n)).toBe(false)
+    expect(isNonceSpent(100n, 75n)).toBe(true)
   })
 })

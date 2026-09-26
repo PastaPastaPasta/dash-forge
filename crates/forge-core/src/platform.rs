@@ -90,6 +90,24 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
 
+/// How long one `waitForStateTransitionResult` may take, on one node, before the write loop
+/// re-broadcasts instead.
+///
+/// A transition that a node accepted can still never produce a result. The common case is
+/// two writers (two processes, or the CLI and the web app) signing with the same identity's
+/// contract nonce at once: both pass CheckTx, the block takes one, and Tenderdash quietly
+/// drops the other from its mempool on recheck, so no result event ever comes. The SDK's
+/// own wait read that silence as a dead node and tried 7 nodes × 30 s (and banned each one):
+/// a write that hung for about 3.5 minutes, then recovered. A re-broadcast of the same bytes
+/// answers at once instead — "already in mempool/chain" (wait again) or a consumed nonce
+/// (the caller checks what landed and re-signs) — so one bounded wait per broadcast is enough.
+/// Blocks land in seconds; 20 s leaves plenty of room for a slow one.
+const WAIT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Hard deadline around one wait, proof verification included (a quorum fetch for the
+/// proof's signature is a separate HTTP call with its own 30 s client timeout).
+const WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Maximum attempts for one proof-verified read. The SDK already rotates across DAPI nodes
 /// within an attempt; this outer loop covers the case where that rotation runs out (every
 /// node it tried was banned, or kept serving unverifiable proofs) by backing off and
@@ -1239,10 +1257,14 @@ impl<'a> WriteEngine<'a> {
             StateTransition::deserialize_from_bytes_untrusted(&prepared.signed.bytes)
                 .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
         let sdk = self.client.sdk();
-
-        let mut attempt: u32 = 0;
-        loop {
-            attempt += 1;
+        let document_type = prepared.document_type.as_str();
+        drive_write(
+            || async {
+                state_transition
+                    .broadcast(sdk, None)
+                    .await
+                    .map_err(|e| classify_write_error(&e, document_type))
+            },
             // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
             // outcome whose proof only authenticates the resulting state, and that is every
             // document of an `indexOnly` type (protocol 14; forge-v2's `star` / `follow`): the
@@ -1250,29 +1272,59 @@ impl<'a> WriteEngine<'a> {
             // execution-proved outcomes too, so nothing weakens for the other types, and for a
             // sign-once write "the proven state holds it" is exactly the success condition — a
             // duplicate of the same signed bytes is rejected on its nonce, not proved again.
-            match state_transition
-                .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(sdk, None)
-                .await
-            {
-                Ok(_proof) => return Ok(BroadcastOutcome::Applied),
-                Err(e) => match classify_write_error(&e, &prepared.document_type) {
-                    WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
-                    WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
-                    WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
-                        // Loop around to re-broadcast the identical signed bytes, after a
-                        // backoff so a node whose ban just lapsed is not re-picked at once.
-                        let delay = backoff_delay(RETRY_BACKOFF_BASE, attempt);
-                        tracing::warn!(
-                            attempt,
-                            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                            error = %e,
-                            "retryable broadcast failure; re-broadcasting identical signed bytes (same nonce/entropy)"
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                    WriteFailure::Retryable => return Err(Error::Timeout { retryable: true }),
-                    WriteFailure::Fatal(err) => return Err(err),
-                },
+            || async {
+                state_transition
+                    .wait_for_affected_state::<StateTransitionProofResult>(
+                        sdk,
+                        Some(wait_settings()),
+                    )
+                    .await
+                    .map(|_proof| ())
+                    .map_err(|e| classify_write_error(&e, document_type))
+            },
+            || self.nonce_spent(&state_transition, prepared.signed.nonce),
+            RETRY_BACKOFF_BASE,
+            document_type,
+        )
+        .await
+    }
+
+    /// Whether Platform's proved identity-contract nonce says `nonce` can no longer be used
+    /// by `transition` (Drive's own `validate_identity_nonce_update`): something — ours or
+    /// another write — took it. `false` when it is still free, when the transition is not a
+    /// document batch, or when the read fails (the loop then re-broadcasts as before).
+    async fn nonce_spent(&self, transition: &StateTransition, nonce: u64) -> bool {
+        use dash_sdk::dpp::identity::identity_nonce::validate_identity_nonce_update;
+        use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
+        use drive_proof_verifier::types::IdentityContractNonceFetcher;
+
+        let StateTransition::Batch(batch) = transition else {
+            return false;
+        };
+        let (Some(owner), Some(first)) = (transition.owner_id(), batch.first_transition()) else {
+            return false;
+        };
+        let contract = first.data_contract_id();
+        let sdk = self.client.sdk();
+        match retry_transient_read("fetch identity-contract nonce", || {
+            IdentityContractNonceFetcher::fetch(sdk, (owner, contract))
+        })
+        .await
+        {
+            Ok(current) => {
+                let current = current.map_or(0, |f| f.0);
+                let spent = !validate_identity_nonce_update(current, nonce, owner).is_valid();
+                tracing::debug!(
+                    nonce,
+                    current = current & NONCE_MASK,
+                    spent,
+                    "checked whether the write's nonce is still free"
+                );
+                spent
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the identity-contract nonce");
+                false
             }
         }
     }
@@ -1905,15 +1957,19 @@ fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<
 }
 
 /// The classification of a broadcast error, driving the retry loop.
+#[derive(Debug)]
 enum WriteFailure {
-    /// The write already landed on-chain (a duplicate re-broadcast: already-present
-    /// document, or gRPC AlreadyExists). Idempotent success.
+    /// The node already holds these exact signed bytes (gRPC `AlreadyExists`: "already in
+    /// mempool" or "already in chain"). Not an answer yet: wait for the result.
+    TxKnown,
+    /// The document is already there (an already-present document, or a content-addressed
+    /// unique-index duplicate). Idempotent success.
     AlreadyLanded,
     /// The nonce was already used: this write landed earlier, or another write took it.
     NonceConsumed,
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
-    Retryable,
+    Retryable(String),
     /// A terminal failure surfaced as a crate error.
     Fatal(Error),
 }
@@ -1943,9 +1999,12 @@ const CONTENT_ADDRESSED_UNIQUE_DOC_TYPES: [&str; 2] = ["chunk", "packManifest"];
 /// from the SDK's authoritative [`CanRetry::can_retry`]. `document_type` scopes the
 /// unique-index idempotency (see [`CONTENT_ADDRESSED_UNIQUE_DOC_TYPES`]).
 fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailure {
-    // gRPC-level "already exists" — the object is already on-chain.
+    // gRPC-level "already exists": the node already has these exact bytes, in its mempool or
+    // in a block. Neither is an answer: a pending transition can still be dropped (a nonce
+    // another write took first), and one in a block can have failed there. The result wait
+    // answers both, at once for one already in a block.
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
-        return WriteFailure::AlreadyLanded;
+        return WriteFailure::TxKnown;
     }
 
     // The id was derived at a protocol version the network is not on (a 13 -> 14 upgrade
@@ -2005,7 +2064,7 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     // The SDK's retry signal (StaleNode / TimeoutReached / Proof) plus node-level transport
     // failures. Re-broadcasting the identical signed bytes is safe for all of them.
     if is_transient_node_error(e) {
-        return WriteFailure::Retryable;
+        return WriteFailure::Retryable(e.to_string());
     }
 
     WriteFailure::Fatal(Error::Platform(e.to_string()))
@@ -2036,6 +2095,132 @@ const RETRY_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(2
 /// The pause after failed attempt number `attempt` (1-based): `base`, then doubling.
 fn backoff_delay(base: std::time::Duration, attempt: u32) -> std::time::Duration {
     base * 2u32.saturating_pow(attempt.saturating_sub(1))
+}
+
+/// The settings for one result wait: a single node, [`WAIT_REQUEST_TIMEOUT`], and an overall
+/// [`WAIT_DEADLINE`]. No SDK-level retry: on silence the write loop re-broadcasts, which is
+/// what finds out whether the transition is still pending, landed, or was dropped.
+fn wait_settings() -> dash_sdk::platform::transition::put_settings::PutSettings {
+    dash_sdk::platform::transition::put_settings::PutSettings {
+        request_settings: RequestSettings {
+            timeout: Some(WAIT_REQUEST_TIMEOUT),
+            retries: Some(0),
+            // A node that stays silent about a transition it accepted is not broken (the
+            // transition was dropped); banning it would only shrink the pool for the retry.
+            ban_failed_address: Some(false),
+            ..RequestSettings::default()
+        },
+        wait_timeout: Some(WAIT_DEADLINE),
+        ..Default::default()
+    }
+}
+
+/// The broadcast / wait loop behind [`WriteEngine::execute`], over its three steps so the
+/// control flow is testable without a network. Every broadcast sends the same signed bytes.
+///
+/// * A broadcast that fails transiently is retried (backed off), up to
+///   [`MAX_BROADCAST_ATTEMPTS`] in all.
+/// * A broadcast the node accepts (or already holds: `TxKnown`) is followed by one bounded
+///   wait ([`WAIT_REQUEST_TIMEOUT`]).
+/// * A wait that ends without an answer asks `nonce_spent`. A spent nonce means our
+///   transition either landed or lost its nonce to another write by the same identity, and
+///   will never produce a result on its own — the caller's proved read decides which
+///   ([`BroadcastOutcome::NonceConsumed`]). This is the moutai hang: Tenderdash drops the
+///   loser of a same-nonce race from its mempool on recheck, yet keeps its hash in the
+///   mempool cache, so a re-broadcast only ever hears "tx already exists in cache" and the
+///   wait never answers. A free nonce means the transition is still pending (or was dropped
+///   for another reason): re-broadcast and wait again.
+/// * Anything else is final.
+async fn drive_write<B, BFut, W, WFut, N, NFut>(
+    mut broadcast: B,
+    mut wait: W,
+    mut nonce_spent: N,
+    backoff: std::time::Duration,
+    document_type: &str,
+) -> Result<BroadcastOutcome>
+where
+    B: FnMut() -> BFut,
+    BFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
+    W: FnMut() -> WFut,
+    WFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
+    N: FnMut() -> NFut,
+    NFut: std::future::Future<Output = bool>,
+{
+    let mut attempt: u32 = 0;
+    // Whether a broadcast in THIS call was accepted. A transition the node already knew on
+    // our first send was broadcast by an earlier call (a replayed journal): its landing is
+    // reported as `AlreadyExists`, not as a fresh `Applied`.
+    let mut sent = false;
+    loop {
+        attempt += 1;
+        let started = std::time::Instant::now();
+        let sent_now = broadcast().await;
+        let failure = match sent_now {
+            Ok(()) | Err(WriteFailure::TxKnown) => {
+                // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
+                // attempt's bytes reached the node even though its answer did not reach us.
+                sent |= sent_now.is_ok() || attempt > 1;
+                match wait().await {
+                    Ok(()) => {
+                        tracing::debug!(
+                            document_type,
+                            attempt,
+                            ms = elapsed_ms(started),
+                            "write landed"
+                        );
+                        return Ok(if sent {
+                            BroadcastOutcome::Applied
+                        } else {
+                            BroadcastOutcome::AlreadyExists
+                        });
+                    }
+                    // No answer: can the transition still land at all?
+                    Err(WriteFailure::Retryable(reason)) => {
+                        if nonce_spent().await {
+                            tracing::warn!(
+                                document_type,
+                                attempt,
+                                elapsed_ms = elapsed_ms(started),
+                                error = %reason,
+                                "no result, and the write's nonce is spent: it landed or another \
+                                 write by this identity took the nonce"
+                            );
+                            return Ok(BroadcastOutcome::NonceConsumed);
+                        }
+                        WriteFailure::Retryable(reason)
+                    }
+                    Err(f) => f,
+                }
+            }
+            Err(f) => f,
+        };
+        match failure {
+            WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
+            WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
+            WriteFailure::Retryable(reason) if attempt < MAX_BROADCAST_ATTEMPTS => {
+                let delay = backoff_delay(backoff, attempt);
+                tracing::warn!(
+                    document_type,
+                    attempt,
+                    elapsed_ms = elapsed_ms(started),
+                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    error = %reason,
+                    "write not confirmed; re-broadcasting identical signed bytes (same nonce/entropy)"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot.
+            WriteFailure::Retryable(_) | WriteFailure::TxKnown => {
+                tracing::warn!(document_type, attempt, "write not confirmed; giving up");
+                return Err(Error::Timeout { retryable: true });
+            }
+            WriteFailure::Fatal(err) => return Err(err),
+        }
+    }
+}
+
+fn elapsed_ms(since: std::time::Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Run a proof-verified read, retrying transient node failures with exponential backoff.
@@ -2612,5 +2797,140 @@ mod tests {
         assert!(!is_transient_node_error(&dash_sdk::Error::Config(
             "bad".into()
         )));
+    }
+
+    /// Drive [`super::drive_write`] with scripted broadcast and wait answers (consumed in
+    /// order) and no backoff. Returns the outcome and how many of each step ran.
+    async fn scripted_write(
+        broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
+        waits: Vec<std::result::Result<(), super::WriteFailure>>,
+    ) -> (Result<super::BroadcastOutcome>, usize, usize) {
+        scripted_write_nonce(broadcasts, waits, vec![]).await
+    }
+
+    /// As [`scripted_write`], with scripted `nonce_spent` answers (missing ones are `false`).
+    async fn scripted_write_nonce(
+        broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
+        waits: Vec<std::result::Result<(), super::WriteFailure>>,
+        spent: Vec<bool>,
+    ) -> (Result<super::BroadcastOutcome>, usize, usize) {
+        let b = RefCell::new(broadcasts.into_iter());
+        let w = RefCell::new(waits.into_iter());
+        let n = RefCell::new(spent.into_iter());
+        let (nb, nw) = (RefCell::new(0), RefCell::new(0));
+        let out = super::drive_write(
+            || {
+                *nb.borrow_mut() += 1;
+                std::future::ready(b.borrow_mut().next().expect("no more broadcasts scripted"))
+            },
+            || {
+                *nw.borrow_mut() += 1;
+                std::future::ready(w.borrow_mut().next().expect("no more waits scripted"))
+            },
+            || std::future::ready(n.borrow_mut().next().unwrap_or(false)),
+            std::time::Duration::ZERO,
+            "comment",
+        )
+        .await;
+        (out, nb.into_inner(), nw.into_inner())
+    }
+
+    fn timeout() -> super::WriteFailure {
+        super::WriteFailure::Retryable("wait timed out".into())
+    }
+
+    #[tokio::test]
+    async fn a_write_that_lands_is_applied_after_one_broadcast_and_one_wait() {
+        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Ok(())]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (1, 1));
+    }
+
+    /// The moutai hang: the node accepted our transition, then another write by the same
+    /// identity took its nonce and Tenderdash dropped ours, so no result ever comes and every
+    /// re-broadcast only hears "tx already exists in cache". After one bounded wait the loop
+    /// sees the nonce is spent and hands the question to the caller, instead of seven 30 s
+    /// waits on seven nodes (before) or four re-broadcasts into the cache (without the check).
+    #[tokio::test]
+    async fn a_silent_wait_with_a_spent_nonce_hands_over_at_once() {
+        let (out, nb, nw) =
+            scripted_write_nonce(vec![Ok(())], vec![Err(timeout())], vec![true]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!((nb, nw), (1, 1));
+        // The same when the re-broadcast is the one that learns the nonce is gone.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Err(super::WriteFailure::NonceConsumed)],
+            vec![Err(timeout())],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!((nb, nw), (2, 1));
+    }
+
+    /// Still pending (slow block): the re-broadcast is told the node has it, so the loop
+    /// waits again rather than failing, and the write is ours.
+    #[tokio::test]
+    async fn a_slow_block_waits_again_and_reports_applied() {
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Err(super::WriteFailure::TxKnown)],
+            vec![Err(timeout()), Ok(())],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (2, 2));
+    }
+
+    /// A replayed journal: the node knew the bytes on the first send (an earlier process
+    /// broadcast them), so the landing is not a fresh write.
+    #[tokio::test]
+    async fn bytes_the_node_already_had_report_already_exists() {
+        let (out, _, _) =
+            scripted_write(vec![Err(super::WriteFailure::TxKnown)], vec![Ok(())]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        // But a later attempt's TxKnown is our own earlier send landing.
+        let (out, _, _) = scripted_write(
+            vec![Err(timeout()), Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+    }
+
+    #[tokio::test]
+    async fn the_loop_is_bounded_and_fatal_answers_stop_it() {
+        let (out, nb, nw) = scripted_write(
+            (0..super::MAX_BROADCAST_ATTEMPTS).map(|_| Ok(())).collect(),
+            (0..super::MAX_BROADCAST_ATTEMPTS)
+                .map(|_| Err(timeout()))
+                .collect(),
+        )
+        .await;
+        assert!(matches!(out, Err(Error::Timeout { retryable: true })));
+        let max = super::MAX_BROADCAST_ATTEMPTS as usize;
+        assert_eq!((nb, nw), (max, max));
+
+        let (out, nb, nw) = scripted_write(
+            vec![Err(super::WriteFailure::Fatal(Error::Unauthorized))],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::Unauthorized)));
+        assert_eq!((nb, nw), (1, 0));
+    }
+
+    /// The wait is bounded per node and never bans: silence about a dropped transition is
+    /// not a dead node.
+    #[test]
+    fn the_result_wait_is_one_bounded_request_that_bans_nobody() {
+        let s = super::wait_settings();
+        assert_eq!(s.request_settings.retries, Some(0));
+        assert_eq!(s.request_settings.ban_failed_address, Some(false));
+        assert_eq!(
+            s.request_settings.timeout,
+            Some(super::WAIT_REQUEST_TIMEOUT)
+        );
+        assert!(s
+            .wait_timeout
+            .is_some_and(|t| t > super::WAIT_REQUEST_TIMEOUT));
     }
 }
