@@ -59,6 +59,13 @@ impl Ctx {
         let target = resolve_target(flags, config, NetworkSettings::from_env())
             .context("resolving the network (--network / --devnet-name / config.toml)")?;
 
+        if cli
+            .identity
+            .as_deref()
+            .is_some_and(forge_core::keystore::is_inline_key)
+        {
+            tracing::warn!("{}", forge_core::keystore::INLINE_KEY_ON_ARGV);
+        }
         let identity_path = cli
             .identity
             .clone()
@@ -97,8 +104,12 @@ impl Ctx {
     /// Load the signing identity (bridge-format key material) from the resolved path.
     pub fn load_bridge(&self) -> Result<BridgeIdentity> {
         let path = self.require_identity_path()?;
-        BridgeIdentity::load_from_file(path)
-            .with_context(|| format!("loading identity from {}", path.display()))
+        BridgeIdentity::load_from_file(path).with_context(|| {
+            format!(
+                "loading identity from {}",
+                forge_core::keystore::describe_key_source(path)
+            )
+        })
     }
 
     /// Connect to the resolved network.
