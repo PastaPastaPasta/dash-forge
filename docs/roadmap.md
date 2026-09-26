@@ -76,6 +76,7 @@ Every roadmap item must keep all of these true:
 | D-H | **Private repos are in the first release.** |
 | D-I | **Hosting = GitHub Pages only** (plus a published IPFS build users can pin themselves). |
 | D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on **devnet moutai** (protocol 14, drive 4.2.0-beta.4) until then. |
+| D-L | **Sign in with a mobile Dash wallet (yappr / App Connect style)** is a launch requirement (owner, 2026-09-26). A user scans a QR (or taps a deep link on mobile) with the Dash Wallet app on iOS or Android, approves on the phone, and is signed in with a limited, contract-group-bound key. No key file and no key paste in the browser. See Phase 4. |
 | D-K | External accounts (Apple signing, pinning services, cloud buckets) are **out of scope for now**. S3 and IPFS are tested against local MinIO and kubo only. |
 
 ### Still open
@@ -131,6 +132,27 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] `dg import` → forge-import, plus a continuous mirror mode.
 - [ ] User docs: quick start, "bring your bucket" guides (R2, B2, S3, MinIO, kubo), migrating from GitHub, how to verify the forge isn't lying to you, key backup and recovery.
 
+**Mobile wallet sign-in (D-L)**
+
+The user scans a QR code (or taps a `dash-key:` deep link on the phone itself), approves in the Dash Wallet app, and the browser is signed in. No key file, no key paste. This is the same QR key exchange yappr uses, via `@pastapastapasta/platform-auth` and `components/auth/key-exchange-*.tsx`.
+
+What exists today, checked 2026-09-26:
+- **Forge web:** an App Connect tile has shipped (`forge-web/lib/auth/app-connect.ts`, PR #24). It emits a `dash-key:` request, polls the PV14 App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ`, decrypts the response with yappr's envelope, and verifies the granted key on chain (AUTHENTICATION/HIGH, bound to the dash-forge group, with a budget and expiry). It shows the full identity and DPNS name for confirmation, and refuses if more than one identity answers.
+- **Dash Wallet Android** (`dash-wallet`, "DashConnect", `PlatformDashConnectRepository`) and **iOS** (`dashwallet-ios`, `Sources/Models/DashConnect`) both implement the yappr key exchange, including the `dash-st:` first-login key registration. Today they are **testnet-only**. They publish `loginKeyResponse` to yappr's own key-exchange contract `7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P`, not the PV14 system contract, and their request layout is `version ‖ appEphemeralPub ‖ contractId(32) ‖ labelLen ‖ label`. The wallet binds the key to that one contract.
+
+The gap: Forge's request puts the **contract group id** in the 32-byte scope slot and reads responses only from the system contract, so a shipped wallet cannot complete a Forge login today.
+
+Work:
+- [ ] **Talk to both formats.** Read responses from both the PV14 App Connect system contract and the legacy key-exchange contract, behind one interface; the verification rules stay the same.
+  - Accept a key bound to forge-core **or** to the group, whichever the wallet grants. Its contract bounds limit what it can sign: a forge-core-only key covers repos and pushes, so collab writes need a second grant or a group-bound key.
+  - Use `platform-auth`'s `yappr-protocol` as the reference implementation, or depend on it directly.
+- [ ] **First-login key registration (`dash-st:`).** When the wallet has no suitable key yet, show the second QR carrying the unsigned IdentityUpdate that adds a limited key. This is yappr's `key-registration-flow`, adapted to Forge's group-bound limited key (budget and expiry).
+- [ ] **Mobile-browser UX.** On a phone, show an "Open in Dash Wallet" deep link instead of a QR. Show the pairing code on both screens and a countdown, then offer to protect the session with a passkey (as yappr does).
+- [ ] **Wallet side (upstream, dashpay):** request group-scoped grants (the Forge contract group) and publish to the PV14 system contract on protocol 14 / mainnet. File issues and PRs against `dashpay/dash-wallet` and `dashpay/dashwallet-ios`, with a spec note agreed with the App Connect authors. Until they ship, Forge supports the legacy contract on testnet.
+- [ ] **Test on real devices.** A scripted e2e with a simulated wallet responder (both formats), plus a manual check with the Dash Wallet Android testnet build and the iOS simulator (`run-ios-simulator`), recorded as evidence.
+
+**Gate:** a user on Dash Wallet (Android or iOS) signs in to Forge on testnet or moutai by scanning one QR code and does a write, with no key file anywhere. On mainnet this is gated on the wallets supporting group-scoped grants on protocol 14.
+
 ### Phase 5 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
 - [ ] Line-level commit/PR diffs, inline review comments, approve/request-changes, re-review on new heads.
 - [ ] Real merges from the browser (fast-forward and clean merges via isomorphic-git, pushed to the user's bucket), respecting protected refs.
@@ -164,12 +186,13 @@ Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) �
 ## 7. Launch criteria (what "real users would want it" means)
 
 Public beta ships when all of these hold on **mainnet**:
-1. A GitHub user with their own bucket goes from nothing to a continuously synced mirror that can't be taken down in **under 10 minutes**, without building from source and without any Forge-run service.
-2. The **survivability drill** passes in CI: any single host, bucket, gateway, relay or domain can disappear and clone and browse still work.
-3. Nothing in the UI claims more than was verified. The nightly has been green for 14 days.
-4. Creating a repo costs **≤ 0.01 DASH**. A 100 KiB push to the user's own bucket costs **< $0.05** in Platform fees.
-5. Private repos pass their security review.
-6. dashpay and Dash Forge itself are on Forge mainnet.
+1. A user signs in with their mobile Dash wallet by scanning one QR code (D-L).
+2. A GitHub user with their own bucket goes from nothing to a continuously synced mirror that can't be taken down in **under 10 minutes**, without building from source and without any Forge-run service.
+3. The **survivability drill** passes in CI: any single host, bucket, gateway, relay or domain can disappear and clone and browse still work.
+4. Nothing in the UI claims more than was verified. The nightly has been green for 14 days.
+5. Creating a repo costs **≤ 0.01 DASH**. A 100 KiB push to the user's own bucket costs **< $0.05** in Platform fees.
+6. Private repos pass their security review.
+7. dashpay and Dash Forge itself are on Forge mainnet.
 
 ## 8. Risks
 
