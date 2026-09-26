@@ -52,7 +52,7 @@ num() {
 str() { jq -r "(try ($1) catch null) | if type == \"string\" then . else \"\" end" "$json"; }
 
 status=$(str .status)
-case "$status" in ok | dry_run | cap_exceeded | error) ;; *) status=error ;; esac
+case "$status" in ok | partial | dry_run | cap_exceeded | error) ;; *) status=error ;; esac
 cpd=$(num .creditsPerDash 100000000000)
 [ "$cpd" -gt 0 ] || cpd=100000000000
 to_dash() {
@@ -77,10 +77,12 @@ expires=$(num .key.expiresAt '')
 # Past year 9999 means "never" for display purposes.
 [ -z "$expires" ] || [ "$expires" -lt 253402300800000 ] || expires=''
 pack_bytes=$(num .counts.packBytes 0)
+skipped=$(num .counts.skipped 0)
 renew="Renew at forge.dashhq.org/${owner:-<owner>}/${name:-<name>}/settings/mirror."
 
 case "$status" in
     ok) heading="Forge mirror updated" ;;
+    partial) heading="Forge mirror updated with skipped items" ;;
     dry_run) heading="Forge mirror dry run (estimate only, nothing was written)" ;;
     cap_exceeded) heading="Forge mirror stopped: cost cap reached" ;;
     *) heading="Forge mirror failed" ;;
@@ -100,10 +102,11 @@ esac
     for pair in issues:Issues prs:PRs comments:Comments reviews:Reviews events:Events releases:Releases labels:Labels; do
         printf '| %s | %s |\n' "${pair#*:}" "$(num ".counts.${pair%%:*}" 0)"
     done
+    [ "$skipped" -eq 0 ] || printf '| Skipped (retried next run) | %s |\n' "$skipped"
     if [ "$status" = dry_run ]; then
         printf '| **Estimated cost** | **%s DASH** |\n' "$(to_dash "$estimate")"
     else
-        printf '| **Platform charged** | **%s DASH** |\n' "$(to_dash "$spent")"
+        printf '| **Spent** | **%s DASH** |\n' "$(to_dash "$spent")"
         printf '| Estimate | %s DASH |\n' "$(to_dash "$estimate")"
     fi
     if [ -n "$budget" ] && [ -n "$remaining" ]; then
@@ -135,6 +138,9 @@ fi
 while IFS= read -r w; do
     [ -z "$w" ] || annotate warning "Forge mirror" "$w"
 done < <(jq -r 'try (.warnings // [])[] | strings | gsub("[\r\n]+"; " ")' "$json")
+if [ "$status" = partial ]; then
+    annotate warning "Forge mirror skipped items" "$skipped item(s) were skipped (see the warnings above). The sync state did not advance, so the next run retries them."
+fi
 if [ "$status" = error ] || [ "$status" = cap_exceeded ]; then
     err=$(str .error)
     annotate error "Forge mirror $status" "${err:-forge-import reported $status without a message}"

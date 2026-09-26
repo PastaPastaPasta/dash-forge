@@ -67,6 +67,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `replicas` | `1` | Storage confirmations a push needs. The Action never falls back to Platform storage silently. |
 | `cost-cap` | `0.05` | Maximum DASH one run may spend (see below). |
 | `dry-run` | `false` | `true`: list, compare and estimate, and write nothing. |
+| `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
 | `version` | `0.1.0` | The Dash Forge release this Action version pins. |
 | `install` | `true` | `false`: use `dg`, `git-remote-dash` and `forge-import` already on `PATH`. |
@@ -76,18 +77,34 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 
 | Output | |
 |---|---|
-| `status` | `ok`, `dry_run`, `cap_exceeded` or `error`. |
-| `spent-dash` | DASH charged by this run. |
-| `summary-json` | Path of the full run summary (`forge-import --summary-json`): counts, estimate, spend, key budget and warnings. |
+| `status` | `ok`, `partial`, `dry_run`, `cap_exceeded` or `error` (see below). |
+| `spent-dash` | DASH spent by this run: the larger of what Platform charged and the drop in the identity's balance. |
+| `summary-json` | Path of the full run summary (`forge-import --summary-json`): counts, estimate, spend, key budget and warnings. It is written on every exit, including errors. |
+
+### Statuses
+
+| `status` | `forge-import` exit code | Step result | Meaning |
+|---|---|---|---|
+| `ok` | 0 | succeeds | Everything was mirrored. |
+| `dry_run` | 0 | succeeds | Nothing was written. If a real run would stop at the cap, a warning says so. |
+| `partial` | 4 | succeeds, with a warning (fails if `fail-on-partial: 'true'`) | The run finished, but some items were skipped: the issue or PR number is already taken in the destination, the destination refused a write, or a PR head push did not fit under the cap. The summary counts them as *Skipped*. The sync state does not advance, so the next run retries them. |
+| `cap_exceeded` | 3 | fails | The estimate or the spend reached `cost-cap`. |
+| `error` | 1 | fails | Anything else. The error is shown as an annotation. |
 
 ## What is synced
 
-- **Code** (`code`): every branch and tag. Force-pushes are mirrored as force-pushes. The head of each pull request is stored at `refs/mirror/pull/<n>/head`, so it can be checked out.
-- **Issues and pull requests** (`issues`, `prs`): title, body, state, labels, comments and reviews. They are signed by the runner identity, and each one says which GitHub item and author it came from. State changes are recorded as events.
+- **Code** (`code`): every branch and tag. Force-pushes are mirrored as force-pushes. The head of each **open** pull request is stored at `refs/mirror/pull/<n>/head`, so it can be checked out.
+- **Issues and pull requests** (`issues`, `prs`): title and body as of the first mirror, plus state, labels, comments and reviews. They are signed by the runner identity, and each one says which GitHub item and author it came from. State changes are recorded as events.
 - **Releases** (`releases`): tag, title and notes. Assets are **not re-uploaded**. They are referenced by their GitHub URL, together with their sha256 when GitHub reports a digest.
 - **Labels** (`labels`).
 
-Not synced yet: edits to an issue or PR **body** after its first import. Later runs pick up state, labels and new comments and reviews only. Wiki, projects, discussions and Actions artifacts are not synced.
+Not mirrored:
+
+- edits to an issue's or PR's title or body after it was first mirrored;
+- a PR retargeted to another base branch after it was first mirrored;
+- later moves of a PR's head once the PR is closed: `refs/mirror/pull/<n>/head` follows the head only while the PR is open;
+- reactions, milestones, assignees, projects and discussions;
+- the wiki and Actions artifacts.
 
 ## Idempotency
 
@@ -117,7 +134,7 @@ Each run adds a table to the job summary:
 | Events | 5 |
 | Releases | 1 |
 | Labels | 6 |
-| **Platform charged** | **0.025 DASH** |
+| **Spent** | **0.025 DASH** |
 | Estimate | 0.026 DASH |
 | Runner key budget left | 0.45 of 0.5 DASH, expires 2027-09-24 |
 | Identity balance | 0.4 DASH |
@@ -128,7 +145,7 @@ With `dry-run: 'true'` the same table says *Would write*, and its cost row is la
 - when `DASH_FORGE_KEY` is not a limited key (it has no budget), recommending a limited runner key;
 - for anything the importer flags, such as a release asset without a digest.
 
-A failed or capped run shows the error as an annotation.
+A `partial` run adds a *Skipped (retried next run)* row and a warning. A failed or capped run shows the error as an annotation.
 
 ## Security
 
