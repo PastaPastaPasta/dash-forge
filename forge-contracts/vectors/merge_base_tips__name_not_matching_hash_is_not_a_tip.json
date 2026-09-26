@@ -2,6 +2,7 @@
   "name": "name_not_matching_hash_is_not_a_tip",
   "description": "An update whose refName does not hash to its (real, 64-hex) refNameHash is inert, so it is not a tip.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

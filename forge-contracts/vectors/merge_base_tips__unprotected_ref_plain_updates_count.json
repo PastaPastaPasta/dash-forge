@@ -2,6 +2,7 @@
   "name": "unprotected_ref_plain_updates_count",
   "description": "On a ref no pattern protects, plain updates are tips.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

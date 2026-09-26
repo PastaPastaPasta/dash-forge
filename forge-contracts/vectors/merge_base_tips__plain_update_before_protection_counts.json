@@ -2,6 +2,7 @@
   "name": "plain_update_before_protection_counts",
   "description": "Protection is as-of each update: a plain update written before the ref was protected stays a tip.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

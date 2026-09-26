@@ -2,6 +2,7 @@
   "name": "plain_update_on_protected_ref_is_not_a_tip",
   "description": "A plain refUpdate naming a protected ref is inert (§4), so the commit it names was never a tip of the branch.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

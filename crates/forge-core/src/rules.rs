@@ -1415,8 +1415,6 @@ mod tests {
         base_tip: Option<String>,
         #[serde(default)]
         ancestry: Ancestry,
-        #[serde(default)]
-        base_history: Option<BaseHistory>,
     }
 
     /// A PR base ref's raw history: the fold's base tip and merge predicate then come from
@@ -1479,7 +1477,7 @@ mod tests {
         ref_name_hash: String,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct MergeBaseTipsInput {
         updates: Vec<RefUpdate>,
@@ -1552,30 +1550,16 @@ mod tests {
                     serde_json::from_value(v.expected.clone()).expect("fold_issue expected");
                 assert_eq!(got, want, "vector `{ctx}`");
             }
-            "merge_base_tips" => {
-                let inp: MergeBaseTipsInput =
-                    serde_json::from_value(v.input.clone()).expect("merge_base_tips input");
-                let got = merge_base_tips(&inp.updates, &inp.config_history, &inp.ref_name_hash);
-                let want: MergeBaseTips =
-                    serde_json::from_value(v.expected.clone()).expect("merge_base_tips expected");
-                assert_eq!(got, want, "vector `{ctx}`");
-            }
             "fold_pr" => {
                 let inp: FoldPrInput =
                     serde_json::from_value(v.input.clone()).expect("fold_pr input");
                 let authz = AuthzResolver::new(inp.token_records);
-                let (base_tip, ancestry) = fold_base(
-                    ctx,
-                    inp.base_history.as_ref(),
-                    inp.base_tip.as_deref(),
-                    &inp.ancestry,
-                );
                 let got = fold_pr_state(
                     &inp.events,
                     &inp.target_author,
                     &authz,
-                    base_tip.as_deref(),
-                    |a, d| ancestry.is_ancestor(a, d),
+                    inp.base_tip.as_deref(),
+                    |a, d| inp.ancestry.is_ancestor(a, d),
                 );
                 let want: PrState =
                     serde_json::from_value(v.expected.clone()).expect("fold_pr expected");
@@ -1808,6 +1792,11 @@ mod tests {
                 let inp: WellFormedInput = input(v);
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
+            }
+            "merge_base_tips" => {
+                let inp: MergeBaseTipsInput = input(v);
+                let got = merge_base_tips(&inp.updates, &inp.config_history, &inp.ref_name_hash);
+                assert_eq!(got, expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);

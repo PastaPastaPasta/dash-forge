@@ -2,6 +2,7 @@
   "name": "deletion_keeps_history_and_newest_tip",
   "description": "A deletion is never a tip; the ref points nowhere now, but its earlier tips (and the newest of them) still count for merges.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

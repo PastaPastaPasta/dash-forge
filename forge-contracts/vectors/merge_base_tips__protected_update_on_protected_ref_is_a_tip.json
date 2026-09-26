@@ -2,6 +2,7 @@
   "name": "protected_update_on_protected_ref_is_a_tip",
   "description": "A protectedRefUpdate moves a protected ref: its commit is a tip.",
   "case": "merge_base_tips",
+  "rules": "v2",
   "input": {
     "updates": [
       {

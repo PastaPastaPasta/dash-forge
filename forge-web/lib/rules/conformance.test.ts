@@ -88,7 +88,6 @@ interface FoldPrInput {
   readonly tokenRecords?: readonly TokenRecord[]
   readonly baseTip?: string | null
   readonly ancestry?: Pairs
-  readonly baseHistory?: BaseHistory
 }
 
 /** A PR base ref's raw history: the fold's base tip and predicate come from `mergeBaseTips`. */
@@ -179,14 +178,14 @@ function runCase(v: Vector): void {
     case 'fold_pr': {
       const inp = v.input as FoldPrInput
       const authz = new AuthzResolver(inp.tokenRecords ?? [])
-      const [baseTip, isAncestor] = foldBase(v, inp)
-      const got = foldPrState(inp.events, inp.targetAuthor, authz, baseTip, isAncestor)
+      const got = foldPrState(
+        inp.events,
+        inp.targetAuthor,
+        authz,
+        inp.baseTip ?? undefined,
+        ancestryFromPairs(inp.ancestry ?? []),
+      )
       expect(got).toEqual(v.expected)
-      break
-    }
-    case 'merge_base_tips': {
-      const inp = v.input as BaseHistory
-      expect(mergeBaseTips(inp.updates, inp.configHistory ?? [], inp.refNameHash)).toEqual(v.expected)
       break
     }
     case 'overlay': {
@@ -321,6 +320,12 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['doc', 'visibility'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }
       expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
+      break
+    }
+    case 'merge_base_tips': {
+      onlyKeys(v, ['updates', 'configHistory', 'refNameHash'])
+      const inp = v.input as BaseHistory
+      expect(mergeBaseTips(inp.updates, inp.configHistory ?? [], inp.refNameHash)).toEqual(v.expected)
       break
     }
     case 'ref_name_hashes': {
