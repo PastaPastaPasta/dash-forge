@@ -2,16 +2,18 @@
  * A minimal IndexedDB key-value layer: one database, a few object stores, promise-shaped.
  *
  * Holds the browser's local state that must survive a reload but never leaves the device:
- * the spend ledger, write journals (a repo creation interrupted half-way), and the key vault.
+ * the spend ledger, write journals (a repo creation interrupted half-way), the key vault, and
+ * the local notifications inbox (items, per-feed cursors, subscriptions).
  * Every call is browser-only; outside a browser (SSR, vitest) the stores are in-memory maps,
  * so the modules built on this stay testable without a fake IndexedDB.
  */
 
-export type StoreName = 'spend' | 'journal' | 'vault'
+export type StoreName = 'spend' | 'journal' | 'vault' | 'inbox'
 
 const DB_NAME = 'dash-forge'
-const DB_VERSION = 1
-const STORES: readonly StoreName[] = ['spend', 'journal', 'vault']
+// Bump on every new store; the upgrade only ever adds stores (STORES stays additive).
+const DB_VERSION = 2
+const STORES: readonly StoreName[] = ['spend', 'journal', 'vault', 'inbox']
 
 let dbPromise: Promise<IDBDatabase> | null = null
 const memory = new Map<StoreName, Map<string, unknown>>()

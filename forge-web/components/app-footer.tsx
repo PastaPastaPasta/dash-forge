@@ -15,6 +15,9 @@ export function AppFooter(): JSX.Element {
           <Link href="/" className="hover:text-anvil-800 dark:hover:text-anvil-100">
             Discover
           </Link>
+          <Link href="/explore" className="hover:text-anvil-800 dark:hover:text-anvil-100">
+            Explore
+          </Link>
           <Link href="/new" className="hover:text-anvil-800 dark:hover:text-anvil-100">
             New repo
           </Link>
