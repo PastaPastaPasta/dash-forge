@@ -14,10 +14,6 @@ pub enum RelayError {
     #[error("ssrf guard: {0}")]
     Ssrf(String),
 
-    /// A webhook secret could not be resolved (no config secret, encrypted-only path).
-    #[error("secret unavailable: {0}")]
-    SecretUnavailable(String),
-
     /// Delivery failed after exhausting retries (dead-lettered).
     #[error("delivery failed after {attempts} attempts: {reason}")]
     DeliveryExhausted {
@@ -26,6 +22,11 @@ pub enum RelayError {
         /// The last failure reason.
         reason: String,
     },
+
+    /// No delivery slot to the destination freed up in time: other hooks kept it busy. Not
+    /// the receiver's fault, so it does not count against the hook's circuit breaker.
+    #[error("destination busy: {0}")]
+    DestinationBusy(String),
 
     /// An underlying forge-core error (Platform read/write).
     #[error("forge-core: {0}")]

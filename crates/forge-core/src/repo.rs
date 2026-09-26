@@ -1339,6 +1339,38 @@ impl<'a> RepoService<'a> {
     }
 }
 
+/// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates
+/// that pass [`rules::is_update_valid`] (legal name that hashes to its key, protected-ref
+/// routing as of each update's time), read with no identity. What a verifier checks a pushed
+/// oid against: "a valid update set this ref to it", which holds even after later pushes,
+/// unlike "it is the current tip".
+pub async fn read_valid_tips(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    ref_name: &str,
+) -> Result<BTreeSet<String>> {
+    repo.require_readable()?;
+    let scope = repo.scope()?;
+    let contract = client.fetch_contract(&scope.contract_id).await?;
+    let configs = crate::refs::read_config_history(client, &contract, &scope).await?;
+    let hash = crate::backends::sha256(ref_name.as_bytes());
+    let updates = crate::refs::read_ref_history(client, &contract, &scope, hash).await?;
+    Ok(updates
+        .iter()
+        .filter(|u| rules::is_update_valid(u, &configs))
+        .map(|u| u.new_oid.clone())
+        .collect())
+}
+
+/// A `config` document flattened to what protection resolution needs.
+pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
+    ConfigDoc {
+        id: d.id.clone(),
+        created_at: d.created_at.unwrap_or(0),
+        protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
+    }
+}
+
 /// The `String`s of a list of [`Uri`]s.
 fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()

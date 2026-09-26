@@ -470,7 +470,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         Err(e) => {
             out.push(Check::fail(
                 "identity",
-                format!("{}: {:#}", path.display(), e),
+                format!("{}: {:#}", forge_core::keystore::describe_key_source(&path), e),
                 "pass the bridge identity export with --identity <file>, or `dg auth login --identity <file>`",
             ));
             return out;
@@ -478,9 +478,15 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     };
     out.push(Check::ok(
         "identity",
-        format!("{} ({})", bridge.identity_id, path.display()),
+        format!(
+            "{} ({})",
+            bridge.identity_id,
+            forge_core::keystore::describe_key_source(&path)
+        ),
     ));
-    out.push(file_mode_check(&path));
+    if !forge_core::keystore::is_inline_key(&path) {
+        out.push(file_mode_check(&path));
+    }
     out.push(
         match (
             bridge.doc_op_key().is_ok(),

@@ -68,7 +68,7 @@ use crate::platform::{
     FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
 use crate::rules::{ConfigDoc, MergeBaseTips, RefUpdate};
-use crate::scope::{self, DocScope};
+use crate::scope::DocScope;
 
 /// The plain ref-update document type.
 pub(crate) const DOC_REF_UPDATE: &str = "refUpdate";
@@ -205,14 +205,7 @@ pub async fn read_config_history(
             &[QueryOrder::asc("$createdAt")],
         )
         .await?;
-    Ok(docs
-        .iter()
-        .map(|d| ConfigDoc {
-            id: d.id.clone(),
-            created_at: d.created_at.unwrap_or(0),
-            protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
-        })
-        .collect())
+    Ok(docs.iter().map(crate::repo::config_doc).collect())
 }
 
 /// The history of the ref named `ref_name` that a PR merge into it is verified against
@@ -397,11 +390,7 @@ pub fn has_missing_parent(updates: &[RefUpdate]) -> bool {
 }
 
 /// Flatten a ref-update document to the [`RefUpdate`] shape the fold consumes.
-pub(crate) fn ref_update_from_doc(
-    d: &FetchedDocument,
-    hash_hex: &str,
-    protected: bool,
-) -> RefUpdate {
+pub fn ref_update_from_doc(d: &FetchedDocument, hash_hex: &str, protected: bool) -> RefUpdate {
     RefUpdate {
         id: d.id.clone(),
         ref_name_hash: hash_hex.to_string(),

@@ -5,37 +5,33 @@
 //!
 //!  1. Receive the webhook and **verify the HMAC-SHA256 signature** (`X-Hub-Signature-256`).
 //!  2. **Re-fetch the referenced state from Platform** and verify it independently — here,
-//!     for a `push`, confirm the `after` oid actually appears in the repo's `refUpdate`
-//!     history on-chain. A tampered relay that altered the payload is detected here (the
-//!     oid it invented is not on Platform), which is the whole trust model: the relay is
-//!     availability-only.
-//!  3. **Write a `checkRun` doc back** through the runner's own identity holding a WRITE
-//!     token — closing the CI loop that forge-web renders. (Best-effort: if the CI identity
-//!     lacks WRITE on the repo the write is reported as skipped, not fatal.)
+//!     for a `push`, confirm by forge's own rules that a valid update of the ref set it to
+//!     `after`. A tampered relay that altered the payload is detected here, which is the
+//!     whole trust model: the relay is availability-only.
+//!  3. **Write a `checkRun` doc back** through the runner's own identity (a writer or
+//!     maintainer of the repo) — closing the CI loop forge-web renders. (Best-effort: if it
+//!     is not a member the write is reported as skipped, not fatal.)
 //!
 //! Run it:
 //! ```text
 //! FORGE_RELAY_SECRET=shared-secret \
 //! CI_IDENTITY=/path/CI-RUNNER.identity.json \
-//! CI_REPO=<repoContractId> \
+//! CI_REPO=<forge-v2 repo id> CI_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai \
 //! CI_LISTEN=127.0.0.1:9099 \
 //! cargo run -p forge-relay --example ci_consumer
 //! ```
-//! `CI_IDENTITY`/`CI_REPO` are optional — without them it verifies + logs but writes no
+//! `CI_IDENTITY` is optional: without it the consumer verifies and logs but writes no
 //! `checkRun`.
 
 use std::collections::BTreeMap;
 use std::env;
 
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{FieldValue, Network, PlatformClient, QueryOrder, WriteEngine};
-
-type HmacSha256 = Hmac<Sha256>;
+use forge_core::platform::{FieldValue, Network, PlatformClient, WriteEngine};
+use forge_core::webhooks::verify_signature as verify;
 
 /// A parsed HTTP request: method/path plus lowercased headers and the raw body.
 struct HttpRequest {
@@ -56,14 +52,14 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("set FORGE_RELAY_SECRET to the webhook HMAC secret"))?;
     let listen = env::var("CI_LISTEN").unwrap_or_else(|_| "127.0.0.1:9099".to_string());
     let ci_identity = env::var("CI_IDENTITY").ok();
-    // SECURITY: the verification contract is CONFIGURED, never taken from the payload. The
-    // relay is untrusted; if the consumer picked the contract from `repository`, a malicious
-    // relay would point verification at a contract it controls and defeat the whole
+    // SECURITY: the verification repo is CONFIGURED, never taken from the payload. The
+    // relay is untrusted; if the consumer picked the repo from `repository`, a malicious
+    // relay would point verification at a repo it controls and defeat the whole
     // re-fetch-and-verify defense this example exists to demonstrate. So CI_REPO is
     // mandatory — the consumer only ever verifies against the repo it was told to trust.
     let ci_repo = env::var("CI_REPO").map_err(|_| {
         anyhow::anyhow!(
-            "set CI_REPO to the EXPECTED repo contract id (base58). The verification target \
+            "set CI_REPO to the EXPECTED forge-v2 repo id (base58). The verification target \
              must be configured, never derived from the (untrusted) webhook payload."
         )
     })?;
@@ -138,7 +134,7 @@ async fn handle(
 }
 
 /// Re-fetch the pushed ref state from Platform and, if a CI identity is configured, write a
-/// `checkRun` doc back. `ci_repo` is the CONFIGURED expected contract id — never the
+/// `checkRun` doc back. `ci_repo` is the CONFIGURED expected repo id — never the
 /// payload's own `repository` (which the untrusted relay controls).
 async fn verify_and_check_run(
     payload: &serde_json::Value,
@@ -148,59 +144,47 @@ async fn verify_and_check_run(
 ) -> anyhow::Result<()> {
     let after = payload["after"].as_str().unwrap_or_default().to_string();
     let ref_name = payload["ref"].as_str().unwrap_or_default();
-    // If the payload names a different contract than the one we trust, that is a red flag
+    // If the payload names a different repo than the one we trust, that is a red flag
     // (a tampered/misrouted delivery) — log it, but verify against the CONFIGURED repo only.
-    if let Some(claimed) = payload["repository"]["dash_contract_id"].as_str() {
+    if let Some(claimed) = payload["repository"]["dash_repo_id"].as_str() {
         if claimed != ci_repo {
             tracing::warn!(
                 claimed,
                 trusted = ci_repo,
-                "payload repository contract id does not match the configured CI_REPO; verifying against CI_REPO only"
+                "payload repository id does not match the configured CI_REPO; verifying against CI_REPO only"
             );
         }
     }
     let repo_id = ci_repo.to_string();
 
     let client = PlatformClient::connect_network(network.clone()).await?;
-    let contract = client.fetch_contract(&repo_id).await?;
+    let repo = forge_core::resolve::resolve_id(&client, &repo_id).await?;
+    let forge = repo.require_v2()?.clone();
+    let scope = repo.scope()?;
 
-    // Independent verification: does the after-oid actually exist in the repo's refUpdate
-    // history on Platform? (A tampered relay payload would fail here.)
-    let mut on_chain = false;
-    for doc_type in ["refUpdate", "protectedRefUpdate"] {
-        let docs = client
-            .query_documents(
-                &contract,
-                doc_type,
-                &[],
-                &[QueryOrder::desc("$createdAt")],
-                100,
-                None,
-            )
-            .await?;
-        if docs
-            .iter()
-            .any(|d| d.field_hex("newOid").as_deref() == Some(after.as_str()))
-        {
-            on_chain = true;
-            break;
-        }
-    }
+    // Independent verification: did a *valid* update of this ref set it to `after`? forge's
+    // own rule decides validity (legal name bound to its hash; on a protected ref, only a
+    // maintainer's protectedRefUpdate counts). "The oid appears in some update" is not
+    // enough: a writer's plain refUpdate on a protected branch lands on chain but moves
+    // nothing. Not "is it the current tip" either: a later push must not fail this build. A
+    // tampered relay payload fails here too.
+    let tips = forge_core::repo::read_valid_tips(&client, &repo, ref_name).await?;
+    let verified = tips.contains(&after);
     tracing::info!(
         after,
         ref_name,
-        on_chain,
-        "re-fetched push state from Platform"
+        verified,
+        "re-fetched ref history from Platform"
     );
 
-    let conclusion = if on_chain { "success" } else { "failure" };
-    let summary = if on_chain {
-        format!("Verified push to {ref_name}: after-oid {after} is present on Platform.")
+    let conclusion = if verified { "success" } else { "failure" };
+    let summary = if verified {
+        format!("Verified push to {ref_name}: a valid update on Platform set it to {after}.")
     } else {
-        format!("REJECTED: after-oid {after} for {ref_name} was NOT found on Platform (possible tampered relay).")
+        format!("REJECTED: no valid update on Platform set {ref_name} to {after}.")
     };
 
-    // 3. Write a checkRun doc back (best-effort — needs WRITE on the repo).
+    // 3. Write a checkRun doc back (best-effort — needs writer or maintainer on the repo).
     let Some(identity_path) = ci_identity else {
         tracing::info!("no CI_IDENTITY set — skipping checkRun write (verification-only mode)");
         return Ok(());
@@ -210,35 +194,24 @@ async fn verify_and_check_run(
     let engine = WriteEngine::new(&client, &identity, bridge.doc_op_key()?)?;
 
     let after_bytes = hex::decode(&after).unwrap_or_default();
-    let mut props: BTreeMap<String, FieldValue> = BTreeMap::new();
-    props.insert("headOid".into(), FieldValue::bytes(after_bytes));
-    props.insert("name".into(), FieldValue::text("dash-forge-ci"));
-    props.insert("status".into(), FieldValue::text("completed"));
-    props.insert("conclusion".into(), FieldValue::text(conclusion));
-    props.insert("summary".into(), FieldValue::text(summary));
+    let props: BTreeMap<String, FieldValue> = scope.props([
+        ("headOid", FieldValue::bytes(after_bytes)),
+        ("name", FieldValue::text("dash-forge-ci")),
+        ("status", FieldValue::text("completed")),
+        ("conclusion", FieldValue::text(conclusion)),
+        ("summary", FieldValue::text(summary)),
+    ]);
+    let collab = client.fetch_contract(&forge.collab).await?;
 
-    match engine.create_document(&contract, "checkRun", props).await {
+    match engine.create_document(&collab, "checkRun", props).await {
         Ok(id) => {
             tracing::info!(check_run_doc = %id, conclusion, "wrote checkRun back to Platform (CI loop closed)");
         }
         Err(e) => {
-            tracing::warn!(error = %e, "checkRun write skipped (CI identity likely lacks a WRITE token on this repo)");
+            tracing::warn!(error = %e, "checkRun write skipped (the CI identity must be a writer or maintainer of the repo)");
         }
     }
     Ok(())
-}
-
-/// Constant-time verify a `sha256=<hex>` signature.
-fn verify(secret: &[u8], body: &[u8], signature_header: &str) -> bool {
-    let Some(hex_sig) = signature_header.strip_prefix("sha256=") else {
-        return false;
-    };
-    let Ok(expected) = hex::decode(hex_sig) else {
-        return false;
-    };
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key");
-    mac.update(body);
-    mac.verify_slice(&expected).is_ok()
 }
 
 /// Read an HTTP/1.1 request (headers + Content-Length body) from `stream`.

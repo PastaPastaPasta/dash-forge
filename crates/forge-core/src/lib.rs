@@ -21,6 +21,8 @@
 //! - [`rules`] — `FORGE_RULES_V1`: ref resolution, event folds, protected-pattern matching.
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
+//! - [`envelope`] — the `encryptedFor` scheme (`ecdh-secp256k1-aes256-cbc`), matching Platform.
+//! - [`webhooks`] — forge-v2 `webhook` documents: create/list/remove, newest-wins, secrets.
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
 //! - [`user_error`] — [`user_error::UserError`]: stable code + cause + fix, the exit-code
 //!   table, and the mapping from [`Error`] / SDK messages that `dg` and the helper render.
@@ -32,6 +34,7 @@ pub mod backends;
 pub mod collab;
 pub mod cost;
 pub mod create;
+pub mod envelope;
 pub mod error;
 pub mod fork;
 pub mod keystore;
@@ -48,6 +51,7 @@ pub mod scope;
 pub mod storage;
 pub mod tokens;
 pub mod user_error;
+pub mod webhooks;
 
 pub use error::{Error, Result};
 pub use user_error::UserError;

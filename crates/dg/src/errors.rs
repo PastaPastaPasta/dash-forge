@@ -160,7 +160,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("storage command failed", Some(repo))
         }
         Command::Storage(_) => ("storage command failed", None),
-        Command::Import { .. } => ("import failed", None),
+        Command::Webhook(w) => w.context(),
+        Command::Import(a) => ("import failed", a.repo.as_ref()),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),
     };

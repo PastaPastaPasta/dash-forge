@@ -1049,6 +1049,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "forge-core",
+ "forge-import",
  "hex",
  "reqwest",
  "serde",
@@ -1416,8 +1417,11 @@ dependencies = [
  "hex",
  "hmac",
  "openssl",
+ "platform-encryption",
+ "rand 0.8.8",
  "reqwest",
  "rs-sdk-trusted-context-provider",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha1",
@@ -1428,6 +1432,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -1440,6 +1445,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1452,10 +1458,7 @@ dependencies = [
  "anyhow",
  "clap",
  "forge-core",
- "futures",
  "hex",
- "hmac",
- "rand 0.8.8",
  "reqwest",
  "serde",
  "serde_json",
@@ -1465,6 +1468,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
