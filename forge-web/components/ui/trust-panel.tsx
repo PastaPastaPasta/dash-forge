@@ -66,7 +66,7 @@ export function TrustPanel({
   tipOid,
 }: {
   report: TrustReport
-  /** The repo the proofs were read for: the v1 repo contract id or the forge-v2 repo id. */
+  /** The repo the proofs were read for: its repo id. */
   serial?: string
   /** The commit the attested ref points at. */
   tipOid?: string

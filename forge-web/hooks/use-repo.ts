@@ -3,12 +3,12 @@
 /**
  * useRepoHome — resolve + compose a repo's home view-model from its route address.
  *
- * Connects the SDK (registry, DPNS and the forge-v2 contracts preloaded), resolves the repo —
- * a forge-v2 `repo` document by `($ownerId, name)`, else the v1 registry with
- * listing-authenticity verification — and loads config + refs + star count. Returns the async
+ * Connects the SDK (DPNS and the forge-v2 contracts preloaded), resolves the repo — its
+ * forge-core `repo` document by `($ownerId, name)` or `?repo=` — and loads config + refs +
+ * star count. Returns the async
  * state the repo chrome renders. `notFound` distinguishes an unresolved repo from a read error.
  *
- * Resolution is cached per `(network, owner, name, ?repo=, ?contract=)` with the settled value kept alongside the
+ * Resolution is cached per `(network, owner, name, ?repo=)` with the settled value kept alongside the
  * promise, so navigating between a repo's pages (code → issues → commits …) renders the
  * composed home on the first paint — no "Resolving…" shell on warm navigations. Hits older
  * than {@link HOME_REVALIDATE_MS} serve the cached value and refresh in the background
@@ -35,7 +35,7 @@ export interface UseRepoResult extends AsyncState<RepoHome | null> {
 }
 
 // NOTE for future write flows: anything that mutates what RepoHome composes (refs, config,
-// stars, the listing) must call the hook's `reload()` — or delete the cache key — after the
+// stars, the repo document) must call the hook's `reload()` — or delete the cache key — after the
 // write lands, or the page can serve up-to-TTL-stale data on the next navigation.
 const HOME_CACHE_TTL_MS = 5 * 60_000
 /** Age beyond which a hit is served stale and refreshed in the background. */
@@ -50,7 +50,7 @@ interface HomeCacheEntry {
 const homeCache = new Map<string, HomeCacheEntry>()
 
 function homeCacheKey(network: Network, addr: RepoAddress): string {
-  return `${network}/${addr.owner}/${addr.name}/${addr.repoId ?? ''}/${addr.contractId ?? ''}`
+  return `${network}/${addr.owner}/${addr.name}/${addr.repoId ?? ''}`
 }
 
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {

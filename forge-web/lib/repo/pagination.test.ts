@@ -18,18 +18,25 @@ import {
   bytesToBase64,
   IncompleteReadError,
   queryAllDocuments,
-  skipScanDistinct,
   tieProbeAllowed,
 } from '../sdk'
 import { readConfigBundle } from './config'
-import { DOC, type V1RepoRef } from './contract'
-import { emptyAuthz, listIssues, readEvents, readIssue, readReviews } from './issues'
-import { orderGitPacks } from '../view/browse-source'
+import { DOC, type RepoRef } from './contract'
+import { listIssues, readEvents, readIssue, readReviews } from './issues'
+import { locatorPackSpace } from '../view/browse-source'
 import { readPackManifests } from './packs'
 import { readComments } from '../view/issues-view'
 import { readRefUpdates, resolveRefByHash } from './refs'
 
-const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
+const REPO: RepoRef = {
+  forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
+  repoId: 'R',
+  ownerId: 'owner',
+  name: 'n',
+  visibility: 'public',
+}
+/** The `repoId ==` prefix every repo-scoped query carries. */
+const SCOPE = ['repoId', '==', 'R'] as const
 
 /** Platform's per-query document cap — the whole point of these tests. */
 const PAGE = 100
@@ -61,8 +68,9 @@ function byField(field: string) {
  * Applying `where` is load-bearing for this suite, not realism for its own sake. With a mock
  * that ignores filters and a store holding rows for one target, deleting
  * `where: [['targetId','==',targetId]]` from a reader passes every test here while making
- * every issue in a repo fold every other issue's close events — `foldIssueState` never checks
- * `targetId` itself. So the fixtures below deliberately seed rows the filter MUST exclude.
+ * every issue in a repo fold every other issue's close events — `foldIssueStateV2` never checks
+ * `targetId` itself. So the fixtures below deliberately seed rows the filter MUST exclude. The
+ * store holds one repo, so the `repoId ==` scope every reader adds is accepted as is.
  */
 function paginatingSdk(
   store: Record<string, Record<string, unknown>[]>,
@@ -75,6 +83,7 @@ function paginatingSdk(
         let rows = [...(store[q.documentTypeName] ?? [])]
 
         for (const [field, op, value] of q.where ?? []) {
+          if (field === 'repoId') continue
           if (op === '==') rows = rows.filter((d) => d[field] === value)
           else if (op === 'in' && Array.isArray(value)) {
             rows = rows.filter((d) => (value as unknown[]).includes(d[field]))
@@ -181,13 +190,14 @@ describe('ref history across a page boundary', () => {
     // tie-safe pager issues after every full page of a `(prefix, $createdAt)` read.
     const refQueries = seen.filter((q) => q.documentTypeName === DOC.refUpdate)
     expect(refQueries).toHaveLength(3)
-    expect(refQueries[0]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
+    expect(refQueries[0]?.where).toEqual([SCOPE, ['refNameHash', '==', REF_HASH_B64]])
     expect(refQueries[0]?.startAfter).toBeUndefined()
     expect(refQueries[1]?.where).toEqual([
+      SCOPE,
       ['refNameHash', '==', REF_HASH_B64],
       ['$createdAt', '==', expect.any(Number)],
     ])
-    expect(refQueries[2]?.where).toEqual([['refNameHash', '==', REF_HASH_B64]])
+    expect(refQueries[2]?.where).toEqual([SCOPE, ['refNameHash', '==', REF_HASH_B64]])
     expect(refQueries[2]?.startAfter).toBe(`u-${String(PAGE - 1).padStart(4, '0')}`)
   })
 
@@ -225,7 +235,7 @@ describe('event log across a page boundary', () => {
       {
         [DOC.event]: [
           ...Array.from({ length: PAGE + 1 }, (_, i) => eventDoc(i, 4)),
-          // `foldIssueState` never checks `targetId` itself, so a reader that drops its
+          // `foldIssueStateV2` never checks `targetId` itself, so a reader that drops its
           // filter would silently fold another issue's close events into this one.
           ...Array.from({ length: 5 }, (_, i) => otherTargetEventDoc(i, 1)),
         ],
@@ -241,8 +251,8 @@ describe('event log across a page boundary', () => {
   })
 
   it('folds a close that lands past the first page', async () => {
-    // The shape of the burying attack: `event` carries no token cost, so anyone can pad a
-    // target with inert events. The real close must still be seen.
+    // The shape of the burying attack: a long log (a busy member, or a padded one) pushes
+    // the close past the first page. The real close must still be seen.
     const events = Array.from({ length: PAGE }, (_, i) => eventDoc(i, 4))
     events.push(eventDoc(PAGE, 1))
     const sdk = paginatingSdk({ [DOC.event]: events })
@@ -251,7 +261,6 @@ describe('event log across a page boundary', () => {
       sdk,
       REPO,
       { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 't', body: 'b' },
-      emptyAuthz(),
     )
 
     expect(issue.state.open).toBe(false)
@@ -265,7 +274,7 @@ describe('config timeline across a page boundary', () => {
       $ownerId: 'owner',
       $createdAt: 3_000 + i,
       defaultBranch: i === PAGE ? 'trunk' : 'main',
-      protectedPatterns: '["refs/heads/main"]',
+      protectedPatterns: ['refs/heads/main'],
       archived: false,
     }))
     const sdk = paginatingSdk({ [DOC.config]: configs })
@@ -308,14 +317,14 @@ describe('list surfaces tolerate one unreadable row', () => {
   }
 
   it('keeps the row and marks its state unverified instead of failing the page', async () => {
-    // `issue` and `event` are un-gated, so one target can be padded without limit. That
-    // must not take down the whole issue list — and dropping the row silently would be the
-    // same class of bug as truncating it.
+    // One target's log can outgrow the reader's completeness bound. That must not take down
+    // the whole issue list — and dropping the row silently would be the same class of bug as
+    // truncating it.
     const sdk = endlessEventsSdk([
       { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 'buried' },
     ])
 
-    const issues = await listIssues(sdk, REPO, emptyAuthz(), 10)
+    const issues = await listIssues(sdk, REPO, 10)
 
     expect(issues).toHaveLength(1)
     expect(issues[0]?.title).toBe('buried')
@@ -330,7 +339,6 @@ describe('list surfaces tolerate one unreadable row', () => {
         sdk,
         REPO,
         { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 't', body: '' },
-        emptyAuthz(),
       ),
     ).rejects.toThrow(IncompleteReadError)
   })
@@ -338,8 +346,8 @@ describe('list surfaces tolerate one unreadable row', () => {
 
 describe('reviews across a page boundary', () => {
   it('reads every review on a patch, including a verdict past the first page', async () => {
-    // `review` is un-gated like `event`, so a verdict can be buried the same way — and the
-    // buried one is the one that matters.
+    // `review` is un-gated, so a verdict can be buried under noise — and the buried one is
+    // the one that matters.
     const reviews = Array.from({ length: PAGE + 1 }, (_, i) => ({
       $id: `r-${String(i).padStart(4, '0')}`,
       $ownerId: i === PAGE ? 'maintainer' : 'noise',
@@ -444,7 +452,7 @@ describe('same-block ties at a page boundary (protocol 13)', () => {
     return rows
   }
 
-  const q = { dataContractId: 'c', documentTypeName: 'repoListing', orderBy: [['$createdAt', 'asc']] as const }
+  const q = { dataContractId: 'c', documentTypeName: 'issue', orderBy: [['$createdAt', 'asc']] as const }
 
   it('recovers the rows the cursor alone would skip, once each and in order', async () => {
     const rows = straddlingTie(3)
@@ -529,7 +537,7 @@ describe('packRef alignment is what completeness protects', () => {
     const sdk = paginatingSdk({ [DOC.packManifest]: manifests })
 
     const read = await readPackManifests(sdk, REPO)
-    const ordered = orderGitPacks(read.filter((m) => m.kind === 0))
+    const ordered = locatorPackSpace(read)
 
     // Under a truncated read the oldest manifests fall out and packRef 0 becomes m-0001.
     expect(ordered).toHaveLength(PAGE + 1)
@@ -557,45 +565,6 @@ describe('comment threads across a page boundary', () => {
     expect(read).toHaveLength(PAGE + 1)
     expect(read[read.length - 1]?.body).toBe(`comment ${PAGE}`)
     expect(read.some((c) => c.body === 'other')).toBe(false)
-  })
-})
-
-describe('skip-scan enumeration', () => {
-  /** Rows across `n` distinct keys, one row each. */
-  function keyed(n: number): Record<string, unknown>[] {
-    return Array.from({ length: n }, (_, i) => ({
-      $id: `k-${i}`,
-      $createdAt: i,
-      refNameHash: `key-${String(i).padStart(3, '0')}`,
-    }))
-  }
-
-  it('enumerates every distinct key when the space fits the cap exactly', async () => {
-    // The boundary case: a key space of exactly `maxKeys` IS complete, and must not be
-    // mistaken for one that overflowed.
-    const sdk = paginatingSdk({ [DOC.refUpdate]: keyed(3) })
-
-    const keys = await skipScanDistinct(sdk, {
-      dataContractId: 'c',
-      documentTypeName: DOC.refUpdate,
-      keyField: 'refNameHash',
-      maxKeys: 3,
-    })
-
-    expect(keys).toEqual(['key-000', 'key-001', 'key-002'])
-  })
-
-  it('throws rather than returning a short key list when the cap is exceeded', async () => {
-    const sdk = paginatingSdk({ [DOC.refUpdate]: keyed(4) })
-
-    await expect(
-      skipScanDistinct(sdk, {
-        dataContractId: 'c',
-        documentTypeName: DOC.refUpdate,
-        keyField: 'refNameHash',
-        maxKeys: 3,
-      }),
-    ).rejects.toThrow(IncompleteReadError)
   })
 })
 

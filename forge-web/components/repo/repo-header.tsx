@@ -13,7 +13,6 @@ import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
-import { V1Badge } from '@/components/ui/v1-badge'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
@@ -38,16 +37,15 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
             {home.repo.name || addr.name}
           </Link>
-          {home.repo.kind === 'v2' && home.repo.visibility === 'private' ? (
+          {home.repo.visibility === 'private' ? (
             <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">
               <Lock className="h-3 w-3" aria-hidden /> private
             </span>
           ) : null}
-          {home.repo.kind === 'v1' ? <V1Badge /> : null}
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <StarButton repo={home.repo} listingId={home.listingId} count={home.starCount} />
+          <StarButton repo={home.repo} count={home.starCount} />
         </div>
       </div>
 

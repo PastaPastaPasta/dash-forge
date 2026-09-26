@@ -17,7 +17,7 @@ import { setPlatformVersion } from './query'
 
 export interface EvoSdkConfig {
   readonly network: Network
-  /** Contract ids to preload (registry + the repo contract(s) in view + DPNS). */
+  /** Contract ids to preload (DPNS + the forge-v2 contracts). */
   readonly contractIds: readonly string[]
   /** Per-request timeout (ms). */
   readonly timeoutMs?: number
@@ -177,12 +177,12 @@ class EvoSdkService {
 export const evoSdkService = new EvoSdkService()
 
 /**
- * The connected SDK for `network`, connecting first if needed (the registry, DPNS and forge-v2
+ * The connected SDK for `network`, connecting first if needed (the DPNS and forge-v2
  * contracts preloaded). Flows that start before any page has connected (sign-in) use this.
  */
 export async function ensureSdk(network: Network): Promise<EvoSDK> {
-  const { registryContractId, dpnsContractId, v2 } = NETWORKS[network]
-  const contractIds = [registryContractId, dpnsContractId, v2?.core, v2?.collab].filter(
+  const { dpnsContractId, v2 } = NETWORKS[network]
+  const contractIds = [dpnsContractId, v2?.core, v2?.collab].filter(
     (id): id is string => typeof id === 'string' && id.length > 0,
   )
   await evoSdkService.initialize({ network, contractIds, timeoutMs: 15000 })

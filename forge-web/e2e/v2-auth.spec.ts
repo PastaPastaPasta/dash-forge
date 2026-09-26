@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, idFile, importIdentity, shot, unlock } from './helpers'
+import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, shot, unlock } from './helpers'
 
 /**
  * Limited-key sign-in, live on a devnet (real spend):
@@ -20,22 +20,17 @@ import { E2E_DEVNET, PASSPHRASE, idFile, importIdentity, shot, unlock } from './
  *     lock, its chain-lock proof and the IdentityCreate. Skipped without a funding key.
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!existsSync(idFile('CI-RUNNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 30 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
 /** The group the app binds keys to: the one in the deployment file it is built with. */
-const GROUP: string = E2E_DEVNET
-  ? JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8')).v2.forgeCore.contractGroupId
-  : ''
+const GROUP: string = deployment().v2.forgeCore.contractGroupId
 
 /** Read an identity's keys straight from Platform (evo-sdk in Node), independent of the app. */
 async function onChainKeys(identityId: string): Promise<{ id: number; level: string; budget: bigint | null; expiresAt: number | null; bound: string | null; remaining: bigint | null }[]> {
-  const evo = await import(pathToFileURL(join(ROOT, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
-  const dep = (await import(pathToFileURL(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`)).href, { with: { type: 'json' } })).default
-  const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: dep.dapiAddresses })
-  await sdk.connect()
+  const sdk = await nodeSdk()
   const identity = await sdk.identities.fetch(identityId)
   const keys = identity.publicKeys as { keyId: number; securityLevel: string; totalBudget?: bigint; expiresAt?: bigint; contractBounds?: { toJSON(): { id: string } } }[]
   const budgets = await sdk.identities.keysRemainingBudgets(identityId, keys.map((k) => k.keyId))

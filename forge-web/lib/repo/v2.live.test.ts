@@ -35,8 +35,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       const sdk = evoSdkService.getSdk()
 
       const home = await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'forge-v2-demo' })
-      expect(home?.repo.kind).toBe('v2')
-      if (home === null || home.repo.kind !== 'v2') throw new Error('unreachable')
+      if (home === null) throw new Error('forge-v2-demo did not resolve')
       expect(home.defaultBranch).toBe('main')
       expect(home.starCount).toBe(1)
       const main = home.branches.find((b) => b.refName === 'refs/heads/main')
@@ -50,7 +49,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
         name: 'ignored',
         repoId: home.repo.repoId,
       })
-      expect(pinned?.repo.kind).toBe('v2')
+      expect(pinned?.repo.repoId).toBe(home.repo.repoId)
       expect(
         await loadRepoHome(sdk, { network: 'devnet', owner: MAINTAINER, name: 'x', repoId: home.repo.repoId }),
       ).toBeNull()
@@ -86,7 +85,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
 
       const feed = await listRecentRepos(sdk, { network: 'devnet' })
       const repoId = home.repo.repoId
-      const demo = feed.v2.find((r) => r.key === repoId)
+      const demo = feed.find((r) => r.key === repoId)
       expect(demo).toMatchObject({ stars: 1, issues: 3 })
 
       const profile = await listReposByOwner(sdk, MAINTAINER, { network: 'devnet' })

@@ -3,7 +3,7 @@
  * every `where` clause (so a reader that forgets `repoId ==` reads another repo's documents
  * and fails here), honours `in`, caps pages at 100 and pages by `startAfter`.
  *
- * Covers: resolution (v2 first, v1 fallback, DPNS owners, `?repo=` pins), the RepoSource
+ * Covers: resolution (the `repo` document, DPNS owners, `?repo=` pins), the RepoSource
  * query shapes, the issue/PR folds over `event` + `authorEvent` (lists read the repo feed once
  * instead of per row), the well-formedness filter, membership-derived permissions and
  * approvals, pack-copy selection, and the chunk reads that must name the uploader.
@@ -34,7 +34,6 @@ import {
   v2PacksOfKind,
   wellFormed,
   type PackManifest,
-  type V1RepoRef,
   type V2RepoRef,
 } from './index'
 
@@ -51,7 +50,6 @@ const HEAD = 'ab'.repeat(20)
 const REPO_ISSUE2 = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
 
 const V2: V2RepoRef = {
-  kind: 'v2',
   forge: FORGE,
   repoId: REPO,
   ownerId: OWNER,
@@ -107,7 +105,6 @@ function mockSdk(store: Store, seen: DocumentQuery[] = [], dpns: Record<string, 
       query,
       count: async (q: DocumentQuery) => new Map([['', BigInt((await query({ ...q, limit: 100 })).size)]]),
     },
-    contracts: { fetch: async (id: string) => (store[id] ? { ownerId: () => store[id]?.['$owner']?.[0]?.['id'] } : null) },
     dpns: { resolveName: async (name: string) => dpns[name] },
   } as unknown as EvoSDK
 }
@@ -213,73 +210,49 @@ describe('RepoSource', () => {
     expect(s.targetQuery('comment', { where: [['targetId', '==', 't']] }).where).toEqual([['targetId', '==', 't']])
   })
 
-  it('names the uploader in a v2 chunk read, and not in a v1 one', () => {
-    const v2 = repoSource(V2).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
-    expect(v2.where).toEqual([
+  it('names the uploader in a chunk read', () => {
+    const q = repoSource(V2).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
+    expect(q.where).toEqual([
       ['repoId', '==', REPO],
       ['$ownerId', '==', MAINT],
       ['packHash', '==', hexToBase64('aa'.repeat(32))],
       ['seq', 'in', [0, 1]],
     ])
-    const v1: V1RepoRef = { kind: 'v1', contractId: 'C1', ownerId: OWNER, name: 'x' }
-    expect(repoSource(v1).chunkQuery('aa'.repeat(32), MAINT, [0]).where?.map((w) => w[0])).toEqual([
-      'packHash',
-      'seq',
-    ])
   })
 
-  it('keys and preloads by the model', () => {
+  it('keys by repo id and preloads both forge contracts', () => {
     expect(repoKey(V2)).toBe(REPO)
     expect(repoContractIds(V2)).toEqual(['CORE', 'COLLAB'])
-    expect(repoContractIds({ kind: 'v1', contractId: 'C1', ownerId: OWNER, name: '' })).toEqual(['C1'])
     expect(repoContractIds(null)).toEqual([])
   })
 })
 
 describe('resolveAnyRepo', () => {
-  const store = (): Store => ({
-    ...fixture(),
-    REG: {
-      repoListing: [
-        doc({ $ownerId: OWNER, normalizedName: 'legacy', name: 'Legacy', repoContractId: 'V1C' }),
-      ],
-    },
-    V1C: { $owner: [{ id: OWNER }] },
-  })
   const params = { network: 'devnet' as const }
 
   // resolveAnyRepo reads the build's NETWORKS; these tests hand resolveAnyRepoWith the ids.
-  it('prefers the forge-v2 repo document, then falls back to the v1 registry', async () => {
-    const sdk = mockSdk(store())
-    const v2 = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'Demo' })
-    expect(v2?.repo).toMatchObject({ kind: 'v2', repoId: REPO, name: 'demo' })
-    const v1 = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'legacy' })
-    expect(v1?.repo).toMatchObject({ kind: 'v1', contractId: 'V1C' })
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: 'REG' }, { ...params, owner: OWNER, name: 'nope' }),
-    ).toBeNull()
+  it('resolves the repo document by (owner, normalized name)', async () => {
+    const sdk = mockSdk(fixture())
+    const found = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'Demo' })
+    expect(found?.repo).toMatchObject({ repoId: REPO, name: 'demo' })
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'nope' })).toBeNull()
   })
 
   it('resolves a DPNS owner name and rejects a repo pin owned by someone else', async () => {
-    const sdk = mockSdk(store(), [], { 'alice.dash': OWNER })
-    const byName = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: 'Alice', name: 'demo' })
-    expect(byName?.repo).toMatchObject({ kind: 'v2', ownerId: OWNER })
-    const pinned = await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: OWNER, name: 'x', repoId: REPO })
-    expect(pinned?.repo).toMatchObject({ kind: 'v2', repoId: REPO })
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: MAINT, name: 'x', repoId: REPO }),
-    ).toBeNull()
-    expect(
-      await resolveAnyRepoWith(sdk, { forge: FORGE, registryId: null }, { ...params, owner: 'nobody', name: 'demo' }),
-    ).toBeNull()
+    const sdk = mockSdk(fixture(), [], { 'alice.dash': OWNER })
+    const byName = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: 'Alice', name: 'demo' })
+    expect(byName?.repo).toMatchObject({ ownerId: OWNER })
+    const pinned = await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: OWNER, name: 'x', repoId: REPO })
+    expect(pinned?.repo).toMatchObject({ repoId: REPO })
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: MAINT, name: 'x', repoId: REPO })).toBeNull()
+    expect(await resolveAnyRepoWith(sdk, FORGE, { ...params, owner: 'nobody', name: 'demo' })).toBeNull()
   })
 
-  it('never reads forge-v2 on a network without it', async () => {
+  it('reads nothing on a network without forge-v2', async () => {
     const seen: DocumentQuery[] = []
-    const sdk = mockSdk(store(), seen)
-    const v1 = await resolveAnyRepoWith(sdk, { forge: null, registryId: 'REG' }, { ...params, owner: OWNER, name: 'legacy' })
-    expect(v1?.repo.kind).toBe('v1')
-    expect(seen.some((q) => q.dataContractId === 'CORE')).toBe(false)
+    const sdk = mockSdk(fixture(), seen)
+    expect(await resolveAnyRepoWith(sdk, null, { ...params, owner: OWNER, name: 'demo' })).toBeNull()
+    expect(seen).toEqual([])
     // The exported entry point is the same function over the build's network config.
     expect(typeof resolveAnyRepo).toBe('function')
   })
@@ -310,7 +283,7 @@ describe('forge-v2 issue and PR folds', () => {
     const eventReads = seen.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
     expect(eventReads.every((q) => q.where?.[0]?.[0] === 'repoId')).toBe(true)
     expect(eventReads).toHaveLength(2)
-    // …and no token-history reads either.
+    // …and nothing outside the two forge contracts.
     expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB')).toBe(false)
   })
 
@@ -344,7 +317,7 @@ describe('forge-v2 issue and PR folds', () => {
       )
     }
     invalidateRepoFeed(V2)
-    const issues = await listIssues(mockSdk(store), V2, undefined, 3)
+    const issues = await listIssues(mockSdk(store), V2, 3)
     expect(issues.map((i) => i.number).sort()).toEqual([1, 2, 3])
     expect(issues.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
     invalidateRepoFeed(V2)
@@ -393,12 +366,11 @@ describe('forge-v2 permissions', () => {
 describe('wellFormed', () => {
   const PRIVATE: V2RepoRef = { ...V2, visibility: 'private' }
   const enc = bytesToBase64(new Uint8Array(32))
-  it('applies plaintext-xor-enc by visibility, and passes every v1 document', () => {
+  it('applies plaintext-xor-enc by visibility', () => {
     expect(wellFormed(V2, 'issue', { title: 't' })).toBe(true)
     expect(wellFormed(V2, 'issue', { title: '' })).toBe(false)
     expect(wellFormed(PRIVATE, 'issue', { enc, epoch: 0 })).toBe(true)
     expect(wellFormed(PRIVATE, 'refUpdate', { enc, epoch: 0, refName: 'refs/heads/main' })).toBe(false)
-    expect(wellFormed({ kind: 'v1', contractId: 'c', ownerId: 'o', name: '' }, 'issue', {})).toBe(true)
   })
 })
 

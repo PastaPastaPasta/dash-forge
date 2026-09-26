@@ -65,7 +65,6 @@ export {
   loadBrowseContext,
   loadBrowseContextCached,
   loadFlatIndex,
-  orderGitPacks,
   peekBrowseState,
   PackUnavailableError,
   type BrowseContext,
@@ -95,7 +94,7 @@ export {
   type TrustReport,
   type TrustState,
 } from './trust'
-export { aclName, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
+export { ACL_NAME, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,
   loadRepoHome,

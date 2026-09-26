@@ -61,9 +61,10 @@ export interface TrustInputs {
   readonly checks: ContentChecks
   /** The repo config's backend label — what the owner declared, not what served bytes. */
   readonly configuredBackend: string
-  /** Which rules folded the refs (v1 `FORGE_RULES_V1`, forge-v2 `FORGE_RULES_V2`). */
-  readonly model?: 'v1' | 'v2'
 }
+
+/** The rules that fold a repo's refs. */
+const RULES = 'FORGE_RULES_V2'
 
 /**
  * Severity order for the headline. `pending` ranks below `verified` so a page that has only
@@ -129,7 +130,6 @@ function deriveProofs(network: Network, connection: ConnectionTrust, endpoint: s
 }
 
 function deriveRefs(input: TrustInputs): TrustLink {
-  const rules = input.model === 'v2' ? 'FORGE_RULES_V2' : 'FORGE_RULES_V1'
   if (input.connection === 'connecting') {
     return { state: 'pending', summary: 'pending', detail: 'Refs have not been read yet.' }
   }
@@ -138,7 +138,7 @@ function deriveRefs(input: TrustInputs): TrustLink {
       state: 'unverified',
       summary: 'unchecked',
       detail:
-        `The tip was folded from the refUpdate log by ${rules}, but the log itself was read without proofs.`,
+        `The tip was folded from the refUpdate log by ${RULES}, but the log itself was read without proofs.`,
     }
   }
   const tip = input.tip
@@ -166,7 +166,7 @@ function deriveRefs(input: TrustInputs): TrustLink {
       return {
         state: 'verified',
         summary: 'proof',
-        detail: `The tip was folded by ${rules} from the proof-checked, append-only refUpdate log.`,
+        detail: `The tip was folded by ${RULES} from the proof-checked, append-only refUpdate log.`,
       }
   }
 }

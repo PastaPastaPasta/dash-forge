@@ -13,7 +13,6 @@ import type { V2RepoRef } from './contract'
 import { repoSource } from './source'
 
 const V2: V2RepoRef = {
-  kind: 'v2',
   forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
   repoId: 'R',
   ownerId: 'O',

@@ -2,9 +2,7 @@
  * forge-v2 social reads — stars, follows and profiles in forge-collab (`forge-v2.md` §2).
  *
  * `star` and `follow` are `indexOnly`: their countable indexes give star, follower and
- * following counts in O(1). A star is keyed by the `repo` document id, not by a registry
- * listing. v1 repos keep the registry reads in
- * `./collab`.
+ * following counts in O(1). A star is keyed by the `repo` document id.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'

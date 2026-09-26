@@ -1,11 +1,8 @@
 import { test, expect } from '@playwright/test'
-import { ON_TESTNET, repoUrl, waitForRepoResolved } from './helpers'
-
-// The v1 read fixture lives on testnet; a devnet build runs v2-reads.spec.ts instead.
-test.skip(!ON_TESTNET, 'testnet fixture; this build targets a devnet')
+import { expectLanded, repoUrl, waitForRepoResolved } from './helpers'
 
 /**
- * Scenario 5 — Zero-backend proof.
+ * Scenario 5 — Zero-backend proof, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`).
  *
  * Record every network request made during a repo browse and assert each one goes only to an
  * allowed class of host:
@@ -29,7 +26,7 @@ function isDashPlatform(host: string): boolean {
     host.endsWith('.networks.dash.org') ||
     host.endsWith('.dash.org') ||
     host === 'dash.org' ||
-    // testnet masternodes are frequently addressed by raw IPv4.
+    // devnet masternodes (DAPI) are addressed by raw IPv4.
     /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
   )
 }
@@ -54,27 +51,31 @@ test('5. repo browse contacts only app-origin + DAPI + declared backends (zero-b
   const unexpected = new Set<string>()
 
   page.on('request', (req) => {
-    let host: string
+    let url: URL
     try {
-      host = new URL(req.url()).hostname
+      url = new URL(req.url())
     } catch {
-      return // data:, blob:, about: — not network egress
+      return
     }
-    const url = new URL(req.url())
-    if (url.protocol === 'data:' || url.protocol === 'blob:') return
+    // data:, blob:, about: — not network egress.
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return
+    const host = url.hostname
     contacted.set(host, (contacted.get(host) ?? 0) + 1)
     if (!isAppOrigin(host) && !isDashPlatform(host) && !isKnownBackend(host)) {
       unexpected.add(host)
     }
   })
 
-  // Browse the repo home — this triggers SDK connect + quorum-key fetch + registry + document
-  // reads. The zero-backend claim is about *which hosts* are contacted; it holds whether or not
-  // the proof-verified read ultimately renders data, so we don't gate on successful hydration.
+  // Browse the repo home (SDK connect + quorum keys + repo/ref/manifest reads + the locator
+  // and pack chunks behind the root tree and README), then a blob. Both must actually render:
+  // a browse that never reached the chunk reads would make the host check vacuous.
   await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
+  await expectLanded(page, page.getByRole('link', { name: 'README.md' }).first())
+  await page.goto(repoUrl('blob', '&path=src/main.rs'), { waitUntil: 'domcontentloaded' })
+  await expectLanded(page, page.getByText('reads are proof-checked').first())
   // Let late/lazy fetches (WASM chunk, DAPI round-trips, artifacts) settle.
-  await page.waitForTimeout(8000)
+  await page.waitForTimeout(5000)
 
   const hosts = [...contacted.entries()].sort((a, b) => b[1] - a[1])
   // Surface the evidence in the test output regardless of pass/fail.
@@ -91,11 +92,7 @@ test('5. repo browse contacts only app-origin + DAPI + declared backends (zero-b
       [...unexpected].join('\n'),
   ).toEqual([])
 
-  // Sanity: we actually exercised the Platform network (otherwise the assertion is vacuous) —
-  // at least one Dash Platform host (quorum endpoint or a DAPI masternode) must have been hit.
+  // Sanity: the browse went over the Platform network (otherwise the assertion is vacuous).
   const platformHosts = [...contacted.keys()].filter(isDashPlatform)
-  expect(
-    platformHosts.length,
-    'no Dash Platform host was contacted — the browse did not reach testnet',
-  ).toBeGreaterThan(0)
+  expect(platformHosts.length, 'no Dash Platform host was contacted').toBeGreaterThan(0)
 })

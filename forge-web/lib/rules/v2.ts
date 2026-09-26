@@ -6,8 +6,7 @@
  * module and `docs/contracts/forge-v2.md` (§3 events, §4 packs, §5 private repos, §6
  * numbering and approvals) for the normative text.
  *
- * The event order and per-kind effects are v1's own (`./fold`), so the two rule versions
- * cannot drift apart where they are meant to agree.
+ * The per-kind event effects live in `./fold`, shared with forge-core's `rules.rs`.
  */
 
 import {
@@ -83,7 +82,7 @@ function authorEventApplies(e: Event, targetAuthor: string): boolean {
   return (e.kind === 'close' || e.kind === 'reopen') && e.actor === targetAuthor
 }
 
-/** Both document types, applicable ones only, in v1's `(createdAt, id)` order (stable). */
+/** Both document types, applicable ones only, in `(createdAt, id)` order (stable). */
 function mergedLog(
   events: readonly Event[],
   authorEvents: readonly Event[],

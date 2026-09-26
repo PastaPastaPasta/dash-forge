@@ -8,7 +8,7 @@
  * alternation — into literals. This TS port neutralizes identically and then runs a
  * faithful git-`wildmatch` matcher, so it never needs the crate's extensions at all.
  *
- * Pinned semantics (FORGE_RULES_V1):
+ * Pinned semantics (FORGE_RULES):
  *   `*`  matches any run of chars EXCEPT `/` (stays within one ref segment)
  *   `**` (a whole path segment) matches across `/` (any number of segments)
  *   `?`  matches a single non-`/` char

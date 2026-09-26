@@ -1,5 +1,5 @@
 /**
- * Network resolution — which network a build targets and which registry it reads.
+ * Network resolution — which network a build targets and which forge-v2 contracts it reads.
  *
  * Precedence per field: NEXT_PUBLIC_* env > `forge-contracts/deployments/<key>.json` >
  * testnet default. A network without a deployment resolves to "not deployed", never to
@@ -17,7 +17,7 @@ import {
   NotDeployedError,
   parseDapiAddresses,
   quorumEndpoint,
-  requireRegistryContractId,
+  requireForge,
   resolveNetworks,
 } from './constants'
 import { DEPLOYMENTS, forgeV2Ids, recordedDapiAddresses } from './deployments'
@@ -25,7 +25,9 @@ import { identityFileMatchesNetwork } from './auth/identity-file'
 
 const DEPLOYMENTS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'deployments')
 
-function onDisk(key: string): { registry?: { contractId?: string | null } } {
+function onDisk(key: string): {
+  v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string }; contractGroupId: string }
+} {
   return JSON.parse(readFileSync(resolve(DEPLOYMENTS_DIR, `${key}.json`), 'utf8'))
 }
 
@@ -40,24 +42,21 @@ describe('deployments bundle', () => {
 })
 
 describe('resolveNetworks', () => {
-  it('defaults to testnet with the registry from testnet.json', () => {
+  it('defaults to testnet, which has no forge-v2 deployment', () => {
     const { active, networks } = resolveNetworks({}, DEPLOYMENTS)
     expect(active).toBe('testnet')
-    expect(networks.testnet.registryContractId).toBe(onDisk('testnet').registry?.contractId)
-    expect(networks.testnet.registrySource).toBe('forge-contracts/deployments/testnet.json')
+    if (DEPLOYMENTS['testnet'] === undefined) expect(networks.testnet.v2).toBeNull()
   })
 
-  it('never borrows testnet ids for mainnet', () => {
-    const { active, networks } = resolveNetworks({ network: 'mainnet' }, DEPLOYMENTS)
+  it('never borrows another network\'s ids', () => {
+    const { active, networks } = resolveNetworks({ network: 'mainnet', devnetName: '' }, DEPLOYMENTS)
     expect(active).toBe('mainnet')
-    if (DEPLOYMENTS['mainnet'] === undefined) {
-      expect(networks.mainnet.registryContractId).toBeNull()
-      expect(networks.mainnet.registrySource).toBeNull()
-    }
-    expect(networks.mainnet.registryContractId).not.toBe(networks.testnet.registryContractId)
+    if (DEPLOYMENTS['mainnet'] === undefined) expect(networks.mainnet.v2).toBeNull()
+    const moutai = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS).networks.devnet.v2
+    expect(networks.mainnet.v2).not.toEqual(moutai)
   })
 
-  it('resolves a named devnet from its deployment file (no v1 registry)', () => {
+  it('resolves a named devnet from its deployment file', () => {
     const { active, networks } = resolveNetworks(
       { network: 'devnet', devnetName: 'moutai' },
       DEPLOYMENTS,
@@ -67,11 +66,10 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.devnetName).toBe('moutai')
     expect(networks.devnet.dapiAddresses).toHaveLength(10)
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.84:1443')
-    expect(networks.devnet.registryContractId).toBeNull()
   })
 
   it('exposes the forge-v2 ids devnet-moutai.json records, and none for testnet', () => {
-    const file = JSON.parse(readFileSync(resolve(DEPLOYMENTS_DIR, 'devnet-moutai.json'), 'utf8'))
+    const file = onDisk('devnet-moutai')
     const { networks } = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS)
     expect(networks.devnet.v2).toEqual({
       core: file.v2.forgeCore.contractId,
@@ -93,21 +91,10 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toEqual(['https://10.0.0.1:1443', 'https://10.0.0.2:2443'])
   })
 
-  it('lets NEXT_PUBLIC_REGISTRY_CONTRACT_ID beat the deployment, on the active network only', () => {
-    const { networks } = resolveNetworks(
-      { network: 'devnet', devnetName: 'moutai', registryContractId: 'OVERRIDE' },
-      DEPLOYMENTS,
-    )
-    expect(networks.devnet.registryContractId).toBe('OVERRIDE')
-    expect(networks.devnet.registrySource).toBe('NEXT_PUBLIC_REGISTRY_CONTRACT_ID')
-    // The override does not leak onto testnet.
-    expect(networks.testnet.registryContractId).toBe(onDisk('testnet').registry?.contractId)
-  })
-
-  it('an unknown devnet has no addresses (SDK discovery) and no registry', () => {
+  it('an unknown devnet has no addresses (SDK discovery) and no forge-v2 deployment', () => {
     const { networks } = resolveNetworks({ network: 'devnet', devnetName: 'paloma' }, DEPLOYMENTS)
     expect(networks.devnet.dapiAddresses).toEqual([])
-    expect(networks.devnet.registryContractId).toBeNull()
+    expect(networks.devnet.v2).toBeNull()
   })
 
   it('fails the build on a malformed network env', () => {
@@ -119,17 +106,14 @@ describe('resolveNetworks', () => {
 })
 
 describe('module-level config (default build env)', () => {
-  it('targets testnet and exposes its registry', () => {
+  it('targets testnet by default', () => {
     expect(DEFAULT_NETWORK).toBe('testnet')
-    expect(requireRegistryContractId('testnet')).toBe(onDisk('testnet').registry?.contractId)
   })
 
-  it('throws the actionable NotDeployedError for a network without a registry', () => {
-    if (NETWORKS.mainnet.registryContractId !== null) return
-    expect(() => requireRegistryContractId('mainnet')).toThrow(NotDeployedError)
-    expect(() => requireRegistryContractId('mainnet')).toThrow(
-      /no Dash Forge registry is deployed on mainnet yet; see docs\/mainnet-runbook\.md/,
-    )
+  it('throws the actionable NotDeployedError for a network without forge-v2', () => {
+    if (NETWORKS.mainnet.v2 !== null) return
+    expect(() => requireForge('mainnet')).toThrow(NotDeployedError)
+    expect(() => requireForge('mainnet')).toThrow(/forge-v2 is not deployed on mainnet/)
   })
 })
 

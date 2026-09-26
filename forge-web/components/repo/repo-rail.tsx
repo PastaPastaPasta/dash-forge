@@ -54,7 +54,6 @@ export function RepoRail({
     tip: selected.ref?.state ?? 'missing',
     checks,
     configuredBackend: home.backend.label,
-    model: home.repo.kind,
   })
 
   return (

@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { NetworkBadge } from '@/components/ui/network-badge'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
@@ -52,7 +53,8 @@ export function AppHeader(): JSX.Element {
           </span>
         </Link>
 
-        <NetworkBadge className="hidden sm:inline" />
+        {/* A devnet (resettable, test funds only) is flagged at every width. */}
+        <NetworkBadge className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
 
         <form onSubmit={onSearch} className="relative ml-2 hidden max-w-xs flex-1 sm:block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-400" aria-hidden />

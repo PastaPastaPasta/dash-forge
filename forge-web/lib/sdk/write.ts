@@ -18,10 +18,6 @@
  *    intent token; retrying that action re-broadcasts the *same* signed ST (no new nonce, no
  *    double post). Only "already in mempool/chain" or the doc appearing on a poll counts as
  *    landed; a write not seen landing throws `UnconfirmedWriteError`, never resolves.
- *  - **Token gating**: WRITE/MAINTAIN-gated doc types carry a `TokenPaymentInfo` pinned to the
- *    contract-declared `tokenCost.create` (position + amount) so a later owner-side price change
- *    cannot overcharge — parity with forge-core's `token_payment_for`. Ungated types (issue /
- *    comment / event / patch / review, and the registry's star / follow / repoListing) carry none.
  *
  * Keys never enter React state or logs: the WIF is read from the network-scoped keystore only
  * here, wrapped in a `PrivateKey`, used to sign, and dropped.
@@ -29,7 +25,7 @@
 
 // Type-only: every evo-sdk class is loaded via dynamic `import()` at call time so the ~9.4 MB
 // WASM chunk never enters the initial bundle (it is pulled on the first write / login).
-import type { EvoSDK, StateTransition, TokenPaymentInfo } from '@dashevo/evo-sdk'
+import type { EvoSDK, StateTransition } from '@dashevo/evo-sdk'
 
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -119,7 +115,7 @@ export async function findSigningKey(
       matches = false
     }
     if (!matches) continue
-    // MASTER (0) is not usable for document/token ops; require CRITICAL/HIGH range that is at
+    // MASTER (0) is not usable for document ops; require CRITICAL/HIGH range that is at
     // least as privileged as the requirement.
     if (key.securityLevelNumber === SECURITY_LEVEL.MASTER) continue
     if (key.securityLevelNumber > requiredLevel) continue
@@ -128,60 +124,6 @@ export async function findSigningKey(
     return { publicKey, keyId: key.keyId, securityLevel: key.securityLevelNumber }
   }
   return null
-}
-
-// ---------------------------------------------------------------------------
-// Token gate table (parity with forge-contracts/templates/repo-v1.json)
-// ---------------------------------------------------------------------------
-
-/** A doc type's `tokenCost.create`: token position (0 = WRITE, 1 = MAINTAIN) + amount. */
-export interface TokenGate {
-  readonly position: number
-  readonly amount: number
-}
-
-/**
- * The repo-v1 `tokenCost.create` gates. Ungated types (issue / patch / comment / event /
- * review) are absent → no `TokenPaymentInfo`. Mirrors the template exactly (verified against
- * `repo-v1.json`); the registry types (star / follow / repoListing) are all ungated.
- */
-export const REPO_CREATE_GATES: Readonly<Record<string, TokenGate>> = {
-  config: { position: 1, amount: 1 },
-  refUpdate: { position: 0, amount: 1 },
-  protectedRefUpdate: { position: 1, amount: 1 },
-  packManifest: { position: 0, amount: 1 },
-  manifestPart: { position: 0, amount: 1 },
-  chunk: { position: 0, amount: 1 },
-  label: { position: 1, amount: 1 },
-  release: { position: 1, amount: 1 },
-  checkRun: { position: 0, amount: 1 },
-  webhook: { position: 1, amount: 1 },
-}
-
-/** The token gate for a repo doc-type create, or undefined if the type is ungated. */
-export function createGateFor(documentType: string): TokenGate | undefined {
-  return REPO_CREATE_GATES[documentType]
-}
-
-// ---------------------------------------------------------------------------
-// Cost preview — the calibrated model lives in `./cost`
-// ---------------------------------------------------------------------------
-
-/**
- * The preview for a v1 repo-contract document create: the calibrated estimate plus the
- * WRITE/MAINTAIN token its type spends, if gated. forge-v2 types spend no tokens; their
- * previews come from {@link previewCreate} directly.
- */
-export function previewDocumentCreate(
-  documentType: string,
-  data: Readonly<Record<string, unknown>> = {},
-): CostPreview {
-  const gate = createGateFor(documentType)
-  return {
-    ...previewCreate(documentType, data),
-    tokenAmount: gate?.amount ?? 0,
-    ...(gate ? { tokenPosition: gate.position } : {}),
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +363,7 @@ export interface SpendEvent {
   readonly network: Network
   /** `create:issue`, `delete:star`, `refused:issue` (a refused write still pays its fee), … */
   readonly kind: string
-  /** The repo the write belongs to (base58 `repoId` / v1 contract id), when it has one. */
+  /** The repo the write belongs to (base58 `repoId`), when it has one. */
   readonly repo: string | null
   readonly documentId: string
   readonly estimateCredits: number
@@ -494,7 +436,7 @@ function crossTab<T>(identityId: string, run: () => Promise<T>): Promise<T> {
   return locks ? locks.request(`dash-forge-writer:${identityId}`, run) : run()
 }
 
-/** Run `run` as this identity's only writer. Exported for the v1 token-admin path. */
+/** Run `run` as this identity's only writer. */
 export function serialized<T>(identityId: string, run: () => Promise<T>): Promise<T> {
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
   const next = prev.then(
@@ -538,7 +480,7 @@ function pollForDocument(sdk: EvoSDK, contractId: string, documentType: string, 
  *
  * evo-sdk 4.2's `new Document({ properties })` (and the `properties` setter) converts the
  * properties through JSON, which turns every `Uint8Array` into an array of integers — Drive
- * then rejects the write with "not an array of bytes" for any byteArray field (`listingId`,
+ * then rejects the write with "not an array of bytes" for any byteArray field (`repoId`,
  * `refNameHash`, `newOid`, ...). `Document.fromObject` converts a `Uint8Array` to bytes, which
  * is what 4.0's constructor did: the signed transition is byte-identical to 4.0's for every
  * top-level field. So the system fields come from a property-less constructor call and the
@@ -612,8 +554,6 @@ export interface CreateParams {
   readonly data: Record<string, unknown>
   /** The action this write belongs to ({@link newIntent}); a fresh token when omitted. */
   readonly intent?: string
-  /** A v1 repo contract's token payment for this type (`createGateFor`); none by default. */
-  readonly gate?: TokenGate | null
   readonly requiredLevel?: number
   readonly confirmTimeoutMs?: number
   /** Whether the write landed, for types `documents.get` cannot fetch (indexOnly). */
@@ -630,13 +570,8 @@ async function createDocumentUnlocked(
   const { contractId, documentType, data } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
-  const gate = params.gate ?? undefined
   const indexOnly = params.probe !== undefined
-  const cost: CostPreview = {
-    ...previewCreate(documentType, data),
-    tokenAmount: gate?.amount ?? 0,
-    ...(gate ? { tokenPosition: gate.position } : {}),
-  }
+  const cost: CostPreview = previewCreate(documentType, data)
   const landed = (documentId: string, timeoutMs: number): Promise<boolean> =>
     params.probe ? pollUntil(params.probe, timeoutMs) : pollForDocument(sdk, contractId, documentType, documentId, timeoutMs)
 
@@ -694,7 +629,7 @@ async function createDocumentUnlocked(
     throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
   }
 
-  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, gate, wif, publicKey: signing.publicKey })
+  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, wif, publicKey: signing.publicKey })
 
   let signed = await build()
   for (let attempt = 0; ; attempt++) {
@@ -774,13 +709,12 @@ async function signCreate(
     readonly contractId: string
     readonly documentType: string
     readonly data: Record<string, unknown>
-    readonly gate: TokenGate | undefined
     readonly wif: string
     readonly publicKey: unknown
   },
 ): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string; nonce: bigint }> {
-  const { ownerId, contractId, documentType, data, gate } = p
-  const { Document, DocumentCreateTransition, BatchedTransition, BatchTransition, PrivateKey, TokenPaymentInfo } = await import('@dashevo/evo-sdk')
+  const { ownerId, contractId, documentType, data } = p
+  const { Document, DocumentCreateTransition, BatchedTransition, BatchTransition, PrivateKey } = await import('@dashevo/evo-sdk')
 
   // The nonce is fetched once and used for both the id and the transition. From protocol 14
   // the document id commits to it (protocol 13: entropy only), and the create transition
@@ -796,11 +730,6 @@ async function signCreate(
 
   const document = documentForCreate(Document, { data, documentType, contractId, ownerId, documentId, entropy, platformVersion })
 
-  let tokenPaymentInfo: TokenPaymentInfo | undefined
-  if (gate) {
-    tokenPaymentInfo = new TokenPaymentInfo({ tokenContractPosition: gate.position, maximumTokenCost: BigInt(gate.amount) })
-  }
-
   // `platformVersion` is load-bearing: without it the transition re-derives the id at the
   // SDK's latest compiled version (14), which on a protocol-13 network is an id Drive does not
   // recompute, and the create is rejected.
@@ -808,7 +737,6 @@ async function signCreate(
     document,
     identityContractNonce: nonce,
     platformVersion,
-    ...(tokenPaymentInfo ? { tokenPaymentInfo } : {}),
   })
   if (document.id.toBase58() !== documentId) {
     throw new Error(

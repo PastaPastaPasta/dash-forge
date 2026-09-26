@@ -1,5 +1,5 @@
 /**
- * packManifest reads — locating browse-plane artifacts (data-contracts §2.3).
+ * packManifest reads — locating browse-plane artifacts (`forge-v2.md` §4).
  *
  * `packManifest.kind`: 0 = git pack, 1 = objectLocator, 2 = flatIndex. The `(kind,
  * $createdAt desc)` index lets a reader grab the newest locator / flatIndex in one query.
@@ -13,7 +13,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { PACK_KIND, type PackKind } from '../constants'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { v2PackList, type Role } from '../rules/v2'
-import { DOC, parseJsonList, str, type RepoRef, type V2RepoRef } from './contract'
+import { DOC, str, stringArray, type RepoRef } from './contract'
 import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
 import { readRoleOracle } from './members'
 import { repoSource } from './source'
@@ -37,29 +37,28 @@ export interface PackManifest {
   readonly supersedes: readonly string[]
   /** Consensus `$createdAt` (ms) — the primary key for the packRef total order. */
   readonly createdAt: number
-  /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak (data-contracts §2.3). */
+  /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak. */
   readonly documentId: string
   /**
-   * The manifest's `$ownerId` — who uploaded this copy. On forge-v2 chunks are keyed by it
+   * The manifest's `$ownerId` — who uploaded this copy. Chunks are keyed by it
    * (`(repoId, $ownerId, packHash, seq)`), so a chunk read must name it.
    */
   readonly uploader: string
   /**
-   * forge-v2: every writer's copy of this pack, in the order a reader tries them
-   * (`orderPackCopies`: current maintainers, then writers, then everyone else; each by
-   * `($createdAt, $id)`), this manifest first. A read falls through to the next copy when one
-   * cannot be read or does not verify (`forge-v2.md` §4). Absent on v1, where `packHash` is
-   * unique.
+   * Every writer's copy of this pack, in the order a reader tries them (`orderPackCopies`:
+   * current maintainers, then writers, then everyone else; each by `($createdAt, $id)`), this
+   * manifest first. A read falls through to the next copy when one cannot be read or does not
+   * verify (`forge-v2.md` §4). Absent on a raw manifest row.
    */
   readonly copies?: readonly PackManifest[]
-  /** forge-v2 raw copies: the uploader's current role (null: not a member). Absent on v1. */
+  /** Raw copies: the uploader's current role (null: not a member). */
   readonly ownerRole?: Role | null
 }
 
 /**
- * Parse a packed byteArray field (concatenated fixed-width entries, surfaced as base64 —
- * data-contracts §2.3: `tips` = 20-byte oids, `supersedes` = 32-byte pack hashes) into
- * hex strings. Falls back to the legacy JSON-in-string list shape.
+ * Parse a packed byteArray field (concatenated fixed-width entries, surfaced as base64:
+ * `tips` = 20-byte oids, `supersedes` = 32-byte pack hashes) into hex strings; `[]` when
+ * absent or malformed.
  */
 function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number): string[] {
   const v = doc[field]
@@ -74,10 +73,10 @@ function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number):
         return out
       }
     } catch {
-      /* not base64 — fall through to the legacy JSON-list shape */
+      /* not base64 */
     }
   }
-  return parseJsonList(doc, field)
+  return []
 }
 
 function toManifest(doc: PlainDocument): PackManifest {
@@ -98,8 +97,7 @@ function toManifest(doc: PlainDocument): PackManifest {
     objectCount: num('objectCount'),
     chunkCount: num('chunkCount'),
     storage: num('storage'),
-    // v1: JSON-in-string; forge-v2: a typed string array. parseJsonList reads both.
-    uris: parseJsonList(doc, 'uris'),
+    uris: stringArray(doc, 'uris') ?? [],
     tips: parsePackedHashes(doc, 'tips', 20),
     supersedes: parsePackedHashes(doc, 'supersedes', 32),
     createdAt: num('$createdAt'),
@@ -112,8 +110,8 @@ function toManifest(doc: PlainDocument): PackManifest {
  * List **every** pack manifest, newest first.
  *
  * Completeness is load-bearing for a nastier reason than staleness. A locator addresses
- * pack bytes by `packRef` = the pack's index in oldest-first `($createdAt, $id)` order (see
- * {@link orderGitPacks}). Drop the oldest manifests — which is exactly what a capped
+ * pack bytes by `packRef` = the pack's index in first-upload `($createdAt, $id)` order (see
+ * {@link v2PacksOfKind}). Drop the oldest manifests — which is exactly what a capped
  * newest-first page does once a repo passes one page — and every `packRef` shifts: lookups
  * then read a valid offset in the WRONG pack and return corrupt objects, with nothing in the
  * reader able to detect the misalignment. The fallback-clone path degrades the same way,
@@ -131,11 +129,11 @@ export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<Pac
   return documents.map(toManifest)
 }
 
-/** A `(createdAt, id)` bound: v1 callers pass the locator's `$createdAt` alone. */
+/** A `(createdAt, id)` bound; a bare `$createdAt` includes every document of that time. */
 export type AsOf = number | { readonly createdAt: number; readonly id: string }
 
 /**
- * forge-v2: the pack list of one `kind` (`v2PackList`, `forge-v2.md` §4) over raw manifest
+ * The pack list of one `kind` (`v2PackList`, `forge-v2.md` §4) over raw manifest
  * copies that carry their uploader's role ({@link readRepoPackManifests}), in `packRef`
  * order. Each entry is the representative copy's manifest, positioned at the pack's first
  * upload (`createdAt` / `documentId` are the first upload's), with every usable copy in the
@@ -179,17 +177,11 @@ export function v2PacksOfKind(
     })
 }
 
-/** Whether a manifest list is forge-v2 raw copies (each carries its uploader's role). */
-export function isV2Copies(manifests: readonly PackManifest[]): boolean {
-  return manifests.some((m) => m.ownerRole !== undefined)
-}
-
 /**
- * Every pack manifest of a repo, newest first: v1 as stored; forge-v2 as raw copies, each
- * tagged with its uploader's current role so {@link v2PacksOfKind} can rank them.
+ * Every pack manifest of a repo, newest first, as raw copies — each tagged with its
+ * uploader's current role so {@link v2PacksOfKind} can rank them.
  */
 export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
-  if (repo.kind === 'v1') return readPackManifests(sdk, repo)
   const [manifests, oracle] = await Promise.all([
     readPackManifests(sdk, repo),
     readRoleOracle(sdk, repo),
@@ -198,13 +190,13 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
 }
 
 /**
- * forge-v2: every writer's copy of `packHash` (`(repoId, packHash)` index), ranked for
+ * Every writer's copy of `packHash` (`(repoId, packHash)` index), ranked for
  * reading, as one manifest with `copies` — or null when no copy claims `kind`. Independent of
  * how many other packs the repo holds.
  */
 export async function readV2PackCopies(
   sdk: EvoSDK,
-  repo: V2RepoRef,
+  repo: RepoRef,
   packHashHex: string,
   kind: number,
 ): Promise<PackManifest | null> {
@@ -245,50 +237,6 @@ export async function readNewestManifestOfKind(
 /** The current objectLocator manifest (kind 1) — the size-independent object index. */
 export function readNewestLocatorManifest(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest | null> {
   return readNewestManifestOfKind(sdk, repo, PACK_KIND.OBJECT_LOCATOR)
-}
-
-/**
- * The live (non-superseded) kind-0 git packs among `manifests` — mirror of forge-core
- * `repo.rs::live_kind0_manifests`: kind-0 manifests whose `packHash` no manifest (of any
- * kind) lists in its `supersedes`. Single pass, non-transitive.
- */
-export function liveGitPackManifests(manifests: readonly PackManifest[]): PackManifest[] {
-  const superseded = new Set<string>()
-  for (const m of manifests) {
-    for (const h of m.supersedes) superseded.add(h.toLowerCase())
-  }
-  return manifests.filter(
-    (m) => m.kind === PACK_KIND.GIT_PACK && !superseded.has(m.packHash.toLowerCase()),
-  )
-}
-
-/**
- * The live (non-superseded) `objectLocator` manifests among `manifests`, NEWEST-FIRST — the
- * index fragments a reader merges. Mirror of forge-core `repo.rs::live_locator_manifests`.
- *
- * There is normally more than one: a push publishes a locator over just the pack it stored,
- * so the index accumulates fragments between repacks (see forge-core
- * `RepoService::publish_push_locator` for why it is published that way). A repack — or a
- * push that folds them — supersedes the fragments it consolidates.
- */
-export function liveLocatorManifests(manifests: readonly PackManifest[]): PackManifest[] {
-  const superseded = new Set<string>()
-  for (const m of manifests) {
-    for (const h of m.supersedes) superseded.add(h.toLowerCase())
-  }
-  return manifests
-    .filter(
-      (m) => m.kind === PACK_KIND.OBJECT_LOCATOR && !superseded.has(m.packHash.toLowerCase()),
-    )
-    .sort((a, b) =>
-      a.createdAt !== b.createdAt
-        ? b.createdAt - a.createdAt
-        : a.documentId < b.documentId
-          ? 1
-          : a.documentId > b.documentId
-            ? -1
-            : 0,
-    )
 }
 
 /** The current flatIndex manifest (kind 2) — the full recursive tree listing. */

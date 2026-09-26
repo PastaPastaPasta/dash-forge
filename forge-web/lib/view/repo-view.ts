@@ -1,8 +1,8 @@
 /**
  * Repo home view-model (view glue) — composes the reads a repo page needs into one shape.
  *
- * The cold home view is size-independent: resolve the repo (a forge-v2 `repo` document, else
- * the v1 registry), read its current config + default branch, resolve refs, and read the
+ * The cold home view is size-independent: resolve the repo (its forge-core `repo` document),
+ * read its current config + default branch, resolve refs, and read the
  * O(1) star count. The root tree / README ride the browse plane (locator) and are loaded
  * separately so the header can paint immediately.
  */
@@ -14,7 +14,6 @@ import {
   branchesOf,
   readConfigBundle,
   readRefs,
-  readStarCount,
   readV2StarCount,
   resolveAnyRepo,
   tagsOf,
@@ -56,11 +55,9 @@ export function backendInfo(config: RepoConfig | null): BackendInfo {
 /** Everything the repo header + rail render (excludes browse-plane tree/README). */
 export interface RepoHome {
   readonly repo: RepoRef
-  /** The v1 registry listing id (stars live on it), or null (forge-v2, or no listing). */
-  readonly listingId: string | null
-  /** The forge-v2 `repo` document (description, display name, topics, fork), else null. */
-  readonly v2: V2RepoDoc | null
-  /** The repo description: the v2 `repo` document's, else the v1 listing's. */
+  /** The `repo` document (description, display name, topics, fork). */
+  readonly v2: V2RepoDoc
+  /** The repo description (the `repo` document's). */
   readonly description: string
   readonly config: RepoConfig | null
   readonly defaultBranch: string
@@ -73,7 +70,7 @@ export interface RepoHome {
 
 /**
  * Resolve + compose a repo home view-model from its route address (`owner`, `name`, and an
- * optional `?repo=` / `?contract=` pin). Returns null if nothing authentic resolves.
+ * optional `?repo=` pin). Returns null if nothing resolves.
  */
 export async function loadRepoHome(
   sdk: EvoSDK,
@@ -81,34 +78,22 @@ export async function loadRepoHome(
 ): Promise<RepoHome | null> {
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
-  const { repo } = resolved
-  const v2 = 'doc' in resolved ? resolved.doc : null
-  const listing = 'listing' in resolved ? resolved.listing : null
-  const listingId = listing?.listingId || null
-
-  const readStars = (): Promise<number | null> => {
-    if (repo.kind === 'v2') return readV2StarCount(sdk, repo.forge, repo.repoId).catch(() => null)
-    // Stars live on the registry listing; a repo addressed without one has an unknown count.
-    return listingId
-      ? readStarCount(sdk, listingId, { network: params.network }).catch(() => null)
-      : Promise.resolve(null)
-  }
+  const { repo, doc: v2 } = resolved
 
   // One config query serves both the current config and the history readRefs folds with.
   const bundlePromise = readConfigBundle(sdk, repo)
   const [{ config }, refs, starCount] = await Promise.all([
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
-    readStars(),
+    readV2StarCount(sdk, repo.forge, repo.repoId).catch(() => null),
   ])
 
   return {
     repo,
-    listingId,
     v2,
-    description: v2?.description ?? listing?.description ?? '',
+    description: v2.description,
     config,
-    defaultBranch: config?.defaultBranch ?? v2?.defaultBranch ?? 'main',
+    defaultBranch: config?.defaultBranch ?? v2.defaultBranch ?? 'main',
     branches: branchesOf(refs),
     tags: tagsOf(refs),
     starCount,

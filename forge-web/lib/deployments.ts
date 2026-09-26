@@ -9,9 +9,8 @@
  */
 
 import devnetMoutai from '../../forge-contracts/deployments/devnet-moutai.json'
-import testnet from '../../forge-contracts/deployments/testnet.json'
 
-/** One contract's record: `status` is `registered` once confirmed (v2 records only). */
+/** One contract's record: `status` is `registered` once confirmed. */
 export interface ContractRecord {
   readonly contractId?: string | null
   readonly ownerId?: string | null
@@ -22,7 +21,6 @@ export interface ContractRecord {
 export interface DeploymentFile {
   readonly dapiAddresses?: readonly string[]
   readonly quorumBaseUrl?: string | null
-  readonly registry?: ContractRecord | null
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
   readonly v2?: {
     readonly forgeCore?: ContractRecord
@@ -68,8 +66,10 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   return core && collab && group ? { core, collab, group } : null
 }
 
-/** Deployment key (`testnet`, `mainnet`, `devnet-<name>`) → file contents. */
+/**
+ * Deployment key (`testnet`, `mainnet`, `devnet-<name>`) → file contents. A network with no
+ * file here has no forge-v2 deployment and shows "not deployed".
+ */
 export const DEPLOYMENTS: Readonly<Record<string, DeploymentFile>> = {
-  testnet,
   'devnet-moutai': devnetMoutai,
 }

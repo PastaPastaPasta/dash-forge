@@ -3,11 +3,11 @@
  *
  * Loads every `forge-contracts/vectors/*.json` and asserts this TypeScript port produces the
  * vector's `expected` — the exact same suite the Rust reference runs at the bottom of
- * `crates/forge-core/src/rules.rs`. A vector's `rules` field picks the rule set: absent or
- * `"v1"` is FORGE_RULES_V1, `"v2"` is FORGE_RULES_V2 (`./v2`). If this is green, the two
- * clients agree on ref resolution, protected-pattern matching, issue/PR folds (v1 and v2),
- * token holdings, ref naming, flatIndex staleness overlay, and the v2 numbering, pack-copy,
- * approval, well-formedness and repo-name rules.
+ * `crates/forge-core/src/rules.rs`. A vector's `rules` field picks the rule set: absent is
+ * the base rules forge-v2 shares (ref resolution, protected-pattern matching, ref naming,
+ * flatIndex staleness overlay, verdict labels), `"v2"` is FORGE_RULES_V2 (`./v2`); any other
+ * value fails as unknown. If this is green, the two clients agree on all of those and on the
+ * v2 issue/PR folds, numbering, pack-copy, approval, well-formedness and repo-name rules.
  *
  * SCOPE, stated precisely because it has been over-read: every vector hands the pure
  * functions a ready-made input array, so this suite proves the two ports FOLD identically
@@ -23,12 +23,8 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
-  AuthzResolver,
   ancestryFromPairs,
   displayRefName,
-  foldIssueState,
-  foldPrState,
-  holdingsAsOf,
   matchesProtected,
   overlayTree,
   resolveRef,
@@ -40,7 +36,6 @@ import type {
   Event,
   FlatIndex,
   RefUpdate,
-  TokenRecord,
   TreeDiff,
 } from './types'
 
@@ -48,7 +43,7 @@ interface Vector {
   readonly name: string
   readonly description: string
   readonly case: string
-  readonly rules?: 'v1' | 'v2'
+  readonly rules?: string
   readonly input: unknown
   readonly expected: unknown
 }
@@ -65,26 +60,6 @@ interface ResolveRefInput {
 interface MatchesProtectedInput {
   readonly refName: string
   readonly patterns: readonly string[]
-}
-
-interface HoldingsInput {
-  readonly records: readonly TokenRecord[]
-  readonly identity: string
-  readonly at: number
-}
-
-interface FoldIssueInput {
-  readonly events: readonly Event[]
-  readonly targetAuthor: string
-  readonly tokenRecords?: readonly TokenRecord[]
-}
-
-interface FoldPrInput {
-  readonly events: readonly Event[]
-  readonly targetAuthor: string
-  readonly tokenRecords?: readonly TokenRecord[]
-  readonly baseTip?: string | null
-  readonly ancestry?: Pairs
 }
 
 interface OverlayInput {
@@ -109,7 +84,7 @@ function loadVectors(): Vector[] {
   })
 }
 
-function runCase(v: Vector): void {
+function runCaseBase(v: Vector): void {
   switch (v.case) {
     case 'resolve_ref': {
       const inp = v.input as ResolveRefInput
@@ -138,43 +113,19 @@ function runCase(v: Vector): void {
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
       break
     }
-    case 'holdings': {
-      const inp = v.input as HoldingsInput
-      expect(holdingsAsOf(inp.records, inp.identity, inp.at)).toEqual(v.expected)
-      break
-    }
-    case 'fold_issue': {
-      const inp = v.input as FoldIssueInput
-      const authz = new AuthzResolver(inp.tokenRecords ?? [])
-      expect(foldIssueState(inp.events, inp.targetAuthor, authz)).toEqual(v.expected)
-      break
-    }
-    case 'fold_pr': {
-      const inp = v.input as FoldPrInput
-      const authz = new AuthzResolver(inp.tokenRecords ?? [])
-      const got = foldPrState(
-        inp.events,
-        inp.targetAuthor,
-        authz,
-        inp.baseTip ?? undefined,
-        ancestryFromPairs(inp.ancestry ?? []),
-      )
-      expect(got).toEqual(v.expected)
-      break
-    }
     case 'overlay': {
       const inp = v.input as OverlayInput
       expect(overlayTree(inp.base, inp.diffs ?? [])).toEqual(v.expected)
       break
     }
     default:
-      throw new Error(`unknown vector case: ${v.case}`)
+      throw new Error(`unknown base vector case: ${v.case}`)
   }
 }
 
 /**
  * The keys each v2 input record may carry. The harness refuses any other key, at any depth,
- * as the Rust harness does, so a vector cannot carry a field (v1's `tokenRecords`, a misspelt
+ * as the Rust harness does, so a vector cannot carry a field (a retired `tokenRecords`, a misspelt
  * `supersedes`) that the rules silently ignore.
  */
 const EVENT_KEYS = ['id', 'targetId', 'kind', 'actor', 'value', 'oid', 'createdAt']
@@ -324,6 +275,13 @@ function runCaseV2(v: Vector): void {
   }
 }
 
+/** Run one vector under the rule set its `rules` field names (absent = base). */
+function runVector(v: Vector): void {
+  if (v.rules === undefined) runCaseBase(v)
+  else if (v.rules === 'v2') runCaseV2(v)
+  else throw new Error(`unknown vector rule set "${v.rules}" in ${v.name}`)
+}
+
 interface V2FoldInput {
   readonly events?: readonly Event[]
   readonly authorEvents?: readonly Event[]
@@ -332,23 +290,33 @@ interface V2FoldInput {
 
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
-  const v1 = vectors.filter((v) => (v.rules ?? 'v1') === 'v1')
+  const base = vectors.filter((v) => v.rules === undefined)
   const v2Vectors = vectors.filter((v) => v.rules === 'v2')
 
   it('loads the full vector corpus', () => {
-    expect(v1.length).toBeGreaterThanOrEqual(70)
+    expect(base.length).toBeGreaterThanOrEqual(45)
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
-    expect(v1.length + v2Vectors.length).toBe(vectors.length)
   })
 
-  for (const v of v1) {
-    it(`v1 ${v.case} :: ${v.name}`, () => {
-      runCase(v)
+  it('knows every vector rule set', () => {
+    const unknown = vectors.filter((v) => v.rules !== undefined && v.rules !== 'v2')
+    expect(unknown.map((v) => `${v.name} (rules: ${v.rules})`)).toEqual([])
+  })
+
+  it('rejects a vector with an unknown rule set', () => {
+    expect(() => runVector({ name: 'x', description: '', case: 'resolve_ref', rules: 'v1', input: {}, expected: null })).toThrow(
+      /unknown vector rule set/,
+    )
+  })
+
+  for (const v of base) {
+    it(`base ${v.case} :: ${v.name}`, () => {
+      runVector(v)
     })
   }
   for (const v of v2Vectors) {
     it(`v2 ${v.case} :: ${v.name}`, () => {
-      runCaseV2(v)
+      runVector(v)
     })
   }
 })

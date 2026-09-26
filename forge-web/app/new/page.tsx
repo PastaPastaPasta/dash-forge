@@ -7,20 +7,19 @@
  * "Finish creating <name>" on the next visit instead of leaving a half-made repo. On success
  * the repo's empty state shows the push commands (`ux-dx-spec.md` §5.5).
  *
- * On a network without forge-v2 (testnet today) repos are not created from the browser: a v1
- * repo was its own ~1.18 DASH contract, and that path is gone.
+ * On a network without forge-v2 the page shows "not deployed".
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, GitBranch, Hammer, Loader2, Lock, Terminal } from 'lucide-react'
+import { Check, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/ui/states'
-import { NotDeployedState, isV2Deployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -118,18 +117,10 @@ export default function NewRepoPage(): JSX.Element {
     router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
   }
 
-  if (!isV2Deployed()) {
+  if (!isForgeDeployed()) {
     return (
       <AppShell>
-        {ACTIVE_NETWORK.registryContractId !== null ? (
-          <EmptyState
-            icon={Terminal}
-            title={`New repos are forge-v2, which ${ACTIVE_NETWORK.key} does not run yet`}
-            body="Existing v1 repos here stay readable and writable (issues, comments, stars). A v1 repo was its own ~1.18 DASH contract; creating one from the browser is no longer offered."
-          />
-        ) : (
-          <NotDeployedState />
-        )}
+        <NotDeployedState />
       </AppShell>
     )
   }
