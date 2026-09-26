@@ -78,13 +78,13 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     setError(null)
     const controller = new AbortController()
     try {
-      const { evoSdkService } = await import('@/lib/sdk')
+      const { ensureSdk } = await import('@/lib/sdk')
       const { createIdentityFromMnemonic, depositAddressOf, MIN_DEPOSIT_DUFFS } = await import('@/lib/auth/create-identity')
       const v2 = ACTIVE_NETWORK.v2
       if (!v2) throw new Error('forge-v2 is not deployed here')
       setAddress(await depositAddressOf(m, DEFAULT_NETWORK))
       setStep('fund')
-      const { identityId, key } = await createIdentityFromMnemonic(evoSdkService.getSdk(), {
+      const { identityId, key } = await createIdentityFromMnemonic(await ensureSdk(DEFAULT_NETWORK), {
         network: DEFAULT_NETWORK,
         mnemonic: m,
         group: v2.group,

@@ -34,12 +34,12 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
       try {
         const v2 = ACTIVE_NETWORK.v2
         if (!v2) throw new Error('forge-v2 is not deployed here')
-        const { evoSdkService } = await import('@/lib/sdk')
+        const { ensureSdk } = await import('@/lib/sdk')
         const { newRequest, awaitWalletLogin } = await import('@/lib/auth/app-connect')
         const req = newRequest(DEFAULT_NETWORK, v2.core)
         setUri(req.uri)
         setPairing(req.pairingCode)
-        const login = await awaitWalletLogin(evoSdkService.getSdk(), req, { network: DEFAULT_NETWORK, group: v2.group, signal: controller.signal })
+        const login = await awaitWalletLogin(await ensureSdk(DEFAULT_NETWORK), req, { network: DEFAULT_NETWORK, group: v2.group, signal: controller.signal })
         setGranted({ identityId: login.identityId, key: { keyId: login.keyId, wif: login.wif, limits: login.limits } })
       } catch (e) {
         if (!controller.signal.aborted) setError(errorMessage(e))

@@ -25,7 +25,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { BROWSER_KEY_DEFAULTS, parseIdentityFileText } from '@/lib/auth'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
@@ -132,10 +132,9 @@ function useWalletAvailability(): { limitedKeys: boolean; walletAvailable: boole
     if (!limitedKeys) return
     let cancelled = false
     void (async () => {
-      const { evoSdkService } = await import('@/lib/sdk')
+      const { ensureSdk } = await import('@/lib/sdk')
       const { appConnectAvailable } = await import('@/lib/auth/app-connect')
-      if (!evoSdkService.isReady) return
-      const ok = await appConnectAvailable(evoSdkService.getSdk())
+      const ok = await appConnectAvailable(await ensureSdk(DEFAULT_NETWORK)).catch(() => false)
       if (!cancelled) setAvailable(ok)
     })()
     return () => {

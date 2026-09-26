@@ -14,19 +14,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { AuthController, type AuthSession, type LimitedKey, type LimitedKeyRequest, type Protection, type VaultInfo } from '../lib/auth'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
-import { evoSdkService, type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { recordSpend } from '../lib/spend'
 import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
-
-async function ensureSdk(network: Network): Promise<EvoSDK> {
-  const { registryContractId, dpnsContractId, v2 } = NETWORKS[network]
-  const contractIds = [registryContractId, dpnsContractId, v2?.core, v2?.collab].filter(
-    (id): id is string => typeof id === 'string' && id.length > 0,
-  )
-  await evoSdkService.initialize({ network, contractIds, timeoutMs: 15000 })
-  return evoSdkService.getSdk()
-}
 
 /** A write kind (`create:issue`) → the toast title. */
 const SPEND_TITLES: Readonly<Record<string, string>> = {
