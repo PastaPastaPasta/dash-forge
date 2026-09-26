@@ -3,29 +3,41 @@
 //! A delivery that fails every attempt of its in-window retries ([`crate::deliver`]) is
 //! written here and retried later, on a backoff schedule ([`DEFAULT_SCHEDULE`]: 1 min, 5 min,
 //! 30 min, 2 h, 12 h, 24 h, then every 24 h), until it succeeds or is [`EXPIRY`] old (48 h), when
-//! it is dropped with one log line. The queue survives restarts.
+//! it is dropped with one log line. The queue survives restarts. Only failed deliveries are
+//! written: events still waiting in a hook's in-memory queue, or in flight, when the relay
+//! stops are lost. A failure retrying cannot fix (a body over the cap, a 4xx other than
+//! 408/429) is not queued at all.
 //!
 //! **On disk:** `<state dir>/deliveries/<delivery id>.json`, one file per delivery, mode 0600
-//! in a 0700 directory, written by rename so a crash never leaves half a file. An entry holds
-//! what a retry needs and nothing secret: repo id, hook id, GitHub event name, the source
-//! document id, the JSON body (public chain data), attempt count, times and the last error
-//! (already redacted: no URL beyond scheme and host). Not the secret, not the URL: a retry
-//! goes through the hook's current subscription, so it is signed with the hook's **current**
-//! secret, sent to its current URL through the SSRF guard (re-resolved and pinned), and never
-//! sent at all if the hook was removed or disabled meanwhile.
+//! in a 0700 directory the relay user owns (checked at startup; a symlink is refused), written
+//! by a background thread through a fresh temp file and a rename, so a crash never leaves half
+//! a file and no fsync runs on the async threads. An entry holds what a retry needs and nothing
+//! secret: repo id, hook id, GitHub event name, the source document id, the JSON body (public
+//! chain data), attempt count, times and the last error (already redacted: no URL beyond
+//! scheme and host). Not the secret, not the URL: a retry goes through the hook's current
+//! subscription, so it is signed with the hook's **current** secret, sent to its current URL
+//! through the SSRF guard (re-resolved and pinned), and never sent at all if the hook was
+//! removed or disabled meanwhile. An exclusive lock on `deliveries/.lock`, held while the
+//! relay runs, keeps a second relay off the same queue.
 //!
-//! **Bounds:** at most [`MAX_PENDING_PER_HOOK`] pending entries per hook, [`MAX_PENDING`] in
-//! total and [`MAX_PENDING_BYTES`] of bodies; past a bound the oldest pending entries are
-//! dropped with a log line, so a dead receiver cannot fill the disk. Dropped entries are kept
-//! (without their body) for `forge-relay deliveries` to show, at most [`MAX_DROPPED`] of them
-//! and for [`DROPPED_RETENTION`].
+//! **In memory:** the index, and each pending body as its serialized JSON text, so the byte
+//! bound is what the bodies really take. When the state dir cannot be used the relay runs on
+//! an in-memory queue ([`RetryQueue::in_memory`]): the same retries, lost on restart.
+//!
+//! **Bounds:** at most [`MAX_PENDING_PER_HOOK`] pending entries per hook,
+//! [`MAX_PENDING_PER_REPO`] per repo, [`MAX_PENDING`] in total and [`MAX_PENDING_BYTES`] of
+//! bodies. Past a hook's or repo's bound its own oldest entry is dropped; past a global bound,
+//! the oldest entry of the repo holding the most, so one repo cannot evict the others. Every
+//! drop logs a line. Dropped entries are kept (without their body) for `forge-relay
+//! deliveries` to show, at most [`MAX_DROPPED`] of them and for [`DROPPED_RETENTION`].
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::error::{RelayError, Result};
 
@@ -39,11 +51,14 @@ pub const DEFAULT_SCHEDULE: [Duration; 6] = [
     Duration::from_hours(24),
 ];
 
-/// A pending delivery older than this is dropped.
+/// A pending delivery older than this is dropped (also the longest configurable delay).
 pub const EXPIRY: Duration = Duration::from_hours(48);
 
 /// Pending entries per hook.
 pub const MAX_PENDING_PER_HOOK: usize = 500;
+
+/// Pending entries per repo (all its hooks together).
+pub const MAX_PENDING_PER_REPO: usize = 1000;
 
 /// Pending entries in total.
 pub const MAX_PENDING: usize = 5000;
@@ -92,7 +107,7 @@ pub enum Status {
 }
 
 /// One queued delivery, as stored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     /// The delivery id (`X-GitHub-Delivery`), also the file name.
@@ -121,18 +136,34 @@ pub struct Entry {
     /// When it was dropped (ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped_ms: Option<u64>,
-    /// The JSON body; `null` once dropped.
-    #[serde(default)]
-    pub payload: serde_json::Value,
+    /// The JSON body, as its serialized text; none once dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Box<RawValue>>,
     /// The body's serialized size.
     #[serde(default)]
     pub bytes: usize,
 }
 
 impl Entry {
-    /// `(repo id, hook id)`.
-    pub fn hook_key(&self) -> (&str, &str) {
-        (&self.repo_id, &self.hook_id)
+    /// A copy without the body (what [`RetryQueue::due`] hands out; [`RetryQueue::claim`]
+    /// returns the body).
+    fn head(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            repo_id: self.repo_id.clone(),
+            hook_id: self.hook_id.clone(),
+            event: self.event.clone(),
+            source_doc_id: self.source_doc_id.clone(),
+            created_ms: self.created_ms,
+            tries: self.tries,
+            next_ms: self.next_ms,
+            last_error: self.last_error.clone(),
+            status: self.status,
+            drop_reason: self.drop_reason.clone(),
+            dropped_ms: self.dropped_ms,
+            payload: None,
+            bytes: self.bytes,
+        }
     }
 }
 
@@ -152,42 +183,287 @@ pub struct Failure<'a> {
     pub payload: &'a serde_json::Value,
     /// The (redacted) error.
     pub error: &'a str,
+    /// The caller holds this id's claim (a retry handed out by [`RetryQueue::claim`]): release
+    /// it once the entry is updated. Anyone else leaves the claim alone.
+    pub claimed: bool,
 }
 
-/// The queue: an in-memory index over the files, updated together.
-pub struct RetryQueue {
-    dir: PathBuf,
-    schedule: Vec<Duration>,
-    entries: Mutex<BTreeMap<String, Entry>>,
-    /// Retries handed to a worker and not finished yet. The worker releases the claim on
-    /// every outcome (delivered, failed, dropped, cancelled).
-    claimed: Mutex<HashSet<String>>,
+/// The bounds (constants; tests shrink them).
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    per_hook: usize,
+    per_repo: usize,
+    total: usize,
+    bytes: usize,
 }
 
-impl std::fmt::Debug for RetryQueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RetryQueue")
-            .field("dir", &self.dir)
-            .finish_non_exhaustive()
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            per_hook: MAX_PENDING_PER_HOOK,
+            per_repo: MAX_PENDING_PER_REPO,
+            total: MAX_PENDING,
+            bytes: MAX_PENDING_BYTES,
+        }
     }
 }
 
-/// Set a path's mode (unix; a no-op elsewhere).
-fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+/// `(created ms, id)`: pending entries in age order.
+type Aged = BTreeSet<(u64, String)>;
+
+/// One repo's pending entries.
+#[derive(Debug, Default)]
+struct Tally {
+    aged: Aged,
+    bytes: usize,
+}
+
+/// The entries and the indexes the bounds use, kept in step (under one lock).
+#[derive(Debug, Default)]
+struct State {
+    entries: BTreeMap<String, Entry>,
+    /// Retries handed to a worker and not finished yet.
+    claimed: HashSet<String>,
+    /// Every pending entry.
+    aged: Aged,
+    /// Pending entries per repo.
+    repos: HashMap<String, Tally>,
+    /// Pending entries per `(repo, hook)`.
+    hooks: HashMap<(String, String), Aged>,
+    /// Bytes of pending bodies.
+    bytes: usize,
+    /// `(dropped ms, id)` of the dropped records.
+    dropped: Aged,
+}
+
+impl State {
+    fn index(&mut self, e: &Entry) {
+        match e.status {
+            Status::Pending => {
+                let key = (e.created_ms, e.id.clone());
+                self.aged.insert(key.clone());
+                let repo = self.repos.entry(e.repo_id.clone()).or_default();
+                repo.aged.insert(key.clone());
+                repo.bytes += e.bytes;
+                self.hooks
+                    .entry((e.repo_id.clone(), e.hook_id.clone()))
+                    .or_default()
+                    .insert(key);
+                self.bytes += e.bytes;
+            }
+            Status::Dropped => {
+                self.dropped
+                    .insert((e.dropped_ms.unwrap_or(0), e.id.clone()));
+            }
+        }
+    }
+
+    fn unindex(&mut self, e: &Entry) {
+        match e.status {
+            Status::Pending => {
+                let key = (e.created_ms, e.id.clone());
+                self.aged.remove(&key);
+                if let Some(repo) = self.repos.get_mut(&e.repo_id) {
+                    repo.aged.remove(&key);
+                    repo.bytes = repo.bytes.saturating_sub(e.bytes);
+                    if repo.aged.is_empty() {
+                        self.repos.remove(&e.repo_id);
+                    }
+                }
+                let hook = (e.repo_id.clone(), e.hook_id.clone());
+                if let Some(aged) = self.hooks.get_mut(&hook) {
+                    aged.remove(&key);
+                    if aged.is_empty() {
+                        self.hooks.remove(&hook);
+                    }
+                }
+                self.bytes = self.bytes.saturating_sub(e.bytes);
+            }
+            Status::Dropped => {
+                self.dropped
+                    .remove(&(e.dropped_ms.unwrap_or(0), e.id.clone()));
+            }
+        }
+    }
+
+    fn is_pending(&self, id: &str) -> bool {
+        self.entries
+            .get(id)
+            .is_some_and(|e| e.status == Status::Pending)
+    }
+}
+
+/// What the writer thread still has to do: the latest content of each changed entry (`None`
+/// = delete its file), so repeated updates of one entry cost one write.
+#[derive(Debug, Default)]
+struct Pending {
+    ops: BTreeMap<String, Option<Vec<u8>>>,
+    busy: bool,
+    stop: bool,
+}
+
+#[derive(Debug, Default)]
+struct WriterShared {
+    pending: Mutex<Pending>,
+    cv: Condvar,
+}
+
+impl WriterShared {
+    fn lock(&self) -> MutexGuard<'_, Pending> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The on-disk side: the directory, its lock, and the thread that writes it.
+#[derive(Debug)]
+struct Disk {
+    dir: PathBuf,
+    shared: Arc<WriterShared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// Held (locked) for the queue's lifetime; released when the file closes.
+    _lock: std::fs::File,
+}
+
+impl Disk {
+    fn send(&self, id: &str, op: Option<Vec<u8>>) {
+        self.shared.lock().ops.insert(id.to_string(), op);
+        self.shared.cv.notify_all();
+    }
+
+    /// Wait until everything sent so far is on disk.
+    #[cfg(test)]
+    fn flush(&self) {
+        let mut p = self.shared.lock();
+        while !p.ops.is_empty() || p.busy {
+            p = self
+                .shared
+                .cv
+                .wait(p)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+impl Drop for Disk {
+    fn drop(&mut self) {
+        self.shared.lock().stop = true;
+        self.shared.cv.notify_all();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The writer thread: apply the pending ops in batches, one directory sync per batch; exits
+/// once stopped and drained.
+fn writer_loop(dir: &Path, shared: &WriterShared) {
+    loop {
+        let batch = {
+            let mut p = shared.lock();
+            while p.ops.is_empty() && !p.stop {
+                p = shared.cv.wait(p).unwrap_or_else(PoisonError::into_inner);
+            }
+            if p.ops.is_empty() {
+                return;
+            }
+            p.busy = true;
+            std::mem::take(&mut p.ops)
+        };
+        for (id, op) in batch {
+            let result = match op {
+                Some(bytes) => write_entry(dir, &id, &bytes),
+                None => match std::fs::remove_file(dir.join(format!("{id}.json"))) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                },
+            };
+            if let Err(err) = result {
+                tracing::error!(id = %id, error = %err, "could not update a queued delivery on disk; it lives in memory until the relay stops");
+            }
+        }
+        if let Err(err) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+            tracing::warn!(dir = %dir.display(), error = %err, "could not sync the delivery queue directory");
+        }
+        shared.lock().busy = false;
+        shared.cv.notify_all();
+    }
+}
+
+/// `O_NOFOLLOW` for [`std::os::unix::fs::OpenOptionsExt::custom_flags`].
+#[cfg(unix)]
+fn nofollow() -> i32 {
+    rustix::fs::OFlags::NOFOLLOW.bits().cast_signed()
+}
+
+/// Options for a private (0600) file that is never reached through a symlink.
+fn private_file() -> std::fs::OpenOptions {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600).custom_flags(nofollow());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-        Ok(())
-    }
+    o
 }
 
-/// Read every entry file of `dir` (a missing dir is empty). Unreadable files are skipped with
-/// a warning. Makes no network calls: `forge-relay deliveries` uses this.
+/// A directory builder creating 0700 directories (atomically, not chmod afterwards).
+fn private_dir() -> std::fs::DirBuilder {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b
+}
+
+/// Write one entry durably: a stale temp file is unlinked, a fresh one created exclusively
+/// (never through a symlink), synced, then renamed over the entry.
+fn write_entry(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let path = dir.join(format!("{id}.json"));
+    let tmp = dir.join(format!(".{id}.tmp"));
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut f = private_file().create_new(true).open(&tmp)?;
+    std::io::Write::write_all(&mut f, bytes)?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// `dir` must be a real directory (not a symlink), owned by this user, mode 0700.
+fn check_private_dir(dir: &Path) -> std::io::Result<()> {
+    let md = std::fs::symlink_metadata(dir)?;
+    if !md.file_type().is_dir() {
+        return Err(std::io::Error::other(
+            "it is not a directory (a symlink is refused)",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = rustix::process::geteuid().as_raw();
+        if md.uid() != uid {
+            return Err(std::io::Error::other(format!(
+                "it is owned by uid {}, not by this user (uid {uid})",
+                md.uid()
+            )));
+        }
+        let mode = md.mode() & 0o777;
+        if mode != 0o700 {
+            return Err(std::io::Error::other(format!(
+                "its mode is {mode:o}, not 700 (chmod 700 it)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Read every entry file of `dir` (a missing dir is empty). Only regular `<id>.json` files
+/// are read (not symlinks); unreadable ones are skipped with a warning. Takes no lock and
+/// makes no network calls: `forge-relay deliveries` uses this while the relay runs.
 pub fn read_dir(dir: &Path) -> Result<Vec<Entry>> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -200,11 +476,27 @@ pub fn read_dir(dir: &Path) -> Result<Vec<Entry>> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
+        if !f.file_type().is_ok_and(|t| t.is_file()) {
+            tracing::warn!(file = %path.display(), "skipping a queue file that is not a regular file");
+            continue;
+        }
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        match std::fs::read(&path)
+        let read = || -> std::io::Result<Vec<u8>> {
+            let mut o = std::fs::OpenOptions::new();
+            o.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                o.custom_flags(nofollow());
+            }
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut o.open(&path)?, &mut buf)?;
+            Ok(buf)
+        };
+        match read()
             .map_err(|e| e.to_string())
             .and_then(|b| serde_json::from_slice::<Entry>(&b).map_err(|e| e.to_string()))
             .and_then(|e| {
@@ -227,47 +519,130 @@ pub fn read_dir(dir: &Path) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// Milliseconds of a duration (saturating).
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The queue: an in-memory index, written through to the files by a background thread.
+pub struct RetryQueue {
+    /// `None`: in memory only.
+    disk: Option<Disk>,
+    schedule: Vec<Duration>,
+    limits: Limits,
+    state: Mutex<State>,
+}
+
+impl std::fmt::Debug for RetryQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetryQueue")
+            .field("dir", &self.disk.as_ref().map(|d| &d.dir))
+            .finish_non_exhaustive()
+    }
+}
+
 impl RetryQueue {
-    /// Open (creating `<state dir>/deliveries`, mode 0700) and load the queue.
+    /// Open (creating `<state dir>/deliveries`, mode 0700) and load the queue. Fails with
+    /// [`RelayError::StateLocked`] when another relay holds the queue, and with
+    /// [`RelayError::Io`] when the directory cannot be created, is not a private directory of
+    /// this user, or cannot be read.
     pub fn open(state_dir: &Path, schedule: Vec<Duration>) -> Result<Self> {
         let dir = queue_dir(state_dir);
         let io = |what: &str, e: std::io::Error| {
-            RelayError::Io(format!(
-                "{what} {} ({e}); pass a writable --state-dir for the delivery queue",
-                dir.display()
-            ))
+            RelayError::Io(format!("{what} {}: {e}", dir.display()))
         };
         if !state_dir.exists() {
             // A state dir we create is private too; an existing one is left as it is.
-            std::fs::create_dir_all(state_dir).map_err(|e| io("creating", e))?;
-            set_mode(state_dir, 0o700).map_err(|e| io("securing", e))?;
+            private_dir()
+                .recursive(true)
+                .create(state_dir)
+                .map_err(|e| io("creating", e))?;
         }
-        std::fs::create_dir_all(&dir).map_err(|e| io("creating", e))?;
-        set_mode(&dir, 0o700).map_err(|e| io("securing", e))?;
-        // Temp files left by a crash mid-write.
+        match private_dir().create(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(io("creating", e));
+            }
+            _ => {}
+        }
+        check_private_dir(&dir).map_err(|e| io("refusing to use", e))?;
+        let lock_path = dir.join(".lock");
+        let lock = private_file()
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| io("opening the lock in", e))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(RelayError::StateLocked(format!(
+                    "another forge-relay is using the delivery queue in {}; give each relay its \
+                     own --state-dir",
+                    dir.display()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(io("locking", e)),
+        }
+        // Temp files left by a crash mid-write (unlinking never follows a symlink).
         for f in std::fs::read_dir(&dir)
             .map_err(|e| io("reading", e))?
             .flatten()
         {
-            if f.file_name().to_string_lossy().ends_with(".tmp") {
+            let name = f.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') && name.ends_with(".tmp") {
                 let _ = std::fs::remove_file(f.path());
             }
         }
-        let entries = read_dir(&dir)?
-            .into_iter()
-            .map(|e| (e.id.clone(), e))
-            .collect();
-        let q = Self {
-            dir,
+        let mut state = State::default();
+        for mut e in read_dir(&dir)? {
+            e.bytes = e.payload.as_ref().map_or(0, |p| p.get().len());
+            state.index(&e);
+            state.entries.insert(e.id.clone(), e);
+        }
+        let shared = Arc::new(WriterShared::default());
+        let thread = {
+            let (dir, shared) = (dir.clone(), Arc::clone(&shared));
+            std::thread::Builder::new()
+                .name("relay-queue-writer".into())
+                .spawn(move || writer_loop(&dir, &shared))
+                .map_err(|e| io("starting the writer for", e))?
+        };
+        Ok(Self {
+            disk: Some(Disk {
+                dir,
+                shared,
+                thread: Some(thread),
+                _lock: lock,
+            }),
+            ..Self::in_memory(schedule)
+        }
+        .with_state(state))
+    }
+
+    /// A queue kept in memory only (the state dir is unusable): retries work the same, but
+    /// are lost when the relay stops.
+    pub fn in_memory(schedule: Vec<Duration>) -> Self {
+        Self {
+            disk: None,
             schedule: if schedule.is_empty() {
                 DEFAULT_SCHEDULE.to_vec()
             } else {
                 schedule
             },
-            entries: Mutex::new(entries),
-            claimed: Mutex::new(HashSet::new()),
-        };
-        Ok(q)
+            limits: Limits::default(),
+            state: Mutex::new(State::default()),
+        }
+    }
+
+    fn with_state(self, state: State) -> Self {
+        *self.lock() = state;
+        self
+    }
+
+    /// Whether entries reach the disk.
+    #[cfg(test)]
+    pub fn is_durable(&self) -> bool {
+        self.disk.is_some()
     }
 
     /// The delay before the retry after `tries` failed deliveries (`tries >= 1`).
@@ -276,260 +651,290 @@ impl RetryQueue {
         self.schedule[i]
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Entry>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn lock_claimed(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
-        self.claimed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Write `e` durably: a temp file (mode 0600) synced to disk, renamed over the entry, then
-    /// the directory synced, so a crash leaves the old or the new entry, never a torn one.
+    /// Hand `e`'s current content to the writer.
     fn persist(&self, e: &Entry) {
-        let path = self.dir.join(format!("{}.json", e.id));
-        let tmp = self.dir.join(format!(".{}.tmp", e.id));
-        let write = || -> std::io::Result<()> {
-            let bytes = serde_json::to_vec(e).map_err(std::io::Error::other)?;
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
+        if let Some(disk) = &self.disk {
+            match serde_json::to_vec(e) {
+                Ok(bytes) => disk.send(&e.id, Some(bytes)),
+                Err(err) => {
+                    tracing::error!(id = %e.id, error = %err, "could not serialize a queued delivery");
+                }
             }
-            let mut f = opts.open(&tmp)?;
-            std::io::Write::write_all(&mut f, &bytes)?;
-            f.sync_all()?;
-            std::fs::rename(&tmp, &path)?;
-            std::fs::File::open(&self.dir)?.sync_all()
-        };
-        if let Err(err) = write() {
-            tracing::error!(id = %e.id, error = %err, "could not write a queued delivery to disk; it lives in memory until the relay stops");
         }
     }
 
-    fn remove_file(&self, id: &str) {
-        let _ = std::fs::remove_file(self.dir.join(format!("{id}.json")));
+    fn unlink(&self, id: &str) {
+        if let Some(disk) = &self.disk {
+            disk.send(id, None);
+        }
     }
 
-    /// Mark `e` dropped (log it, free its body, keep the record).
-    fn mark_dropped(&self, e: &mut Entry, reason: &str, now: u64) {
-        tracing::warn!(
-            id = %e.id,
-            repo = %e.repo_id,
-            hook = %e.hook_id,
-            event = %e.event,
-            source = %e.source_doc_id,
-            tries = e.tries,
-            reason,
-            "DEAD-LETTER: dropped a queued delivery"
-        );
-        e.status = Status::Dropped;
-        e.drop_reason = Some(reason.to_string());
-        e.dropped_ms = Some(now);
-        e.payload = serde_json::Value::Null;
-        e.bytes = 0;
-        self.persist(e);
+    /// Wait until every change so far is on disk (dropping the queue also drains the writer).
+    #[cfg(test)]
+    pub fn flush(&self) {
+        if let Some(disk) = &self.disk {
+            disk.flush();
+        }
+    }
+
+    /// Mark the pending entry `id` dropped (log it, free its body, keep the record), then
+    /// trim the dropped records to [`MAX_DROPPED`].
+    fn mark_dropped(&self, st: &mut State, id: &str, reason: &str, now: u64) {
+        let Some(mut e) = st.entries.remove(id) else {
+            return;
+        };
+        if e.status == Status::Pending {
+            st.unindex(&e);
+            tracing::warn!(
+                id = %e.id,
+                repo = %e.repo_id,
+                hook = %e.hook_id,
+                event = %e.event,
+                source = %e.source_doc_id,
+                tries = e.tries,
+                reason,
+                "DEAD-LETTER: dropped a queued delivery"
+            );
+            e.status = Status::Dropped;
+            e.drop_reason = Some(reason.to_string());
+            e.dropped_ms = Some(now);
+            e.payload = None;
+            e.bytes = 0;
+            st.index(&e);
+            self.persist(&e);
+        }
+        st.entries.insert(e.id.clone(), e);
+        while st.dropped.len() > MAX_DROPPED {
+            if let Some((_, old)) = st.dropped.pop_first() {
+                st.entries.remove(&old);
+                self.unlink(&old);
+            }
+        }
     }
 
     /// Record a failed delivery: a new entry (1 try) or one more try of a queued one, due again
     /// after the backoff, or at `defer_until` if given (an open circuit; no try is counted then
-    /// if `count` is false). Enforces the bounds.
-    pub fn fail(&self, f: &Failure<'_>, now: u64, count: bool, defer_until: Option<u64>) {
-        self.release(f.id);
-        let mut entries = self.lock();
-        let e = entries.entry(f.id.to_string()).or_insert_with(|| Entry {
-            id: f.id.to_string(),
-            repo_id: f.repo_id.to_string(),
-            hook_id: f.hook_id.to_string(),
-            event: f.event.to_string(),
-            source_doc_id: f.source_doc_id.to_string(),
-            created_ms: now,
-            tries: 0,
-            next_ms: now,
-            last_error: String::new(),
-            status: Status::Pending,
-            drop_reason: None,
-            dropped_ms: None,
-            bytes: serde_json::to_vec(f.payload).map_or(0, |b| b.len()),
-            payload: f.payload.clone(),
-        });
-        if e.status == Status::Dropped {
-            return; // given up already
+    /// if `count` is false). Enforces the bounds. Releases the claim if the caller holds it
+    /// ([`Failure::claimed`]), only after the entry is updated, so it is never handed out
+    /// again before its new due time.
+    ///
+    /// Returns whether the delivery is queued; `false` when it was dropped already (or the
+    /// bounds dropped it at once).
+    pub fn fail(&self, f: &Failure<'_>, now: u64, count: bool, defer_until: Option<u64>) -> bool {
+        let mut st = self.lock();
+        let queued = self.fail_locked(&mut st, f, now, count, defer_until);
+        if f.claimed {
+            st.claimed.remove(f.id);
         }
+        queued
+    }
+
+    fn fail_locked(
+        &self,
+        st: &mut State,
+        f: &Failure<'_>,
+        now: u64,
+        count: bool,
+        defer_until: Option<u64>,
+    ) -> bool {
+        if !st.entries.contains_key(f.id) {
+            let payload = serde_json::to_string(f.payload)
+                .ok()
+                .and_then(|s| RawValue::from_string(s).ok());
+            let e = Entry {
+                id: f.id.to_string(),
+                repo_id: f.repo_id.to_string(),
+                hook_id: f.hook_id.to_string(),
+                event: f.event.to_string(),
+                source_doc_id: f.source_doc_id.to_string(),
+                created_ms: now,
+                tries: 0,
+                next_ms: now,
+                last_error: String::new(),
+                status: Status::Pending,
+                drop_reason: None,
+                dropped_ms: None,
+                bytes: payload.as_ref().map_or(0, |p| p.get().len()),
+                payload,
+            };
+            st.index(&e);
+            st.entries.insert(e.id.clone(), e);
+        }
+        let backoff = |tries| now.saturating_add(ms(self.delay_after(tries)));
+        let Some(e) = st
+            .entries
+            .get_mut(f.id)
+            .filter(|e| e.status == Status::Pending)
+        else {
+            return false; // given up already
+        };
         if count {
-            e.tries += 1;
+            e.tries = e.tries.saturating_add(1);
         }
         e.last_error = f.error.chars().take(MAX_ERROR_LEN).collect();
-        let backoff =
-            now + u64::try_from(self.delay_after(e.tries).as_millis()).unwrap_or(u64::MAX);
-        e.next_ms = defer_until.map_or(backoff, |t| t.max(now));
-        let e = e.clone();
-        self.persist(&e);
-        self.enforce_bounds(&mut entries, &e.repo_id, &e.hook_id, now);
+        e.next_ms = defer_until.map_or_else(|| backoff(e.tries), |t| t.max(now));
+        let (repo, hook) = (e.repo_id.clone(), e.hook_id.clone());
+        self.persist(e);
+        self.enforce_bounds(st, &repo, &hook, now);
+        st.is_pending(f.id)
     }
 
     /// Put a due entry back without counting a try (its hook is not being served yet, or its
     /// circuit is open).
     pub fn defer(&self, id: &str, until: u64) {
-        let mut entries = self.lock();
-        if let Some(e) = entries
+        let mut st = self.lock();
+        if let Some(e) = st
+            .entries
             .get_mut(id)
             .filter(|e| e.status == Status::Pending && e.next_ms != until)
         {
             e.next_ms = until;
-            let e = e.clone();
-            self.persist(&e);
+            self.persist(e);
         }
     }
 
-    /// A delivery with this id succeeded: forget it.
+    /// A delivery with this id succeeded: forget it (and its claim).
     pub fn succeeded(&self, id: &str) {
-        self.release(id);
-        if self.lock().remove(id).is_some() {
-            self.remove_file(id);
+        let mut st = self.lock();
+        if let Some(e) = st.entries.remove(id) {
+            st.unindex(&e);
+            self.unlink(id);
         }
+        st.claimed.remove(id);
     }
 
-    /// Drop a pending entry (hook removed, ...).
+    /// Drop a pending entry (hook removed, a permanent failure, ...), and its claim.
     pub fn drop_entry(&self, id: &str, reason: &str, now: u64) {
-        self.release(id);
-        let mut entries = self.lock();
-        if let Some(e) = entries.get_mut(id).filter(|e| e.status == Status::Pending) {
-            self.mark_dropped(e, reason, now);
+        let mut st = self.lock();
+        if st.is_pending(id) {
+            self.mark_dropped(&mut st, id, reason, now);
         }
+        st.claimed.remove(id);
     }
 
     /// Drop every pending entry whose `(repo id, hook id)` matches (a hook removed or disabled:
     /// its retries must never reach it, even if it comes back under the same id).
     pub fn drop_where(&self, matches: impl Fn(&str, &str) -> bool, reason: &str, now: u64) {
-        let mut entries = self.lock();
-        for e in entries.values_mut() {
-            if e.status == Status::Pending && matches(&e.repo_id, &e.hook_id) {
-                self.mark_dropped(e, reason, now);
-            }
+        let mut st = self.lock();
+        let ids: Vec<String> = st
+            .hooks
+            .iter()
+            .filter(|((repo, hook), _)| matches(repo, hook))
+            .flat_map(|(_, aged)| aged.iter().map(|(_, id)| id.clone()))
+            .collect();
+        for id in ids {
+            self.mark_dropped(&mut st, &id, reason, now);
         }
     }
 
     /// The repos with pending entries.
     pub fn pending_repos(&self) -> HashSet<String> {
-        self.lock()
-            .values()
-            .filter(|e| e.status == Status::Pending)
-            .map(|e| e.repo_id.clone())
-            .collect()
+        self.lock().repos.keys().cloned().collect()
     }
 
     /// Whether `id` is still pending (a retry handed out may have been dropped since).
     pub fn is_pending(&self, id: &str) -> bool {
-        self.lock()
-            .get(id)
-            .is_some_and(|e| e.status == Status::Pending)
+        self.lock().is_pending(id)
     }
 
-    /// Housekeeping, then the pending entries due at `now` that are not already handed out:
-    /// expire entries older than [`EXPIRY`] (one log line each) and prune old dropped records.
+    /// Housekeeping, then the pending entries due at `now` that are not already handed out,
+    /// without their bodies: expire entries older than [`EXPIRY`] (one log line each) and
+    /// prune dropped records past [`DROPPED_RETENTION`]. No disk I/O on the caller's thread.
     pub fn due(&self, now: u64) -> Vec<Entry> {
-        let expiry = u64::try_from(EXPIRY.as_millis()).unwrap_or(u64::MAX);
-        let mut entries = self.lock();
-        for e in entries.values_mut() {
-            if e.status == Status::Pending && now.saturating_sub(e.created_ms) >= expiry {
-                self.mark_dropped(e, "expired: undelivered for 48 h", now);
+        let expiry = ms(EXPIRY);
+        let keep = ms(DROPPED_RETENTION);
+        let mut st = self.lock();
+        while let Some((created, id)) = st.aged.first().cloned() {
+            if now.saturating_sub(created) < expiry {
+                break;
             }
+            self.mark_dropped(&mut st, &id, "expired: undelivered for 48 h", now);
         }
-        self.prune_dropped(&mut entries, now);
-        let claimed = self.lock_claimed();
-        entries
+        while let Some((dropped, id)) = st.dropped.first().cloned() {
+            if now.saturating_sub(dropped) < keep {
+                break;
+            }
+            st.dropped.pop_first();
+            st.entries.remove(&id);
+            self.unlink(&id);
+        }
+        st.entries
             .values()
             .filter(|e| e.status == Status::Pending && e.next_ms <= now)
-            .filter(|e| !claimed.contains(&e.id))
-            .cloned()
+            .filter(|e| !st.claimed.contains(&e.id))
+            .map(Entry::head)
             .collect()
     }
 
-    /// Mark a due entry handed to its hook's worker (not handed out again until released).
-    pub fn claim(&self, id: &str) {
-        self.lock_claimed().insert(id.to_string());
+    /// Claim a due entry for its hook's worker (not handed out again until released) and
+    /// return its body; `None` if it is no longer pending or is claimed already.
+    pub fn claim(&self, id: &str) -> Option<Box<RawValue>> {
+        let mut st = self.lock();
+        let payload = st
+            .entries
+            .get(id)
+            .filter(|e| e.status == Status::Pending)?
+            .payload
+            .clone()?;
+        st.claimed.insert(id.to_string()).then_some(payload)
     }
 
     /// Release a claim (the worker finished with it, or never got it).
     pub fn release(&self, id: &str) {
-        self.lock_claimed().remove(id);
+        self.lock().claimed.remove(id);
     }
 
-    /// The pending entries of one hook, oldest first; and all pending, oldest first.
-    fn enforce_bounds(
-        &self,
-        entries: &mut BTreeMap<String, Entry>,
-        repo: &str,
-        hook: &str,
-        now: u64,
-    ) {
-        let oldest = |entries: &BTreeMap<String, Entry>, of_hook: bool| -> Vec<String> {
-            let mut v: Vec<(u64, String)> = entries
-                .values()
-                .filter(|e| e.status == Status::Pending)
-                .filter(|e| !of_hook || e.hook_key() == (repo, hook))
-                .map(|e| (e.created_ms, e.id.clone()))
-                .collect();
-            v.sort();
-            v.into_iter().map(|(_, id)| id).collect()
-        };
-        let per_hook = oldest(entries, true);
-        for id in per_hook
-            .iter()
-            .take(per_hook.len().saturating_sub(MAX_PENDING_PER_HOOK))
+    /// Drop the oldest pending entries past the bounds: `hook`'s own past its bound, `repo`'s
+    /// own past its bound, then, past a global bound, the oldest of the repo holding the most
+    /// (entries past the count bound, bytes past the byte bound). Incremental: no full scan.
+    fn enforce_bounds(&self, st: &mut State, repo: &str, hook: &str, now: u64) {
+        let key = (repo.to_string(), hook.to_string());
+        while let Some(id) = st
+            .hooks
+            .get(&key)
+            .filter(|a| a.len() > self.limits.per_hook)
+            .and_then(|a| a.first().map(|(_, id)| id.clone()))
         {
-            if let Some(e) = entries.get_mut(id) {
-                self.mark_dropped(e, "queue full for this hook (oldest dropped)", now);
-            }
+            self.mark_dropped(st, &id, "queue full for this hook (oldest dropped)", now);
         }
-        let all = oldest(entries, false);
-        let mut count = all.len();
-        let mut bytes: usize = entries
-            .values()
-            .filter(|e| e.status == Status::Pending)
-            .map(|e| e.bytes)
-            .sum();
-        for id in all {
-            if count <= MAX_PENDING && bytes <= MAX_PENDING_BYTES {
+        while let Some(id) = st
+            .repos
+            .get(repo)
+            .filter(|t| t.aged.len() > self.limits.per_repo)
+            .and_then(|t| t.aged.first().map(|(_, id)| id.clone()))
+        {
+            self.mark_dropped(st, &id, "queue full for this repo (oldest dropped)", now);
+        }
+        loop {
+            let by_count = st.aged.len() > self.limits.total;
+            if !by_count && st.bytes <= self.limits.bytes {
                 break;
             }
-            if let Some(e) = entries.get_mut(&id) {
-                bytes = bytes.saturating_sub(e.bytes);
-                count -= 1;
-                self.mark_dropped(e, "queue full (oldest dropped)", now);
-            }
-        }
-    }
-
-    /// Delete dropped records beyond [`MAX_DROPPED`] or older than [`DROPPED_RETENTION`].
-    fn prune_dropped(&self, entries: &mut BTreeMap<String, Entry>, now: u64) {
-        let keep = u64::try_from(DROPPED_RETENTION.as_millis()).unwrap_or(u64::MAX);
-        let mut dropped: Vec<(u64, String)> = entries
-            .values()
-            .filter(|e| e.status == Status::Dropped)
-            .map(|e| (e.dropped_ms.unwrap_or(0), e.id.clone()))
-            .collect();
-        dropped.sort();
-        let excess = dropped.len().saturating_sub(MAX_DROPPED);
-        for (i, (t, id)) in dropped.iter().enumerate() {
-            if i < excess || now.saturating_sub(*t) >= keep {
-                entries.remove(id);
-                self.remove_file(id);
-            }
+            let Some(id) = st
+                .repos
+                .values()
+                .max_by_key(|t| if by_count { t.aged.len() } else { t.bytes })
+                .and_then(|t| t.aged.first().map(|(_, id)| id.clone()))
+            else {
+                break;
+            };
+            self.mark_dropped(
+                st,
+                &id,
+                "queue full (oldest of the repo with the most queued dropped)",
+                now,
+            );
         }
     }
 
     /// Every entry (for tests and diagnostics).
     #[cfg(test)]
     pub fn snapshot(&self) -> Vec<Entry> {
-        self.lock().values().cloned().collect()
+        self.lock().entries.values().cloned().collect()
     }
 }
 
@@ -555,18 +960,22 @@ mod tests {
             source_doc_id: "doc",
             payload,
             error: "HTTP 503 Service Unavailable",
+            claimed: false,
         }
+    }
+
+    fn get(q: &RetryQueue, id: &str) -> Entry {
+        q.snapshot().into_iter().find(|e| e.id == id).unwrap()
     }
 
     #[test]
     fn the_backoff_schedule() {
-        let d = dir("schedule");
-        let q = RetryQueue::open(&d, Vec::new()).unwrap();
+        let q = RetryQueue::in_memory(Vec::new());
         let mins: Vec<u64> = (1..=8).map(|t| q.delay_after(t).as_secs() / 60).collect();
         assert_eq!(mins, [1, 5, 30, 120, 720, 1440, 1440, 1440]);
         // Each failure pushes the next attempt out by the next delay.
         let p = serde_json::json!({ "x": 1 });
-        q.fail(&failure("a", "h", &p), 0, true, None);
+        assert!(q.fail(&failure("a", "h", &p), 0, true, None));
         assert_eq!(q.snapshot()[0].next_ms, 60_000);
         q.fail(&failure("a", "h", &p), 60_000, true, None);
         assert_eq!(q.snapshot()[0].next_ms, 60_000 + 5 * 60_000);
@@ -574,7 +983,9 @@ mod tests {
         // A deferral (open circuit) does not count a try.
         q.fail(&failure("a", "h", &p), 100, false, Some(9_999));
         assert_eq!((q.snapshot()[0].tries, q.snapshot()[0].next_ms), (2, 9_999));
-        std::fs::remove_dir_all(&d).ok();
+        // A due time past the end of time saturates instead of wrapping to "due now".
+        q.fail(&failure("a", "h", &p), u64::MAX - 5, true, None);
+        assert_eq!(q.snapshot()[0].next_ms, u64::MAX);
     }
 
     #[test]
@@ -584,12 +995,13 @@ mod tests {
         let p = serde_json::json!({ "ref": "refs/heads/main" });
         {
             let q = RetryQueue::open(&d, Vec::new()).unwrap();
+            assert!(q.is_durable());
             q.fail(&failure(ID1, "h", &p), 1000, true, None);
         }
         let q = RetryQueue::open(&d, Vec::new()).unwrap();
         let e = &q.snapshot()[0];
         assert_eq!((e.id.as_str(), e.tries, e.next_ms), (ID1, 1, 61_000));
-        assert_eq!(e.payload, p);
+        assert_eq!(e.payload.as_ref().unwrap().get(), p.to_string());
         let raw = std::fs::read_to_string(queue_dir(&d).join(format!("{ID1}.json"))).unwrap();
         let fields: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(&raw).unwrap();
@@ -610,7 +1022,9 @@ mod tests {
         }
         // Success forgets it, on disk too.
         q.succeeded(ID1);
+        q.flush();
         assert!(read_dir(&queue_dir(&d)).unwrap().is_empty());
+        drop(q);
 
         // A file whose id is not its own name (or not a delivery id) is not loaded; a crash's
         // temp file is cleaned up on open.
@@ -629,19 +1043,84 @@ mod tests {
     }
 
     #[test]
-    fn due_entries_expire_after_48h_and_claimed_ones_are_not_handed_out_twice() {
-        let d = dir("expiry");
+    fn a_second_relay_cannot_open_a_queue_in_use_but_deliveries_can_read_it() {
+        let d = dir("lock");
         let q = RetryQueue::open(&d, Vec::new()).unwrap();
+        let p = serde_json::json!({});
+        q.fail(&failure(ID1, "h", &p), 0, true, None);
+        q.flush();
+        let err = RetryQueue::open(&d, Vec::new()).unwrap_err();
+        assert!(matches!(err, RelayError::StateLocked(_)), "{err}");
+        // `forge-relay deliveries` reads without the lock.
+        assert_eq!(read_dir(&queue_dir(&d)).unwrap().len(), 1);
+        // Released when the holder stops.
+        drop(q);
+        assert_eq!(
+            RetryQueue::open(&d, Vec::new()).unwrap().snapshot().len(),
+            1
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unsafe_state_dir_is_refused_and_symlinks_are_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        // `deliveries` as a symlink to somewhere else.
+        let d = dir("symlink");
+        let elsewhere = dir("symlink-target");
+        std::fs::create_dir_all(&d).unwrap();
+        private_dir().create(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, queue_dir(&d)).unwrap();
+        let err = RetryQueue::open(&d, Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::remove_dir_all(&elsewhere).ok();
+
+        // A group- or world-readable queue dir.
+        let d = dir("loose");
+        std::fs::create_dir_all(queue_dir(&d)).unwrap();
+        std::fs::set_permissions(queue_dir(&d), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = RetryQueue::open(&d, Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("755"), "{err}");
+
+        // A symlinked entry is not read, and a planted temp-file symlink is not written
+        // through.
+        std::fs::set_permissions(queue_dir(&d), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = d.join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        let good = serde_json::json!({
+            "id": ID1, "repoId": "R", "hookId": "h", "event": "push", "sourceDocId": "doc",
+            "createdMs": 0, "tries": 1, "nextMs": 0, "lastError": "", "status": "pending",
+        });
+        std::fs::write(&victim, good.to_string()).unwrap();
+        std::os::unix::fs::symlink(&victim, queue_dir(&d).join(format!("{ID1}.json"))).unwrap();
+        assert!(read_dir(&queue_dir(&d)).unwrap().is_empty());
+        std::fs::remove_file(queue_dir(&d).join(format!("{ID1}.json"))).unwrap();
+        std::os::unix::fs::symlink(&victim, queue_dir(&d).join(format!(".{ID1}.tmp"))).unwrap();
+        write_entry(&queue_dir(&d), ID1, b"{}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            good.to_string(),
+            "the symlink target is untouched"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn due_entries_expire_after_48h_and_claimed_ones_are_not_handed_out_twice() {
+        let q = RetryQueue::in_memory(Vec::new());
         let p = serde_json::json!({});
         q.fail(&failure("old", "h", &p), 0, true, None);
         q.fail(&failure("new", "h", &p), 47 * H, true, None);
         let due: Vec<String> = q.due(48 * H).into_iter().map(|e| e.id).collect();
         assert_eq!(due, ["new"], "the 48 h old one expired");
-        let old = q.snapshot().into_iter().find(|e| e.id == "old").unwrap();
+        let old = get(&q, "old");
         assert_eq!(old.status, Status::Dropped);
         assert!(old.drop_reason.unwrap().contains("expired"));
-        assert_eq!(old.payload, serde_json::Value::Null, "the body is freed");
-        q.claim("new");
+        assert!(old.payload.is_none(), "the body is freed");
+        assert!(q.claim("new").is_some());
+        assert!(q.claim("new").is_none(), "claimed once");
         assert!(q.due(48 * H + 1).is_empty(), "handed out already");
         assert!(
             q.due(60 * H).is_empty(),
@@ -651,34 +1130,119 @@ mod tests {
         // Dropped records are pruned after their retention.
         q.due(48 * H + 8 * 24 * H);
         assert!(q.snapshot().iter().all(|e| e.id != "old"));
-        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
-    fn bounds_drop_the_oldest() {
-        let d = dir("bounds");
-        let q = RetryQueue::open(&d, Vec::new()).unwrap();
+    fn a_failing_retry_keeps_its_claim_until_its_new_due_time_is_set() {
+        let q = RetryQueue::in_memory(Vec::new());
         let p = serde_json::json!({});
-        let ids: Vec<String> = (0..MAX_PENDING_PER_HOOK + 3)
-            .map(|i| format!("e{i:04}"))
-            .collect();
+        q.fail(&failure("a", "h", &p), 0, true, None);
+        assert_eq!(q.due(60_000).len(), 1);
+        assert!(q.claim("a").is_some());
+        // Someone else's failure of the same delivery (the enqueue overflow path) updates the
+        // entry but leaves the worker's claim alone.
+        q.fail(&failure("a", "h", &p), 60_000, false, Some(60_000));
+        assert!(q.due(60_000).is_empty(), "still claimed by the worker");
+        // The worker's own failure moves the due time first, then releases: it is not due
+        // again until the backoff has passed.
+        q.fail(
+            &Failure {
+                claimed: true,
+                ..failure("a", "h", &p)
+            },
+            60_000,
+            true,
+            None,
+        );
+        assert!(q.due(60_000).is_empty(), "not due before the backoff");
+        assert_eq!(
+            q.due(60_000 + 5 * 60_000).len(),
+            1,
+            "released and due later"
+        );
+    }
+
+    #[test]
+    fn bounds_drop_the_oldest_of_the_hook_and_the_repo() {
+        let mut q = RetryQueue::in_memory(Vec::new());
+        q.limits = Limits {
+            per_hook: 5,
+            per_repo: 8,
+            ..Limits::default()
+        };
+        let p = serde_json::json!({});
+        let ids: Vec<String> = (0..8).map(|i| format!("e{i:04}")).collect();
         for (i, id) in ids.iter().enumerate() {
             q.fail(&failure(id, "h", &p), i as u64, true, None);
         }
-        let snap = q.snapshot();
-        let pending: Vec<&Entry> = snap
-            .iter()
-            .filter(|e| e.status == Status::Pending)
-            .collect();
-        assert_eq!(pending.len(), MAX_PENDING_PER_HOOK);
+        let pending = |q: &RetryQueue| {
+            q.snapshot()
+                .into_iter()
+                .filter(|e| e.status == Status::Pending)
+                .count()
+        };
+        assert_eq!(pending(&q), 5);
         for old in &ids[..3] {
-            let e = snap.iter().find(|e| &e.id == old).unwrap();
-            assert_eq!(e.status, Status::Dropped, "{old}");
+            assert_eq!(get(&q, old).status, Status::Dropped, "{old}");
         }
-        // Another hook has its own budget.
-        q.fail(&failure("other", "h2", &p), 10_000, true, None);
-        assert!(q.is_pending("other"));
-        std::fs::remove_dir_all(&d).ok();
+        // Another hook of the repo has its own budget, within the repo's.
+        for i in 0..4 {
+            q.fail(&failure(&format!("h2-{i}"), "h2", &p), 100 + i, true, None);
+        }
+        assert_eq!(pending(&q), 8, "the repo's bound");
+        assert_eq!(
+            get(&q, "e0003").status,
+            Status::Dropped,
+            "the repo's oldest"
+        );
+    }
+
+    #[test]
+    fn a_flooding_repo_evicts_its_own_entries_not_other_repos() {
+        let mut q = RetryQueue::in_memory(Vec::new());
+        q.limits = Limits {
+            per_hook: 100,
+            per_repo: 100,
+            total: 10,
+            bytes: MAX_PENDING_BYTES,
+        };
+        let p = serde_json::json!({});
+        // A quiet repo's two old retries.
+        for i in 0..2 {
+            q.fail(
+                &Failure {
+                    repo_id: "quiet",
+                    ..failure(&format!("q{i}"), "h", &p)
+                },
+                i,
+                true,
+                None,
+            );
+        }
+        // A hostile repo floods through many hooks.
+        for i in 0..50 {
+            let (id, hook) = (format!("f{i:03}"), format!("hook{}", i % 25));
+            q.fail(
+                &Failure {
+                    repo_id: "flood",
+                    ..failure(&id, &hook, &p)
+                },
+                10 + i,
+                true,
+                None,
+            );
+        }
+        assert!(
+            q.is_pending("q0") && q.is_pending("q1"),
+            "the quiet repo keeps its retries"
+        );
+        let flood = q
+            .snapshot()
+            .into_iter()
+            .filter(|e| e.status == Status::Pending && e.repo_id == "flood")
+            .count();
+        assert_eq!(flood, 8, "the flooding repo pays for the global bound");
+        assert!(q.is_pending("f049"), "its newest are kept");
     }
 
     #[test]
@@ -689,13 +1253,18 @@ mod tests {
         q.fail(&failure(ID1, "h", &p), 0, true, None);
         q.drop_entry(ID1, "hook removed or disabled", 5);
         assert!(!q.is_pending(ID1));
-        q.fail(&failure(ID1, "h", &p), 10, true, None);
-        assert!(!q.is_pending(ID1), "a later failure does not revive it");
+        assert!(
+            !q.fail(&failure(ID1, "h", &p), 10, true, None),
+            "a later failure does not revive it, and says so"
+        );
+        assert!(!q.is_pending(ID1));
+        q.flush();
         let on_disk = read_dir(&queue_dir(&d)).unwrap();
         assert_eq!(
             on_disk[0].drop_reason.as_deref(),
             Some("hook removed or disabled")
         );
+        drop(q);
         std::fs::remove_dir_all(&d).ok();
     }
 }

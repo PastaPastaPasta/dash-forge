@@ -215,10 +215,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
                 allow_private: cfg.allow_private,
                 ..Default::default()
             }),
-            Some(Arc::new(RetryQueue::open(
-                &cfg.state_dir,
-                cfg.retry_schedule.clone(),
-            )?)),
+            Some(Arc::new(open_queue(&cfg)?)),
         ),
         started_ms: now_ms(),
         cfg,
@@ -304,6 +301,29 @@ async fn poll_loop(shared: &Arc<Shared>, repos: &Repos) -> ! {
 fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
     cfg.poll_interval
         .saturating_mul(u32::try_from(cfg.refresh_cycles).unwrap_or(u32::MAX))
+}
+
+/// The durable retry queue in the state dir. When the dir cannot be used (a read-only root,
+/// a volume the relay user cannot write, an unsafe directory), the relay still starts, on an
+/// in-memory queue, with a loud warning: webhooks are delivered and retried, but pending
+/// retries are lost on restart. Another relay holding the queue is fatal (two relays would
+/// deliver the same retries).
+fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
+    match RetryQueue::open(&cfg.state_dir, cfg.retry_schedule.clone()) {
+        Ok(q) => Ok(q),
+        Err(e @ RelayError::StateLocked(_)) => Err(e),
+        Err(e) => {
+            tracing::error!(
+                state_dir = %cfg.state_dir.display(),
+                error = %e,
+                "THE DELIVERY QUEUE IS NOT DURABLE: the state dir cannot be used, so failed \
+                 deliveries are retried from memory only and lost when the relay restarts. \
+                 Give the relay a writable state dir it owns (mode 0700): --state-dir, \
+                 FORGE_RELAY_STATE_DIR, or a volume at /state in the container images"
+            );
+            Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()))
+        }
+    }
 }
 
 /// `owner/name` or a repo id → the forge-v2 repo.
@@ -590,28 +610,33 @@ async fn prime_ref_streams(
 /// Resolve a repo's metadata, config history, issue/PR index, valid ref tips, and recently
 /// opened PR heads.
 async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result<RepoState> {
-    let repo = forge_core::resolve::resolve_id(&shared.client, repo_id).await?;
-    let RepoRef {
-        owner_id,
-        name,
-        visibility,
-        ..
-    } = &repo;
-    if *visibility == Visibility::Private {
+    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
+    let Some(repo_doc) = shared
+        .client
+        .fetch_document(core, forge_core::resolve::DOC_REPO, repo_id)
+        .await?
+    else {
+        return Err(RelayError::Config(format!(
+            "{repo_id}: no such forge-v2 repository"
+        )));
+    };
+    let owner_id = &repo_doc.owner_id;
+    let name = repo_doc
+        .field_str("name")
+        .ok_or_else(|| RelayError::Config(format!("repo {repo_id} has no name")))?;
+    if forge_core::scope::visibility_of(&repo_doc) == Visibility::Private {
         // A private repo's content is encrypted to its members; the relay is not one.
         return Err(RelayError::Config(format!(
             "{repo_id} is a private repository; the relay does not serve private repositories"
         )));
     }
-    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
     let config_docs = read_all(shared, core, "config", repo_id).await?;
     let configs: Vec<ConfigDoc> = config_docs.iter().map(config_doc).collect();
-    let repo_doc = shared.client.fetch_document(core, "repo", repo_id).await?;
     // The newest config's default branch, else the repo document's.
     let default_branch = config_docs
         .iter()
         .rev()
-        .chain(repo_doc.as_ref())
+        .chain(std::iter::once(&repo_doc))
         .find_map(|d| d.field_str("defaultBranch"))
         .map_or_else(
             || "main".to_string(),
@@ -1173,6 +1198,35 @@ fn prune_heads(heads: &mut BTreeMap<String, Head>, cursors: &mut BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unusable_state_dir_falls_back_to_memory_but_a_locked_one_is_fatal() {
+        let base = std::env::temp_dir().join(format!("relay-openq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg_for = |dir: std::path::PathBuf| {
+            RelayConfig::load(
+                None,
+                &crate::config::CliOverrides {
+                    state_dir: Some(dir),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // Not a directory at all (as a read-only root or a foreign-owned volume would fail).
+        let file = base.join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let q = open_queue(&cfg_for(file)).unwrap();
+        assert!(!q.is_durable(), "runs, in memory");
+        // A usable dir is durable; a second relay on it does not start.
+        let cfg = cfg_for(base.join("state"));
+        let held = open_queue(&cfg).unwrap();
+        assert!(held.is_durable());
+        assert!(matches!(open_queue(&cfg), Err(RelayError::StateLocked(_))));
+        drop(held);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn a_repo_that_appears_late_never_replays_history_before_the_relay_started() {

@@ -19,11 +19,14 @@
 //! * a hook removed or disabled by discovery is **cancelled**: its queued events are dropped,
 //!   and its entries in the retry queue are dropped when they come due.
 //!
-//! Delivery is **at-least-once**: up to `max_attempts` attempts within `overall_timeout`
-//! (30 s by default); then the delivery goes to the durable retry queue ([`crate::queue`]),
+//! A delivery gets up to `max_attempts` attempts within `overall_timeout` (30 s by default).
+//! If they all fail it is **retried durably**: it goes to the retry queue ([`crate::queue`]),
 //! which retries it on a backoff schedule across restarts, signed with the hook's current
 //! secret and sent to its current URL through the SSRF guard, until it succeeds or expires
-//! after 48 h. Every delivery carries a stable `X-GitHub-Delivery` id (hook id + source
+//! after 48 h. Events not yet attempted when the relay stops (waiting in a hook's in-memory
+//! queue, or in flight) are lost: this is not at-least-once. A failure retrying cannot fix
+//! ([`RelayError::Permanent`]: a body over the cap, a 4xx other than 408/429) is dead-lettered
+//! at once and not queued. Every delivery carries a stable `X-GitHub-Delivery` id (hook id + source
 //! document id), so a consumer that sees a document twice (a retry, another relay) can dedupe
 //! on it. The body is signed as
 //! `X-Hub-Signature-256: sha256=<hex>`, exactly as GitHub does. Logs never contain secrets,
@@ -298,13 +301,10 @@ impl Deliverer {
         let body = serde_json::to_vec(&event.payload)
             .map_err(|e| RelayError::Config(format!("serializing payload: {e}")))?;
         if body.len() > MAX_BODY_BYTES {
-            return Err(RelayError::DeliveryExhausted {
-                attempts: 0,
-                reason: format!(
-                    "payload of {} bytes exceeds the {MAX_BODY_BYTES}-byte cap",
-                    body.len()
-                ),
-            });
+            return Err(RelayError::Permanent(format!(
+                "payload of {} bytes exceeds the {MAX_BODY_BYTES}-byte cap",
+                body.len()
+            )));
         }
         let target =
             ssrf::resolve_and_validate(url, self.config.allow_private, self.config.dns_timeout)
@@ -360,7 +360,9 @@ impl Deliverer {
                     // A client error other than throttling will not recover.
                     if status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429
                     {
-                        break;
+                        return Err(RelayError::Permanent(format!(
+                            "the receiver answered {last_reason}"
+                        )));
                     }
                 }
                 // reqwest's own message can include the full URL; keep only the kind.
@@ -405,6 +407,10 @@ struct Job {
     /// A retry from the durable queue (claimed there; the worker releases the claim).
     retry: bool,
 }
+
+/// Where a due retry would go: its hook's channel, when the hook's circuit is open until (ms),
+/// and whether the hook still wants the event.
+type RetryTarget = (mpsc::Sender<Job>, u64, bool);
 
 /// The event name as the `'static` constant the relay produces, for a retry read from disk.
 fn static_event_name(name: &str) -> Option<&'static str> {
@@ -494,59 +500,77 @@ impl Dispatcher {
     pub fn dispatch_retries(&self) {
         let Some(queue) = &self.queue else { return };
         let now = now_ms();
-        let hooks = self
-            .hooks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let authoritative = lock_set(&self.authoritative).clone();
-        let mut drops = Vec::new();
-        let mut defers = Vec::new();
-        for e in queue.due(now) {
-            let key = format!("{}:{}", e.repo_id, e.hook_id);
-            let Some(w) = hooks.get(&key) else {
+        let due = queue.due(now);
+        if due.is_empty() {
+            return;
+        }
+        // Only a lookup per entry under the hooks lock (with the authoritative set `sync`
+        // writes under it, so the two agree); the queue is touched after it.
+        let (authoritative, targets) = {
+            let hooks = self
+                .hooks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let authoritative = lock_set(&self.authoritative).clone();
+            let targets: Vec<Option<RetryTarget>> = due
+                .iter()
+                .map(|e| {
+                    hooks.get(&format!("{}:{}", e.repo_id, e.hook_id)).map(|w| {
+                        let wanted = w
+                            .sub
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .wants(&e.event);
+                        (
+                            w.tx.clone(),
+                            w.open_until_ms.load(std::sync::atomic::Ordering::Relaxed),
+                            wanted,
+                        )
+                    })
+                })
+                .collect();
+            (authoritative, targets)
+        };
+        for (e, target) in due.into_iter().zip(targets) {
+            let Some((tx, open_until, wanted)) = target else {
                 if authoritative.contains(&e.repo_id) {
-                    drops.push((e.id, "hook removed or disabled"));
+                    queue.drop_entry(&e.id, "hook removed or disabled", now);
                 }
                 continue;
             };
-            let open_until = w.open_until_ms.load(std::sync::atomic::Ordering::Relaxed);
             if open_until > now {
-                defers.push((e.id, open_until));
+                queue.defer(&e.id, open_until);
                 continue;
             }
-            let wanted = w
-                .sub
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .wants(&e.event);
             let Some(event_name) = static_event_name(&e.event).filter(|_| wanted) else {
-                drops.push((e.id, "the hook no longer subscribes to this event"));
+                queue.drop_entry(&e.id, "the hook no longer subscribes to this event", now);
                 continue;
             };
-            if w.tx.capacity() == 0 {
+            if tx.capacity() == 0 {
                 continue; // busy: still due next tick, nothing rewritten
             }
-            queue.claim(&e.id);
+            let Some(raw) = queue.claim(&e.id) else {
+                continue; // dropped or handed out meanwhile
+            };
+            let payload = match serde_json::from_str(raw.get()) {
+                Ok(p) => p,
+                Err(err) => {
+                    queue.drop_entry(&e.id, &format!("unreadable body: {err}"), now);
+                    continue;
+                }
+            };
             let job = Job {
                 event: Arc::new(WebhookEvent {
                     event: event_name,
                     action: None,
-                    payload: e.payload,
+                    payload,
                     source_doc_id: e.source_doc_id,
                 }),
                 retry: true,
             };
-            if w.tx.try_send(job).is_err() {
+            if tx.try_send(job).is_err() {
                 queue.release(&e.id);
             }
-        }
-        drop(hooks);
-        // Disk writes outside the hooks lock.
-        for (id, reason) in drops {
-            queue.drop_entry(&id, reason, now);
-        }
-        for (id, until) in defers {
-            queue.defer(&id, until);
         }
     }
 
@@ -578,20 +602,6 @@ impl Dispatcher {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         hooks.retain(|k, _| wanted.contains_key(k));
         lock_set(&self.authoritative).clone_from(authoritative);
-        let live: std::collections::HashSet<(String, String)> = subs
-            .iter()
-            .map(|s| (s.repo_id.clone(), s.hook_id.clone()))
-            .collect();
-        if let Some(q) = &self.queue {
-            q.drop_where(
-                |repo, hook| {
-                    authoritative.contains(repo)
-                        && !live.contains(&(repo.to_string(), hook.to_string()))
-                },
-                "hook removed or disabled",
-                now_ms(),
-            );
-        }
         for (key, sub) in wanted {
             if let Some(w) = hooks.get(&key) {
                 *w.sub
@@ -621,6 +631,20 @@ impl Dispatcher {
                 },
             );
         }
+        drop(hooks);
+        // Outside the hooks lock. A gone hook has no worker now, so nothing hands its entries
+        // out meanwhile.
+        if let Some(q) = &self.queue {
+            let live: std::collections::HashSet<(&str, &str)> = subs
+                .iter()
+                .map(|s| (s.repo_id.as_str(), s.hook_id.as_str()))
+                .collect();
+            q.drop_where(
+                |repo, hook| authoritative.contains(repo) && !live.contains(&(repo, hook)),
+                "hook removed or disabled",
+                now_ms(),
+            );
+        }
     }
 
     /// Queue `event` for every hook of `repo_id` that wants it. Never waits.
@@ -631,7 +655,9 @@ impl Dispatcher {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut repo_has_hooks = false;
-        for (key, w) in hooks.iter() {
+        // Hooks whose in-memory queue was full: handed to the durable queue after the lock.
+        let mut overflow = Vec::new();
+        for w in hooks.values() {
             let (of_repo, wants) = {
                 let sub = w
                     .sub
@@ -648,29 +674,33 @@ impl Dispatcher {
                 retry: false,
             };
             if w.tx.try_send(job).is_err() {
-                // The in-memory queue is full: hand it to the durable queue for a later retry.
-                let sub = w
-                    .sub
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                match &self.queue {
-                    Some(q) => q.fail(
-                        &Failure {
-                            id: &delivery_id(&sub.hook_id, &event.source_doc_id),
-                            ..failure_of(&sub, &event, "the hook's in-memory queue was full")
-                        },
-                        now_ms(),
-                        false,
-                        Some(now_ms()),
-                    ),
-                    None => {
-                        tracing::error!(hook = %key, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: the hook's queue is full; event dropped");
-                    }
-                }
+                overflow.push(
+                    w.sub
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
+                );
             }
         }
         drop(hooks);
+        for sub in overflow {
+            let id = delivery_id(&sub.hook_id, &event.source_doc_id);
+            let queued = self.queue.as_ref().is_some_and(|q| {
+                let now = now_ms();
+                q.fail(
+                    &Failure {
+                        id: &id,
+                        ..failure_of(&sub, &event, "the hook's in-memory queue was full")
+                    },
+                    now,
+                    false,
+                    Some(now),
+                )
+            });
+            if !queued {
+                tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: the hook's queue is full; event dropped");
+            }
+        }
         if !repo_has_hooks && lock_set(&self.warned_no_hooks).insert(repo_id.to_string()) {
             // Should not happen (a repo is served only once its hooks are synced); say so once.
             tracing::warn!(repo = %repo_id, event = event.event, source = %event.source_doc_id, "an event of a served repo found no hook; dropped (logged once per repo)");
@@ -688,6 +718,7 @@ fn failure_of<'a>(sub: &'a WebhookSub, event: &'a WebhookEvent, error: &'a str) 
         source_doc_id: &event.source_doc_id,
         payload: &event.payload,
         error,
+        claimed: false,
     }
 }
 
@@ -712,6 +743,66 @@ fn drain_cancelled(t: &mut HookTask, job: Job, hook_id: &str) {
     if let Some(q) = &t.queue {
         for j in pending.iter().filter(|j| j.retry) {
             q.release(&delivery_id(hook_id, &j.event.source_doc_id));
+        }
+    }
+}
+
+/// Log a delivery's outcome and update the durable queue: forget a delivered one, drop a
+/// permanent failure (dead-lettered, never retried), queue any other failure for a retry
+/// (and say whether it really was queued).
+fn record_outcome(
+    t: &HookTask,
+    job: &Job,
+    sub: &WebhookSub,
+    id: &str,
+    url: &str,
+    result: &Result<DeliveryReceipt>,
+) {
+    let event = &job.event;
+    match &result {
+        Ok(receipt) => {
+            tracing::info!(
+                repo = %sub.repo_id,
+                hook = %sub.hook_id,
+                url = %url,
+                event = event.event,
+                action = event.action.unwrap_or("-"),
+                delivery_id = %receipt.delivery_id,
+                status = receipt.status,
+                attempts = receipt.attempts,
+                retry = job.retry,
+                source = %event.source_doc_id,
+                "delivered webhook"
+            );
+            if let Some(q) = &t.queue {
+                q.succeeded(id);
+            }
+        }
+        Err(e @ RelayError::Permanent(_)) => {
+            tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, url = %url, event = event.event, source = %event.source_doc_id, error = %e, "DEAD-LETTER: webhook delivery failed permanently; not retried");
+            if let Some(q) = &t.queue {
+                q.drop_entry(id, &e.to_string(), now_ms());
+            }
+        }
+        Err(e) => {
+            let error = e.to_string();
+            let queued = t.queue.as_ref().is_some_and(|q| {
+                q.fail(
+                    &Failure {
+                        id,
+                        claimed: job.retry,
+                        ..failure_of(sub, event, &error)
+                    },
+                    now_ms(),
+                    !matches!(e, RelayError::DestinationBusy(_)),
+                    None,
+                )
+            });
+            if queued {
+                tracing::warn!(repo = %sub.repo_id, hook = %sub.hook_id, url = %url, event = event.event, source = %event.source_doc_id, error = %error, "webhook delivery failed; queued for a later retry");
+            } else {
+                tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, url = %url, event = event.event, source = %event.source_doc_id, error = %error, "DEAD-LETTER: webhook delivery failed");
+            }
         }
     }
 }
@@ -743,19 +834,20 @@ async fn run_hook(mut t: HookTask) {
         }
         if breaker.is_open(Instant::now()) {
             let until = t.open_until_ms.load(std::sync::atomic::Ordering::Relaxed);
-            match &t.queue {
-                Some(q) => q.fail(
+            let queued = t.queue.as_ref().is_some_and(|q| {
+                q.fail(
                     &Failure {
                         id: &id,
+                        claimed: job.retry,
                         ..failure_of(&sub, event, "circuit open for this hook")
                     },
                     now,
                     false,
                     Some(until),
-                ),
-                None => {
-                    tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, %url, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: circuit open for this hook; not delivered");
-                }
+                )
+            });
+            if !queued {
+                tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, %url, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: circuit open for this hook; not delivered");
             }
             continue;
         }
@@ -763,52 +855,18 @@ async fn run_hook(mut t: HookTask) {
             .deliverer
             .deliver(&sub.url, sub.secret.expose(), &sub.hook_id, event)
             .await;
-        match &result {
-            Ok(receipt) => {
-                tracing::info!(
-                    repo = %sub.repo_id,
-                    hook = %sub.hook_id,
-                    %url,
-                    event = event.event,
-                    action = event.action.unwrap_or("-"),
-                    delivery_id = %receipt.delivery_id,
-                    status = receipt.status,
-                    attempts = receipt.attempts,
-                    retry = job.retry,
-                    source = %event.source_doc_id,
-                    "delivered webhook"
-                );
-                if let Some(q) = &t.queue {
-                    q.succeeded(&id);
-                }
-            }
-            Err(e) => {
-                let error = e.to_string();
-                match &t.queue {
-                    Some(q) => {
-                        tracing::warn!(repo = %sub.repo_id, hook = %sub.hook_id, %url, event = event.event, source = %event.source_doc_id, error = %error, "webhook delivery failed; queued for a later retry");
-                        let counted = !matches!(e, RelayError::DestinationBusy(_));
-                        q.fail(
-                            &Failure {
-                                id: &id,
-                                ..failure_of(&sub, event, &error)
-                            },
-                            now_ms(),
-                            counted,
-                            None,
-                        );
-                    }
-                    None => {
-                        tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, %url, event = event.event, source = %event.source_doc_id, error = %error, "DEAD-LETTER: webhook delivery failed");
-                    }
-                }
-            }
-        }
-        if matches!(result, Err(RelayError::DestinationBusy(_))) {
-            continue; // not the receiver's failure
+        record_outcome(&t, &job, &sub, &id, &url, &result);
+        // Neither a busy destination (not the receiver's failure) nor a permanent failure (a
+        // body over the cap; or a 4xx, which retrying does not change) moves the breaker.
+        if matches!(
+            result,
+            Err(RelayError::DestinationBusy(_) | RelayError::Permanent(_))
+        ) {
+            continue;
         }
         if let Some(cool) = breaker.record(result.is_ok(), Instant::now()) {
-            let until = now_ms() + u64::try_from(cool.as_millis()).unwrap_or(u64::MAX);
+            let until =
+                now_ms().saturating_add(u64::try_from(cool.as_millis()).unwrap_or(u64::MAX));
             t.open_until_ms
                 .store(until, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(repo = %sub.repo_id, hook = %sub.hook_id, %url, cool_down_s = cool.as_secs(), "circuit opened after repeated failures; its retries wait until it closes");
@@ -1037,6 +1095,62 @@ mod tests {
         wait_until(|| !q.is_pending(&delivery_id("h", "doc1"))).await;
         assert!(q.snapshot().is_empty(), "delivered: forgotten");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_permanent_failure_is_dead_lettered_not_queued() {
+        let q = Arc::new(RetryQueue::in_memory(vec![Duration::from_secs(1)]));
+        let (gone, gone_hits) = receiver(404).await;
+        let d = Dispatcher::with_queue(
+            Deliverer::new(DeliverConfig {
+                max_attempts: 3,
+                ..quick()
+            }),
+            Some(Arc::clone(&q)),
+        );
+        d.sync_all(&[sub(&format!("http://{gone}/h"), &[])]);
+        d.enqueue("R", push(4));
+        wait_until(|| gone_hits.load(std::sync::atomic::Ordering::SeqCst) == 1).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            gone_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a 404 is not retried in the window"
+        );
+        assert!(q.snapshot().is_empty(), "nor queued");
+
+        // A queued retry whose receiver now answers 4xx is dropped, not retried for 48 h.
+        let (down, _) = receiver(503).await;
+        d.sync_all(&[sub(&format!("http://{down}/h"), &[])]);
+        d.enqueue("R", push(5));
+        let id = delivery_id("h", "doc5");
+        wait_until(|| q.is_pending(&id)).await;
+        d.sync_all(&[sub(&format!("http://{gone}/h"), &[])]);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        d.dispatch_retries();
+        wait_until(|| !q.is_pending(&id)).await;
+        let e = q.snapshot().into_iter().find(|e| e.id == id).unwrap();
+        assert!(
+            e.drop_reason.as_deref().unwrap().contains("404"),
+            "{:?}",
+            e.drop_reason
+        );
+        // And an over-cap body is permanent too.
+        let err = Deliverer::new(DeliverConfig::default())
+            .deliver(
+                "https://1.1.1.1/hook",
+                b"s",
+                "h",
+                &WebhookEvent {
+                    event: "push",
+                    action: None,
+                    payload: serde_json::json!({ "x": "a".repeat(MAX_BODY_BYTES) }),
+                    source_doc_id: "doc".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RelayError::Permanent(_)), "{err}");
     }
 
     #[tokio::test]

@@ -23,6 +23,15 @@ pub enum RelayError {
         reason: String,
     },
 
+    /// A delivery retrying cannot fix (a body over the cap, or a client error other than
+    /// 408/429 from the receiver): dead-lettered at once, never queued for a retry.
+    #[error("not retried: {0}")]
+    Permanent(String),
+
+    /// Another relay holds the delivery queue in this state dir.
+    #[error("{0}")]
+    StateLocked(String),
+
     /// No delivery slot to the destination freed up in time: other hooks kept it busy. Not
     /// the receiver's fault, so it does not count against the hook's circuit breaker.
     #[error("destination busy: {0}")]

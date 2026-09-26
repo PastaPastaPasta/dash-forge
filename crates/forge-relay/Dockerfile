@@ -41,7 +41,12 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin relay
+ && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin relay \
+ && install -d -o 10001 -g 10001 -m 0700 /state
 COPY --from=builder /forge-relay /usr/local/bin/forge-relay
+# The retry queue's state dir, owned by the runtime user (a named volume mounted here starts
+# with this ownership). Without a writable state dir the relay runs on an in-memory queue.
+ENV FORGE_RELAY_STATE_DIR=/state
+VOLUME /state
 USER 10001:10001
 ENTRYPOINT ["forge-relay", "run"]

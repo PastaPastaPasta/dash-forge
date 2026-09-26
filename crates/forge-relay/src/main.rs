@@ -61,7 +61,8 @@ enum Command {
 /// `forge-relay deliveries` arguments.
 #[derive(Debug, Parser)]
 struct DeliveriesArgs {
-    /// The relay's config file, to use its `state-dir` (the same file as `run --config`).
+    /// The relay's config file, to use its `state-dir` (the same file as `run --config`). Only
+    /// `state-dir` is read.
     #[arg(long = "config", short = 'c')]
     config: Option<PathBuf>,
     /// The relay's state dir (default: `$FORGE_RELAY_STATE_DIR`, else

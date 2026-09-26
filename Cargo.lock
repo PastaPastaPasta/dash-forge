@@ -1499,6 +1499,7 @@ dependencies = [
  "forge-core",
  "hex",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

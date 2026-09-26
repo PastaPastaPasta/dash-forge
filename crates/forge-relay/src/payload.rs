@@ -109,8 +109,8 @@ pub const ALL_EVENTS: [&str; 7] = [
 ];
 
 /// A fully-built webhook event: the GitHub event name (for `X-GitHub-Event`), the
-/// serialized body, and the source document id (the dedup/delivery-id seed — consumers
-/// dedupe on the delivery id at-least-once semantics require, PRD 05 §Deliver).
+/// serialized body, and the source document id (the dedup/delivery-id seed — a document can
+/// be delivered more than once, so consumers dedupe on the delivery id; PRD 05 §Deliver).
 #[derive(Debug, Clone)]
 pub struct WebhookEvent {
     /// The GitHub event name: `push` / `pull_request` / `issue_comment` / `check_run` /
