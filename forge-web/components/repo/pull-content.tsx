@@ -34,6 +34,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
+import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -154,6 +155,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
             <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{pull.baseRefName || '?'}</span> · {timeAgo(pull.createdAt)}
           </span>
           {pull.headOid ? <span className="flex items-center gap-1 text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
+          <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} className="ml-auto" />
         </div>
         {/* Where the PR's objects actually live. Without this a reviewer has a commit id
             with no stated home: a PR's head normally sits in the contributor's own repo, and

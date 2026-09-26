@@ -50,7 +50,17 @@ export {
   readV2FollowCounts,
   readV2StarCount,
   readV2Stargazers,
+  readV2TargetCounts,
+  readPublicRepoFacts,
 } from './social'
+export {
+  newestPerTag,
+  parseReleaseAssets,
+  readReleases,
+  type ReleaseAssetView,
+  type ReleaseList,
+  type ReleaseView,
+} from './releases'
 export {
   readConfig,
   readConfigBundle,

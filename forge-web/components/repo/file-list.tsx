@@ -6,6 +6,7 @@
  */
 
 import Link from 'next/link'
+import type { ReactNode } from 'react'
 import { File, FileCog, Folder, GitCommitHorizontal, Link2 } from 'lucide-react'
 import type { TreeEntry } from '@/lib/view'
 import { modeKind } from '@/lib/view'
@@ -32,6 +33,7 @@ export function FileList({
   addr,
   basePath,
   refParam = '',
+  commitColumn,
 }: {
   entries: readonly TreeEntry[]
   addr: RepoAddress
@@ -39,6 +41,11 @@ export function FileList({
   basePath: string
   /** The `?ref=` selection to carry into child links ('' = default branch, omitted). */
   refParam?: string
+  /**
+   * The last-commit cell for an entry (subject · time), loaded lazily by the caller: the list
+   * never waits for it. Hidden below the sm breakpoint.
+   */
+  commitColumn?: (name: string) => ReactNode
 }): JSX.Element {
   const sorted = [...entries].sort((a, b) => {
     const ak = a.mode === 0o40000 ? 0 : 1
@@ -69,8 +76,28 @@ export function FileList({
             ) : null}
           </>
         )
+        const commit = commitColumn ? (
+          <span className="hidden w-1/2 min-w-0 items-center justify-end gap-3 text-[12px] sm:flex">{commitColumn(e.name)}</span>
+        ) : null
         const rowCls =
           'group flex h-9 items-center gap-2.5 border-b border-anvil-100 px-3 text-dense last:border-b-0 dark:border-anvil-850'
+        // The commit cell holds its own link, so a row with one is a div around two links.
+        if (commit !== null) {
+          return (
+            <div key={i} className={cn(rowCls, 'hover:bg-anvil-50 dark:hover:bg-anvil-900')}>
+              {href ? (
+                <Link href={href} className="group flex min-w-0 flex-1 items-center gap-2.5">
+                  {inner}
+                </Link>
+              ) : (
+                <span className="flex min-w-0 flex-1 items-center gap-2.5" title="Submodule (gitlink)">
+                  {inner}
+                </span>
+              )}
+              {commit}
+            </div>
+          )
+        }
         return href ? (
           <Link key={i} href={href} className={cn(rowCls, 'hover:bg-anvil-50 dark:hover:bg-anvil-900')}>
             {inner}

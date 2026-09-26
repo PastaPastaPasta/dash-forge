@@ -8,8 +8,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { ForgeIds } from '../deployments'
-import { countDocuments, queryDocuments } from '../sdk'
-import { V2_DOC, str } from './contract'
+import { countDocuments, queryAllDocuments, queryDocuments } from '../sdk'
+import { DOC, V2_DOC, asIdentifierString, str, type V2RepoRef } from './contract'
 
 /** A repo's star count (`star.byRepo`, countable). */
 export function readV2StarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
@@ -39,6 +39,62 @@ export async function readV2Stargazers(
   return docs
     .map((d) => str(d, '$ownerId'))
     .filter((id) => id !== '')
+}
+
+/**
+ * A repo's issue and pull-request totals, from the `number` indexes (`issue.number`,
+ * `patch.number`, rangeCountable): O(1) and proof-checked, so a tab count is never a guess.
+ * `null` for a count that could not be read.
+ */
+export async function readV2TargetCounts(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  repoId: string,
+): Promise<{ issues: number | null; pulls: number | null }> {
+  const count = (type: string): Promise<number | null> =>
+    countDocuments(sdk, {
+      dataContractId: forge.collab,
+      documentTypeName: type,
+      where: [['repoId', '==', repoId]],
+    }).catch(() => null)
+  const [issues, pulls] = await Promise.all([count(DOC.issue), count(DOC.patch)])
+  return { issues, pulls }
+}
+
+/**
+ * What anyone can see of a private repo (`ux-dx-spec.md` §6.3, `forge-v2.md` §5): its member
+ * count, its last activity (the newest ref update's time) and its stored size. Nothing here
+ * decrypts anything: sizes and timing are public by design.
+ */
+export async function readPublicRepoFacts(
+  sdk: EvoSDK,
+  repo: V2RepoRef,
+): Promise<{ members: number; lastActivity: number | null; storedBytes: number }> {
+  const scoped = (type: string, orderBy: readonly (readonly [string, 'asc' | 'desc'])[], limit?: number) => ({
+    dataContractId: repo.forge.core,
+    documentTypeName: type,
+    where: [['repoId', '==', repo.repoId]] as const,
+    orderBy,
+    ...(limit !== undefined ? { limit } : {}),
+  })
+  const [maintainers, writers, newest, manifests] = await Promise.all([
+    queryAllDocuments(sdk, scoped(V2_DOC.maintainer, [['memberId', 'asc']])),
+    queryAllDocuments(sdk, scoped(V2_DOC.writer, [['memberId', 'asc']])),
+    queryDocuments(sdk, scoped(DOC.refUpdate, [['$createdAt', 'desc']], 1)),
+    queryAllDocuments(sdk, scoped(DOC.packManifest, [['$createdAt', 'asc']])),
+  ])
+  const at = newest[0]?.['$createdAt']
+  const sizes = new Map<string, number>()
+  for (const m of manifests) {
+    const hash = str(m, 'packHash')
+    const size = typeof m['sizeBytes'] === 'number' ? m['sizeBytes'] : Number(m['sizeBytes'] ?? 0)
+    if (hash !== '' && Number.isFinite(size)) sizes.set(hash, size)
+  }
+  return {
+    members: new Set([...maintainers, ...writers].map((d) => asIdentifierString(d['memberId']))).size,
+    lastActivity: typeof at === 'number' ? at : null,
+    storedBytes: [...sizes.values()].reduce((a, b) => a + b, 0),
+  }
 }
 
 /** Follower count (`follow.byTarget`) and following count (`follow.byOwner`), both countable. */

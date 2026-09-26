@@ -60,21 +60,36 @@ export function NetworkBadge({
   )
 }
 
-/** Full-width state for a view that needs Dash Forge on a network without it. */
+/**
+ * Full-width state for a view that needs Dash Forge on a network without it
+ * (`ux-dx-spec.md` §6.3): read-only chrome and one card. Mainnet waits for Platform v14.
+ */
 export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: NetworkConfig }): JSX.Element {
+  const mainnet = config.network === 'mainnet'
   return (
     <div
       role="status"
+      data-testid="not-deployed"
       className="flex flex-col items-center justify-center rounded-lg border border-caution/30 bg-caution/5 px-6 py-10 text-center"
     >
       <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-caution/10 text-caution">
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
       <h3 className="text-prose text-anvil-900 dark:text-anvil-50">
-        Dash Forge is not deployed on {config.key}
+        {mainnet
+          ? "Dash Forge isn't on mainnet yet (waiting for Platform v14)."
+          : `Dash Forge isn't deployed on ${config.key} yet.`}
       </h3>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
-        {new NotDeployedError(config.key).message}. Nothing here is read from another network.
+        {mainnet ? (
+          <>
+            <a href="https://github.com/PastaPastaPasta/dash-forge#readme" className="text-forge-700 underline dark:text-forge-400">
+              Follow progress →
+            </a>
+          </>
+        ) : (
+          <>{new NotDeployedError(config.key).message}. Nothing here is read from another network.</>
+        )}
       </p>
     </div>
   )

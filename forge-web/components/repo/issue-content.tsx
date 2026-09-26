@@ -21,7 +21,8 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { writeErrorMessage } from '@/lib/view/write-errors'
-import { useParam } from '@/hooks/use-query-param'
+import { useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { CopyLinkButton } from '@/components/ui/copy-link'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -39,7 +40,7 @@ type Pending =
   | { kind: 'label'; label: string; remove: boolean }
   | null
 
-export function IssueContent({ home, number }: { home: RepoHome; number: number }): JSX.Element {
+export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
@@ -161,6 +162,7 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
               ) : null}
             </span>
           ))}
+          {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} className="ml-auto" /> : null}
         </div>
       </div>
 

@@ -61,6 +61,12 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   review: -20_000_000,
 }
 
+/**
+ * An `IdentityKeyLimitsUpdate` (top up a key's budget / expiry), signed by the master key and
+ * paid from the identity balance. Measured on moutai (2026-09-26): 2,267,600 credits.
+ */
+export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
+
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Estimated credits; negative when the action refunds storage. */

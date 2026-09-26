@@ -9,7 +9,7 @@ export function IssueClient(): JSX.Element {
   const number = Number.parseInt(useParam('number'), 10)
   return (
     <RepoScaffold addr={addr} rail={false}>
-      {(home) => <IssueContent home={home} number={number} />}
+      {(home) => <IssueContent home={home} addr={addr} number={number} />}
     </RepoScaffold>
   )
 }

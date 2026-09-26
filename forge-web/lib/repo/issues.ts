@@ -15,7 +15,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   compareKey,
-  isNullOid,
+  mergeBaseTips,
+  type ConfigDoc,
   type Event,
   type IsAncestor,
   type IssueState,
@@ -40,6 +41,7 @@ import {
   wellFormed,
   type RepoRef,
 } from './contract'
+import { readConfigHistory } from './config'
 import { readRefUpdates } from './refs'
 import { readRoleOracle } from './members'
 import { repoSource } from './source'
@@ -490,40 +492,57 @@ function sourceIdOf(doc: PlainDocument): string {
 
 /** A base ref's tips, as a PR read needs them. */
 export interface BaseRefTips {
-  /** Every oid the ref has ever pointed at (deletions excluded), oldest first. */
-  readonly historical: string[]
-  /** The newest of those — the ref's current tip. */
+  /**
+   * Every oid a VALID update set the ref to (deletions excluded), oldest first, each once:
+   * the merge-reachability set. A plain `refUpdate` on a protected ref is inert (§4) and not
+   * in it ({@link mergeBaseTips}).
+   */
+  readonly historical: readonly string[]
+  /** The newest of those: the fold's base tip. */
   readonly tip: string | undefined
   /**
    * Where the ref pointed at `openedAt`: `''` when it was deleted then, `undefined` when it
-   * had no update yet. Raw history, like `tip`: only a diff baseline, never a trust input.
+   * had no valid update yet. Only a diff baseline, never a trust input.
    */
   readonly atOpen: string | undefined
 }
 
 /**
- * Derive {@link BaseRefTips} from a ref's full update history, on the `(createdAt, id)` total
- * order. A null `newOid` is a deletion, never a reachable tip, so the current tip is the
- * newest NON-null one — parity with forge-core `base_ref_tips`, where taking the last element
- * of the plain-then-protected concatenation was neither the newest update nor deletion-aware.
+ * Derive {@link BaseRefTips} from a ref's full update history and the repo's config
+ * timeline: `historical` and `tip` are the shared {@link mergeBaseTips} rule (parity with
+ * forge-core `read_merge_base`), `atOpen` is where the valid history pointed when the PR
+ * was opened.
  */
-export function baseRefTips(updates: readonly RefUpdate[], openedAt: number): BaseRefTips {
-  const ordered = [...updates].sort(compareKey)
-  const historical = ordered.map((u) => u.newOid).filter((o) => !isNullOid(o))
-  const openOid = ordered.filter((u) => u.createdAt <= openedAt).at(-1)?.newOid
+export function baseRefTips(
+  updates: readonly RefUpdate[],
+  configHistory: readonly ConfigDoc[],
+  refNameHashHex: string,
+  openedAt: number,
+): BaseRefTips {
+  const tips = mergeBaseTips(updates, configHistory, refNameHashHex)
+  const before = mergeBaseTips(
+    updates.filter((u) => u.createdAt <= openedAt),
+    configHistory,
+    refNameHashHex,
+  )
   return {
-    historical,
-    tip: historical[historical.length - 1],
-    atOpen: openOid === undefined ? undefined : isNullOid(openOid) ? '' : openOid,
+    historical: tips.historical,
+    tip: tips.tip ?? undefined,
+    atOpen: before.tip === null ? undefined : before.current ?? '',
   }
 }
 
-/** Read one PR (patch) and fold its state, using the historical-tips merge predicate. */
+/**
+ * Read one PR (patch) and fold its state, using the historical-tips merge predicate over the
+ * base ref's VALID history. `configHistory` yields the repo's config timeline (read here when
+ * not given; a list shares one read across its rows).
+ */
 export async function readPull(
   sdk: EvoSDK,
   repo: RepoRef,
   patchDoc: PlainDocument,
   log?: TargetLog,
+  configHistory?: () => Promise<readonly ConfigDoc[]>,
 ): Promise<PullView> {
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
@@ -535,7 +554,11 @@ export async function readPull(
   let isAncestor: IsAncestor = () => false
   let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
-    tips = baseRefTips(await readRefUpdates(sdk, repo, baseRefNameHashRaw), createdAt)
+    const [updates, configs] = await Promise.all([
+      readRefUpdates(sdk, repo, baseRefNameHashRaw),
+      configHistory ? configHistory() : readConfigHistory(sdk, repo),
+    ])
+    tips = baseRefTips(updates, configs, byteFieldToHex(patchDoc, 'baseRefNameHash'), createdAt)
     isAncestor = historicalTipsPredicate(tips.historical)
   }
   const baseTip = tips.tip
@@ -578,11 +601,14 @@ export async function listPulls(
   limit = 50,
 ): Promise<Listed<PullView>> {
   const { documents, hidden } = await newestTargets(sdk, repo, 'patch', limit)
+  // One config read for the whole page, made by the first row that has a base ref.
+  let configs: Promise<readonly ConfigDoc[]> | undefined
+  const configHistory = () => (configs ??= readConfigHistory(sdk, repo))
   const rows = await foldRows(
     sdk,
     repo,
     documents,
-    (doc, log) => readPull(sdk, repo, doc, log),
+    (doc, log) => readPull(sdk, repo, doc, log, configHistory),
     incompletePullView,
   )
   return Object.assign(rows, { hidden })

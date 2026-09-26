@@ -1,0 +1,88 @@
+{
+  "name": "current_epoch_is_highest_anchored",
+  "description": "epochs 0, 1, 3 exist (not contiguous): the current epoch is 3.",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 3,
+        "createdAtBlockHeight": 3000,
+        "createdAt": 3000000,
+        "enc": "02c8e91e8a64a309b4601baf2233497f90770a80f0b823796337741fe2da0f19c9000102030405060708090a0b2d383d5eb1e4da76729e2eb1665f78af023e43475b5ea468cf83e252142ccbd851becf1550821e119afc549287a74f7f73fbf1f0c051546d6ca6"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "346fb09eb7d015d6ed47cc9048f4d3f8612ed83accd32b6cf126ba1c9c52de81",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 3,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "ae61deb75bea8d5686e7186b8630a1c3d42eb7b68362dc2496d0e2632be6524f",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 3,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 3,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+      "3": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d"
+    },
+    "readable": [
+      0,
+      1,
+      3
+    ],
+    "writeEpoch": 3,
+    "unanchored": [],
+    "alerts": [],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}

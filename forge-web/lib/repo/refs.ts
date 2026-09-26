@@ -263,7 +263,7 @@ export async function readAllRefUpdates(
  * page pins a branch at its 100th push — the tip stops advancing and every later commit
  * becomes unreachable through the UI. It also feeds {@link historicalTipsPredicate}, where
  * a truncated tip set makes a genuinely merged PR fold as still-open. Parity: forge-core
- * `refs::read_ref_history` (behind `base_ref_tips`).
+ * `refs::read_ref_history` (behind `read_merge_base`).
  */
 export async function readRefUpdates(
   sdk: EvoSDK,

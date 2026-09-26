@@ -1,0 +1,18 @@
+{
+  "name": "patch_ref_hash_mismatch",
+  "description": "A public patch filed under one base hash while naming another base is malformed: it would be folded against one branch and merged into another.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "9ac131b6ce602f7b3a204467d09caae8cde8c2f98c3f3f88d86aad689f8fbaa3",
+      "sourceRefName": "refs/heads/fix",
+      "sourceRefNameHash": "7a6f28df1fbd2e8124f42884b8f363735a757345fc410cbadae1d9d2fcc50bd1"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

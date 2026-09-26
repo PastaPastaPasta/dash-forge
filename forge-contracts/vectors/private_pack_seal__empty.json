@@ -1,0 +1,24 @@
+{
+  "name": "empty",
+  "description": "a zero-length plaintext is one 16-byte segment (52 bytes sealed).",
+  "case": "private_pack_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "fileId": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "plaintextHex": ""
+  },
+  "expected": {
+    "header": "4446504b010e0000000000000000000000000000f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "segments": 1,
+    "sealedLen": 52,
+    "tags": [
+      "70ae66b8c3bceb742661fa2f54aa8f1b"
+    ],
+    "packHash": "b8c5d7a586974c24b60c5099cd65a60e6d86cbb9c0d2ab8733a34f5d72bf612d",
+    "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sealed": "4446504b010e0000000000000000000000000000f0e1d2c3b4a5968778695a4b3c2d1e0f70ae66b8c3bceb742661fa2f54aa8f1b"
+  }
+}

@@ -89,6 +89,19 @@ describe('dash-blue text tokens meet WCAG AA', () => {
   })
 })
 
+describe('Verification state words meet WCAG AA', () => {
+  // `text-{state}-700 dark:text-{state}`: the -700 shade on light surfaces, the base on dark.
+  it.each([['verify'], ['caution']])('%s', (state) => {
+    const ramp = colors[state] as Record<string, string>
+    for (const bg of Object.values(LIGHT_SURFACES)) {
+      expect(contrast(rgb(ramp['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+    for (const bg of Object.values(DARK_SURFACES)) {
+      expect(contrast(rgb(ramp.DEFAULT!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+  })
+})
+
 describe('no component renders text in the raw brand blue', () => {
   const root = resolve(__dirname, '../..')
 

@@ -15,16 +15,50 @@ use forge_core::repo::credits_to_dash;
 /// Serialized system fields + CBOR framing added to a document's own property bytes.
 const DOC_SYSTEM_OVERHEAD: u64 = 180;
 
-/// Index and count-tree storage a forge-collab document pays beyond its bytes, credits.
-/// Measured on moutai (forge-v2): 45 collab docs (issues, comments, events,
-/// labels) cost about 42M credits each beyond their bytes; rounded up.
-const COLLAB_INDEX_OVERHEAD: u64 = 45_000_000;
-
 /// Index storage a forge-v2 git-data document (`chunk`, `packManifest`, `refUpdate`) pays
-/// beyond its bytes, credits. Measured on moutai: 25 ref updates, 121 manifests and 115
-/// chunks cost 0.1998 DASH against 0.0571 by bytes alone, about 55M credits a document
-/// (v2 indexes carry `repoId` and the uploader).
-pub const GIT_DOC_INDEX_OVERHEAD: u64 = 55_000_000;
+/// beyond its bytes, credits (v2 indexes carry `repoId` and the uploader). Calibrated on
+/// moutai against per-push balance drops (see `tests::estimates_cover_a_recorded_run`):
+/// the helper's byte price plus 68M per document it reports is 1.5–5% over.
+pub const GIT_DOC_INDEX_OVERHEAD: u64 = 68_000_000;
+
+/// The kinds of forge-collab document the importer writes. Each pays a different index and
+/// count-tree cost beyond its bytes: a document type with more indexes (an issue or PR:
+/// number, state, author, updated) pays more than a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollabDoc {
+    /// An issue or a pull request.
+    Target,
+    /// A comment.
+    Comment,
+    /// A review.
+    Review,
+    /// A state event (close, reopen, merge, label, draft).
+    Event,
+    /// A label definition.
+    Label,
+    /// A release.
+    Release,
+}
+
+impl CollabDoc {
+    /// Index storage beyond the document's bytes, credits. Calibrated on moutai from
+    /// per-write balance drops (two clean imports of `PastaPastaPasta/dash-faucet`, and one
+    /// of `backports-validation-script`): each figure sits at or above the mean measured
+    /// overhead of its kind, so a run's total estimate comes out 0–10% over what it pays.
+    pub fn index_overhead(self) -> u64 {
+        match self {
+            // Issues and PRs: measured 58–92M (mean 70–81M). Releases were not measured
+            // separately; they are priced as the largest kind (tag, notes, assets).
+            CollabDoc::Target | CollabDoc::Release => 90_000_000,
+            // Measured 40–55M, mean 43–53M.
+            CollabDoc::Comment => 52_000_000,
+            // Reviews: measured 18–113M, mean 21–45M. Events: 34–50M, mean 40–42M.
+            CollabDoc::Review | CollabDoc::Event => 45_000_000,
+            // Measured 27–68M, mean 28–36M.
+            CollabDoc::Label => 35_000_000,
+        }
+    }
+}
 
 /// The estimated credits of one forge-v2 git-data document of `bytes` bytes.
 pub fn git_doc_credits(bytes: u64) -> u64 {
@@ -48,9 +82,10 @@ pub fn chunked_credits(bytes: u64) -> u64 {
     full.saturating_add(tail)
 }
 
-/// The estimated credits of one collaboration document whose properties total `bytes`.
-pub fn collab_doc_credits(bytes: u64) -> u64 {
-    estimate_document_storage(bytes + DOC_SYSTEM_OVERHEAD).total() + COLLAB_INDEX_OVERHEAD
+/// The estimated credits of one collaboration document of `kind` whose properties total
+/// `bytes`.
+pub fn collab_doc_credits(kind: CollabDoc, bytes: u64) -> u64 {
+    estimate_document_storage(bytes + DOC_SYSTEM_OVERHEAD).total() + kind.index_overhead()
 }
 
 /// Why a run stopped at the cap.
@@ -252,7 +287,86 @@ mod tests {
 
     #[test]
     fn collab_docs_cost_their_bytes_plus_index_overhead() {
-        assert!(collab_doc_credits(0) > COLLAB_INDEX_OVERHEAD);
-        assert!(collab_doc_credits(1000) > collab_doc_credits(10));
+        let c = CollabDoc::Comment;
+        assert!(collab_doc_credits(c, 0) > c.index_overhead());
+        assert!(collab_doc_credits(c, 1000) > collab_doc_credits(c, 10));
+    }
+
+    /// A clean, traced import of `PastaPastaPasta/dash-faucet` into moutai (2026-09-26,
+    /// `RUST_LOG=forge_import::cost=debug`, an identity nothing else was using): every
+    /// write's properties size (bytes) and measured balance drop, and each git push's
+    /// helper price and document count. The Mirror Action's CI run of the same import paid
+    /// 0.0781 DASH against a 0.0649 estimate (20% under); the estimate must stay an upper
+    /// bound, 0–10% over.
+    #[test]
+    fn estimates_cover_a_recorded_run() {
+        const COLLAB: &[(CollabDoc, u64, u64)] = &[
+            (CollabDoc::Label, 93, 41_750_760),
+            (CollabDoc::Label, 122, 35_258_160),
+            (CollabDoc::Label, 117, 34_957_560),
+            (CollabDoc::Label, 100, 34_863_920),
+            (CollabDoc::Label, 101, 35_103_980),
+            (CollabDoc::Label, 103, 34_757_160),
+            (CollabDoc::Label, 97, 34_332_380),
+            (CollabDoc::Label, 107, 34_826_300),
+            (CollabDoc::Label, 100, 34_442_600),
+            (CollabDoc::Target, 1051, 125_761_060),
+            (CollabDoc::Event, 120, 58_658_220),
+            (CollabDoc::Event, 120, 41_859_680),
+            (CollabDoc::Comment, 5357, 204_426_380),
+            (CollabDoc::Target, 818, 85_828_680),
+            (CollabDoc::Event, 120, 50_567_500),
+            (CollabDoc::Event, 120, 42_209_020),
+            (CollabDoc::Comment, 2562, 130_017_520),
+            (CollabDoc::Target, 3067, 149_111_560),
+            (CollabDoc::Comment, 5357, 203_214_840),
+            (CollabDoc::Comment, 1995, 103_288_200),
+            (CollabDoc::Comment, 1796, 96_714_740),
+            (CollabDoc::Comment, 1486, 91_613_340),
+            (CollabDoc::Comment, 2936, 127_491_260),
+            (CollabDoc::Comment, 2349, 113_656_880),
+            (CollabDoc::Comment, 401, 58_625_380),
+            (CollabDoc::Comment, 1610, 58_625_380),
+            (CollabDoc::Comment, 1367, 84_708_880),
+            (CollabDoc::Comment, 1155, 82_548_300),
+            (CollabDoc::Comment, 1026, 78_135_800),
+            (CollabDoc::Review, 4814, 165_590_500),
+            (CollabDoc::Review, 1743, 165_590_500),
+            (CollabDoc::Review, 1287, 60_499_720),
+            (CollabDoc::Review, 4072, 136_509_040),
+        ];
+        const GIT: &[(u64, u64, u64)] = &[
+            (1_698_161_516, 9, 2_267_023_180),
+            (735_380_076, 5, 1_040_705_540),
+        ];
+        let collab_est: u64 = COLLAB
+            .iter()
+            .map(|&(kind, bytes, _)| collab_doc_credits(kind, bytes))
+            .sum();
+        let collab_paid: u64 = COLLAB.iter().map(|&(_, _, paid)| paid).sum();
+        let git_est: u64 = GIT
+            .iter()
+            .map(|&(helper, docs, _)| helper + docs * GIT_DOC_INDEX_OVERHEAD)
+            .sum();
+        let git_paid: u64 = GIT.iter().map(|&(_, _, paid)| paid).sum();
+        let (est, paid) = (collab_est + git_est, collab_paid + git_paid);
+        #[allow(clippy::cast_precision_loss)] // ratios for the assertion messages only
+        let ratio = |e: u64, p: u64| e as f64 / p as f64;
+        assert!(
+            est >= paid && est <= paid + paid / 10,
+            "whole run: estimate {est} vs paid {paid} ({:.3})",
+            ratio(est, paid)
+        );
+        // Each part is an upper bound too, within 10%.
+        for (what, e, p) in [
+            ("collab", collab_est, collab_paid),
+            ("git", git_est, git_paid),
+        ] {
+            assert!(
+                e >= p && e <= p + p / 10,
+                "{what}: estimate {e} vs paid {p} ({:.3})",
+                ratio(e, p)
+            );
+        }
     }
 }

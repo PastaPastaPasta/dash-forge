@@ -59,6 +59,7 @@ export {
   artifactRangeFetch,
   buildPackSource,
   clearChunkCache,
+  forgetDeadMirrors,
   invalidateBrowseContext,
   loadArtifactBytes,
   loadArtifactBytesProgress,
@@ -67,6 +68,7 @@ export {
   loadFlatIndex,
   peekBrowseState,
   PackUnavailableError,
+  StorageUnreachableError,
   type BrowseContext,
   type BrowseState,
   type UnavailablePack,
@@ -87,13 +89,23 @@ export {
   connectionTrust,
   deriveConnectionTrust,
   deriveTrust,
+  TRUST_LABEL,
   worstOf,
   type ConnectionTrust,
+  type TipLink,
   type TrustInputs,
   type TrustLink,
   type TrustReport,
   type TrustState,
 } from './trust'
+export { crossCheckQuorumKeysCached, type QuorumCrossCheck } from './quorum-check'
+export {
+  describeUnavailable,
+  normalizeGateway,
+  readGateways,
+  setUserGateways,
+  userGateways,
+} from './storage-status'
 export { ACL_NAME, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,

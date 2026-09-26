@@ -47,7 +47,10 @@ module.exports = {
           DEFAULT: '#16a34a', // proof/hash verified — icons, borders, tints
           700: '#15803d', // solid fill behind white text (5.02:1; the base value is 3.3:1)
         },
-        caution: '#d97706', // degraded availability
+        caution: {
+          DEFAULT: '#d97706', // degraded availability — icons, borders, tints; text on dark
+          700: '#b45309', // TEXT on light surfaces (5.02:1 on white; the base value is 3.19:1)
+        },
         danger: '#dc2626', // force-push, delete, failed verification
         // Dash brand blue — identity/credits/network UI only. The brand value is for fills,
         // tints and icons; it is under 4.5:1 as TEXT on every surface in both themes, so

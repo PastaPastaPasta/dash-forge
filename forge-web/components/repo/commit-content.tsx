@@ -23,7 +23,7 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
-    <BrowseBoundary repo={home.repo}>
+    <BrowseBoundary repo={home.repo} addr={addr}>
       {(reader) => <Body reader={reader} oid={oid} addr={addr} />}
     </BrowseBoundary>
   )

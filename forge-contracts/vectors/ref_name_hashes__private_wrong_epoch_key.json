@@ -1,0 +1,15 @@
+{
+  "name": "private_wrong_epoch_key",
+  "description": "Private: a hash made under epoch 1's K_ref does not verify under epoch 0's.",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main",
+      "refNameHash": "7310537f7a9b04d1eaab334d91ee963c89be088d7309ed5dcf84951ed7bb215a"
+    },
+    "refKey": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e"
+  },
+  "expected": false
+}

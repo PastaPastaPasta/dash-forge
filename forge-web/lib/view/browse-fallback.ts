@@ -26,9 +26,12 @@ import { repoKey, type PackManifest, type RepoRef } from '../repo'
 import {
   loadArtifactBytesProgress,
   PackUnavailableError,
+  StorageUnreachableError,
+  unavailableOf,
   type BrowseContext,
   type UnavailablePack,
 } from './browse-source'
+import { describePack } from './storage-status'
 import { noteContentCheck, objectObserver } from './content-checks'
 import {
   deleteStoredFallback,
@@ -196,11 +199,21 @@ export function missingObjectError(
   const where = unavailable
     .map((p) => `${p.packHash.slice(0, 12)}… (${p.hosts.length > 0 ? p.hosts.join(', ') : 'no fetchable mirror'})`)
     .join('; ')
+  // Name the storage that actually failed: a fork's pack is read from its parent's chunks on
+  // Platform (a `platform://` locator), not from anyone's external mirrors.
+  const onPlatform = unavailable.some((p) => p.hosts.includes('platform'))
+  const external = unavailable.some((p) => p.hosts.some((h) => h !== 'platform'))
+  const source =
+    onPlatform && !external
+      ? "the parent repo's chunks on Platform"
+      : onPlatform
+        ? "the parent repo's chunks on Platform or external storage"
+        : 'external storage'
+  const n = unavailable.length
   return new Error(
     `object ${oidHex.slice(0, 12)}… is not in any pack this browser could load. ` +
-      `${unavailable.length === 1 ? 'One pack' : `${unavailable.length} packs`} could not be fetched from ` +
-      `${unavailable.length === 1 ? 'its' : 'their'} external storage and may hold it: ${where}. ` +
-      'Cloning with dash:// reads the same packs; if their mirrors are down it will fail the same way.',
+      `${n === 1 ? 'One pack' : `${n} packs`} could not be fetched from ${source} and may hold it: ${where}. ` +
+      `Cloning with dash:// reads the same ${n === 1 ? 'pack' : 'packs'}; if ${onPlatform && !external ? 'those chunks are missing' : 'the storage is down'} it will fail the same way.`,
   )
 }
 
@@ -239,10 +252,7 @@ async function downloadPacks(
           },
           (e: unknown): PackOutcome => {
             if (!(e instanceof PackUnavailableError)) throw e
-            return {
-              manifest: m,
-              unavailable: { packHash: m.packHash, hosts: e.hosts, reason: e.message, corrupt: e.corrupt },
-            }
+            return { manifest: m, unavailable: { ...unavailableOf(e), packHash: m.packHash } }
           },
         )
         // Observed here so an outcome no one awaits (the clone failed first) is never an
@@ -302,14 +312,13 @@ async function runFallback(
     ).values(),
   ]
   for (const u of unavailable) {
-    noteContentCheck(repoKey(repo), { unavailablePack: u.packHash, corruptMirror: u.corrupt })
+    noteContentCheck(repoKey(repo), {
+      unavailablePack: u.packHash,
+      corruptMirror: u.corrupt,
+      unreachable: describePack(u),
+    })
   }
-  if (got.length === 0) {
-    throw new Error(
-      `none of this repo's ${livePacks.length} live packs could be fetched from their storage: ` +
-        unavailable.map((u) => u.reason).join('; '),
-    )
-  }
+  if (got.length === 0) throw new StorageUnreachableError(unavailable)
 
   const packs = got.map((o) => o.bytes)
   const manifests = got.map((o) => o.manifest)

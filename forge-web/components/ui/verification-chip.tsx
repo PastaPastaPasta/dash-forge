@@ -1,24 +1,25 @@
 import { ShieldAlert, ShieldCheck, ShieldEllipsis, ShieldHalf, ShieldX } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { TrustState } from '@/lib/view'
+import { TRUST_LABEL, type TrustState } from '@/lib/view'
 
 /**
  * Verification chip — signature element (style guide §A). A compact chip row stating what
- * was checked: `proofs ✓ · content ✓ 12 objects · src platform`. Semantic colors are
- * meaningful: verify green = the check ran and passed, caution amber = partial or not
- * checked, danger red = the check failed, neutral = nothing checked yet. Callers pass states
- * derived from checks that actually ran (`deriveTrust`), never a constant.
+ * was checked. Semantic colors are meaningful and always paired with an icon and a word:
+ * green Verified = the check ran and passed; amber Partly verified / Couldn't verify = partial,
+ * or the check could not run; red Failed = the check ran and the data was wrong; neutral Not
+ * checked yet. Callers pass states derived from checks that actually ran (`deriveTrust`).
  */
 
-/** Label, color and icon for each trust state — shared with the trust panel. */
+/** Word, color and icon for each trust state — shared with the Verification card. */
 export const TRUST_META: Readonly<
   Record<TrustState, { label: string; klass: string; Icon: typeof ShieldCheck }>
 > = {
-  verified: { label: 'verified', klass: 'text-verify', Icon: ShieldCheck },
-  partial: { label: 'partial', klass: 'text-caution', Icon: ShieldHalf },
-  unverified: { label: 'unverified', klass: 'text-caution', Icon: ShieldAlert },
-  pending: { label: 'pending', klass: 'text-anvil-500 dark:text-anvil-400', Icon: ShieldEllipsis },
-  failed: { label: 'failed', klass: 'text-danger', Icon: ShieldX },
+  // The base green is under AA as text on light surfaces; -700 carries the word there.
+  verified: { label: TRUST_LABEL.verified, klass: 'text-verify-700 dark:text-verify', Icon: ShieldCheck },
+  partial: { label: TRUST_LABEL.partial, klass: 'text-caution-700 dark:text-caution', Icon: ShieldHalf },
+  unverified: { label: TRUST_LABEL.unverified, klass: 'text-caution-700 dark:text-caution', Icon: ShieldAlert },
+  pending: { label: TRUST_LABEL.pending, klass: 'text-anvil-500 dark:text-anvil-400', Icon: ShieldEllipsis },
+  failed: { label: TRUST_LABEL.failed, klass: 'text-danger', Icon: ShieldX },
 }
 
 export interface ChipSegment {

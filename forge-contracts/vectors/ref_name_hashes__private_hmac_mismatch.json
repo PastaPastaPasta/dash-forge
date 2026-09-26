@@ -1,0 +1,15 @@
+{
+  "name": "private_hmac_mismatch",
+  "description": "Private (H3): the decrypted name is refs/heads/main but the document is indexed under HMAC(K_ref,0, refs/heads/dev): malformed.",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main",
+      "refNameHash": "eef70d7506d9e18be1005f88cd0889a9fa321fb0bce4dc1209442c41cc0c47e2"
+    },
+    "refKey": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e"
+  },
+  "expected": false
+}

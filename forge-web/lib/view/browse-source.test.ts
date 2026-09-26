@@ -592,6 +592,20 @@ describe('fork pack via a platform:// locator', () => {
     expect(scopes).toEqual([])
   })
 
+  it("shares cached chunks with the parent's own storage-0 copy", async () => {
+    const { sdk, scopes } = parentSdk(bytes)
+    const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]
+    const viaFork = await artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/uploader/${hash}`))(start, end)
+    const queries = scopes.length
+    expect(queries).toBeGreaterThan(0)
+    // The parent reads the same pack from its own chunks: same network, repo id, uploader, hash.
+    const PARENT: V2RepoRef = { ...FORK, repoId: 'PARENT', ownerId: 'uploader' }
+    const own: PackManifest = { ...gitPack(hash, 0, 'pm'), sizeBytes: total, uploader: 'uploader' }
+    const viaParent = await artifactRangeFetch(sdk, PARENT, own)(start, end)
+    expect(Array.from(viaParent)).toEqual(Array.from(viaFork))
+    expect(scopes).toHaveLength(queries) // no second chunk query
+  })
+
   it('falls back to an https mirror when the chunks do not verify', async () => {
     const tampered = bytes.slice()
     tampered[0]! ^= 0xff

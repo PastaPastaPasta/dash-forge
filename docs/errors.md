@@ -228,6 +228,8 @@ Fix: run it again. A different node is asked.
 
 Fix: for `git push`, run the push again. Chunks are journaled and ref updates are idempotent, so nothing is paid for twice. For other writes (an issue, a comment), check whether it landed before running the command again.
 
+**Concurrent writes from the same identity.** Two writers signing as one identity at the same moment (two terminals, `dg` and a `git push`, or the CLI and the web app) can pick the same contract nonce. Platform accepts both, the block takes one, and the node quietly drops the other: no result for it ever arrives. The CLI and the web app notice this without waiting minutes. After one bounded wait (20 s), they read the identity's nonce. If it is spent, they check whether the write landed and re-sign it with the next nonce if it did not. Expect such a write to finish in about 20–60 s instead of the usual few seconds. You only see E704 when that check itself cannot reach Platform. Writers that take turns never hit this.
+
 ## E801
 
 **Stopped by the cost guard.** This push costs more than `dash.costWarnThreshold`, or `dash.confirm = always`, and there is no terminal to confirm on (CI, a GUI client). The helper never assumes yes.

@@ -1,0 +1,21 @@
+{
+  "name": "epoch0",
+  "description": "HKDF-SHA256 subkeys of the epoch key for epoch 0 (§2.2).",
+  "case": "private_kdf",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "fileId": "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+  },
+  "expected": {
+    "prk": "74b9ee840de5d5a97a0a075fb825e319f4f1fd18e73809ef1dd0cd89fe5921b5",
+    "doc": "0f21a88819aca66526d4965dcd7854ba141266e080d843b25b79e49cda40ee39",
+    "ref": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e",
+    "kcv": "7cab1ab77a4b34d31fa6ef954054",
+    "commit": "2ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584",
+    "hedge": "df837125748c9e4468f19ca654ee2166f91de41a9d541bc79ad08b2d7bdfc1a5",
+    "pack": "7c3836d19c8c22116136d9a49d6cc92914771e1010c697673a7baba1c521932b"
+  }
+}

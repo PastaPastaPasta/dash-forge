@@ -1,0 +1,25 @@
+{
+  "name": "three_segments",
+  "description": "40,000 bytes at L = 14: 3 segments, packHash is the sealed bytes' sha256, never the plaintext's (§3).",
+  "case": "private_pack_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "fileId": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "plaintextMod251": 40000
+  },
+  "expected": {
+    "header": "4446504b010e0000000000000000000000009c40f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "segments": 3,
+    "sealedLen": 40084,
+    "tags": [
+      "bd93a5ffb088dee81cd4e5c8d6750d33",
+      "fb62d98c6a0e1d864129988e24495f65",
+      "69789e159bdc8234933d844b7a8ed32c"
+    ],
+    "packHash": "7e7e4e4ed63d4c51a46f0ecd9b3a2a50b2f5fed46e89c58b8ac6450bf7582315",
+    "plaintextSha256": "8f272ca6d96caedf3d860ff34ed21868f04ce18a2f41686f513c3c989146ca79"
+  }
+}
