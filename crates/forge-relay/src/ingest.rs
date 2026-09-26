@@ -119,6 +119,39 @@ impl Cursor {
         }
     }
 
+    /// A `Tail { lookback }` cursor primed from `newest_first`, the stream's newest documents
+    /// (a descending page, or a complete list reversed): all of them count as seen except the
+    /// newest `lookback`, which the next read returns (with anything written since). Priming
+    /// from the same read that built a repo's state leaves no gap between the two.
+    pub fn primed(newest_first: &[FetchedDocument], lookback: u32) -> Self {
+        let lookback = lookback as usize;
+        let mut c = Self {
+            baseline: Baseline::Tail {
+                lookback: u32::try_from(lookback).unwrap_or(u32::MAX),
+            },
+            primed: true,
+            since: None,
+            seen: BTreeSet::new(),
+        };
+        match newest_first.get(lookback) {
+            Some(first_skipped) => {
+                c.since = first_skipped.created_at;
+                c.seen = newest_first[lookback..]
+                    .iter()
+                    .filter(|d| d.created_at == c.since)
+                    .map(|d| d.id.clone())
+                    .collect();
+            }
+            // Everything is replayed. A full page may not be the whole history: start at its
+            // oldest document rather than the beginning of time.
+            None if newest_first.len() >= PAGE as usize => {
+                c.since = newest_first.last().and_then(|d| d.created_at);
+            }
+            None => {}
+        }
+        c
+    }
+
     /// Record `d` as delivered, returning whether it is new.
     fn advance(&mut self, d: &FetchedDocument) -> bool {
         let Some(t) = d.created_at else {
@@ -205,15 +238,9 @@ pub async fn poll_stream(
 ) -> Result<Vec<FetchedDocument>> {
     if let (false, Baseline::Tail { lookback }) = (cursor.primed, cursor.baseline) {
         // The newest page, descending (no cursor, which every protocol proves). Everything in
-        // it is baselined; the oldest-first tail of `lookback` of it is replayed.
+        // it is baselined except the newest `lookback`, which the read below returns.
         let tail = source.page(None, false, PAGE, None).await?;
-        let mut replay: Vec<_> = tail.iter().take(lookback as usize).cloned().collect();
-        replay.reverse();
-        for d in tail.iter().rev() {
-            cursor.advance(d);
-        }
-        cursor.primed = true;
-        return Ok(replay);
+        *cursor = Cursor::primed(&tail, lookback);
     }
 
     let mut out = Vec::new();
@@ -905,6 +932,33 @@ mod tests {
             ids(&poll_stream(&idx, &mut c).await.unwrap()),
             ["a", "b", "c"]
         );
+        // Lookback at least the whole stream: everything.
+        let mut c = Cursor::new(Baseline::Tail { lookback: 9 });
+        assert_eq!(
+            ids(&poll_stream(&idx, &mut c).await.unwrap()),
+            ["a", "b", "c"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cursor_primed_from_a_state_read_misses_nothing_written_after_it() {
+        let idx = Mem::new(&[("a", 10), ("b", 20), ("b2", 20)]);
+        // The state was built from this complete read (newest first)...
+        let snapshot: Vec<FetchedDocument> = vec![at("b2", 20), at("b", 20), at("a", 10)];
+        let mut c = Cursor::primed(&snapshot, 0);
+        // ...then more landed before the first poll, one in the same block as the newest.
+        idx.push("b3", 20);
+        idx.push("c", 30);
+        assert_eq!(ids(&poll_stream(&idx, &mut c).await.unwrap()), ["b3", "c"]);
+        // With a lookback, the newest `lookback` of the snapshot come back too.
+        let mut c = Cursor::primed(&snapshot, 1);
+        assert_eq!(
+            ids(&poll_stream(&idx, &mut c).await.unwrap()),
+            ["b2", "b3", "c"]
+        );
+        // An empty stream: everything later is new.
+        let mut c = Cursor::primed(&[], 0);
+        assert_eq!(ids(&poll_stream(&idx, &mut c).await.unwrap()).len(), 5);
     }
 
     #[tokio::test]

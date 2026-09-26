@@ -6,14 +6,21 @@
 //!
 //! * **Discovery** (its own task, every `refresh_cycles` poll intervals): re-read the hooks
 //!   addressed to this relay ([`crate::subscriptions`], bounded by [`DISCOVERY_TIMEOUT`]),
-//!   start serving new repos (each set up within [`INIT_TIMEOUT`]), stop serving repos with no
-//!   hook left, and resync the per-hook delivery workers ([`crate::deliver::Dispatcher`]).
+//!   set up new repos (each within [`INIT_TIMEOUT`]), stop serving repos with no hook left,
+//!   resync the per-hook delivery workers ([`crate::deliver::Dispatcher`]), and only then
+//!   publish the new repos to the poller, so no poll runs before its repo's hooks exist.
 //! * **Polling** (every poll interval): each served repo is polled in its own task, at most
 //!   [`MAX_CONCURRENT_REPOS`] at once; a repo whose previous poll is still running is skipped.
 //!   A poll reads the repo's streams past their cursors and enqueues each new document's event.
 //!   Enqueueing never waits for a receiver. A poll checks its deadline ([`REPO_BUDGET`]) between
-//!   streams and stops there, resuming next time; nothing cancels a poll midway, and a stream's
-//!   cursor is saved only after its documents were enqueued, so no event is lost to a timeout.
+//!   streams and stops there; the next poll resumes at the stage it stopped in (repo streams,
+//!   threads, check runs), so a slow node cannot starve the later stages. Nothing cancels a
+//!   poll midway, and a stream's cursor is saved only after its documents were enqueued, so no
+//!   event is lost to a timeout. The event feed is read only in a cycle whose pushes and config
+//!   were read, so merges are judged against current base-ref tips.
+//!
+//! **Merge tips** are tracked only for refs that are the base of a known PR: backfilled from
+//! that ref's history (by `refNameHash`) when the PR is first seen, then fed by the ref streams.
 //!
 //! **Baselines.** A repo is first read from "now": at startup with `Tail` (plus `--lookback`);
 //! later with `Since(max(earliest hook $createdAt, relay start))`; after dropping out and coming
@@ -123,10 +130,13 @@ struct RepoState {
     heads: BTreeMap<String, Head>,
     /// The repo's `config` history (for protected-ref routing).
     configs: Vec<ConfigDoc>,
-    /// Every tip a valid update set, by `refNameHash` (hex): what a merge is checked against.
+    /// Every tip a valid update set, by `refNameHash` (hex), for the base refs of known PRs only
+    /// (a hash is present once backfilled): what a merge is checked against.
     tips: BTreeMap<String, BTreeSet<String>>,
     /// Round-robin position over the non-priority threads.
     rotation: usize,
+    /// Which stage group a poll starts at (it resumes where the deadline last stopped it).
+    next_stage: usize,
 }
 
 /// A served repo: its state, and what its hooks want (set by discovery, read by polls).
@@ -416,6 +426,46 @@ impl Discovery {
             (before, new)
         };
 
+        let ready = self.setup_new(new, startup).await;
+
+        // Under one lock: hooks to the dispatcher, `wants` set, then the new repos published.
+        let mut repos = lock(&self.repos);
+        let served: BTreeSet<String> = repos
+            .keys()
+            .chain(ready.iter().map(|(id, _)| id))
+            .cloned()
+            .collect();
+        subs.retain(|s| served.contains(&s.repo_id));
+        shared.dispatcher.sync(&subs);
+        for (repo_id, slot) in repos.iter().chain(ready.iter().map(|(k, v)| (k, v))) {
+            *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
+        }
+        repos.extend(ready);
+        self.subs = subs;
+
+        let after: BTreeSet<String> = repos.keys().cloned().collect();
+        if before != after || startup {
+            tracing::info!(
+                repos = after.len(),
+                hooks = self.subs.len(),
+                added = ?after.difference(&before).collect::<Vec<_>>(),
+                removed = ?before.difference(&after).collect::<Vec<_>>(),
+                "webhook subscriptions refreshed"
+            );
+        }
+        Ok(())
+    }
+
+    /// Set up new repos (each within [`INIT_TIMEOUT`]) **without publishing them**: a poll must
+    /// not see a repo before the dispatcher knows its hooks, or its first events would find no
+    /// hook and be dropped. The caller publishes them after syncing the dispatcher.
+    async fn setup_new(
+        &mut self,
+        new: Vec<(String, u64)>,
+        startup: bool,
+    ) -> Vec<(String, Arc<RepoSlot>)> {
+        let shared = Arc::clone(&self.shared);
+        let mut ready = Vec::new();
         for (repo_id, earliest) in new {
             let baseline = baseline_for(
                 startup,
@@ -431,14 +481,14 @@ impl Discovery {
                         Baseline::Since(t) => t,
                         _ => 0,
                     };
-                    lock(&self.repos).insert(
+                    ready.push((
                         repo_id,
                         Arc::new(RepoSlot {
                             state: tokio::sync::Mutex::new(state),
                             wants: Mutex::new(BTreeMap::new()),
                             high_water: AtomicU64::new(high),
                         }),
-                    );
+                    ));
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(repo = %repo_id, error = %e, "cannot serve repo; retrying at the next discovery");
@@ -448,26 +498,7 @@ impl Discovery {
                 }
             }
         }
-
-        let repos = lock(&self.repos);
-        for (repo_id, slot) in repos.iter() {
-            *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
-        }
-        subs.retain(|s| repos.contains_key(&s.repo_id));
-        shared.dispatcher.sync(&subs);
-        self.subs = subs;
-
-        let after: BTreeSet<String> = repos.keys().cloned().collect();
-        if before != after || startup {
-            tracing::info!(
-                repos = after.len(),
-                hooks = self.subs.len(),
-                added = ?after.difference(&before).collect::<Vec<_>>(),
-                removed = ?before.difference(&after).collect::<Vec<_>>(),
-                "webhook subscriptions refreshed"
-            );
-        }
-        Ok(())
+        ready
     }
 }
 
@@ -489,11 +520,57 @@ async fn read_all(
         .await?)
 }
 
-/// Record the tip of a valid ref update.
+/// Record the tip of a valid ref update, if its ref is tracked (a base ref of a known PR).
 fn add_tip(tips: &mut BTreeMap<String, BTreeSet<String>>, d: &FetchedDocument) {
     if let (Some(hash), Some(oid)) = (d.field_hex("refNameHash"), d.field_hex("newOid")) {
-        tips.entry(hash).or_default().insert(oid);
+        if let Some(set) = tips.get_mut(&hash) {
+            set.insert(oid);
+        }
     }
+}
+
+/// With a `Tail` baseline, prime `key`'s cursor from the complete read that built the repo's
+/// state, so nothing written between setting up and the first poll is skipped. (A `Since`
+/// baseline re-reads from its time; what it re-reads is already in the state, and the state is
+/// keyed, so it merges.)
+fn prime(
+    cursors: &mut BTreeMap<String, Cursor>,
+    baseline: Baseline,
+    key: &str,
+    oldest_first: &[FetchedDocument],
+) {
+    if let Baseline::Tail { lookback } = baseline {
+        let newest_first: Vec<FetchedDocument> = oldest_first.iter().rev().cloned().collect();
+        cursors.insert(key.to_string(), Cursor::primed(&newest_first, lookback));
+    }
+}
+
+/// With a `Tail` baseline, prime the ref streams' cursors at setup time from their newest page
+/// (their history is not read in full; see `RepoState::backfill_tips`).
+async fn prime_ref_streams(
+    shared: &Shared,
+    cursors: &mut BTreeMap<String, Cursor>,
+    baseline: Baseline,
+    repo_id: &str,
+) -> Result<()> {
+    let Baseline::Tail { lookback } = baseline else {
+        return Ok(());
+    };
+    for doc_type in [DOC_REF_UPDATE, DOC_PROTECTED_REF_UPDATE] {
+        let newest = shared
+            .client
+            .query_documents(
+                &shared.contracts.core,
+                doc_type,
+                &[repo_filter(repo_id)?],
+                &[QueryOrder::desc("$createdAt")],
+                100,
+                None,
+            )
+            .await?;
+        cursors.insert(doc_type.to_string(), Cursor::primed(&newest, lookback));
+    }
+    Ok(())
 }
 
 /// Resolve a repo's metadata, config history, issue/PR index, valid ref tips, and recently
@@ -532,15 +609,9 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
             |b| b.trim_start_matches("refs/heads/").to_string(),
         );
 
-    // One-time backfill of every valid tip (later ones come from the ref streams).
-    let mut tips = BTreeMap::new();
-    for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
-        for d in read_all(shared, core, doc_type, repo_id).await? {
-            if ingest::ref_update_is_valid(&d, protected, &configs) {
-                add_tip(&mut tips, &d);
-            }
-        }
-    }
+    let mut cursors = BTreeMap::new();
+    prime(&mut cursors, baseline, "config", &config_docs);
+    prime_ref_streams(shared, &mut cursors, baseline, repo_id).await?;
 
     // Every existing issue and PR, so events on old threads translate. Their comment and
     // review streams start where the repo's streams do. Recently opened PRs' heads are
@@ -549,7 +620,9 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
     let mut targets = BTreeMap::new();
     let mut heads = BTreeMap::new();
     for (doc_type, is_pr) in [(DOC_ISSUE, false), (DOC_PATCH, true)] {
-        for d in read_all(shared, collab, doc_type, repo_id).await? {
+        let docs = read_all(shared, collab, doc_type, repo_id).await?;
+        prime(&mut cursors, baseline, doc_type, &docs);
+        for d in docs {
             let t = if is_pr {
                 TargetInfo::from_patch(&d, baseline)
             } else {
@@ -567,9 +640,9 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
             targets.insert(d.id.clone(), t);
         }
     }
-    prune_heads(&mut heads);
+    prune_heads(&mut heads, &mut cursors);
     tracing::info!(repo = %repo_id, name = %name, owner = %owner_id, targets = targets.len(), ?baseline, "serving repo");
-    Ok(RepoState {
+    let mut state = RepoState {
         meta: RepositoryMeta {
             repo_id: repo_id.to_string(),
             owner_id: owner_id.clone(),
@@ -578,14 +651,18 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
             web_base_url: shared.cfg.web_base_url.clone(),
         },
         baseline,
-        cursors: BTreeMap::new(),
+        cursors,
         targets,
         closed: BTreeSet::new(),
         heads,
         configs,
-        tips,
+        tips: BTreeMap::new(),
         rotation: 0,
-    })
+        next_stage: 0,
+    };
+    // Valid tips of the PRs' base refs only (what merges are checked against).
+    state.backfill_tips(shared).await?;
+    Ok(state)
 }
 
 /// One stream read: its new documents and the advanced cursor, **not yet saved**. The caller
@@ -626,6 +703,51 @@ impl RepoState {
                 None
             }
         }
+    }
+
+    /// Start tracking valid tips for every PR base ref not tracked yet: read that ref's history
+    /// once (by `refNameHash`), keep the tips of valid updates; later ones come from the ref
+    /// streams (`add_tip`). Only base refs are tracked, so memory and setup time scale with the
+    /// PRs' base branches, not with the repo's whole ref history.
+    async fn backfill_tips(&mut self, shared: &Shared) -> Result<()> {
+        let wanted: BTreeSet<String> = self
+            .targets
+            .values()
+            .filter(|t| t.is_pr && rules::ref_name_hash_matches(&t.base_ref, &t.base_ref_hash))
+            .map(|t| t.base_ref_hash.to_ascii_lowercase())
+            .filter(|h| !self.tips.contains_key(h))
+            .collect();
+        let repo = decode_identifier(&self.meta.repo_id)?;
+        for hash in wanted {
+            let Ok(bytes) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) else {
+                continue;
+            };
+            let mut set = BTreeSet::new();
+            for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)]
+            {
+                for d in shared
+                    .client
+                    .query_all_documents(
+                        &shared.contracts.core,
+                        doc_type,
+                        &[
+                            QueryFilter::eq("repoId", FieldValue::identifier(repo)),
+                            QueryFilter::eq("refNameHash", FieldValue::bytes32(bytes)),
+                        ],
+                        &[QueryOrder::asc("$createdAt")],
+                    )
+                    .await?
+                {
+                    if ingest::ref_update_is_valid(&d, protected, &self.configs) {
+                        if let Some(oid) = d.field_hex("newOid") {
+                            set.insert(oid);
+                        }
+                    }
+                }
+            }
+            self.tips.insert(hash, set);
+        }
+        Ok(())
     }
 
     /// Save a read's cursor (after its events were enqueued); returns its newest `$createdAt`.
@@ -669,8 +791,13 @@ impl RepoState {
     }
 }
 
+/// The groups a poll works through, in order: repo-level streams (pushes, then releases,
+/// issues, PRs and the event feed), thread streams, check runs.
+const STAGES: usize = 3;
+
 /// One poll of one repo; returns the newest `$createdAt` read. Stops at a stream boundary once
-/// `deadline` has passed (the rest is read next cycle).
+/// `deadline` has passed; the next poll starts at the stage it stopped in, so a slow node
+/// cannot keep the later stages (threads, check runs) from ever being read.
 async fn poll_repo(
     shared: &Shared,
     repo_id: &str,
@@ -681,82 +808,114 @@ async fn poll_repo(
     let Ok(rf) = repo_filter(repo_id) else {
         return 0;
     };
-    let high = poll_pushes(shared, st, std::slice::from_ref(&rf)).await;
-    high.max(poll_repo_rest(shared, st, rf, wants, deadline).await)
+    let mut high = 0;
+    let start = st.next_stage % STAGES;
+    for i in 0..STAGES {
+        let stage = (start + i) % STAGES;
+        if Instant::now() >= deadline {
+            st.next_stage = stage;
+            return high;
+        }
+        let (h, finished) = match stage {
+            0 => poll_repo_streams(shared, st, &rf, deadline).await,
+            1 => poll_threads(shared, st, wants, deadline).await,
+            _ => poll_check_runs(shared, st, &rf, wants, deadline).await,
+        };
+        high = high.max(h);
+        if !finished {
+            st.next_stage = stage;
+            return high;
+        }
+    }
+    st.next_stage = 0;
+    high
+}
+
+/// Pushes, then releases, new issues and PRs, and the state-change feed. The feed is read only
+/// if the pushes were (so a merge is never judged against tips missing this cycle's pushes).
+/// Returns `(newest $createdAt, finished before the deadline)`.
+async fn poll_repo_streams(
+    shared: &Shared,
+    st: &mut RepoState,
+    rf: &QueryFilter,
+    deadline: Instant,
+) -> (u64, bool) {
+    let (high, pushes_read) = poll_pushes(shared, st, std::slice::from_ref(rf)).await;
+    let (h, finished) = poll_repo_rest(shared, st, rf, pushes_read, deadline).await;
+    (high.max(h), finished)
 }
 
 /// Pushes. Read the ref streams, then config, so every config that applied to an update read
-/// here is known when it is judged. If config cannot be read, judge nothing: the ref cursors
-/// stay where they were.
-async fn poll_pushes(shared: &Shared, st: &mut RepoState, prefix: &[QueryFilter]) -> u64 {
+/// here is known when it is judged. If config or either ref stream cannot be read, judge
+/// nothing: the cursors stay where they were. Returns `(newest $createdAt, all three read)`.
+async fn poll_pushes(shared: &Shared, st: &mut RepoState, prefix: &[QueryFilter]) -> (u64, bool) {
     let core = &shared.contracts.core;
     let base = st.baseline;
     let repo_id = st.meta.repo_id.clone();
     let mut high = 0;
-    let refs: Vec<(Read, bool)> = {
-        let mut out = Vec::new();
-        for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
-            if let Some(r) = st
-                .read(shared, doc_type.into(), doc_type, core, prefix, base)
-                .await
-            {
-                out.push((r, protected));
-            }
-        }
-        out
-    };
-    if let Some(cfg_read) = st
-        .read(shared, "config".into(), "config", core, prefix, base)
-        .await
-    {
-        for d in &cfg_read.docs {
-            // The first read after init returns configs init already loaded.
-            if !st.configs.iter().any(|c| c.id == d.id) {
-                st.configs.push(config_doc(d));
-            }
-        }
-        high = high.max(st.commit(cfg_read));
-        for (r, protected) in refs {
-            for d in &r.docs {
-                if !ingest::ref_update_is_valid(d, protected, &st.configs) {
-                    tracing::debug!(repo = %repo_id, source = %d.id, "ref update is inert by the protected-ref rule; not reported");
-                    continue;
-                }
-                add_tip(&mut st.tips, d);
-                if !ingest::is_ref_deletion(d) {
-                    if let Some(oid) = d.field_hex("newOid") {
-                        // Runs on this commit from the push on; an oid already watched keeps
-                        // its baseline (older runs are never replayed).
-                        let t = d.created_at.unwrap_or(0);
-                        st.heads.entry(oid).or_insert(Head {
-                            seen: t,
-                            baseline: Baseline::Since(t),
-                        });
-                        prune_heads(&mut st.heads);
-                    }
-                }
-                st.emit(shared, ingest::translate_ref_update(&st.meta, d));
-            }
-            high = high.max(st.commit(r));
+    let mut refs: Vec<(Read, bool)> = Vec::new();
+    for (doc_type, protected) in [(DOC_REF_UPDATE, false), (DOC_PROTECTED_REF_UPDATE, true)] {
+        match st
+            .read(shared, doc_type.into(), doc_type, core, prefix, base)
+            .await
+        {
+            Some(r) => refs.push((r, protected)),
+            None => return (0, false),
         }
     }
-    high
+    let Some(cfg_read) = st
+        .read(shared, "config".into(), "config", core, prefix, base)
+        .await
+    else {
+        return (0, false);
+    };
+    for d in &cfg_read.docs {
+        // The first read after init returns configs init already loaded.
+        if !st.configs.iter().any(|c| c.id == d.id) {
+            st.configs.push(config_doc(d));
+        }
+    }
+    high = high.max(st.commit(cfg_read));
+    for (r, protected) in refs {
+        for d in &r.docs {
+            if !ingest::ref_update_is_valid(d, protected, &st.configs) {
+                tracing::debug!(repo = %repo_id, source = %d.id, "ref update is inert by the protected-ref rule; not reported");
+                continue;
+            }
+            add_tip(&mut st.tips, d);
+            if !ingest::is_ref_deletion(d) {
+                if let Some(oid) = d.field_hex("newOid") {
+                    // Runs on this commit from the push on; an oid already watched keeps its
+                    // baseline (older runs are never replayed).
+                    let t = d.created_at.unwrap_or(0);
+                    st.heads.entry(oid).or_insert(Head {
+                        seen: t,
+                        baseline: Baseline::Since(t),
+                    });
+                    prune_heads(&mut st.heads, &mut st.cursors);
+                }
+            }
+            st.emit(shared, ingest::translate_ref_update(&st.meta, d));
+        }
+        high = high.max(st.commit(r));
+    }
+    (high, true)
 }
 
-/// The repo's releases, new issues and PRs, and state-change feed; then threads and checks.
+/// Releases, new issues and PRs, then the state-change feed, which is skipped when this
+/// cycle's pushes were not read (`pushes_read`). Returns `(newest $createdAt, finished)`.
 async fn poll_repo_rest(
     shared: &Shared,
     st: &mut RepoState,
-    rf: QueryFilter,
-    wants: &BTreeMap<&'static str, u64>,
+    rf: &QueryFilter,
+    pushes_read: bool,
     deadline: Instant,
-) -> u64 {
+) -> (u64, bool) {
     let prefix = [rf.clone()];
     let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
     let base = st.baseline;
     let mut high = 0;
 
-    // Releases, then new issues and PRs, then the state-change feed.
     let streams: [(&str, &LoadedContract); 5] = [
         (DOC_RELEASE, core),
         (DOC_ISSUE, collab),
@@ -766,7 +925,18 @@ async fn poll_repo_rest(
     ];
     for (doc_type, contract) in streams {
         if Instant::now() >= deadline {
-            return high;
+            return (high, false);
+        }
+        if matches!(doc_type, DOC_EVENT | DOC_AUTHOR_EVENT) {
+            if !pushes_read {
+                // Merges would be judged against tips missing this cycle's pushes.
+                continue;
+            }
+            // Tips of new PRs' base refs, before their merges are judged.
+            if let Err(e) = st.backfill_tips(shared).await {
+                tracing::warn!(repo = %st.meta.repo_id, error = %e, "base-ref tips unavailable; reading the event feed next cycle");
+                continue;
+            }
         }
         let Some(r) = st
             .read(shared, doc_type.into(), doc_type, contract, &prefix, base)
@@ -791,7 +961,7 @@ async fn poll_repo_rest(
                             seen,
                             baseline: Baseline::Since(seen),
                         });
-                        prune_heads(&mut st.heads);
+                        prune_heads(&mut st.heads, &mut st.cursors);
                     }
                     st.targets.insert(d.id.clone(), t);
                     if doc_type == DOC_PATCH {
@@ -810,16 +980,15 @@ async fn poll_repo_rest(
         }
         high = high.max(st.commit(r));
     }
-
-    high = high.max(poll_threads(shared, st, wants, deadline).await);
-    high.max(poll_check_runs(shared, st, &rf, wants, deadline).await)
+    (high, true)
 }
 
 /// The threads whose comment/review streams are read this cycle: the prioritized ones (open or
 /// active within [`THREAD_ACTIVE_WINDOW_MS`], most recent first, at most
 /// [`MAX_PRIORITY_THREADS`]) plus [`ROTATING_THREADS`] of the rest in round-robin order, so a
-/// quiet closed thread's comments are still read eventually.
-fn threads_this_cycle(st: &mut RepoState, now: u64) -> Vec<(String, bool, Baseline)> {
+/// quiet closed thread's comments are still read eventually. Each entry says whether it is a
+/// rotating one: the rotation advances by the rotating threads actually read.
+fn threads_this_cycle(st: &RepoState, now: u64) -> Vec<(String, bool, Baseline, bool)> {
     let cutoff = now.saturating_sub(THREAD_ACTIVE_WINDOW_MS);
     let (mut hot, cold): (Vec<_>, Vec<_>) = st
         .targets
@@ -830,35 +999,40 @@ fn threads_this_cycle(st: &mut RepoState, now: u64) -> Vec<(String, bool, Baseli
     let mut rest: Vec<_> = hot.split_off(hot.len().min(MAX_PRIORITY_THREADS));
     rest.extend(cold);
     rest.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut out: Vec<_> = hot.into_iter().map(|(id, pr, b, _)| (id, pr, b)).collect();
+    let mut out: Vec<_> = hot
+        .into_iter()
+        .map(|(id, pr, b, _)| (id, pr, b, false))
+        .collect();
     if !rest.is_empty() {
         let n = rest.len();
         let start = st.rotation % n;
         out.extend(
             (0..ROTATING_THREADS.min(n))
                 .map(|i| &rest[(start + i) % n])
-                .map(|(id, pr, b, _)| (id.clone(), *pr, *b)),
+                .map(|(id, pr, b, _)| (id.clone(), *pr, *b, true)),
         );
-        st.rotation = (start + ROTATING_THREADS) % n;
     }
     out
 }
 
-/// Comments (per issue/PR) and reviews (per PR) of this cycle's threads.
+/// Comments (per issue/PR) and reviews (per PR) of this cycle's threads. Returns
+/// `(newest $createdAt, finished before the deadline)`.
 async fn poll_threads(
     shared: &Shared,
     st: &mut RepoState,
     wants: &BTreeMap<&'static str, u64>,
     deadline: Instant,
-) -> u64 {
+) -> (u64, bool) {
     let comments = wants.get("issue_comment").copied();
     let reviews = wants.get("pull_request_review").copied();
     if comments.is_none() && reviews.is_none() {
-        return 0;
+        return (0, true);
     }
     let collab = &shared.contracts.collab;
     let mut high = 0;
-    for (tid, is_pr, tbase) in threads_this_cycle(st, now_ms()) {
+    let mut rotated = 0;
+    let mut finished = true;
+    'threads: for (tid, is_pr, tbase, rotating) in threads_this_cycle(st, now_ms()) {
         let Ok(bytes) = decode_identifier(&tid) else {
             continue;
         };
@@ -869,7 +1043,8 @@ async fn poll_threads(
         for (doc_type, field, since) in kinds {
             let Some(since) = since else { continue };
             if Instant::now() >= deadline {
-                return high;
+                finished = false;
+                break 'threads;
             }
             let prefix = [QueryFilter::eq(field, FieldValue::identifier(bytes))];
             let Some(r) = st
@@ -898,8 +1073,10 @@ async fn poll_threads(
             }
             high = high.max(st.commit(r));
         }
+        rotated += usize::from(rotating);
     }
-    high
+    st.rotation = st.rotation.wrapping_add(rotated);
+    (high, finished)
 }
 
 /// Check runs, per watched head oid (the newest [`MAX_HEADS`]). New `checkRun` documents only:
@@ -911,15 +1088,15 @@ async fn poll_check_runs(
     rf: &QueryFilter,
     wants: &BTreeMap<&'static str, u64>,
     deadline: Instant,
-) -> u64 {
+) -> (u64, bool) {
     let Some(since) = wants.get("check_run").copied() else {
-        return 0;
+        return (0, true);
     };
     let mut high = 0;
     let heads: Vec<(String, Head)> = st.heads.iter().map(|(k, v)| (k.clone(), *v)).collect();
     for (oid, head) in heads {
         if Instant::now() >= deadline {
-            return high;
+            return (high, false);
         }
         let Ok(bytes) = hex::decode(&oid) else {
             continue;
@@ -946,7 +1123,7 @@ async fn poll_check_runs(
         }
         high = high.max(st.commit(r));
     }
-    high
+    (high, true)
 }
 
 /// Record an event's effect on its target: activity time, and open/closed.
@@ -972,7 +1149,7 @@ fn note_activity(s: &mut RepoState, d: &FetchedDocument) {
 }
 
 /// Keep the newest [`MAX_HEADS`] head oids.
-fn prune_heads(heads: &mut BTreeMap<String, Head>) {
+fn prune_heads(heads: &mut BTreeMap<String, Head>, cursors: &mut BTreeMap<String, Cursor>) {
     if heads.len() <= MAX_HEADS {
         return;
     }
@@ -980,6 +1157,7 @@ fn prune_heads(heads: &mut BTreeMap<String, Head>) {
     by_time.sort();
     for (_, k) in by_time.iter().take(heads.len() - MAX_HEADS) {
         heads.remove(k);
+        cursors.remove(&format!("{DOC_CHECK_RUN}:{k}"));
     }
 }
 
@@ -1085,6 +1263,7 @@ mod tests {
             configs: Vec::new(),
             tips: BTreeMap::new(),
             rotation: 0,
+            next_stage: 0,
         }
     }
 
@@ -1094,8 +1273,11 @@ mod tests {
         let now = 10 * THREAD_ACTIVE_WINDOW_MS;
         let mut seen = BTreeSet::new();
         for _ in 0..3 {
-            let batch = threads_this_cycle(&mut st, now);
+            let batch = threads_this_cycle(&st, now);
             assert_eq!(batch.len(), ROTATING_THREADS);
+            assert!(batch.iter().all(|t| t.3), "all rotating");
+            // As `poll_threads` does when it reads the whole batch.
+            st.rotation += batch.len();
             seen.extend(batch.into_iter().map(|t| t.0));
         }
         assert_eq!(
@@ -1103,12 +1285,16 @@ mod tests {
             25,
             "every thread read within ceil(25 / 10) cycles"
         );
-        // An open thread is always read.
+        // A batch cut short by the deadline: the rotation only moves by what was read, so the
+        // unread ones come first next cycle.
+        let batch = threads_this_cycle(&st, now);
+        st.rotation += 4;
+        assert_eq!(threads_this_cycle(&st, now)[0].0, batch[4].0);
+        // An open thread is always read, and does not move the rotation.
         st.closed.remove("t007");
         for _ in 0..3 {
-            assert!(threads_this_cycle(&mut st, now)
-                .iter()
-                .any(|t| t.0 == "t007"));
+            let batch = threads_this_cycle(&st, now);
+            assert!(batch.iter().any(|t| t.0 == "t007" && !t.3));
         }
     }
 
@@ -1165,7 +1351,17 @@ mod tests {
                 )
             })
             .collect();
-        prune_heads(&mut heads);
+        let mut cursors: BTreeMap<String, Cursor> = heads
+            .keys()
+            .map(|k| {
+                (
+                    format!("{DOC_CHECK_RUN}:{k}"),
+                    Cursor::new(Baseline::Beginning),
+                )
+            })
+            .collect();
+        prune_heads(&mut heads, &mut cursors);
+        assert_eq!(cursors.len(), MAX_HEADS, "pruned heads lose their cursors");
         assert_eq!(heads.len(), MAX_HEADS);
         assert!(!heads.contains_key(&format!("{:040x}", 0)));
         assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));

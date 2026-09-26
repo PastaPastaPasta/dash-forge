@@ -46,11 +46,17 @@ pub const MAX_IN_FLIGHT_PER_DEST: usize = 2;
 
 /// Attempts in flight at once to one address, whatever host names it (a CDN or anycast
 /// address serves many tenants, each bounded by [`MAX_IN_FLIGHT_PER_DEST`]).
+///
+/// Known limit: receivers behind one shared CDN address share these 8 slots. A tenant
+/// cannot take more than its own 2, but four slow tenants on one address can keep a fifth
+/// waiting; its attempts then retry within the delivery budget and, if no slot ever frees,
+/// dead-letter as `DestinationBusy` without tripping its breaker.
 pub const MAX_IN_FLIGHT_PER_IP: usize = 8;
 
-/// How long an attempt waits for a slot before giving up with
-/// [`RelayError::DestinationBusy`] (which does not trip the circuit breaker).
-pub const SLOT_WAIT: Duration = Duration::from_secs(10);
+/// How long an attempt waits for a slot; after that the attempt counts as failed and the next
+/// one is tried (within the overall budget). A delivery whose every attempt only waited ends
+/// as [`RelayError::DestinationBusy`], which does not trip the circuit breaker.
+pub const SLOT_WAIT: Duration = Duration::from_secs(5);
 
 /// Events waiting per hook; beyond this they are dropped (dead-lettered).
 pub const QUEUE_PER_HOOK: usize = 256;
@@ -305,14 +311,25 @@ impl Deliverer {
 
         let mut last_reason = String::new();
         let mut attempts = 0;
+        // Whether any attempt reached the receiver (else every one waited on a busy slot).
+        let mut sent = false;
         for attempt in 1..=self.config.max_attempts {
             attempts = attempt;
             if attempt > 1 {
                 // No slot is held while backing off.
                 tokio::time::sleep(self.config.base_backoff * 2u32.pow(attempt - 2)).await;
             }
-            // A slot per attempt, released when the attempt ends.
-            let _slots = self.slots(&target).await?;
+            // A slot per attempt, released when the attempt ends. A slot that stays busy is
+            // this attempt lost, not the delivery: try again within the overall budget.
+            let _slots = match self.slots(&target).await {
+                Ok(s) => s,
+                Err(e) => {
+                    last_reason = e.to_string();
+                    tracing::warn!(url = %shown, attempt, "no delivery slot free for the destination; retrying");
+                    continue;
+                }
+            };
+            sent = true;
             match http
                 .post(target.url.clone())
                 .header("Content-Type", "application/json")
@@ -345,6 +362,10 @@ impl Deliverer {
                 Err(e) => last_reason = describe(&e),
             }
             tracing::warn!(url = %shown, attempt, reason = %last_reason, "webhook delivery attempt failed");
+        }
+        if !sent {
+            // Never got a slot: the destination was busy with others, not this receiver's fault.
+            return Err(RelayError::DestinationBusy(last_reason));
         }
         Err(RelayError::DeliveryExhausted {
             attempts,
@@ -393,6 +414,15 @@ impl Drop for HookWorker {
 pub struct Dispatcher {
     deliverer: Arc<Deliverer>,
     hooks: Mutex<HashMap<String, HookWorker>>,
+    /// Repos already warned about having no hook (the warning is logged once per repo).
+    warned_no_hooks: Mutex<std::collections::HashSet<String>>,
+}
+
+/// Lock the warned-repos set.
+fn lock_set(
+    m: &Mutex<std::collections::HashSet<String>>,
+) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Dispatcher {
@@ -401,6 +431,7 @@ impl Dispatcher {
         Self {
             deliverer: Arc::new(deliverer),
             hooks: Mutex::new(HashMap::new()),
+            warned_no_hooks: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -452,20 +483,27 @@ impl Dispatcher {
             .hooks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut repo_has_hooks = false;
         for (key, w) in hooks.iter() {
-            let wants = {
+            let (of_repo, wants) = {
                 let sub = w
                     .sub
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                sub.repo_id == repo_id && sub.wants(event.event)
+                (sub.repo_id == repo_id, sub.wants(event.event))
             };
-            if !wants {
+            repo_has_hooks |= of_repo;
+            if !(of_repo && wants) {
                 continue;
             }
             if w.tx.try_send(Arc::clone(&event)).is_err() {
                 tracing::error!(hook = %key, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: the hook's queue is full; event dropped");
             }
+        }
+        drop(hooks);
+        if !repo_has_hooks && lock_set(&self.warned_no_hooks).insert(repo_id.to_string()) {
+            // Should not happen (a repo is served only once its hooks are synced); say so once.
+            tracing::warn!(repo = %repo_id, event = event.event, source = %event.source_doc_id, "an event of a served repo found no hook; dropped (logged once per repo)");
         }
     }
 }

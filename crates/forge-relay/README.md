@@ -78,9 +78,13 @@ docker run --rm --read-only \
   beyond that, events are dead-lettered). After 3 failed deliveries in a row a hook's circuit
   opens for 1 minute, doubling up to an hour while it keeps failing; one success closes it.
   Each attempt takes a slot (2 per destination host and address, 8 per address) and frees it
-  before backing off. A removed or disabled hook's queued events are dropped.
+  before backing off; an attempt that waits 5 s for a slot is retried. Known limit: receivers
+  behind one shared CDN/anycast address share its 8 slots, so a few slow tenants there can
+  delay another one's deliveries (at worst to a `DEAD-LETTER`, which does not open its
+  circuit). A removed or disabled hook's queued events are dropped.
 - Repos are polled concurrently (8 at a time), each within a 20 s budget per cycle, checked
-  between streams; discovery runs in its own task.
+  between streams; a poll cut short resumes at the stage it stopped in. Discovery runs in its
+  own task, and a new repo is polled only once its hooks are registered.
 - No state on disk. A restart starts from "now" (or `--lookback` for the repo-level
   streams). A repo first served while the relay runs is read from its earliest hook's
   `$createdAt`, never from before the relay started; a repo that drops out and returns
