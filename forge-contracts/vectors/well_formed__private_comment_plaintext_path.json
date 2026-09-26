@@ -1,0 +1,16 @@
+{
+  "name": "private_comment_plaintext_path",
+  "description": "comment.path is a content field (private-repos.md §8.1, TLV tag 10): a private comment carrying a plaintext path is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "comment",
+      "path": "src/lib.rs",
+      "enc": "00000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": false
+}

@@ -1,0 +1,21 @@
+{
+  "name": "epoch0",
+  "description": "shared key SHA-256(parity || x), the 47-byte plaintext 0x01 || KCV_0 || K_0, AES-256-CBC under the IV (§5.1).",
+  "case": "private_wrap_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "senderPriv": "840fa5c84d8f6ecf5c27fd778356ba94480b9b35f264e7690933dcf1676f9ac0",
+    "senderPub": "03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948",
+    "recipientPriv": "f16baad1b1863c015869f5a6a2db471537d06a31d3bd78d961300f13f6b14239",
+    "recipientPub": "035bf470bf1fbffac4b0b01c0ae8480b0b56d6695482bb116286c62e99af15e337",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "iv": "0f0e0d0c0b0a09080706050403020100"
+  },
+  "expected": {
+    "shared": "e6cf085ee93d30ba8b5f81451d11709e9856c12acef291ce4e084b18a4c4856b",
+    "plaintext": "017cab1ab77a4b34d31fa6ef954054000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "wrapped": "0f0e0d0c0b0a09080706050403020100828afa35dca4dbd8eb40591d52f363f10671f7b77f5f619a25ee6d03fb88043c7fa0037e5c0d83ea667f9ba7289a82cc"
+  }
+}

@@ -9,7 +9,7 @@
 //! | `dash.replicas` | N: the push fails unless N targets confirm. Default: every listed target. |
 //! | `dash.platformFallback` | store on Platform when the external targets cannot confirm N. |
 //! | `dash.costWarnThreshold` | DASH; a push estimated above it asks for confirmation. |
-//! | `dash.confirm` | `auto` (default: ask only above the threshold), `always`, `never`. |
+//! | `dash.confirm` | `auto` (default: ask only above the threshold), `always`, `never`, `refuse` (never ask: above the threshold, fail; for unattended callers such as forge-import). |
 //!
 //! The helper's stdin/stdout belong to git, so confirmation is read from `/dev/tty`. With
 //! no terminal (CI, a GUI client) a push that needs confirmation fails with a message
@@ -47,6 +47,10 @@ pub enum ConfirmMode {
     Always,
     /// Never ask (print the estimate and proceed).
     Never,
+    /// Never ask, even with a terminal: above the threshold the push fails (E801). For
+    /// unattended callers that set the threshold as a hard cap (forge-import, the Mirror
+    /// Action), where a prompt would either block or let a "y" spend past the cap.
+    Refuse,
 }
 
 impl ConfirmMode {
@@ -55,7 +59,8 @@ impl ConfirmMode {
             "" | "auto" => Ok(Self::Auto),
             "always" | "true" | "yes" => Ok(Self::Always),
             "never" | "false" | "no" => Ok(Self::Never),
-            other => bail!("dash.confirm must be auto, always or never (got {other:?})"),
+            "refuse" => Ok(Self::Refuse),
+            other => bail!("dash.confirm must be auto, always, never or refuse (got {other:?})"),
         }
     }
 }
@@ -207,12 +212,12 @@ pub fn guard(
     let must_ask = match mode {
         ConfirmMode::Never => false,
         ConfirmMode::Always => credits > 0,
-        ConfirmMode::Auto => over,
+        ConfirmMode::Auto | ConfirmMode::Refuse => over,
     };
     if !must_ask {
         return Guard::Proceed;
     }
-    if have_tty {
+    if have_tty && mode != ConfirmMode::Refuse {
         Guard::Ask(match threshold_dash {
             Some(t) if over => format!(
                 "This push costs about {} DASH, above dash.costWarnThreshold ({t}).",
@@ -274,7 +279,7 @@ pub fn enforce(
     // Only look for a terminal when the guard could actually ask (no /dev/tty open on a
     // push that has no threshold and `dash.confirm` auto/never).
     let could_ask = match policy.confirm {
-        ConfirmMode::Never => false,
+        ConfirmMode::Never | ConfirmMode::Refuse => false,
         ConfirmMode::Always => credits > 0,
         ConfirmMode::Auto => policy.cost_warn_threshold.is_some(),
     };
@@ -351,6 +356,15 @@ mod tests {
             guard(one_dash, Some(0.1), ConfirmMode::Auto, true),
             Guard::Ask(_)
         ));
+        // Refuse never asks, even with a terminal; under the threshold it proceeds.
+        assert!(matches!(
+            guard(one_dash, Some(0.1), ConfirmMode::Refuse, true),
+            Guard::Refuse(_)
+        ));
+        assert_eq!(
+            guard(one_dash / 100, Some(0.1), ConfirmMode::Refuse, true),
+            Guard::Proceed
+        );
         // Over, no terminal → refuse with the fix.
         let Guard::Refuse(cause) = guard(one_dash, Some(0.1), ConfirmMode::Auto, false) else {
             panic!("expected refuse");

@@ -1,0 +1,17 @@
+{
+  "name": "third_key",
+  "description": "a third key: padding error or KCV mismatch, WrapUnreadable.",
+  "case": "private_wrap_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 0,
+    "wrapped": "0f0e0d0c0b0a09080706050403020100828afa35dca4dbd8eb40591d52f363f10671f7b77f5f619a25ee6d03fb88043c7fa0037e5c0d83ea667f9ba7289a82cc",
+    "readerPriv": "040fb2fc97dfd1e92892b3d0d424919f08a3e0fb56c0528178d7e79e7a63086d",
+    "counterpartyPub": "03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948",
+    "anchorCommit": "2ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584"
+  },
+  "expected": {
+    "error": "wrapUnreadable"
+  }
+}

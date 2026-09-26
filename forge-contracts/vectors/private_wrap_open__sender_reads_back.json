@@ -1,0 +1,17 @@
+{
+  "name": "sender_reads_back",
+  "description": "the sender reads its own wrap with its key and the recipient's public key.",
+  "case": "private_wrap_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 0,
+    "wrapped": "0f0e0d0c0b0a09080706050403020100828afa35dca4dbd8eb40591d52f363f10671f7b77f5f619a25ee6d03fb88043c7fa0037e5c0d83ea667f9ba7289a82cc",
+    "readerPriv": "840fa5c84d8f6ecf5c27fd778356ba94480b9b35f264e7690933dcf1676f9ac0",
+    "counterpartyPub": "035bf470bf1fbffac4b0b01c0ae8480b0b56d6695482bb116286c62e99af15e337",
+    "anchorCommit": "2ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584"
+  },
+  "expected": {
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  }
+}

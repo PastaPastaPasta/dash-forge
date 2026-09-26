@@ -1,0 +1,16 @@
+{
+  "name": "main_epoch1",
+  "description": "refNameHash = HMAC-SHA256(K_ref,e, refName), per epoch, never the public sha256 (§4.5).",
+  "case": "private_ref_hash",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "epoch": 1,
+    "refName": "refs/heads/main"
+  },
+  "expected": {
+    "hash": "7310537f7a9b04d1eaab334d91ee963c89be088d7309ed5dcf84951ed7bb215a",
+    "publicSha256": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+  }
+}

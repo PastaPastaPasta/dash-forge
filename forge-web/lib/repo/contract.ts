@@ -165,6 +165,7 @@ export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument)
       sourceRefName: text('sourceRefName'),
       defaultBranch: text('defaultBranch'),
       protectedPatterns: stringArray(doc, 'protectedPatterns'),
+      path: text('path'),
       enc: byteFieldToHex(doc, 'enc') || null,
       epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
     },

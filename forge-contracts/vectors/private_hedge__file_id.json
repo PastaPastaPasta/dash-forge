@@ -1,0 +1,16 @@
+{
+  "name": "file_id",
+  "description": "fileId = HMAC-SHA256(K_hedge,e, 0x01 || rnd(32) || SHA-256(plaintext))[0..16] (§3.6).",
+  "case": "private_hedge",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "rnd": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "plaintextMod251": 1000
+  },
+  "expected": {
+    "fileId": "6a9ab759c0a547a9b11b685e63297dde"
+  }
+}

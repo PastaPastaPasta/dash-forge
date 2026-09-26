@@ -140,7 +140,7 @@ impl Helper {
             let bridge = BridgeIdentity::load_from_file(&self.key_path).with_context(|| {
                 format!(
                     "loading identity from {} (set DASH_FORGE_KEY)",
-                    self.key_path.display()
+                    forge_core::keystore::describe_key_source(&self.key_path)
                 )
             })?;
             let client = PlatformClient::connect(self.target.clone())

@@ -1,0 +1,14 @@
+{
+  "name": "public_comment_path_without_body",
+  "description": "A public inline comment still needs its body: path alone is not the required field.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "comment",
+      "path": "src/lib.rs"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}
