@@ -333,8 +333,19 @@ async fn push_one(
     let before = ledger.budget.remaining();
     ledger.budget.charge(est.est_credits, what)?;
     let guard = before.map(|b| b.saturating_sub(est.overhead()));
+    let traced = ledger.traced_balance().await;
     let pushed = p.push(guard);
     let measured = ledger.reconcile().await;
+    tracing::debug!(
+        target: "forge_import::cost",
+        what,
+        helper = est.helper_credits,
+        refs = est.refs,
+        packs = est.packs,
+        pack_bytes = est.pack_bytes,
+        "push estimate"
+    );
+    ledger.trace_cost(what, est.est_credits, traced).await;
     if let Err(e) = &pushed {
         // Refund the charge only when nothing can have been paid for without the ledger
         // knowing: the helper's guard refused before storing anything, or the balance read

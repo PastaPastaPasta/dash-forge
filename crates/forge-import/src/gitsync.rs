@@ -76,6 +76,9 @@ pub struct PushReport {
     /// The helper's own price for it (no index overhead): what its cost guard compares
     /// `dash.costWarnThreshold` against.
     pub helper_credits: u64,
+    /// Documents the helper said it writes (chunks + manifests + ref updates), when it
+    /// reported them.
+    pub docs: u64,
 }
 
 impl PushReport {
@@ -100,6 +103,7 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
                 r.pack_bytes += num("bytes");
             }
             Some("platform") => {
+                r.docs += num("chunks") + num("manifests") + num("refUpdates");
                 r.est_credits += num("estCredits");
                 r.helper_credits += num("estCredits");
             }
@@ -242,6 +246,7 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
         est_credits: est,
         // No helper price for a repo that does not exist yet; the estimate stands in.
         helper_credits: est,
+        docs: 0,
     })
 }
 
@@ -259,7 +264,8 @@ impl GitPusher {
         // GIT_DOC_INDEX_OVERHEAD per document (measured). Add it for the documents the helper
         // said it would write: two manifests per pack, a chunk per ~14.7 KB, a ref update per ref.
         let payload = forge_core::pack::DOC_PAYLOAD_MAX as u64;
-        let docs = r.refs + r.packs * (2 + r.pack_bytes.div_ceil(payload.max(1)));
+        let guessed = r.refs + r.packs * (2 + r.pack_bytes.div_ceil(payload.max(1)));
+        let docs = if r.docs > 0 { r.docs } else { guessed };
         r.est_credits = r.est_credits.saturating_add(docs * GIT_DOC_INDEX_OVERHEAD);
         Ok(r)
     }
@@ -364,6 +370,7 @@ dash: some human line"#;
                 pack_bytes: 900,
                 est_credits: 1234,
                 helper_credits: 1234,
+                docs: 5,
             }
         );
     }
