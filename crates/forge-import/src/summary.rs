@@ -35,9 +35,11 @@ pub struct Counts {
 }
 
 impl Counts {
-    /// Whether nothing was written.
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
+    /// Add what a git push wrote (or would write).
+    pub fn add_push(&mut self, push: &crate::gitsync::PushReport) {
+        self.refs += push.refs;
+        self.packs += push.packs;
+        self.pack_bytes += push.pack_bytes;
     }
 }
 

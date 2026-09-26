@@ -17,6 +17,7 @@ use forge_core::collab::{CommentAnchor, Imported, ReleaseAsset, Verdict};
 use forge_core::platform::{
     FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
+use forge_core::rules::v2::Role;
 use forge_core::rules::{self, AuthzResolver, EventKind};
 use forge_core::scope::{DocScope, RepoRef};
 use forge_core::tokens::TokenService;
@@ -31,8 +32,41 @@ use crate::source_github::Classes;
 pub struct Collaborator {
     /// Identity id.
     pub identity: String,
-    /// `true`: MAINTAIN (→ maintainer); `false`: WRITE only (→ writer).
-    pub maintainer: bool,
+    /// MAINTAIN → maintainer, WRITE only → writer.
+    pub role: Role,
+}
+
+/// The newest document per key (`(createdAt, id)` order); documents without a key are
+/// skipped.
+fn keep_newest(
+    docs: &[FetchedDocument],
+    key: impl Fn(&FetchedDocument) -> Option<String>,
+) -> BTreeMap<String, &FetchedDocument> {
+    let mut newest: BTreeMap<String, &FetchedDocument> = BTreeMap::new();
+    for d in docs {
+        let Some(k) = key(d) else { continue };
+        let order = |x: &FetchedDocument| (x.created_at.unwrap_or(0), x.id.clone());
+        if newest.get(&k).is_none_or(|cur| order(d) > order(cur)) {
+            newest.insert(k, d);
+        }
+    }
+    newest
+}
+
+/// An issue's or PR's number, when it is a valid one (1..=u32::MAX).
+fn number(d: &FetchedDocument) -> Option<u32> {
+    d.field_u64("number")
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n > 0)
+}
+
+/// Folded label names as the contract bounds them.
+fn label_names(labels: &BTreeSet<String>) -> BTreeSet<String> {
+    labels
+        .iter()
+        .map(|l| model::label_name(l))
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 /// The v1 repository being read.
@@ -115,7 +149,11 @@ impl<'a> V1Source<'a> {
                 let write = c.holdings.write && !c.holdings.write_frozen;
                 (maintain || write).then_some(Collaborator {
                     identity: c.identity_id,
-                    maintainer: maintain,
+                    role: if maintain {
+                        Role::Maintainer
+                    } else {
+                        Role::Writer
+                    },
                 })
             })
             .collect())
@@ -131,7 +169,6 @@ impl<'a> V1Source<'a> {
     }
 
     /// Read everything into the model.
-    #[allow(clippy::too_many_lines)] // one pass per class, in order
     pub async fn collect(&self, classes: Classes) -> Result<SrcCollab> {
         let Classes {
             issues,
@@ -142,67 +179,53 @@ impl<'a> V1Source<'a> {
         } = classes;
         let mut out = SrcCollab::default();
         if labels {
-            let mut newest: BTreeMap<String, (u64, String, SrcLabel)> = BTreeMap::new();
-            for d in self
+            // The newest definition of a name decides; a retired one drops the label.
+            let docs = self
                 .all(
                     "label",
                     &[],
                     &[QueryOrder::asc("name"), QueryOrder::asc("$createdAt")],
                 )
-                .await?
-            {
-                let name = model::label_name(&d.field_str("name").unwrap_or_default());
-                if name.is_empty() || d.field_bool("retired") {
-                    continue;
-                }
-                let key = (d.created_at.unwrap_or(0), d.id.clone());
-                let l = SrcLabel {
-                    name: name.clone(),
-                    color: model::color(&d.field_str("color").unwrap_or_default()),
-                    description: model::clip(
-                        &d.field_str("description").unwrap_or_default(),
-                        200,
-                        400,
-                    ),
-                };
-                if newest
-                    .get(&name)
-                    .is_none_or(|(t, id, _)| (key.0, &key.1) > (*t, id))
-                {
-                    newest.insert(name, (key.0, key.1, l));
-                }
-            }
-            out.labels = Some(newest.into_values().map(|(_, _, l)| l).collect());
+                .await?;
+            let newest = keep_newest(&docs, |d| {
+                Some(model::label_name(&d.field_str("name")?)).filter(|n| !n.is_empty())
+            });
+            out.labels = Some(
+                newest
+                    .into_iter()
+                    .filter(|(_, d)| !d.field_bool("retired"))
+                    .map(|(name, d)| SrcLabel {
+                        name,
+                        color: model::color(&d.field_str("color").unwrap_or_default()),
+                        description: model::clip(
+                            &d.field_str("description").unwrap_or_default(),
+                            200,
+                            400,
+                        ),
+                    })
+                    .collect(),
+            );
         }
         if releases {
-            let mut newest: BTreeMap<String, (u64, String, SrcRelease)> = BTreeMap::new();
-            for d in self
+            let docs = self
                 .all("release", &[], &[QueryOrder::asc("$createdAt")])
-                .await?
-            {
-                let tag = d.field_str("tagName").unwrap_or_default();
-                if tag.is_empty() || d.field_bool("yanked") {
-                    continue;
-                }
-                let assets = d
-                    .field_str("assets")
-                    .and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
-                    .unwrap_or_default();
-                let r = SrcRelease {
-                    tag_name: tag.clone(),
-                    name: d.field_str("name").unwrap_or_default(),
-                    notes: d.field_str("notes").unwrap_or_default(),
-                    assets,
-                };
-                let key = (d.created_at.unwrap_or(0), d.id.clone());
-                if newest
-                    .get(&tag)
-                    .is_none_or(|(t, id, _)| (key.0, &key.1) > (*t, id))
-                {
-                    newest.insert(tag, (key.0, key.1, r));
-                }
-            }
-            out.releases = Some(newest.into_values().map(|(_, _, r)| r).collect());
+                .await?;
+            let newest = keep_newest(&docs, |d| d.field_str("tagName").filter(|t| !t.is_empty()));
+            out.releases = Some(
+                newest
+                    .into_iter()
+                    .filter(|(_, d)| !d.field_bool("yanked"))
+                    .map(|(tag_name, d)| SrcRelease {
+                        tag_name,
+                        name: d.field_str("name").unwrap_or_default(),
+                        notes: d.field_str("notes").unwrap_or_default(),
+                        assets: d
+                            .field_str("assets")
+                            .and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
+                            .unwrap_or_default(),
+                    })
+                    .collect(),
+            );
         }
         if !(issues || prs) {
             return Ok(out);
@@ -309,28 +332,12 @@ impl<'a> V1Source<'a> {
         Ok(out)
     }
 
-    fn labels_and_closed(state_open: bool, labels: &BTreeSet<String>) -> (bool, BTreeSet<String>) {
-        (
-            !state_open,
-            labels
-                .iter()
-                .map(|l| model::label_name(l))
-                .filter(|l| !l.is_empty())
-                .collect(),
-        )
-    }
-
     async fn issue(&self, d: &FetchedDocument, authz: &AuthzResolver) -> Result<Option<SrcTarget>> {
-        let Some(number) = d
-            .field_u64("number")
-            .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n > 0)
-        else {
+        let Some(number) = number(d) else {
             return Ok(None);
         };
         let events = self.events(&d.id).await?;
         let state = rules::fold_issue_state(&events, &d.owner_id, authz);
-        let (closed, labels) = Self::labels_and_closed(state.open, &state.labels);
         let orig = imported_of(d);
         let created = d.created_at.unwrap_or(0);
         let key = self.key(&format!("issues/{number}"));
@@ -347,9 +354,9 @@ impl<'a> V1Source<'a> {
                 &key,
             ),
             imported: Self::provenance(&key, &d.owner_id, created, orig.as_ref()),
-            closed,
+            closed: !state.open,
             merged_oid: None,
-            labels,
+            labels: label_names(&state.labels),
             draft: false,
             patch: None,
             comments: self.comments(&d.id, number, "issue").await?,
@@ -358,11 +365,7 @@ impl<'a> V1Source<'a> {
     }
 
     async fn patch(&self, d: &FetchedDocument, authz: &AuthzResolver) -> Result<Option<SrcTarget>> {
-        let Some(number) = d
-            .field_u64("number")
-            .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n > 0)
-        else {
+        let Some(number) = number(d) else {
             return Ok(None);
         };
         let base_ref_name = d
@@ -415,7 +418,6 @@ impl<'a> V1Source<'a> {
                     .and_then(model::oid)
             })
             .flatten();
-        let (closed, labels) = Self::labels_and_closed(state.open, &state.labels);
         let orig = imported_of(d);
         let created = d.created_at.unwrap_or(0);
         let key = self.key(&format!("pulls/{number}"));
@@ -432,9 +434,9 @@ impl<'a> V1Source<'a> {
                 &key,
             ),
             imported: Self::provenance(&key, &d.owner_id, created, orig.as_ref()),
-            closed,
+            closed: !state.open,
             merged_oid,
-            labels,
+            labels: label_names(&state.labels),
             draft: state.draft,
             patch: Some(SrcPatch {
                 base_ref_name,

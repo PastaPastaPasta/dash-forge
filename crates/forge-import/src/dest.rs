@@ -14,7 +14,13 @@ use forge_core::resolve::{find_v2, repo_slug, resolve_id};
 use forge_core::rules::v2::{Role, Visibility};
 use forge_core::scope::RepoRef;
 
-use crate::summary::{KeyInfo, RepoInfo};
+use forge_core::collab::v2::Collab;
+use forge_core::repo::credits_to_dash;
+
+use crate::budget::{Budget, CapExceeded};
+use crate::model::SrcCollab;
+use crate::sink::{Ledger, Sink};
+use crate::summary::{KeyInfo, RepoInfo, Status, Summary};
 
 /// Estimated cost of creating a repository (`repo` + owner `maintainer` + `config`),
 /// credits. Measured on moutai at about 0.0013 DASH; rounded up.
@@ -42,6 +48,19 @@ impl Signer {
             .await
             .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
         Ok(Self { bridge, identity })
+    }
+
+    /// [`Self::load`] when a key source was given; `None` only for a dry run without one.
+    pub async fn load_opt(
+        client: &PlatformClient,
+        source: Option<&Path>,
+        dry_run: bool,
+    ) -> Result<Option<Self>> {
+        match source {
+            Some(k) => Ok(Some(Self::load(client, k).await?)),
+            None if dry_run => Ok(None),
+            None => bail!("no signing identity: pass --identity <file> or set DASH_FORGE_KEY"),
+        }
     }
 
     /// The identity id.
@@ -170,7 +189,6 @@ pub async fn create(
     dest: &mut DestRepo,
     description: &str,
     default_branch: &str,
-    backend_mode: u8,
 ) -> Result<bool> {
     if dest.owner != signer.id() {
         bail!(
@@ -189,7 +207,8 @@ pub async fn create(
         } else {
             default_branch.to_string()
         },
-        backend_mode,
+        // Platform by default; a storage policy on the pushing side decides where packs go.
+        backend_mode: 0,
         visibility: Visibility::Public,
         fork_of: None,
     };
@@ -225,6 +244,84 @@ pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &st
             repo.display()
         )
     })
+}
+
+/// Close a run: an `Err` becomes the summary's status (`cap_exceeded` for the spend cap,
+/// else `error`) and its redacted message.
+pub fn finish(mut summary: Summary, result: Result<()>) -> Summary {
+    if let Err(e) = result {
+        summary.status = if e.downcast_ref::<CapExceeded>().is_some() {
+            Status::CapExceeded
+        } else {
+            Status::Error
+        };
+        summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
+    }
+    summary
+}
+
+/// The cost confirmation: `yes` skips it; without a terminal it refuses; a "no" is an
+/// error ("cancelled").
+pub fn confirm(yes: bool, credits: u64) -> Result<()> {
+    use std::io::IsTerminal as _;
+    if yes || credits == 0 {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!("refusing to spend without confirmation on a non-interactive stdin; pass --yes");
+    }
+    eprint!("Proceed (~{:.6} DASH)? [y/N] ", credits_to_dash(credits));
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        bail!("cancelled")
+    }
+}
+
+/// Diff `src` against `existing` without writing: the ledger holds what would be written,
+/// its estimate and warnings.
+pub async fn dry_collab<'a>(
+    client: &'a PlatformClient,
+    existing: Option<RepoRef>,
+    signer_id: Option<String>,
+    src: &SrcCollab,
+) -> Result<Ledger<'a>> {
+    let mut dry = Sink::new(
+        Collab::reader(client),
+        existing,
+        Ledger::new(client, signer_id, true, Budget::new(None)),
+    );
+    dry.sync(src).await?;
+    Ok(dry.ledger)
+}
+
+/// Write the collaboration documents missing from `repo`, then fill the summary's counts,
+/// warnings, spend, balance and key limits (also when the sync failed part-way).
+pub async fn write_collab(
+    client: &PlatformClient,
+    signer: &Signer,
+    repo: RepoRef,
+    ledger: Ledger<'_>,
+    src: &SrcCollab,
+    summary: &mut Summary,
+) -> Result<()> {
+    let mut sink = Sink::new(
+        Collab::new(client, &signer.identity, &signer.bridge),
+        Some(repo),
+        ledger,
+    );
+    let result = sink.sync(src).await;
+    sink.ledger.reconcile().await;
+    summary.counts = sink.ledger.counts;
+    summary
+        .warnings
+        .extend(std::mem::take(&mut sink.ledger.warnings));
+    summary.spent_credits = sink.ledger.budget.spent();
+    summary.balance_credits = client.get_balance(&signer.id()).await.ok();
+    summary.key = signer.key_info(client).await;
+    result
 }
 
 #[cfg(test)]

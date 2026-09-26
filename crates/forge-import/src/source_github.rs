@@ -45,6 +45,22 @@ pub struct Classes {
 }
 
 impl Classes {
+    /// Every class except those in `skip` (`issues`, `prs`, `labels`, `releases`), and
+    /// whether `members` was skipped: the `--skip` form `migrate` takes. Code is always on.
+    pub fn from_skip(skip: &[String]) -> (Self, bool) {
+        let on = |what: &str| !skip.iter().any(|s| s == what);
+        (
+            Self {
+                code: true,
+                issues: on("issues"),
+                prs: on("prs"),
+                labels: on("labels"),
+                releases: on("releases"),
+            },
+            on("members"),
+        )
+    }
+
     /// Parse `code,issues,prs,releases,labels` (`all` = every class).
     pub fn parse(s: &str) -> Result<Self> {
         let mut c = Self::default();

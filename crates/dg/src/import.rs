@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use forge_core::network::NetworkSettings;
 use forge_core::user_error::{codes, UserError};
 use forge_import::budget::dash_to_credits;
 use forge_import::github::GithubRepoRef;
@@ -114,33 +113,20 @@ pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
         limit: a.limit,
         network: ctx.target.clone(),
         key: ctx.identity_path.clone(),
-        backend_mode: 0,
     };
     report(ctx, &importer::run(&cfg).await)
 }
 
 /// `dg migrate`.
 pub async fn migrate(ctx: &Ctx, a: &MigrateArgs) -> Result<()> {
-    let skip = |what: &str| a.skip.iter().any(|s| s == what);
-    let source_network = NetworkSettings::from_flags(
-        Some(a.from_network.clone()),
-        a.from_devnet_name.clone(),
-        None,
-    )
-    .resolve()?;
+    let (classes, members) = Classes::from_skip(&a.skip);
     let cfg = MigrateConfig {
         source: a.source.clone(),
-        source_network,
+        source_network: migrate::source_network(&a.from_network, a.from_devnet_name.clone())?,
         dest: a.repo.clone(),
         network: ctx.target.clone(),
-        classes: Classes {
-            code: true,
-            issues: !skip("issues"),
-            prs: !skip("prs"),
-            labels: !skip("labels"),
-            releases: !skip("releases"),
-        },
-        members: !skip("members"),
+        classes,
+        members,
         max_spend: max_spend(a.max_spend)?,
         dry_run: a.dry_run,
         yes: ctx.yes,

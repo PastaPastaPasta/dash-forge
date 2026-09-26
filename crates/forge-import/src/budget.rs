@@ -31,6 +31,23 @@ pub fn git_doc_credits(bytes: u64) -> u64 {
     forge_core::cost::estimate(bytes).total() + GIT_DOC_INDEX_OVERHEAD
 }
 
+/// Per-`chunk` document overhead on top of its payload bytes.
+pub const CHUNK_OVERHEAD: u64 = 120;
+/// Serialized size of a `refUpdate`.
+pub const REF_UPDATE_BYTES: u64 = 200;
+
+/// The estimated credits of storing `bytes` as Platform `chunk` documents.
+pub fn chunked_credits(bytes: u64) -> u64 {
+    let payload = forge_core::pack::DOC_PAYLOAD_MAX as u64;
+    let full = (bytes / payload).saturating_mul(git_doc_credits(payload + CHUNK_OVERHEAD));
+    let tail = if bytes.is_multiple_of(payload) {
+        0
+    } else {
+        git_doc_credits(bytes % payload + CHUNK_OVERHEAD)
+    };
+    full.saturating_add(tail)
+}
+
 /// The estimated credits of one collaboration document whose properties total `bytes`.
 pub fn collab_doc_credits(bytes: u64) -> u64 {
     estimate_document_storage(bytes + DOC_SYSTEM_OVERHEAD).total() + COLLAB_INDEX_OVERHEAD
@@ -94,21 +111,6 @@ impl Budget {
     /// What this run has spent, as far as it can tell (credits).
     pub fn spent(&self) -> u64 {
         self.estimated.max(self.measured)
-    }
-
-    /// The measured balance drop, when a start balance was recorded.
-    pub fn measured(&self) -> u64 {
-        self.measured
-    }
-
-    /// The cap, credits.
-    pub fn cap(&self) -> Option<u64> {
-        self.cap
-    }
-
-    /// How much may still be spent (`None` = uncapped).
-    pub fn remaining(&self) -> Option<u64> {
-        self.cap.map(|c| c.saturating_sub(self.spent()))
     }
 
     /// Refuse the whole plan up front when its estimate alone exceeds the cap.
@@ -189,7 +191,7 @@ mod tests {
         b.reconcile(905);
         assert_eq!(b.spent(), 95);
         assert!(b.charge(10, "b").is_err());
-        assert_eq!(b.remaining(), Some(5));
+        assert_eq!(b.spent(), 95);
     }
 
     #[test]

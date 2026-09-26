@@ -20,33 +20,27 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
-use forge_core::collab::v2::Collab;
-
 use forge_core::members::{MemberReader, MemberService};
-use forge_core::network::NetworkTarget;
+use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{split, KIND_GIT_PACK};
 use forge_core::platform::PlatformClient;
 use forge_core::repo::{
-    PackManifestInfo, PackManifestInput, RepoReader, RepoService, MANIFEST_URIS_V2,
+    credits_to_dash, PackManifestInfo, PackManifestInput, RepoReader, RepoService, MANIFEST_URIS_V2,
 };
 use forge_core::rules::v2::Role;
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
 use forge_core::storage::PackReader;
 
-use crate::budget::{git_doc_credits, Budget};
+use crate::budget::{chunked_credits, git_doc_credits, Budget, REF_UPDATE_BYTES};
 use crate::dest::{self, Signer, REPO_CREATE_CREDITS};
-use crate::sink::{Ledger, Sink};
+use crate::sink::Ledger;
 use crate::source_github::Classes;
 use crate::source_v1::{Collaborator, V1Source};
 use crate::summary::{Status, Summary};
 
 /// Serialized size of a `packManifest` before its `uris`.
 const MANIFEST_BYTES: u64 = 260;
-/// Serialized size of a `refUpdate`.
-const REF_UPDATE_BYTES: u64 = 200;
-/// Per-`chunk` document overhead on top of its payload.
-const CHUNK_OVERHEAD: u64 = 120;
 /// Serialized size of a membership document.
 const MEMBER_BYTES: u64 = 200;
 
@@ -74,6 +68,13 @@ pub struct MigrateConfig {
     pub key: Option<PathBuf>,
 }
 
+/// The network a v1 repository lives on (`--from-network` / `--from-devnet-name`).
+pub fn source_network(network: &str, devnet_name: Option<String>) -> Result<NetworkTarget> {
+    NetworkSettings::from_flags(Some(network.to_string()), devnet_name, None)
+        .resolve()
+        .context("resolving --from-network")
+}
+
 /// One v1 pack to carry over.
 struct PackPlan {
     manifest: PackManifestInfo,
@@ -90,18 +91,18 @@ impl PackPlan {
     fn credits(&self) -> u64 {
         let uris: u64 = self.external.iter().map(|u| u.len() as u64 + 4).sum();
         let manifest = git_doc_credits(MANIFEST_BYTES + uris + 120);
-        if !self.reupload() {
-            return manifest;
+        if self.reupload() {
+            manifest + chunked_credits(self.manifest.size_bytes)
+        } else {
+            manifest
         }
-        let size = usize::try_from(self.manifest.size_bytes).unwrap_or(usize::MAX);
-        let full = size / forge_core::pack::DOC_PAYLOAD_MAX;
-        let rest = size % forge_core::pack::DOC_PAYLOAD_MAX;
-        let mut chunks = git_doc_credits(forge_core::pack::DOC_PAYLOAD_MAX as u64 + CHUNK_OVERHEAD)
-            .saturating_mul(full as u64);
-        if rest > 0 {
-            chunks += git_doc_credits(rest as u64 + CHUNK_OVERHEAD);
-        }
-        manifest + chunks
+    }
+}
+
+/// Drop trailing URIs until the list fits a v2 manifest's `uris`.
+fn fit_uris(uris: &mut Vec<String>) {
+    while !uris.is_empty() && !MANIFEST_URIS_V2.fits(uris) {
+        uris.pop();
     }
 }
 
@@ -126,9 +127,7 @@ fn portable_uris(uris: &[String]) -> Vec<String> {
         })
         .cloned()
         .collect();
-    while !out.is_empty() && !MANIFEST_URIS_V2.fits(&out) {
-        out.pop();
-    }
+    fit_uris(&mut out);
     out
 }
 
@@ -162,21 +161,14 @@ fn tip(state: &RefState) -> Option<String> {
     }
 }
 
-/// Run a migration.
+/// Run a migration. Always returns a summary (a failure is its status and error).
 pub async fn run(cfg: &MigrateConfig) -> Summary {
     let mut summary = Summary::new(
         cfg.network.network.key(),
         format!("{} ({})", cfg.source, cfg.source_network.network.key()),
     );
-    if let Err(e) = run_inner(cfg, &mut summary).await {
-        summary.status = if e.downcast_ref::<crate::budget::CapExceeded>().is_some() {
-            Status::CapExceeded
-        } else {
-            Status::Error
-        };
-        summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
-    }
-    summary
+    let result = run_inner(cfg, &mut summary).await;
+    dest::finish(summary, result)
 }
 
 async fn resolve_v1(client: &PlatformClient, spec: &str) -> Result<RepoRef> {
@@ -198,7 +190,88 @@ async fn resolve_v1(client: &PlatformClient, spec: &str) -> Result<RepoRef> {
     Ok(repo)
 }
 
-#[allow(clippy::too_many_lines)]
+/// What the migration has left to write (everything the destination does not hold yet).
+struct Todo<'p> {
+    packs: Vec<&'p PackPlan>,
+    /// `(ref name, wanted tip, current tip)`.
+    refs: Vec<(String, String, Option<String>)>,
+    members: Vec<Collaborator>,
+}
+
+impl Todo<'_> {
+    fn git_credits(&self) -> u64 {
+        self.packs.iter().map(|p| p.credits()).sum::<u64>()
+            + git_doc_credits(REF_UPDATE_BYTES) * self.refs.len() as u64
+    }
+
+    fn member_credits(&self) -> u64 {
+        git_doc_credits(MEMBER_BYTES) * self.members.len() as u64
+    }
+}
+
+/// Diff the v1 packs, refs and members against the destination (signer-free reads).
+async fn todo<'p>(
+    client: &PlatformClient,
+    existing: Option<&RepoRef>,
+    packs: &'p [PackPlan],
+    refs: &[(String, RefState)],
+    collaborators: Vec<Collaborator>,
+    warnings: &mut Vec<String>,
+) -> Result<Todo<'p>> {
+    let (have_packs, have_refs, have_members) = match existing {
+        Some(repo) => {
+            let r = RepoReader::new(client);
+            let packs: BTreeSet<[u8; 32]> = r
+                .read_pack_manifests(repo)
+                .await?
+                .into_iter()
+                .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
+                .map(|m| m.pack_hash)
+                .collect();
+            let members = MemberReader::new(client).list(repo).await?;
+            (packs, r.read_refs(repo).await?, members)
+        }
+        None => Default::default(),
+    };
+    let (packs, unreadable): (Vec<&PackPlan>, Vec<&PackPlan>) = packs
+        .iter()
+        .filter(|p| !have_packs.contains(&p.manifest.pack_hash))
+        .partition(|p| p.reupload() || !p.external.is_empty());
+    for p in &unreadable {
+        warnings.push(format!(
+            "v1 pack {} is stored only at private or local addresses ({}); nobody else can \
+             read it, so it is not copied",
+            &hex::encode(p.manifest.pack_hash)[..12],
+            p.manifest.uris.join(", ")
+        ));
+    }
+    let refs = refs
+        .iter()
+        .filter_map(|(name, state)| {
+            let want = tip(state)?;
+            let current = have_refs
+                .iter()
+                .find(|(n, _)| n == name)
+                .and_then(|(_, s)| tip(s));
+            (current.as_deref() != Some(want.as_str())).then(|| (name.clone(), want, current))
+        })
+        .collect();
+    let members = collaborators
+        .into_iter()
+        .filter(|c| {
+            !have_members
+                .iter()
+                .any(|m| m.identity_id == c.identity && m.role == c.role)
+        })
+        .collect();
+    Ok(Todo {
+        packs,
+        refs,
+        members,
+    })
+}
+
+#[allow(clippy::too_many_lines)] // one sequential run: read, price, confirm, write
 async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
     // Source (read only, no identity).
     let src_client = PlatformClient::connect(cfg.source_network.clone())
@@ -213,42 +286,33 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
     let source = V1Source::new(&src_client, v1.clone()).await?;
     let reader = RepoReader::new(&src_client);
     let refs = reader.read_refs(&v1).await.context("reading the v1 refs")?;
-    let packs: Vec<PackPlan> = live_packs(
-        &reader
-            .read_pack_manifests(&v1)
-            .await
-            .context("reading the v1 pack manifests")?,
-    )
-    .into_iter()
-    .map(|m| PackPlan {
-        external: if m.storage == 1 {
-            portable_uris(&m.uris)
-        } else {
-            Vec::new()
-        },
-        manifest: m,
-    })
-    .collect();
+    let manifests = reader
+        .read_pack_manifests(&v1)
+        .await
+        .context("reading the v1 pack manifests")?;
+    let packs: Vec<PackPlan> = live_packs(&manifests)
+        .into_iter()
+        .map(|m| PackPlan {
+            external: if m.storage == 1 {
+                portable_uris(&m.uris)
+            } else {
+                Vec::new()
+            },
+            manifest: m,
+        })
+        .collect();
     let collaborators = if cfg.members {
         source.collaborators().await?
     } else {
         Vec::new()
     };
     let collab_src = source.collect(cfg.classes).await?;
-    let default_branch = source
-        .default_branch()
-        .await
-        .unwrap_or_else(|| "main".into());
 
     // Destination.
     let client = PlatformClient::connect(cfg.network.clone())
         .await
         .with_context(|| format!("connecting to {}", cfg.network.network))?;
-    let signer = match &cfg.key {
-        Some(k) => Some(Signer::load(&client, k).await?),
-        None if cfg.dry_run => None,
-        None => bail!("no signing identity: pass --identity <file> or set DASH_FORGE_KEY"),
-    };
+    let signer = Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await?;
     let signer_id = signer.as_ref().map(Signer::id);
     let spec = cfg
         .dest
@@ -256,140 +320,50 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
         .unwrap_or_else(|| v1.name().to_ascii_lowercase());
     let mut dest = dest::resolve(&client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
-
-    // What is already there.
-    let (have_packs, have_refs) = match (&dest.existing, &signer) {
-        (Some(repo), Some(s)) => {
-            let svc = RepoService::new(&client, &s.identity, &s.bridge);
-            let have: BTreeSet<[u8; 32]> = svc
-                .read_pack_manifests(repo)
-                .await?
-                .into_iter()
-                .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
-                .map(|m| m.pack_hash)
-                .collect();
-            let refs = svc.read_refs(repo).await?;
-            (have, refs)
-        }
-        (Some(repo), None) => {
-            let r = RepoReader::new(&client);
-            let have = r
-                .read_pack_manifests(repo)
-                .await?
-                .into_iter()
-                .map(|m| m.pack_hash)
-                .collect();
-            (have, r.read_refs(repo).await?)
-        }
-        (None, _) => (BTreeSet::new(), Vec::new()),
-    };
-    let (packs_todo, unreadable): (Vec<&PackPlan>, Vec<&PackPlan>) = packs
-        .iter()
-        .filter(|p| !have_packs.contains(&p.manifest.pack_hash))
-        .partition(|p| p.reupload() || !p.external.is_empty());
-    for p in &unreadable {
-        summary.warnings.push(format!(
-            "v1 pack {} is stored only at private or local addresses ({}); nobody else can \
-             read it, so it is not copied",
-            &hex::encode(p.manifest.pack_hash)[..12],
-            p.manifest.uris.join(", ")
-        ));
-    }
-    let refs_todo: Vec<(String, String, Option<String>)> = refs
-        .iter()
-        .filter_map(|(name, state)| {
-            let want = tip(state)?;
-            let current = have_refs
-                .iter()
-                .find(|(n, _)| n == name)
-                .and_then(|(_, s)| tip(s));
-            (current.as_deref() != Some(want.as_str())).then(|| (name.clone(), want, current))
-        })
-        .collect();
-    let members_todo: Vec<&Collaborator> = match &dest.existing {
-        Some(repo) => {
-            let current = MemberReader::new(&client).list(repo).await?;
-            collaborators
-                .iter()
-                .filter(|c| {
-                    let role = if c.maintainer {
-                        Role::Maintainer
-                    } else {
-                        Role::Writer
-                    };
-                    !current
-                        .iter()
-                        .any(|m| m.identity_id == c.identity && m.role == role)
-                })
-                .collect()
-        }
-        None => collaborators.iter().collect(),
-    };
+    let todo = todo(
+        &client,
+        dest.existing.as_ref(),
+        &packs,
+        &refs,
+        collaborators,
+        &mut summary.warnings,
+    )
+    .await?;
 
     // Price.
     let create = dest.existing.is_none();
-    let git_credits: u64 = packs_todo.iter().map(|p| p.credits()).sum::<u64>()
-        + git_doc_credits(REF_UPDATE_BYTES) * refs_todo.len() as u64;
-    let member_credits = git_doc_credits(MEMBER_BYTES) * members_todo.len() as u64;
-    let collab_credits = {
-        let mut dry = Sink::new(
-            Collab::reader(&client),
-            dest.existing.clone(),
-            Ledger::new(&client, signer_id.clone(), true, Budget::new(None)),
-        );
-        dry.sync(&collab_src).await?;
-        dry.ledger.budget.spent()
-    };
+    let dry = dest::dry_collab(&client, dest.existing.clone(), signer_id, &collab_src).await?;
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
-    let total = create_credits + git_credits + member_credits + collab_credits;
+    let total = create_credits + todo.git_credits() + todo.member_credits() + dry.budget.spent();
     summary.estimate_credits = total;
     let mut budget = Budget::new(cfg.max_spend);
     budget.check_plan(total)?;
-    let reupload = packs_todo.iter().filter(|p| p.reupload()).count();
+    let reupload = todo.packs.iter().filter(|p| p.reupload()).count();
     eprintln!(
-        "{} → {}: {} packs ({} re-uploaded as Platform chunks, {} referenced), {} refs, {} members; estimated {:.6} DASH",
+        "{} → {}: {} packs ({} re-uploaded as Platform chunks, {} referenced), {} refs, {} \
+         members; estimated {:.6} DASH",
         summary.source,
         dest.url(),
-        packs_todo.len(),
+        todo.packs.len(),
         reupload,
-        packs_todo.len() - reupload,
-        refs_todo.len(),
-        members_todo.len(),
-        forge_core::repo::credits_to_dash(total)
+        todo.packs.len() - reupload,
+        todo.refs.len(),
+        todo.members.len(),
+        credits_to_dash(total)
     );
 
     if cfg.dry_run {
-        let mut dry = Sink::new(
-            Collab::reader(&client),
-            dest.existing.clone(),
-            Ledger::new(&client, signer_id.clone(), true, Budget::new(None)),
-        );
-        dry.sync(&collab_src).await?;
-        summary.counts = dry.ledger.counts;
-        summary.counts.packs = packs_todo.len() as u64;
-        summary.counts.pack_bytes = packs_todo.iter().map(|p| p.manifest.size_bytes).sum();
-        summary.counts.refs = refs_todo.len() as u64;
-        summary.counts.members = members_todo.len() as u64;
-        summary.warnings.extend(dry.ledger.warnings);
+        summary.counts = dry.counts;
+        summary.counts.packs = todo.packs.len() as u64;
+        summary.counts.pack_bytes = todo.packs.iter().map(|p| p.manifest.size_bytes).sum();
+        summary.counts.refs = todo.refs.len() as u64;
+        summary.counts.members = todo.members.len() as u64;
+        summary.warnings.extend(dry.warnings);
         summary.status = Status::DryRun;
         return Ok(());
     }
-    let signer = signer.expect("checked above");
-    if total > 0 && !cfg.yes {
-        use std::io::IsTerminal as _;
-        if !std::io::stdin().is_terminal() {
-            bail!("refusing to spend without confirmation on a non-interactive stdin; pass --yes");
-        }
-        eprint!(
-            "Proceed (~{:.6} DASH)? [y/N] ",
-            forge_core::repo::credits_to_dash(total)
-        );
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            bail!("cancelled");
-        }
-    }
+    let signer = signer.expect("load_opt returns a signer outside a dry run");
+    dest::confirm(cfg.yes, total)?;
     budget.start(signer.identity.balance());
 
     if create {
@@ -399,15 +373,12 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
             v1.display(),
             cfg.source_network.network.key()
         );
-        let created = dest::create(
-            &client,
-            &signer,
-            &mut dest,
-            &description,
-            &default_branch,
-            0,
-        )
-        .await?;
+        let default_branch = source
+            .default_branch()
+            .await
+            .unwrap_or_else(|| "main".into());
+        let created =
+            dest::create(&client, &signer, &mut dest, &description, &default_branch).await?;
         summary.repo = dest.info(created);
     }
     let repo = dest.existing.clone().expect("created or existing");
@@ -415,17 +386,59 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
     let mut ledger = Ledger::new(&client, Some(signer.id()), false, budget);
     ledger.reconcile().await;
 
-    // Git data: packs first (a ref must never name history that is not stored), then refs.
-    let svc = RepoService::new(&client, &signer.identity, &signer.bridge);
+    copy_git(
+        &reader,
+        &v1,
+        &client,
+        &signer,
+        &repo,
+        role,
+        &todo,
+        &mut ledger,
+    )
+    .await?;
+    add_members(
+        &client,
+        &signer,
+        &repo,
+        &todo.members,
+        &cfg.network,
+        &mut ledger,
+    )
+    .await?;
+    dest::write_collab(&client, &signer, repo, ledger, &collab_src, summary).await?;
+    if summary.counts.packs > 0 {
+        summary.warnings.push(
+            "the browse index (objectLocator) is not copied; the web app reads the repository \
+             whole-pack until the next push or `dg repack`"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Copy the git data: packs first (a ref must never name history that is not stored), then
+/// refs. Every write is charged to the ledger's budget before it is signed.
+#[allow(clippy::too_many_arguments)]
+async fn copy_git(
+    reader: &RepoReader<'_>,
+    v1: &RepoRef,
+    client: &PlatformClient,
+    signer: &Signer,
+    repo: &RepoRef,
+    role: Role,
+    todo: &Todo<'_>,
+    ledger: &mut Ledger<'_>,
+) -> Result<()> {
+    let svc = RepoService::new(client, &signer.identity, &signer.bridge);
     let pack_reader = PackReader::from_user_config();
-    for p in &packs_todo {
+    for p in &todo.packs {
         let hash = hex::encode(p.manifest.pack_hash);
         // Reading is free; charge only a pack that will actually be written.
-        let bytes = match reader.fetch_artifact(&v1, &p.manifest, &pack_reader).await {
+        let bytes = match reader.fetch_artifact(v1, &p.manifest, &pack_reader).await {
             Ok(b) => b,
-            // An external pack no URI serves any more (v1 packs pushed to a local bucket):
-            // nothing can read it, so there is nothing to copy. Its objects are missing
-            // from the v1 repo too; a clone that needs them fails either way.
+            // An external pack no URI serves any more: nothing can read it, so there is
+            // nothing to copy. Its objects are missing from the v1 repo too.
             Err(e) if !p.reupload() => {
                 ledger.warn(format!(
                     "v1 pack {} is stored externally and no recorded copy is readable ({e}); \
@@ -442,23 +455,18 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
         let (storage, chunk_count, mut uris) = if p.reupload() {
             let meta = forge_core::backends::PackMeta::for_bytes(&bytes);
             let stored = svc
-                .put_pack(&repo, &bytes, &meta)
+                .put_pack(repo, &bytes, &meta)
                 .await
                 .with_context(|| format!("uploading pack {hash}"))?;
-            (
-                0,
-                split(&bytes).len() as u64,
-                stored.into_iter().map(|u| u.0).collect::<Vec<_>>(),
-            )
+            let uris = stored.into_iter().map(|u| u.0).collect::<Vec<_>>();
+            (0, split(&bytes).len() as u64, uris)
         } else {
             (1, 0, Vec::new())
         };
         uris.extend(p.external.iter().cloned());
-        while !MANIFEST_URIS_V2.fits(&uris) {
-            uris.pop();
-        }
+        fit_uris(&mut uris);
         svc.write_pack_manifest(
-            &repo,
+            repo,
             &PackManifestInput {
                 pack_hash: p.manifest.pack_hash,
                 kind: u64::from(KIND_GIT_PACK),
@@ -478,16 +486,9 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
         ledger.counts.pack_bytes += bytes.len() as u64;
         ledger.reconcile().await;
     }
-    for (name, want, current) in &refs_todo {
-        let (Ok(new_oid), prev) = (
-            hex::decode(want),
-            current
-                .as_deref()
-                .map(hex::decode)
-                .transpose()
-                .ok()
-                .flatten(),
-        ) else {
+    for (name, want, current) in &todo.refs {
+        let prev = current.as_deref().map(hex::decode).transpose();
+        let (Ok(new_oid), Ok(prev)) = (hex::decode(want), prev) else {
             ledger.warn(format!("ref {name} has an unreadable tip; skipped"));
             continue;
         };
@@ -495,7 +496,7 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
             .budget
             .charge(git_doc_credits(REF_UPDATE_BYTES), format!("ref {name}"))?;
         match svc
-            .write_ref_update(&repo, name, &new_oid, prev.as_deref(), true)
+            .write_ref_update(repo, name, &new_oid, prev.as_deref(), true)
             .await
         {
             Ok(_) => ledger.counts.refs += 1,
@@ -508,68 +509,48 @@ async fn run_inner(cfg: &MigrateConfig, summary: &mut Summary) -> Result<()> {
         }
         ledger.reconcile().await;
     }
+    Ok(())
+}
 
-    // Members.
-    if !members_todo.is_empty() {
-        if repo.owner_id() == signer.id() {
-            let members = MemberService::new(&client, &signer.identity, &signer.bridge);
-            for c in &members_todo {
-                let role = if c.maintainer {
-                    Role::Maintainer
-                } else {
-                    Role::Writer
-                };
-                ledger.budget.charge(
-                    git_doc_credits(MEMBER_BYTES),
-                    format!("member {}", c.identity),
-                )?;
-                match members.grant(&repo, &c.identity, role).await {
-                    Ok(_) => ledger.counts.members += 1,
-                    Err(forge_core::Error::Config(why)) if why.contains("not an identity") => {
-                        ledger.warn(format!(
-                            "v1 collaborator {} does not exist on {}; not added",
-                            c.identity, cfg.network.network
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(
-                            anyhow::Error::from(e).context(format!("adding member {}", c.identity))
-                        )
-                    }
-                }
-                ledger.reconcile().await;
-            }
-        } else {
-            ledger.warn(format!(
-                "{} v1 collaborators were not added: only the repository owner ({}) can add members",
-                members_todo.len(),
-                repo.owner_id()
-            ));
-        }
+/// Grant the v1 collaborators their roles (only the repository owner can).
+async fn add_members(
+    client: &PlatformClient,
+    signer: &Signer,
+    repo: &RepoRef,
+    members: &[Collaborator],
+    network: &NetworkTarget,
+    ledger: &mut Ledger<'_>,
+) -> Result<()> {
+    if members.is_empty() {
+        return Ok(());
     }
-
-    // Issues, PRs and the rest.
-    let mut sink = Sink::new(
-        Collab::new(&client, &signer.identity, &signer.bridge),
-        Some(repo),
-        ledger,
-    );
-    let result = sink.sync(&collab_src).await;
-    sink.ledger.reconcile().await;
-    summary.counts = sink.ledger.counts;
-    summary
-        .warnings
-        .extend(std::mem::take(&mut sink.ledger.warnings));
-    summary.spent_credits = sink.ledger.budget.spent();
-    summary.balance_credits = client.get_balance(&signer.id()).await.ok();
-    summary.key = signer.key_info(&client).await;
-    result?;
-    if summary.counts.packs > 0 {
-        summary.warnings.push(
-            "the browse index (objectLocator) is not copied; the web app reads the repository \
-             whole-pack until the next push or `dg repack`"
-                .into(),
-        );
+    if repo.owner_id() != signer.id() {
+        ledger.warn(format!(
+            "{} v1 collaborators were not added: only the repository owner ({}) can add members",
+            members.len(),
+            repo.owner_id()
+        ));
+        return Ok(());
+    }
+    let svc = MemberService::new(client, &signer.identity, &signer.bridge);
+    for c in members {
+        ledger.budget.charge(
+            git_doc_credits(MEMBER_BYTES),
+            format!("member {}", c.identity),
+        )?;
+        match svc.grant(repo, &c.identity, c.role).await {
+            Ok(_) => ledger.counts.members += 1,
+            Err(forge_core::Error::Config(why)) if why.contains("not an identity") => {
+                ledger.warn(format!(
+                    "v1 collaborator {} does not exist on {}; not added",
+                    c.identity, network.network
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::Error::from(e).context(format!("adding member {}", c.identity)))
+            }
+        }
+        ledger.reconcile().await;
     }
     Ok(())
 }

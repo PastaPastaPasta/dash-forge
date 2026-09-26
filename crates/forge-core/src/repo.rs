@@ -348,7 +348,7 @@ impl<'a> RepoReader<'a> {
         Self { client }
     }
 
-    async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
+    pub(crate) async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
         repo.require_readable()?;
         let scope = repo.scope()?;
         let contract = self.client.fetch_contract(&scope.contract_id).await?;
@@ -399,54 +399,94 @@ impl<'a> RepoReader<'a> {
             .and_then(|d| d.field_str("defaultBranch")))
     }
 
-    /// One manifest's artifact, SHA-256-verified: external copies first (raced with
-    /// `reader`'s gateways), then the Platform chunks of this manifest's uploader.
+    /// One manifest's artifact, SHA-256-verified (see [`Self::fetch_artifact_from`]).
     pub async fn fetch_artifact(
         &self,
         repo: &RepoRef,
         manifest: &PackManifestInfo,
         reader: &PackReader,
     ) -> Result<Vec<u8>> {
-        let (scope, contract) = self.readable(repo).await?;
+        let (_, contract) = self.readable(repo).await?;
+        self.fetch_artifact_from(repo, &contract, manifest, reader)
+            .await
+    }
+
+    /// Fetch one manifest's artifact, SHA-256-verified against it.
+    ///
+    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
+    /// list (cheap, and needs no Platform queries). The Platform `chunk` copy is the last
+    /// resort — used when no external copy verifies, or when the manifest records none. On
+    /// v2 that copy is the chunks *this manifest's uploader* wrote.
+    pub async fn fetch_artifact_from(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> Result<Vec<u8>> {
         let expected = hex::encode(manifest.pack_hash);
-        let has_chunks = manifest.storage == 0;
+        let scope = repo.scope()?;
+        let own = Uri(scope.locator(&manifest.owner_id, &expected));
+        // Platform copies to read, in order: chunks another repo's scope holds (a fork's
+        // manifest names its parent's this way), then this manifest's own chunks.
+        // Only locators of THIS pack: a manifest naming another pack's chunks would have
+        // readers download them in full before the hash check refused them.
+        let mut platform: Vec<Uri> = manifest
+            .uris
+            .iter()
+            .map(|u| Uri(u.clone()))
+            .filter(|u| {
+                *u != own
+                    && crate::backends::PlatformLocator::parse(u)
+                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
+            })
+            .collect();
+        if manifest.storage == 0 {
+            platform.push(own);
+        }
+        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         if reader.has_candidates(&manifest.uris) {
-            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            // With chunks to fall back on, the external copies get a size-scaled budget
+            // after which no new candidate starts — dead gateways must not cost minutes per
+            // pack before the on-chain read, but a big pack streaming from a healthy mirror
+            // is not abandoned mid-transfer.
+            let budget =
+                (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
             match reader
                 .fetch_verified(&manifest.uris, &expected, size, budget)
                 .await
             {
                 Ok(bytes) => return Ok(bytes),
-                Err(e) if !has_chunks => return Err(e),
-                Err(e) => {
-                    tracing::info!(
-                        pack = %expected,
-                        error = %e,
-                        "no external copy verified; reading Platform chunks"
-                    );
-                }
+                Err(e) if platform.is_empty() => return Err(e),
+                Err(e) => tracing::info!(
+                    pack = %expected,
+                    error = %e,
+                    "no external copy verified; reading Platform chunks"
+                ),
             }
-        } else if !has_chunks {
+        } else if platform.is_empty() {
             return Err(Error::Io(format!(
                 "artifact {expected} is stored externally but its manifest records no URI this \
                  client can read ({:?})",
                 manifest.uris
             )));
         }
-        let owner = scope.is_v2().then_some(manifest.owner_id.as_str());
-        let bytes = crate::backends::platform::read_pack(
-            self.client,
-            &contract,
-            &scope,
-            owner,
-            manifest.pack_hash,
-        )
-        .await?;
-        if crate::backends::sha256(&bytes) != manifest.pack_hash {
-            return Err(Error::Integrity);
+        let mut last = Error::NotFound;
+        for locator in &platform {
+            match crate::backends::platform::read_pack(self.client, contract, &scope, locator).await
+            {
+                Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
+                    return Ok(bytes)
+                }
+                Ok(_) => last = Error::Integrity,
+                Err(e) => {
+                    tracing::info!(%locator, error = %e, "Platform copy unreadable");
+                    last = e;
+                }
+            }
         }
-        Ok(bytes)
+        Err(last)
     }
 }
 
@@ -533,10 +573,7 @@ impl<'a> RepoService<'a> {
 
     /// The scope and contract of `repo`, for reading (a repo this client can read).
     async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
-        repo.require_readable()?;
-        let scope = repo.scope()?;
-        let contract = self.client.fetch_contract(&scope.contract_id).await?;
-        Ok((scope, contract))
+        RepoReader::new(self.client).readable(repo).await
     }
 
     /// The writable (v2) scope and contract of `repo`, or [`Error::V1ReadOnly`].
@@ -860,12 +897,8 @@ impl<'a> RepoService<'a> {
             .await
     }
 
-    /// Fetch one manifest's artifact, SHA-256-verified against it.
-    ///
-    /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
-    /// list (cheap, and needs no Platform queries). The Platform `chunk` copy is the last
-    /// resort — used when no external copy verifies, or when the manifest records none. On
-    /// v2 that copy is the chunks *this manifest's uploader* wrote.
+    /// Fetch one manifest's artifact, SHA-256-verified against it (see
+    /// [`RepoReader::fetch_artifact_from`]; reading needs no signer).
     pub async fn fetch_artifact_from(
         &self,
         repo: &RepoRef,
@@ -873,70 +906,9 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInfo,
         reader: &PackReader,
     ) -> Result<Vec<u8>> {
-        let expected = hex::encode(manifest.pack_hash);
-        let scope = repo.scope()?;
-        let own = Uri(scope.locator(&manifest.owner_id, &expected));
-        // Platform copies to read, in order: chunks another repo's scope holds (a fork's
-        // manifest names its parent's this way), then this manifest's own chunks.
-        // Only locators of THIS pack: a manifest naming another pack's chunks would have
-        // readers download them in full before the hash check refused them.
-        let mut platform: Vec<Uri> = manifest
-            .uris
-            .iter()
-            .map(|u| Uri(u.clone()))
-            .filter(|u| {
-                *u != own
-                    && crate::backends::PlatformLocator::parse(u)
-                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
-            })
-            .collect();
-        if manifest.storage == 0 {
-            platform.push(own);
-        }
-        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
-        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        if reader.has_candidates(&manifest.uris) {
-            // With chunks to fall back on, the external copies get a size-scaled budget
-            // after which no new candidate starts — dead gateways must not cost minutes per
-            // pack before the on-chain read, but a big pack streaming from a healthy mirror
-            // is not abandoned mid-transfer.
-            let budget =
-                (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
-            match reader
-                .fetch_verified(&manifest.uris, &expected, size, budget)
-                .await
-            {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) if platform.is_empty() => return Err(e),
-                Err(e) => tracing::info!(
-                    pack = %expected,
-                    error = %e,
-                    "no external copy verified; reading Platform chunks"
-                ),
-            }
-        } else if platform.is_empty() {
-            return Err(Error::Io(format!(
-                "artifact {expected} is stored externally but its manifest records no URI this \
-                 client can read ({:?})",
-                manifest.uris
-            )));
-        }
-        let engine = self.doc_engine()?;
-        let backend = PlatformBackend::new(&engine, contract, &scope, self.identity.id());
-        let mut last = Error::NotFound;
-        for locator in &platform {
-            match backend.get(locator, None).await {
-                Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
-                    return Ok(bytes)
-                }
-                Ok(_) => last = Error::Integrity,
-                Err(e) => {
-                    tracing::info!(%locator, error = %e, "Platform copy unreadable");
-                    last = e;
-                }
-            }
-        }
-        Err(last)
+        RepoReader::new(self.client)
+            .fetch_artifact_from(repo, contract, manifest, reader)
+            .await
     }
 
     /// Read `pack_hash` from the best copy that verifies (forge-v2 §4 reader rule):

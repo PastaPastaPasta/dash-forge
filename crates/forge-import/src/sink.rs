@@ -58,11 +58,6 @@ impl<'a> Ledger<'a> {
         }
     }
 
-    /// Whether this is a dry run.
-    pub fn dry_run(&self) -> bool {
-        self.dry_run
-    }
-
     /// Record a warning (also logged).
     pub fn warn(&mut self, msg: impl Into<String>) {
         let msg = msg.into();

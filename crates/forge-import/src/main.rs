@@ -211,27 +211,17 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Migrate(m)) => {
-            let skip = |what: &str| m.skip.iter().any(|s| s == what);
-            let source_network = NetworkSettings::from_flags(
-                Some(m.from_network.clone()),
-                m.from_devnet_name.clone(),
-                None,
-            )
-            .resolve()
-            .context("resolving --from-network")?;
+            let (classes, members) = Classes::from_skip(&m.skip);
             let cfg = MigrateConfig {
                 source: m.source.clone(),
-                source_network,
+                source_network: migrate::source_network(
+                    &m.from_network,
+                    m.from_devnet_name.clone(),
+                )?,
                 dest: m.repo.clone(),
                 network: target(&m.net)?,
-                classes: Classes {
-                    code: true,
-                    issues: !skip("issues"),
-                    prs: !skip("prs"),
-                    labels: !skip("labels"),
-                    releases: !skip("releases"),
-                },
-                members: !skip("members"),
+                classes,
+                members,
                 max_spend: m.max_spend.map(dash_to_credits).transpose()?,
                 dry_run: m.dry_run,
                 yes: m.yes,
@@ -256,7 +246,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 limit: r.limit,
                 network: target(&r.net)?,
                 key: key(&r.net),
-                backend_mode: 0,
             };
             Ok(finish(&importer::run(&cfg).await, r.summary_json.as_ref()))
         }

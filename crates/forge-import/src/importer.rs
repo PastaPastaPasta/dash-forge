@@ -11,12 +11,10 @@
 //! A re-run with nothing new writes nothing and costs nothing: git sees up-to-date refs,
 //! and the collaboration diff finds every item already there (see [`crate::sink`]).
 
-use std::io::IsTerminal as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::Collab;
 use forge_core::network::NetworkTarget;
 use forge_core::platform::PlatformClient;
 use forge_core::repo::credits_to_dash;
@@ -25,7 +23,7 @@ use crate::budget::Budget;
 use crate::dest::{self, Signer, REPO_CREATE_CREDITS};
 use crate::github::{GithubClient, GithubRepoRef};
 use crate::gitsync::{GitPusher, PushReport};
-use crate::sink::{Ledger, Sink};
+use crate::sink::Ledger;
 use crate::source_github::{self, Classes};
 use crate::state::{self, SyncState};
 use crate::summary::{Status, Summary};
@@ -54,31 +52,19 @@ pub struct ImportConfig {
     pub network: NetworkTarget,
     /// The signing identity source; optional for a dry run.
     pub key: Option<PathBuf>,
-    /// Storage backend mode advertised by a freshly created repo.
-    pub backend_mode: u8,
 }
 
-/// Run an import. Always returns a summary; `Err` only for failures before one exists.
+/// Run an import. Always returns a summary (a failure is its status and error).
 pub async fn run(cfg: &ImportConfig) -> Summary {
     let mut summary = Summary::new(
         cfg.network.network.key(),
         format!("github.com/{}", cfg.source.slug()),
     );
-    match run_inner(cfg, &mut summary).await {
-        Ok(()) => {}
-        Err(e) => {
-            summary.status = if e.downcast_ref::<crate::budget::CapExceeded>().is_some() {
-                Status::CapExceeded
-            } else {
-                Status::Error
-            };
-            summary.error = Some(forge_core::user_error::redact(&format!("{e:#}")));
-        }
-    }
-    summary
+    let result = run_inner(cfg, &mut summary).await;
+    dest::finish(summary, result)
 }
 
-#[allow(clippy::too_many_lines)] // one sequential run: read, price, write
+#[allow(clippy::too_many_lines)] // one sequential run: read, price, confirm, write
 async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
     let started = state::now();
     let gh = GithubClient::new(cfg.source.clone());
@@ -87,11 +73,7 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
     let client = PlatformClient::connect(cfg.network.clone())
         .await
         .context("connecting to Dash Platform")?;
-    let signer = match &cfg.key {
-        Some(k) => Some(Signer::load(&client, k).await?),
-        None if cfg.dry_run => None,
-        None => anyhow::bail!("no signing identity: pass --identity <file> or set DASH_FORGE_KEY"),
-    };
+    let signer = Signer::load_opt(&client, cfg.key.as_deref(), cfg.dry_run).await?;
     let signer_id = signer.as_ref().map(Signer::id);
     let spec = cfg
         .dest
@@ -100,42 +82,32 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
     let mut dest = dest::resolve(&client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
 
-    let mut budget = Budget::new(cfg.max_spend);
-    if let Some(s) = &signer {
-        budget.start(s.identity.balance());
-    }
-
     // Collaboration data (diffed on chain; `since` narrows what GitHub is asked for).
+    let existing_id = dest.existing.as_ref().map(|r| r.id().to_string());
     let mut sync_state = SyncState::load(
         cfg.state_path.as_deref(),
         &summary.source,
-        &dest
-            .existing
-            .as_ref()
-            .map(|r| r.id().to_string())
-            .unwrap_or_default(),
+        existing_id.as_deref().unwrap_or_default(),
     );
     let since = sync_state.since();
     let collab_src =
         source_github::collect(&gh, &cfg.source, cfg.classes, since.as_deref(), cfg.limit)?;
 
     // Git data.
-    let work = match &cfg.work_dir {
-        Some(d) => d.clone(),
-        None => std::env::temp_dir().join(format!(
+    let work = cfg.work_dir.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
             "forge-import-{}-{}-{}",
             cfg.source.owner,
             cfg.source.repo,
             std::process::id()
-        )),
-    };
+        ))
+    });
     let _cleanup = cfg.work_dir.is_none().then(|| TempDir(work.clone()));
     if cfg.classes.code {
         gh.sync_mirror(&work).context("mirroring the git data")?;
     }
 
-    // Price everything, then the up-front cap check. The git push can only be priced by the
-    // helper once the repository exists.
+    // Price everything, then the up-front cap check.
     let create = dest.existing.is_none();
     let git_pusher = |url: String| GitPusher {
         git_dir: work.clone(),
@@ -151,19 +123,12 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
         // A new repo (or no identity to ask the helper with): price the whole pack.
         _ => crate::gitsync::estimate_fresh(&work, cfg.classes.prs)?,
     };
-    let dry = {
-        let mut dry = Sink::new(
-            Collab::reader(&client),
-            dest.existing.clone(),
-            Ledger::new(&client, signer_id.clone(), true, Budget::new(None)),
-        );
-        dry.sync(&collab_src).await?;
-        dry.ledger
-    };
+    let dry = dest::dry_collab(&client, dest.existing.clone(), signer_id, &collab_src).await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let estimate = create_credits + push_estimate.est_credits + collab_estimate;
     summary.estimate_credits = estimate;
+    let mut budget = Budget::new(cfg.max_spend);
     budget.check_plan(estimate)?;
     eprintln!(
         "{} → {}: estimated {:.6} DASH (repo {:.6}, git {:.6}, issues/PRs/releases {:.6})",
@@ -177,17 +142,14 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
 
     if cfg.dry_run {
         summary.counts = dry.counts;
-        summary.counts.refs = push_estimate.refs;
-        summary.counts.packs = push_estimate.packs;
-        summary.counts.pack_bytes = push_estimate.pack_bytes;
+        summary.counts.add_push(&push_estimate);
         summary.warnings.extend(dry.warnings);
         summary.status = Status::DryRun;
         return Ok(());
     }
-    let signer = signer.expect("checked above");
-    if estimate > 0 && !confirm(cfg, estimate)? {
-        anyhow::bail!("cancelled");
-    }
+    let signer = signer.expect("load_opt returns a signer outside a dry run");
+    dest::confirm(cfg.yes, estimate)?;
+    budget.start(signer.identity.balance());
 
     // 1. The repository.
     if create {
@@ -206,70 +168,32 @@ async fn run_inner(cfg: &ImportConfig, summary: &mut Summary) -> Result<()> {
             &mut dest,
             &description,
             &meta.default_branch,
-            cfg.backend_mode,
         )
         .await?;
         summary.repo = dest.info(created);
-        budget.reconcile(client.get_balance(&signer.id()).await.unwrap_or(u64::MAX));
     }
     let repo = dest.existing.clone().expect("created or existing");
     dest::require_member(&client, &repo, &signer.id()).await?;
-    if sync_state.repo_id.is_empty() {
+    if existing_id.is_none() {
         sync_state = SyncState::load(cfg.state_path.as_deref(), &summary.source, repo.id());
     }
 
     // 2. Git data: priced (again, now that the repo exists), charged, pushed.
     let mut ledger = Ledger::new(&client, Some(signer.id()), false, budget);
+    ledger.reconcile().await;
     if cfg.classes.code {
         let pusher = git_pusher(dest.url());
         let est = pusher.estimate()?;
         if est.refs > 0 {
             ledger.budget.charge(est.est_credits, "the git push")?;
-            let done = pusher.push()?;
-            ledger.counts.refs = done.refs;
-            ledger.counts.packs = done.packs;
-            ledger.counts.pack_bytes = done.pack_bytes;
+            ledger.counts.add_push(&pusher.push()?);
             ledger.reconcile().await;
         }
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases.
-    let mut sink = Sink::new(
-        Collab::new(&client, &signer.identity, &signer.bridge),
-        Some(repo),
-        ledger,
-    );
-    let result = sink.sync(&collab_src).await;
-    sink.ledger.reconcile().await;
-    summary.counts = sink.ledger.counts;
-    summary
-        .warnings
-        .extend(std::mem::take(&mut sink.ledger.warnings));
-    summary.spent_credits = sink.ledger.budget.spent();
-    summary.balance_credits = client.get_balance(&signer.id()).await.ok();
-    summary.key = signer.key_info(&client).await;
-    result?;
-    sync_state.save(started)?;
-    Ok(())
-}
-
-/// The cost confirmation: `--yes` skips it; without a terminal it refuses.
-fn confirm(cfg: &ImportConfig, credits: u64) -> Result<bool> {
-    if cfg.yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        anyhow::bail!(
-            "refusing to spend without confirmation on a non-interactive stdin; pass --yes"
-        );
-    }
-    eprint!("Proceed (~{:.6} DASH)? [y/N] ", credits_to_dash(credits));
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    dest::write_collab(&client, &signer, repo, ledger, &collab_src, summary).await?;
+    sync_state.save(started)
 }
 
 /// Removes a temporary directory on drop.
