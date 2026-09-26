@@ -63,7 +63,7 @@ Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base int
 
 ## E106
 
-**Partially completed.** `dg import` or `dg migrate` finished, but some items were not mirrored: an issue or PR whose number is held by someone else, a document the destination refused, the optional push of open pull request heads, or (migrate) a ref whose history needs a v1 pack that could not be copied. The warnings name each one, and `counts.skipped` / `counts.gitSkipped` in the `--json` summary count them. Everything else was written.
+**Partially completed.** `dg import` finished, but some items were not mirrored: an issue or PR whose number is held by someone else, a document the destination refused, or the optional push of open pull request heads. The warnings name each one, and `counts.skipped` / `counts.gitSkipped` in the `--json` summary count them. Everything else was written.
 
 Fix: run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
 
@@ -206,7 +206,7 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 **v1 repository is read only.** The repository is a forge-v1 repository (one data contract per repo). v1 repositories can still be cloned, fetched and viewed, but nothing writes to them any more. The refusal happens before anything is signed.
 
-Fix: copy it to forge-v2 with `dg migrate <owner>/<name> --from-network testnet` (refs, packs, issues, PRs, labels, releases and members; `--dry-run` prices it first), or create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there.
+Fix: create a forge-v2 repository (`dg repo create <name>`, about 0.001 DASH) and push there. `dg migrate`, which moves a v1 repository to forge-v2, is coming soon.
 
 ## E701
 

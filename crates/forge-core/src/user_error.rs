@@ -116,7 +116,7 @@ pub mod codes {
     pub const CHECKS_FAILED: &str = "E104";
     /// `dg pr merge` cannot merge without a person: the head and base conflict.
     pub const MERGE_CONFLICT: &str = "E105";
-    /// `dg import` / `dg migrate` finished, but skipped some items; a re-run retries them.
+    /// `dg import` finished, but skipped some items; a re-run retries them.
     pub const PARTIAL: &str = "E106";
     /// Arguments that do not make sense together.
     pub const USAGE: &str = "E201";
@@ -556,10 +556,8 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             ctx.headline(&format!("{repo} is a v1 repository, which is read only")),
         )
         .cause("forge-v1 repositories (one contract each) can still be cloned and viewed, but no longer written")
-        .fix(format!(
-            "copy it to forge-v2 with `dg migrate {repo} --from-network testnet`, or create a \
-             forge-v2 repository (`dg repo create <name>`) and push there"
-        )),
+        .fix("create a forge-v2 repository (`dg repo create <name>`) and push there")
+        .note("`dg migrate` (moving a v1 repo to forge-v2) is coming soon"),
         CoreError::V2NotDeployed { network } => UserError::new(
             codes::NOT_DEPLOYED,
             ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),

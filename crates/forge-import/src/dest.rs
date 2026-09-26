@@ -1,6 +1,6 @@
-//! The destination: a forge-v2 repository the signer mirrors into. Shared by `import` and
-//! `migrate`: resolve (or create) the repository, check the signer can write what the run
-//! needs, and read the signing key's limits for the summary.
+//! The destination: a forge-v2 repository the signer mirrors into. Resolve (or create) the
+//! repository, check the signer can write what the run needs, and read the signing key's
+//! limits for the summary.
 
 use std::path::Path;
 

@@ -196,89 +196,63 @@ impl<'a> PlatformBackend<'a> {
     fn locator_uri(&self, pack_hash: &str) -> Uri {
         Uri(self.scope.locator(&self.writer, pack_hash))
     }
-}
 
-/// The scope a locator's chunks are read from, given the reading repo's `own` scope: its
-/// own, or on forge-v2 another repo's in the same contract (a fork's manifest names its
-/// parent's chunks, which chunk reads can address because the chunk key is `(repoId,
-/// uploader, pack, seq)`). A locator into another contract is refused. Pointing at other
-/// chunks is harmless: the bytes are verified against the pack hash.
-fn read_scope(own: &DocScope, loc: &PlatformLocator) -> Result<DocScope> {
-    if loc.repo.is_none() || !own.is_v2() {
-        return Ok(own.clone());
-    }
-    let scope = loc.scope()?;
-    if scope.contract_id != own.contract_id {
-        return Err(Error::Config(format!(
-            "platform locator names contract {}, not this repository's {}",
-            scope.contract_id, own.contract_id
-        )));
-    }
-    Ok(scope)
-}
-
-/// Read and reassemble the pack a `platform://` locator names, from the chunks in
-/// `contract` (see [`read_scope`] for which scope), with only a client: no signer is needed
-/// to read. Not hash-verified; the caller compares against the pack hash.
-pub async fn read_pack(
-    client: &crate::platform::PlatformClient,
-    contract: &LoadedContract,
-    own: &DocScope,
-    locator: &Uri,
-) -> Result<Vec<u8>> {
-    let loc = PlatformLocator::parse(locator)?;
-    let scope = read_scope(own, &loc)?;
-    let chunks = read_chunks(
-        client,
-        contract,
-        &scope,
-        loc.owner.as_deref(),
-        loc.pack_hash,
-    )
-    .await?;
-    if chunks.is_empty() {
-        return Err(Error::NotFound);
-    }
-    Ok(join(&chunks))
-}
-
-async fn read_chunks(
-    client: &crate::platform::PlatformClient,
-    contract: &LoadedContract,
-    scope: &DocScope,
-    owner: Option<&str>,
-    pack_hash: [u8; 32],
-) -> Result<Vec<Chunk>> {
-    let docs = client
-        .query_all_documents(
-            contract,
-            CHUNK_DOC_TYPE,
-            &scope.chunk_filters(owner, pack_hash)?,
-            &[QueryOrder::asc(FIELD_SEQ)],
-        )
-        .await?;
-    let mut chunks = docs
-        .iter()
-        .map(|d| decode_chunk_doc(&d.fields))
-        .collect::<Result<Vec<Chunk>>>()?;
-    // The (packHash, seq) index already returns seq-ordered, but sort defensively so
-    // reassembly never depends on traversal order.
-    chunks.sort_by_key(|c| c.seq);
-
-    // Diagnosable-integrity pre-check: chunk seqs must be the contiguous run 0..N. A
-    // missing chunk would otherwise surface only as an opaque whole-pack SHA-256
-    // mismatch downstream; report exactly which seq is absent instead.
-    for (i, chunk) in chunks.iter().enumerate() {
-        if usize::try_from(chunk.seq) != Ok(i) {
+    /// The scope a locator's chunks are read from: this backend's own, or on forge-v2
+    /// another repo's in the same contract (a fork's manifest names its parent's chunks,
+    /// which chunk reads can address because the chunk key is `(repoId, uploader, pack,
+    /// seq)`). A locator into another contract is refused: this backend holds one contract.
+    /// Pointing at other chunks is harmless: the bytes are verified against the pack hash.
+    fn read_scope(&self, loc: &PlatformLocator) -> Result<DocScope> {
+        if loc.repo.is_none() || !self.scope.is_v2() {
+            return Ok(self.scope.clone());
+        }
+        let scope = loc.scope()?;
+        if scope.contract_id != self.scope.contract_id {
             return Err(Error::Config(format!(
-                "pack storage incomplete: expected chunk seq {i} but found {}; \
-                 {} chunk(s) present (a chunk failed to store or was deleted)",
-                chunk.seq,
-                chunks.len()
+                "platform locator names contract {}, not this repository's {}",
+                scope.contract_id, self.scope.contract_id
             )));
         }
+        Ok(scope)
     }
-    Ok(chunks)
+
+    /// Read every `chunk` document of `owner`'s copy of `pack_hash` (complete, `seq`
+    /// ordered) and decode each to a [`Chunk`]. `owner` is required on forge-v2.
+    async fn read_chunks(&self, loc: &PlatformLocator) -> Result<Vec<Chunk>> {
+        let scope = self.read_scope(loc)?;
+        let docs = self
+            .engine
+            .client()
+            .query_all_documents(
+                self.contract,
+                CHUNK_DOC_TYPE,
+                &scope.chunk_filters(loc.owner.as_deref(), loc.pack_hash)?,
+                &[QueryOrder::asc(FIELD_SEQ)],
+            )
+            .await?;
+        let mut chunks = docs
+            .iter()
+            .map(|d| decode_chunk_doc(&d.fields))
+            .collect::<Result<Vec<Chunk>>>()?;
+        // The (packHash, seq) index already returns seq-ordered, but sort defensively so
+        // reassembly never depends on traversal order.
+        chunks.sort_by_key(|c| c.seq);
+
+        // Diagnosable-integrity pre-check: chunk seqs must be the contiguous run 0..N. A
+        // missing chunk would otherwise surface only as an opaque whole-pack SHA-256
+        // mismatch downstream; report exactly which seq is absent instead.
+        for (i, chunk) in chunks.iter().enumerate() {
+            if usize::try_from(chunk.seq) != Ok(i) {
+                return Err(Error::Config(format!(
+                    "pack storage incomplete: expected chunk seq {i} but found {}; \
+                     {} chunk(s) present (a chunk failed to store or was deleted)",
+                    chunk.seq,
+                    chunks.len()
+                )));
+            }
+        }
+        Ok(chunks)
+    }
 }
 
 #[async_trait::async_trait]
@@ -321,7 +295,12 @@ impl PackBackend for PlatformBackend<'_> {
         // the pure `crate::pack::join`. A ranged read slices the reassembled bytes — the
         // platform tier serves whole chunks, so partial fetch is a post-join slice (the
         // browse plane's per-object ranged reads run over the locator, not raw chunks).
-        let bytes = read_pack(self.engine.client(), self.contract, self.scope, uri).await?;
+        let loc = PlatformLocator::parse(uri)?;
+        let chunks = self.read_chunks(&loc).await?;
+        if chunks.is_empty() {
+            return Err(Error::NotFound);
+        }
+        let bytes = join(&chunks);
         match range {
             None => Ok(bytes),
             Some(r) => {
@@ -350,7 +329,8 @@ impl PackBackend for PlatformBackend<'_> {
             .query_documents(
                 self.contract,
                 CHUNK_DOC_TYPE,
-                &read_scope(self.scope, &loc)?
+                &self
+                    .read_scope(&loc)?
                     .chunk_filters(loc.owner.as_deref(), loc.pack_hash)?,
                 &[QueryOrder::asc(FIELD_SEQ)],
                 1,

@@ -30,7 +30,7 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login`. The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.28 DASH/MiB.
 
-> **Network.** The importer writes **forge-v2** repositories (about **0.001 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`) and come to mainnet after Platform protocol 14 activates. Testnet only has read-only forge-v1 repositories; `dg migrate` copies one to forge-v2.
+> **Network.** The importer writes **forge-v2** repositories (about **0.001 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`) and come to mainnet after Platform protocol 14 activates.
 
 ---
 
@@ -86,8 +86,6 @@ A run with `--limit` that left items out does not advance `--state` either, and 
 ```sh
 dg storage use r2-main --global
 ```
-
-**From forge-v1.** `dg migrate <owner>/<name> --from-network testnet` copies a v1 repository into forge-v2. It copies the live packs and every ref. Platform chunks are re-uploaded. A pack on external storage is referenced by its public copies only: `https://` on a public host without credentials or a query string (no presigned URLs), or `ipfs://`. `s3://` locators, private, local and credentialed addresses are never republished under your identity. A pack with no public copy is not copied. Each ref is then checked (the copied packs are indexed locally and its history walked), and a ref is written only when its whole history is stored without the missing packs, since a ref must never name history the repository does not store. Release asset URIs go through the same filter. It copies issues, PRs, comments, reviews, labels and releases with their numbers. The v1 token holders become `maintainer` / `writer` members. `--dry-run` prices it first.
 
 ---
 

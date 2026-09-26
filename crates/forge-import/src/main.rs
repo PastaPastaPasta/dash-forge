@@ -1,5 +1,5 @@
 //! `forge-import`: mirror a GitHub repository into forge-v2 (once, or incrementally from CI),
-//! migrate a forge-v1 repository, or run the gist author-claim check.
+//! or run the gist author-claim check.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -11,7 +11,6 @@ use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_import::budget::dash_to_credits;
 use forge_import::github::GithubRepoRef;
 use forge_import::importer::{self, ImportConfig};
-use forge_import::migrate::{self, MigrateConfig};
 use forge_import::source_github::Classes;
 use forge_import::summary::{Status, Summary};
 
@@ -20,7 +19,7 @@ use forge_import::summary::{Status, Summary};
 #[command(
     name = "forge-import",
     version = env!("DASH_FORGE_VERSION"),
-    about = "Mirror a GitHub repository into Dash Forge (forge-v2), or migrate a forge-v1 repository",
+    about = "Mirror a GitHub repository into Dash Forge (forge-v2)",
     args_conflicts_with_subcommands = true
 )]
 struct Cli {
@@ -102,8 +101,6 @@ struct NetArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Copy a forge-v1 repository into a forge-v2 repository.
-    Migrate(Box<MigrateArgs>),
     /// Check a GitHub author claim (signed gist challenge).
     Claim {
         /// The GitHub login being claimed.
@@ -112,38 +109,6 @@ enum Command {
         #[arg(long)]
         gist: String,
     },
-}
-
-#[derive(Debug, clap::Args)]
-struct MigrateArgs {
-    /// The v1 repository: `owner/name` or its contract id.
-    source: String,
-    /// The network the v1 repository is on (default: testnet).
-    #[arg(long, default_value = "testnet", value_parser = ["testnet", "mainnet", "devnet"])]
-    from_network: String,
-    /// Its devnet name, when `--from-network devnet`.
-    #[arg(long)]
-    from_devnet_name: Option<String>,
-    /// Destination repository (default: the v1 name, yours).
-    #[arg(long)]
-    repo: Option<String>,
-    /// Skip issues, prs, labels, releases or members (repeatable).
-    #[arg(long, value_parser = ["issues", "prs", "labels", "releases", "members"])]
-    skip: Vec<String>,
-    /// Hard cap, in DASH.
-    #[arg(long, value_name = "DASH")]
-    max_spend: Option<f64>,
-    /// Plan and price only.
-    #[arg(long)]
-    dry_run: bool,
-    /// Do not ask for confirmation.
-    #[arg(long, short = 'y')]
-    yes: bool,
-    /// Write the run summary as JSON here.
-    #[arg(long)]
-    summary_json: Option<PathBuf>,
-    #[command(flatten)]
-    net: NetArgs,
 }
 
 fn target(net: &NetArgs) -> Result<NetworkTarget> {
@@ -221,25 +186,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Migrate(m)) => {
-            let (classes, members) = Classes::from_skip(&m.skip);
-            let cfg = MigrateConfig {
-                source: m.source.clone(),
-                source_network: migrate::source_network(
-                    &m.from_network,
-                    m.from_devnet_name.clone(),
-                )?,
-                dest: m.repo.clone(),
-                network: target(&m.net)?,
-                classes,
-                members,
-                max_spend: m.max_spend.map(dash_to_credits).transpose()?,
-                dry_run: m.dry_run,
-                yes: m.yes,
-                key: key(&m.net),
-            };
-            Ok(finish(&migrate::run(&cfg).await, m.summary_json.as_ref()))
-        }
         None => {
             let source = cli
                 .source
@@ -298,25 +244,5 @@ mod tests {
         assert_eq!(cli.source.as_deref(), Some("o/r"));
         assert_eq!(cli.run.max_spend, Some(0.05));
         assert!(cli.command.is_none());
-    }
-
-    #[test]
-    fn parses_migrate() {
-        let cli = Cli::try_parse_from([
-            "forge-import",
-            "migrate",
-            "8hJm/m1",
-            "--from-network",
-            "testnet",
-            "--skip",
-            "members",
-            "--dry-run",
-        ])
-        .unwrap();
-        let Some(Command::Migrate(m)) = cli.command else {
-            panic!("expected migrate")
-        };
-        assert_eq!(m.skip, vec!["members"]);
-        assert!(m.dry_run);
     }
 }

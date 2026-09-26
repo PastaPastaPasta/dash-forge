@@ -30,8 +30,6 @@ pub struct Counts {
     pub releases: u64,
     /// Label definitions.
     pub labels: u64,
-    /// Members granted (migrate).
-    pub members: u64,
     /// Items that could not be mirrored this run (see the warnings); a run with any is
     /// `partial`, and its state does not advance.
     pub skipped: u64,
@@ -165,7 +163,7 @@ impl Summary {
         eprintln!("{} → {} ({})", self.source, self.repo.url, self.network);
         eprintln!(
             "  {label}: {} ref updates · {} packs ({}) · {} issues · {} PRs · {} comments · \
-             {} reviews · {} events · {} releases · {} labels{}",
+             {} reviews · {} events · {} releases · {} labels",
             c.refs,
             c.packs,
             forge_core::storage::human_bytes(c.pack_bytes),
@@ -175,12 +173,7 @@ impl Summary {
             c.reviews,
             c.events,
             c.releases,
-            c.labels,
-            if c.members > 0 {
-                format!(" · {} members", c.members)
-            } else {
-                String::new()
-            }
+            c.labels
         );
         if self.status == Status::DryRun {
             eprintln!(

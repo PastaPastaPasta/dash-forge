@@ -16,14 +16,14 @@ use forge_core::repo::credits_to_dash;
 const DOC_SYSTEM_OVERHEAD: u64 = 180;
 
 /// Index and count-tree storage a forge-collab document pays beyond its bytes, credits.
-/// Measured on moutai (forge-v2): 45 migrated collab docs (issues, comments, events,
+/// Measured on moutai (forge-v2): 45 collab docs (issues, comments, events,
 /// labels) cost about 42M credits each beyond their bytes; rounded up.
 const COLLAB_INDEX_OVERHEAD: u64 = 45_000_000;
 
-/// Index storage a forge-v2 git-data document (`chunk`, `packManifest`, `refUpdate`,
-/// membership) pays beyond its bytes, credits. Measured on moutai: a `dg migrate` of 25 ref
-/// updates, 121 manifests and 115 chunks cost 0.1998 DASH against 0.0571 by bytes alone,
-/// about 55M credits a document (v2 indexes carry `repoId` and the uploader).
+/// Index storage a forge-v2 git-data document (`chunk`, `packManifest`, `refUpdate`) pays
+/// beyond its bytes, credits. Measured on moutai: 25 ref updates, 121 manifests and 115
+/// chunks cost 0.1998 DASH against 0.0571 by bytes alone, about 55M credits a document
+/// (v2 indexes carry `repoId` and the uploader).
 pub const GIT_DOC_INDEX_OVERHEAD: u64 = 55_000_000;
 
 /// The estimated credits of one forge-v2 git-data document of `bytes` bytes.

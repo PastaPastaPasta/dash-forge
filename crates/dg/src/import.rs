@@ -1,4 +1,4 @@
-//! `dg import` / `dg migrate`: thin wrappers over the forge-import library. Same engine as
+//! `dg import`: a thin wrapper over the forge-import library. Same engine as
 //! the `forge-import` binary (and the GitHub Mirror Action): estimate first, `--max-spend`
 //! checked before every write, idempotent re-runs.
 
@@ -10,7 +10,6 @@ use forge_core::user_error::{codes, UserError};
 use forge_import::budget::dash_to_credits;
 use forge_import::github::GithubRepoRef;
 use forge_import::importer::{self, ImportConfig};
-use forge_import::migrate::{self, MigrateConfig};
 use forge_import::source_github::Classes;
 use forge_import::summary::{Status, Summary};
 
@@ -40,31 +39,6 @@ pub struct ImportArgs {
     /// Import at most this many issues and PRs (0 = all).
     #[arg(long, default_value_t = 0)]
     pub limit: usize,
-}
-
-/// `dg migrate` options.
-#[derive(Debug, clap::Args)]
-pub struct MigrateArgs {
-    /// The forge-v1 repository: `owner/name` or its contract id.
-    pub source: String,
-    /// The network it is on.
-    #[arg(long, default_value = "testnet", value_parser = ["testnet", "mainnet", "devnet"])]
-    pub from_network: String,
-    /// Its devnet name, when `--from-network devnet`.
-    #[arg(long)]
-    pub from_devnet_name: Option<String>,
-    /// Destination repository (default: the v1 name, yours).
-    #[arg(long)]
-    pub repo: Option<String>,
-    /// Leave out issues, prs, labels, releases or members (repeatable).
-    #[arg(long, value_parser = ["issues", "prs", "labels", "releases", "members"])]
-    pub skip: Vec<String>,
-    /// Hard cap in DASH, checked before every write.
-    #[arg(long, value_name = "DASH")]
-    pub max_spend: Option<f64>,
-    /// Price only; write nothing.
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 fn max_spend(dash: Option<f64>) -> Result<Option<u64>> {
@@ -140,22 +114,4 @@ pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
         key: ctx.identity_path.clone(),
     };
     report(ctx, &importer::run(&cfg).await)
-}
-
-/// `dg migrate`.
-pub async fn migrate(ctx: &Ctx, a: &MigrateArgs) -> Result<()> {
-    let (classes, members) = Classes::from_skip(&a.skip);
-    let cfg = MigrateConfig {
-        source: a.source.clone(),
-        source_network: migrate::source_network(&a.from_network, a.from_devnet_name.clone())?,
-        dest: a.repo.clone(),
-        network: ctx.target.clone(),
-        classes,
-        members,
-        max_spend: max_spend(a.max_spend)?,
-        dry_run: a.dry_run,
-        yes: ctx.yes,
-        key: ctx.identity_path.clone(),
-    };
-    report(ctx, &migrate::run(&cfg).await)
 }

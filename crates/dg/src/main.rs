@@ -162,8 +162,6 @@ pub enum Command {
     Webhook(webhook::WebhookCommand),
     /// Import (or re-sync) a GitHub repository into forge-v2: code, issues, PRs, releases.
     Import(Box<import::ImportArgs>),
-    /// Copy a forge-v1 repository into forge-v2 (code, issues, PRs, members).
-    Migrate(Box<import::MigrateArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
         /// Apply the safe automatic fixes (create config directories with 0700, set missing
@@ -979,7 +977,6 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo, to, profile, ..
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import(args) => import::import(ctx, args).await,
-        Command::Migrate(args) => import::migrate(ctx, args).await,
         Command::Doctor { fix } => doctor::run(ctx, *fix).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
