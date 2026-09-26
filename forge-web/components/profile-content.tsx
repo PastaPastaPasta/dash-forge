@@ -14,12 +14,15 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import {
   followIdentity,
+  followIdentityV2,
   isFollowing,
+  isFollowingV2,
   readFollowerCount,
   readFollowingCount,
   readV2FollowCounts,
   resolveOwner,
   unfollowIdentity,
+  unfollowIdentityV2,
 } from '@/lib/repo'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
@@ -84,16 +87,19 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
     { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
   )
   const identityId = data?.identityId ?? address
-  // Following is a v1 registry write; forge-v2 follows come with v2 writes.
-  const canFollow = isRegistryDeployed() && NETWORKS[network].v2 === null
+  // forge-v2 follows live in forge-collab; networks without it use the v1 registry.
+  const forge = NETWORKS[network].v2
+  const canFollow = forge !== null || isRegistryDeployed()
 
   const isSelf = identity === identityId
   const follow = useRegistryToggle({
     enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
-    read: () => isFollowing(sdk!, network, identity!, identityId),
-    add: async () => (await followIdentity(sdk!, signer!, identityId)).confirmed,
-    remove: async () => (await unfollowIdentity(sdk!, signer!, identityId)).deleted,
+    read: () => (forge ? isFollowingV2(sdk!, forge, identity!, identityId) : isFollowing(sdk!, network, identity!, identityId)),
+    add: async () =>
+      (forge ? await followIdentityV2(sdk!, signer!, forge, identityId) : await followIdentity(sdk!, signer!, identityId)).confirmed,
+    remove: async () =>
+      (forge ? await unfollowIdentityV2(sdk!, signer!, forge, identityId) : await unfollowIdentity(sdk!, signer!, identityId)).deleted,
   })
 
   const toggleFollow = (): void => {

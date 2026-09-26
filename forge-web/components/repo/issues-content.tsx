@@ -8,23 +8,23 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
 import { previewDocumentCreate } from '@/lib/sdk'
+import { useWriteGuard } from '@/hooks/use-write-guard'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { V2WritesNote } from '@/components/repo/v2-writes-note'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
@@ -36,6 +36,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const [composing, setComposing] = useState(false)
+  const router = useRouter()
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
     () => listIssues(sdk!, home.repo, undefined, 100),
@@ -131,7 +132,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         open={composing}
         onClose={() => setComposing(false)}
         repo={home.repo}
-        onCreated={reload}
+        onCreated={(n) => router.push(repoHref('/repo/issue', addr, { number: String(n) }))}
         addr={addr}
       />
     </div>
@@ -162,32 +163,33 @@ function ComposeIssueDialog({
   open: boolean
   onClose: () => void
   repo: RepoHome['repo']
-  onCreated: () => void
+  onCreated: (number: number) => void
   addr: RepoAddress
 }): JSX.Element {
   const { sdk } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
+  const guard = useWriteGuard()
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
 
-  const cost = previewDocumentCreate('issue')
+  const cost = previewDocumentCreate('issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
-    if (!identity || !signer) {
-      openLogin()
-      return
-    }
-    if (!sdk || repo.kind !== 'v1' || title.trim() === '') return
+    if (!guard.check(cost.credits)) return
+    if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
+    setNote(null)
     try {
-      await createIssue(sdk, signer, repo, { title: title.trim(), body })
+      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body }, (taken, next) =>
+        setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+      )
       setTitle('')
       setBody('')
-      onCreated()
+      onCreated(created.number)
       onClose()
     } catch (e) {
       setError(errorMessage(e))
@@ -201,11 +203,17 @@ function ComposeIssueDialog({
       open={open}
       onClose={onClose}
       title="Open an issue"
-      description={`In ${addr.owner}/${addr.name}. Anyone can open one — no token needed.`}
+      description={`In ${addr.owner}/${addr.name}. Anyone can open one.`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant="primary" onClick={submit} loading={pending} disabled={title.trim() === '' || repo.kind !== 'v1'}>
+          <Button
+            variant="primary"
+            onClick={submit}
+            loading={pending}
+            disabled={title.trim() === '' || guard.disabledReason !== null}
+            title={guard.disabledReason ?? undefined}
+          >
             {identity ? 'Submit issue' : 'Sign in to submit'}
           </Button>
         </>
@@ -219,7 +227,7 @@ function ComposeIssueDialog({
           <Textarea id="issue-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened, and how to reproduce it." className="min-h-[140px]" />
         </Field>
         <CostPreview cost={cost} />
-        {repo.kind !== 'v1' ? <V2WritesNote /> : null}
+        {note ? <p className="text-dense text-caution">{note}</p> : null}
         {error ? (
           <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{error}</div>
         ) : null}

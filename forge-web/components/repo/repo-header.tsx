@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Archive, Code2, GitCommit, GitPullRequest, Lock, MessageSquare, Settings, Star } from 'lucide-react'
+import { Archive, Code2, GitCommit, GitPullRequest, Lock, MessageSquare, Settings } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { Author } from '@/components/author'
@@ -47,18 +47,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {home.repo.kind === 'v1' ? (
-            <StarButton listingId={home.listingId} count={home.starCount} />
-          ) : (
-            <span
-              className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 px-2.5 py-1 text-dense text-anvil-600 dark:border-anvil-750 dark:text-anvil-300"
-              title="Stars (a provable count). Starring a forge-v2 repo from the browser is not available yet."
-            >
-              <Star className="h-3.5 w-3.5" aria-hidden />
-              <span className="font-mono text-[12px]">{home.starCount ?? '–'}</span>
-              <span className="sr-only">stars</span>
-            </span>
-          )}
+          <StarButton repo={home.repo} listingId={home.listingId} count={home.starCount} />
         </div>
       </div>
 

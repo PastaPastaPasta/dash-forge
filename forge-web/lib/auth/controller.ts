@@ -17,6 +17,7 @@ import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
+import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import {
   identityFileMatchesNetwork,
@@ -37,6 +38,8 @@ export interface AuthSession {
   /** Credit balance (bigint-safe as a decimal string; parsed by the UI). */
   readonly balance: string
   readonly network: Network
+  /** The signing key's budget and expiry, when it is a PV14 limited key. */
+  readonly keyLimits?: KeyLimits | null
 }
 
 /** Observable controller state. Never carries private-key material. */

@@ -1,21 +1,23 @@
 'use client'
 
 /**
- * ConfirmDialog — the pre-sign confirmation gate every cost-bearing write passes through.
+ * ConfirmDialog — the pre-sign gate every cost-bearing write passes through.
  *
- * Shows the action, its {@link CostPreview}, and (when logged in) an affordability check
- * against the credit balance — with a bridge.thepasta.org deep link when credits are short.
- * Runs the async action, surfacing pending / broadcast / confirmed / error inline in the
- * app's voice. Free actions can pass `cost={null}` to skip the price row.
+ * Shows the action and its {@link CostPreview}, then checks the write against both budgets
+ * (`ux-dx-spec.md` §4 rule 5): the identity's balance and, for a limited key, what is left of
+ * the key's budget. When either is short the confirm button opens the top-up sheet with the
+ * shortfall instead. Runs the async action, surfacing pending / confirmed / error inline.
  */
 
 import { useState } from 'react'
-import { ExternalLink } from 'lucide-react'
 import type { CostPreview as Cost } from '@/lib/sdk'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { affordability } from '@/lib/view/funds'
+import { creditsAsDash } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
 export interface ConfirmDialogProps {
@@ -33,8 +35,6 @@ export interface ConfirmDialogProps {
   successNote?: string
 }
 
-const BRIDGE_URL = 'https://bridge.thepasta.org'
-
 export function ConfirmDialog({
   open,
   onClose,
@@ -44,18 +44,24 @@ export function ConfirmDialog({
   refund,
   confirmLabel,
   onConfirm,
-  successNote = 'Broadcast — confirming on Platform',
+  successNote = 'Confirmed on Platform',
 }: ConfirmDialogProps): JSX.Element {
-  const { identity, balance } = useAuth()
+  const { identity, balance, keyLimits } = useAuth()
+  const openTopUp = useUiStore((s) => s.openTopUp)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
-  const credits = balance ? Number(balance) : 0
-  const insufficient =
-    identity !== null && cost !== null && !refund && cost.credits > 0 && credits < cost.credits
+  const check =
+    identity !== null && cost !== null && !refund
+      ? affordability(cost.credits, BigInt(balance ?? '0'), keyLimits)
+      : ({ ok: true } as const)
 
   const run = async (): Promise<void> => {
+    if (!check.ok) {
+      openTopUp({ blocker: check.blocker, shortfall: check.shortfall })
+      return
+    }
     setPending(true)
     setError(null)
     try {
@@ -89,44 +95,31 @@ export function ConfirmDialog({
           <Button variant="ghost" onClick={close} disabled={pending}>
             Cancel
           </Button>
-          <Button
-            variant={refund ? 'danger' : 'primary'}
-            onClick={run}
-            loading={pending}
-            disabled={insufficient || done}
-          >
-            {done ? 'Done' : confirmLabel}
+          <Button variant={refund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done}>
+            {done ? 'Done' : check.ok ? confirmLabel : 'Top up to continue'}
           </Button>
         </>
       }
     >
       <div className="space-y-3">
-        {cost ? <CostPreview cost={cost} refund={refund} /> : (
-          <p className="text-dense text-anvil-500 dark:text-anvil-400">
-            This action is free — no credits or tokens are spent.
-          </p>
+        {cost ? (
+          <CostPreview cost={cost} refund={refund} />
+        ) : (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
         )}
 
-        {insufficient ? (
+        {!check.ok ? (
           <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution">
-            Not enough credits for this write.{' '}
-            <a
-              href={BRIDGE_URL}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="inline-flex items-center gap-0.5 font-medium underline"
-            >
-              Top up at the bridge <ExternalLink className="h-3 w-3" aria-hidden />
-            </a>
+            {check.blocker === 'key-budget'
+              ? `This browser's key has ${creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left; this write needs ${creditsAsDash(cost?.credits ?? 0)}. Renew the key to continue.`
+              : `Not enough credits: short by ${creditsAsDash(Number(check.shortfall))} DASH.`}
           </div>
         ) : null}
 
-        {done ? (
-          <p className="text-dense text-verify">{successNote}</p>
-        ) : null}
+        {done ? <p className="text-dense text-verify">{successNote}</p> : null}
 
         {error ? (
-          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
             {error}
           </div>
         ) : null}
