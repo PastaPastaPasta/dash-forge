@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright'
-import { type Page, type ConsoleMessage } from '@playwright/test'
-import { mkdirSync } from 'node:fs'
+import { expect, type Browser, type Page, type ConsoleMessage } from '@playwright/test'
+import { homedir } from 'node:os'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -136,4 +137,67 @@ export async function runAxe(page: import('@playwright/test').Page, label: strin
   )
 
   return seriousOrCritical
+}
+
+/** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/). */
+export function idFile(name: string): string {
+  return join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+}
+
+export const PASSPHRASE = 'e2e passphrase for the vault'
+
+/**
+ * Where a signed-in browser's storage (the encrypted vault record in IndexedDB, nothing in
+ * plaintext) is kept between runs, per devnet identity, so the specs reuse one limited key
+ * per identity instead of registering a new one on every test (identities would otherwise
+ * accumulate keys without bound). Gitignored (e2e/.playwright/).
+ */
+function stateFile(name: string): string {
+  return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${name}.json`)
+}
+
+/** Import the identity file once: the master key registers a limited key for this browser. */
+export async function importIdentity(page: Page, name: string): Promise<void> {
+  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await page.getByTestId('tile-import').click()
+  await page.setInputFiles('input[type="file"]', idFile(name))
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  await page.getByRole('button', { name: /create this browser's key/i }).click()
+  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 120_000 })
+}
+
+/**
+ * A browser context signed in as `name`. The first time, the identity file is imported (one
+ * new limited key); afterwards the saved vault is restored and unlocked with the passphrase.
+ * If the stored key stopped working (expired, disabled), it is imported again.
+ */
+export async function signedIn(browser: Browser, name: string, path = '/'): Promise<Page> {
+  const saved = stateFile(name)
+  const context = await browser.newContext(existsSync(saved) ? { storageState: saved } : {})
+  const page = await context.newPage()
+  await page.goto(path, { waitUntil: 'domcontentloaded' })
+  let reused = false
+  if (existsSync(saved)) {
+    try {
+      await unlock(page)
+      reused = true
+    } catch {
+      await page.keyboard.press('Escape')
+    }
+  }
+  if (!reused) {
+    await importIdentity(page, name)
+    mkdirSync(join(__dirname, '.playwright', 'auth'), { recursive: true, mode: 0o700 })
+    await context.storageState({ path: saved, indexedDB: true })
+  }
+  return page
+}
+
+/** After a reload: unlock the vault this context already holds. */
+export async function unlock(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByRole('button', { name: /^unlock$/i }).click()
+  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
 }

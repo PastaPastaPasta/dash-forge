@@ -6,7 +6,7 @@
  * completeness fallback (S0.8) that active-repo correctness depends on.
  */
 
-export { evoSdkService, type EvoSdkConfig } from './service'
+export { ensureSdk, evoSdkService, type EvoSdkConfig } from './service'
 export {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,

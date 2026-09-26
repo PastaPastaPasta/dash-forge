@@ -1,8 +1,6 @@
-import { test, expect, type Browser, type Page } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { E2E_DEVNET, shot } from './helpers'
+import { E2E_DEVNET, idFile, shot, signedIn, unlock } from './helpers'
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
@@ -17,27 +15,14 @@ import { E2E_DEVNET, shot } from './helpers'
  * its cost preview, and the spend ledger in /settings records it.
  */
 
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`)
-const idFile = (name: string): string => join(ID_DIR, `${name}.identity.json`)
 const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const COLLAB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
 const REPO = `e2e-${Date.now().toString(36)}`
 const ISSUE_TITLE = `Browser-written issue ${REPO}`
 
 test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
-test.skip(!existsSync(idFile('OWNER')), `test identities not found in ${ID_DIR}`)
+test.skip(!existsSync(idFile('OWNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
-
-/** A fresh browser context signed in as `name` (identity-file import). */
-async function signedIn(browser: Browser, name: string, path = '/'): Promise<Page> {
-  const context = await browser.newContext()
-  const page = await context.newPage()
-  await page.goto(path, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('button', { name: /^sign in$/i }).first().click()
-  await page.setInputFiles('input[type="file"]', idFile(name))
-  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 90_000 })
-  return page
-}
 
 /** Confirm the open dialog: it must show a cost, then report success and close. */
 async function confirmWrite(page: Page, label: RegExp): Promise<void> {
@@ -121,8 +106,10 @@ test('w6. owner approves the fixture PR, then removes the writer', async ({ brow
   await confirmWrite(page, /submit review/i)
   await expect(page.getByRole('region', { name: 'Approvals' })).toBeVisible()
 
-  // A full navigation starts a new session (this PR keeps the old keystore): sign in again.
-  const settings = await signedIn(browser, 'OWNER', repoPath('settings'))
+  // A full navigation locks the key; the vault unlocks it again with the passphrase.
+  const settings = page
+  await settings.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
+  await unlock(settings)
   await settings.getByRole('button', { name: /^remove$/i }).first().click()
   await confirmWrite(settings, /sign & remove/i)
   await expect(settings.getByText('WRITER', { exact: true })).toHaveCount(0, { timeout: 60_000 })

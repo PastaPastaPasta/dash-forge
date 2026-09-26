@@ -141,7 +141,7 @@ export default function NewRepoPage(): JSX.Element {
           icon={Lock}
           title="Sign in to forge a repo"
           body="Creating a repo writes three small documents signed by your identity."
-          action={<Button variant="primary" onClick={openLogin}>Sign in</Button>}
+          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
         />
       </AppShell>
     )

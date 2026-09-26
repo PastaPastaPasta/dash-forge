@@ -13,6 +13,7 @@
   "dependencies": {
     "@dashevo/evo-sdk": "4.2.0-beta.4",
     "@noble/hashes": "^2.2.0",
+    "@noble/secp256k1": "^3.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
@@ -21,6 +22,7 @@
     "next": "14.2.25",
     "next-themes": "^0.4.6",
     "pako": "^3.0.1",
+    "qr": "^0.7.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.5",
