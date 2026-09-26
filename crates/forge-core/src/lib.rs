@@ -37,6 +37,7 @@ pub mod create;
 pub mod envelope;
 pub mod error;
 pub mod fork;
+pub mod keychain;
 pub mod keystore;
 pub mod members;
 pub mod network;
