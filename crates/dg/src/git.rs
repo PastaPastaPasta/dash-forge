@@ -198,6 +198,24 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// Refuse a PR's base ref unless it is a plain branch: `refs/heads/<name>` that
+/// `git check-ref-format` accepts and that holds no refspec or glob syntax. It is a document
+/// field anyone could have written, and it becomes a fetch refspec and a push destination.
+pub fn require_branch_ref(r: &str) -> Result<()> {
+    let plain = r.strip_prefix("refs/heads/").is_some_and(|b| !b.is_empty())
+        && !r
+            .bytes()
+            .any(|b| matches!(b, b':' | b'*' | b'?' | b'[' | b'\\' | b'^' | b'~' | b'+'))
+        && crate::git::git_ok(Path::new("."), &["check-ref-format", r]);
+    if plain {
+        Ok(())
+    } else {
+        Err(crate::errors::usage(format!(
+            "the pull request's base {r:?} is not a plain branch (refs/heads/<name>); refusing to use it"
+        )))
+    }
+}
+
 /// `refs/heads/<b>` for a bare branch name; a full ref as given.
 pub fn full_ref(b: &str) -> String {
     if b.starts_with("refs/") {
@@ -241,6 +259,25 @@ mod tests {
             plan_merge(Some(B), B, true, true),
             MergePlan::AlreadyMerged { oid: B.into() }
         );
+    }
+
+    #[test]
+    fn only_plain_branches_are_accepted_as_a_pr_base() {
+        assert!(require_branch_ref("refs/heads/main").is_ok());
+        assert!(require_branch_ref("refs/heads/release/1.x").is_ok());
+        for bad in [
+            "refs/heads/x:refs/heads/main",
+            "+refs/heads/main",
+            "refs/heads/*",
+            "refs/tags/v1",
+            "main",
+            "refs/heads/",
+            "refs/heads/a..b",
+            "refs/heads/-x\n",
+            "HEAD",
+        ] {
+            assert!(require_branch_ref(bad).is_err(), "{bad:?} must be refused");
+        }
     }
 
     #[test]

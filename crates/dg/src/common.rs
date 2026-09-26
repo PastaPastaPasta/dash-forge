@@ -102,6 +102,68 @@ pub async fn resolve(
         .with_context(|| format!("resolving {owner}/{}", repo_ref.name))
 }
 
+/// A connected signer and the repository a command acts on.
+pub struct Session {
+    /// The connection.
+    pub client: PlatformClient,
+    /// The signing key material.
+    pub bridge: forge_core::keystore::BridgeIdentity,
+    /// The signing identity.
+    pub identity: LoadedIdentity,
+    /// The resolved repository.
+    pub repo: Repo,
+}
+
+impl Session {
+    /// Parse `repo`, connect, fetch the signer and resolve the repository.
+    pub async fn open(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        let repo_ref = RepoRef::parse(repo)?;
+        let (client, bridge, identity) = ctx.connect_with_identity().await?;
+        let repo = resolve(&client, &identity, &repo_ref).await?;
+        Ok(Self {
+            client,
+            bridge,
+            identity,
+            repo,
+        })
+    }
+
+    /// [`Self::open`], refusing a (read-only) v1 repository before anything is signed.
+    pub async fn open_v2(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        let s = Self::open(ctx, repo).await?;
+        s.repo.require_v2()?;
+        Ok(s)
+    }
+
+    /// The forge-v2 collaboration service, signing as this session's identity.
+    pub fn collab(&self) -> forge_core::collab::v2::Collab<'_> {
+        forge_core::collab::v2::Collab::new(&self.client, &self.identity, &self.bridge)
+    }
+
+    /// Credits spent since `before` (0 when the balance cannot be read). A write that just
+    /// landed can be read from a node a block behind, which still shows the old balance, so
+    /// the balance is read a few times until it moves.
+    pub async fn spent_since(&self, before: u64) -> u64 {
+        for attempt in 0..4 {
+            if let Ok(after) = self.client.get_balance(&self.identity.id()).await {
+                if after < before || attempt == 3 {
+                    return before.saturating_sub(after);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        0
+    }
+
+    /// The signer's balance now (0 when unreadable), for [`Self::spent_since`].
+    pub async fn balance(&self) -> u64 {
+        self.client
+            .get_balance(&self.identity.id())
+            .await
+            .unwrap_or(0)
+    }
+}
+
 /// An issue / PR number as the contract stores it (1..=2^32-1), or a usage error.
 pub fn number_arg(n: u64) -> Result<u32> {
     u32::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {

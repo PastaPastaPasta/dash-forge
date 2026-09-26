@@ -139,7 +139,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         ) => ("could not read the pull request", Some(repo)),
         Command::Pr(P::Review { repo, .. }) => ("review not posted", Some(repo)),
         Command::Pr(P::Merge { repo, .. }) => ("merge failed", Some(repo)),
-        Command::Release(R::Create { repo, .. }) => ("release not created", Some(repo)),
+        Command::Release(R::Create(args)) => ("release not created", Some(&args.repo)),
         Command::Release(R::List { repo } | R::Download { repo, .. }) => {
             ("could not read releases", Some(repo))
         }

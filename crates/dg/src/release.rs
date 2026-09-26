@@ -15,15 +15,17 @@ use serde_json::json;
 use forge_core::backends::PackMeta;
 use forge_core::collab::v2::Collab;
 use forge_core::collab::{Release, ReleaseAsset, ReleaseInput, ReleaseService};
+use forge_core::rules::v2::Role;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{
     replicate, ExternalTarget, PackReader, StoragePolicy, StorageProfiles, StorageTarget,
 };
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{resolve, RepoRef};
+use crate::common::Session;
 use crate::context::Ctx;
-use crate::ReleaseCommand;
+use crate::fmt::{cost_json, cost_line, dash_usd_price, short};
+use crate::{ReleaseCommand, ReleaseCreateArgs};
 
 /// URIs an asset records (the contract's whole `assets` JSON is 4096 bytes).
 const MAX_ASSET_URIS: usize = 4;
@@ -31,27 +33,7 @@ const MAX_ASSET_URIS: usize = 4;
 /// Dispatch a `release` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     match cmd {
-        ReleaseCommand::Create {
-            repo,
-            tag,
-            name,
-            notes,
-            yanked,
-            assets,
-            storage,
-        } => {
-            create(
-                ctx,
-                repo,
-                tag,
-                name,
-                notes,
-                *yanked,
-                assets,
-                storage.as_deref(),
-            )
-            .await
-        }
+        ReleaseCommand::Create(args) => create(ctx, args).await,
         ReleaseCommand::List { repo } => list(ctx, repo).await,
         ReleaseCommand::Download {
             repo,
@@ -125,107 +107,85 @@ async fn upload_asset(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn create(
-    ctx: &Ctx,
-    repo: &str,
-    tag: &str,
-    name: &str,
-    notes: &str,
-    yanked: bool,
-    assets: &[PathBuf],
-    storage: Option<&str>,
-) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
-    let collab = Collab::new(&client, &identity, &bridge);
+async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
+    let s = Session::open_v2(ctx, &args.repo).await?;
+    let collab = s.collab();
+    let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.
-    if collab.signer_role(&handle).await? != Some(forge_core::rules::v2::Role::Maintainer)
-        && std::env::var(forge_core::collab::v2::SKIP_PRECHECK_ENV).is_err()
-    {
-        return Err(forge_core::Error::NotPermitted {
-            action: format!("publish release {tag}"),
-            reason: format!("releases of {} are maintainer-only", handle.display()),
-            needs: "maintainer".into(),
-        }
-        .into());
-    }
-    let targets = if assets.is_empty() {
+    collab
+        .require_role(&s.repo, Role::Maintainer, &format!("publish release {tag}"))
+        .await?;
+    let targets = if args.assets.is_empty() {
         None
     } else {
-        Some(asset_targets(storage)?)
+        Some(asset_targets(args.storage.as_deref())?)
     };
-    let total: u64 = assets
+    let total = args
+        .assets
         .iter()
         .map(|p| std::fs::metadata(p).map(|m| m.len()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .context("reading the asset files")?
-        .iter()
-        .sum();
-    if !ctx.confirm(&format!(
-        "Publish release {tag} of {}{}? (one small document, ~0.0002 DASH)",
-        handle.display(),
-        if assets.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " with {} asset(s), {}",
-                assets.len(),
-                forge_core::storage::human_bytes(total)
-            )
-        }
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
+        .sum::<std::io::Result<u64>>()
+        .context("reading the asset files")?;
+    let with = if args.assets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " with {} asset(s), {}",
+            args.assets.len(),
+            forge_core::storage::human_bytes(total)
+        )
+    };
+    ctx.confirm_or_cancel(&format!(
+        "Publish release {tag} of {}{with}? (one small document, ~0.0002 DASH)",
+        s.repo.display()
+    ))?;
     let mut uploaded = Vec::new();
     if let Some((targets, required)) = &targets {
-        for p in assets {
+        for p in &args.assets {
             let a = upload_asset(p, targets, *required).await?;
             if !ctx.json {
                 eprintln!(
                     "  ✓ {} ({}) sha256 {} → {} cop(ies)",
                     a.name,
                     forge_core::storage::human_bytes(a.size_bytes),
-                    &a.sha256[..12],
+                    short(&a.sha256),
                     a.uris.len()
                 );
             }
             uploaded.push(a);
         }
     }
-    let before = client.get_balance(&identity.id()).await.unwrap_or(0);
+    let before = s.balance().await;
     let input = ReleaseInput {
-        tag_name: tag.to_string(),
-        name: name.to_string(),
-        notes: notes.to_string(),
-        yanked,
-        assets: uploaded.clone(),
+        tag_name: tag.clone(),
+        name: args.name.clone(),
+        notes: args.notes.clone(),
+        yanked: args.yanked,
+        assets: uploaded,
     };
-    let doc_id = collab.create_release(&handle, &input).await.map_err(|e| {
-        let note = if uploaded.is_empty() {
-            "nothing was written".to_string()
+    let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
+        anyhow::Error::from(e).context(if input.assets.is_empty() {
+            "nothing was written"
         } else {
-            "the assets were uploaded (content-addressed; re-running reuses them)".to_string()
-        };
-        anyhow::Error::from(e).context(note)
+            "the assets were uploaded (content-addressed; re-running reuses them)"
+        })
     })?;
-    let spent = crate::issue::spent(&client, &identity.id(), before).await;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
     ctx.emit(
         json!({
             "status": "created",
             "tag": tag,
             "documentId": doc_id,
-            "assets": uploaded.iter().map(asset_json).collect::<Vec<_>>(),
-            "cost": crate::fmt::cost_json(spent, crate::fmt::dash_usd_price()),
+            "assets": input.assets.iter().map(asset_json).collect::<Vec<_>>(),
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
                 "✓ published release {tag} of {} ({} asset(s)) · {}",
-                handle.display(),
-                uploaded.len(),
-                crate::fmt::cost_line(spent, crate::fmt::dash_usd_price())
+                s.repo.display(),
+                input.assets.len(),
+                cost_line(spent, price)
             );
         },
     );
@@ -238,17 +198,15 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
 async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    if handle.is_v1() {
-        let r = ReleaseService::new(&client, &identity, &bridge)
-            .list_releases(handle.v1_contract_id()?)
+    let s = Session::open(ctx, repo).await?;
+    if s.repo.is_v1() {
+        let r = ReleaseService::new(&s.client, &s.identity, &s.bridge)
+            .list_releases(s.repo.v1_contract_id()?)
             .await
             .context("list_releases")?;
         return Ok((r, Vec::new()));
     }
-    Ok(Collab::reader(&client).releases(&handle).await?)
+    Ok(Collab::reader(&s.client).releases(&s.repo).await?)
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {

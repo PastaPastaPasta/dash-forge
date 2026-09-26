@@ -22,6 +22,19 @@ pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 200_000_000;
 /// update, each a few hundred bytes), in credits. An upper bound.
 pub const FORK_PER_DOC_CREDITS: u64 = 20_000_000;
 
+/// A commit id shortened for display (12 hex digits).
+pub fn short(oid: &str) -> &str {
+    &oid[..oid.len().min(12)]
+}
+
+/// How a close / reopen was written, for human output.
+pub fn route_text(route: forge_core::collab::v2::StateRoute) -> &'static str {
+    match route {
+        forge_core::collab::v2::StateRoute::Member => "as a member (event)",
+        forge_core::collab::v2::StateRoute::Author => "as the author (authorEvent)",
+    }
+}
+
 /// The DASH/USD price to use: `DASH_USD` env override, else the offline fallback.
 pub fn dash_usd_price() -> f64 {
     std::env::var("DASH_USD")

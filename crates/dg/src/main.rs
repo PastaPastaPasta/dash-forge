@@ -446,29 +446,8 @@ pub struct PrCreateArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ReleaseCommand {
-    /// Create a release.
-    Create {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// Tag name.
-        #[arg(long)]
-        tag: String,
-        /// Display name.
-        #[arg(long, default_value = "")]
-        name: String,
-        /// Release notes.
-        #[arg(long, default_value = "")]
-        notes: String,
-        /// Mark the release yanked.
-        #[arg(long)]
-        yanked: bool,
-        /// A file to attach (repeatable): uploaded to your storage, sha256 recorded.
-        #[arg(long = "asset", value_name = "FILE")]
-        assets: Vec<PathBuf>,
-        /// Storage profiles for the assets (default: this repository's `dash.storage`).
-        #[arg(long)]
-        storage: Option<String>,
-    },
+    /// Create a release (maintainers only), optionally with files.
+    Create(Box<ReleaseCreateArgs>),
     /// List releases.
     List {
         /// The repository (`owner/name`).
@@ -487,6 +466,31 @@ pub enum ReleaseCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+}
+
+/// `dg release create` arguments.
+#[derive(Debug, clap::Args)]
+pub struct ReleaseCreateArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// Tag name.
+    #[arg(long)]
+    pub tag: String,
+    /// Display name.
+    #[arg(long, default_value = "")]
+    pub name: String,
+    /// Release notes.
+    #[arg(long, default_value = "")]
+    pub notes: String,
+    /// Mark the release yanked.
+    #[arg(long)]
+    pub yanked: bool,
+    /// A file to attach (repeatable): uploaded to your storage, sha256 recorded.
+    #[arg(long = "asset", value_name = "FILE")]
+    pub assets: Vec<PathBuf>,
+    /// Storage profiles for the assets (default: this repository's `dash.storage`).
+    #[arg(long)]
+    pub storage: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -784,6 +788,27 @@ pub enum StateArg {
     All,
     Open,
     Closed,
+}
+
+impl StateArg {
+    /// Whether an item that is `open` passes this filter.
+    pub fn matches(self, open: bool) -> bool {
+        match self {
+            StateArg::All => true,
+            StateArg::Open => open,
+            StateArg::Closed => !open,
+        }
+    }
+}
+
+impl From<StateArg> for forge_core::collab::StateFilter {
+    fn from(s: StateArg) -> Self {
+        match s {
+            StateArg::All => Self::All,
+            StateArg::Open => Self::Open,
+            StateArg::Closed => Self::Closed,
+        }
+    }
 }
 
 /// PR review verdict.

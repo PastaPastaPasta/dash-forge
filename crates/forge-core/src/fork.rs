@@ -20,9 +20,8 @@
 //! the fork already has (the repo by name, a manifest per pack hash, the refs' current tips)
 //! before writing, so re-running an interrupted fork finishes it and pays for nothing twice.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::backends::PLATFORM_SCHEME;
 use crate::create::{create_repo, CreateRepoOpts, CreateRepoResult};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
@@ -54,14 +53,12 @@ pub fn fork_manifest(parent: &RepoRef, m: &PackManifestInfo) -> Result<Option<Pa
     if !MANIFEST_URIS_V2.fits(&uris) {
         uris.retain(|u| !u.starts_with("s3://"));
     }
-    if uris.len() > MANIFEST_URIS_V2.max_items.unwrap_or(usize::MAX) {
-        uris.truncate(MANIFEST_URIS_V2.max_items.unwrap_or(usize::MAX));
-    }
     uris.retain(|u| {
         MANIFEST_URIS_V2
             .max_item_len
             .is_none_or(|max| u.len() <= max)
     });
+    uris.truncate(MANIFEST_URIS_V2.max_items.unwrap_or(usize::MAX));
     if uris.is_empty() {
         return Ok(None);
     }
@@ -91,8 +88,7 @@ pub fn plan_manifests<'m>(
     parent: &'m [PackManifestInfo],
     fork_has: &BTreeSet<[u8; 32]>,
 ) -> Vec<&'m PackManifestInfo> {
-    let mut by_hash: std::collections::BTreeMap<[u8; 32], &PackManifestInfo> =
-        std::collections::BTreeMap::new();
+    let mut by_hash: BTreeMap<[u8; 32], &PackManifestInfo> = BTreeMap::new();
     for m in parent {
         if m.kind != u64::from(crate::pack::KIND_GIT_PACK) || fork_has.contains(&m.pack_hash) {
             continue;
@@ -192,11 +188,8 @@ pub async fn fork_repo(
             unreferenceable.push(m.pack_hash);
             continue;
         };
-        if input
-            .uris
-            .first()
-            .is_some_and(|u| u.starts_with(&format!("{PLATFORM_SCHEME}://")))
-        {
+        // A Platform copy is recorded as the parent's chunk locator.
+        if m.storage == 0 {
             platform_referenced += 1;
         }
         svc.write_pack_manifest(&fork, &input).await?;

@@ -8,7 +8,7 @@ use serde_json::json;
 use forge_core::collab::v2::Collab;
 use forge_core::collab::LabelService;
 
-use crate::common::{resolve, RepoRef};
+use crate::common::Session;
 use crate::context::Ctx;
 use crate::LabelCommand;
 
@@ -27,16 +27,14 @@ pub async fn run(ctx: &Ctx, cmd: &LabelCommand) -> Result<()> {
 }
 
 async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let labels = if handle.is_v1() {
-        LabelService::new(&client, &identity, &bridge)
-            .list_labels(handle.v1_contract_id()?)
+    let s = Session::open(ctx, repo).await?;
+    let labels = if s.repo.is_v1() {
+        LabelService::new(&s.client, &s.identity, &s.bridge)
+            .list_labels(s.repo.v1_contract_id()?)
             .await
             .context("list_labels")?
     } else {
-        Collab::reader(&client).labels(&handle).await?
+        Collab::reader(&s.client).labels(&s.repo).await?
     };
     let shown: Vec<_> = labels.iter().filter(|l| all || !l.retired).collect();
     ctx.emit(
@@ -70,19 +68,15 @@ async fn define(
     description: &str,
     retired: bool,
 ) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
+    let s = Session::open_v2(ctx, repo).await?;
     let verb = if retired { "Retire" } else { "Define" };
-    if !ctx.confirm(&format!(
+    ctx.confirm_or_cancel(&format!(
         "{verb} label {name:?} in {}? (one small document; members only)",
-        handle.display()
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
-    let id = Collab::new(&client, &identity, &bridge)
-        .create_label(&handle, name, color, description, retired)
+        s.repo.display()
+    ))?;
+    let id = s
+        .collab()
+        .create_label(&s.repo, name, color, description, retired)
         .await?;
     ctx.emit(
         json!({

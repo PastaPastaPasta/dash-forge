@@ -19,15 +19,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, PatchInput, PatchView, StateRoute, V2Patch};
+use forge_core::collab::v2::{Collab, PatchInput, PatchView, V2Patch};
 use forge_core::collab::{PullRequest, PullRequestService, Verdict};
 use forge_core::create::default_journal_dir;
+use forge_core::rules::v2::Role;
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{number_arg, resolve, RepoRef};
+use crate::common::{number_arg, resolve, RepoRef, Session};
 use crate::context::Ctx;
+use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, short};
 use crate::git::{self, MergePlan};
 use crate::{PrCommand, VerdictArg};
 
@@ -116,30 +118,31 @@ fn state_label(v: &PatchView) -> &'static str {
 // ---------------------------------------------------------------------------
 
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
-    let repo_ref = RepoRef::parse(&args.repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let forge = handle.require_v2()?.clone();
+    let s = Session::open_v2(ctx, &args.repo).await?;
+    let handle = &s.repo;
+    let forge = handle.require_v2()?;
     let cwd = std::env::current_dir().context("reading the current directory")?;
 
     // The source repo: --head-repo, else the signer's fork of the target, else the target.
     let source = match &args.head_repo {
-        Some(r) => resolve(&client, &identity, &RepoRef::parse(r)?).await?,
-        None => forge_core::resolve::find_forks(&client, &forge, handle.id(), Some(&identity.id()))
-            .await?
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| handle.clone()),
+        Some(r) => resolve(&s.client, &s.identity, &RepoRef::parse(r)?).await?,
+        None => {
+            forge_core::resolve::find_forks(&s.client, forge, handle.id(), Some(&s.identity.id()))
+                .await?
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| handle.clone())
+        }
     };
     source.require_v2()?;
-    let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
+    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let (head_ref, head_oid) = resolve_head(args, &cwd, &svc, &source).await?;
     // The base branch: --base, else the target's default branch.
     let base = if let Some(b) = &args.base {
         git::full_ref(b)
     } else {
         let d = svc
-            .read_default_branch(&handle)
+            .read_default_branch(handle)
             .await?
             .unwrap_or_else(|| "main".into());
         git::full_ref(&d)
@@ -166,17 +169,17 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
             handle.display(),
             source.display(),
-            &head_oid[..12]
+            short(&head_oid)
         );
     }
-    if !ctx.confirm("Open it? (one small document, ~0.0001 DASH)")? {
-        return Err(crate::errors::cancelled());
-    }
-    let before = client.get_balance(&identity.id()).await.unwrap_or(0);
-    let created = Collab::new(&client, &identity, &bridge)
-        .create_patch(&handle, &input, &default_journal_dir()?)
+    ctx.confirm_or_cancel("Open it? (one small document, ~0.0001 DASH)")?;
+    let before = s.balance().await;
+    let created = s
+        .collab()
+        .create_patch(handle, &input, &default_journal_dir()?)
         .await?;
-    let spent = crate::issue::spent(&client, &identity.id(), before).await;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -189,14 +192,14 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "sourceRepoId": source.id(),
             "sourceRepo": source.display(),
             "resumed": created.resumed,
-            "cost": crate::fmt::cost_json(spent, crate::fmt::dash_usd_price()),
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
                 "✓ opened PR #{} in {} · {}",
                 created.number,
                 handle.display(),
-                crate::fmt::cost_line(spent, crate::fmt::dash_usd_price())
+                cost_line(spent, price)
             );
         },
     );
@@ -266,11 +269,10 @@ async fn resolve_head(
 // ---------------------------------------------------------------------------
 
 async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let s = Session::open(ctx, repo).await?;
+    let handle = &s.repo;
     if handle.is_v1() {
-        let prs = PullRequestService::new(&client, &identity, &bridge)
+        let prs = PullRequestService::new(&s.client, &s.identity, &s.bridge)
             .list_prs(handle.v1_contract_id()?, limit, None)
             .await
             .context("list_prs")?;
@@ -282,21 +284,16 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         });
         return Ok(());
     }
-    let collab = Collab::reader(&client);
-    let (patches, hidden) = collab.list_patches(&handle, limit).await?;
-    let oracle = collab.member_oracle(&handle).await?;
+    let collab = Collab::reader(&s.client);
+    let (patches, hidden) = collab.list_patches(handle, limit).await?;
+    let oracle = collab.member_oracle(handle).await?;
     let mut rows = Vec::new();
     for p in patches {
-        let v = collab.patch_view(&handle, p).await?;
-        let keep = match state {
-            crate::StateArg::All => true,
-            crate::StateArg::Open => v.state.open,
-            crate::StateArg::Closed => !v.state.open,
-        };
-        if !keep {
+        let v = collab.patch_view(handle, p).await?;
+        if !state.matches(v.state.open) {
             continue;
         }
-        let (approvals, _) = collab.approvals_with(&handle, &v.patch, &oracle).await?;
+        let (approvals, _) = collab.approvals_with(handle, &v.patch, &oracle).await?;
         rows.push((v, approvals));
     }
     let json_rows: Vec<_> = rows
@@ -346,10 +343,6 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     Ok(())
 }
 
-fn short(oid: &str) -> &str {
-    &oid[..oid.len().min(12)]
-}
-
 fn v1_row(p: &PullRequest) -> serde_json::Value {
     json!({
         "number": p.number,
@@ -373,11 +366,10 @@ fn view_v1(ctx: &Ctx, pw: &forge_core::collab::PullRequestWithState) {
 }
 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let s = Session::open(ctx, repo).await?;
+    let (client, handle) = (&s.client, &s.repo);
     if handle.is_v1() {
-        let pw = PullRequestService::new(&client, &identity, &bridge)
+        let pw = PullRequestService::new(client, &s.identity, &s.bridge)
             .pr_state(handle.v1_contract_id()?, number, None)
             .await
             .context("pr_state")?
@@ -385,12 +377,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         view_v1(ctx, &pw);
         return Ok(());
     }
-    let collab = Collab::reader(&client);
-    let p = patch(&collab, &handle, repo, number).await?;
-    let v = collab.patch_view(&handle, p).await?;
-    let (approvals, reviews) = collab.approvals(&handle, &v.patch).await?;
-    let comments = collab.comments(&handle, &v.patch.document_id).await?;
-    let source = forge_core::resolve::resolve_id(&client, &v.patch.source_repo_id)
+    let collab = Collab::reader(client);
+    let p = patch(&collab, handle, repo, number).await?;
+    let v = collab.patch_view(handle, p).await?;
+    let (approvals, reviews) = collab.approvals(handle, &v.patch).await?;
+    let comments = collab.comments(handle, &v.patch.document_id).await?;
+    let source = forge_core::resolve::resolve_id(client, &v.patch.source_repo_id)
         .await
         .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display());
 
@@ -473,31 +465,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
-    let collab = Collab::new(&client, &identity, &bridge);
-    let p = patch(&collab, &handle, repo, number).await?;
-    if !ctx.confirm(&format!(
+    let s = Session::open_v2(ctx, repo).await?;
+    let (handle, collab) = (&s.repo, s.collab());
+    let p = patch(&collab, handle, repo, number).await?;
+    let v = Verdict::from_code(verdict.code());
+    ctx.confirm_or_cancel(&format!(
         "Post a {} review on PR #{number} at {}? (one small document)",
-        Verdict::from_code(verdict.code()).label(),
+        v.label(),
         short(&p.head_oid)
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
+    ))?;
     let head = hex::decode(&p.head_oid).context("PR head oid")?;
     let id = collab
-        .review(
-            &handle,
-            &p.document_id,
-            Verdict::from_code(verdict.code()),
-            &head,
-            body,
-            None,
-        )
+        .review(handle, &p.document_id, v, &head, body, None)
         .await?;
-    let counts = collab.signer_role(&handle).await?.is_some();
+    let counts = collab.signer_role(handle).await?.is_some();
     ctx.emit(
         json!({
             "status": "reviewed",
@@ -508,11 +489,7 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
             "counts": counts,
         }),
         || {
-            println!(
-                "✓ {} PR #{number} at {}",
-                Verdict::from_code(verdict.code()).label(),
-                short(&p.head_oid)
-            );
+            println!("✓ {} PR #{number} at {}", v.label(), short(&p.head_oid));
             if !counts && verdict != VerdictArg::Comment {
                 println!("  note: you are not a member of {}, so this review does not count toward approvals", handle.display());
             }
@@ -522,17 +499,12 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
 }
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
-    let collab = Collab::new(&client, &identity, &bridge);
-    let p = patch(&collab, &handle, repo, number).await?;
+    let s = Session::open_v2(ctx, repo).await?;
+    let collab = s.collab();
+    let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
-    if !ctx.confirm(&format!("{verb} PR #{number}? (one small document)"))? {
-        return Err(crate::errors::cancelled());
-    }
-    let (route, id) = collab.set_open(&handle, &p.target(), close).await?;
+    ctx.confirm_or_cancel(&format!("{verb} PR #{number}? (one small document)"))?;
+    let (route, id) = collab.set_open(&s.repo, &p.target(), close).await?;
     ctx.emit(
         json!({
             "status": if close { "closed" } else { "reopened" },
@@ -541,11 +513,11 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "eventId": id,
         }),
         || {
-            let via = match route {
-                StateRoute::Member => "as a member (event)",
-                StateRoute::Author => "as the author (authorEvent)",
-            };
-            println!("✓ {}d PR #{number} {via}", verb.to_lowercase());
+            println!(
+                "✓ {}d PR #{number} {}",
+                verb.to_lowercase(),
+                route_text(route)
+            );
         },
     );
     Ok(())
@@ -579,17 +551,22 @@ async fn merge(
     event_only: bool,
     merge_oid: Option<&str>,
 ) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
-    let collab = Collab::new(&client, &identity, &bridge);
-    let p = patch(&collab, &handle, repo, number).await?;
-    let view = collab.patch_view(&handle, p).await?;
+    let s = Session::open_v2(ctx, repo).await?;
+    let (handle, collab) = (&s.repo, s.collab());
+    let p = patch(&collab, handle, repo, number).await?;
+    let view = collab.patch_view(handle, p).await?;
     if view.state.merged {
         return Err(UserError::new(codes::USAGE, format!("PR #{number} is already merged")).into());
     }
-    require_member(&collab, &handle, number).await?;
+    // Only members can merge (the merge event is member-gated at consensus): refuse before
+    // any git work.
+    collab
+        .require_role(
+            handle,
+            Role::Writer,
+            &format!("merge pull request #{number}"),
+        )
+        .await?;
     let mut steps = Steps {
         json: ctx.json,
         done: Vec::new(),
@@ -601,16 +578,14 @@ async fn merge(
             view.patch.base_ref_name
         );
     }
-    if !ctx.confirm(&format!(
+    ctx.confirm_or_cancel(&format!(
         "Merge PR #{number}? ({}; ~0.0003 DASH plus the pack if new objects are stored)",
         if event_only {
             "posts the merge event only"
         } else {
             "pushes to the base branch, then posts the merge event"
         }
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
+    ))?;
 
     let merge_oid = if event_only {
         let oid = merge_oid.map_or_else(
@@ -625,7 +600,7 @@ async fn merge(
         steps.ok("plan", format!("event only, naming {}", short(&oid)));
         oid
     } else {
-        match push_merge(ctx, &handle, &view, &identity.id(), &mut steps) {
+        match push_merge(ctx, handle, &view, &s.identity.id(), &mut steps) {
             Ok(oid) => oid,
             Err(e) => {
                 return Err(crate::errors::reported(
@@ -636,7 +611,7 @@ async fn merge(
         }
     };
 
-    let event_id = post_merge_event(&collab, &handle, &view, &merge_oid, event_only, repo)
+    let event_id = post_merge_event(&collab, handle, &view, &merge_oid, event_only, repo)
         .await
         .map_err(|u| {
             crate::errors::reported(
@@ -647,9 +622,9 @@ async fn merge(
     steps.ok("event", format!("merge event {}", short(&event_id)));
 
     // Re-read the fold: "merged" is what readers will say, not what we hoped.
-    let merged = match collab.patch(&handle, view.patch.number).await? {
+    let merged = match collab.patch(handle, view.patch.number).await? {
         Some(p) => collab
-            .patch_view(&handle, p)
+            .patch_view(handle, p)
             .await
             .is_ok_and(|v| v.state.merged),
         None => false,
@@ -677,22 +652,6 @@ async fn merge(
         },
     );
     Ok(())
-}
-
-/// Only members can merge (the merge event is member-gated at consensus): refuse before any
-/// git work. [`forge_core::collab::v2::SKIP_PRECHECK_ENV`] turns it off to prove the gate.
-async fn require_member(collab: &Collab<'_>, handle: &Repo, number: u64) -> Result<()> {
-    if std::env::var(forge_core::collab::v2::SKIP_PRECHECK_ENV).is_ok()
-        || collab.signer_role(handle).await?.is_some()
-    {
-        return Ok(());
-    }
-    Err(forge_core::Error::NotPermitted {
-        action: format!("merge pull request #{number}"),
-        reason: format!("you are not a member of {}", handle.display()),
-        needs: "writer".into(),
-    }
-    .into())
 }
 
 /// Post the `merge` event naming `merge_oid`; on failure, the user error saying what
@@ -766,6 +725,12 @@ fn push_merge(
     signer: &str,
     steps: &mut Steps,
 ) -> Result<String> {
+    // The base ref and head are PR document fields anyone could have written; they become a
+    // refspec and a push destination below.
+    git::require_branch_ref(&view.patch.base_ref_name)?;
+    if !git::is_oid(&view.patch.head_oid) {
+        anyhow::bail!("the PR names a malformed head commit");
+    }
     let env = git::dash_env(ctx);
     let scratch = tempfile::tempdir().context("creating a scratch directory")?;
     let dir = scratch.path();
@@ -958,29 +923,45 @@ fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> 
 // checkout / diff
 // ---------------------------------------------------------------------------
 
-/// The (v2 source repo id, head oid, base ref) of a PR, or the v1 equivalents.
-async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<(String, String, String)> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    if handle.is_v1() {
-        let pr = PullRequestService::new(&client, &identity, &bridge)
-            .get_pr(handle.v1_contract_id()?, number)
+/// Where a PR's pieces are: the source repo id, the head oid, the base ref, and the target
+/// repo's id (v2), or the v1 equivalents.
+struct Located {
+    source: String,
+    head: String,
+    base_ref: String,
+    target: String,
+}
+
+async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
+    let s = Session::open(ctx, repo).await?;
+    let target = s.repo.id().to_string();
+    let (source, head, base_ref) = if s.repo.is_v1() {
+        let pr = PullRequestService::new(&s.client, &s.identity, &s.bridge)
+            .get_pr(s.repo.v1_contract_id()?, number)
             .await?
             .ok_or_else(|| not_found(repo, number))?;
-        return Ok((pr.source_contract_id, pr.head_oid, pr.base_ref_name));
+        (pr.source_contract_id, pr.head_oid, pr.base_ref_name)
+    } else {
+        let p = patch(&Collab::reader(&s.client), &s.repo, repo, number).await?;
+        (p.source_repo_id, p.head_oid, p.base_ref_name)
+    };
+    // Every field came from a document anyone could have written: check the shapes before
+    // any of them reaches git.
+    if !git::is_oid(&head) {
+        anyhow::bail!("PR #{number} names a malformed head commit {head:?}");
     }
-    let p = patch(&Collab::reader(&client), &handle, repo, number).await?;
-    Ok((p.source_repo_id, p.head_oid, p.base_ref_name))
+    Ok(Located {
+        source,
+        head,
+        base_ref,
+        target,
+    })
 }
 
 /// Fetch a PR head into the repository at `cwd` from `dash://<source>` (fixed refspec —
 /// the PR's own `sourceRefName` is attacker-chosen and never used as one).
 fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
-    if git::has_object(cwd, head) {
-        return Ok(false);
-    }
-    if source.is_empty() {
+    if source.is_empty() || git::has_object(cwd, head) {
         return Ok(false);
     }
     let url = format!("dash://{source}");
@@ -999,7 +980,7 @@ fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
 }
 
 async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let (source, head, _) = locate(ctx, repo, number).await?;
+    let Located { source, head, .. } = locate(ctx, repo, number).await?;
     let cwd = std::env::current_dir()?;
     let fetched = fetch_head(ctx, &cwd, &source, &head)?;
     if !git::has_object(&cwd, &head) {
@@ -1034,20 +1015,23 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 }
 
 async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (source, head, base_ref) = locate(ctx, repo, number).await?;
+    let Located {
+        source,
+        head,
+        base_ref,
+        target,
+    } = locate(ctx, repo, number).await?;
+    git::require_branch_ref(&base_ref)?;
     let cwd = std::env::current_dir()?;
     fetch_head(ctx, &cwd, &source, &head)?;
     // The base as the target repo has it now, fetched fresh.
-    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
     let base_local = format!("refs/remotes/dash-pr/base-{number}");
     git::git(
         &cwd,
         &[
             "fetch",
             "-q",
-            &format!("dash://{}", handle.id()),
+            &format!("dash://{target}"),
             &format!("+{base_ref}:{base_local}"),
         ],
         &git::dash_env(ctx),

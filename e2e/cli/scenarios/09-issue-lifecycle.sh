@@ -30,8 +30,8 @@ dg_write() { # dg_write <identity> <log-prefix> <dg args...>
 
 # The issue's `open` state as <identity> reads it, polled until it equals <want>.
 wait_open() { # wait_open <number> <want true|false>
-  local i
-  for i in $(seq 1 10); do
+  local _
+  for _ in $(seq 1 10); do
     if dg_read_retry "$ID_OWNER" "$LOG-view.json" "$LOG-view.err" --json issue view "$REPO" "$1"; then
       [[ "$(jq_py "$LOG-view.json" 'str(d["state"]["open"]).lower()')" == "$2" ]] && return 0
     fi

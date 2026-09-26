@@ -101,7 +101,7 @@ pub struct Imported {
 
 impl Imported {
     /// Build the nested `imported` object field, validating the string lengths.
-    pub(crate) fn to_field(&self) -> Result<FieldValue> {
+    fn to_field(&self) -> Result<FieldValue> {
         check_len("imported author", &self.author, 120)?;
         check_len("imported url", &self.url, 300)?;
         let mut map = BTreeMap::new();
@@ -119,7 +119,7 @@ impl Imported {
 }
 
 /// Insert the `imported` provenance object into `props` when present (no-op for `None`).
-fn insert_imported(
+pub(crate) fn insert_imported(
     props: &mut BTreeMap<String, FieldValue>,
     imported: Option<&Imported>,
 ) -> Result<()> {
@@ -1090,7 +1090,7 @@ fn pr_from_doc(d: &platform::FetchedDocument) -> PullRequest {
     }
 }
 
-pub(crate) fn review_from_doc(d: &platform::FetchedDocument) -> Review {
+fn review_from_doc(d: &platform::FetchedDocument) -> Review {
     Review {
         document_id: d.id.clone(),
         reviewer: d.owner_id.clone(),

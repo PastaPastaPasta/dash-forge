@@ -11,14 +11,13 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::Collab;
 use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
 use forge_core::tokens::TokenService;
 
-use crate::common::{resolve, RepoRef};
+use crate::common::{resolve, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{
     cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
@@ -142,10 +141,12 @@ fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
 /// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
 /// into the parent's scope), and the parent's refs copied. Resumable.
 async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let parent = resolve(&client, &identity, &repo_ref).await?;
-    parent.require_v2()?;
+    let Session {
+        client,
+        bridge,
+        identity,
+        repo: parent,
+    } = Session::open_v2(ctx, repo).await?;
     let slug = repo_slug(name.unwrap_or(parent.name()))?;
     if parent.owner_id() == identity.id() && slug == parent.name() {
         return Err(crate::errors::usage(format!(
@@ -171,9 +172,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
             cost_line(estimate, price)
         );
     }
-    if !ctx.confirm(&format!("Fork {}?", parent.display()))? {
-        return Err(crate::errors::cancelled());
-    }
+    ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
     let opts = CreateRepoOpts {
         description: format!("fork of {}", parent.display()),
         ..CreateRepoOpts::public(slug)
@@ -236,25 +235,21 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
 /// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
 /// delete).
 async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
+    let s = Session::open_v2(ctx, repo).await?;
+    let handle = &s.repo;
     let verb = if on { "Star" } else { "Unstar" };
-    if !ctx.confirm(&format!(
+    ctx.confirm_or_cancel(&format!(
         "{verb} {}? (one small document)",
         handle.display()
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
-    let collab = Collab::new(&client, &identity, &bridge);
+    ))?;
+    let collab = s.collab();
     let changed = if on {
-        collab.star(&handle).await?
+        collab.star(handle).await?
     } else {
-        collab.unstar(&handle).await?
+        collab.unstar(handle).await?
     };
-    let starred = collab.is_starred(&handle).await.unwrap_or(on);
-    let count = collab.star_count(&handle).await.ok();
+    let starred = collab.is_starred(handle).await.unwrap_or(on);
+    let count = collab.star_count(handle).await.ok();
     let (status, what) = match (on, changed) {
         (true, true) => ("starred", "starred"),
         (true, false) => ("already_starred", "already starred"),

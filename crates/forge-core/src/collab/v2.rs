@@ -26,8 +26,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    check_len, doc_engine, event_kind_to_u64, label_from_doc, release_from_doc, u64_to_event_kind,
-    CommentAnchor, Imported, Label, Release, ReleaseInput, Verdict, DEFAULT_PAGE,
+    check_len, doc_engine, event_kind_to_u64, insert_imported, label_from_doc, release_from_doc,
+    u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput, Verdict,
+    DEFAULT_PAGE,
 };
 use crate::backends::sha256;
 use crate::create::replay_landed;
@@ -36,8 +37,8 @@ use crate::keystore::BridgeIdentity;
 use crate::members::{self, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
-    self, BroadcastOutcome, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity,
-    PlatformClient, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryFilter,
+    QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::v2::{
     allocate_number, count_approvals, fold_issue_state_v2, fold_pr_state_v2, is_well_formed,
@@ -462,9 +463,7 @@ pub fn issue_props(
     if !body.is_empty() {
         p.insert("body".to_string(), FieldValue::text(body));
     }
-    if let Some(i) = imported {
-        p.insert("imported".to_string(), i.to_field()?);
-    }
+    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
@@ -531,9 +530,7 @@ pub fn patch_props(
     if let Some(h) = input.patch_manifest_hash {
         p.insert("patchManifestHash".to_string(), FieldValue::bytes32(h));
     }
-    if let Some(i) = imported {
-        p.insert("imported".to_string(), i.to_field()?);
-    }
+    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
@@ -573,19 +570,18 @@ pub fn event_props(
     Ok(p)
 }
 
-/// The properties of an `authorEvent`: close or reopen only (the schema refuses the rest).
+/// The properties of an `authorEvent`: close or reopen only (the schema refuses the rest),
+/// and no value or oid.
 pub fn author_event_props(target: &Target, close: bool) -> Result<BTreeMap<String, FieldValue>> {
-    let mut p = target_props(target)?;
-    let kind = if close {
+    event_props(target, close_kind(close), None, None)
+}
+
+fn close_kind(close: bool) -> EventKind {
+    if close {
         EventKind::Close
     } else {
         EventKind::Reopen
-    };
-    p.insert(
-        "kind".to_string(),
-        FieldValue::integer(event_kind_to_u64(kind)),
-    );
-    Ok(p)
+    }
 }
 
 fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
@@ -731,6 +727,19 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
+    async fn write(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        doc_type: &str,
+        props: BTreeMap<String, FieldValue>,
+    ) -> Result<String> {
+        self.engine()?
+            .create_document(contract, doc_type, Self::with_repo(repo, props)?)
+            .await
+    }
+
     // --- membership ------------------------------------------------------------
 
     /// The signer's best current role in `repo`, if any.
@@ -745,8 +754,8 @@ impl<'a> Collab<'a> {
     }
 
     /// Refuse, before signing, a write the signer's role cannot make. `needs` is the least
-    /// role that can (maintainer or writer).
-    async fn require_role(&self, repo: &RepoRef, needs: Role, action: &str) -> Result<()> {
+    /// role that can (maintainer or writer). Off when [`SKIP_PRECHECK_ENV`] is set.
+    pub async fn require_role(&self, repo: &RepoRef, needs: Role, action: &str) -> Result<()> {
         if !precheck_enabled() {
             return Ok(());
         }
@@ -1323,12 +1332,8 @@ impl<'a> Collab<'a> {
                 p.insert("side".to_string(), FieldValue::integer(s));
             }
         }
-        if let Some(i) = imported {
-            p.insert("imported".to_string(), i.to_field()?);
-        }
-        self.engine()?
-            .create_document(&collab, DOC_COMMENT, Self::with_repo(repo, p)?)
-            .await
+        insert_imported(&mut p, imported)?;
+        self.write(repo, &collab, DOC_COMMENT, p).await
     }
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
@@ -1360,12 +1365,8 @@ impl<'a> Collab<'a> {
         if !body.is_empty() {
             p.insert("body".to_string(), FieldValue::text(body));
         }
-        if let Some(i) = imported {
-            p.insert("imported".to_string(), i.to_field()?);
-        }
-        self.engine()?
-            .create_document(&collab, DOC_REVIEW, Self::with_repo(repo, p)?)
-            .await
+        insert_imported(&mut p, imported)?;
+        self.write(repo, &collab, DOC_REVIEW, p).await
     }
 
     // --- writes: events ------------------------------------------------------------------
@@ -1393,23 +1394,7 @@ impl<'a> Collab<'a> {
         )
         .await?;
         let collab = self.collab_contract(repo).await?;
-        self.engine()?
-            .create_document(&collab, DOC_EVENT, Self::with_repo(repo, props)?)
-            .await
-    }
-
-    /// Post the target author's own close / reopen (`authorEvent`).
-    pub async fn post_author_event(
-        &self,
-        repo: &RepoRef,
-        target: &Target,
-        close: bool,
-    ) -> Result<String> {
-        let props = author_event_props(target, close)?;
-        let collab = self.collab_contract(repo).await?;
-        self.engine()?
-            .create_document(&collab, DOC_AUTHOR_EVENT, Self::with_repo(repo, props)?)
-            .await
+        self.write(repo, &collab, DOC_EVENT, props).await
     }
 
     /// Close or reopen `target`, through whichever gate admits the signer: a member's
@@ -1440,24 +1425,15 @@ impl<'a> Collab<'a> {
                 })
             }
         };
-        let id = match route {
-            StateRoute::Member => {
-                let kind = if close {
-                    EventKind::Close
-                } else {
-                    EventKind::Reopen
-                };
-                let collab = self.collab_contract(repo).await?;
-                self.engine()?
-                    .create_document(
-                        &collab,
-                        DOC_EVENT,
-                        Self::with_repo(repo, event_props(target, kind, None, None)?)?,
-                    )
-                    .await?
-            }
-            StateRoute::Author => self.post_author_event(repo, target, close).await?,
+        let (doc_type, props) = match route {
+            StateRoute::Member => (
+                DOC_EVENT,
+                event_props(target, close_kind(close), None, None)?,
+            ),
+            StateRoute::Author => (DOC_AUTHOR_EVENT, author_event_props(target, close)?),
         };
+        let collab = self.collab_contract(repo).await?;
+        let id = self.write(repo, &collab, doc_type, props).await?;
         Ok((route, id))
     }
 
@@ -1465,7 +1441,6 @@ impl<'a> Collab<'a> {
 
     /// Publish (or supersede) a release. Maintainer-only at consensus.
     pub async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
-        check_len("release tagName", &input.tag_name, 63)?;
         if input.tag_name.is_empty() || input.tag_name.len() > 63 {
             return Err(Error::Config("a release tag is 1-63 bytes".into()));
         }
@@ -1498,9 +1473,7 @@ impl<'a> Collab<'a> {
         )
         .await?;
         let core = self.core_contract(repo).await?;
-        self.engine()?
-            .create_document(&core, DOC_RELEASE, Self::with_repo(repo, p)?)
-            .await
+        self.write(repo, &core, DOC_RELEASE, p).await
     }
 
     /// Every release of `repo`, newest revision per tag, newest first; `previous` holds the
@@ -1550,9 +1523,7 @@ impl<'a> Collab<'a> {
         self.require_role(repo, Role::Writer, &format!("define label {name}"))
             .await?;
         let core = self.core_contract(repo).await?;
-        self.engine()?
-            .create_document(&core, DOC_LABEL, Self::with_repo(repo, p)?)
-            .await
+        self.write(repo, &core, DOC_LABEL, p).await
     }
 
     /// Every label of `repo`, newest definition per name.
@@ -1760,22 +1731,11 @@ fn create_journal_path(
     fingerprint: &str,
 ) -> PathBuf {
     let digest = hex::encode(sha256(fingerprint.as_bytes()));
-    let kind = match kind {
-        TargetKind::Issue => "issue",
-        TargetKind::Patch => "patch",
-    };
     dir.join(format!(
-        "{kind}-{network}-{repo_id}-{signer}-{}.json",
+        "{}-{network}-{repo_id}-{signer}-{}.json",
+        kind.doc_type(),
         &digest[..16]
     ))
-}
-
-/// Whether a broadcast outcome means the write is in place.
-pub fn landed(outcome: BroadcastOutcome) -> bool {
-    matches!(
-        outcome,
-        BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists
-    )
 }
 
 #[cfg(test)]
