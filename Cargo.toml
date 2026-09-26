@@ -57,6 +57,11 @@ dapi-grpc = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-bet
 drive-proof-verifier = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4", default-features = false }
 rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4" }
 simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4" }
+# The `encryptedFor` scheme (`ecdh-secp256k1-aes256-cbc`, DIP-15 ECDH + AES-256-CBC) from the
+# same tag, so forge-core's envelope matches Platform byte for byte. Small (no dashcore); used
+# by `forge_core::envelope`. `secp256k1` is the version it exposes in its API (it must unify).
+platform-encryption = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.4" }
+secp256k1 = { version = "0.30", features = ["std"] }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which
 # promotes every `warn` below to a hard error. Kept pragmatic: `all` + a selected

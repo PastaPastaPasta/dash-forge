@@ -173,6 +173,85 @@ impl LoadedIdentity {
     pub fn balance(&self) -> u64 {
         self.0.balance()
     }
+
+    /// The identity's public keys as SDK-free [`IdentityKeyInfo`]s, ordered by key id.
+    pub fn public_keys(&self) -> Vec<IdentityKeyInfo> {
+        use dash_sdk::dpp::identity::contract_bounds::ContractBounds;
+        self.0
+            .public_keys()
+            .values()
+            .map(|k| IdentityKeyInfo {
+                id: k.id(),
+                // The names a bridge identity file uses, spelled out (not rs-dpp's Debug).
+                purpose: match k.purpose() {
+                    Purpose::AUTHENTICATION => "AUTHENTICATION",
+                    Purpose::ENCRYPTION => "ENCRYPTION",
+                    Purpose::DECRYPTION => "DECRYPTION",
+                    Purpose::TRANSFER => "TRANSFER",
+                    Purpose::SYSTEM => "SYSTEM",
+                    Purpose::VOTING => "VOTING",
+                    Purpose::OWNER => "OWNER",
+                }
+                .to_string(),
+                security_level: match k.security_level() {
+                    SecurityLevel::MASTER => "MASTER",
+                    SecurityLevel::CRITICAL => "CRITICAL",
+                    SecurityLevel::HIGH => "HIGH",
+                    SecurityLevel::MEDIUM => "MEDIUM",
+                }
+                .to_string(),
+                key_type: match k.key_type() {
+                    KeyType::ECDSA_SECP256K1 => "ECDSA_SECP256K1",
+                    KeyType::BLS12_381 => "BLS12_381",
+                    KeyType::ECDSA_HASH160 => "ECDSA_HASH160",
+                    KeyType::BIP13_SCRIPT_HASH => "BIP13_SCRIPT_HASH",
+                    KeyType::EDDSA_25519_HASH160 => "EDDSA_25519_HASH160",
+                }
+                .to_string(),
+                public_key: k.data().to_vec(),
+                disabled: k.is_disabled(),
+                bound_to: k.contract_bounds().map(|b| match b {
+                    ContractBounds::SingleContract { id }
+                    | ContractBounds::SingleContractDocumentType { id, .. } => {
+                        id.to_string(Encoding::Base58)
+                    }
+                    ContractBounds::ContractGroup { .. } => "contract-group".to_string(),
+                }),
+            })
+            .collect()
+    }
+}
+
+/// One public key of an identity, SDK-free ([`LoadedIdentity::public_keys`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityKeyInfo {
+    /// The key id.
+    pub id: u32,
+    /// `AUTHENTICATION`, `ENCRYPTION`, `DECRYPTION`, `TRANSFER`, ...
+    pub purpose: String,
+    /// `MASTER`, `CRITICAL`, `HIGH` or `MEDIUM`.
+    pub security_level: String,
+    /// `ECDSA_SECP256K1`, `BLS12_381`, ...
+    pub key_type: String,
+    /// The key data (a 33-byte compressed point for `ECDSA_SECP256K1`).
+    pub public_key: Vec<u8>,
+    /// Whether the key is disabled.
+    pub disabled: bool,
+    /// The contract (base58) the key is bound to, `contract-group` for a group bound key,
+    /// `None` for an unbound key.
+    pub bound_to: Option<String>,
+}
+
+impl IdentityKeyInfo {
+    /// An enabled `ECDSA_SECP256K1` key of purpose `ENCRYPTION`, usable for the
+    /// `ecdh-secp256k1-aes256-cbc` scheme (`crate::envelope`), unbound or bound to
+    /// `contract_id`.
+    pub fn is_usable_encryption_key(&self, contract_id: &str) -> bool {
+        !self.disabled
+            && self.purpose == "ENCRYPTION"
+            && self.key_type == "ECDSA_SECP256K1"
+            && self.bound_to.as_deref().is_none_or(|b| b == contract_id)
+    }
 }
 
 impl std::fmt::Debug for LoadedIdentity {

@@ -24,8 +24,9 @@ use crate::error::{Error, Result};
 /// fixed `"[redacted]"` placeholder — so even if a parent struct (`IdentityKey`,
 /// `BridgeIdentity`) is ever serialized into a journal or log, the WIF/mnemonic can
 /// never leak. Round-tripping a `Secret` through serde is therefore intentionally lossy.
+/// The string is wiped from memory when the `Secret` is dropped.
 #[derive(Clone)]
-pub struct Secret(String);
+pub struct Secret(zeroize::Zeroizing<String>);
 
 /// The placeholder emitted whenever a [`Secret`] is serialized.
 const REDACTED: &str = "[redacted]";
@@ -33,7 +34,7 @@ const REDACTED: &str = "[redacted]";
 impl Secret {
     /// Wrap a plaintext secret.
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self(zeroize::Zeroizing::new(value.into()))
     }
 
     /// Borrow the underlying secret. The call site is the audit point — never log
@@ -58,7 +59,7 @@ impl Serialize for Secret {
 
 impl<'de> Deserialize<'de> for Secret {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        Ok(Self(String::deserialize(deserializer)?))
+        Ok(Self::new(String::deserialize(deserializer)?))
     }
 }
 

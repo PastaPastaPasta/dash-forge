@@ -43,6 +43,13 @@ drive-proof-verifier.workspace = true
 rs-sdk-trusted-context-provider.workspace = true
 simple-signer.workspace = true
 
+# `envelope`: the `encryptedFor` scheme (webhook secrets, later repoKey wraps). IVs come
+# from the OS RNG; decrypted secrets are wiped on drop.
+platform-encryption.workspace = true
+secp256k1.workspace = true
+rand = "0.8"
+zeroize = "1"
+
 # Only for `vendored-openssl` below. rs-sdk-trusted-context-provider enables reqwest's default
 # (native-tls) features, which on Linux link the system OpenSSL; this lets a release build
 # compile OpenSSL in statically instead.

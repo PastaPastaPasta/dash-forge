@@ -195,6 +195,12 @@ See [BUILDING.md](BUILDING.md). You need Rust (the version is pinned by
    built archives, writes `SHA256SUMS`, attests the files, and publishes the release with
    generated notes. The run fails before anything is published in two cases: the tag does
    not match the `Cargo.toml` version, or the tagged commit is not on `master`.
+3. **Approve twice.** Two jobs use the protected `release` environment, and each waits for a
+   reviewer: `attest + publish` (the GitHub Release), then, after it succeeds,
+   `push forge-relay image` (pushes `ghcr.io/<owner>/forge-relay:<version>`, and `:latest`
+   for a non-pre-release, built from the checksummed musl archive). Approving only the first
+   publishes the release without the image; the image job can be approved later from the
+   same run.
 
 The dry run also runs on every PR that touches `crates/`, `Cargo.*` or the pipeline. It
 builds and packages every target and uploads the archives as workflow artifacts. It never
