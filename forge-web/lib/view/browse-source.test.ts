@@ -14,7 +14,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, V2RepoRef } from '../repo'
+import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64, hexToBase64 } from '../sdk'
 import { DOC } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
@@ -33,7 +33,7 @@ import {
 // must be dropped between tests to keep the fixtures independent.
 beforeEach(() => clearChunkCache())
 
-const REPO: V2RepoRef = {
+const REPO: RepoRef = {
   forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
   repoId: 'REPO',
   ownerId: 'owner',
@@ -520,7 +520,7 @@ describe('loadBrowseContext', () => {
 // ---------------------------------------------------------------------------
 
 describe('fork pack via a platform:// locator', () => {
-  const FORK: V2RepoRef = {
+  const FORK: RepoRef = {
     forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
     repoId: 'FORK',
     ownerId: 'forker',
@@ -599,7 +599,7 @@ describe('fork pack via a platform:// locator', () => {
     const queries = scopes.length
     expect(queries).toBeGreaterThan(0)
     // The parent reads the same pack from its own chunks: same network, repo id, uploader, hash.
-    const PARENT: V2RepoRef = { ...FORK, repoId: 'PARENT', ownerId: 'uploader' }
+    const PARENT: RepoRef = { ...FORK, repoId: 'PARENT', ownerId: 'uploader' }
     const own: PackManifest = { ...gitPack(hash, 0, 'pm'), sizeBytes: total, uploader: 'uploader' }
     const viaParent = await artifactRangeFetch(sdk, PARENT, own)(start, end)
     expect(Array.from(viaParent)).toEqual(Array.from(viaFork))

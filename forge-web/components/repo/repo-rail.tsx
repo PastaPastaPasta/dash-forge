@@ -24,7 +24,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { readMembershipsCached, repoContractIds, repoKey, type V2RepoRef } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -121,7 +121,7 @@ function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Eleme
   )
 }
 
-function Members({ repo }: { repo: V2RepoRef }): JSX.Element {
+function Members({ repo }: { repo: RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),

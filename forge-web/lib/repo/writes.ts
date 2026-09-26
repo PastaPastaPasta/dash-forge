@@ -36,7 +36,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, V2_DOC, num, str, type RepoRef } from './contract'
+import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
@@ -168,7 +168,7 @@ function numberOf(doc: Record<string, unknown>): number | null {
  * — only when `base` sits at the ceiling — the contiguous run of taken numbers above it,
  * paged to its end. Null when nothing is left to allocate.
  */
-export async function nextNumberV2(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number | null> {
+export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number | null> {
   const source = repoSource(repo)
   const count = await countDocuments(sdk, source.repoQuery(DOC[type]))
   const ceiling = numberCeiling(count)
@@ -236,7 +236,7 @@ export async function createIssue(
   input: { title: string; body: string; intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
-  let number = await nextNumberV2(sdk, repo, 'issue')
+  let number = await nextNumber(sdk, repo, 'issue')
   for (let attempt = 0; attempt < 4; attempt++) {
     if (number === null) throw new Error('this repo has no issue numbers left to allocate')
     const data: Record<string, unknown> = { number, title: input.title }
@@ -252,7 +252,7 @@ export async function createIssue(
         if (holder === undefined || holder === null || holder === auth.identityId) throw e
       } else if (!isDuplicate(e)) throw e
       const taken: number = number
-      number = await nextNumberV2(sdk, repo, 'issue')
+      number = await nextNumber(sdk, repo, 'issue')
       if (number !== null && number <= taken) number = taken + 1
       if (number !== null) onRetry?.(taken, number)
     }
@@ -318,7 +318,7 @@ export async function addAuthorEvent(
   repo: RepoRef,
   input: { target: WriteTarget; kind: 'close' | 'reopen'; intent?: string },
 ): Promise<WriteResult> {
-  return writeRepoDoc(sdk, auth, repo, V2_DOC.authorEvent, eventData(input.target, input.kind), input.intent)
+  return writeRepoDoc(sdk, auth, repo, DOC.authorEvent, eventData(input.target, input.kind), input.intent)
 }
 
 /** Which state-event type a close/reopen by the viewer should be. */
@@ -497,7 +497,7 @@ function need(auth: WriteAuth | null): WriteAuth {
 // Membership (owner-only)
 // ---------------------------------------------------------------------------
 
-const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: V2_DOC.maintainer, writer: V2_DOC.writer }
+const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: DOC.maintainer, writer: DOC.writer }
 
 /** The membership document `(repoId, memberId)` of `role`, or null. */
 async function findMembership(sdk: EvoSDK, repo: RepoRef, role: Role, memberId: string): Promise<string | null> {
@@ -560,7 +560,7 @@ export async function revokeMember(
 // forge-v2 repo creation (three documents, resumable)
 // ---------------------------------------------------------------------------
 
-/** Options for {@link createRepoV2}. */
+/** Options for {@link createRepo}. */
 export interface CreateRepoInput {
   readonly name: string
   readonly description?: string
@@ -629,7 +629,7 @@ export function normalizeRepoName(input: string): string {
  * of failing on the unique `($ownerId, name)` index; the IndexedDB journal lets the UI offer
  * that rerun. `onStep` reports progress.
  */
-export async function createRepoV2(
+export async function createRepo(
   sdk: EvoSDK,
   auth: WriteAuth,
   forge: ForgeIds,
@@ -661,7 +661,7 @@ export async function createRepoV2(
   const existingRepo = async (): Promise<string | null> => {
     const { documents } = await queryDocumentsWithProof(sdk, {
       dataContractId: forge.core,
-      documentTypeName: V2_DOC.repo,
+      documentTypeName: DOC.repo,
       where: [
         ['$ownerId', '==', ownerId],
         ['name', '==', name],
@@ -677,7 +677,7 @@ export async function createRepoV2(
     if (input.description) data['description'] = input.description
     if (input.defaultBranch) data['defaultBranch'] = input.defaultBranch
     try {
-      const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: V2_DOC.repo, data, intent: `${key}:repo` })
+      const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: DOC.repo, data, intent: `${key}:repo` })
       repoId = r.documentId
     } catch (e) {
       if (!isDuplicate(e)) throw e
@@ -697,7 +697,7 @@ export async function createRepoV2(
     try {
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
-        documentType: V2_DOC.maintainer,
+        documentType: DOC.maintainer,
         data: { repoId: R, memberId: decodeIdentifier(ownerId) },
         intent: `${key}:maintainer`,
       })

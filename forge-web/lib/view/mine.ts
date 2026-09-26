@@ -20,7 +20,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
-import { DOC, V2_DOC, asIdentifierString } from '../repo/contract'
+import { DOC, asIdentifierString } from '../repo/contract'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
@@ -85,7 +85,7 @@ export async function readReposByIds(sdk: EvoSDK, forge: ForgeIds, ids: readonly
   for (const batch of chunks(unique, IN_MAX)) {
     const docs = await read(sdk, {
       dataContractId: forge.core,
-      documentTypeName: V2_DOC.repo,
+      documentTypeName: DOC.repo,
       where: [['$id', 'in', batch]],
       limit: batch.length,
     })
@@ -243,7 +243,7 @@ const starDoc = z.object({ repoId: ident })
 export async function listStarredRepoIds(sdk: EvoSDK, forge: ForgeIds, me: string, limit = IN_MAX): Promise<Page<string>> {
   const docs = await read(sdk, {
     dataContractId: forge.collab,
-    documentTypeName: V2_DOC.star,
+    documentTypeName: DOC.star,
     where: [['$ownerId', '==', me]],
     limit,
   })

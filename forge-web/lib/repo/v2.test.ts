@@ -31,10 +31,10 @@ import {
   repoSource,
   resolveAnyRepo,
   resolveAnyRepoWith,
-  v2PacksOfKind,
+  packsOfKind,
   wellFormed,
   type PackManifest,
-  type V2RepoRef,
+  type RepoRef,
 } from './index'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
@@ -49,7 +49,7 @@ const OTHER_REPO = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
 const HEAD = 'ab'.repeat(20)
 const REPO_ISSUE2 = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
 
-const V2: V2RepoRef = {
+const DEMO: RepoRef = {
   forge: FORGE,
   repoId: REPO,
   ownerId: OWNER,
@@ -196,7 +196,7 @@ function fixture(): Store {
 
 describe('RepoSource', () => {
   it('scopes v2 list queries by repoId and routes types to their contract', () => {
-    const s = repoSource(V2)
+    const s = repoSource(DEMO)
     expect(s.repoQuery('refUpdate', { orderBy: [['$createdAt', 'asc']] })).toEqual({
       dataContractId: 'CORE',
       documentTypeName: 'refUpdate',
@@ -211,7 +211,7 @@ describe('RepoSource', () => {
   })
 
   it('names the uploader in a chunk read', () => {
-    const q = repoSource(V2).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
+    const q = repoSource(DEMO).chunkQuery('aa'.repeat(32), MAINT, [0, 1])
     expect(q.where).toEqual([
       ['repoId', '==', REPO],
       ['$ownerId', '==', MAINT],
@@ -221,8 +221,8 @@ describe('RepoSource', () => {
   })
 
   it('keys by repo id and preloads both forge contracts', () => {
-    expect(repoKey(V2)).toBe(REPO)
-    expect(repoContractIds(V2)).toEqual(['CORE', 'COLLAB'])
+    expect(repoKey(DEMO)).toBe(REPO)
+    expect(repoContractIds(DEMO)).toEqual(['CORE', 'COLLAB'])
     expect(repoContractIds(null)).toEqual([])
   })
 })
@@ -261,10 +261,10 @@ describe('resolveAnyRepo', () => {
 describe('forge-v2 refs and config', () => {
   it('folds only this repo’s ref updates, and reads its config', async () => {
     const sdk = mockSdk(fixture())
-    const refs = await readRefs(sdk, V2)
+    const refs = await readRefs(sdk, DEMO)
     expect(refs).toHaveLength(1)
     expect(refs[0]?.state).toMatchObject({ state: 'resolved', oid: HEAD })
-    const { config } = await readConfigBundle(sdk, V2)
+    const { config } = await readConfigBundle(sdk, DEMO)
     expect(config?.protectedPatterns).toEqual(['refs/heads/main'])
   })
 })
@@ -273,7 +273,7 @@ describe('forge-v2 issue and PR folds', () => {
   it('folds event + authorEvent from one feed read for a whole list page', async () => {
     const seen: DocumentQuery[] = []
     const sdk = mockSdk(fixture(), seen)
-    const issues = await listIssues(sdk, V2)
+    const issues = await listIssues(sdk, DEMO)
     const by = new Map(issues.map((i) => [i.number, i]))
     expect([...by.keys()].sort()).toEqual([1, 2, 3]) // #4 (malformed) and the other repo's #1 are skipped
     expect(by.get(1)?.state).toMatchObject({ open: true, labels: ['bug'] }) // the stranger's authorEvent is inert
@@ -302,10 +302,10 @@ describe('forge-v2 issue and PR folds', () => {
         kind: 1,
       }),
     ]
-    invalidateRepoFeed(V2)
-    const issues = await listIssues(mockSdk(store), V2)
+    invalidateRepoFeed(DEMO)
+    const issues = await listIssues(mockSdk(store), DEMO)
     expect(issues.find((i) => i.number === 2)?.state.open).toBe(false)
-    invalidateRepoFeed(V2)
+    invalidateRepoFeed(DEMO)
   })
 
   it('pages past hidden rows to fill the page and reports how many it hid', async () => {
@@ -316,16 +316,16 @@ describe('forge-v2 issue and PR folds', () => {
         doc({ $id: `spam${n}`, $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
       )
     }
-    invalidateRepoFeed(V2)
-    const issues = await listIssues(mockSdk(store), V2, 3)
+    invalidateRepoFeed(DEMO)
+    const issues = await listIssues(mockSdk(store), DEMO, 3)
     expect(issues.map((i) => i.number).sort()).toEqual([1, 2, 3])
     expect(issues.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
-    invalidateRepoFeed(V2)
+    invalidateRepoFeed(DEMO)
   })
 
   it('folds a merge by a member whose oid is the base tip', async () => {
     const sdk = mockSdk(fixture())
-    const [pull] = await listPulls(sdk, V2)
+    const [pull] = await listPulls(sdk, DEMO)
     expect(pull?.state).toMatchObject({ merged: true, open: false })
     expect(pull?.sourceId).toBe(REPO)
     expect(pull?.headOnBase).toBe(true)
@@ -333,10 +333,10 @@ describe('forge-v2 issue and PR folds', () => {
 
   it('builds the issue timeline with author events marked, and counts member approvals only', async () => {
     const sdk = mockSdk(fixture())
-    invalidateMembers(V2)
-    const issue = await loadIssueThread(sdk, V2, 2)
+    invalidateMembers(DEMO)
+    const issue = await loadIssueThread(sdk, DEMO, 2)
     expect(issue?.timeline.filter((t) => t.kind === 'event' && t.byAuthor)).toHaveLength(1)
-    const pr = await loadPullThread(sdk, V2, 1)
+    const pr = await loadPullThread(sdk, DEMO, 1)
     expect(pr?.approvals?.approvers).toEqual([MAINT])
     expect(pr?.approvals?.roles.get(MAINT)).toBe('maintainer')
     // The stranger's review is shown in the timeline, not counted.
@@ -347,34 +347,34 @@ describe('forge-v2 issue and PR folds', () => {
 describe('forge-v2 permissions', () => {
   it('derives the viewer’s controls from membership documents', async () => {
     const sdk = mockSdk(fixture())
-    invalidateMembers(V2)
-    expect(await readViewerPermissions(sdk, V2, MAINT)).toEqual({ write: true, maintain: true })
-    expect(await readViewerPermissions(sdk, V2, WRITER)).toEqual({ write: true, maintain: false })
-    expect(await readViewerPermissions(sdk, V2, STRANGER)).toEqual({ write: false, maintain: false })
+    invalidateMembers(DEMO)
+    expect(await readViewerPermissions(sdk, DEMO, MAINT)).toEqual({ write: true, maintain: true })
+    expect(await readViewerPermissions(sdk, DEMO, WRITER)).toEqual({ write: true, maintain: false })
+    expect(await readViewerPermissions(sdk, DEMO, STRANGER)).toEqual({ write: false, maintain: false })
     expect(holdingsOfRole(null)).toEqual({ write: false, maintain: false })
   })
 
   it('reports unknown (null), not "no access", when the members cannot be read', async () => {
-    invalidateMembers(V2)
+    invalidateMembers(DEMO)
     const broken = {
       documents: { query: () => Promise.reject(new Error('DAPI down')) },
     } as unknown as EvoSDK
-    expect(await readViewerPermissions(broken, V2, MAINT)).toBeNull()
+    expect(await readViewerPermissions(broken, DEMO, MAINT)).toBeNull()
   })
 })
 
 describe('wellFormed', () => {
-  const PRIVATE: V2RepoRef = { ...V2, visibility: 'private' }
+  const PRIVATE: RepoRef = { ...DEMO, visibility: 'private' }
   const enc = bytesToBase64(new Uint8Array(32))
   it('applies plaintext-xor-enc by visibility', () => {
-    expect(wellFormed(V2, 'issue', { title: 't' })).toBe(true)
-    expect(wellFormed(V2, 'issue', { title: '' })).toBe(false)
+    expect(wellFormed(DEMO, 'issue', { title: 't' })).toBe(true)
+    expect(wellFormed(DEMO, 'issue', { title: '' })).toBe(false)
     expect(wellFormed(PRIVATE, 'issue', { enc, epoch: 0 })).toBe(true)
     expect(wellFormed(PRIVATE, 'refUpdate', { enc, epoch: 0, refName: 'refs/heads/main' })).toBe(false)
   })
 })
 
-describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
+describe('packsOfKind (the v2 pack list over raw copies)', () => {
   const copy = (
     id: string,
     uploader: string,
@@ -398,7 +398,7 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
   })
 
   it('reads maintainers’ copies first but keeps the pack at its first upload’s position', () => {
-    const [pack] = v2PacksOfKind([copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)], 0)
+    const [pack] = packsOfKind([copy('s', STRANGER, 1), copy('w', WRITER, 2), copy('m', MAINT, 3)], 0)
     expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m', 'w', 's'])
     expect(pack?.uploader).toBe(MAINT)
     expect(pack?.createdAt).toBe(1)
@@ -410,11 +410,11 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
       copy('w', WRITER, 1, { kind: 1, objectCount: 0 }), // an earlier writer claims kind 1
       copy('m', MAINT, 2, { objectCount: 17 }),
     ]
-    const [pack] = v2PacksOfKind(packs, 0)
+    const [pack] = packsOfKind(packs, 0)
     expect(pack?.objectCount).toBe(17)
     expect(pack?.copies?.map((c) => c.documentId)).toEqual(['m'])
     expect(pack?.documentId).toBe('w') // position still pinned to the first upload
-    expect(v2PacksOfKind(packs, 1)).toEqual([])
+    expect(packsOfKind(packs, 1)).toEqual([])
   })
 
   it('numbers packRefs within a kind, so index fragments do not shift git packs', () => {
@@ -423,8 +423,8 @@ describe('v2PacksOfKind (the v2 pack list over raw copies)', () => {
       copy('l1', MAINT, 2, { packHash: 'l1', kind: 1 }),
       copy('p2', MAINT, 3, { packHash: 'p2' }),
     ]
-    expect(v2PacksOfKind(packs, 0).map((p) => p.packHash)).toEqual(['p1', 'p2'])
-    expect(v2PacksOfKind(packs, 0, { createdAt: 2, id: 'l1' }).map((p) => p.packHash)).toEqual(['p1'])
+    expect(packsOfKind(packs, 0).map((p) => p.packHash)).toEqual(['p1', 'p2'])
+    expect(packsOfKind(packs, 0, { createdAt: 2, id: 'l1' }).map((p) => p.packHash)).toEqual(['p1'])
   })
 })
 
@@ -461,16 +461,16 @@ describe('issue numbering (allocate_number over the live index)', () => {
     COLLAB: { issue: numbers.map((n) => doc({ $ownerId: AUTHOR, repoId: REPO, number: n, title: `#${n}` })) },
   })
   it('claims base + 1, ignoring a far squatter', async () => {
-    const { nextNumberV2 } = await import('./writes')
-    expect(await nextNumberV2(mockSdk(issues(1, 2, 3, 4_294_967_295)), V2, 'issue')).toBe(4)
+    const { nextNumber } = await import('./writes')
+    expect(await nextNumber(mockSdk(issues(1, 2, 3, 4_294_967_295)), DEMO, 'issue')).toBe(4)
   })
   it('starts at 1 in an empty repo', async () => {
-    const { nextNumberV2 } = await import('./writes')
-    expect(await nextNumberV2(mockSdk(issues()), V2, 'issue')).toBe(1)
+    const { nextNumber } = await import('./writes')
+    expect(await nextNumber(mockSdk(issues()), DEMO, 'issue')).toBe(1)
   })
   it('steps over squatters sitting on and just above the ceiling', async () => {
-    const { nextNumberV2 } = await import('./writes')
+    const { nextNumber } = await import('./writes')
     // count 4 → ceiling 108; 108, 109, 110 are taken, 111 is free.
-    expect(await nextNumberV2(mockSdk(issues(1, 108, 109, 110)), V2, 'issue')).toBe(111)
+    expect(await nextNumber(mockSdk(issues(1, 108, 109, 110)), DEMO, 'issue')).toBe(111)
   })
 })

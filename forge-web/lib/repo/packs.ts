@@ -111,7 +111,7 @@ function toManifest(doc: PlainDocument): PackManifest {
  *
  * Completeness is load-bearing for a nastier reason than staleness. A locator addresses
  * pack bytes by `packRef` = the pack's index in first-upload `($createdAt, $id)` order (see
- * {@link v2PacksOfKind}). Drop the oldest manifests — which is exactly what a capped
+ * {@link packsOfKind}). Drop the oldest manifests — which is exactly what a capped
  * newest-first page does once a repo passes one page — and every `packRef` shifts: lookups
  * then read a valid offset in the WRONG pack and return corrupt objects, with nothing in the
  * reader able to detect the misalignment. The fallback-clone path degrades the same way,
@@ -140,7 +140,7 @@ export type AsOf = number | { readonly createdAt: number; readonly id: string }
  * order a reader tries them. Superseded packs stay in the list, in place: a hash proves a
  * pack's bytes, not that it holds everything it claims to replace.
  */
-export function v2PacksOfKind(
+export function packsOfKind(
   copies: readonly PackManifest[],
   kind: number,
   asOf?: AsOf,
@@ -179,7 +179,7 @@ export function v2PacksOfKind(
 
 /**
  * Every pack manifest of a repo, newest first, as raw copies — each tagged with its
- * uploader's current role so {@link v2PacksOfKind} can rank them.
+ * uploader's current role so {@link packsOfKind} can rank them.
  */
 export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest[]> {
   const [manifests, oracle] = await Promise.all([
@@ -194,7 +194,7 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
  * reading, as one manifest with `copies` — or null when no copy claims `kind`. Independent of
  * how many other packs the repo holds.
  */
-export async function readV2PackCopies(
+export async function readPackCopies(
   sdk: EvoSDK,
   repo: RepoRef,
   packHashHex: string,
@@ -210,7 +210,7 @@ export async function readV2PackCopies(
     readRoleOracle(sdk, repo),
   ])
   const copies = documents.map(toManifest).map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
-  return v2PacksOfKind(copies, kind)[0] ?? null
+  return packsOfKind(copies, kind)[0] ?? null
 }
 
 /** The newest manifest of a given kind (the current locator / flatIndex), or null. */

@@ -14,14 +14,14 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { normalizeRepoName, type Visibility } from '../rules/v2'
 import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
-import { V2_DOC, asIdentifierString, stringArray, type RepoRef } from './contract'
+import { DOC, asIdentifierString, stringArray, type RepoRef } from './contract'
 
 interface DpnsFacadeLike {
   dpns: { resolveName(name: string): Promise<string | undefined> }
 }
 
 /** A forge-v2 `repo` document, flattened. */
-export interface V2RepoDoc {
+export interface RepoDoc {
   readonly repoId: string
   readonly ownerId: string
   readonly name: string
@@ -45,7 +45,7 @@ function asString(v: unknown): string {
 }
 
 /** Flatten a forge-core `repo` document. */
-export function toV2RepoDoc(doc: PlainDocument): V2RepoDoc {
+export function toRepoDoc(doc: PlainDocument): RepoDoc {
   const forkOf = asIdentifierString(doc['forkOf'])
   return {
     repoId: asString(doc['$id']),
@@ -62,7 +62,7 @@ export function toV2RepoDoc(doc: PlainDocument): V2RepoDoc {
 }
 
 /** The {@link RepoRef} a `repo` document addresses. */
-export function v2RefOf(forge: ForgeIds, repo: V2RepoDoc): RepoRef {
+export function repoRefOf(forge: ForgeIds, repo: RepoDoc): RepoRef {
   return {
     forge,
     repoId: repo.repoId,
@@ -111,38 +111,38 @@ export function resolveOwner(sdk: EvoSDK, owner: string): Promise<string | null>
 }
 
 /** The one forge-v2 `repo` document `where` selects, or null. */
-async function readV2Repo(
+async function readRepoDoc(
   sdk: EvoSDK,
   forge: ForgeIds,
   where: readonly WhereClause[],
-): Promise<V2RepoDoc | null> {
+): Promise<RepoDoc | null> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: forge.core,
-    documentTypeName: V2_DOC.repo,
+    documentTypeName: DOC.repo,
     where,
     limit: 1,
   })
   const doc = documents[0]
-  return doc === undefined ? null : toV2RepoDoc(doc)
+  return doc === undefined ? null : toRepoDoc(doc)
 }
 
 /** The forge-v2 `repo` document `($ownerId, name)`, or null. */
-function readV2RepoByName(sdk: EvoSDK, forge: ForgeIds, ownerId: string, name: string): Promise<V2RepoDoc | null> {
-  return readV2Repo(sdk, forge, [
+function readRepoByName(sdk: EvoSDK, forge: ForgeIds, ownerId: string, name: string): Promise<RepoDoc | null> {
+  return readRepoDoc(sdk, forge, [
     ['$ownerId', '==', ownerId],
     ['name', '==', name],
   ])
 }
 
 /** The forge-v2 `repo` document with id `repoId`, or null. */
-export function readV2RepoById(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<V2RepoDoc | null> {
-  return readV2Repo(sdk, forge, [['$id', '==', repoId]])
+export function readRepoById(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<RepoDoc | null> {
+  return readRepoDoc(sdk, forge, [['$id', '==', repoId]])
 }
 
 /** What resolved: the repo and its `repo` document. */
 export interface ResolvedRepo {
   readonly repo: RepoRef
-  readonly doc: V2RepoDoc
+  readonly doc: RepoDoc
 }
 
 /** How a repo route addresses a repo. */
@@ -176,11 +176,11 @@ export async function resolveAnyRepoWith(
 
   if (params.repoId) {
     if (!isIdentifier(params.repoId)) return null
-    const doc = await readV2RepoById(sdk, forge, params.repoId)
-    return doc !== null && doc.ownerId === ownerId ? { repo: v2RefOf(forge, doc), doc } : null
+    const doc = await readRepoById(sdk, forge, params.repoId)
+    return doc !== null && doc.ownerId === ownerId ? { repo: repoRefOf(forge, doc), doc } : null
   }
   const name = normalizeRepoName(params.name)
   if (name === null) return null
-  const doc = await readV2RepoByName(sdk, forge, ownerId, name)
-  return doc === null ? null : { repo: v2RefOf(forge, doc), doc }
+  const doc = await readRepoByName(sdk, forge, ownerId, name)
+  return doc === null ? null : { repo: repoRefOf(forge, doc), doc }
 }

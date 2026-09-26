@@ -45,13 +45,13 @@ pub async fn resolve_named(client: &PlatformClient, owner: &str, name: &str) -> 
     let slug = repo_slug(name)?;
     let owner_bytes = platform::decode_identifier(owner)?;
     let forge = client.target().require_v2()?;
-    find_v2(client, forge, owner_bytes, &slug)
+    find_named(client, forge, owner_bytes, &slug)
         .await?
         .ok_or(Error::NotFound)
 }
 
-/// The forge-v2 repo `owner` named `slug`, if it exists (proved either way).
-pub async fn find_v2(
+/// The repo `owner` named `slug`, if it exists (proved either way).
+pub async fn find_named(
     client: &PlatformClient,
     forge: &ForgeIds,
     owner: [u8; 32],

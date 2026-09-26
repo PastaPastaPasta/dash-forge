@@ -124,7 +124,7 @@ pub struct Target {
 
 /// An `issue` document, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Issue {
+pub struct Issue {
     /// The issue number.
     pub number: u32,
     /// Document `$id`.
@@ -141,7 +141,7 @@ pub struct V2Issue {
     pub imported: Option<Imported>,
 }
 
-impl V2Issue {
+impl Issue {
     /// This issue as an event / comment target.
     pub fn target(&self) -> Target {
         Target {
@@ -155,7 +155,7 @@ impl V2Issue {
 
 /// A `patch` (pull request) document, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Patch {
+pub struct Patch {
     /// The PR number (independent of issue numbers).
     pub number: u32,
     /// Document `$id`.
@@ -182,7 +182,7 @@ pub struct V2Patch {
     pub imported: Option<Imported>,
 }
 
-impl V2Patch {
+impl Patch {
     /// This PR as an event / comment target.
     pub fn target(&self) -> Target {
         Target {
@@ -215,7 +215,7 @@ pub struct PatchInput {
 
 /// A `comment`, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Comment {
+pub struct Comment {
     /// Document `$id`.
     pub document_id: String,
     /// Author.
@@ -230,7 +230,7 @@ pub struct V2Comment {
 
 /// A `review`, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Review {
+pub struct Review {
     /// Document `$id`.
     pub document_id: String,
     /// Reviewer (`$ownerId`).
@@ -281,7 +281,7 @@ impl<T> Listed<T> {
 #[derive(Debug, Clone)]
 pub struct IssueView {
     /// The issue.
-    pub issue: V2Issue,
+    pub issue: Issue,
     /// Open/closed, labels, assignees.
     pub state: IssueState,
 }
@@ -290,7 +290,7 @@ pub struct IssueView {
 #[derive(Debug, Clone)]
 pub struct PatchView {
     /// The PR.
-    pub patch: V2Patch,
+    pub patch: Patch,
     /// Open/closed/merged, labels, draft.
     pub state: PrState,
     /// The base ref's current tip (hex), when it has one.
@@ -373,9 +373,9 @@ fn number_of(d: &FetchedDocument) -> u32 {
         .unwrap_or_default()
 }
 
-/// A fetched `issue` as a [`V2Issue`].
-pub fn issue_from_doc(d: &FetchedDocument) -> V2Issue {
-    V2Issue {
+/// A fetched `issue` as a [`Issue`].
+pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
+    Issue {
         number: number_of(d),
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
@@ -386,9 +386,9 @@ pub fn issue_from_doc(d: &FetchedDocument) -> V2Issue {
     }
 }
 
-/// A fetched `patch` as a [`V2Patch`].
-pub fn patch_from_doc(d: &FetchedDocument) -> V2Patch {
-    V2Patch {
+/// A fetched `patch` as a [`Patch`].
+pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
+    Patch {
         number: number_of(d),
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
@@ -407,8 +407,8 @@ pub fn patch_from_doc(d: &FetchedDocument) -> V2Patch {
     }
 }
 
-fn comment_from_doc(d: &FetchedDocument) -> V2Comment {
-    V2Comment {
+fn comment_from_doc(d: &FetchedDocument) -> Comment {
+    Comment {
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
         body: d.field_str("body").unwrap_or_default(),
@@ -417,8 +417,8 @@ fn comment_from_doc(d: &FetchedDocument) -> V2Comment {
     }
 }
 
-fn review_from_doc(d: &FetchedDocument) -> V2Review {
-    V2Review {
+fn review_from_doc(d: &FetchedDocument) -> Review {
+    Review {
         document_id: d.id.clone(),
         reviewer: d.owner_id.clone(),
         verdict: Verdict::from_code(d.field_u64("verdict").unwrap_or_default()),
@@ -829,7 +829,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Issue `number` of `repo`, if it exists and is well-formed.
-    pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<V2Issue>> {
+    pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<Issue>> {
         Ok(self
             .target_doc(repo, TargetKind::Issue, number)
             .await?
@@ -838,7 +838,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Pull request `number` of `repo`, if it exists and is well-formed.
-    pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<V2Patch>> {
+    pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<Patch>> {
         Ok(self
             .target_doc(repo, TargetKind::Patch, number)
             .await?
@@ -889,7 +889,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The newest `limit` issues (0 = one page of 100), newest first.
-    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Issue>> {
+    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<Issue>> {
         Ok(self
             .newest(repo, TargetKind::Issue, limit)
             .await?
@@ -897,7 +897,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The newest `limit` pull requests (0 = one page of 100), newest first.
-    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Patch>> {
+    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<Listed<Patch>> {
         Ok(self
             .newest(repo, TargetKind::Patch, limit)
             .await?
@@ -910,7 +910,7 @@ impl<'a> Collab<'a> {
         &self,
         forge: &ForgeIds,
         source_repo_id: &str,
-    ) -> Result<Vec<V2Patch>> {
+    ) -> Result<Vec<Patch>> {
         let collab = self.client.fetch_contract(&forge.collab).await?;
         let docs = self
             .client
@@ -967,7 +967,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Every well-formed comment on a target, oldest first.
-    pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<V2Comment>> {
+    pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Comment>> {
         let collab = self.collab_contract(repo).await?;
         Ok(self
             .by_target(&collab, DOC_COMMENT, "targetId", target_id)
@@ -979,7 +979,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Every well-formed review on a patch, oldest first.
-    pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<V2Review>> {
+    pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<Review>> {
         let collab = self.collab_contract(repo).await?;
         Ok(self
             .by_target(&collab, DOC_REVIEW, "patchId", patch_id)
@@ -993,7 +993,7 @@ impl<'a> Collab<'a> {
     // --- reads: folded state --------------------------------------------------------
 
     /// An issue's state (§3 fold).
-    pub async fn issue_state(&self, repo: &RepoRef, issue: &V2Issue) -> Result<IssueState> {
+    pub async fn issue_state(&self, repo: &RepoRef, issue: &Issue) -> Result<IssueState> {
         let log = self.target_log(repo, &issue.document_id).await?;
         Ok(fold_issue_state_v2(
             &log.events,
@@ -1025,7 +1025,7 @@ impl<'a> Collab<'a> {
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a base tip).
-    pub async fn patch_view(&self, repo: &RepoRef, patch: V2Patch) -> Result<PatchView> {
+    pub async fn patch_view(&self, repo: &RepoRef, patch: Patch) -> Result<PatchView> {
         let log = self.target_log(repo, &patch.document_id).await?;
         let base = self.base_ref_tips(repo, &patch.base_ref_name).await?;
         let state = fold_pr_state_v2(
@@ -1049,8 +1049,8 @@ impl<'a> Collab<'a> {
     pub async fn approvals(
         &self,
         repo: &RepoRef,
-        patch: &V2Patch,
-    ) -> Result<(Approvals, Vec<V2Review>)> {
+        patch: &Patch,
+    ) -> Result<(Approvals, Vec<Review>)> {
         let oracle = self.member_oracle(repo).await?;
         self.approvals_with(repo, patch, &oracle).await
     }
@@ -1066,9 +1066,9 @@ impl<'a> Collab<'a> {
     pub async fn approvals_with(
         &self,
         repo: &RepoRef,
-        patch: &V2Patch,
+        patch: &Patch,
         oracle: &RoleOracle,
-    ) -> Result<(Approvals, Vec<V2Review>)> {
+    ) -> Result<(Approvals, Vec<Review>)> {
         let reviews = self.reviews(repo, &patch.document_id).await?;
         let rule: Vec<RuleReview> = reviews
             .iter()

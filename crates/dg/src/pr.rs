@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, PatchInput, PatchView, V2Patch};
+use forge_core::collab::v2::{Collab, Patch, PatchInput, PatchView};
 use forge_core::collab::Verdict;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::Role;
@@ -96,7 +96,7 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
 }
 
 /// The v2 PR `number` of `handle`, or E102.
-async fn patch(collab: &Collab<'_>, handle: &Repo, repo: &str, number: u64) -> Result<V2Patch> {
+async fn patch(collab: &Collab<'_>, handle: &Repo, repo: &str, number: u64) -> Result<Patch> {
     collab
         .patch(handle, number_arg(number)?)
         .await?

@@ -7,7 +7,7 @@
 
 import { Star } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { readV2Stargazers } from '@/lib/repo'
+import { readStargazers } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { Author } from '@/components/author'
@@ -18,7 +18,7 @@ export function StargazersContent({ home }: { home: RepoHome }): JSX.Element {
   const { repo } = home
 
   const { data, loading, error, reload } = useAsync<string[]>(
-    () => readV2Stargazers(sdk!, repo.forge, repo.repoId),
+    () => readStargazers(sdk!, repo.forge, repo.repoId),
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )

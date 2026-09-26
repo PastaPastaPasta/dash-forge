@@ -14,14 +14,14 @@ import {
   branchesOf,
   readConfigBundle,
   readRefs,
-  readV2StarCount,
+  readStarCount,
   resolveAnyRepo,
   tagsOf,
   type RepoAddressParams,
   type RepoConfig,
   type RepoRef,
   type ResolvedRef,
-  type V2RepoDoc,
+  type RepoDoc,
 } from '../repo'
 
 /** Backend descriptor for the repo header badge / clone box. */
@@ -56,7 +56,7 @@ export function backendInfo(config: RepoConfig | null): BackendInfo {
 export interface RepoHome {
   readonly repo: RepoRef
   /** The `repo` document (description, display name, topics, fork). */
-  readonly v2: V2RepoDoc
+  readonly v2: RepoDoc
   /** The repo description (the `repo` document's). */
   readonly description: string
   readonly config: RepoConfig | null
@@ -85,7 +85,7 @@ export async function loadRepoHome(
   const [{ config }, refs, starCount] = await Promise.all([
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
-    readV2StarCount(sdk, repo.forge, repo.repoId).catch(() => null),
+    readStarCount(sdk, repo.forge, repo.repoId).catch(() => null),
   ])
 
   return {

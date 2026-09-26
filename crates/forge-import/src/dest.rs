@@ -10,7 +10,7 @@ use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts};
 use forge_core::keystore::BridgeIdentity;
 use forge_core::members::MemberReader;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
-use forge_core::resolve::{find_v2, repo_slug, resolve_id};
+use forge_core::resolve::{find_named, repo_slug, resolve_id};
 use forge_core::rules::v2::{Role, Visibility};
 use forge_core::scope::RepoRef;
 
@@ -170,7 +170,7 @@ pub async fn resolve(
     let name = repo_slug(&name)?;
     let owner_bytes = forge_core::platform::decode_identifier(&owner)
         .with_context(|| format!("owner {owner:?} is not an identity id"))?;
-    let existing = find_v2(client, &forge, owner_bytes, &name).await?;
+    let existing = find_named(client, &forge, owner_bytes, &name).await?;
     Ok(DestRepo {
         owner,
         name,

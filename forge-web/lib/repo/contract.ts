@@ -13,8 +13,11 @@ import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
-/** The per-repo document type names forge-core and forge-collab share (`forge-v2.md` §2). */
+/** The forge-core and forge-collab document type names (`forge-v2.md` §2). */
 export const DOC = {
+  repo: 'repo',
+  maintainer: 'maintainer',
+  writer: 'writer',
   config: 'config',
   refUpdate: 'refUpdate',
   protectedRefUpdate: 'protectedRefUpdate',
@@ -25,19 +28,12 @@ export const DOC = {
   patch: 'patch',
   comment: 'comment',
   event: 'event',
+  authorEvent: 'authorEvent',
   review: 'review',
   label: 'label',
   release: 'release',
   checkRun: 'checkRun',
   webhook: 'webhook',
-} as const
-
-/** The forge-v2 repo, membership, author-event and social document types (`forge-v2.md` §2). */
-export const V2_DOC = {
-  repo: 'repo',
-  maintainer: 'maintainer',
-  writer: 'writer',
-  authorEvent: 'authorEvent',
   star: 'star',
   follow: 'follow',
 } as const
@@ -57,10 +53,10 @@ const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
 }
 
 /**
- * A forge-v2 repository: a `repo` document in the network's shared forge-core contract,
- * with everything else keyed by its id (`forge-v2.md` §2).
+ * A repo reference: a `repo` document in the network's shared forge-core contract, with
+ * everything else keyed by its id (`forge-v2.md` §2).
  */
-export interface V2RepoRef {
+export interface RepoRef {
   readonly forge: ForgeIds
   /** The `repo` document id (base58). */
   readonly repoId: string
@@ -68,9 +64,6 @@ export interface V2RepoRef {
   readonly name: string
   readonly visibility: Visibility
 }
-
-/** A repo reference: a forge-v2 `repo` document. */
-export type RepoRef = V2RepoRef
 
 /** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
 export function repoContractIds(repo: RepoRef | null): string[] {

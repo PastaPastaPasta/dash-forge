@@ -27,7 +27,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import {
   checkRepoInput,
-  createRepoV2,
+  createRepo,
   discardRepoCreation,
   normalizeRepoName,
   pendingRepoCreations,
@@ -105,7 +105,7 @@ export default function NewRepoPage(): JSX.Element {
     setProgress(INITIAL_PROGRESS)
     let result
     try {
-      result = await createRepoV2(sdk, signer, forge, i, (step, state) =>
+      result = await createRepo(sdk, signer, forge, i, (step, state) =>
         setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
       )
     } catch (e) {

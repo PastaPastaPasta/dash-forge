@@ -15,11 +15,11 @@ import type { ForgeIds } from '../deployments'
 import type { Holdings } from '../rules'
 import { RoleOracle, type Membership, type Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
-import { V2_DOC, asIdentifierString, type RepoRef } from './contract'
+import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 const ROLES: readonly Role[] = ['maintainer', 'writer']
-const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: V2_DOC.maintainer, writer: V2_DOC.writer }
+const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: DOC.maintainer, writer: DOC.writer }
 
 /** A repo an identity is a member of. */
 export interface MemberRepo {

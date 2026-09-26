@@ -27,8 +27,8 @@ import {
 } from '../browse'
 import {
   CHUNK_QUERY_MAX,
-  readV2PackCopies,
-  v2PacksOfKind,
+  readPackCopies,
+  packsOfKind,
   type AsOf,
   readNewestManifestOfKind,
   readRepoPackManifests,
@@ -595,7 +595,7 @@ async function firstSequential<T, R>(
 }
 
 /** A chunk locator: `platform://<core>/<repoId>/<owner>/<packHash>` (forge-core `scope.rs`). */
-const PLATFORM_LOCATOR_V2 = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{64})$/i
+const PLATFORM_LOCATOR = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{64})$/i
 
 /**
  * The chunk reads a `storage 1` manifest's `platform://` locators name. A fork records each
@@ -615,7 +615,7 @@ function platformLocatorReads(
   const seen = new Set<string>()
   const out: { repo: RepoRef; manifest: PackManifest }[] = []
   for (const uri of manifest.uris) {
-    const [, core, repoId, owner, hash] = PLATFORM_LOCATOR_V2.exec(uri) ?? []
+    const [, core, repoId, owner, hash] = PLATFORM_LOCATOR.exec(uri) ?? []
     if (core !== repo.forge.core || repoId === undefined || owner === undefined) continue
     if (hash?.toLowerCase() !== want || seen.has(`${repoId}/${owner}`)) continue
     seen.add(`${repoId}/${owner}`)
@@ -879,7 +879,7 @@ export function locatorPackSpace(
 ): PackManifest[] {
   // The pack list's kind-0 packs (`forge-v2.md` §4), superseded ones included and in place —
   // a locator's packRefs index every git pack listed as of it.
-  return v2PacksOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
+  return packsOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
 }
 
 /**
@@ -887,7 +887,7 @@ export function locatorPackSpace(
  * those a verified pack supersedes left out.
  */
 function locatorFragments(manifests: readonly PackManifest[]): PackManifest[] {
-  return v2PacksOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
+  return packsOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
     .filter((p) => !p.superseded)
     .reverse()
 }
@@ -949,7 +949,7 @@ export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatInd
   if (!newest) return null
   // Any writer can post a kind-2 manifest, so read the pack's copies in order and accept only
   // bytes that hash to `packHash` (loadArtifactBytes checks each copy).
-  const flatManifest = await readV2PackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
+  const flatManifest = await readPackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
   if (!flatManifest) return null
   const bytes = await loadArtifactBytes(sdk, repo, flatManifest)
   return FlatIndex.parse(bytes)

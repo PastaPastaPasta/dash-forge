@@ -18,7 +18,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
-import { readV2RepoById, repoKey, v2RefOf, type PullView, type RepoRef } from '@/lib/repo'
+import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
 import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
@@ -42,20 +42,20 @@ type SourceRepo =
 function useSourceRepo(base: RepoRef, sourceId: string | null): SourceRepo {
   const { sdk, ready } = useSdk()
   const { forge } = base
-  const v2Source = useAsync<RepoRef | null>(
+  const sourceRepo = useAsync<RepoRef | null>(
     async () => {
-      const doc = await readV2RepoById(sdk!, forge, sourceId!)
-      return doc === null ? null : v2RefOf(forge, doc)
+      const doc = await readRepoById(sdk!, forge, sourceId!)
+      return doc === null ? null : repoRefOf(forge, doc)
     },
     [ready, forge.core, sourceId ?? ''],
     { enabled: ready && sdk !== null && sourceId !== null },
   )
   if (sourceId === null) return { kind: 'none' }
-  if (v2Source.error) {
-    return { kind: 'missing', message: `The source repo could not be read (${v2Source.error}).`, retry: v2Source.reload }
+  if (sourceRepo.error) {
+    return { kind: 'missing', message: `The source repo could not be read (${sourceRepo.error}).`, retry: sourceRepo.reload }
   }
-  if (v2Source.data) return { kind: 'found', repo: v2Source.data }
-  if (v2Source.settled && !v2Source.loading) {
+  if (sourceRepo.data) return { kind: 'found', repo: sourceRepo.data }
+  if (sourceRepo.settled && !sourceRepo.loading) {
     return { kind: 'missing', message: `The source repo ${sourceId.slice(0, 8)}… this PR names does not exist.` }
   }
   return { kind: 'loading' }

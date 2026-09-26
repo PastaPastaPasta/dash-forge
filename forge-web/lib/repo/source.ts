@@ -13,13 +13,13 @@
  */
 
 import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause } from '../sdk'
-import { DOC, V2_DOC, type RepoRef } from './contract'
+import { DOC, type RepoRef } from './contract'
 
 /** The forge-v2 document types held by forge-core; everything else is forge-collab. */
 const CORE_TYPES: ReadonlySet<string> = new Set([
-  V2_DOC.repo,
-  V2_DOC.maintainer,
-  V2_DOC.writer,
+  DOC.repo,
+  DOC.maintainer,
+  DOC.writer,
   DOC.refUpdate,
   DOC.protectedRefUpdate,
   DOC.config,

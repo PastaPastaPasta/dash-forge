@@ -12,7 +12,7 @@
 import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
-import { followRelation, readV2FollowCounts, resolveOwner } from '@/lib/repo'
+import { followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -58,7 +58,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       if (identityId === null) return null
       const forge = NETWORKS[network].v2
       const noCounts = { followers: null, following: null }
-      const follows = forge !== null ? readV2FollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
+      const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
       const [name, repos, counts] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
         listReposByOwner(sdk!, identityId, { network }),

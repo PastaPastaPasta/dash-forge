@@ -24,10 +24,10 @@ import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { isPublicHttpsUrl } from '../net'
 import { evoSdkService, type WriteAuth } from '../sdk'
 import { parseIdentityFileText } from '../auth'
-import { readV2PackCopies } from '../repo'
+import { readPackCopies } from '../repo'
 import { loadArtifactBytesProgress } from '../view/browse-source'
 import { retryWhileMissing } from '../view/retry'
-import type { V2RepoRef } from '../repo/contract'
+import type { RepoRef } from '../repo/contract'
 import { storeAndRecordPack, policyFor, type StorageProfile } from './index'
 import { sha256Hex } from './sigv4'
 
@@ -66,7 +66,7 @@ describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on moutai', () =
       if (!v2) throw new Error('no forge-v2 deployment on this devnet')
       await evoSdkService.initialize({ network: 'devnet', contractIds: [v2.core, v2.collab], timeoutMs: 20000 })
       const sdk = evoSdkService.getSdk()
-      const repo: V2RepoRef = { forge: v2, repoId: EMPTY_REPO, ownerId: parsed.identityId, name: 'forge-v2-empty', visibility: 'public' }
+      const repo: RepoRef = { forge: v2, repoId: EMPTY_REPO, ownerId: parsed.identityId, name: 'forge-v2-empty', visibility: 'public' }
 
       // One artifact per public URL: the signer's manifest slot for a pack is permanent, so a
       // rerun with the same bytes and URL finds its own manifest and writes nothing.
@@ -95,7 +95,7 @@ describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on moutai', () =
       expect(events).toEqual(['minio:start', 'minio:done'])
 
       // The node answering the read may be a block behind the one that confirmed the write.
-      const copy = await retryWhileMissing(() => readV2PackCopies(sdk, repo, hash, 2), 8)
+      const copy = await retryWhileMissing(() => readPackCopies(sdk, repo, hash, 2), 8)
       expect(copy, 'the manifest should read back from Platform').not.toBeNull()
       expect(copy?.uris).toEqual(stored.uris)
       const got = await loadArtifactBytesProgress(sdk, repo, copy!)

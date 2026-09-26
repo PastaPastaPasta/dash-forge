@@ -14,7 +14,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
 import { normalizeDocument, queryDocumentsWithProof } from '../sdk'
-import { DOC, V2_DOC, readMemberRepoIds, toV2RepoDoc, type V2RepoDoc } from '../repo'
+import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 
 /** A repo row for the discovery feed and profiles. */
 export interface DiscoveredRepo {
@@ -35,7 +35,7 @@ export interface DiscoveredRepo {
   readonly role?: Role
 }
 
-function fromV2(doc: V2RepoDoc, counts?: { stars?: number | null; issues?: number | null }): DiscoveredRepo {
+function fromRepoDoc(doc: RepoDoc, counts?: { stars?: number | null; issues?: number | null }): DiscoveredRepo {
   return {
     key: doc.repoId,
     ownerId: doc.ownerId,
@@ -72,7 +72,7 @@ function countOf(counts: Map<string, bigint> | undefined, id: string): number | 
  * (`documents.composite`, protocol 14). Falls back to a plain page without counts if the
  * composite surface is unavailable.
  */
-async function listRecentV2Repos(
+async function readRecentRepos(
   sdk: EvoSDK,
   forge: ForgeIds,
   limit = 24,
@@ -80,13 +80,13 @@ async function listRecentV2Repos(
   try {
     const result = await (sdk as unknown as CompositeFacadeLike).documents.composite({
       dataContractId: forge.core,
-      documentType: V2_DOC.repo,
+      documentType: DOC.repo,
       orderBy: [['$createdAt', 'desc']],
       limit,
       subQueries: [
         {
           dataContractId: forge.collab,
-          documentType: V2_DOC.star,
+          documentType: DOC.star,
           kind: 'counts',
           bind: { sourceProperty: '$id', field: 'repoId' },
         },
@@ -100,17 +100,17 @@ async function listRecentV2Repos(
     })
     const [stars, issues] = result.subResults.map((r) => (r.kind === 'counts' ? r.counts : undefined))
     return result.pageDocuments.map((raw) => {
-      const doc = toV2RepoDoc(normalizeDocument(raw))
-      return fromV2(doc, { stars: countOf(stars, doc.repoId), issues: countOf(issues, doc.repoId) })
+      const doc = toRepoDoc(normalizeDocument(raw))
+      return fromRepoDoc(doc, { stars: countOf(stars, doc.repoId), issues: countOf(issues, doc.repoId) })
     })
   } catch {
     const { documents } = await queryDocumentsWithProof(sdk, {
       dataContractId: forge.core,
-      documentTypeName: V2_DOC.repo,
+      documentTypeName: DOC.repo,
       orderBy: [['$createdAt', 'desc']],
       limit,
     })
-    return documents.map((d) => fromV2(toV2RepoDoc(d)))
+    return documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
 }
 
@@ -123,7 +123,7 @@ export async function listRecentRepos(
   opts: { network?: Network; limit?: number } = {},
 ): Promise<DiscoveredRepo[]> {
   const forge = NETWORKS[opts.network ?? DEFAULT_NETWORK].v2
-  return forge === null ? [] : listRecentV2Repos(sdk, forge, opts.limit ?? 24)
+  return forge === null ? [] : readRecentRepos(sdk, forge, opts.limit ?? 24)
 }
 
 /**
@@ -142,27 +142,27 @@ export async function listReposByOwner(
   const owned = async (): Promise<DiscoveredRepo[]> => {
     const { documents } = await queryDocumentsWithProof(sdk, {
       dataContractId: forge.core,
-      documentTypeName: V2_DOC.repo,
+      documentTypeName: DOC.repo,
       where: [['$ownerId', '==', ownerId]],
       orderBy: [['name', 'asc']],
       limit,
     })
-    return documents.map((d) => fromV2(toV2RepoDoc(d)))
+    return documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
   const member = async (): Promise<DiscoveredRepo[]> => {
     const rows = (await readMemberRepoIds(sdk, forge, ownerId)).slice(0, limit)
     if (rows.length === 0) return []
     const { documents } = await queryDocumentsWithProof(sdk, {
       dataContractId: forge.core,
-      documentTypeName: V2_DOC.repo,
+      documentTypeName: DOC.repo,
       where: [['$id', 'in', rows.map((r) => r.repoId)]],
       limit: rows.length,
     })
     const roleOf = new Map(rows.map((r) => [r.repoId, r.role]))
     return documents
-      .map(toV2RepoDoc)
+      .map(toRepoDoc)
       .filter((doc) => doc.ownerId !== ownerId)
-      .map((doc) => ({ ...fromV2(doc), role: roleOf.get(doc.repoId) }))
+      .map((doc) => ({ ...fromRepoDoc(doc), role: roleOf.get(doc.repoId) }))
   }
 
   // Independent sources: one failing must not blank the other. Both failing is an error.

@@ -9,13 +9,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { ForgeIds } from '../deployments'
 import { countDocuments, queryAllDocuments, queryDocuments } from '../sdk'
-import { DOC, V2_DOC, asIdentifierString, str, type V2RepoRef } from './contract'
+import { DOC, asIdentifierString, str, type RepoRef } from './contract'
 
 /** A repo's star count (`star.byRepo`, countable). */
-export function readV2StarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
+export function readStarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
   return countDocuments(sdk, {
     dataContractId: forge.collab,
-    documentTypeName: V2_DOC.star,
+    documentTypeName: DOC.star,
     where: [['repoId', '==', repoId]],
   })
 }
@@ -24,7 +24,7 @@ export function readV2StarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): P
  * Who starred a repo. `star` is `indexOnly` with no `$createdAt` in its indexes (`forge-v2.md`
  * §9), so the list is in index order, not newest first, and carries no star time.
  */
-export async function readV2Stargazers(
+export async function readStargazers(
   sdk: EvoSDK,
   forge: ForgeIds,
   repoId: string,
@@ -32,7 +32,7 @@ export async function readV2Stargazers(
 ): Promise<string[]> {
   const docs = await queryDocuments(sdk, {
     dataContractId: forge.collab,
-    documentTypeName: V2_DOC.star,
+    documentTypeName: DOC.star,
     where: [['repoId', '==', repoId]],
     limit,
   })
@@ -46,7 +46,7 @@ export async function readV2Stargazers(
  * `patch.number`, rangeCountable): O(1) and proof-checked, so a tab count is never a guess.
  * `null` for a count that could not be read.
  */
-export async function readV2TargetCounts(
+export async function readTargetCounts(
   sdk: EvoSDK,
   forge: ForgeIds,
   repoId: string,
@@ -68,7 +68,7 @@ export async function readV2TargetCounts(
  */
 export async function readPublicRepoFacts(
   sdk: EvoSDK,
-  repo: V2RepoRef,
+  repo: RepoRef,
 ): Promise<{ members: number; lastActivity: number | null; storedBytes: number }> {
   const scoped = (type: string, orderBy: readonly (readonly [string, 'asc' | 'desc'])[], limit?: number) => ({
     dataContractId: repo.forge.core,
@@ -78,8 +78,8 @@ export async function readPublicRepoFacts(
     ...(limit !== undefined ? { limit } : {}),
   })
   const [maintainers, writers, newest, manifests] = await Promise.all([
-    queryAllDocuments(sdk, scoped(V2_DOC.maintainer, [['memberId', 'asc']])),
-    queryAllDocuments(sdk, scoped(V2_DOC.writer, [['memberId', 'asc']])),
+    queryAllDocuments(sdk, scoped(DOC.maintainer, [['memberId', 'asc']])),
+    queryAllDocuments(sdk, scoped(DOC.writer, [['memberId', 'asc']])),
     queryDocuments(sdk, scoped(DOC.refUpdate, [['$createdAt', 'desc']], 1)),
     queryAllDocuments(sdk, scoped(DOC.packManifest, [['$createdAt', 'asc']])),
   ])
@@ -98,7 +98,7 @@ export async function readPublicRepoFacts(
 }
 
 /** Follower count (`follow.byTarget`) and following count (`follow.byOwner`), both countable. */
-export async function readV2FollowCounts(
+export async function readFollowCounts(
   sdk: EvoSDK,
   forge: ForgeIds,
   identityId: string,
@@ -106,12 +106,12 @@ export async function readV2FollowCounts(
   const [followers, following] = await Promise.all([
     countDocuments(sdk, {
       dataContractId: forge.collab,
-      documentTypeName: V2_DOC.follow,
+      documentTypeName: DOC.follow,
       where: [['identityId', '==', identityId]],
     }).catch(() => null),
     countDocuments(sdk, {
       dataContractId: forge.collab,
-      documentTypeName: V2_DOC.follow,
+      documentTypeName: DOC.follow,
       where: [['$ownerId', '==', identityId]],
     }).catch(() => null),
   ])

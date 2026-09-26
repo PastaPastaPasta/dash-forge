@@ -177,7 +177,7 @@ pub async fn fork_repo(
     // A repo of the signer's with this name already exists: continue only if it is a fork
     // of this parent (an interrupted fork). Anything else would have the parent's manifests
     // and refs written into an unrelated repository, permanently.
-    if let Some(existing) = crate::resolve::find_v2(
+    if let Some(existing) = crate::resolve::find_named(
         client,
         forge,
         platform::decode_identifier(&owner)?,

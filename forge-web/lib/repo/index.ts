@@ -12,7 +12,6 @@
 
 export {
   DOC,
-  V2_DOC,
   asIdentifierString,
   num,
   str,
@@ -23,19 +22,18 @@ export {
   toRefUpdate,
   wellFormed,
   type RepoRef,
-  type V2RepoRef,
 } from './contract'
 export { CHUNK_QUERY_MAX, repoSource } from './source'
 export {
-  readV2RepoById,
+  readRepoById,
   resolveAnyRepo,
   resolveAnyRepoWith,
   resolveOwner,
-  toV2RepoDoc,
-  v2RefOf,
+  toRepoDoc,
+  repoRefOf,
   type RepoAddressParams,
   type ResolvedRepo,
-  type V2RepoDoc,
+  type RepoDoc,
 } from './resolveRepo'
 export {
   holdingsOfRole,
@@ -47,10 +45,10 @@ export {
   readViewerPermissions,
 } from './members'
 export {
-  readV2FollowCounts,
-  readV2StarCount,
-  readV2Stargazers,
-  readV2TargetCounts,
+  readFollowCounts,
+  readStarCount,
+  readStargazers,
+  readTargetCounts,
   readPublicRepoFacts,
 } from './social'
 export {
@@ -85,8 +83,8 @@ export {
   readNewestManifestOfKind,
   readPackManifests,
   readRepoPackManifests,
-  readV2PackCopies,
-  v2PacksOfKind,
+  readPackCopies,
+  packsOfKind,
   type AsOf,
   type PackManifest,
 } from './packs'
@@ -116,12 +114,12 @@ export {
   createComment,
   createIssue,
   createRelease,
-  createRepoV2,
+  createRepo,
   createReview,
   discardRepoCreation,
   followRelation,
   grantMember,
-  nextNumberV2,
+  nextNumber,
   normalizeRepoName,
   pendingRepoCreations,
   revokeMember,

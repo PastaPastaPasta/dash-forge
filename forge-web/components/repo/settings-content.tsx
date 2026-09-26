@@ -14,9 +14,9 @@
 import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import type { V2RepoRef } from '@/lib/repo'
+import type { RepoRef } from '@/lib/repo'
 import { grantMember, invalidateMembers, readMembershipsCached, revokeMember } from '@/lib/repo'
-import type { Membership, Role as V2Role } from '@/lib/rules/v2'
+import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
 import { decodeIdentifier } from '@/lib/auth'
@@ -35,7 +35,7 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 
 export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
-  return <V2Settings home={home} repo={home.repo} />
+  return <RepoSettings home={home} repo={home.repo} />
 }
 
 /**
@@ -43,7 +43,7 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
  * ACL consensus enforces), and the ids a CLI or SDK user needs. The owner adds a member by
  * creating their document and removes one by deleting it; consensus refuses anyone else.
  */
-function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.Element {
+function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
@@ -55,8 +55,8 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
   )
   const memberRows = members.data ?? []
   const [memberId, setMemberId] = useState('')
-  const [role, setRole] = useState<V2Role>('writer')
-  const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: V2Role } | null>(null)
+  const [role, setRole] = useState<MemberRole>('writer')
+  const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: MemberRole } | null>(null)
   const idError = (() => {
     if (memberId.trim() === '') return null
     try {
@@ -142,7 +142,7 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
                 </Field>
               </div>
               <div role="radiogroup" aria-label="Role" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-                {(['writer', 'maintainer'] as V2Role[]).map((r) => (
+                {(['writer', 'maintainer'] as MemberRole[]).map((r) => (
                   <button
                     key={r}
                     role="radio"

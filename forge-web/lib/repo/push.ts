@@ -25,7 +25,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, type V2RepoRef } from './contract'
+import { DOC, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 /** The fields of a `packManifest` (forge-core `PackManifestInput`). */
@@ -76,7 +76,7 @@ function isDuplicate(e: unknown): boolean {
 }
 
 /** The signer's own manifest of `packHash` in `repo` (the unique slot), or null. */
-export async function findOwnManifest(sdk: EvoSDK, repo: V2RepoRef, ownerId: string, packHashHex: string): Promise<string | null> {
+export async function findOwnManifest(sdk: EvoSDK, repo: RepoRef, ownerId: string, packHashHex: string): Promise<string | null> {
   const { documents } = await queryDocumentsWithProof(
     sdk,
     repoSource(repo).repoQuery(DOC.packManifest, {
@@ -98,7 +98,7 @@ export async function findOwnManifest(sdk: EvoSDK, repo: V2RepoRef, ownerId: str
 export async function writePackManifest(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: V2RepoRef,
+  repo: RepoRef,
   input: PackManifestInput,
   intent?: string,
 ): Promise<WriteResult> {
@@ -151,7 +151,7 @@ export function splitChunks(bytes: Uint8Array): Chunk[] {
 }
 
 /** The seqs of `packHash` the signer already stored in `repo`. */
-async function storedSeqs(sdk: EvoSDK, repo: V2RepoRef, ownerId: string, packHashHex: string, total: number): Promise<Set<number>> {
+async function storedSeqs(sdk: EvoSDK, repo: RepoRef, ownerId: string, packHashHex: string, total: number): Promise<Set<number>> {
   const have = new Set<number>()
   const source = repoSource(repo)
   for (let start = 0; start < total; start += 100) {
@@ -174,7 +174,7 @@ async function storedSeqs(sdk: EvoSDK, repo: V2RepoRef, ownerId: string, packHas
 export async function putPlatformChunks(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: V2RepoRef,
+  repo: RepoRef,
   bytes: Uint8Array,
   packHashHex: string,
   /** `written`: chunks this call itself created (0 on the first report, before any write). */

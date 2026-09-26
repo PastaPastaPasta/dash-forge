@@ -49,8 +49,8 @@ export default function ExplorePage(): JSX.Element {
   const on = ready && sdk !== null && forge !== null
 
   const recent = useAsync(() => listRecentRepos(sdk!, { network, limit: 24 }), [ready, network], { enabled: on })
-  const recentV2 = recent.data ?? []
-  const releases = useAsync(() => latestReleases(sdk!, forge!, recentV2.map(repoLite)), [recentV2.map((r) => r.key).join(',')], {
+  const recentRepos = recent.data ?? []
+  const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.data !== null,
   })
 

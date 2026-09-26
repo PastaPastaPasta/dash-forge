@@ -37,7 +37,6 @@ import {
   num,
   str,
   toEvent,
-  V2_DOC,
   wellFormed,
   type RepoRef,
 } from './contract'
@@ -249,7 +248,7 @@ export async function readTargetLog(
         }),
       ),
     )
-  const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+  const [events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
   return { events, authorEvents }
 }
 
@@ -270,7 +269,7 @@ async function readRepoFeed(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, Tar
   let events: Event[]
   let authorEvents: Event[]
   try {
-    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
   } catch (e) {
     // Too much activity to read up front: the caller folds rows one target at a time.
     if (e instanceof IncompleteReadError) return null

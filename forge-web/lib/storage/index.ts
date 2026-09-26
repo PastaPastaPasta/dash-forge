@@ -7,7 +7,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { WriteAuth, WriteResult } from '../sdk'
-import type { V2RepoRef } from '../repo/contract'
+import type { RepoRef } from '../repo/contract'
 import { writePackManifest, type PackManifestInput } from '../repo/push'
 import { storeArtifact, type StoreOptions, type StoredArtifact } from './upload'
 
@@ -43,7 +43,7 @@ export interface RecordedPack {
 export async function storeAndRecordPack(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: V2RepoRef,
+  repo: RepoRef,
   bytes: Uint8Array,
   meta: Pick<PackManifestInput, 'kind' | 'objectCount' | 'tips' | 'supersedes'>,
   opts: StoreOptions & { readonly intent?: string },
