@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** No Dash Forge release is published yet, so the default `install: 'true'` has nothing to download. Until the first release, build `dg`, `git-remote-dash` and `forge-import` from source in the job and set `install: 'false'` (see [`.github/workflows/mirror-action.yml`](../.github/workflows/mirror-action.yml)). Use `@master` until this action has a release tag; `@v1` will follow with the first release.
+> **Status.** No Dash Forge release is published yet, so the default `install: 'true'` has nothing to download. Until the first release, build `dg`, `git-remote-dash` and `forge-import` from source in the job and set `install: 'false'` (see [`.github/workflows/mirror-action.yml`](../.github/workflows/mirror-action.yml)). Use `@master` until this Action has its own release tag, which will come with the first Dash Forge release.
 
 ## Quick start
 
