@@ -15,6 +15,8 @@ import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useIntent } from '@/hooks/use-intent'
+import { writeErrorMessage } from '@/lib/view/write-errors'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -28,7 +30,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
-import { cn, errorMessage } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 type Filter = 'open' | 'closed' | 'all'
 
@@ -174,25 +176,27 @@ function ComposeIssueDialog({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const draft = useIntent()
 
   const cost = previewCreate('issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
-    if (!guard.check(cost.credits)) return
+    if (pending || !guard.check(cost.credits)) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
     setNote(null)
     try {
-      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body }, (taken, next) =>
+      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body, intent: draft.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       setTitle('')
       setBody('')
+      draft.renew()
       onCreated(created.number)
       onClose()
     } catch (e) {
-      setError(errorMessage(e))
+      setError(writeErrorMessage(e).message)
     } finally {
       setPending(false)
     }

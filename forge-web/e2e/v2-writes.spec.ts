@@ -134,3 +134,31 @@ test('w6. owner approves the fixture PR, then removes the writer', async ({ brow
   await expect(settings.getByTestId('spend-reconcile')).toBeVisible()
   await shot(settings, 'v2w-06-spend')
 })
+
+test('w7. star, unstar, star, unstar in a row (create and index-only delete share nonces)', async ({ browser }) => {
+  const page = await signedIn(browser, 'CONTRIB', repoPath(''))
+  for (let round = 0; round < 2; round++) {
+    const star = page.getByRole('button', { name: /^star/i })
+    await expect(star).toBeEnabled({ timeout: 60_000 })
+    await star.click()
+    await expect(page.getByRole('button', { name: /starred/i })).toContainText('1', { timeout: 90_000 })
+    await page.getByRole('button', { name: /starred/i }).click()
+    await expect(page.getByRole('button', { name: /^star/i })).toContainText('0', { timeout: 90_000 })
+  }
+  // No write error surfaced (Next's route announcer is an empty alert region; ignore it).
+  await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0)
+})
+
+test('w8. grant, revoke, grant, revoke a writer in a row', async ({ browser }) => {
+  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  for (let round = 0; round < 2; round++) {
+    await page.getByLabel('Identity ID').fill(COLLAB)
+    await page.getByRole('radio', { name: 'writer' }).click()
+    await page.getByRole('button', { name: /^add$/i }).click()
+    await confirmWrite(page, /sign & add/i)
+    await expect(page.getByText('WRITER', { exact: true })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('button', { name: /^remove$/i }).first().click()
+    await confirmWrite(page, /sign & remove/i)
+    await expect(page.getByText('WRITER', { exact: true })).toHaveCount(0, { timeout: 60_000 })
+  }
+})

@@ -105,17 +105,14 @@ export function AuthProvider({
 
   const onSpend = useCallback(
     (event: SpendEvent) => {
-      toast({ title: SPEND_TITLES[event.kind] ?? 'Write confirmed', credits: event.actualCredits ?? null })
-      void (async () => {
-        let after: bigint | null = null
-        try {
-          await controller.refreshBalance()
-          after = BigInt(controller.getState().session?.balance ?? '0')
-        } catch {
-          /* the ledger still records the row */
-        }
-        await recordSpend(event, after).catch(() => undefined)
-      })()
+      const refused = event.kind.startsWith('refused:')
+      toast({
+        title: refused ? 'Platform refused that write' : SPEND_TITLES[event.kind] ?? 'Write confirmed',
+        credits: event.actualCredits ?? null,
+        ...(refused ? { tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
+      })
+      void recordSpend(event).catch(() => undefined)
+      void controller.refreshBalance().catch(() => undefined)
     },
     [controller],
   )

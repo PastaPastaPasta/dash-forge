@@ -24,12 +24,14 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { requireRegistryContractId, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
-import { idbDelete, idbEntries, idbPut } from '../idb'
+import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { allocateNumber, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role } from '../rules/v2'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
+  UnconfirmedWriteError,
+  serialized,
   createGateFor,
   countDocuments,
   createDocumentIdempotent,
@@ -125,15 +127,19 @@ async function writeRepoDoc(
   repo: RepoRef,
   documentType: string,
   data: Record<string, unknown>,
+  intent?: string,
 ): Promise<WriteResult> {
-  const result = await createDocumentIdempotent(sdk, auth, {
-    contractId: contractFor(repo, documentType),
-    documentType,
-    data: scoped(repo, data),
-    gate: repo.kind === 'v1' ? createGateFor(documentType) ?? null : null,
-  })
-  afterWrite(repo, auth.network)
-  return result
+  try {
+    return await createDocumentIdempotent(sdk, auth, {
+      contractId: contractFor(repo, documentType),
+      documentType,
+      data: scoped(repo, data),
+      gate: repo.kind === 'v1' ? createGateFor(documentType) ?? null : null,
+      ...(intent ? { intent } : {}),
+    })
+  } finally {
+    afterWrite(repo, auth.network)
+  }
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -252,7 +258,7 @@ export async function createIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { title: string; body: string },
+  input: { title: string; body: string; intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   let number = repo.kind === 'v2' ? await nextNumberV2(sdk, repo, 'issue') : await nextNumberV1(sdk, repo)
@@ -261,9 +267,15 @@ export async function createIssue(
     const data: Record<string, unknown> = { number, title: input.title }
     if (input.body.length > 0) data['body'] = input.body
     try {
-      return { ...(await writeRepoDoc(sdk, auth, repo, DOC.issue, data)), number }
+      // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
+      const intent = input.intent ? `${input.intent}#${number}` : undefined
+      return { ...(await writeRepoDoc(sdk, auth, repo, DOC.issue, data, intent)), number }
     } catch (e) {
-      if (!isDuplicate(e)) throw e
+      if (e instanceof UnconfirmedWriteError) {
+        // Not seen yet. If someone else holds the number, ours was refused: renumber.
+        const holder = await issueHolder(sdk, repo, number).catch(() => undefined)
+        if (holder === undefined || holder === null || holder === auth.identityId) throw e
+      } else if (!isDuplicate(e)) throw e
       const taken: number = number
       number = repo.kind === 'v2' ? await nextNumberV2(sdk, repo, 'issue') : taken + 1
       if (number !== null && number <= taken) number = taken + 1
@@ -273,16 +285,23 @@ export async function createIssue(
   throw new Error('could not claim an issue number after several attempts; try again')
 }
 
+/** Who holds issue `number` (its `$ownerId`), or null when nobody does. */
+async function issueHolder(sdk: EvoSDK, repo: RepoRef, number: number): Promise<string | null> {
+  const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', number]], limit: 1 }))
+  const owner = documents[0]?.['$ownerId']
+  return typeof owner === 'string' ? owner : null
+}
+
 /** Create a `comment` on an issue or PR (ungated; author-owned). */
 export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  return writeRepoDoc(sdk, auth, repo, DOC.comment, data)
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, data, input.intent)
 }
 
 /** The document data of a state event on `target`. */
@@ -308,9 +327,9 @@ export async function addEvent(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; kind: EventKindName; value?: string; oidHex?: string },
+  input: { target: WriteTarget; kind: EventKindName; value?: string; oidHex?: string; intent?: string },
 ): Promise<WriteResult> {
-  return writeRepoDoc(sdk, auth, repo, DOC.event, eventData(repo, input.target, input.kind, input))
+  return writeRepoDoc(sdk, auth, repo, DOC.event, eventData(repo, input.target, input.kind, input), input.intent)
 }
 
 /**
@@ -321,10 +340,10 @@ export async function addAuthorEvent(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen' },
+  input: { target: WriteTarget; kind: 'close' | 'reopen'; intent?: string },
 ): Promise<WriteResult> {
   if (repo.kind === 'v1') return addEvent(sdk, auth, repo, input)
-  return writeRepoDoc(sdk, auth, repo, V2_DOC.authorEvent, eventData(repo, input.target, input.kind))
+  return writeRepoDoc(sdk, auth, repo, V2_DOC.authorEvent, eventData(repo, input.target, input.kind), input.intent)
 }
 
 /** Which state-event type a close/reopen by the viewer should be. */
@@ -343,7 +362,7 @@ export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen'; author: string; isMember: boolean },
+  input: { target: WriteTarget; kind: 'close' | 'reopen'; author: string; isMember: boolean; intent?: string },
 ): Promise<WriteResult> {
   const route = stateEventRoute({ viewer: auth.identityId, author: input.author, isMember: input.isMember })
   if (route === null) throw new Error('only the author or a maintainer or writer can do that')
@@ -353,7 +372,7 @@ export async function setTargetState(
   } catch (e) {
     // The membership read was stale (revoked meanwhile): the author path still holds.
     const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
-    if (gateRefused && auth.identityId === input.author) return addAuthorEvent(sdk, auth, repo, input)
+    if (gateRefused && auth.identityId === input.author) return addAuthorEvent(sdk, auth, repo, { ...input, intent: input.intent ? `${input.intent}:author` : undefined })
     throw e
   }
 }
@@ -363,7 +382,7 @@ export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string },
+  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
@@ -371,7 +390,7 @@ export async function createReview(
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body && input.body.length > 0) data['body'] = input.body
-  return writeRepoDoc(sdk, auth, repo, DOC.review, data)
+  return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent)
 }
 
 // ---------------------------------------------------------------------------
@@ -391,13 +410,13 @@ export async function createRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { tagName: string; name?: string; notes?: string; yanked?: boolean; assets?: readonly ReleaseAsset[] },
+  input: { tagName: string; name?: string; notes?: string; yanked?: boolean; assets?: readonly ReleaseAsset[]; intent?: string },
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
   if (input.name && input.name.length > 0) data['name'] = input.name
   if (input.notes && input.notes.length > 0) data['notes'] = input.notes
   if (input.assets && input.assets.length > 0) data['assets'] = JSON.stringify(input.assets)
-  return writeRepoDoc(sdk, auth, repo, DOC.release, data)
+  return writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +475,7 @@ async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, ty
     contractId: forge.collab,
     documentType: type,
     documentId: targetId,
+    repo: type === 'star' ? targetId : null,
     document: own,
     probeGone: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) === null,
   })
@@ -601,6 +621,7 @@ export async function grantMember(
   repo: V2RepoRef,
   memberId: string,
   role: Role,
+  intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
   const result = await createOrExisting(
@@ -609,6 +630,7 @@ export async function grantMember(
         contractId: repo.forge.core,
         documentType: ROLE_DOC[role],
         data: { repoId: decodeIdentifier(repo.repoId), memberId: decodeIdentifier(memberId) },
+        ...(intent ? { intent } : {}),
       }),
     () => findMembership(sdk, repo, role, memberId),
   )
@@ -631,6 +653,7 @@ export async function revokeMember(
     contractId: repo.forge.core,
     documentType: ROLE_DOC[role],
     documentId: existing,
+    repo: repo.repoId,
   })
   invalidateMembers(repo, auth.network)
   return result
@@ -653,9 +676,12 @@ export async function adminCollaborator(
   maintain: boolean,
 ): Promise<void> {
   const role = maintain ? 'maintain' : 'write'
-  if (op === 'grant') await grantRole(sdk, auth, repo.contractId, memberId, role)
-  else if (op === 'suspend') await suspendRole(sdk, auth, repo.contractId, memberId, role)
-  else await revokeRole(sdk, auth, repo.contractId, memberId, role)
+  // The token ops use this identity's nonces too: queue them behind any document write.
+  await serialized(auth.identityId, async () => {
+    if (op === 'grant') await grantRole(sdk, auth, repo.contractId, memberId, role)
+    else if (op === 'suspend') await suspendRole(sdk, auth, repo.contractId, memberId, role)
+    else await revokeRole(sdk, auth, repo.contractId, memberId, role)
+  })
   invalidateAuthz(repo.contractId)
 }
 
@@ -683,12 +709,22 @@ export interface RepoCreationJournal {
   readonly startedAt: number
 }
 
-/** A created (or completed) repo. */
+/** A created (or completed) repo. What each step cost reaches the ledger through `onSpend`. */
 export interface CreateRepoResult {
   readonly repoId: string
   readonly name: string
-  /** Credits the steps this run performed took (null when a balance read failed). */
-  readonly actualCredits: number | null
+}
+
+/** The byte limits the `repo` schema sets (maxBytes counts UTF-8 bytes, not characters). */
+export const REPO_LIMITS = { description: 1000, defaultBranch: 255 } as const
+
+/** Refuse input the contract would refuse, with a readable reason, before anything is signed. */
+export function checkRepoInput(input: CreateRepoInput): void {
+  const bytes = (s: string | undefined): number => (s ? new TextEncoder().encode(s).length : 0)
+  if (bytes(input.description) > REPO_LIMITS.description) {
+    throw new Error(`The description is ${bytes(input.description)} bytes; the limit is ${REPO_LIMITS.description} (accented letters and emoji take more than one byte).`)
+  }
+  if (bytes(input.defaultBranch) > REPO_LIMITS.defaultBranch) throw new Error('The default branch name is too long.')
 }
 
 function journalKey(network: Network, ownerId: string, name: string): string {
@@ -732,20 +768,16 @@ export async function createRepoV2(
   const name = normalizeRepoName(input.name)
   const ownerId = auth.identityId
   const key = journalKey(auth.network, ownerId, name)
-  const journal: { -readonly [K in keyof RepoCreationJournal]: RepoCreationJournal[K] } = {
-    network: auth.network,
-    ownerId,
-    input: { ...input, name },
-    repoId: null,
-    done: [],
-    startedAt: Date.now(),
-  }
+  checkRepoInput(input)
+  // A resumed creation keeps the values it started with, so the repo and config documents
+  // agree (the form may have been edited since; the page warns about that).
+  const previous = await idbGet<RepoCreationJournal>('journal', key)
+  const journal: { -readonly [K in keyof RepoCreationJournal]: RepoCreationJournal[K] } = previous
+    ? { ...previous }
+    : { network: auth.network, ownerId, input: { ...input, name }, repoId: null, done: [], startedAt: Date.now() }
+  input = journal.input
   const save = (): Promise<void> => idbPut('journal', key, journal)
   await save()
-  let spent: number | null = 0
-  const add = (r: { actualCredits: number | null }): void => {
-    spent = spent === null || r.actualCredits === null ? null : spent + r.actualCredits
-  }
   const step = async (s: CreateRepoStep, run: () => Promise<void>): Promise<void> => {
     onStep?.(s, 'start')
     await run()
@@ -774,8 +806,7 @@ export async function createRepoV2(
     if (input.description) data['description'] = input.description
     if (input.defaultBranch) data['defaultBranch'] = input.defaultBranch
     try {
-      const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: V2_DOC.repo, data })
-      add(r)
+      const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: V2_DOC.repo, data, intent: `${key}:repo` })
       repoId = r.documentId
     } catch (e) {
       if (!isDuplicate(e)) throw e
@@ -793,13 +824,12 @@ export async function createRepoV2(
   await step('maintainer', async () => {
     if ((await findMembership(sdk, repo, 'maintainer', ownerId)) !== null) return
     try {
-      add(
-        await createDocumentIdempotent(sdk, auth, {
-          contractId: forge.core,
-          documentType: V2_DOC.maintainer,
-          data: { repoId: R, memberId: decodeIdentifier(ownerId) },
-        }),
-      )
+      await createDocumentIdempotent(sdk, auth, {
+        contractId: forge.core,
+        documentType: V2_DOC.maintainer,
+        data: { repoId: R, memberId: decodeIdentifier(ownerId) },
+        intent: `${key}:maintainer`,
+      })
     } catch (e) {
       if (!isDuplicate(e)) throw e
     }
@@ -809,16 +839,15 @@ export async function createRepoV2(
   await step('config', async () => {
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
-    add(
-      await createDocumentIdempotent(sdk, auth, {
-        contractId: forge.core,
-        documentType: DOC.config,
-        data: { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } },
-      }),
-    )
+    await createDocumentIdempotent(sdk, auth, {
+      contractId: forge.core,
+      documentType: DOC.config,
+      data: { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } },
+      intent: `${key}:config`,
+    })
   })
 
   await idbDelete('journal', key)
   invalidateMembers(repo, auth.network)
-  return { repoId, name, actualCredits: spent }
+  return { repoId, name }
 }

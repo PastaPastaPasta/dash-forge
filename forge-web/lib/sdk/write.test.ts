@@ -13,6 +13,9 @@ import repoV1 from '../../../forge-contracts/templates/repo-v1.json'
 import {
   REPO_CREATE_GATES,
   asConsensusRefusal,
+  isAlreadyExistsError,
+  isNonceUsedError,
+  newIntent,
   createGateFor,
   isStaleDocumentIdError,
   pendingWriteKey,
@@ -265,23 +268,27 @@ describe('repo name normalization', () => {
 })
 
 describe('pending-write cache key', () => {
-  const data = { listingId: new Uint8Array(32).fill(7), n: 1, nested: { b: 'x', a: 2n } }
-  it('keys the logical write, not the attempt (stable across retries)', () => {
-    const a = pendingWriteKey('owner', 'contract', 'star', data)
-    const b = pendingWriteKey('owner', 'contract', 'star', {
-      nested: { a: 2n, b: 'x' },
-      n: 1,
-      listingId: new Uint8Array(32).fill(7),
-    })
-    expect(a).toBe(b)
+  it('keys the action (intent), so a retry of one action finds its transition', () => {
+    const intent = newIntent()
+    expect(pendingWriteKey('owner', 'contract', 'event', intent)).toBe(pendingWriteKey('owner', 'contract', 'event', intent))
   })
-  it('separates different writes', () => {
-    const a = pendingWriteKey('owner', 'contract', 'star', data)
-    expect(pendingWriteKey('other', 'contract', 'star', data)).not.toBe(a)
-    expect(pendingWriteKey('owner', 'contract', 'follow', data)).not.toBe(a)
-    expect(
-      pendingWriteKey('owner', 'contract', 'star', { ...data, listingId: new Uint8Array(32).fill(8) }),
-    ).not.toBe(a)
+  it('gives two actions with identical data different keys (close, reopen, close)', () => {
+    expect(pendingWriteKey('owner', 'contract', 'event', newIntent())).not.toBe(pendingWriteKey('owner', 'contract', 'event', newIntent()))
+  })
+  it('binds owner, contract and type', () => {
+    const i = newIntent()
+    const a = pendingWriteKey('owner', 'contract', 'star', i)
+    expect(pendingWriteKey('other', 'contract', 'star', i)).not.toBe(a)
+    expect(pendingWriteKey('owner', 'other', 'star', i)).not.toBe(a)
+    expect(pendingWriteKey('owner', 'contract', 'follow', i)).not.toBe(a)
+  })
+})
+
+describe('nonce error classification', () => {
+  it('treats only mempool/chain duplicates as "mine landed"', () => {
+    expect(isAlreadyExistsError(new Error('state transition already in mempool'))).toBe(true)
+    expect(isAlreadyExistsError(new Error('invalid identity nonce: nonce already present'))).toBe(false)
+    expect(isNonceUsedError(new Error('invalid identity nonce: nonce already present'))).toBe(true)
   })
 })
 

@@ -20,6 +20,8 @@ import type { Holdings } from '@/lib/rules'
 import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useIntent } from '@/hooks/use-intent'
+import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useParam } from '@/hooks/use-query-param'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
@@ -32,7 +34,6 @@ import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { errorMessage } from '@/lib/utils'
 
 type Pending =
   | { kind: 'state' }
@@ -61,6 +62,7 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
   )
 
   const [comment, setComment] = useState('')
+  const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
@@ -86,35 +88,38 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
   const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
 
   const postComment = async (): Promise<void> => {
-    if (comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim() })
+      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent })
       setComment('')
+      draft.renew()
       reload()
     } catch (e) {
-      setCommentError(errorMessage(e))
+      setCommentError(writeErrorMessage(e).message)
     } finally {
       setPosting(false)
     }
   }
 
-  const runPending = async (): Promise<void> => {
-    if (!sdk || !signer || pending === null) return
+  const runPending = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     if (pending.kind === 'state') {
       await setTargetState(sdk, signer, home.repo, {
         target,
         kind: open ? 'close' : 'reopen',
         author: issue.author,
         isMember,
+        intent,
       })
     } else {
       await addEvent(sdk, signer, home.repo, {
         target,
         kind: pending.remove ? 'labelRemove' : 'labelAdd',
         value: pending.label,
+        intent,
       })
       setNewLabel('')
     }

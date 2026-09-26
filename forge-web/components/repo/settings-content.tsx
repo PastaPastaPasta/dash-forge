@@ -64,7 +64,7 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
   const [action, setAction] = useState<Action | null>(null)
 
   const runAction = async (): Promise<void> => {
-    if (!sdk || !signer || !action) return
+    if (!sdk || !signer || !action) throw new Error('sign in to continue')
     await adminCollaborator(sdk, signer, repo, action.kind, action.member, action.role === 'maintain')
     collabs.reload()
   }
@@ -239,10 +239,10 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
       return 'Not an identity id (base58, 32 bytes).'
     }
   })()
-  const runAction = async (): Promise<void> => {
-    if (!sdk || !signer || !action) return
+  const runAction = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'grant') {
-      await grantMember(sdk, signer, repo, action.member, action.role)
+      await grantMember(sdk, signer, repo, action.member, action.role, intent)
       setMemberId('')
     } else {
       await revokeMember(sdk, signer, repo, action.member, action.role)

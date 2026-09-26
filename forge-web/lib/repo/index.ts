@@ -138,6 +138,7 @@ export {
   addAuthorEvent,
   addEvent,
   adminCollaborator,
+  checkRepoInput,
   createComment,
   createIssue,
   createRelease,

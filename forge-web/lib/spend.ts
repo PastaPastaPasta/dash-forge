@@ -11,8 +11,8 @@ import type { Network } from './constants'
 import { idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
-/** A ledger row. */
-export interface SpendRow extends SpendEvent {
+/** A ledger row (the balance before the write is not stored: only the baseline keeps one). */
+export interface SpendRow extends Omit<SpendEvent, 'balanceBefore'> {
   readonly at: number
 }
 
@@ -31,19 +31,19 @@ function baselineKey(network: Network, identityId: string): string {
 }
 
 /**
- * Record a write. `balanceAfter` (credits, read after the write) seeds the reconciliation
- * baseline the first time a ledger for this identity is written: the balance before its first
- * write is `balanceAfter` plus what that write took.
+ * Record a write. The first write of an identity's ledger seeds the reconciliation baseline
+ * with the balance read right before that write (writes of one identity are serialized, so
+ * no other write of this browser can sit between that read and this row).
  */
-export async function recordSpend(event: SpendEvent, balanceAfter: bigint | null): Promise<void> {
+export async function recordSpend(event: SpendEvent): Promise<void> {
   const at = Date.now()
-  const row: SpendRow = { ...event, at }
+  const { balanceBefore, ...rest } = event
+  const row: SpendRow = { ...rest, at }
   const key = `${prefix(event.network, event.identityId)}${String(at).padStart(15, '0')}:${event.documentId}`
   await idbPut('spend', key, row)
   const bk = baselineKey(event.network, event.identityId)
-  if (balanceAfter !== null && (await idbGet<Baseline>('spend', bk)) === undefined) {
-    const before = balanceAfter + BigInt(event.actualCredits ?? event.estimateCredits)
-    await idbPut<Baseline>('spend', bk, { at, balanceCredits: before.toString() })
+  if (balanceBefore !== null && (await idbGet<Baseline>('spend', bk)) === undefined) {
+    await idbPut<Baseline>('spend', bk, { at, balanceCredits: balanceBefore.toString() })
   }
 }
 

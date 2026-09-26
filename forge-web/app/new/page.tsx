@@ -11,7 +11,7 @@
  * repo was its own ~1.18 DASH contract, and that path is gone.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, GitBranch, Hammer, Loader2, Lock, Terminal } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
@@ -27,6 +27,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import {
+  checkRepoInput,
   createRepoV2,
   discardRepoCreation,
   normalizeRepoName,
@@ -62,20 +63,30 @@ export default function NewRepoPage(): JSX.Element {
   const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
 
-  useEffect(() => {
+  const reloadPending = useCallback(() => {
     if (!identity) return
     pendingRepoCreations(DEFAULT_NETWORK, identity).then(setPending, () => setPending([]))
   }, [identity])
+  useEffect(reloadPending, [reloadPending])
 
   const nameError = useMemo(() => {
     if (name.trim() === '') return null
     try {
-      normalizeRepoName(name)
+      checkRepoInput({ name: normalizeRepoName(name), description })
       return null
     } catch (e) {
       return errorMessage(e, 'invalid name')
     }
-  }, [name])
+  }, [name, description])
+  // An unfinished creation of this name resumes with the values it started with.
+  const resuming = useMemo(() => {
+    if (nameError !== null || name.trim() === '') return null
+    const n = normalizeRepoName(name)
+    return pending.find((j) => j.input.name === n) ?? null
+  }, [name, nameError, pending])
+  const differs =
+    resuming !== null &&
+    ((resuming.input.description ?? '') !== description.trim() || (resuming.input.defaultBranch ?? 'main') !== (defaultBranch.trim() || 'main'))
 
   const input = (): CreateRepoInput => ({
     name: normalizeRepoName(name),
@@ -93,9 +104,14 @@ export default function NewRepoPage(): JSX.Element {
   const create = async (i: CreateRepoInput): Promise<void> => {
     if (!sdk || !signer || !forge) throw new Error('sign in first')
     setProgress(INITIAL_PROGRESS)
-    const result = await createRepoV2(sdk, signer, forge, i, (step, state) =>
-      setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
-    )
+    let result
+    try {
+      result = await createRepoV2(sdk, signer, forge, i, (step, state) =>
+        setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
+      )
+    } finally {
+      reloadPending()
+    }
     router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
   }
 
@@ -179,6 +195,12 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           </Field>
 
+          {differs ? (
+            <p className="text-[12px] text-caution">
+              An unfinished creation of this name started with a different description or branch; finishing it keeps those
+              values. Change them after it exists.
+            </p>
+          ) : null}
           <CostPreview cost={cost} />
           <p className="-mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             One-time. Code goes to storage you choose when you push; Platform keeps manifests and refs.

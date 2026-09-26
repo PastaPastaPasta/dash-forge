@@ -23,6 +23,8 @@ import type { Holdings } from '@/lib/rules'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useIntent } from '@/hooks/use-intent'
+import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
@@ -37,7 +39,6 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { errorMessage } from '@/lib/utils'
 
 type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput } | null
 
@@ -68,6 +69,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   )
 
   const [comment, setComment] = useState('')
+  const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
@@ -100,34 +102,37 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const target = { id: pull.id, number: pull.number }
 
   const postComment = async (): Promise<void> => {
-    if (comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: pull.id, body: comment.trim() })
+      await createComment(sdk, signer, home.repo, { targetId: pull.id, body: comment.trim(), intent: draft.intent })
       setComment('')
+      draft.renew()
       reload()
     } catch (e) {
-      setCommentError(errorMessage(e))
+      setCommentError(writeErrorMessage(e).message)
     } finally {
       setPosting(false)
     }
   }
 
-  const runPending = async (): Promise<void> => {
-    if (!sdk || !signer || pending === null) return
-    if (pending === 'merge') await addEvent(sdk, signer, home.repo, { target, kind: 'merge', oidHex: pull.headOid })
+  const runPending = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
+    if (pending === 'merge') await addEvent(sdk, signer, home.repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
     else if (pending === 'close' || pending === 'reopen') {
-      await setTargetState(sdk, signer, home.repo, { target, kind: pending, author: pull.author, isMember })
+      await setTargetState(sdk, signer, home.repo, { target, kind: pending, author: pull.author, isMember, intent })
     } else {
       await createReview(sdk, signer, home.repo, {
         patchId: pull.id,
         verdict: pending.review,
         commitOid: pull.headOid,
         body: comment.trim(),
+        intent,
       })
       setComment('')
+      draft.renew()
     }
     reload()
   }
@@ -233,7 +238,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant={v === 'approve' ? 'primary' : 'outline'}
                 disabled={guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate('review').credits)) setPending({ review: v })
+                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits)) setPending({ review: v })
                 }}
               >
                 {VERDICT_TEXT[v]}
