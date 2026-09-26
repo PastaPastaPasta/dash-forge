@@ -157,7 +157,7 @@ The nightly is green on master, and the CLI suite now runs on moutai.
 
 In flight: CLI issues/PRs/releases/forks on v2 (D) · import/relay/migrate + GitHub Mirror Action (G) · web v2 writes + limited-key sign-in + cost UX (F).
 
-Next: private repos (Phase 3) · storage wizard in web · Explore/notifications · docs refresh for v2.
+Next: private repos (Phase 3, design: [docs/security/private-repos.md](security/private-repos.md), reviewed; its §13 lists contract changes required before mainnet registration) · storage wizard in web · Explore/notifications · docs refresh for v2.
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
 
