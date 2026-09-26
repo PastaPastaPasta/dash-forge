@@ -46,6 +46,54 @@ export interface PullActionInputs {
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
 export const ACL_NAME = 'members'
 
+/**
+ * The browser merge button (`ux-dx-spec.md` §5.7), forge-v2 only. Its label says what it does;
+ * a disabled state says why.
+ */
+export type MergeButton =
+  | { readonly kind: 'hidden' }
+  | { readonly kind: 'checking' }
+  | { readonly kind: 'fast-forward'; readonly label: 'Merge (fast-forward)' }
+  | { readonly kind: 'merge-commit'; readonly label: 'Create merge commit and merge' }
+  | { readonly kind: 'conflicts'; readonly label: "Can't merge in the browser — conflicts"; readonly checkout: string }
+  | { readonly kind: 'protected'; readonly label: 'Protected branch — maintainers only' }
+  | { readonly kind: 'mobile'; readonly label: 'Use a desktop browser for this step' }
+  | { readonly kind: 'unavailable'; readonly reason: string }
+
+export interface MergeButtonInputs {
+  /** From {@link pullActions}: the viewer is a current maintainer or writer and the PR is open. */
+  readonly canMerge: boolean
+  readonly isMaintainer: boolean
+  /** The base branch matches the repo's current protected patterns. */
+  readonly baseProtected: boolean
+  readonly narrow: boolean
+  /** The worker's verdict, or null while it runs; an error string when it could not decide. */
+  readonly check: 'fast-forward' | 'merge' | 'conflict' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
+  /** `dg pr checkout <repo> <n>` for the conflicts row. */
+  readonly checkout: string
+}
+
+export function mergeButton(i: MergeButtonInputs): MergeButton {
+  if (!i.canMerge) return { kind: 'hidden' }
+  if (i.baseProtected && !i.isMaintainer) return { kind: 'protected', label: 'Protected branch — maintainers only' }
+  if (i.narrow) return { kind: 'mobile', label: 'Use a desktop browser for this step' }
+  const c = i.check
+  if (c === null) return { kind: 'checking' }
+  if (typeof c === 'object') return { kind: 'unavailable', reason: `Couldn't check the merge in the browser (${c.error}).` }
+  switch (c) {
+    case 'fast-forward':
+      return { kind: 'fast-forward', label: 'Merge (fast-forward)' }
+    case 'merge':
+      return { kind: 'merge-commit', label: 'Create merge commit and merge' }
+    case 'conflict':
+      return { kind: 'conflicts', label: "Can't merge in the browser — conflicts", checkout: i.checkout }
+    case 'up-to-date':
+      return { kind: 'unavailable', reason: 'The base branch already contains this head; record the merge with "Mark as merged".' }
+    case 'unrelated':
+      return { kind: 'unavailable', reason: 'The head and the base branch share no history.' }
+  }
+}
+
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
 export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'

@@ -67,6 +67,8 @@ function knownMinSize(reader: ObjectReader, oid: string): number | null {
 export interface PatchOptions {
   /** Download and measure the blobs even when the browse index says they are too large. */
   readonly ignoreSizeHint?: boolean
+  /** Compare lines with whitespace removed (`git diff -w`). */
+  readonly ignoreWhitespace?: boolean
 }
 
 async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions): Promise<string> {
@@ -107,7 +109,7 @@ export async function loadFilePatch(
       readText(sides.base, change.baseOid, options),
       readText(sides.head, change.headOid, options),
     ])
-    const lines = diffTextLines(before, after)
+    const lines = diffTextLines(before, after, undefined, { ignoreWhitespace: options.ignoreWhitespace === true })
     if (lines === null) {
       return placeholder(change, 'too-complex', 'This change is too large to diff in the browser.')
     }

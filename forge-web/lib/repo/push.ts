@@ -1,5 +1,6 @@
 /**
- * Push-side chain writes for forge-v2 repos: `packManifest` and Platform `chunk` documents,
+ * Push-side chain writes for forge-v2 repos: `packManifest`, Platform `chunk` documents and
+ * ref updates (`refUpdate` / `protectedRefUpdate`),
  * shaped exactly as forge-core writes them (`RepoService::write_pack_manifest`,
  * `backends/platform.rs::encode_chunk_doc`, `pack::split`), so a pack the browser records is
  * read by the CLI and vice versa.
@@ -11,7 +12,12 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { hexToBytes } from '@noble/hashes/utils.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+
+import { isLegalRefName, matchesProtected } from '../rules'
+import { readConfig } from './config'
+import { invalidateRepoFeed } from './issues'
 
 import { CHUNK_FIELDS, FIELD_MAX, MANIFEST_MAX_URIS, MANIFEST_URI_MAX_LEN } from '../constants'
 import { decodeIdentifier } from '../auth/base58'
@@ -208,4 +214,79 @@ export async function putPlatformChunks(
     onProgress?.(done, chunks.length, written)
   }
   return { locator: `platform://${repo.forge.core}/${repo.repoId}/${auth.identityId}/${packHashHex}`, chunkCount: chunks.length }
+}
+// ---------------------------------------------------------------------------
+// Ref updates (forge-core `RepoService::write_ref_update`): `refNameHash = sha256(refName)`,
+// `refName`, `newOid`, `force`, and `prevOid` when the expected prior tip is known. A ref
+// matching the current `protectedPatterns` goes to the maintainer-gated
+// `protectedRefUpdate`; a plain `refUpdate` for it would be inert under the as-of rule.
+// ---------------------------------------------------------------------------
+
+/** A ref update to write. */
+export interface RefUpdateInput {
+  readonly refName: string
+  /** The new tip, hex; all zeros deletes the ref. */
+  readonly newOid: string
+  /** The tip this update expects to replace (divergence detection), hex. */
+  readonly prevOid?: string
+  readonly force?: boolean
+}
+
+/** `sha256(refName)` — the indexed key of every ref update. */
+export function refNameHash(refName: string): Uint8Array {
+  return sha256(new TextEncoder().encode(refName))
+}
+
+/** The ref-update document data (without `repoId`) forge-core writes. */
+export function refUpdateData(input: RefUpdateInput): Record<string, unknown> {
+  // `refName` is shown to every clone's git: refuse what could inject a line.
+  if (!isLegalRefName(input.refName) || new TextEncoder().encode(input.refName).length > 255) {
+    throw new Error(`illegal ref name ${JSON.stringify(input.refName)}`)
+  }
+  const data: Record<string, unknown> = {
+    refNameHash: refNameHash(input.refName),
+    refName: input.refName,
+    newOid: hexToBytes(input.newOid),
+    force: input.force ?? false,
+  }
+  if (input.prevOid) data['prevOid'] = hexToBytes(input.prevOid)
+  return data
+}
+
+/** Which type a ref update must be, from the repo's current protected patterns. */
+export function refUpdateType(refName: string, protectedPatterns: readonly string[]): 'refUpdate' | 'protectedRefUpdate' {
+  return matchesProtected(refName, protectedPatterns) ? DOC.protectedRefUpdate : DOC.refUpdate
+}
+
+/**
+ * Move `refName` in `repo`: a `protectedRefUpdate` (maintainers only) when the ref matches
+ * the current protected patterns, else a `refUpdate` (maintainers and writers). The patterns
+ * are read fresh unless the caller passes them.
+ */
+export async function writeRefUpdate(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: RefUpdateInput,
+  options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] } = {},
+): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
+  const data = refUpdateData(input)
+  const patterns = options.protectedPatterns ?? (await readConfig(sdk, repo))?.protectedPatterns ?? []
+  const documentType = refUpdateType(input.refName, patterns)
+  try {
+    const r = await createDocumentIdempotent(sdk, auth, {
+      contractId: repo.forge.core,
+      documentType,
+      data: { repoId: decodeIdentifier(repo.repoId), ...data },
+      ...(options.intent ? { intent: options.intent } : {}),
+    })
+    return { ...r, documentType }
+  } finally {
+    invalidateRepoFeed(repo)
+  }
+}
+
+/** Hex of a `refNameHash` (tests; the fork plan's "fork has this ref" check). */
+export function refNameHashHex(refName: string): string {
+  return bytesToHex(refNameHash(refName))
 }

@@ -2,16 +2,14 @@
 
 /**
  * PullContent — PR detail: folded state, base/head, where the PR's objects live, the author's
- * body, the files changed (see {@link PullDiff}), the timeline (comments, state events and
- * review verdicts), a comment composer, and mark-as-merged / close / reopen.
+ * body, the review fold, the files changed (see {@link PullDiff}) with inline threads, the
+ * timeline (comments, state events and review verdicts), a comment composer, and
+ * mark-as-merged / close / reopen.
  *
- * **It cannot merge code**, stated here because the name suggests otherwise. "Mark as merged"
- * appends a `merge` event carrying the PR head oid. Consensus accepts that event only from a
- * maintainer or writer, and the fold applies it only once the head has been a tip of the base
- * ref — which a push must do. So the control is shown only to members ({@link pullActions})
- * and says whether the head is already on the base branch. For a base branch that has moved
- * on, the merge commit is not the head oid at all; that merge is recorded with the CLI
- * (`dg pr merge --merge-oid`).
+ * On forge-v2 the merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged"
+ * only appends a `merge` event carrying the PR head oid; the fold accepts it only from a
+ * maintainer or writer, and only once the head has been a tip of the base ref, so the control
+ * says whether the head is already on the base branch.
  */
 
 import { useState } from 'react'
@@ -39,7 +37,11 @@ import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
-import type { RepoAddress } from '@/hooks/use-query-param'
+import { InlineCommentsProvider } from '@/components/repo/inline-comments'
+import { PullMerge } from '@/components/repo/pull-merge'
+import { inlineCommentIds } from '@/lib/view/inline-threads'
+import { useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { retryWhileMissing } from '@/lib/view/retry'
 
 type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
 
@@ -54,8 +56,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
 
+  // Just opened here: a node one block behind answers "not found"; keep asking briefly.
+  const justCreated = useParam('created') === '1'
   const { data, loading, error, reload } = useAsync<PullThread | null>(
-    () => loadPullThread(sdk!, home.repo, number),
+    () => retryWhileMissing(() => loadPullThread(sdk!, home.repo, number), justCreated ? 8 : 0),
     [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
@@ -80,6 +84,9 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
 
   const { pull, timeline } = data
+  // Inline comments and their replies show on the diff, not in the conversation.
+  const inlineIds = new Set(inlineCommentIds(data.comments))
+  const conversation = timeline.filter((t) => t.kind !== 'comment' || !inlineIds.has(t.comment.id))
   const merged = pull.state.merged
   const open = pull.state.open
   const actions = pullActions({
@@ -178,6 +185,11 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
             </div>
           </div>
         ) : null}
+        {data.approvals !== null ? (
+          <div className="mt-3">
+            <Approvals approvals={data.approvals} headOid={pull.headOid} />
+          </div>
+        ) : null}
       </div>
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -190,13 +202,27 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         </div>
       </div>
 
-      {data.approvals !== null ? (
-        <Approvals approvals={data.approvals} author={pull.author} headOid={pull.headOid} />
-      ) : null}
+      <PullMerge
+        repo={home.repo}
+        home={home}
+        pull={pull}
+        canMerge={actions.canMarkMerged}
+        isMaintainer={holdings.data?.maintain === true}
+        checkout={`dg pr checkout ${addr.owner}/${addr.name} ${pull.number}`}
+        onMerged={reload}
+      />
 
-      <PullDiff pull={pull} home={home} />
+      <PullDiff
+        pull={pull}
+        home={home}
+        wrap={(_, diff) => (
+          <InlineCommentsProvider repo={home.repo} pullId={pull.id} headOid={pull.headOid} comments={data.comments} onPosted={reload}>
+            {diff}
+          </InlineCommentsProvider>
+        )}
+      />
 
-      {timeline.length > 0 ? <Timeline items={timeline} /> : null}
+      {conversation.length > 0 ? <Timeline items={conversation} /> : null}
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>
@@ -251,8 +277,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         {actions.canMarkMerged ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             {actions.markCountsNow
-              ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands. The web app cannot merge code itself.`
-              : `The web app cannot merge code. Push the head commit to ${base} first; a merge mark only counts once it is there.`}
+              ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
+              : `A merge mark only counts once the head commit is on ${base}; merge it above, or push it there first.`}
           </p>
         ) : actions.mergeHint !== null ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
