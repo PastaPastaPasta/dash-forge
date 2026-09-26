@@ -1,0 +1,6 @@
+{"status":"cap_exceeded","network":"mainnet","source":"alice/project",
+ "repo":{"owner":"8hJmcHWTowner","name":"project","id":"Repo1","url":"dash://8hJmcHWTowner/project","created":false},
+ "counts":{"refs":0,"packs":0,"packBytes":0,"issues":0,"prs":0,"comments":0,"reviews":0,"events":0,"releases":0,"labels":0},
+ "estimateCredits":9000000000,"spentCredits":0,"creditsPerDash":100000000000,"balanceCredits":40000000000,
+ "key":{"id":3,"budgetCredits":50000000000,"remainingCredits":5000000000,"expiresAt":1790000000000},
+ "warnings":["line one\n::error::injected"],"error":"estimate 0.09 DASH exceeds --max-spend 0.05 | nothing written"}

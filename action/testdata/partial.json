@@ -1,0 +1,6 @@
+{"status":"partial","network":"devnet-moutai","source":"alice/project",
+ "repo":{"owner":"8hJmcHWTowner","name":"project","id":"Repo1","url":"dash://8hJmcHWTowner/project","created":false},
+ "counts":{"refs":1,"packs":1,"packBytes":1048576,"issues":2,"prs":0,"comments":3,"reviews":0,"events":1,"releases":0,"labels":0,"skipped":2},
+ "estimateCredits":1200000000,"spentCredits":1300000000,"creditsPerDash":100000000000,"balanceCredits":38000000000,
+ "key":{"id":3,"budgetCredits":50000000000,"remainingCredits":44000000000,"expiresAt":4102444800000},
+ "warnings":["issue #7: number already taken in the destination; skipped","PR #9: head push did not fit the cap; skipped"]}
