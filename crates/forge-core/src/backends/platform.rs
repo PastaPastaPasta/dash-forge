@@ -103,9 +103,14 @@ pub fn chunk_documents(
         .collect()
 }
 
-/// A parsed `platform://` locator: whose chunks, and which pack.
+/// A parsed `platform://` locator: where the chunks live, whose they are, and which pack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformLocator {
+    /// The contract holding the chunks: forge-core (v2) or the repo contract (v1).
+    pub contract: String,
+    /// The repo whose scope holds the chunks (v2 only). A fork's manifest names its
+    /// parent's chunks this way, so the fork re-uploads nothing.
+    pub repo: Option<String>,
     /// The uploader whose copy the chunks are. forge-v2 locators name it (a v2 chunk's key
     /// includes `$ownerId`); v1 ones do not, the repo contract being the whole scope.
     pub owner: Option<String>,
@@ -122,9 +127,14 @@ impl PlatformLocator {
             .filter(|_| uri.scheme() == Some(PLATFORM_SCHEME))
             .ok_or_else(|| Error::Config(format!("not a platform locator: {uri}")))?;
         let parts: Vec<&str> = rest.split('/').collect();
-        let (owner, hex_hash) = match parts.as_slice() {
-            [_contract, hash] => (None, *hash),
-            [_core, _repo, owner, hash] => (Some((*owner).to_string()), *hash),
+        let (contract, repo, owner, hex_hash) = match parts.as_slice() {
+            [contract, hash] => (*contract, None, None, *hash),
+            [core, repo, owner, hash] => (
+                *core,
+                Some((*repo).to_string()),
+                Some((*owner).to_string()),
+                *hash,
+            ),
             _ => return Err(Error::Config(format!("malformed platform locator: {uri}"))),
         };
         let raw = hex::decode(hex_hash)
@@ -132,7 +142,24 @@ impl PlatformLocator {
         let pack_hash = raw
             .try_into()
             .map_err(|_| Error::Config("platform locator packHash is not 32 bytes".into()))?;
-        Ok(Self { owner, pack_hash })
+        Ok(Self {
+            contract: contract.to_string(),
+            repo,
+            owner,
+            pack_hash,
+        })
+    }
+
+    /// The document scope this locator's chunks are read from.
+    pub fn scope(&self) -> Result<DocScope> {
+        Ok(DocScope {
+            contract_id: self.contract.clone(),
+            repo_id: self
+                .repo
+                .as_deref()
+                .map(crate::platform::decode_identifier)
+                .transpose()?,
+        })
     }
 }
 
@@ -170,16 +197,36 @@ impl<'a> PlatformBackend<'a> {
         Uri(self.scope.locator(&self.writer, pack_hash))
     }
 
+    /// The scope a locator's chunks are read from: this backend's own, or on forge-v2
+    /// another repo's in the same contract (a fork's manifest names its parent's chunks,
+    /// which chunk reads can address because the chunk key is `(repoId, uploader, pack,
+    /// seq)`). A locator into another contract is refused: this backend holds one contract.
+    /// Pointing at other chunks is harmless: the bytes are verified against the pack hash.
+    fn read_scope(&self, loc: &PlatformLocator) -> Result<DocScope> {
+        if loc.repo.is_none() || !self.scope.is_v2() {
+            return Ok(self.scope.clone());
+        }
+        let scope = loc.scope()?;
+        if scope.contract_id != self.scope.contract_id {
+            return Err(Error::Config(format!(
+                "platform locator names contract {}, not this repository's {}",
+                scope.contract_id, self.scope.contract_id
+            )));
+        }
+        Ok(scope)
+    }
+
     /// Read every `chunk` document of `owner`'s copy of `pack_hash` (complete, `seq`
     /// ordered) and decode each to a [`Chunk`]. `owner` is required on forge-v2.
-    async fn read_chunks(&self, owner: Option<&str>, pack_hash: [u8; 32]) -> Result<Vec<Chunk>> {
+    async fn read_chunks(&self, loc: &PlatformLocator) -> Result<Vec<Chunk>> {
+        let scope = self.read_scope(loc)?;
         let docs = self
             .engine
             .client()
             .query_all_documents(
                 self.contract,
                 CHUNK_DOC_TYPE,
-                &self.scope.chunk_filters(owner, pack_hash)?,
+                &scope.chunk_filters(loc.owner.as_deref(), loc.pack_hash)?,
                 &[QueryOrder::asc(FIELD_SEQ)],
             )
             .await?;
@@ -249,9 +296,7 @@ impl PackBackend for PlatformBackend<'_> {
         // platform tier serves whole chunks, so partial fetch is a post-join slice (the
         // browse plane's per-object ranged reads run over the locator, not raw chunks).
         let loc = PlatformLocator::parse(uri)?;
-        let chunks = self
-            .read_chunks(loc.owner.as_deref(), loc.pack_hash)
-            .await?;
+        let chunks = self.read_chunks(&loc).await?;
         if chunks.is_empty() {
             return Err(Error::NotFound);
         }
@@ -285,7 +330,7 @@ impl PackBackend for PlatformBackend<'_> {
                 self.contract,
                 CHUNK_DOC_TYPE,
                 &self
-                    .scope
+                    .read_scope(&loc)?
                     .chunk_filters(loc.owner.as_deref(), loc.pack_hash)?,
                 &[QueryOrder::asc(FIELD_SEQ)],
                 1,
@@ -393,6 +438,8 @@ mod tests {
         assert_eq!(v1.pack_hash, [0xcd; 32]);
         let v2 = PlatformLocator::parse(&Uri(format!("platform://C/R/OWNER/{h}"))).unwrap();
         assert_eq!(v2.owner.as_deref(), Some("OWNER"));
+        assert_eq!((v2.contract.as_str(), v2.repo.as_deref()), ("C", Some("R")));
+        assert_eq!((v1.contract.as_str(), v1.repo.as_deref()), ("C", None));
         assert!(PlatformLocator::parse(&Uri(format!("platform://C/R/{h}"))).is_err());
         assert!(PlatformLocator::parse(&Uri(format!("https://C/{h}"))).is_err());
     }

@@ -15,8 +15,8 @@ use forge_core::user_error::{self, codes, ErrorContext, UserError};
 use serde_json::Value;
 
 use crate::{
-    AuthCommand, CollabCommand, Command, CostCommand, IssueCommand, PrCommand, ReleaseCommand,
-    RepoBackendCommand, RepoCommand, StorageCommand,
+    AuthCommand, CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, PrCommand,
+    ReleaseCommand, RepoBackendCommand, RepoCommand, StorageCommand,
 };
 
 /// A failure with a result of its own: `body` is the command's `--json` object (printed
@@ -110,9 +110,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Auth(A::Status) => ("could not show auth status", None),
         Command::Auth(A::Balance) => ("could not read the balance", None),
         Command::Repo(Rp::Create { name, .. }) => ("repository not created", Some(name)),
-        Command::Repo(Rp::Clone { repo } | Rp::Fork { repo } | Rp::View { repo }) => {
+        Command::Repo(Rp::Clone { repo } | Rp::View { repo }) => {
             ("could not show the repository", Some(repo))
         }
+        Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
+        Command::Repo(Rp::Star { repo }) => ("repository not starred", Some(repo)),
+        Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
         Command::Repo(Rp::List { .. }) => ("could not list repositories", None),
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
@@ -125,7 +128,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Issue(I::Close { repo, .. }) => ("issue not closed", Some(repo)),
         Command::Issue(I::Reopen { repo, .. }) => ("issue not reopened", Some(repo)),
         Command::Issue(I::Label { repo, .. }) => ("label not changed", Some(repo)),
-        Command::Pr(P::Create { repo, .. }) => ("pull request not created", Some(repo)),
+        Command::Pr(P::Create(args)) => ("pull request not created", Some(&args.repo)),
+        Command::Pr(P::Close { repo, .. }) => ("pull request not closed", Some(repo)),
+        Command::Pr(P::Reopen { repo, .. }) => ("pull request not reopened", Some(repo)),
         Command::Pr(
             P::List { repo, .. }
             | P::View { repo, .. }
@@ -133,10 +138,14 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             | P::Checkout { repo, .. },
         ) => ("could not read the pull request", Some(repo)),
         Command::Pr(P::Review { repo, .. }) => ("review not posted", Some(repo)),
-        Command::Pr(P::Merge { repo, .. }) => ("merge not recorded", Some(repo)),
-        Command::Release(R::Create { repo, .. }) => ("release not created", Some(repo)),
+        Command::Pr(P::Merge { repo, .. }) => ("merge failed", Some(repo)),
+        Command::Release(R::Create(args)) => ("release not created", Some(&args.repo)),
         Command::Release(R::List { repo } | R::Download { repo, .. }) => {
             ("could not read releases", Some(repo))
+        }
+        Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
+        Command::Label(LabelCommand::Create { repo, .. } | LabelCommand::Retire { repo, .. }) => {
+            ("label not changed", Some(repo))
         }
         Command::Collab(C::Add { repo, .. }) => ("collaborator not added", Some(repo)),
         Command::Collab(C::Suspend { repo, .. }) => ("collaborator not suspended", Some(repo)),

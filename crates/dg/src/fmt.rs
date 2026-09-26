@@ -18,6 +18,38 @@ pub const FALLBACK_DASH_USD: f64 = 30.0;
 /// An upper bound; the measured cost is reported after the create lands.
 pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 200_000_000;
 
+/// The pre-write estimate per extra document a fork writes (a pack manifest or a ref
+/// update, each a few hundred bytes), in credits. An upper bound.
+pub const FORK_PER_DOC_CREDITS: u64 = 20_000_000;
+
+/// `text` with control characters (C0 except newline and tab, DEL, and C1) removed, for
+/// printing document text anyone could have written (titles, bodies, comments, ref names)
+/// to a terminal, where an escape sequence could rewrite what the user sees. `--json` output
+/// is left exact.
+pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
+    let bad =
+        |c: char| (c.is_control() && c != '\n' && c != '\t') || ('\u{80}'..='\u{9f}').contains(&c);
+    if text.chars().any(bad) {
+        text.chars().filter(|c| !bad(*c)).collect::<String>().into()
+    } else {
+        text.into()
+    }
+}
+
+/// A commit id shortened for display (12 hex digits).
+pub fn short(oid: &str) -> &str {
+    // By character: the value may be untrusted document text, not hex.
+    oid.char_indices().nth(12).map_or(oid, |(i, _)| &oid[..i])
+}
+
+/// How a close / reopen was written, for human output.
+pub fn route_text(route: forge_core::collab::v2::StateRoute) -> &'static str {
+    match route {
+        forge_core::collab::v2::StateRoute::Member => "as a member (event)",
+        forge_core::collab::v2::StateRoute::Author => "as the author (authorEvent)",
+    }
+}
+
 /// The DASH/USD price to use: `DASH_USD` env override, else the offline fallback.
 pub fn dash_usd_price() -> f64 {
     std::env::var("DASH_USD")
@@ -78,6 +110,19 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_never_splits_a_character() {
+        assert_eq!(short(&"a".repeat(40)), "a".repeat(12));
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(&"é".repeat(20)), "é".repeat(12));
+    }
+
+    #[test]
+    fn terminal_text_loses_escape_sequences() {
+        assert_eq!(safe("plain\ntext\t!"), "plain\ntext\t!");
+        assert_eq!(safe("red\u{1b}[31mX\u{7}\u{9b}2J"), "red[31mX2J");
+    }
 
     #[test]
     fn dash_amount_trims_trailing_zeros() {

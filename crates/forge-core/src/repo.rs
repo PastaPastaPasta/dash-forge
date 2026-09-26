@@ -768,7 +768,25 @@ impl<'a> RepoService<'a> {
         reader: &PackReader,
     ) -> Result<Vec<u8>> {
         let expected = hex::encode(manifest.pack_hash);
-        let has_chunks = manifest.storage == 0;
+        let scope = repo.scope()?;
+        let own = Uri(scope.locator(&manifest.owner_id, &expected));
+        // Platform copies to read, in order: chunks another repo's scope holds (a fork's
+        // manifest names its parent's this way), then this manifest's own chunks.
+        // Only locators of THIS pack: a manifest naming another pack's chunks would have
+        // readers download them in full before the hash check refused them.
+        let mut platform: Vec<Uri> = manifest
+            .uris
+            .iter()
+            .map(|u| Uri(u.clone()))
+            .filter(|u| {
+                *u != own
+                    && crate::backends::PlatformLocator::parse(u)
+                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
+            })
+            .collect();
+        if manifest.storage == 0 {
+            platform.push(own);
+        }
         // Every body is capped at the manifest's size (0 = unknown on very old manifests).
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         if reader.has_candidates(&manifest.uris) {
@@ -776,36 +794,43 @@ impl<'a> RepoService<'a> {
             // after which no new candidate starts — dead gateways must not cost minutes per
             // pack before the on-chain read, but a big pack streaming from a healthy mirror
             // is not abandoned mid-transfer.
-            let budget = has_chunks.then(|| crate::storage::read::external_budget(size));
+            let budget =
+                (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
             match reader
                 .fetch_verified(&manifest.uris, &expected, size, budget)
                 .await
             {
                 Ok(bytes) => return Ok(bytes),
-                Err(e) if !has_chunks => return Err(e),
+                Err(e) if platform.is_empty() => return Err(e),
                 Err(e) => tracing::info!(
                     pack = %expected,
                     error = %e,
                     "no external copy verified; reading Platform chunks"
                 ),
             }
-        } else if !has_chunks {
+        } else if platform.is_empty() {
             return Err(Error::Io(format!(
                 "artifact {expected} is stored externally but its manifest records no URI this \
                  client can read ({:?})",
                 manifest.uris
             )));
         }
-        let scope = repo.scope()?;
-        let locator = Uri(scope.locator(&manifest.owner_id, &expected));
         let engine = self.doc_engine()?;
-        let bytes = PlatformBackend::new(&engine, contract, &scope, self.identity.id())
-            .get(&locator, None)
-            .await?;
-        if hex::encode(crate::backends::sha256(&bytes)) != expected {
-            return Err(Error::Integrity);
+        let backend = PlatformBackend::new(&engine, contract, &scope, self.identity.id());
+        let mut last = Error::NotFound;
+        for locator in &platform {
+            match backend.get(locator, None).await {
+                Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
+                    return Ok(bytes)
+                }
+                Ok(_) => last = Error::Integrity,
+                Err(e) => {
+                    tracing::info!(%locator, error = %e, "Platform copy unreadable");
+                    last = e;
+                }
+            }
         }
-        Ok(bytes)
+        Err(last)
     }
 
     /// Read `pack_hash` from the best copy that verifies (forge-v2 §4 reader rule):
@@ -1365,7 +1390,7 @@ pub fn group_by_hash(manifests: &[PackManifestInfo]) -> Vec<([u8; 32], Vec<&Pack
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
 /// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
 /// then writers, then anyone else, each by `($createdAt, $id)`.
-pub(crate) fn order_copies<'m>(
+pub fn order_copies<'m>(
     copies: &[&'m PackManifestInfo],
     roles: &RoleMap,
 ) -> Vec<&'m PackManifestInfo> {

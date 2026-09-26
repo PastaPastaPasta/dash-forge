@@ -33,6 +33,7 @@ pub mod collab;
 pub mod cost;
 pub mod create;
 pub mod error;
+pub mod fork;
 pub mod keystore;
 pub mod members;
 pub mod network;

@@ -75,8 +75,12 @@ assert_not_file_contains() { ! grep -qiF -- "$2" "$1"; }
 
 # --- binary discovery + PATH -------------------------------------------------
 harness_find_binaries() {
-  local rel="${E2E_REPO_ROOT}/target/release" dbg="${E2E_REPO_ROOT}/target/debug"
-  if [[ -x "${rel}/git-remote-dash" && -x "${rel}/dg" ]]; then
+  # CARGO_TARGET_DIR is honored, so a build in a shared target dir is found.
+  local target="${CARGO_TARGET_DIR:-${E2E_REPO_ROOT}/target}"
+  local rel="${target}/release" dbg="${target}/debug"
+  if [[ -n "${E2E_BIN_DIR:-}" ]]; then
+    BIN_DIR="${E2E_BIN_DIR}"
+  elif [[ -x "${rel}/git-remote-dash" && -x "${rel}/dg" ]]; then
     BIN_DIR="${rel}"
   elif [[ -x "${dbg}/git-remote-dash" && -x "${dbg}/dg" ]]; then
     BIN_DIR="${dbg}"

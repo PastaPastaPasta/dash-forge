@@ -157,6 +157,15 @@ impl Ctx {
         ))
     }
 
+    /// [`Self::confirm`], turning a "no" into the E803 cancellation.
+    pub fn confirm_or_cancel(&self, prompt: &str) -> Result<()> {
+        if self.confirm(prompt)? {
+            Ok(())
+        } else {
+            Err(crate::errors::cancelled())
+        }
+    }
+
     /// Print a `--json` value (pretty) or a human closure's output, choosing by mode.
     #[allow(clippy::needless_pass_by_value)]
     pub fn emit(&self, value: Value, human: impl FnOnce()) {
