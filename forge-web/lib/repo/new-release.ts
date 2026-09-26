@@ -42,8 +42,9 @@ export function assetNamesProblem(names: readonly string[]): string | null {
 /** The `assets` JSON for `assets`, or an error when it exceeds the document's 4096 bytes. */
 export function assetsJson(assets: readonly ReleaseAsset[]): string {
   const json = JSON.stringify(assets)
-  if (utf8(json) > RELEASE_ASSETS_MAX_BYTES) {
-    throw new Error(`the asset list takes ${utf8(json)} bytes and a release holds ${RELEASE_ASSETS_MAX_BYTES}: use fewer assets, or shorter names and URLs`)
+  const bytes = utf8(json)
+  if (bytes > RELEASE_ASSETS_MAX_BYTES) {
+    throw new Error(`the asset list takes ${bytes} bytes and a release holds ${RELEASE_ASSETS_MAX_BYTES}: use fewer assets, or shorter names and URLs`)
   }
   return json
 }
@@ -73,8 +74,8 @@ export async function publishRelease(
   storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
   onEvent?: (e: PublishEvent) => void,
 ): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
-  const tag = tagProblem(input.tagName) ?? releaseTextProblem(input) ?? assetNamesProblem(input.files.map((f) => f.name))
-  if (tag) throw new Error(tag)
+  const problem = tagProblem(input.tagName) ?? releaseTextProblem(input) ?? assetNamesProblem(input.files.map((f) => f.name))
+  if (problem) throw new Error(problem)
   const assets: ReleaseAsset[] = []
   for (const f of input.files) {
     const stored = await storeFile(f.bytes, { ...storage, onStep: (event) => onEvent?.({ step: 'upload', asset: f.name, event }) })
@@ -82,7 +83,7 @@ export async function publishRelease(
     assets.push(asset)
     onEvent?.({ step: 'uploaded', asset: f.name, stored: asset })
   }
-  assetsJson(assets)
+  assetsJson(assets) // throws when the list outgrows the document, before paying for it
   onEvent?.({ step: 'release' })
   const release = await createRelease(sdk, auth, repo, {
     tagName: input.tagName,

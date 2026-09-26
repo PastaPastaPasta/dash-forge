@@ -185,6 +185,40 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
   throw new Error('not an external profile')
 }
 
+/** A copy on one external target: the URIs its manifest entry records. */
+interface ExternalCopy {
+  readonly target: string
+  readonly uris: string[]
+}
+
+/** Store on every named external target in parallel; outcomes in the order they settle. */
+async function storeOnExternalTargets(
+  targets: readonly string[],
+  byName: ReadonlyMap<string, StorageProfile>,
+  bytes: Uint8Array,
+  hashHex: string,
+  step: (e: UploadEvent) => void,
+): Promise<{ confirmed: ExternalCopy[]; failures: TargetFailure[] }> {
+  const confirmed: ExternalCopy[] = []
+  const failures: TargetFailure[] = []
+  await Promise.all(
+    targets.map(async (name) => {
+      step({ target: name, phase: 'start' })
+      try {
+        const profile = byName.get(name)
+        if (!profile) throw new Error('no such storage profile in this browser')
+        const uris = await storeExternal(profile, bytes, hashHex)
+        confirmed.push({ target: name, uris })
+        step({ target: name, phase: 'done', uris })
+      } catch (e) {
+        failures.push({ target: name, reason: errText(e) })
+        step({ target: name, phase: 'failed', reason: errText(e) })
+      }
+    }),
+  )
+  return { confirmed, failures }
+}
+
 /**
  * Every recorded URI, de-duplicated: the `platform://` locator first (released helpers read
  * `uris[0]` of a storage-0 manifest as the chunk locator), then public https URLs, then the
@@ -237,7 +271,6 @@ export async function storeFile(
   bytes: Uint8Array,
   opts: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[]; readonly onStep?: (e: UploadEvent) => void; readonly maxUris?: number },
 ): Promise<StoredFile> {
-  const step = opts.onStep ?? (() => undefined)
   const byName = new Map(opts.profiles.map((p) => [p.name, p]))
   const external = (opts.policy?.targets ?? []).filter((t) => byName.get(t)?.settings.kind !== 'platform')
   if (opts.policy === null || external.length === 0) {
@@ -245,23 +278,7 @@ export async function storeFile(
   }
   const required = Math.min(opts.policy.replicas, external.length)
   const hashHex = await sha256Hex(bytes)
-  const confirmed: { target: string; uris: string[] }[] = []
-  const failures: TargetFailure[] = []
-  await Promise.all(
-    external.map(async (name) => {
-      step({ target: name, phase: 'start' })
-      try {
-        const profile = byName.get(name)
-        if (!profile) throw new Error('no such storage profile in this browser')
-        const uris = await storeExternal(profile, bytes, hashHex)
-        confirmed.push({ target: name, uris })
-        step({ target: name, phase: 'done', uris })
-      } catch (e) {
-        failures.push({ target: name, reason: errText(e) })
-        step({ target: name, phase: 'failed', reason: errText(e) })
-      }
-    }),
-  )
+  const { confirmed, failures } = await storeOnExternalTargets(external, byName, bytes, hashHex, opts.onStep ?? (() => undefined))
   if (confirmed.length < required) throw new ReplicationError(required, confirmed.map((c) => c.target), failures, false)
   confirmed.sort((a, b) => external.indexOf(a.target) - external.indexOf(b.target))
   let uris = orderUris(confirmed.map((c) => c.uris))
@@ -336,26 +353,15 @@ export async function storeArtifact(
     await platformCopy('platform')
   } else {
     const byName = new Map(opts.profiles.map((p) => [p.name, p]))
-    const targets = policy.targets.map((name) => ({ name, profile: byName.get(name) }))
-    const external = targets.filter((t) => t.profile?.settings.kind !== 'platform')
-    const onChain = targets.filter((t) => t.profile?.settings.kind === 'platform')
-    await Promise.all(
-      external.map(async ({ name, profile }) => {
-        step({ target: name, phase: 'start' })
-        try {
-          if (!profile) throw new Error('no such storage profile in this browser')
-          const uris = await storeExternal(profile, bytes, hashHex)
-          confirmed.push({ target: name, uris, platform: false })
-          step({ target: name, phase: 'done', uris })
-        } catch (e) {
-          fail(name, e)
-        }
-      }),
-    )
+    const isPlatform = (name: string): boolean => byName.get(name)?.settings.kind === 'platform'
+    const onChain = policy.targets.filter(isPlatform)
+    const external = await storeOnExternalTargets(policy.targets.filter((name) => !isPlatform(name)), byName, bytes, hashHex, step)
+    for (const copy of external.confirmed) confirmed.push({ ...copy, platform: false })
+    failures.push(...external.failures)
     const notMet = (): ReplicationError => new ReplicationError(policy.replicas, confirmed.map((c) => c.target), failures, platformWritten)
     // Platform targets only if they can still make up the policy: never pay for chunks whose
     // push is about to fail anyway — and never without the user's go-ahead on the price.
-    for (const [i, { name }] of onChain.entries()) {
+    for (const [i, name] of onChain.entries()) {
       if (confirmed.length + (onChain.length - i) < policy.replicas) break
       if (!(await agreePlatform(`Your storage policy for this repo includes Dash Platform (${name}).`))) {
         fail(name, new Error('storing on Platform was declined'))

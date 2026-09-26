@@ -35,6 +35,19 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 type AssetState = 'waiting' | 'uploading' | 'done' | 'failed'
 
+function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Element | null {
+  switch (state) {
+    case 'uploading':
+      return <Loader2 className="h-3.5 w-3.5 animate-spin text-anvil-500" aria-hidden />
+    case 'done':
+      return <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify" aria-hidden />
+    case 'failed':
+      return <XCircle className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
+    default:
+      return null
+  }
+}
+
 export function NewReleaseButton({ home, onPublished }: { home: RepoHome; onPublished: () => void }): JSX.Element | null {
   const { role } = useViewerRole(home.repo)
   const [open, setOpen] = useState(false)
@@ -77,11 +90,13 @@ function NewReleaseDialog({ home, onClose, onPublished }: { home: RepoHome; onCl
   const assetsEstimate = files.map((f) => `${f.name}${'·'.repeat(110)}`).join('')
   const cost = previewCreate('release', { tagName: tag, name: title, notes, assets: assetsEstimate })
 
+  const mark = (asset: string, state: AssetState): void => setProgress((p) => ({ ...p, [asset]: state }))
+
   const publish = async (): Promise<void> => {
     if (!sdk || !signer || !repo || problem !== null || !guard.check(cost.credits)) return
     setPhase('publishing')
     setError(null)
-    setProgress(Object.fromEntries(files.map((f) => [f.name, 'waiting' as AssetState])))
+    setProgress(Object.fromEntries(files.map((f): [string, AssetState] => [f.name, 'waiting'])))
     try {
       const assetFiles: AssetFile[] = []
       for (const f of files) assetFiles.push({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })
@@ -92,9 +107,9 @@ function NewReleaseDialog({ home, onClose, onPublished }: { home: RepoHome; onCl
         { tagName: tag.trim(), name: title.trim(), notes: notes.trim(), files: assetFiles, intent: draft.intent },
         { policy, profiles: config?.profiles ?? [] },
         (e) => {
-          if (e.step === 'upload' && e.event.phase === 'start') setProgress((p) => ({ ...p, [e.asset]: 'uploading' }))
-          if (e.step === 'upload' && e.event.phase === 'failed') setProgress((p) => ({ ...p, [e.asset]: 'failed' }))
-          if (e.step === 'uploaded') setProgress((p) => ({ ...p, [e.asset]: 'done' }))
+          if (e.step === 'uploaded') mark(e.asset, 'done')
+          else if (e.step === 'upload' && e.event.phase === 'start') mark(e.asset, 'uploading')
+          else if (e.step === 'upload' && e.event.phase === 'failed') mark(e.asset, 'failed')
         },
       )
       invalidateSessionCache(`releases:${network}:`)
@@ -164,13 +179,7 @@ function NewReleaseDialog({ home, onClose, onPublished }: { home: RepoHome; onCl
                 const s = progress[f.name]
                 return (
                   <li key={f.name} className="flex items-center gap-2 px-3 py-1.5" data-testid={`asset-${f.name}`} data-state={s ?? 'waiting'}>
-                    {s === 'uploading' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-anvil-500" aria-hidden />
-                    ) : s === 'done' ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify" aria-hidden />
-                    ) : s === 'failed' ? (
-                      <XCircle className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
-                    ) : null}
+                    <AssetStateIcon state={s} />
                     <span className="min-w-0 flex-1 truncate font-mono">{f.name}</span>
                     <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(f.size)}</span>
                     {s ? <span className={cn('text-[12px]', s === 'failed' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>{s === 'done' ? 'stored, verified' : s}</span> : null}
