@@ -2,30 +2,31 @@
  * WriteEngine unit tests — network-free parity + encoding checks.
  *
  * The token gate table, cost math, base58 identifier encoding, WIF parsing, identity-file
- * extraction, and the createRepo template transforms are all deterministic and verified here
- * against the same `repo-v1.json` the CLI compiles in, so a drift between the browser and Rust
- * write encodings fails CI without needing testnet.
+ * extraction and the calibrated cost model are deterministic and verified here against the same
+ * `repo-v1.json` the CLI compiles in, so a drift between the browser and Rust write encodings
+ * fails CI without needing testnet.
  */
 
 import { describe, expect, it } from 'vitest'
 
-import repoV1 from './repo-v1-template.json'
+import repoV1 from '../../../forge-contracts/templates/repo-v1.json'
 import {
-  COST_ESTIMATE_CREDITS,
-  CREDITS_PER_DASH,
   REPO_CREATE_GATES,
+  asConsensusRefusal,
   createGateFor,
-  creditsToDash,
   isStaleDocumentIdError,
   pendingWriteKey,
   previewDocumentCreate,
 } from './write'
 import {
-  applySoloOwnerTokenRules,
-  buildRepoV1Contract,
-  normalizeDocumentPositions,
-  type JsonValue,
-} from './contract-create'
+  CREDITS_PER_DASH,
+  creditsToDash,
+  estimateCreateCredits,
+  previewCreate,
+  previewDelete,
+  sumPreviews,
+  textBytes,
+} from './cost'
 import {
   base58CheckDecode,
   base58CheckEncode,
@@ -80,7 +81,33 @@ describe('cost preview', () => {
   it('converts credits to DASH at 1e11', () => {
     expect(CREDITS_PER_DASH).toBe(100_000_000_000)
     expect(creditsToDash(CREDITS_PER_DASH)).toBe(1)
-    expect(creditsToDash(COST_ESTIMATE_CREDITS.repoCreate)).toBeCloseTo(1.18, 5)
+  })
+
+  it('matches the moutai measurements within 10 %', () => {
+    // Balance deltas measured on devnet moutai (protocol 14, 2026-09-25).
+    const measured: [string, Record<string, unknown>, number][] = [
+      ['issue', { title: 'z'.repeat(10) }, 57_681_940],
+      ['issue', { title: 'z'.repeat(10), body: 'z'.repeat(1000) }, 85_175_900],
+      ['issue', { title: 'z'.repeat(10), body: 'z'.repeat(4000) }, 167_691_860],
+      ['comment', { body: 'c'.repeat(10) }, 47_624_080],
+      ['comment', { body: 'c'.repeat(4000) }, 157_220_300],
+      ['star', {}, 27_792_520],
+      ['maintainer', {}, 39_381_960],
+    ]
+    for (const [type, data, actual] of measured) {
+      const est = estimateCreateCredits(type, data)
+      expect(Math.abs(est - actual) / actual, `${type} ${textBytes(data)}B`).toBeLessThan(0.1)
+    }
+  })
+
+  it('sums a repo creation (repo + maintainer + config) near 0.0013 DASH', () => {
+    const total = sumPreviews([previewCreate('repo', { name: 'demo' }), previewCreate('maintainer'), previewCreate('config')])
+    expect(total.dash).toBeGreaterThan(0.0012)
+    expect(total.dash).toBeLessThan(0.0014)
+  })
+
+  it('previews deletes of indexOnly types as refunds', () => {
+    expect(previewDelete('star').credits).toBeLessThan(0)
   })
 
   it('folds the token spend into a gated create preview', () => {
@@ -222,72 +249,6 @@ describe('identity-file parsing', () => {
 })
 
 // ---------------------------------------------------------------------------
-// createRepo template transforms (parity with forge-core repo.rs)
-// ---------------------------------------------------------------------------
-
-function collectPositions(schema: JsonValue): number[][] {
-  const out: number[][] = []
-  const walk = (node: JsonValue): void => {
-    if (node === null || typeof node !== 'object' || Array.isArray(node)) return
-    const props = node['properties']
-    if (props !== null && typeof props === 'object' && !Array.isArray(props)) {
-      const positions: number[] = []
-      for (const key of Object.keys(props)) {
-        const prop = props[key]
-        if (prop !== null && typeof prop === 'object' && !Array.isArray(prop) && typeof prop['position'] === 'number') {
-          positions.push(prop['position'])
-        }
-        if (prop !== undefined) walk(prop)
-      }
-      out.push(positions.slice().sort((a, b) => a - b))
-    }
-  }
-  walk(schema)
-  return out
-}
-
-function findMainGroup(node: JsonValue): boolean {
-  if (node === 'MainGroup') return true
-  if (Array.isArray(node)) return node.some(findMainGroup)
-  if (node !== null && typeof node === 'object') {
-    return Object.values(node).some((v) => findMainGroup(v))
-  }
-  return false
-}
-
-describe('createRepo template transforms', () => {
-  it('drops the group, re-points MainGroup rules to the owner', () => {
-    const template = structuredClone(repoV1) as unknown as { [k: string]: JsonValue }
-    // The committed template targets an org repo (has groups + MainGroup rules).
-    expect(template['groups']).toBeDefined()
-    applySoloOwnerTokenRules(template)
-    expect(template['groups']).toBeUndefined()
-    expect(findMainGroup(template['tokens'] as JsonValue)).toBe(false)
-  })
-
-  it('renumbers every object level to contiguous 0..N positions', () => {
-    const template = structuredClone(repoV1) as unknown as { [k: string]: JsonValue }
-    normalizeDocumentPositions(template)
-    const schemas = template['documentSchemas'] as { [k: string]: JsonValue }
-    for (const name of Object.keys(schemas)) {
-      const schema = schemas[name]
-      if (schema === undefined) continue
-      for (const positions of collectPositions(schema)) {
-        const expected = positions.map((_, i) => i)
-        expect(positions, `${name} positions must be contiguous`).toEqual(expected)
-      }
-    }
-  })
-
-  it('buildRepoV1Contract applies both fixes without mutating the import', () => {
-    const built = buildRepoV1Contract()
-    expect(built['groups']).toBeUndefined()
-    // The shared import must be untouched (structuredClone isolation).
-    expect((repoV1 as { groups?: unknown }).groups).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
 // misc encoding helpers
 // ---------------------------------------------------------------------------
 
@@ -321,6 +282,14 @@ describe('pending-write cache key', () => {
     expect(
       pendingWriteKey('owner', 'contract', 'star', { ...data, listingId: new Uint8Array(32).fill(8) }),
     ).not.toBe(a)
+  })
+})
+
+describe('consensus refusal classification', () => {
+  it('reads the numeric code a wasm error carries', () => {
+    expect(asConsensusRefusal({ code: 40105, message: 'duplicate unique properties' })?.code).toBe(40105)
+    expect(asConsensusRefusal({ code: -1, message: 'snapshot' })).toBeNull()
+    expect(asConsensusRefusal(new Error('fetch failed'))).toBeNull()
   })
 })
 
