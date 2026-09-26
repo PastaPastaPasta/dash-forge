@@ -186,6 +186,42 @@ describe('write engine', () => {
     await expect(createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'N5' })).rejects.toBeInstanceOf(UnconfirmedWriteError)
   })
 
+  it('a lost broadcast answer keeps the signed bytes: the retry rebroadcasts them, never a second document', async () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+        removeItem: (k: string) => void store.delete(k),
+      },
+    })
+    try {
+      const signed: bigint[] = []
+      let calls = 0
+      let landed = false
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          calls += 1
+          if (calls === 1) throw new Error('grpc: deadline exceeded')
+          landed = true
+        },
+        wait: async () => ({}),
+        exists: async () => (landed ? {} : undefined),
+      }
+      const sdk = sdkOf(script, signed)
+      const params = { ...write, contractId: 'N7', intent: 'post-1' }
+      const err = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(UnconfirmedWriteError)
+      const r = await createDocumentIdempotent(sdk, auth([]), params)
+      expect(r.documentId).toBe((err as UnconfirmedWriteError).documentId)
+      // The retry rebroadcast the cached bytes (same nonce) instead of signing a new document.
+      expect(signed).toEqual([2n, 2n])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a delete whose existence check fails does not report success without broadcasting', async () => {
     let deleted = false
     const script: Script = {

@@ -675,13 +675,15 @@ async function createDocumentUnlocked(
       try {
         await facades(sdk).stateTransitions.broadcastStateTransition(StateTransitionClass.fromBytes(cached.bytes))
       } catch (e) {
-        // Already in: the poll decides. Any other error: the cached bytes cannot land.
-        if (!isAlreadyExistsError(e)) {
+        // Refused: the cached bytes cannot land. A used nonce: they landed (the poll sees
+        // them) or never will, so a retry may sign afresh. Already in, or a transport error:
+        // the poll decides, and the bytes stay cached until it sees them.
+        const refusal = asConsensusRefusal(e)
+        if (refusal) {
           clearPendingST(cacheKey)
-          const refusal = asConsensusRefusal(e)
-          if (refusal) throw refusal
-          if (!isNonceUsedError(e)) throw e
+          throw refusal
         }
+        if (isNonceUsedError(e)) clearPendingST(cacheKey)
       }
     }
     return done(documentId, await landed(documentId, confirmTimeoutMs))
@@ -706,7 +708,6 @@ async function createDocumentUnlocked(
         markNonceUsed(ownerId, contractId, signed.nonce)
         return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
       }
-      clearPendingST(cacheKey)
       if (attempt === 0 && isNonceUsedError(e)) {
         // The nonce source lagged: that nonce belongs to an earlier write. Skip past it.
         markNonceUsed(ownerId, contractId, signed.nonce)
@@ -722,7 +723,15 @@ async function createDocumentUnlocked(
       }
       const refusal = asConsensusRefusal(e)
       if (refusal) refused(refusal, signed.documentId)
-      throw e
+      if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
+        clearPendingST(cacheKey)
+        throw e
+      }
+      // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
+      // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
+      // same bytes instead of signing a second document.
+      markNonceUsed(ownerId, contractId, signed.nonce)
+      return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
     }
   }
 
