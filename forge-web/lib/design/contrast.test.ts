@@ -102,6 +102,21 @@ describe('Verification state words meet WCAG AA', () => {
   })
 })
 
+describe('danger text meets WCAG AA', () => {
+  const danger = colors['danger'] as Record<string, string>
+  it.each(Object.entries(LIGHT_SURFACES))('danger-700 on %s (light theme)', (_, bg) => {
+    expect(contrast(rgb(danger['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+  it.each(Object.entries(DARK_SURFACES))('danger-400 on %s (dark theme)', (_, bg) => {
+    expect(contrast(rgb(danger['400']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+  it('the base value is not a text color on the darkest or lightest-gray surface', () => {
+    // 4.01:1 on anvil-950: the storage wizard's axe failure (a danger button).
+    expect(contrast(rgb(danger.DEFAULT!), rgb(anvil['950']!))).toBeLessThan(AA_TEXT)
+    expect(contrast(rgb(danger.DEFAULT!), rgb(anvil['100']!))).toBeLessThan(AA_TEXT)
+  })
+})
+
 describe('no component renders text in the raw brand blue', () => {
   const root = resolve(__dirname, '../..')
 

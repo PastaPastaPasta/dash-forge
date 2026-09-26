@@ -105,6 +105,14 @@ export function AuthProvider({
 
   useEffect(() => controller.subscribe(setState), [controller])
 
+  // A notice from a sign-in step (e.g. storage settings that could not survive a key renewal).
+  const notice = state.notice ?? null
+  useEffect(() => {
+    if (!notice) return
+    toast({ title: 'Storage settings were not carried over', tone: 'warn', detail: notice })
+    controller.clearNotice()
+  }, [notice, controller])
+
   const [vaults, setVaults] = useState<readonly VaultInfo[]>([])
   const reloadVaults = useCallback(() => {
     controller.storedVaults().then(setVaults, () => setVaults([]))
