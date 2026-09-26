@@ -5,15 +5,19 @@
  *   1. a fresh 12-word mnemonic; the user proves they wrote it down (three words);
  *   2. the deposit address (the mnemonic's BIP-44 asset-lock key) and QR; funds arrive from
  *      any wallet (or the faucet on dev networks);
- *   3. the asset lock is built, broadcast and proven (InstantSend or chain lock);
- *   4. one IdentityCreate registers the canonical key set (MASTER, HIGH, CRITICAL auth,
- *      CRITICAL transfer, MEDIUM encryption; DIP-13 from the mnemonic, so `dg` and the bridge
- *      open the same identity) **plus** this browser's limited key (key 5: HIGH, bound to the
- *      dash-forge contract group, budget + expiry), so no second signature is needed.
+ *   3. the asset lock is built, saved to the journal, broadcast, and proven (InstantSend or
+ *      chain lock);
+ *   4. this browser's limited key is generated and **stored in the vault first**, then one
+ *      IdentityCreate registers the canonical key set (MASTER, HIGH, CRITICAL auth, CRITICAL
+ *      transfer, MEDIUM encryption; DIP-13 from the mnemonic, so `dg` and the bridge open the
+ *      same identity) plus that key (key 5: HIGH, bound to the dash-forge contract group,
+ *      budget + expiry), so no second signature is needed.
  *
- * The journal keeps only public facts between steps (the deposit address, the asset-lock
- * txid, the identity id): nothing secret. A resumed flow re-derives every key from the
- * mnemonic, which the user types again (they have it written down; step 1 made sure).
+ * The journal keeps only public facts (the deposit address, the signed asset-lock transaction
+ * and its txid, the identity id). A resumed flow re-derives every key from the mnemonic, which
+ * the user types again. If the identity already exists on resume (created, but the tab closed
+ * before the key was confirmed), the mnemonic's master key registers a fresh limited key. The
+ * caller clears the journal only once the key is adopted.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -22,22 +26,23 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
 import { idbDelete, idbGet, idbPut } from '../idb'
+import { authSdk } from '../sdk/facade'
 import {
   broadcastTx,
   buildAssetLock,
   coreEndpoints,
+  getUtxos,
   obtainLockProof,
   waitForDeposit,
   wifBytes,
   type CoreEndpoints,
   type LockProof,
 } from './asset-lock'
-import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, identityKeyPath, normalizeMnemonic } from './hd'
-import { defaultLimits, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, deriveMasterKey, identityKeyPath, normalizeMnemonic } from './hd'
+import { defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 
 /** Minimum deposit (spec §2.2: 0.02 DASH; the asset-lock floor is 0.003). */
 export const MIN_DEPOSIT_DUFFS = 2_000_000
-export const DEFAULT_DEPOSIT_DUFFS = 5_000_000
 
 /** A pending creation: public facts only (no keys, no mnemonic). */
 export interface CreationJournal {
@@ -45,6 +50,8 @@ export interface CreationJournal {
   readonly depositAddress: string
   readonly identityId: string | null
   readonly lockTxid: string | null
+  /** The signed asset-lock transaction, saved before it is broadcast (hex). */
+  readonly lockRaw: string | null
   readonly startedAt: number
 }
 
@@ -60,27 +67,32 @@ export function clearCreationJournal(network: Network): Promise<void> {
   return idbDelete('journal', journalKey(network))
 }
 
+/** What an unfinished creation's deposit address holds (duffs), to warn before discarding. */
+export async function depositBalance(network: Network, address: string, endpoints = coreEndpoints(network)): Promise<number> {
+  const utxos = await getUtxos(endpoints, address)
+  return utxos.reduce((s, u) => s + u.satoshis, 0)
+}
+
 /** The deposit address a mnemonic funds (its BIP-44 asset-lock key). */
 export async function depositAddressOf(mnemonic: string, network: Network): Promise<string> {
   return (await deriveAt(mnemonic, assetLockKeyPath(network), network)).address
 }
 
-interface StatusFacade {
-  system: { status(): Promise<{ toJSON(): { chain?: { coreChainLockedHeight?: number } } }> }
-}
-
 async function platformClh(sdk: EvoSDK): Promise<number | null> {
-  const s = await (sdk as unknown as StatusFacade).system.status()
-  const h = s.toJSON()?.chain?.coreChainLockedHeight
+  const h = (await authSdk(sdk).system.status()).toJSON()?.chain?.coreChainLockedHeight
   return typeof h === 'number' ? h : null
 }
 
 export type CreateStage = 'waiting-deposit' | 'locking' | 'proving' | 'registering' | 'verifying'
 
+/** The browser key's id on a created identity: right after the canonical five. */
+export const BROWSER_KEY_ID = CANONICAL_KEYS.length
+
 /**
  * Run (or resume) the creation from the funded deposit onward. Resolves with the new identity
- * id and this browser's limited key. `mnemonic` never leaves this function's scope except as
- * derived keys inside the WASM signer, which is freed before returning.
+ * id and this browser's limited key. `persistKey` is called with the key before it is
+ * registered on chain (store it in the vault there), so a tab closed mid-create can never
+ * leave a registered key that nobody holds.
  */
 export async function createIdentityFromMnemonic(
   sdk: EvoSDK,
@@ -88,6 +100,7 @@ export async function createIdentityFromMnemonic(
     readonly network: Network
     readonly mnemonic: string
     readonly group: string
+    readonly persistKey: (identityId: string, key: { keyId: number; wif: string }) => Promise<void>
     readonly minDepositDuffs?: number
     readonly limits?: LimitedKeyRequest
     readonly endpoints?: CoreEndpoints
@@ -99,24 +112,26 @@ export async function createIdentityFromMnemonic(
   const { network, group } = params
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
-  const evo = await import('@dashevo/evo-sdk')
-  const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = evo
+  const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = await import('@dashevo/evo-sdk')
 
   const lockKey = await deriveAt(mnemonic, assetLockKeyPath(network), network)
-  const journal = (await readCreationJournal(network)) ?? {
+  let journal: CreationJournal = (await readCreationJournal(network)) ?? {
     network,
     depositAddress: lockKey.address,
     identityId: null,
     lockTxid: null,
+    lockRaw: null,
     startedAt: Date.now(),
   }
   if (journal.depositAddress !== lockKey.address) throw new Error('these words do not match the deposit in progress')
-  await idbPut('journal', journalKey(network), journal)
+  const save = async (patch: Partial<CreationJournal>): Promise<void> => {
+    journal = { ...journal, ...patch }
+    await idbPut('journal', journalKey(network), journal)
+  }
+  await save({})
 
-  // 1-3: deposit → asset lock → proof (resumes from a broadcast lock).
-  let lockTxid = journal.lockTxid
-  let lockRaw: Uint8Array | null = null
-  if (lockTxid === null) {
+  // 1-3: deposit → asset lock (saved before broadcast) → proof.
+  if (journal.lockTxid === null || journal.lockRaw === null) {
     params.onStage?.('waiting-deposit')
     const utxos = await waitForDeposit(ep, lockKey.address, params.minDepositDuffs ?? MIN_DEPOSIT_DUFFS, {
       signal: params.signal,
@@ -126,33 +141,45 @@ export async function createIdentityFromMnemonic(
     const priv = wifBytes(lockKey.wif)
     const lock = buildAssetLock(utxos, priv)
     priv.fill(0)
-    await broadcastTx(ep, bytesToHex(lock.raw), lock.txid)
-    lockTxid = lock.txid
-    lockRaw = lock.raw
-    await idbPut('journal', journalKey(network), { ...journal, lockTxid })
+    await save({ lockTxid: lock.txid, lockRaw: bytesToHex(lock.raw) })
   }
+  const lockTxid = journal.lockTxid as string
+  const lockRaw = hexToBytes(journal.lockRaw as string)
+  // Idempotent: re-sending an accepted transaction is a no-op the explorer tolerates.
+  await broadcastTx(ep, bytesToHex(lockRaw), lockTxid)
   params.onStage?.('proving')
-  if (lockRaw === null) lockRaw = await fetchRaw(ep, lockTxid)
   const proof: LockProof = await obtainLockProof(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
     signal: params.signal,
     onStatus: (s) => params.onStage?.('proving', s),
   })
-
   const assetLockProof =
     proof.type === 'instant'
       ? AssetLockProof.createInstantAssetLockProof(proof.islock, proof.raw, 0)
       : AssetLockProof.createChainAssetLockProof(proof.height, new OutPoint(proof.txid, 0))
   const identityId = assetLockProof.createIdentityId().toBase58()
-  await idbPut('journal', journalKey(network), { ...journal, lockTxid, identityId })
+  await save({ identityId })
 
-  // 4: IdentityCreate with the canonical keys + this browser's limited key.
-  params.onStage?.('registering')
   const limits = params.limits ?? defaultLimits()
+  const exists = (await authSdk(sdk).identities.balance(identityId).catch(() => undefined)) !== undefined
+  if (exists) {
+    // Created by an earlier run whose browser key was lost: the master key renews it.
+    params.onStage?.('registering', 'The identity exists; registering a key for this browser…')
+    const master = await deriveMasterKey(mnemonic, network)
+    // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
+    // the same update, so no key nobody holds stays live.
+    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID })
+    await params.persistKey(identityId, key)
+    return { identityId, key }
+  }
+
+  // 4: the browser key goes to the vault first, then IdentityCreate registers it.
+  params.onStage?.('registering')
+  const browserKey = PrivateKey.fromBytes(crypto.getRandomValues(new Uint8Array(32)), network === 'mainnet' ? 'mainnet' : 'testnet')
+  const wif = browserKey.toWIF()
+  await params.persistKey(identityId, { keyId: BROWSER_KEY_ID, wif })
   const identity = new Identity(identityId)
   const signer = new IdentitySigner()
-  const browserKey = PrivateKey.fromBytes(crypto.getRandomValues(new Uint8Array(32)), network === 'mainnet' ? 'mainnet' : 'testnet')
   const assetLockPrivateKey = PrivateKey.fromWIF(lockKey.wif)
-  const browserKeyId = CANONICAL_KEYS.length
   try {
     for (const k of CANONICAL_KEYS) {
       const d = await deriveAt(mnemonic, identityKeyPath(network, k.id), network)
@@ -170,7 +197,7 @@ export async function createIdentityFromMnemonic(
     }
     identity.addPublicKey(
       new IdentityPublicKey({
-        keyId: browserKeyId,
+        keyId: BROWSER_KEY_ID,
         purpose: 'authentication',
         securityLevel: 'high',
         keyType: 'ecdsa_secp256k1',
@@ -182,32 +209,14 @@ export async function createIdentityFromMnemonic(
       }),
     )
     signer.addKey(browserKey)
-    const existing = await (sdk as unknown as { identities: { balance(id: string): Promise<bigint | undefined> } }).identities
-      .balance(identityId)
-      .catch(() => undefined)
-    if (existing === undefined) {
-      await (sdk as unknown as { identities: { create(o: unknown): Promise<void> } }).identities.create({
-        identity,
-        assetLockProof,
-        assetLockPrivateKey,
-        signer,
-      })
-    }
+    await authSdk(sdk).identities.create({ identity, assetLockProof, assetLockPrivateKey, signer })
   } finally {
     signer.free()
     assetLockPrivateKey.free()
+    browserKey.free()
   }
-  const wif = browserKey.toWIF()
-  browserKey.free()
 
   params.onStage?.('verifying')
-  const verified = await verifyLimitedKey(sdk, identityId, browserKeyId, group, network, wif)
-  await clearCreationJournal(network)
-  return { identityId, key: { keyId: browserKeyId, wif, limits: verified } }
-}
-
-async function fetchRaw(ep: CoreEndpoints, id: string): Promise<Uint8Array> {
-  const res = await fetch(`${ep.insight}/rawtx/${id}`)
-  if (!res.ok) throw new Error(`could not refetch asset lock ${id}`)
-  return hexToBytes(((await res.json()) as { rawtx: string }).rawtx)
+  const verified = await verifyLimitedKey(sdk, identityId, BROWSER_KEY_ID, group, network, wif)
+  return { identityId, key: { keyId: BROWSER_KEY_ID, wif, limits: verified } }
 }

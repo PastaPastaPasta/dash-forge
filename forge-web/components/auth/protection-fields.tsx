@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
-export function useProtection(identityLabel: string): {
+export function useProtection(): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -31,7 +31,7 @@ export function useProtection(identityLabel: string): {
     setEnrolling(true)
     setPasskeyError(null)
     try {
-      const p = await enrollPasskey(identityLabel || 'dash-forge', `Dash Forge (${identityLabel.slice(0, 8) || 'identity'})`)
+      const p = await enrollPasskey(`Dash Forge (${new Date().toISOString().slice(0, 10)})`)
       if (p === null) setPasskeyError("This passkey can't protect keys here (no PRF support). Use a passphrase.")
       else setPasskey(p)
     } catch (e) {
@@ -80,4 +80,14 @@ export function useProtection(identityLabel: string): {
     </div>
   )
   return { fields, protection, problem }
+}
+
+/** An error line in the sign-in sheet (alert role, wraps long SDK messages). */
+export function ErrorBox({ error }: { error: string | null }): JSX.Element | null {
+  if (!error) return null
+  return (
+    <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
+      {error}
+    </div>
+  )
 }

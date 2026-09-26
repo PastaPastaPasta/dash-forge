@@ -6,43 +6,46 @@
  * (live, HIGH, bound to the dash-forge group, budgeted, expiring), then stores it in the vault.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Qr } from '@/components/ui/qr'
-import { useProtection } from '@/components/auth/protection-fields'
-import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
+import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { BROWSER_KEY_DEFAULTS, type LimitedKey } from '@/lib/auth'
+import { awaitWalletLogin, newRequest } from '@/lib/auth/app-connect'
+import { ensureSdk } from '@/lib/sdk'
+import { isAbort } from '@/lib/sdk/facade'
 import { errorMessage } from '@/lib/utils'
 
 export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Element {
-  const { adoptLimitedKey } = useAuth()
+  const { adoptLimitedKey, isLoading } = useAuth()
   const [uri, setUri] = useState<string | null>(null)
   const [pairing, setPairing] = useState('')
   const [slow, setSlow] = useState(false)
   const [granted, setGranted] = useState<{ identityId: string; key: LimitedKey } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const { fields, protection, problem } = useProtection(granted?.identityId ?? '')
-  const abort = useRef<AbortController | null>(null)
+  const { fields, protection, problem } = useProtection()
 
   useEffect(() => {
     const controller = new AbortController()
-    abort.current = controller
     const timer = setTimeout(() => setSlow(true), 3 * 60 * 1000)
     void (async () => {
       try {
         const v2 = ACTIVE_NETWORK.v2
         if (!v2) throw new Error('forge-v2 is not deployed here')
-        const { ensureSdk } = await import('@/lib/sdk')
-        const { newRequest, awaitWalletLogin } = await import('@/lib/auth/app-connect')
-        const req = newRequest(DEFAULT_NETWORK, v2.core)
+        const req = newRequest(ACTIVE_NETWORK.network, v2.core)
         setUri(req.uri)
         setPairing(req.pairingCode)
-        const login = await awaitWalletLogin(await ensureSdk(DEFAULT_NETWORK), req, { network: DEFAULT_NETWORK, group: v2.group, signal: controller.signal })
+        const login = await awaitWalletLogin(await ensureSdk(ACTIVE_NETWORK.network), req, {
+          network: ACTIVE_NETWORK.network,
+          group: v2.group,
+          signal: controller.signal,
+        })
         setGranted({ identityId: login.identityId, key: { keyId: login.keyId, wif: login.wif, limits: login.limits } })
       } catch (e) {
-        if (!controller.signal.aborted) setError(errorMessage(e))
+        if (!isAbort(e)) setError(errorMessage(e))
       }
     })()
     return () => {
@@ -61,7 +64,8 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
         <Button
           variant="primary"
           className="w-full"
-          disabled={protection === null}
+          loading={isLoading}
+          disabled={protection === null || isLoading}
           onClick={async () => {
             if (!protection) return
             try {
@@ -75,7 +79,7 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
           Finish signing in
         </Button>
         {problem ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
-        {error ? <p role="alert" className="text-dense text-danger">{error}</p> : null}
+        <ErrorBox error={error} />
       </div>
     )
   }
@@ -94,7 +98,7 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
       </p>
       {slow ? <p className="text-dense text-caution">No response yet. Keep this tab open, or choose another method.</p> : null}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Needs a wallet with Platform login (App Connect).</p>
-      {error ? <p role="alert" className="text-dense text-danger">{error}</p> : null}
+      <ErrorBox error={error} />
     </div>
   )
 }

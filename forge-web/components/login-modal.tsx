@@ -10,60 +10,92 @@
  *      registers a limited key for this browser, and is not stored;
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
  *
- * When this device already holds an encrypted key, the sheet opens on "Unlock" instead.
- * On a network without forge-v2 (no contract group to bind a key to, testnet today) only the
- * v1 paths exist: the identity file signs with its HIGH/CRITICAL key for this tab.
+ * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
+ * (callers can open it on a view directly: Renew opens Import). On a network without forge-v2
+ * (no contract group to bind a key to, testnet today) only the v1 path exists: the identity
+ * file signs with its HIGH/CRITICAL key for this tab.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
+import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { useProtection } from '@/components/auth/protection-fields'
+import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
-import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
-import { BROWSER_KEY_DEFAULTS, parseIdentityFileText } from '@/lib/auth'
+import { FORGET_CONFIRM } from '@/components/keys-panel'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile, parseIdentityFileText } from '@/lib/auth'
+import { appConnectAvailable } from '@/lib/auth/app-connect'
+import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
-type View = 'choose' | 'unlock' | 'import' | 'create' | 'wallet' | 'advanced'
+type View = 'choose' | 'unlock' | 'advanced' | LoginView
 
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
+  const requested = useUiStore((s) => s.loginView)
   const close = useUiStore((s) => s.closeLogin)
   const { vaults, limitedKeys } = useAuth()
   const [view, setView] = useState<View>('choose')
+  const [unlockFor, setUnlockFor] = useState<string | null>(null)
+  const hasVault = vaults.length > 0
 
+  // Pick the view when the sheet opens. If the stored-key list arrives after it opened (the
+  // /login route opens it on load), move from the untouched tile list to Unlock — never
+  // away from a flow the user already started.
+  const opened = useRef<{ hasVault: boolean } | null>(null)
   useEffect(() => {
-    if (open) setView(vaults.length > 0 ? 'unlock' : 'choose')
-  }, [open, vaults.length])
+    if (!open) {
+      opened.current = null
+      return
+    }
+    if (opened.current === null) {
+      opened.current = { hasVault }
+      setView(requested ?? (hasVault ? 'unlock' : 'choose'))
+      setUnlockFor(null)
+      return
+    }
+    if (!opened.current.hasVault && hasVault && requested === null) {
+      opened.current = { hasVault }
+      setView((v) => (v === 'choose' ? 'unlock' : v))
+    }
+  }, [open, requested, hasVault])
 
   const back = view === 'choose' || view === 'unlock' ? null : () => setView('choose')
+  const description =
+    view === 'advanced'
+      ? 'A pasted key signs for this tab only, with whatever power it has.'
+      : limitedKeys
+        ? `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
+        : `Your key signs writes on ${ACTIVE_NETWORK.key}. It stays in this tab, never sent anywhere.`
 
   return (
-    <Dialog
-      open={open}
-      onClose={close}
-      title="Sign in to Dash Forge"
-      description={
-        limitedKeys
-          ? `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
-          : `Your key signs writes on ${ACTIVE_NETWORK.key}. It stays in this tab, never sent anywhere.`
-      }
-      className="max-w-lg"
-    >
+    <Dialog open={open} onClose={close} title="Sign in to Dash Forge" description={description} className="max-w-lg">
       {back ? (
         <button type="button" onClick={back} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-anvil-800 dark:hover:text-anvil-100">
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> All options
         </button>
       ) : null}
-      {view === 'unlock' ? <UnlockView onDone={close} onOther={() => setView('choose')} /> : null}
+      {view === 'unlock' ? <UnlockView initial={unlockFor} onDone={close} onOther={() => setView('choose')} onRenew={() => setView('import')} /> : null}
       {view === 'choose' ? <ChooseView onPick={setView} /> : null}
-      {view === 'import' ? (limitedKeys ? <ImportView onDone={close} /> : <V1FileView onDone={close} />) : null}
+      {view === 'import' ? (
+        limitedKeys ? (
+          <ImportView
+            onDone={close}
+            onStored={(id) => {
+              setUnlockFor(id)
+              setView('unlock')
+            }}
+          />
+        ) : (
+          <V1FileView onDone={close} />
+        )
+      ) : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
@@ -89,7 +121,8 @@ function Tile({ icon: Icon, title, body, onClick, testId }: { icon: typeof Walle
 }
 
 function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
-  const { limitedKeys, walletAvailable } = useWalletAvailability()
+  const { limitedKeys } = useAuth()
+  const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   return (
     <div className="space-y-2">
@@ -125,42 +158,73 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
 }
 
 /** Whether the App Connect tile applies here (protocol 14 + the system contract present). */
-function useWalletAvailability(): { limitedKeys: boolean; walletAvailable: boolean } {
-  const { limitedKeys } = useAuth()
-  const [walletAvailable, setAvailable] = useState(false)
+function useWalletAvailability(limitedKeys: boolean): boolean {
+  const [available, setAvailable] = useState(false)
   useEffect(() => {
     if (!limitedKeys) return
     let cancelled = false
-    void (async () => {
-      const { ensureSdk } = await import('@/lib/sdk')
-      const { appConnectAvailable } = await import('@/lib/auth/app-connect')
-      const ok = await appConnectAvailable(await ensureSdk(DEFAULT_NETWORK)).catch(() => false)
-      if (!cancelled) setAvailable(ok)
-    })()
+    ensureSdk(ACTIVE_NETWORK.network)
+      .then(appConnectAvailable)
+      .then(
+        (ok) => !cancelled && setAvailable(ok),
+        () => undefined,
+      )
     return () => {
       cancelled = true
     }
   }, [limitedKeys])
-  return { limitedKeys, walletAvailable }
+  return available
 }
 
-function ErrorBox({ error }: { error: string | null }): JSX.Element | null {
-  if (!error) return null
+/** A dashed "choose a file" button over a hidden file input. */
+function FilePicker({ label, detail, onFile, disabled }: { label: string; detail?: string; onFile: (f: File) => void; disabled?: boolean }): JSX.Element {
+  const ref = useRef<HTMLInputElement>(null)
   return (
-    <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
-      {error}
-    </div>
+    <>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => ref.current?.click()}
+        className="flex w-full flex-col items-center gap-1 rounded-lg border border-dashed border-anvil-300 px-4 py-5 text-center hover:border-forge-400 dark:border-anvil-700"
+      >
+        <Upload className="h-5 w-5 text-forge-500" aria-hidden />
+        <span className="text-dense font-medium">{label}</span>
+        {detail ? <span className="font-mono text-[12px] text-anvil-500">{detail}</span> : null}
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        aria-label="Identity file"
+        accept="application/json,.json,.txt"
+        className="sr-only"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) onFile(f)
+          e.target.value = ''
+        }}
+      />
+    </>
   )
 }
 
-function UnlockView({ onDone, onOther }: { onDone: () => void; onOther: () => void }): JSX.Element {
-  const { vaults, unlock, logout, isLoading } = useAuth()
-  const [pick, setPick] = useState(0)
+function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | null; onDone: () => void; onOther: () => void; onRenew: () => void }): JSX.Element {
+  const { vaults, unlock, forget, isLoading } = useAuth()
+  const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === initial)))
   const [passphrase, setPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const v = vaults[pick]
-  if (!v) return <p className="text-dense">No key is stored on this device.</p>
+  const v = vaults[pick] ?? vaults[0]
+  if (!v) {
+    return (
+      <div className="space-y-3">
+        <p className="text-dense">No key is stored on this device.</p>
+        <Button variant="primary" className="w-full" onClick={onOther}>
+          Sign-in options
+        </Button>
+      </div>
+    )
+  }
   const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
+    if (isLoading) return
     setError(null)
     try {
       await unlock(v.identityId, method)
@@ -170,6 +234,7 @@ function UnlockView({ onDone, onOther }: { onDone: () => void; onOther: () => vo
       setError(errorMessage(e))
     }
   }
+  const expired = error !== null && /no longer usable|renew/i.test(error)
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-dense">
@@ -188,7 +253,7 @@ function UnlockView({ onDone, onOther }: { onDone: () => void; onOther: () => vo
         )}
       </div>
       {v.methods.includes('passkey') ? (
-        <Button variant="primary" className="w-full" onClick={() => go('passkey')} loading={isLoading}>
+        <Button variant="primary" className="w-full" onClick={() => go('passkey')} loading={isLoading} disabled={isLoading}>
           <Fingerprint className="h-4 w-4" aria-hidden /> Unlock with passkey
         </Button>
       ) : null}
@@ -203,27 +268,40 @@ function UnlockView({ onDone, onOther }: { onDone: () => void; onOther: () => vo
           <Field label="Passphrase" htmlFor="unlock-passphrase">
             <Input id="unlock-passphrase" type="password" autoComplete="current-password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus />
           </Field>
-          <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === ''}>
+          <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
             Unlock
           </Button>
         </form>
       ) : null}
       <ErrorBox error={error} />
+      {expired ? (
+        <Button variant="outline" className="w-full" onClick={onRenew}>
+          Renew this browser&apos;s key
+        </Button>
+      ) : null}
       <div className="flex justify-between pt-1 text-[12px]">
         <button type="button" onClick={onOther} className="text-anvil-500 underline">
-          Use another identity
+          Other sign-in options
         </button>
-        <button type="button" onClick={() => logout(true)} className="text-danger underline">
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(FORGET_CONFIRM)) void forget(v.identityId).then(() => setPick(0))
+          }}
+          className="text-danger underline"
+        >
           Forget this key
         </button>
       </div>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Stored {formatDate(v.createdAt)} · key #{v.keyId}</p>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        Stored {formatDate(v.createdAt)} · key #{v.keyId}
+      </p>
     </div>
   )
 }
 
-function ImportView({ onDone }: { onDone: () => void }): JSX.Element {
-  const { importIdentity, isLoading } = useAuth()
+function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
+  const { importIdentity, isLoading, vaults, identity } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   const [fileText, setFileText] = useState<string | null>(null)
   const [fileName, setFileName] = useState('')
@@ -231,25 +309,29 @@ function ImportView({ onDone }: { onDone: () => void }): JSX.Element {
   const [mnemonic, setMnemonic] = useState('')
   const [identityId, setIdentityId] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
-  const who = mode === 'file' ? fileIdentity : identityId
-  const { fields, protection, problem } = useProtection(who)
+  const { fields, protection, problem } = useProtection()
+  const who = mode === 'file' ? fileIdentity : identityId.trim()
+  // Offer Unlock for a key this device already holds, unless this is a renewal of the
+  // signed-in identity (then the old key is disabled in the same update).
+  const alreadyStored = who !== '' && who !== identity && vaults.some((v) => v.identityId === who)
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
     const text = await file.text()
     try {
-      setFileIdentity(parseIdentityFileText(text).identityId)
-    } catch {
+      setFileIdentity(masterMaterialFromFile(text).identityId)
+    } catch (e) {
       setFileIdentity('')
+      setError(errorMessage(e))
+      return
     }
     setFileText(text)
     setFileName(file.name)
   }
 
-  const ready = protection !== null && (mode === 'file' ? fileText !== null : mnemonic.trim() !== '' && identityId.trim() !== '')
+  const ready = protection !== null && !isLoading && (mode === 'file' ? fileText !== null : mnemonic.trim() !== '' && identityId.trim() !== '')
   const submit = async (): Promise<void> => {
-    if (!protection) return
+    if (!protection || isLoading) return
     setError(null)
     try {
       await importIdentity(mode === 'file' ? { fileText: fileText as string } : { mnemonic, identityId }, protection)
@@ -278,29 +360,7 @@ function ImportView({ onDone }: { onDone: () => void }): JSX.Element {
         ))}
       </div>
       {mode === 'file' ? (
-        <>
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="flex w-full flex-col items-center gap-1 rounded-lg border border-dashed border-anvil-300 px-4 py-5 text-center hover:border-forge-400 dark:border-anvil-700"
-          >
-            <Upload className="h-5 w-5 text-forge-500" aria-hidden />
-            <span className="text-dense font-medium">{fileName || 'Choose an identity file (.json)'}</span>
-            {fileIdentity ? <span className="font-mono text-[12px] text-anvil-500">{fileIdentity}</span> : null}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            aria-label="Identity file"
-            accept="application/json,.json,.txt"
-            className="sr-only"
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) void onFile(f)
-              e.target.value = ''
-            }}
-          />
-        </>
+        <FilePicker label={fileName || 'Choose an identity file (.json)'} detail={fileIdentity || undefined} onFile={(f) => void onFile(f)} />
       ) : (
         <>
           <Field label="Identity ID" htmlFor="import-id">
@@ -311,6 +371,15 @@ function ImportView({ onDone }: { onDone: () => void }): JSX.Element {
           </Field>
         </>
       )}
+      {alreadyStored ? (
+        <div className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
+          This device already holds a key for this identity.{' '}
+          <button type="button" className="text-forge-600 underline dark:text-forge-400" onClick={() => onStored(who)}>
+            Unlock it instead
+          </button>{' '}
+          or continue to replace it (the old key is disabled in the same update).
+        </div>
+      ) : null}
       {fields}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days (~0.0005 DASH, one master-key signature).
@@ -326,13 +395,13 @@ function ImportView({ onDone }: { onDone: () => void }): JSX.Element {
 
 /** Networks without forge-v2 (testnet): an identity file's HIGH/CRITICAL key, this tab only. */
 function V1FileView({ onDone }: { onDone: () => void }): JSX.Element {
-  const { loginWithRawKey, isLoading } = useAuth()
+  const { loginWithRawKey, isLoading, controller } = useAuth()
   const [error, setError] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
   const onFile = async (file: File): Promise<void> => {
     setError(null)
     try {
       const parsed = parseIdentityFileText(await file.text())
+      controller.checkFileNetwork(parsed.networkKey)
       await loginWithRawKey(parsed.identityId, parsed.signingKeyWif)
       onDone()
     } catch (e) {
@@ -341,27 +410,7 @@ function V1FileView({ onDone }: { onDone: () => void }): JSX.Element {
   }
   return (
     <div className="space-y-3">
-      <button
-        type="button"
-        onClick={() => fileRef.current?.click()}
-        disabled={isLoading}
-        className="flex w-full flex-col items-center gap-2 rounded-lg border border-dashed border-anvil-300 px-4 py-8 text-center hover:border-forge-400 dark:border-anvil-700"
-      >
-        <Upload className="h-5 w-5 text-forge-500" aria-hidden />
-        <span className="text-dense font-medium">Choose an identity file</span>
-      </button>
-      <input
-        ref={fileRef}
-        type="file"
-        aria-label="Identity file"
-        accept="application/json,.json,.txt"
-        className="sr-only"
-        onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) void onFile(f)
-          e.target.value = ''
-        }}
-      />
+      <FilePicker label="Choose an identity file" onFile={(f) => void onFile(f)} disabled={isLoading} />
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         {ACTIVE_NETWORK.key} has no Forge contract group yet, so there are no limited keys here: the file&apos;s signing key is held in this tab and forgotten on reload.
       </p>
@@ -376,6 +425,7 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
   const [key, setKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const submit = async (): Promise<void> => {
+    if (isLoading) return
     setError(null)
     try {
       await loginWithRawKey(identityId, key)
@@ -397,7 +447,7 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
       <Field label="Private key (WIF or hex)" htmlFor="adv-key" hint="HIGH or CRITICAL authentication key. Held in this tab only.">
         <Input id="adv-key" type="password" value={key} onChange={(e) => setKey(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
       </Field>
-      <Button variant="danger" className="w-full" onClick={submit} loading={isLoading} disabled={identityId.trim() === '' || key.trim() === ''}>
+      <Button variant="danger" className="w-full" onClick={submit} loading={isLoading} disabled={identityId.trim() === '' || key.trim() === '' || isLoading}>
         Sign in for this tab
       </Button>
       <ErrorBox error={error} />

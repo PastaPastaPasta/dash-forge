@@ -24,6 +24,7 @@ import { hash160 } from './asset-lock'
 import { encodeWif } from './wif'
 import { verifyLimitedKey } from './limited-key'
 import type { KeyLimits } from '../view/funds'
+import { authSdk, sleep } from '../sdk/facade'
 
 /** The App Connect system contract (the same id on every network, protocol 14). */
 export const APP_CONNECT_CONTRACT_ID = 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ'
@@ -96,6 +97,9 @@ interface RawResponse {
   toJSON(): { $ownerId: string; walletEphemeralPubKey: string; encryptedPayload: string }
 }
 
+/** Why a response was skipped: not for us (never retry), or not verifiable yet (retry). */
+class NotOurs extends Error {}
+
 function b64(s: string): Uint8Array {
   const bin = atob(s)
   return Uint8Array.from(bin, (c) => c.charCodeAt(0))
@@ -104,7 +108,7 @@ function b64(s: string): Uint8Array {
 /** Whether the App Connect contract exists on this network (hide the tile otherwise). */
 export async function appConnectAvailable(sdk: import('@dashevo/evo-sdk').EvoSDK): Promise<boolean> {
   try {
-    const c = await (sdk as unknown as { contracts: { fetch(id: string): Promise<unknown> } }).contracts.fetch(APP_CONNECT_CONTRACT_ID)
+    const c = await authSdk(sdk).contracts.fetch(APP_CONNECT_CONTRACT_ID)
     return c !== undefined && c !== null
   } catch {
     return false
@@ -129,13 +133,15 @@ export async function awaitWalletLogin(
   req: AppConnectRequest,
   params: { network: Network; group: string; signal?: AbortSignal; intervalMs?: number },
 ): Promise<WalletLogin> {
-  const seen = new Set<string>()
-  const docs = (sdk as unknown as { documents: { query(q: unknown): Promise<Map<string, RawResponse | undefined>> } }).documents
+  // Owners whose response does not decrypt with our key are not answering us: skip them for
+  // good. A response that decrypts but whose key is not verifiable yet (the wallet published
+  // before its key update was visible, or a read failed) is retried on the next poll.
+  const notOurs = new Set<string>()
   for (;;) {
     if (params.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
-    let rows: Map<string, RawResponse | undefined> = new Map()
+    let rows: Map<string, unknown> = new Map()
     try {
-      rows = await docs.query({
+      rows = await authSdk(sdk).documents.query({
         dataContractId: APP_CONNECT_CONTRACT_ID,
         documentTypeName: 'loginKeyResponse',
         where: [['appEphemeralPubKeyHash', '==', btoa(String.fromCharCode(...req.appEphemeralPubKeyHash))]],
@@ -147,32 +153,41 @@ export async function awaitWalletLogin(
     }
     for (const raw of rows.values()) {
       if (!raw) continue
-      const j = raw.toJSON()
-      if (seen.has(j.$ownerId)) continue
-      seen.add(j.$ownerId)
+      const j = (raw as RawResponse).toJSON()
+      if (notOurs.has(j.$ownerId)) continue
       try {
-        const login = await openResponse(req, b64(j.walletEphemeralPubKey), b64(j.encryptedPayload))
-        const auth = authKeyFromLogin(login, j.$ownerId)
-        login.fill(0)
-        const wif = encodeWif(auth, params.network)
-        auth.fill(0)
+        const wif = await decryptGrant(req, j, params.network)
         const keyId = await findKeyId(sdk, j.$ownerId, wif, params.network)
         if (keyId === null) continue
         const limits = await verifyLimitedKey(sdk, j.$ownerId, keyId, params.group, params.network, wif)
         disposeRequest(req)
         return { identityId: j.$ownerId, keyId, wif, limits }
-      } catch {
-        /* not ours, or not a Forge-bounded key: keep waiting */
+      } catch (e) {
+        if (e instanceof NotOurs) notOurs.add(j.$ownerId)
       }
     }
-    await new Promise((r) => setTimeout(r, params.intervalMs ?? 3000))
+    await sleep(params.intervalMs ?? 3000, params.signal)
   }
+}
+
+async function decryptGrant(req: AppConnectRequest, j: ReturnType<RawResponse['toJSON']>, network: Network): Promise<string> {
+  let login: Uint8Array
+  try {
+    login = await openResponse(req, b64(j.walletEphemeralPubKey), b64(j.encryptedPayload))
+  } catch {
+    throw new NotOurs()
+  }
+  const auth = authKeyFromLogin(login, j.$ownerId)
+  login.fill(0)
+  const wif = encodeWif(auth, network)
+  auth.fill(0)
+  return wif
 }
 
 /** Which key on `identityId` the WIF controls (the wallet may register it as HASH160). */
 async function findKeyId(sdk: import('@dashevo/evo-sdk').EvoSDK, identityId: string, wif: string, network: Network): Promise<number | null> {
   const { PrivateKey } = await import('@dashevo/evo-sdk')
-  const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<{ publicKeys: { keyId: number; validatePrivateKey(b: Uint8Array, n: string): boolean }[] } | undefined> } }).identities.fetch(identityId)
+  const identity = await authSdk(sdk).identities.fetch(identityId)
   const pk = PrivateKey.fromWIF(wif)
   const bytes = pk.toBytes()
   pk.free()

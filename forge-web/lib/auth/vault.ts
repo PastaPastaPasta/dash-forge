@@ -158,13 +158,17 @@ export function passkeysAvailable(): boolean {
  * Create a passkey for the vault and evaluate its PRF. Returns null when the authenticator
  * does not support `prf` (the caller falls back to a passphrase). Some authenticators only
  * report `prf.enabled` at creation and need a get() to produce output; both are handled.
+ *
+ * Every passkey gets a random WebAuthn `user.id`: platform authenticators replace a
+ * discoverable credential with the same (rpId, user.id), so a shared id would let a second
+ * identity's enrolment silently destroy the first identity's only unlock method.
  */
-export async function enrollPasskey(identityId: string, label: string): Promise<{ credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array } | null> {
+export async function enrollPasskey(label: string): Promise<{ credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array } | null> {
   const prfSalt = random(32)
   const cred = (await navigator.credentials.create({
     publicKey: {
       rp: { id: rpId(), name: 'Dash Forge' },
-      user: { id: buf(sha256(enc.encode(identityId))), name: label, displayName: label },
+      user: { id: buf(random(32)), name: label, displayName: label },
       challenge: buf(random(32)),
       pubKeyCredParams: [
         { type: 'public-key', alg: -7 },
@@ -314,6 +318,15 @@ export async function forgetVault(network: Network, identityId: string): Promise
 // The unlocked secret: module memory only.
 let unlocked: { network: Network; secret: VaultSecret; at: number } | null = null
 let lockTimer: ReturnType<typeof setTimeout> | null = null
+const lockListeners = new Set<() => void>()
+
+/** Be told when the vault locks (auto-lock, sign-out). Returns an unsubscribe function. */
+export function onVaultLock(listener: () => void): () => void {
+  lockListeners.add(listener)
+  return () => {
+    lockListeners.delete(listener)
+  }
+}
 
 function setUnlocked(network: Network, secret: VaultSecret): void {
   unlocked = { network, secret, at: Date.now() }
@@ -341,7 +354,9 @@ export function unlockedSecret(network: Network, identityId: string): VaultSecre
 
 /** Forget the unlocked secret (sign-out, auto-lock). The stored record stays. */
 export function lockVault(): void {
+  const wasUnlocked = unlocked !== null
   unlocked = null
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = null
+  if (wasUnlocked) for (const l of lockListeners) l()
 }

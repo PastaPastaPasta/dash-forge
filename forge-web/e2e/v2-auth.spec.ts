@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, idFile, shot, signedIn, unlock } from './helpers'
+import { E2E_DEVNET, PASSPHRASE, idFile, importIdentity, shot, unlock } from './helpers'
 
 /**
  * Limited-key sign-in, live on a devnet (real spend):
@@ -49,7 +49,9 @@ async function onChainKeys(identityId: string): Promise<{ id: number; level: str
 test('a1. import once: a limited key lands on chain, the vault survives a reload', async ({ browser }) => {
   const identityId = String(JSON.parse(readFileSync(idFile('CI-RUNNER'), 'utf8')).identityId)
   const before = await onChainKeys(identityId)
-  const page = await signedIn(browser, 'CI-RUNNER', '/settings/')
+  const page = await (await browser.newContext()).newPage()
+  await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
+  await importIdentity(page, 'CI-RUNNER')
   await expect(page.getByTestId('key-budget')).toContainText('0.05 DASH', { timeout: 30_000 })
   await shot(page, 'v2a-01-settings-key')
 

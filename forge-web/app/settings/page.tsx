@@ -29,7 +29,7 @@ export default function SettingsPage(): JSX.Element {
           icon={Wallet}
           title="Not signed in"
           body="Sign in to see your balance and account settings."
-          action={<Button variant="primary" onClick={openLogin}>Sign in</Button>}
+          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
         />
       </AppShell>
     )

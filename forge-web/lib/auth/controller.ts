@@ -22,16 +22,19 @@ import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
+import { authSdk } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { readKeyLimits, registerLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 import {
+  VaultLockedError,
   forgetVault,
   holdForSession,
   listVaults,
   lockVault,
+  onVaultLock,
   storeInVault,
   unlockWithPasskey,
   unlockWithPassphrase,
@@ -92,6 +95,13 @@ export class AuthController {
     private readonly network: Network = DEFAULT_NETWORK,
   ) {
     purgeLegacyKeystore()
+    // The 12-hour auto-lock ends the session too, so the UI offers Unlock instead of a
+    // signed-in header whose every write fails.
+    onVaultLock(() => {
+      if (this.state.session?.storage === 'vault' || this.state.session?.storage === 'session') {
+        this.setState({ session: null })
+      }
+    })
   }
 
   getState(): AuthState {
@@ -159,40 +169,62 @@ export class AuthController {
     }
   }
 
-  /** Open a session for an unlocked secret: re-verify the key on chain, load balance + limits. */
-  private async open(secret: VaultSecret, storage: AuthSession['storage']): Promise<AuthSession> {
-    const sdk = await this.getSdk()
-    const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<Parameters<typeof findSigningKey>[0] | undefined> } }).identities.fetch(secret.identityId)
-    if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
-    const match = await findSigningKey(identity, secret.wif, this.network, 3)
-    if (!match) throw new WriteAuthError('this key is no longer usable on the identity (disabled or expired) — sign in again')
-    const [balance, keyLimits] = await Promise.all([
-      readIdentityBalance(sdk, secret.identityId),
-      readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null),
-    ])
-    const session: AuthSession = {
-      identityId: secret.identityId,
-      balance: balance.toString(),
-      network: this.network,
-      keyLimits,
-      keyId: match.keyId,
-      storage,
+  /**
+   * Open a session for an unlocked secret: re-verify the key on chain, load balance + limits.
+   * On failure the unlocked key is dropped again, so no key sits in memory without a session.
+   */
+  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits): Promise<AuthSession> {
+    try {
+      const sdk = await this.getSdk()
+      const identity = await authSdk(sdk).identities.fetch(secret.identityId)
+      if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
+      const match = await findSigningKey(identity, secret.wif, this.network, 3)
+      if (!match) throw new KeyNotUsableError()
+      const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
+      const session: AuthSession = {
+        identityId: secret.identityId,
+        balance: identity.balance.toString(),
+        network: this.network,
+        keyLimits,
+        keyId: match.keyId,
+        storage,
+      }
+      this.setState({ session })
+      return session
+    } catch (e) {
+      lockVault()
+      throw e
     }
-    this.setState({ session })
-    return session
   }
 
-  /** Store a freshly registered limited key in the vault and open its session. */
+  /**
+   * Store a freshly registered limited key in the vault and open its session. If the key is
+   * stored but the session cannot open yet (a read failed), say so: the key is safe and
+   * unlocking will continue.
+   */
   private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
     await storeInVault(this.network, secret, protection)
-    return this.open(secret, 'vault')
+    try {
+      return await this.open(secret, 'vault', key.limits)
+    } catch (e) {
+      throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
+    }
+  }
+
+  /**
+   * Store a key in the vault before it is registered on chain (identity creation). It stays
+   * unlocked for the {@link openStored} that follows; a failed run calls {@link logout}.
+   */
+  async persistKey(secret: VaultSecret, protection: Protection): Promise<void> {
+    await storeInVault(this.network, secret, protection)
   }
 
   /**
    * Import an identity file or mnemonic once: its master key signs one IdentityUpdate that
-   * registers a limited key for this browser, and is then dropped. Only the limited key is
-   * kept, encrypted under `protection`.
+   * registers a limited key for this browser (disabling the key this device held for it
+   * before, when renewing), and is then dropped. Only the limited key is kept, encrypted under
+   * `protection`.
    */
   async importIdentity(
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -204,10 +236,7 @@ export class AuthController {
       let masterWif: string | null
       if ('fileText' in input) {
         const m = masterMaterialFromFile(input.fileText)
-        const buildKey = NETWORKS[this.network].key
-        if (!identityFileMatchesNetwork(m.networkKey, buildKey)) {
-          throw new Error(`identity file is for ${m.networkKey}, but this app is on ${buildKey}`)
-        }
+        this.checkFileNetwork(m.networkKey)
         identityId = m.identityId
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
@@ -216,12 +245,14 @@ export class AuthController {
         masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
       }
       if (!masterWif) throw new Error('no master key found')
+      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       const sdk = await this.getSdk()
       const key = await registerLimitedKey(sdk, {
         network: this.network,
         identityId,
         masterWif,
         group: this.group(),
+        ...(previous ? { replaceKeyId: previous.keyId } : {}),
         ...(request ? { request } : {}),
       })
       masterWif = null
@@ -229,9 +260,32 @@ export class AuthController {
     })
   }
 
+  /** Refuse an identity file made for another network (a testnet key on a devnet build). */
+  checkFileNetwork(networkKey: string | null): void {
+    const buildKey = NETWORKS[this.network].key
+    if (!identityFileMatchesNetwork(networkKey, buildKey)) {
+      throw new Error(`identity file is for ${networkKey}, but this app is on ${buildKey}`)
+    }
+  }
+
   /** Adopt a limited key obtained elsewhere (identity creation, App Connect). */
   async adoptLimitedKey(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     return this.run(() => this.adopt(identityId, key, protection))
+  }
+
+  /** Open the session of a key already in the vault and unlocked (identity creation). */
+  async openStored(identityId: string, method: { passphrase: string } | 'passkey' | null, limits?: KeyLimits): Promise<AuthSession> {
+    return this.run(async () => {
+      const secret =
+        unlockedSecret(this.network, identityId) ??
+        (method === 'passkey'
+          ? await unlockWithPasskey(this.network, identityId)
+          : method !== null
+            ? await unlockWithPassphrase(this.network, identityId, method.passphrase)
+            : null)
+      if (!secret) throw new VaultLockedError('unlock to continue')
+      return this.open(secret, 'vault', limits)
+    })
   }
 
   /** Unlock a stored vault and open its session. */
@@ -252,14 +306,16 @@ export class AuthController {
   async loginWithRawKey(identityId: string, privateKey: string): Promise<AuthSession> {
     return this.run(async () => {
       const wif = normalizeToWif(privateKey, this.network)
-      const sdk = await this.getSdk()
-      const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<Parameters<typeof findSigningKey>[0] | undefined> } }).identities.fetch(identityId.trim())
-      if (!identity) throw new WriteAuthError(`identity ${identityId} not found on ${this.network}`)
-      const match = await findSigningKey(identity, wif, this.network, 3)
-      if (!match) throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
-      const secret: VaultSecret = { identityId: identityId.trim(), keyId: match.keyId, wif }
+      const secret: VaultSecret = { identityId: identityId.trim(), keyId: -1, wif }
       holdForSession(this.network, secret)
-      return this.open(secret, 'session')
+      try {
+        return await this.open(secret, 'session')
+      } catch (e) {
+        if (e instanceof KeyNotUsableError) {
+          throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
+        }
+        throw e
+      }
     })
   }
 
@@ -277,17 +333,23 @@ export class AuthController {
     this.setState({ session: { ...current, balance: balance.toString(), keyLimits } })
   }
 
-  /** Lock: forget the unlocked key (the stored vault stays; unlock to continue). */
-  lock(): void {
+  /** Lock (keep the stored key; unlock to continue). The session ends with it. */
+  logout(): void {
     lockVault()
     this.setState({ session: null, error: null })
   }
 
-  /** Sign out and forget this browser's key entirely. */
-  async logout(forget = false): Promise<void> {
-    const session = this.state.session
-    lockVault()
-    if (forget && session) await forgetVault(this.network, session.identityId)
-    this.setState({ session: null, error: null })
+  /** Delete the stored key of `identityId` from this device (ending its session if open). */
+  async forget(identityId: string): Promise<void> {
+    if (this.state.session?.identityId === identityId) this.logout()
+    await forgetVault(this.network, identityId)
+  }
+}
+
+/** The key opened no longer controls a usable key on the identity (disabled, expired, wrong). */
+export class KeyNotUsableError extends WriteAuthError {
+  constructor() {
+    super("this browser's key is no longer usable on the identity (disabled or expired) — renew it")
+    this.name = 'KeyNotUsableError'
   }
 }

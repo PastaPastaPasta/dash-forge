@@ -12,6 +12,7 @@ import { ExternalLink } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { creditsAsDash } from '@/lib/view/format'
@@ -27,6 +28,7 @@ export function faucetUrl(): string | null {
 export function TopUpSheet(): JSX.Element | null {
   const reason = useUiStore((s) => s.topUp)
   const close = useUiStore((s) => s.closeTopUp)
+  const openLogin = useUiStore((s) => s.openLogin)
   const { identity } = useAuth()
   if (reason === null || identity === null) return null
   const faucet = faucetUrl()
@@ -47,10 +49,21 @@ export function TopUpSheet(): JSX.Element | null {
     >
       <div className="space-y-3 text-dense">
         {keyProblem ? (
-          <p>
-            Sign in again with your identity file or mnemonic to register a fresh limited key for this browser.
-            Your master key is used once and not stored.
-          </p>
+          <>
+            <p>
+              Renew it with your identity file or recovery phrase: the master key registers a fresh limited key for this
+              browser, disables the old one, and is not stored.
+            </p>
+            <Button
+              variant="primary"
+              onClick={() => {
+                close()
+                openLogin('import')
+              }}
+            >
+              Renew key
+            </Button>
+          </>
         ) : (
           <>
             <p>

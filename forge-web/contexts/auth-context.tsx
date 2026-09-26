@@ -69,9 +69,13 @@ interface AuthContextValue {
   /** Advanced: a pasted key, for this tab only. */
   loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
   refreshBalance: () => Promise<void>
-  /** Lock (keep the stored key) or sign out and forget this browser's key. */
-  logout: (forget?: boolean) => void
+  /** Lock: end the session, keep the stored key (unlock to continue). */
+  logout: () => void
+  /** Delete the stored key of `identityId` from this device. */
+  forget: (identityId: string) => Promise<void>
   reloadVaults: () => void
+  /** The headless controller (identity creation stores its key before registering it). */
+  readonly controller: AuthController
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -94,42 +98,30 @@ export function AuthProvider({
   }, [controller])
   useEffect(reloadVaults, [reloadVaults])
 
-  const importIdentity = useCallback<AuthContextValue['importIdentity']>(
-    async (input, protection, request) => {
-      await controller.importIdentity(input, protection, request)
-      reloadVaults()
-    },
-    [controller, reloadVaults],
+  // Every sign-in path ends with a reload of the stored-key list, success or not: a key stored
+  // before a later step failed must show up in Unlock.
+  const withReload = useCallback(
+    <A extends unknown[]>(fn: (...args: A) => Promise<unknown>) =>
+      async (...args: A): Promise<void> => {
+        try {
+          await fn(...args)
+        } finally {
+          reloadVaults()
+        }
+      },
+    [reloadVaults],
   )
-  const adoptLimitedKey = useCallback<AuthContextValue['adoptLimitedKey']>(
-    async (identityId, key, protection) => {
-      await controller.adoptLimitedKey(identityId, key, protection)
-      reloadVaults()
-    },
-    [controller, reloadVaults],
-  )
-  const unlock = useCallback<AuthContextValue['unlock']>(
-    async (identityId, method) => {
-      await controller.unlock(identityId, method)
-    },
-    [controller],
-  )
-  const loginWithRawKey = useCallback(
-    async (identityId: string, privateKey: string) => {
-      await controller.loginWithRawKey(identityId, privateKey)
-    },
-    [controller],
-  )
-
-  const refreshBalance = useCallback(async () => {
-    await controller.refreshBalance()
-  }, [controller])
-
-  const logout = useCallback(
-    (forget = false) => {
-      void controller.logout(forget).then(reloadVaults)
-    },
-    [controller, reloadVaults],
+  const actions = useMemo(
+    () => ({
+      importIdentity: withReload(controller.importIdentity.bind(controller)),
+      adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
+      unlock: withReload(controller.unlock.bind(controller)),
+      loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
+      refreshBalance: () => controller.refreshBalance(),
+      logout: () => controller.logout(),
+      forget: withReload(controller.forget.bind(controller)),
+    }),
+    [controller, withReload],
   )
 
   const onSpend = useCallback(
@@ -170,15 +162,11 @@ export function AuthProvider({
       storage: session?.storage ?? null,
       limitedKeys: controller.supportsLimitedKeys(),
       vaults,
-      importIdentity,
-      adoptLimitedKey,
-      unlock,
-      loginWithRawKey,
-      refreshBalance,
-      logout,
       reloadVaults,
+      controller,
+      ...actions,
     }),
-    [adoptLimitedKey, controller, funds, importIdentity, keyLimits, loginWithRawKey, logout, refreshBalance, reloadVaults, session, signer, state.error, state.isLoading, unlock, vaults],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, vaults],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

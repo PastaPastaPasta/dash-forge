@@ -73,7 +73,7 @@ export function AppHeader(): JSX.Element {
               <AccountMenu identity={identity} balance={balance} onLogout={logout} />
             </>
           ) : (
-            <Button variant="primary" size="sm" onClick={openLogin}>
+            <Button variant="primary" size="sm" onClick={() => openLogin()}>
               Sign in
             </Button>
           )}

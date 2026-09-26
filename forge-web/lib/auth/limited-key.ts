@@ -18,6 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
 import { CREDITS_PER_DASH } from '../sdk/cost'
+import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 
 /** Browser key defaults (spec §2.1). */
@@ -44,34 +45,14 @@ export interface LimitedKey {
   readonly limits: KeyLimits
 }
 
-interface WasmKey {
-  readonly keyId: number
-  readonly purposeNumber: number
-  readonly securityLevelNumber: number
-  readonly disabledAt?: bigint
-  readonly totalBudget?: bigint
-  readonly expiresAt?: bigint
-  readonly contractBounds?: { toJSON(): { $type: string; id: string } }
-  validatePrivateKey(bytes: Uint8Array, network: string): boolean
-}
-interface WasmIdentity {
-  readonly publicKeys: WasmKey[]
-  readonly balance: bigint
-}
-interface IdentitiesFacade {
-  fetch(id: string): Promise<WasmIdentity | undefined>
-  update(options: unknown): Promise<void>
-  keysRemainingBudgets(id: string, keyIds: number[]): Promise<Map<number, bigint | null>>
-}
-
-function identities(sdk: EvoSDK): IdentitiesFacade {
-  return (sdk as unknown as { identities: IdentitiesFacade }).identities
-}
-
 /**
  * Register a limited key on `identityId`, signed once by `masterWif`. Generates the new key
  * in the WASM (never exposed until returned), registers it, verifies on chain that it landed
  * with exactly the requested bounds, budget and expiry, and returns it.
+ *
+ * `replaceKeyId`: a renewal disables this browser's previous limited key in the same update,
+ * so renewing never leaves a live key nobody holds. Only a live group-bound HIGH key is
+ * disabled; anything else named is ignored.
  */
 export async function registerLimitedKey(
   sdk: EvoSDK,
@@ -81,11 +62,12 @@ export async function registerLimitedKey(
     readonly masterWif: string
     readonly group: string
     readonly request?: LimitedKeyRequest
+    readonly replaceKeyId?: number
   },
 ): Promise<LimitedKey> {
   const { IdentityPublicKeyInCreation, ContractBounds, IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
   const request = params.request ?? defaultLimits()
-  const identity = await identities(sdk).fetch(params.identityId)
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found on ${params.network}`)
 
   // The master key must be one of this identity's MASTER keys; say so plainly rather than
@@ -117,7 +99,20 @@ export async function registerLimitedKey(
       totalBudget: request.budgetCredits,
       expiresAt: BigInt(request.expiresAt),
     })
-    await identities(sdk).update({ identity, addPublicKeys: [key], signer })
+    const old = identity.publicKeys.find((k) => k.keyId === params.replaceKeyId)
+    const disable =
+      old && old.disabledAt === undefined && old.securityLevelNumber === 2 && old.contractBounds?.toJSON().id === params.group
+        ? [old.keyId]
+        : []
+    try {
+      await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.length ? { disablePublicKeys: disable } : {}), signer })
+    } catch (e) {
+      // Two tabs registering at once both pick max+1; the second is refused.
+      if (/revision|duplicate|already exists|key id/i.test(String((e as { message?: unknown })?.message ?? e))) {
+        throw new Error('another key was registered on this identity at the same moment; try again')
+      }
+      throw e
+    }
   } finally {
     signer.free()
     master.free()
@@ -149,7 +144,7 @@ export async function verifyLimitedKey(
   network: Network,
   wif?: string,
 ): Promise<KeyLimits> {
-  const identity = await identities(sdk).fetch(identityId)
+  const identity = await authSdk(sdk).identities.fetch(identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === keyId)
   if (!k) throw new Error(`key ${keyId} is not on identity ${identityId}`)
   if (k.disabledAt !== undefined) throw new Error(`key ${keyId} is disabled`)
@@ -174,13 +169,13 @@ export async function verifyLimitedKey(
 
 /** What is left of a key's budget (null when it has none). */
 export async function readRemainingBudget(sdk: EvoSDK, identityId: string, keyId: number): Promise<bigint | null> {
-  const map = await identities(sdk).keysRemainingBudgets(identityId, [keyId])
+  const map = await authSdk(sdk).identities.keysRemainingBudgets(identityId, [keyId])
   return map.get(keyId) ?? null
 }
 
 /** The limits of a key already on the identity (for a session resumed from the vault). */
 export async function readKeyLimits(sdk: EvoSDK, identityId: string, keyId: number): Promise<KeyLimits | null> {
-  const identity = await identities(sdk).fetch(identityId)
+  const identity = await authSdk(sdk).identities.fetch(identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === keyId)
   if (!k) return null
   if (k.totalBudget === undefined && k.expiresAt === undefined) return null

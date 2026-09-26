@@ -14,12 +14,17 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { INSIGHT_OVERRIDE_KEY } from '@/lib/auth/asset-lock'
+
+/** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
+export const FORGET_CONFIRM =
+  "Delete this browser's key? You will need your identity file, recovery phrase or wallet to sign in again here. Its budget stays on the identity until it expires."
 
 export function KeysPanel(): JSX.Element {
-  const { keyLimits, storage, funds, logout } = useAuth()
+  const { identity, keyLimits, storage, funds, logout, forget } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const [explorer, setExplorer] = useState(() =>
-    typeof window === 'undefined' ? '' : window.localStorage.getItem('forge:insight-url') ?? '',
+    typeof window === 'undefined' ? '' : window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) ?? '',
   )
   const low = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
 
@@ -47,13 +52,19 @@ export function KeysPanel(): JSX.Element {
         <p className="text-caution">This browser&apos;s key is nearly used up. Renew it (uses your master key once).</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" onClick={openLogin}>
+        <Button variant="outline" size="sm" onClick={() => openLogin('import')}>
           <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Renew key
         </Button>
-        <Button variant="outline" size="sm" onClick={() => logout(false)}>
+        <Button variant="outline" size="sm" onClick={() => logout()}>
           <Lock className="h-3.5 w-3.5" aria-hidden /> Lock
         </Button>
-        <Button variant="danger" size="sm" onClick={() => logout(true)}>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={() => {
+            if (identity && window.confirm(FORGET_CONFIRM)) void forget(identity)
+          }}
+        >
           <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out &amp; forget key
         </Button>
       </div>
@@ -69,8 +80,8 @@ export function KeysPanel(): JSX.Element {
           onChange={(e) => {
             setExplorer(e.target.value)
             const v = e.target.value.trim()
-            if (v === '') window.localStorage.removeItem('forge:insight-url')
-            else if (/^https:\/\//.test(v)) window.localStorage.setItem('forge:insight-url', v.replace(/\/+$/, ''))
+            if (v === '') window.localStorage.removeItem(INSIGHT_OVERRIDE_KEY)
+            else if (/^https:\/\//.test(v)) window.localStorage.setItem(INSIGHT_OVERRIDE_KEY, v.replace(/\/+$/, ''))
           }}
         />
       </Field>

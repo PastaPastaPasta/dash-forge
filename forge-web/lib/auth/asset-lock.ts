@@ -21,6 +21,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, type Network } from '../constants'
+import { sleep } from '../sdk/facade'
 import { base58CheckDecode } from './base58'
 import { decodeWif } from './wif'
 
@@ -35,9 +36,12 @@ export interface CoreEndpoints {
   readonly islockRpc: string | null
 }
 
+/** Where Settings stores a user-chosen block explorer (Insight API base URL). */
+export const INSIGHT_OVERRIDE_KEY = 'forge:insight-url'
+
 /** The endpoints this build uses (Settings may override the explorer, spec §2.2). */
 export function coreEndpoints(network: Network = ACTIVE_NETWORK.network): CoreEndpoints {
-  const override = typeof window !== 'undefined' ? window.localStorage.getItem('forge:insight-url') : null
+  const override = typeof window !== 'undefined' ? window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) : null
   if (network === 'devnet') {
     return { insight: override ?? `https://insight.${ACTIVE_NETWORK.devnetName}.networks.dash.org/insight-api`, islockRpc: null }
   }
@@ -274,15 +278,6 @@ async function fetchIslock(rpc: string, id: string): Promise<Uint8Array | null> 
   const hit = data.result?.find((r) => r?.txid === id && r.hex)
   return hit?.hex ? hexToBytes(hit.hex) : null
 }
-
-const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
-  new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => {
-      clearTimeout(t)
-      reject(new DOMException('cancelled', 'AbortError'))
-    })
-  })
 
 /**
  * Wait until the asset lock is provable: an InstantSend lock where the network offers one
