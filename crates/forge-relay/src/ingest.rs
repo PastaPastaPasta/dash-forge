@@ -33,8 +33,8 @@
 //! Drive answers a `start_after` naming a deleted document with `StartDocumentNotFound`, which
 //! would stop the stream for good. `start_after` is used only between pages of one read, on a
 //! document fetched a moment earlier; if even that fails, the read fails and is retried from
-//! `t` next cycle. A failed read leaves the cursor where it was: delivery is at-least-once and
-//! consumers dedupe on `X-GitHub-Delivery`. Every forge-v2 type requires `$createdAt`, and a
+//! `t` next cycle. A failed read leaves the cursor where it was: a document can be delivered
+//! more than once, and consumers dedupe on `X-GitHub-Delivery`. Every forge-v2 type requires `$createdAt`, and a
 //! proved v2 read returns it; a document without one is skipped.
 //!
 //! The `translate_*` functions are pure (`FetchedDocument` → [`WebhookEvent`]) and tested

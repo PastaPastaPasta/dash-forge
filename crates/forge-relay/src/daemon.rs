@@ -50,11 +50,15 @@ use crate::ingest::{
     DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
     DOC_RELEASE, DOC_REVIEW,
 };
-use crate::payload::RepositoryMeta;
+use crate::payload::{RepositoryMeta, ALL_EVENTS};
+use crate::queue::RetryQueue;
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 
 /// Wall-clock budget for one repo's poll: past it, the poll stops at the next stream boundary.
 const REPO_BUDGET: Duration = Duration::from_secs(20);
+
+/// How often due retries are handed out from the durable queue.
+const RETRY_TICK: Duration = Duration::from_secs(5);
 
 /// Repos polled at once.
 const MAX_CONCURRENT_REPOS: usize = 8;
@@ -78,17 +82,6 @@ const ROTATING_THREADS: usize = 10;
 
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
-
-/// Every GitHub event the relay produces.
-const ALL_EVENTS: [&str; 7] = [
-    "push",
-    "release",
-    "issues",
-    "pull_request",
-    "issue_comment",
-    "pull_request_review",
-    "check_run",
-];
 
 /// The two forge-v2 contracts.
 struct Contracts {
@@ -206,9 +199,11 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         ));
     }
 
+    let queue = Arc::new(open_queue(&cfg)?);
     if let Some(addr) = cfg.listen.clone() {
+        let durable = queue.is_durable();
         tokio::spawn(async move {
-            if let Err(e) = crate::health::serve(&addr).await {
+            if let Err(e) = crate::health::serve(&addr, durable).await {
                 tracing::error!(error = %e, "health listener stopped");
             }
         });
@@ -217,10 +212,13 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     let shared = Arc::new(Shared {
         client,
         contracts,
-        dispatcher: Dispatcher::new(Deliverer::new(DeliverConfig {
-            allow_private: cfg.allow_private,
-            ..Default::default()
-        })),
+        dispatcher: Dispatcher::with_queue(
+            Deliverer::new(DeliverConfig {
+                allow_private: cfg.allow_private,
+                ..Default::default()
+            }),
+            Some(queue),
+        ),
         started_ms: now_ms(),
         cfg,
     });
@@ -233,7 +231,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     );
 
     let repos: Repos = Arc::new(Mutex::new(BTreeMap::new()));
-    let mut discovery = Discovery {
+    spawn_discovery(Discovery {
         shared: Arc::clone(&shared),
         repos: Arc::clone(&repos),
         identity,
@@ -241,7 +239,20 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         statics,
         subs: Vec::new(),
         resume_at: BTreeMap::new(),
-    };
+    });
+
+    tokio::select! {
+        () = poll_loop(&shared, &repos) => {}
+        () = shutdown_signal() => {}
+    }
+    tracing::info!("stopping: writing undelivered events to the retry queue");
+    shared.dispatcher.shutdown(SHUTDOWN_GRACE).await;
+    tracing::info!("stopped");
+    Ok(())
+}
+
+/// Run discovery in its own task, every `refresh_cycles` poll intervals.
+fn spawn_discovery(mut discovery: Discovery) {
     tokio::spawn(async move {
         let every = shared_refresh_interval(&discovery.shared.cfg);
         let mut ticker = tokio::time::interval(every);
@@ -256,13 +267,45 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
             }
         }
     });
+}
 
-    poll_loop(&shared, &repos).await
+/// How long a graceful stop waits for the hook workers (within `docker stop`'s default 10 s).
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// SIGTERM (`docker stop`, systemd) or ctrl-c.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot watch for SIGTERM; only ctrl-c stops gracefully");
+            }
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Every poll interval, poll each served repo in its own task, at most
 /// [`MAX_CONCURRENT_REPOS`] at once; a repo whose previous poll is still running is skipped.
 async fn poll_loop(shared: &Arc<Shared>, repos: &Repos) -> ! {
+    // Due retries from the durable queue, handed to their hooks' workers every few seconds.
+    let retries = Arc::clone(shared);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(RETRY_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            retries.dispatcher.dispatch_retries();
+        }
+    });
     let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REPOS));
     let mut ticker = tokio::time::interval(shared.cfg.poll_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -295,6 +338,43 @@ async fn poll_loop(shared: &Arc<Shared>, repos: &Repos) -> ! {
 fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
     cfg.poll_interval
         .saturating_mul(u32::try_from(cfg.refresh_cycles).unwrap_or(u32::MAX))
+}
+
+/// The durable retry queue in the state dir.
+///
+/// * A state dir chosen explicitly (`--state-dir`, `state-dir`) that cannot be used is fatal:
+///   the operator asked for durability.
+/// * The default one (a read-only root, a volume the relay user cannot write) falls back to an
+///   in-memory queue, with a warning on every start and `"durable": false` on the health
+///   endpoint: webhooks are delivered and retried, but pending retries are lost on restart.
+/// * Another relay holding the queue is always fatal (two relays would deliver the same
+///   retries).
+fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
+    let not_durable = "the delivery queue is NOT durable: the default state dir cannot be used, \
+                       so failed deliveries are retried from memory only and lost when the \
+                       relay restarts. Give the relay a writable state dir it owns: \
+                       --state-dir, FORGE_RELAY_STATE_DIR, or a volume at /state in the \
+                       container images";
+    let Some(state_dir) = &cfg.state_dir else {
+        tracing::warn!(
+            error = "no FORGE_RELAY_STATE_DIR, XDG_STATE_HOME or HOME to derive it from",
+            "{not_durable}"
+        );
+        return Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()));
+    };
+    match RetryQueue::open(state_dir, cfg.retry_schedule.clone()) {
+        Ok(q) => Ok(q),
+        Err(e @ RelayError::StateLocked(_)) => Err(e),
+        Err(e) if cfg.state_dir_explicit => Err(RelayError::Config(format!(
+            "the delivery queue's state dir cannot be used: {e}. Fix it (a directory this user \
+             owns and can write), or leave --state-dir / state-dir unset to run with a \
+             non-durable queue"
+        ))),
+        Err(e) => {
+            tracing::warn!(state_dir = %state_dir.display(), error = %e, "{not_durable}");
+            Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()))
+        }
+    }
 }
 
 /// `owner/name` or a repo id → the forge-v2 repo.
@@ -429,7 +509,19 @@ impl Discovery {
             .cloned()
             .collect();
         subs.retain(|s| served.contains(&s.repo_id));
-        shared.dispatcher.sync(&subs);
+        // Where this pass knows the hooks for sure: the relay index was read (else this returned
+        // an error above), the repo's own hooks were read, and it is served, or has no hook at
+        // all. A repo that failed to read or to set up is not judged (its retries wait).
+        let queued_repos = shared.dispatcher.queued_repos();
+        let authoritative: std::collections::HashSet<String> = served
+            .iter()
+            .chain(queued_repos.iter())
+            .filter(|r| !failed.contains(*r))
+            .filter(|r| served.contains(*r) || !wanted.contains_key(*r))
+            .filter(|r| self.repo_filter.is_empty() || self.repo_filter.contains(*r))
+            .cloned()
+            .collect();
+        shared.dispatcher.sync(&subs, &authoritative);
         for (repo_id, slot) in repos.iter().chain(ready.iter().map(|(k, v)| (k, v))) {
             *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
         }
@@ -569,28 +661,33 @@ async fn prime_ref_streams(
 /// Resolve a repo's metadata, config history, issue/PR index, valid ref tips, and recently
 /// opened PR heads.
 async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result<RepoState> {
-    let repo = forge_core::resolve::resolve_id(&shared.client, repo_id).await?;
-    let RepoRef {
-        owner_id,
-        name,
-        visibility,
-        ..
-    } = &repo;
-    if *visibility == Visibility::Private {
+    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
+    let Some(repo_doc) = shared
+        .client
+        .fetch_document(core, forge_core::resolve::DOC_REPO, repo_id)
+        .await?
+    else {
+        return Err(RelayError::Config(format!(
+            "{repo_id}: no such forge-v2 repository"
+        )));
+    };
+    let owner_id = &repo_doc.owner_id;
+    let name = repo_doc
+        .field_str("name")
+        .ok_or_else(|| RelayError::Config(format!("repo {repo_id} has no name")))?;
+    if forge_core::scope::visibility_of(&repo_doc) == Visibility::Private {
         // A private repo's content is encrypted to its members; the relay is not one.
         return Err(RelayError::Config(format!(
             "{repo_id} is a private repository; the relay does not serve private repositories"
         )));
     }
-    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
     let config_docs = read_all(shared, core, "config", repo_id).await?;
     let configs: Vec<ConfigDoc> = config_docs.iter().map(config_doc).collect();
-    let repo_doc = shared.client.fetch_document(core, "repo", repo_id).await?;
     // The newest config's default branch, else the repo document's.
     let default_branch = config_docs
         .iter()
         .rev()
-        .chain(repo_doc.as_ref())
+        .chain(std::iter::once(&repo_doc))
         .find_map(|d| d.field_str("defaultBranch"))
         .map_or_else(
             || "main".to_string(),
@@ -1152,6 +1249,39 @@ fn prune_heads(heads: &mut BTreeMap<String, Head>, cursors: &mut BTreeMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unusable_default_state_dir_falls_back_to_memory_but_not_an_explicit_one() {
+        let base = std::env::temp_dir().join(format!("relay-openq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg_for = |dir: std::path::PathBuf| {
+            RelayConfig::load(
+                None,
+                &crate::config::CliOverrides {
+                    state_dir: Some(dir),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // Not a directory at all (as a read-only root or a foreign-owned volume would fail):
+        // fatal when chosen explicitly, a fallback to memory when it is the default.
+        let file = base.join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+        let mut cfg = cfg_for(file);
+        assert!(matches!(open_queue(&cfg), Err(RelayError::Config(_))));
+        cfg.state_dir_explicit = false;
+        let q = open_queue(&cfg).unwrap();
+        assert!(!q.is_durable(), "runs, in memory");
+        // A usable dir is durable; a second relay on it does not start.
+        let cfg = cfg_for(base.join("state"));
+        let held = open_queue(&cfg).unwrap();
+        assert!(held.is_durable());
+        assert!(matches!(open_queue(&cfg), Err(RelayError::StateLocked(_))));
+        drop(held);
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn a_repo_that_appears_late_never_replays_history_before_the_relay_started() {
