@@ -29,9 +29,10 @@ import {
   runMergeSteps,
   type MergeRun,
   type MergeStepId,
-  type UploadPack,
 } from '@/lib/merge/runner'
 import { mergeButton } from '@/lib/view/pull-actions'
+import { publishMergeIndex } from '@/lib/merge/locator'
+import { useMergeUpload } from '@/components/repo/merge-upload'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import type { DiffSides } from '@/lib/view'
 import { preferring } from '@/lib/view/pull-diff'
@@ -47,15 +48,6 @@ import { Oid } from '@/components/ui/oid'
 import { cn } from '@/lib/utils'
 
 type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
-
-/**
- * The storage upload for `repo`. Phase 2 wires `lib/storage` in here (the merger's storage
- * policy, or a priced Platform upload they confirm first); until then there is none, and the
- * upload step says the browser cannot upload yet.
- */
-function useMergeUpload(_repo: RepoRef): UploadPack | null {
-  return null
-}
 
 export function MergePanel({
   repo,
@@ -85,7 +77,7 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const upload = useMergeUpload(repo)
+  const { upload, dialog: uploadDialog, storageLabel, begin } = useMergeUpload(repo)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const reader = useMemo(() => (sides === null ? null : preferring(sides.head, sides.base)), [sides])
@@ -120,6 +112,7 @@ export function MergePanel({
   })
 
   const [steps, setSteps] = useState<Partial<Record<MergeStepId, StepState>>>({})
+  const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
   const [run, setRun] = useState<MergeRun>(EMPTY_RUN)
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
@@ -136,6 +129,8 @@ export function MergePanel({
     setBusy(true)
     setFailure(null)
     setStopped(null)
+    begin()
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}`
     try {
       const done = await runMergeSteps(
         {
@@ -147,10 +142,17 @@ export function MergePanel({
           input,
           merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
           upload,
-          intent: `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}`,
+          publishIndex: upload === null ? null : async (pack, packHash) => {
+            const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
+            return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+          },
+          intent,
         },
         run,
-        (e) => setSteps((s) => ({ ...s, [e.step]: e.state })),
+        (e) => {
+          setSteps((s) => ({ ...s, [e.step]: e.state }))
+          if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
+        },
       )
       setRun(done)
       setNewTip(done.result?.newTip ?? null)
@@ -166,7 +168,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, protectedPatterns, input, run, baseTipOid, onMerged, upload])
+  }, [sdk, signer, reader, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, protectedPatterns, input, run, baseTipOid, onMerged, upload, begin])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
@@ -219,7 +221,9 @@ export function MergePanel({
       {button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
           <CostPreview cost={cost} />
-          <span>plus the pack&apos;s storage (shown before upload)</span>
+          <span>
+            plus the pack&apos;s storage{storageLabel ? ` on ${storageLabel}` : ''}
+          </span>
         </div>
       ) : null}
 
@@ -231,7 +235,7 @@ export function MergePanel({
               <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
                 <StepIcon state={s} />
                 {label}
-                {s === 'skipped' ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">(nothing to store)</span> : null}
+                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
               </li>
             )
           })}
@@ -252,6 +256,7 @@ export function MergePanel({
           Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
         </p>
       ) : null}
+      {uploadDialog}
     </section>
   )
 }

@@ -1,7 +1,8 @@
 /**
  * The browser merge as a resumable chain of steps (`ux-dx-spec.md` §5.7):
  *
- *   fetch base + head → merge → build pack → upload → packManifest → ref update → merge event
+ *   fetch base + head → merge → build pack → upload → packManifest → browse index →
+ *   ref update → merge event
  *
  * Each step's result is kept in a {@link MergeRun} the caller holds, so a retry resumes at the
  * step that failed and pays for nothing twice, and a failure after the upload names exactly
@@ -11,6 +12,9 @@
  * ({@link UploadPack}), so the runner does not care where the pack goes. A merge that adds no
  * objects (a fast-forward of a same-repo PR: the head is in the base repo's packs already)
  * skips the upload and the manifest, as the push helper does for an empty pack.
+ *
+ * The browse index (a kind-1 locator fragment for the new pack) is best effort, as in the
+ * push helper: a failure there is reported and skipped, never a failed merge.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -21,7 +25,7 @@ import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
 import type { MergeResult } from './protocol'
 
-export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'ref' | 'event'
+export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event'
 
 export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: string }[] = [
   { id: 'fetch', label: 'Fetch base and head' },
@@ -29,6 +33,7 @@ export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: s
   { id: 'pack', label: 'Build pack' },
   { id: 'upload', label: 'Upload pack to storage' },
   { id: 'manifest', label: 'Record the pack (packManifest)' },
+  { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the base branch (ref update)' },
   { id: 'event', label: 'Record the merge (merge event)' },
 ]
@@ -41,8 +46,8 @@ export interface StoredPack {
 }
 
 /**
- * Store the merge pack (the user's storage policy, or Platform chunks when they agree).
- * Phase 2 plugs `lib/storage` in here; `null` means this build cannot upload from the browser.
+ * Store an artifact (the merge pack, then its index fragment) under the merger's storage
+ * policy, or on Platform once they agree to the price. `null`: nothing can be uploaded.
  */
 export type UploadPack = (bytes: Uint8Array, info: { readonly packHash: string; readonly objectCount: number }) => Promise<StoredPack>
 
@@ -68,6 +73,11 @@ export interface MergeRunDeps {
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>
   readonly upload: UploadPack | null
+  /**
+   * Publish the browse-index fragment for the recorded pack; resolves with a note for the step
+   * list (published at packRef n, or why it was skipped). Best effort: a throw is reported.
+   */
+  readonly publishIndex: ((pack: Uint8Array, packHash: string) => Promise<string>) | null
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
 }
@@ -100,6 +110,7 @@ const FAILED_PHRASES: Readonly<Record<MergeStepId, string>> = {
   pack: 'building the pack',
   upload: 'the upload',
   manifest: 'the pack manifest',
+  index: 'the browse index',
   ref: 'the ref update',
   event: 'the merge event',
 }
@@ -110,6 +121,7 @@ const RETRY_LABEL: Readonly<Record<MergeStepId, string>> = {
   pack: 'Retry',
   upload: 'Retry upload',
   manifest: 'Retry manifest',
+  index: 'Retry',
   ref: 'Retry ref update',
   event: 'Retry merge event',
 }
@@ -207,6 +219,20 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
         ),
       )
       mark('manifest', { manifestId: w.documentId })
+    }
+  }
+
+  if (!run.done.includes('index')) {
+    const publish = deps.publishIndex
+    if (empty || publish === null) {
+      mark('index', {}, 'skipped', empty ? 'nothing new to index' : 'not available')
+    } else {
+      onStep({ step: 'index', state: 'running' })
+      try {
+        mark('index', {}, 'done', await publish(result.pack, result.packHash))
+      } catch (e) {
+        mark('index', {}, 'skipped', `not published (${reasonOf(e)}); the repo browses by the in-browser clone until the next push`)
+      }
     }
   }
 

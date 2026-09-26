@@ -52,6 +52,11 @@ function deps(extra: Partial<MergeRunDeps> = {}): MergeRunDeps {
       if (fail.has('upload')) throw new Error('403 from r2')
       return { storage: 1, chunkCount: 0, uris: ['https://pub/p.pack'] }
     },
+    publishIndex: async (_p, h) => {
+      calls.push(`index:${h}`)
+      if (fail.has('index')) throw new Error('fragment upload 500')
+      return 'packRef 3'
+    },
     intent: 'merge:P:bb',
     ...extra,
   }
@@ -70,10 +75,11 @@ describe('merge step runner', () => {
       'worker',
       'upload:3:2',
       `manifest:${'dd'.repeat(32)}:1:https://pub/p.pack`,
+      `index:${'dd'.repeat(32)}`,
       `ref:refs/heads/main:${BASE}->${TIP}:refs/heads/main`,
       `event:merge:${TIP}`,
     ])
-    expect(run.done).toEqual(['fetch', 'merge', 'pack', 'upload', 'manifest', 'ref', 'event'])
+    expect(run.done).toEqual(['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref', 'event'])
     expect(events.filter((e) => e.state === 'done').map((e) => e.step)).toEqual(run.done)
   })
 
@@ -94,6 +100,14 @@ describe('merge step runner', () => {
     const run = await runMergeSteps(deps(), e.run, () => undefined)
     expect(calls).toEqual([`ref:refs/heads/main:${BASE}->${TIP}:refs/heads/main`, `event:merge:${TIP}`])
     expect(run.eventId).toBe('E1')
+  })
+
+  it('a failed browse index is reported and skipped, never a failed merge', async () => {
+    fail.add('index')
+    const events: StepEvent[] = []
+    const run = await runMergeSteps(deps(), EMPTY_RUN, (e) => events.push(e))
+    expect(run.eventId).toBe('E1')
+    expect(events.find((e) => e.step === 'index' && e.state === 'skipped')?.detail).toMatch(/fragment upload 500/)
   })
 
   it('says nothing was written when the upload fails', async () => {

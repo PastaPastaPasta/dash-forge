@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { E2E_DEVNET, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
@@ -189,4 +189,57 @@ test('c6. the owner approves; the fold, the palette and the merge button states'
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
   await shot(page, 'c-pr-mobile')
+})
+
+/**
+ * The live browser merge. `lib/merge/merge-seed.live.test.ts` seeds an OWNER repo whose `main`
+ * and `feature` diverge, with PR #1; set E2E_C_MERGE_SEED to the JSON it wrote. OWNER merges
+ * with a merge commit, stores the pack on Platform after the priced question, and the PR folds
+ * as merged; the new tip browses with both sides' edits.
+ */
+const SEED = process.env['E2E_C_MERGE_SEED'] ?? ''
+
+test('c7. the owner merges a divergent PR in the browser (merge commit, Platform storage)', async ({ browser }) => {
+  test.skip(SEED === '' || !existsSync(SEED), 'set E2E_C_MERGE_SEED (lib/merge/merge-seed.live.test.ts)')
+  const seed = JSON.parse(readFileSync(SEED, 'utf8')) as { owner: string; name: string; number: number }
+  const pr = `/repo/pull/?owner=${seed.owner}&name=${seed.name}&number=${seed.number}`
+
+  const page = await signedIn(browser, 'OWNER', '/settings/')
+  await page.getByLabel('Merge commit name').fill('Forge E2E Owner')
+  await page.getByLabel('Merge commit email').fill('owner@e2e.forge.invalid')
+  await page.goto(pr, { waitUntil: 'domcontentloaded' })
+  await unlock(page)
+  await waitForRepoResolved(page)
+
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 120_000 })
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'c-merge-commit-button')
+  await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
+
+  const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
+  await expect(ask).toBeVisible({ timeout: 120_000 })
+  await expect(ask.getByTestId('cost-preview')).toContainText('DASH')
+  await shot(page, 'c-merge-platform-question')
+  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+
+  const steps = page.getByRole('list', { name: 'Merge steps' })
+  await expect(steps.locator('[data-step="event"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
+  for (const s of ['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref']) {
+    await expect(steps.locator(`[data-step="${s}"]`)).toHaveAttribute('data-state', 'done')
+  }
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'c-merge-steps-done')
+
+  // "Merged" only once the fold reads the merge event and the new tip back.
+  await eventually(page, visible(page.getByText('Merged', { exact: true }).first()))
+  await shot(page, 'c-merged')
+  for (const [path, text] of [
+    ['a.txt', 'alpha, on main'],
+    ['b.txt', 'beta, from the feature branch'],
+  ] as const) {
+    await page.goto(`/repo/blob/?owner=${seed.owner}&name=${seed.name}&path=${path}`, { waitUntil: 'domcontentloaded' })
+    await unlock(page)
+    await waitForRepoResolved(page)
+    await eventually(page, visible(page.getByText(text).first()))
+  }
 })
