@@ -225,6 +225,10 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 # re-register forge-collab alone (new id) against the recorded forge-core and group:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --only collab --force-new [--dry-run]
+# re-register both (new forge-core, new group, new forge-collab) after a forge-core change the
+# update rules refuse:
+node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
+     --network devnet --devnet-name moutai --force-new [--dry-run]
 # would an in-place DataContractUpdate from the registered schema be accepted instead?
 git show <commit it was registered from>:forge-contracts/contracts/forge-collab.json > /tmp/registered-forge-collab.json
 cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml -- \
@@ -235,13 +239,15 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - forge-core's create transition registers the contract group (`dash-forge`) and enrols forge-core as a whole contract.
 - forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
 - Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy unless told to. Each record also carries `schemaHash`, the sha256 of the schema JSON (after placeholder substitution, compactly re-serialized) it was registered from; a rerun that finds a recorded contract whose hash differs from the current schema warns and leaves it as is. A dry run's forge-core step is not checked against a leftover record.
+- `--force-new` without `--only` supersedes the pair when the recorded forge-core was registered from a different schema: forge-core's record moves to `v2.forgeCoreSuperseded`, the group to `v2.contractGroupSuperseded`, forge-collab (whose schema names forge-core's id) to `v2.forgeCollabSuperseded`, and a new forge-core (registering a new group) and forge-collab are registered. A rerun after success registers nothing.
 - `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
-- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) on 2026-09-25 by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled:
-  - forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1)
-  - forge-collab `CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq` (nonce 4), the current schema (the `event`/`authorEvent` split of §3, with `authorEvent`'s feed index), registered with `--only collab --force-new`
-  - contract group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o` (`dash-forge`)
-  - superseded, still on chain and in the group, not read by clients:
+- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. Current pair, registered on 2026-09-26 with `--force-new` from the schemas carrying the private-repository changes of `docs/security/private-repos.md` §13 (`$createdAtBlockHeight` required on `config`, `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`, `issue`, `patch`, `comment`, `review`; forge-core `enc.maxItems` 1536). Adding a required field is refused on update, so this is a new pair and a new group; documents under the old pair stay there, unread, and the read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`):
+  - forge-core `GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL` (nonce 5)
+  - forge-collab `GCBfP3cMdxPNyAwEQC6ppfKCDEoNS9HHyF6aBrsK7fRr` (nonce 6)
+  - contract group `G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2` (`dash-forge`)
+  - superseded, still on chain, not read by clients:
+    - the 2026-09-25 pair: forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1) and forge-collab `CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq` (nonce 4) in group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o`, from the schemas before §13.
     - forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2), the first registration, whose `event` took all four operands. The split could not be an update: `--previous` reports `validate_update` refusing the removal of `event`'s `ownerRefersTo` operands (adding `authorEvent` alone would have been accepted).
     - forge-collab `6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W` (nonce 3), the split without `authorEvent`'s feed index. Adding an index is refused on update too ("we do not allow modifications of data contract index paths").
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).

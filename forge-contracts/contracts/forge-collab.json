@@ -177,6 +177,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "number"
       ],
@@ -332,6 +333,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "number",
         "baseRefNameHash",
@@ -456,6 +458,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "targetId"
       ],
@@ -531,6 +534,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "patchId",
         "verdict",

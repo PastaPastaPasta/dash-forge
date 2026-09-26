@@ -3,7 +3,7 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab [--force-new]]
+//        [--only collab] [--force-new]
 //
 // --only collab registers forge-collab alone, against the forge-core and contract group already
 // recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
@@ -14,6 +14,14 @@
 // it gets a new id. Rerunning the same command after it succeeded, or after a crash, therefore
 // registers nothing new. That is how a schema change the update rules refuse (e.g. narrowing an
 // ownerRefersTo) ships; documents under the old contract stay where they are, under its id.
+//
+// --force-new without --only does the same for the pair: when the recorded forge-core was
+// registered from a different schema (a change such as a new `required` system field, which the
+// update rules refuse), its record moves to v2.forgeCoreSuperseded, the recorded group to
+// v2.contractGroupSuperseded, and a new forge-core (registering a new contract group) and a new
+// forge-collab against it are registered. forge-collab's substituted schema names forge-core's
+// id, so a new forge-core always supersedes the recorded forge-collab too. Rerunning it after it
+// succeeded registers nothing new.
 //
 // Steps, each skipped when deployments/<network>.json shows it already done and the chain
 // confirms it (so a failed run is resumed by running the same command again):
@@ -166,7 +174,6 @@ async function main() {
   const only = args.only === undefined ? null : String(args.only);
   if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
   const forceNew = Boolean(args['force-new']);
-  if (forceNew && only !== 'collab') throw new Error('--force-new needs --only collab');
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
     : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
@@ -348,6 +355,34 @@ async function main() {
     return id;
   }
 
+  // --force-new for the pair: supersede a forge-core registered from another schema (and so the
+  // group it registered, and the forge-collab that names its id). Same rules as for collab below:
+  // only a completed registration from a different schema is superseded, so a rerun is a no-op.
+  if (forceNew && only === null && v2.forgeCore?.contractId) {
+    const old = v2.forgeCore;
+    const currentHash = schemaHash(loadSchema('forge-core'));
+    if (old.status === 'registered' && old.schemaHash === currentHash) {
+      log(`forgeCore: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
+    } else if (old.status === 'registered') {
+      if (dryRun) {
+        log(`forgeCore: --force-new would supersede ${old.contractId} (and its group and forge-collab) with new contracts`);
+      } else {
+        const at = new Date().toISOString();
+        v2.forgeCoreSuperseded = [...(v2.forgeCoreSuperseded ?? []), { ...old, supersededAt: at }];
+        if (v2.contractGroup) {
+          v2.contractGroupSuperseded = [...(v2.contractGroupSuperseded ?? []), { ...v2.contractGroup, supersededAt: at }];
+        }
+        delete v2.forgeCore;
+        delete v2.contractGroupId;
+        delete v2.contractGroup;
+        record();
+        log(`forgeCore: ${old.contractId} moved to forgeCoreSuperseded; registering a new forge-core and contract group`);
+      }
+    }
+  }
+  const coreRecordBeforeDryRun = dryRun && forceNew && only === null ? v2.forgeCore : undefined;
+  if (coreRecordBeforeDryRun) delete v2.forgeCore; // a dry run sizes the new one, records nothing
+
   // forge-core registers the group, so the group id is derived from forge-core's own nonce,
   // whichever nonce that turns out to be (fresh, reused, or recorded by an earlier run).
   let coreId;
@@ -407,6 +442,7 @@ async function main() {
     groupIdFor: () => groupIdFinal,
   });
   if (collabRecordBeforeDryRun) v2.forgeCollab = collabRecordBeforeDryRun;
+  if (coreRecordBeforeDryRun) v2.forgeCore = coreRecordBeforeDryRun;
 
   if (!dryRun) {
     const info = await sdk.contractGroups.info(groupIdFinal);

@@ -20,32 +20,6 @@
     "version": 1
   },
   "v2": {
-    "forgeCore": {
-      "contractId": "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L",
-      "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
-      "identityNonce": "1",
-      "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
-      "status": "registered",
-      "sizeBytes": 11924,
-      "balanceBefore": "4999868427280",
-      "deployedAt": "2026-09-25T06:38:01.259Z",
-      "costCredits": "60571079360",
-      "costDash": 0.6057107936,
-      "schemaHash": "1d1a167b0135c7413dade4c6139db5ecb3385d4acdc504cb6e2e2e8d62687b34"
-    },
-    "forgeCollab": {
-      "contractId": "CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq",
-      "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
-      "identityNonce": "4",
-      "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
-      "status": "registered",
-      "sizeBytes": 12149,
-      "schemaHash": "e4f69eacbc496390241d03aa452948b8f88beb306200d18afc0b0b177b61571b",
-      "balanceBefore": "4833234329110",
-      "deployedAt": "2026-09-25T08:19:34.823Z",
-      "costCredits": "55552297710",
-      "costDash": 0.5555229771
-    },
     "forgeCollabSuperseded": [
       {
         "contractId": "9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y",
@@ -75,15 +49,22 @@
         "costDash": 0.5454732369,
         "schemaHash": "00bced182390af6b28704ad52d3b618c83a2fc2de7836e69145cf9f4fa238649",
         "supersededAt": "2026-09-25T08:19:32.784Z"
+      },
+      {
+        "contractId": "CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq",
+        "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+        "identityNonce": "4",
+        "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
+        "status": "registered",
+        "sizeBytes": 12149,
+        "schemaHash": "e4f69eacbc496390241d03aa452948b8f88beb306200d18afc0b0b177b61571b",
+        "balanceBefore": "4833234329110",
+        "deployedAt": "2026-09-25T08:19:34.823Z",
+        "costCredits": "55552297710",
+        "costDash": 0.5555229771,
+        "supersededAt": "2026-09-26T17:56:59.082Z"
       }
     ],
-    "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
-    "contractGroup": {
-      "id": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
-      "name": "dash-forge",
-      "owner": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
-      "verifiedAt": "2026-09-25T08:19:50.934Z"
-    },
     "protocolVersion": 14,
     "sdk": "@dashevo/evo-sdk@4.2.0-beta.4",
     "devnet": {
@@ -100,6 +81,64 @@
         "https://68.67.122.199:1443",
         "https://68.67.122.84:1443"
       ]
+    },
+    "forgeCoreSuperseded": [
+      {
+        "contractId": "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L",
+        "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+        "identityNonce": "1",
+        "contractGroupId": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
+        "status": "registered",
+        "sizeBytes": 11924,
+        "balanceBefore": "4999868427280",
+        "deployedAt": "2026-09-25T06:38:01.259Z",
+        "costCredits": "60571079360",
+        "costDash": 0.6057107936,
+        "schemaHash": "1d1a167b0135c7413dade4c6139db5ecb3385d4acdc504cb6e2e2e8d62687b34",
+        "supersededAt": "2026-09-26T17:56:56.498Z"
+      }
+    ],
+    "contractGroupSuperseded": [
+      {
+        "id": "23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o",
+        "name": "dash-forge",
+        "owner": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+        "verifiedAt": "2026-09-25T08:19:50.934Z",
+        "supersededAt": "2026-09-26T17:56:56.498Z"
+      }
+    ],
+    "forgeCore": {
+      "contractId": "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL",
+      "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+      "identityNonce": "5",
+      "contractGroupId": "G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2",
+      "status": "registered",
+      "sizeBytes": 12039,
+      "schemaHash": "b317f788eb906546be39180347351776876df71879afd8990fa54fd62e35fcf0",
+      "balanceBefore": "4777628358754",
+      "deployedAt": "2026-09-26T17:56:59.080Z",
+      "costCredits": "60572562220",
+      "costDash": 0.6057256222
+    },
+    "forgeCollab": {
+      "contractId": "GCBfP3cMdxPNyAwEQC6ppfKCDEoNS9HHyF6aBrsK7fRr",
+      "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+      "identityNonce": "6",
+      "contractGroupId": "G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2",
+      "status": "registered",
+      "sizeBytes": 12241,
+      "schemaHash": "a4235d7372d93733f0cee8c7946f29db6dccc4defd22c0de66e2b3c7cfedd99e",
+      "balanceBefore": "4717055796534",
+      "deployedAt": "2026-09-26T17:57:01.341Z",
+      "costCredits": "55555374110",
+      "costDash": 0.5555537411
+    },
+    "contractGroupId": "G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2",
+    "contractGroup": {
+      "id": "G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2",
+      "name": "dash-forge",
+      "owner": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+      "verifiedAt": "2026-09-26T17:57:01.708Z"
     }
   }
 }

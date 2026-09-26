@@ -43,7 +43,7 @@
       "type": "array",
       "byteArray": true,
       "minItems": 28,
-      "maxItems": 1024
+      "maxItems": 1536
     }
   },
   "documentSchemas": {
@@ -399,6 +399,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "refNameHash",
         "newOid"
@@ -507,6 +508,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "refNameHash",
         "newOid"
@@ -608,6 +610,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId"
       ],
       "additionalProperties": false
@@ -761,6 +764,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "packHash",
         "kind",
@@ -1209,6 +1213,7 @@
       ],
       "required": [
         "$createdAt",
+        "$createdAtBlockHeight",
         "repoId",
         "memberId",
         "epoch",
