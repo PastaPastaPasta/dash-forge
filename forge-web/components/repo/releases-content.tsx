@@ -7,8 +7,8 @@
  * through SHA-256 and saved only on a match; a mismatch turns the row red and nothing is
  * saved.
  *
- * Creating a release (with asset upload) is added separately: the list header keeps a slot
- * for a maintainer's "New release" button.
+ * A maintainer publishes one from the header ({@link NewReleaseButton}): assets go to their own
+ * storage, hashed and verified, then one `release` document names them.
  */
 
 import { useState } from 'react'
@@ -25,6 +25,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { NewReleaseButton } from '@/components/repo/new-release'
 import { errorMessage, cn } from '@/lib/utils'
 
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -37,7 +38,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
           <CopyLinkButton repo={addr} target={{ kind: 'releases' }} />
-          {/* NewReleaseButton slot: a maintainer's "New release" (upload + createRelease). */}
+          <NewReleaseButton home={home} onPublished={reload} />
         </div>
       </div>
       {error ? (

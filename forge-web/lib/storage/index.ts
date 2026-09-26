@@ -21,6 +21,8 @@ export {
   fitManifestUris,
   orderUris,
   storeArtifact,
+  storeFile,
+  type StoredFile,
   type PlatformQuestion,
   type StoreOptions,
   type StoredArtifact,

@@ -119,7 +119,7 @@ export function StorageWizard(): JSX.Element {
 
       <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
 
-      <DefaultPolicy config={config} storable={storable} save={save} />
+      <DefaultPolicy key={config.profiles.map((p) => p.name).join(',')} config={config} storable={storable} save={save} />
 
       <CostCard />
     </div>

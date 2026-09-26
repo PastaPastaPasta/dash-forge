@@ -218,6 +218,60 @@ export function fitManifestUris(uris: readonly string[]): string[] {
   throw new Error("the confirmed copies' URIs do not fit a manifest (at most 8, each up to 300 bytes); use shorter public URLs or fewer targets")
 }
 
+/** A file stored on the user's own storage (a release asset). */
+export interface StoredFile {
+  readonly sha256: string
+  readonly sizeBytes: number
+  /** Public https URLs first, then `ipfs://` / `s3://`, at most `maxUris`. */
+  readonly uris: readonly string[]
+  readonly confirmed: readonly string[]
+  readonly failures: readonly TargetFailure[]
+}
+
+/**
+ * Store a file (a release asset) on the policy's EXTERNAL targets only, verified the same way
+ * as a pack (parity with `dg release create --asset`: assets never go to Platform chunks; a
+ * policy with no external target is refused before anything is uploaded).
+ */
+export async function storeFile(
+  bytes: Uint8Array,
+  opts: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[]; readonly onStep?: (e: UploadEvent) => void; readonly maxUris?: number },
+): Promise<StoredFile> {
+  const step = opts.onStep ?? (() => undefined)
+  const byName = new Map(opts.profiles.map((p) => [p.name, p]))
+  const external = (opts.policy?.targets ?? []).filter((t) => byName.get(t)?.settings.kind !== 'platform')
+  if (opts.policy === null || external.length === 0) {
+    throw new Error('Release assets are stored on your own storage (S3 or IPFS), and no such storage is chosen for this repo. Add one in Settings → Storage.')
+  }
+  const required = Math.min(opts.policy.replicas, external.length)
+  const hashHex = await sha256Hex(bytes)
+  const confirmed: { target: string; uris: string[] }[] = []
+  const failures: TargetFailure[] = []
+  await Promise.all(
+    external.map(async (name) => {
+      step({ target: name, phase: 'start' })
+      try {
+        const profile = byName.get(name)
+        if (!profile) throw new Error('no such storage profile in this browser')
+        const uris = await storeExternal(profile, bytes, hashHex)
+        confirmed.push({ target: name, uris })
+        step({ target: name, phase: 'done', uris })
+      } catch (e) {
+        failures.push({ target: name, reason: errText(e) })
+        step({ target: name, phase: 'failed', reason: errText(e) })
+      }
+    }),
+  )
+  if (confirmed.length < required) throw new ReplicationError(required, confirmed.map((c) => c.target), failures, false)
+  confirmed.sort((a, b) => external.indexOf(a.target) - external.indexOf(b.target))
+  let uris = orderUris(confirmed.map((c) => c.uris))
+  const max = opts.maxUris ?? 4
+  // Credential-less readers use the public copies: drop private s3:// first (as the CLI does).
+  if (uris.length > max) uris = uris.filter((u) => !u.startsWith('s3://'))
+  uris = fitManifestUris(uris.slice(0, max))
+  return { sha256: hashHex, sizeBytes: bytes.length, uris, confirmed: confirmed.map((c) => c.target), failures }
+}
+
 /** What {@link storeArtifact} needs besides the bytes. */
 export interface StoreOptions {
   readonly policy: StoragePolicy | null
