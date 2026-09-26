@@ -160,11 +160,6 @@ pub enum Command {
     /// Webhooks a relay delivers (forge-v2).
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
-    /// Import a repository from GitHub (thin wrapper over forge-import).
-    Import {
-        /// The GitHub repository URL.
-        url: String,
-    },
     /// Import (or re-sync) a GitHub repository into forge-v2: code, issues, PRs, releases.
     Import(Box<import::ImportArgs>),
     /// Copy a forge-v1 repository into forge-v2 (code, issues, PRs, members).
