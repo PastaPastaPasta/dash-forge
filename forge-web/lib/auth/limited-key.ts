@@ -21,6 +21,7 @@ import type { Network } from '../constants'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
+import { retryWhileMissing } from '../view/retry'
 
 /** Browser key defaults (spec §2.1). */
 export const BROWSER_KEY_DEFAULTS = { budgetDash: 0.05, days: 90 } as const
@@ -147,8 +148,11 @@ export async function verifyLimitedKey(
   wif?: string,
   request?: LimitedKeyRequest,
 ): Promise<KeyLimits> {
-  const identity = await authSdk(sdk).identities.fetch(identityId)
-  const k = identity?.publicKeys.find((x) => x.keyId === keyId)
+  // Called right after registering: a node a block behind does not show the key yet.
+  const k = await retryWhileMissing(async () => {
+    const identity = await authSdk(sdk).identities.fetch(identityId)
+    return identity?.publicKeys.find((x) => x.keyId === keyId) ?? null
+  }, 6)
   if (!k) throw new Error(`key ${keyId} is not on identity ${identityId}`)
   if (k.disabledAt !== undefined) throw new Error(`key ${keyId} is disabled`)
   if (k.purposeNumber !== 0 || k.securityLevelNumber !== 2) throw new Error(`key ${keyId} is not an AUTHENTICATION/HIGH key`)
