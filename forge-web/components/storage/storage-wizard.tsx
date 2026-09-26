@@ -63,7 +63,7 @@ export function StorageWizard(): JSX.Element {
   return (
     <div className="space-y-6">
       {!storable ? (
-        <p className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution">
+        <p className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution">
           This tab signs with a pasted key, which has no vault. Storage settings are kept encrypted with a stored key: sign in by importing your identity to save them.
         </p>
       ) : null}
@@ -268,7 +268,7 @@ function AddProfile({
           Save profile
         </Button>
         <Button variant="ghost" size="sm" onClick={onDone}>Cancel</Button>
-        <span id={statusId} role="status" aria-live="polite" className={cn('text-[12px]', blocking && draft ? 'text-caution' : 'text-anvil-500 dark:text-anvil-400')}>
+        <span id={statusId} role="status" aria-live="polite" className={cn('text-[12px]', blocking && draft ? 'text-caution-700 dark:text-caution' : 'text-anvil-500 dark:text-anvil-400')}>
           {status}
         </span>
       </div>
@@ -311,7 +311,7 @@ function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; s
                 <span className="font-mono font-medium text-anvil-900 dark:text-anvil-50">{p.name}</span>
                 <span className="text-anvil-500 dark:text-anvil-400">{where}</span>
                 {test ? (
-                  <span className={cn('text-[12px]', test.ok ? 'text-verify' : 'text-caution')}>
+                  <span className={cn('text-[12px]', test.ok ? 'text-verify-700 dark:text-verify' : 'text-caution-700 dark:text-caution')}>
                     {test.ok ? 'passed' : 'failed some checks'} · {formatDate(test.at)}
                   </span>
                 ) : p.settings.kind === 'platform' ? null : (
@@ -420,7 +420,7 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
         >
           Save default
         </Button>
-        <span role="status" aria-live="polite" className={cn('text-[12px]', saved ? 'text-verify' : 'text-caution')}>
+        <span role="status" aria-live="polite" className={cn('text-[12px]', saved ? 'text-verify-700 dark:text-verify' : 'text-caution-700 dark:text-caution')}>
           {saved ? 'Saved.' : problem && targets.length > 0 ? problem : ''}
         </span>
         {err ? <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{err}</span> : null}

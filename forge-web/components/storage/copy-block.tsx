@@ -26,7 +26,7 @@ export function CopyBlock({ text, label }: { text: string; label: string }): JSX
         aria-label={label}
         className="absolute right-2 top-2 rounded p-1 text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
       >
-        {copied ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <Copy className="h-4 w-4" aria-hidden />}
+        {copied ? <Check className="h-4 w-4 text-verify-700 dark:text-verify" aria-hidden /> : <Copy className="h-4 w-4" aria-hidden />}
       </button>
     </div>
   )
