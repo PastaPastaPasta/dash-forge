@@ -473,7 +473,7 @@ fn check_private_dir(dir: &Path) -> std::io::Result<()> {
             st.st_uid
         )));
     }
-    let mode = u32::from(st.st_mode) & 0o777;
+    let mode = rustix::fs::Mode::from_raw_mode(st.st_mode).bits() & 0o777;
     if mode != 0o700 {
         tracing::warn!(dir = %dir.display(), mode = format!("{mode:o}"), "tightening the delivery queue directory to mode 700");
         rustix::fs::fchmod(&fd, Mode::RWXU)?;

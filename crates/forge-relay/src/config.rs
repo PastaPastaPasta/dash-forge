@@ -109,8 +109,9 @@ pub struct RelayConfig {
     pub listen: Option<String>,
     /// Statically configured webhooks (plaintext secrets; local testing).
     pub static_webhooks: Vec<StaticWebhook>,
-    /// Where the durable delivery queue lives (`<state dir>/deliveries`).
-    pub state_dir: PathBuf,
+    /// Where the durable delivery queue lives (`<state dir>/deliveries`); `None` when no
+    /// default could be resolved (no `FORGE_RELAY_STATE_DIR`, `XDG_STATE_HOME` or `HOME`).
+    pub state_dir: Option<PathBuf>,
     /// Whether the state dir was chosen explicitly (`--state-dir` or `state-dir` in the
     /// config file): then a queue that cannot be durable is fatal, not a fallback to memory.
     pub state_dir_explicit: bool,
@@ -205,10 +206,11 @@ impl RelayConfig {
             listen: cli.listen.clone().or(file.listen),
             static_webhooks: file.webhook,
             state_dir_explicit: cli.state_dir.is_some() || file.state_dir.is_some(),
-            state_dir: match cli.state_dir.clone().or(file.state_dir) {
-                Some(d) => d,
-                None => crate::queue::default_state_dir()?,
-            },
+            state_dir: cli
+                .state_dir
+                .clone()
+                .or(file.state_dir)
+                .or_else(|| crate::queue::default_state_dir().ok()),
             retry_schedule: retry_schedule(file.retry_schedule_secs)?,
         })
     }

@@ -350,7 +350,19 @@ fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
 /// * Another relay holding the queue is always fatal (two relays would deliver the same
 ///   retries).
 fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
-    match RetryQueue::open(&cfg.state_dir, cfg.retry_schedule.clone()) {
+    let not_durable = "the delivery queue is NOT durable: the default state dir cannot be used, \
+                       so failed deliveries are retried from memory only and lost when the \
+                       relay restarts. Give the relay a writable state dir it owns: \
+                       --state-dir, FORGE_RELAY_STATE_DIR, or a volume at /state in the \
+                       container images";
+    let Some(state_dir) = &cfg.state_dir else {
+        tracing::warn!(
+            error = "no FORGE_RELAY_STATE_DIR, XDG_STATE_HOME or HOME to derive it from",
+            "{not_durable}"
+        );
+        return Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()));
+    };
+    match RetryQueue::open(state_dir, cfg.retry_schedule.clone()) {
         Ok(q) => Ok(q),
         Err(e @ RelayError::StateLocked(_)) => Err(e),
         Err(e) if cfg.state_dir_explicit => Err(RelayError::Config(format!(
@@ -359,14 +371,7 @@ fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
              non-durable queue"
         ))),
         Err(e) => {
-            tracing::warn!(
-                state_dir = %cfg.state_dir.display(),
-                error = %e,
-                "the delivery queue is NOT durable: the default state dir cannot be used, so \
-                 failed deliveries are retried from memory only and lost when the relay \
-                 restarts. Give the relay a writable state dir it owns: --state-dir, \
-                 FORGE_RELAY_STATE_DIR, or a volume at /state in the container images"
-            );
+            tracing::warn!(state_dir = %state_dir.display(), error = %e, "{not_durable}");
             Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()))
         }
     }
