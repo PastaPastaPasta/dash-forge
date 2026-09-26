@@ -3,7 +3,7 @@
 /** `/settings` — account settings: identity, network, balance, the local spend ledger, sign out. */
 
 import Link from 'next/link'
-import { LogOut, Wallet } from 'lucide-react'
+import { Wallet } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
@@ -13,11 +13,12 @@ import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
+import { KeysPanel } from '@/components/keys-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
 export default function SettingsPage(): JSX.Element {
-  const { identity, balance, logout } = useAuth()
+  const { identity, balance } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
@@ -70,15 +71,8 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-dense font-medium">Sign out</div>
-              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Wipes your signing key from the browser keystore on this device.</p>
-            </div>
-            <Button variant="danger" onClick={logout}>
-              <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
-            </Button>
-          </div>
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
+          <KeysPanel />
         </section>
 
         <p className="text-center text-[12px] text-anvil-400">

@@ -90,7 +90,7 @@ function AccountMenu({
 }: {
   identity: string
   balance: string | null
-  onLogout: () => void
+  onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -151,11 +151,11 @@ function AccountMenu({
             role="menuitem"
             onClick={() => {
               setOpen(false)
-              onLogout()
+              onLogout(false)
             }}
             className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger hover:bg-danger/5"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+            <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
           </button>
         </div>
       ) : null}

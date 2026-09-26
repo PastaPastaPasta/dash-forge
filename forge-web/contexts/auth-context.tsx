@@ -12,7 +12,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { AuthController, type AuthSession } from '../lib/auth'
+import { AuthController, type AuthSession, type LimitedKey, type LimitedKeyRequest, type Protection, type VaultInfo } from '../lib/auth'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
 import { evoSdkService, type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { recordSpend } from '../lib/spend'
@@ -61,10 +61,26 @@ interface AuthContextValue {
   readonly error: string | null
   /** The key-free write signer for the WriteEngine, or null when logged out. */
   readonly signer: WriteAuth | null
-  login: (identityId: string, privateKey: string) => Promise<void>
-  loginWithIdentityFile: (text: string) => Promise<void>
+  /** How this session's key is held: a vault-stored limited key, or a tab-only raw key. */
+  readonly storage: AuthSession['storage'] | null
+  /** Whether this network supports limited keys (forge-v2, protocol 14). */
+  readonly limitedKeys: boolean
+  /** Keys stored (encrypted) on this device for this network. */
+  readonly vaults: readonly VaultInfo[]
+  /** The limited-key ceremony: import an identity file or a mnemonic once. */
+  importIdentity: (
+    input: { fileText: string } | { mnemonic: string; identityId: string },
+    protection: Protection,
+    request?: LimitedKeyRequest,
+  ) => Promise<void>
+  adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
+  unlock: (identityId: string, method: { passphrase: string } | 'passkey') => Promise<void>
+  /** Advanced: a pasted key, for this tab only. */
+  loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
   refreshBalance: () => Promise<void>
-  logout: () => void
+  /** Lock (keep the stored key) or sign out and forget this browser's key. */
+  logout: (forget?: boolean) => void
+  reloadVaults: () => void
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -81,16 +97,35 @@ export function AuthProvider({
 
   useEffect(() => controller.subscribe(setState), [controller])
 
-  const login = useCallback(
-    async (identityId: string, privateKey: string) => {
-      await controller.login(identityId, privateKey)
+  const [vaults, setVaults] = useState<readonly VaultInfo[]>([])
+  const reloadVaults = useCallback(() => {
+    controller.storedVaults().then(setVaults, () => setVaults([]))
+  }, [controller])
+  useEffect(reloadVaults, [reloadVaults])
+
+  const importIdentity = useCallback<AuthContextValue['importIdentity']>(
+    async (input, protection, request) => {
+      await controller.importIdentity(input, protection, request)
+      reloadVaults()
+    },
+    [controller, reloadVaults],
+  )
+  const adoptLimitedKey = useCallback<AuthContextValue['adoptLimitedKey']>(
+    async (identityId, key, protection) => {
+      await controller.adoptLimitedKey(identityId, key, protection)
+      reloadVaults()
+    },
+    [controller, reloadVaults],
+  )
+  const unlock = useCallback<AuthContextValue['unlock']>(
+    async (identityId, method) => {
+      await controller.unlock(identityId, method)
     },
     [controller],
   )
-
-  const loginWithIdentityFile = useCallback(
-    async (text: string) => {
-      await controller.loginWithIdentityFile(text)
+  const loginWithRawKey = useCallback(
+    async (identityId: string, privateKey: string) => {
+      await controller.loginWithRawKey(identityId, privateKey)
     },
     [controller],
   )
@@ -99,9 +134,12 @@ export function AuthProvider({
     await controller.refreshBalance()
   }, [controller])
 
-  const logout = useCallback(() => {
-    controller.logout()
-  }, [controller])
+  const logout = useCallback(
+    (forget = false) => {
+      void controller.logout(forget).then(reloadVaults)
+    },
+    [controller, reloadVaults],
+  )
 
   const onSpend = useCallback(
     (event: SpendEvent) => {
@@ -138,12 +176,18 @@ export function AuthProvider({
       isLoading: state.isLoading,
       error: state.error,
       signer,
-      login,
-      loginWithIdentityFile,
+      storage: session?.storage ?? null,
+      limitedKeys: controller.supportsLimitedKeys(),
+      vaults,
+      importIdentity,
+      adoptLimitedKey,
+      unlock,
+      loginWithRawKey,
       refreshBalance,
       logout,
+      reloadVaults,
     }),
-    [funds, keyLimits, login, loginWithIdentityFile, logout, refreshBalance, session, signer, state.error, state.isLoading],
+    [adoptLimitedKey, controller, funds, importIdentity, keyLimits, loginWithRawKey, logout, refreshBalance, reloadVaults, session, signer, state.error, state.isLoading, unlock, vaults],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

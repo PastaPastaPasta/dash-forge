@@ -123,6 +123,55 @@ export function parseIdentityFile(json: unknown): ParsedIdentityFile {
   return { identityId, network, networkKey, signingKeyWif: best.wif, securityLevel: best.level }
 }
 
+/** What the import ceremony needs from an identity file: its id, network and master key. */
+export interface MasterMaterial {
+  readonly identityId: string
+  readonly networkKey: string | null
+  /** The identity's MASTER key (WIF), used once to register a limited key. */
+  readonly masterWif: string | null
+  /** The file's mnemonic, when it carries one (the master key can be derived from it). */
+  readonly mnemonic: string | null
+}
+
+/**
+ * Extract the master key (or a mnemonic to derive it) from a bridge-format identity file.
+ * Nothing else is kept: the other keys in the file are never used by the browser.
+ */
+export function masterMaterialFromFile(text: string): MasterMaterial {
+  let json: unknown
+  try {
+    json = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`identity file is not valid JSON: ${(e as Error).message}`)
+  }
+  if (json === null || typeof json !== 'object') throw new Error('identity file must be a JSON object')
+  const obj = json as Record<string, unknown>
+  const identityId = asString(obj['identityId']) ?? asString(obj['id'])
+  if (identityId === null) throw new Error('identity file is missing "identityId"')
+  const network = normalizeNetwork(obj['network'])
+  const networkKey = network === null ? null : (obj['network'] as string)
+  const rawKeys = obj['identityKeys'] ?? obj['keys']
+  let masterWif: string | null = null
+  if (Array.isArray(rawKeys)) {
+    for (const raw of rawKeys as RawKey[]) {
+      if (asString(raw.purpose)?.toUpperCase() !== 'AUTHENTICATION') continue
+      if (asString(raw.securityLevel)?.toUpperCase() !== 'MASTER') continue
+      const keyType = asString(raw.keyType)
+      if (keyType !== null && !WIF_SIGNABLE_KEY_TYPES.has(keyType.toUpperCase())) continue
+      const wif = asString(raw.privateKeyWif) ?? asString(raw.privateKey)
+      if (wif !== null && isLikelyWif(wif)) {
+        masterWif = wif
+        break
+      }
+    }
+  }
+  const mnemonic = asString(obj['mnemonic'])
+  if (masterWif === null && mnemonic === null) {
+    throw new Error('identity file has neither a MASTER authentication key nor a mnemonic')
+  }
+  return { identityId, networkKey, masterWif, mnemonic }
+}
+
 /** Parse identity-file text (JSON string) with a friendly error on malformed JSON. */
 export function parseIdentityFileText(text: string): ParsedIdentityFile {
   let json: unknown

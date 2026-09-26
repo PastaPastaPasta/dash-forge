@@ -1,14 +1,19 @@
 /**
- * AuthController — the headless identity session for forge-web.
+ * AuthController — the headless identity session for forge-web (`ux-dx-spec.md` §2).
  *
- * Login imports a bridge-format identity file OR a pasted WIF + identity id, stores the signing
- * key in the network-scoped keystore (never in this object's observable state), verifies the key
- * against the on-chain identity, and exposes an observable `{ identity, balance }` snapshot plus a
- * {@link WriteAuth} the WriteEngine consumes. Password-vault / passkey wrapping of the stored key
- * is the documented follow-up; M3 is direct key login.
+ * A session is an identity plus the key this browser signs with. The key is one of:
+ *   - a PV14 **limited key** (the normal case): registered by importing an identity file or
+ *     mnemonic (the master key signs one IdentityUpdate and is dropped), created with a new
+ *     identity, or granted by a wallet through App Connect. It lives encrypted in the
+ *     {@link ./vault} and, unlocked, only in that module's memory;
+ *   - an **advanced raw key** pasted by a developer: held for this tab only (never stored),
+ *     with a warning in the UI.
  *
- * The controller never places a private key in its state or in any log line: the WIF lives only
- * in the keystore, and `getSigningKeyWif()` reads it on demand at signing time.
+ * The controller's observable state never carries key material. `writeAuth.getSigningKeyWif()`
+ * reads the unlocked key at signing time and throws once the vault is locked.
+ *
+ * Earlier builds stored WIFs in plain `localStorage` (`forge_key_*`); on construction every
+ * such entry is deleted.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -19,18 +24,22 @@ import { errorMessage } from '../utils'
 import { WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
+import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
+import { deriveMasterKey, isValidMnemonic } from './hd'
+import { readKeyLimits, registerLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 import {
-  identityFileMatchesNetwork,
-  parseIdentityFileText,
-  type ParsedIdentityFile,
-} from './identity-file'
-import {
-  clearPrivateKey,
-  getPrivateKey,
-  hasPrivateKey,
-  storePrivateKey,
-  storedIdentityIds,
-} from './keystore'
+  forgetVault,
+  holdForSession,
+  listVaults,
+  lockVault,
+  storeInVault,
+  unlockWithPasskey,
+  unlockWithPassphrase,
+  unlockedSecret,
+  type Protection,
+  type VaultInfo,
+  type VaultSecret,
+} from './vault'
 
 /** The public (key-free) session snapshot. */
 export interface AuthSession {
@@ -40,6 +49,10 @@ export interface AuthSession {
   readonly network: Network
   /** The signing key's budget and expiry, when it is a PV14 limited key. */
   readonly keyLimits?: KeyLimits | null
+  /** The signing key's id on the identity. */
+  readonly keyId?: number
+  /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
+  readonly storage: 'vault' | 'session'
 }
 
 /** Observable controller state. Never carries private-key material. */
@@ -49,26 +62,26 @@ export interface AuthState {
   readonly error: string | null
 }
 
-interface IdentitiesFetchFacade {
-  fetch(identityId: string): Promise<
-    | {
-        readonly publicKeys: {
-          keyId: number
-          purposeNumber: number
-          securityLevelNumber: number
-          validatePrivateKey(bytes: Uint8Array, network: string): boolean
-        }[]
-        readonly balance: bigint
-        getPublicKeyById(keyId: number): unknown
-      }
-    | undefined
-  >
-}
-
 type Listener = (state: AuthState) => void
 
 /** How the SDK is obtained — injected so the controller stays testable and SSR-safe. */
 export type SdkProvider = () => Promise<EvoSDK>
+
+/** Delete keys an earlier build left in plain localStorage. */
+export function purgeLegacyKeystore(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const s = window.localStorage
+    const doomed: string[] = []
+    for (let i = 0; i < s.length; i++) {
+      const k = s.key(i)
+      if (k?.startsWith('forge_key_')) doomed.push(k)
+    }
+    for (const k of doomed) s.removeItem(k)
+  } catch {
+    /* storage disabled */
+  }
+}
 
 export class AuthController {
   private state: AuthState = { session: null, isLoading: false, error: null }
@@ -77,14 +90,14 @@ export class AuthController {
   constructor(
     private readonly getSdk: SdkProvider,
     private readonly network: Network = DEFAULT_NETWORK,
-  ) {}
+  ) {
+    purgeLegacyKeystore()
+  }
 
-  /** Current state snapshot. */
   getState(): AuthState {
     return this.state
   }
 
-  /** Subscribe to state changes; returns an unsubscribe fn. */
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener)
     return () => {
@@ -97,10 +110,21 @@ export class AuthController {
     for (const l of this.listeners) l(this.state)
   }
 
+  /** The dash-forge contract group this network's keys are bound to. */
+  private group(): string {
+    const v2 = NETWORKS[this.network].v2
+    if (!v2) throw new Error(`forge-v2 is not deployed on ${NETWORKS[this.network].key}: limited keys need its contract group`)
+    return v2.group
+  }
+
+  /** Whether this network supports limited keys (protocol 14 + a forge-v2 group). */
+  supportsLimitedKeys(): boolean {
+    return NETWORKS[this.network].v2 !== null
+  }
+
   /**
-   * A {@link WriteAuth} bound to the current session. The WriteEngine calls
-   * `getSigningKeyWif()` at signing time, which reads the keystore — throwing a
-   * {@link WriteAuthError} (never returning null) if the key is absent.
+   * A {@link WriteAuth} bound to the current session. `getSigningKeyWif()` reads the unlocked
+   * key at signing time, throwing a {@link WriteAuthError} when the vault has locked.
    */
   get writeAuth(): WriteAuth | null {
     const session = this.state.session
@@ -111,99 +135,159 @@ export class AuthController {
       identityId,
       network,
       getSigningKeyWif(): string {
-        const wif = getPrivateKey(network, identityId)
-        if (!wif) {
-          throw new WriteAuthError(
-            `no stored signing key for ${identityId} on ${network} — please log in again`,
-          )
-        }
-        return wif
+        const secret = unlockedSecret(network, identityId)
+        if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
+        return secret.wif
       },
     }
   }
 
-  /** Whether a signing key is stored for the given identity on this network. */
-  hasStoredKey(identityId: string): boolean {
-    return hasPrivateKey(this.network, identityId)
+  /** Vaults stored on this device for this network (for the unlock chooser). */
+  storedVaults(): Promise<VaultInfo[]> {
+    return listVaults(this.network)
   }
 
-  /** Identity ids with a stored key on this network (for a "resume session" chooser). */
-  storedIdentities(): string[] {
-    return storedIdentityIds(this.network)
+  private async run<T>(fn: () => Promise<T>): Promise<T> {
+    this.setState({ isLoading: true, error: null })
+    try {
+      const v = await fn()
+      this.setState({ isLoading: false })
+      return v
+    } catch (e) {
+      this.setState({ isLoading: false, error: errorMessage(e) })
+      throw e
+    }
+  }
+
+  /** Open a session for an unlocked secret: re-verify the key on chain, load balance + limits. */
+  private async open(secret: VaultSecret, storage: AuthSession['storage']): Promise<AuthSession> {
+    const sdk = await this.getSdk()
+    const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<Parameters<typeof findSigningKey>[0] | undefined> } }).identities.fetch(secret.identityId)
+    if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
+    const match = await findSigningKey(identity, secret.wif, this.network, 3)
+    if (!match) throw new WriteAuthError('this key is no longer usable on the identity (disabled or expired) — sign in again')
+    const [balance, keyLimits] = await Promise.all([
+      readIdentityBalance(sdk, secret.identityId),
+      readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null),
+    ])
+    const session: AuthSession = {
+      identityId: secret.identityId,
+      balance: balance.toString(),
+      network: this.network,
+      keyLimits,
+      keyId: match.keyId,
+      storage,
+    }
+    this.setState({ session })
+    return session
+  }
+
+  /** Store a freshly registered limited key in the vault and open its session. */
+  private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
+    const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
+    await storeInVault(this.network, secret, protection)
+    return this.open(secret, 'vault')
   }
 
   /**
-   * Log in with an identity id + a private key (WIF or hex). The key is normalized to a
-   * network WIF, verified against the on-chain identity's AUTHENTICATION keys, stored, and the
-   * balance loaded. Rejects a key that does not control any usable key on the identity.
+   * Import an identity file or mnemonic once: its master key signs one IdentityUpdate that
+   * registers a limited key for this browser, and is then dropped. Only the limited key is
+   * kept, encrypted under `protection`.
    */
-  async login(identityId: string, privateKey: string): Promise<AuthSession> {
-    this.setState({ isLoading: true, error: null })
-    try {
+  async importIdentity(
+    input: { fileText: string } | { mnemonic: string; identityId: string },
+    protection: Protection,
+    request?: LimitedKeyRequest,
+  ): Promise<AuthSession> {
+    return this.run(async () => {
+      let identityId: string
+      let masterWif: string | null
+      if ('fileText' in input) {
+        const m = masterMaterialFromFile(input.fileText)
+        const buildKey = NETWORKS[this.network].key
+        if (!identityFileMatchesNetwork(m.networkKey, buildKey)) {
+          throw new Error(`identity file is for ${m.networkKey}, but this app is on ${buildKey}`)
+        }
+        identityId = m.identityId
+        masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
+      } else {
+        if (!(await isValidMnemonic(input.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+        identityId = input.identityId.trim()
+        masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
+      }
+      if (!masterWif) throw new Error('no master key found')
+      const sdk = await this.getSdk()
+      const key = await registerLimitedKey(sdk, {
+        network: this.network,
+        identityId,
+        masterWif,
+        group: this.group(),
+        ...(request ? { request } : {}),
+      })
+      masterWif = null
+      return this.adopt(identityId, key, protection)
+    })
+  }
+
+  /** Adopt a limited key obtained elsewhere (identity creation, App Connect). */
+  async adoptLimitedKey(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
+    return this.run(() => this.adopt(identityId, key, protection))
+  }
+
+  /** Unlock a stored vault and open its session. */
+  async unlock(identityId: string, method: { passphrase: string } | 'passkey'): Promise<AuthSession> {
+    return this.run(async () => {
+      const secret =
+        method === 'passkey'
+          ? await unlockWithPasskey(this.network, identityId)
+          : await unlockWithPassphrase(this.network, identityId, method.passphrase)
+      return this.open(secret, 'vault')
+    })
+  }
+
+  /**
+   * Advanced: sign with a pasted private key for this tab only (never stored). The key must
+   * control a HIGH or CRITICAL authentication key of the identity; MASTER keys are refused.
+   */
+  async loginWithRawKey(identityId: string, privateKey: string): Promise<AuthSession> {
+    return this.run(async () => {
       const wif = normalizeToWif(privateKey, this.network)
       const sdk = await this.getSdk()
-      const identity = await (sdk as unknown as { identities: IdentitiesFetchFacade }).identities.fetch(
-        identityId,
-      )
-      if (!identity) {
-        throw new WriteAuthError(`identity ${identityId} not found on ${this.network}`)
-      }
-      // Require the WIF to control at least one usable (CRITICAL/HIGH) AUTHENTICATION key.
+      const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<Parameters<typeof findSigningKey>[0] | undefined> } }).identities.fetch(identityId.trim())
+      if (!identity) throw new WriteAuthError(`identity ${identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, wif, this.network, 3)
-      if (!match) {
-        throw new WriteAuthError(
-          'the provided key does not match any usable AUTHENTICATION key on this identity',
-        )
-      }
-      storePrivateKey(this.network, identityId, wif)
-      const balance = await readIdentityBalance(sdk, identityId)
-      const session: AuthSession = {
-        identityId,
-        balance: balance.toString(),
-        network: this.network,
-      }
-      this.setState({ session, isLoading: false, error: null })
-      return session
-    } catch (e) {
-      const message = errorMessage(e)
-      this.setState({ isLoading: false, error: message })
-      throw e
-    }
+      if (!match) throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
+      const secret: VaultSecret = { identityId: identityId.trim(), keyId: match.keyId, wif }
+      holdForSession(this.network, secret)
+      return this.open(secret, 'session')
+    })
   }
 
-  /** Log in from bridge-format identity-file text (JSON). Extracts id + signing key, then logs in. */
-  async loginWithIdentityFile(text: string): Promise<AuthSession> {
-    let parsed: ParsedIdentityFile
-    try {
-      parsed = parseIdentityFileText(text)
-    } catch (e) {
-      const message = errorMessage(e)
-      this.setState({ error: message })
-      throw e
-    }
-    // Compare full keys so a devnet-paloma identity is refused by a devnet-moutai build.
-    const buildKey = NETWORKS[this.network].key
-    if (!identityFileMatchesNetwork(parsed.networkKey, buildKey)) {
-      const message = `identity file is for ${parsed.networkKey}, but this app is on ${buildKey}`
-      this.setState({ error: message })
-      throw new Error(message)
-    }
-    return this.login(parsed.identityId, parsed.signingKeyWif)
-  }
-
-  /** Refresh the current session's credit balance. */
+  /** Refresh the balance and the key's remaining budget. */
   async refreshBalance(): Promise<void> {
     const session = this.state.session
     if (!session) return
     const sdk = await this.getSdk()
-    const balance = await readIdentityBalance(sdk, session.identityId)
-    this.setState({ session: { ...session, balance: balance.toString() } })
+    const [balance, keyLimits] = await Promise.all([
+      readIdentityBalance(sdk, session.identityId),
+      session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
+    ])
+    const current = this.state.session
+    if (current?.identityId !== session.identityId) return
+    this.setState({ session: { ...current, balance: balance.toString(), keyLimits } })
   }
 
-  /** Log out: forget the session and wipe the stored signing key for this identity. */
-  logout(): void {
+  /** Lock: forget the unlocked key (the stored vault stays; unlock to continue). */
+  lock(): void {
+    lockVault()
+    this.setState({ session: null, error: null })
+  }
+
+  /** Sign out and forget this browser's key entirely. */
+  async logout(forget = false): Promise<void> {
     const session = this.state.session
-    if (session) clearPrivateKey(this.network, session.identityId)
+    lockVault()
+    if (forget && session) await forgetVault(this.network, session.identityId)
     this.setState({ session: null, error: null })
   }
 }
