@@ -461,6 +461,7 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         ref_name_hash: d.field_hex("refNameHash"),
         base_ref_name_hash: d.field_hex("baseRefNameHash"),
         source_ref_name_hash: d.field_hex("sourceRefNameHash"),
+        path: d.field_str("path"),
         default_branch: None,
         protected_patterns: None,
         enc: d.field_hex("enc").filter(|h| !h.is_empty()),

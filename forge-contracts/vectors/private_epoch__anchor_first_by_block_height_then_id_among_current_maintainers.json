@@ -1,0 +1,135 @@
+{
+  "name": "anchor_first_by_block_height_then_id_among_current_maintainers",
+  "description": "at equal block heights the smaller $id is the anchor; a writer's config never is; the loser's wrap is a KeyMismatch naming the loser.",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "47fa0b45470bdaa44476a7aaf09ced901ee374bf58229ae84a4700129e2ebb1c",
+        "owner": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        "epoch": 1,
+        "createdAtBlockHeight": 900,
+        "createdAt": 900000,
+        "enc": "02761a02e7771e9677b7366d4366fe7aed70650c50d784fb40d7772a98e5140915000102030405060708090a0b34cb0a3f59f8b1baaa738c9b78966d7595d8bcd16987c8c6079705bdcb1103adf0f4754511cb7ce4ad5a48455be58e36816fce5a6d1e338fa50f"
+      },
+      {
+        "id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4937e9722cc8a130d9d5bb176679b47d6"
+      },
+      {
+        "id": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "0264b54197f9563fa637b1b520041479cbd48eebdd390e6e2e6b4f91ad40640fd4000102030405060708090a0b61a7a4f7210961a6fc25784cac3443fa3bd94e1f61613dc7b025a41f06c1dcacb27b714fdb45e6b3806b7ed6f35710cc9089c9d28d59792064e1"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "25c096e6e15a1071b9496163844ff62e95516c508d3f457793397599b51e832a",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      {
+        "id": "86832ac62288f7fce6152729e258ddfe8041dab41c271c171dd2be6711b9f388",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "4be327b28ae6dd14552751d3262496e924a707a2d02fe80337b66bf74d7d24ac",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "memberId": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "824b7ca9dbc80e3000938b4ca65256545087f7ae64e731dcfda53933607d5810",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "memberId": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 1,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+    },
+    "readable": [
+      0,
+      1
+    ],
+    "writeEpoch": 1,
+    "unanchored": [],
+    "alerts": [
+      {
+        "kind": "keyMismatch",
+        "epoch": 1,
+        "author": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      }
+    ],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}

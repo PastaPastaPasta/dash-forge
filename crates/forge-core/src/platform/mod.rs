@@ -128,6 +128,8 @@ const DAPI_RETRIES: usize = 6;
 
 pub use crate::network::{Network, NetworkTarget, Registry};
 
+pub mod wrap;
+
 /// The `dashcore` network the SDK and its context provider use for `network`.
 fn to_dashcore(network: &Network) -> DashcoreNetwork {
     match network {

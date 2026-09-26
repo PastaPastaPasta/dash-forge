@@ -412,6 +412,8 @@ export interface ContentDoc {
   readonly defaultBranch?: string | null
   /** `config.protectedPatterns`. */
   readonly protectedPatterns?: readonly string[] | null
+  /** `comment.path` (an inline review comment's file); a content field (private-repos.md §8.1). */
+  readonly path?: string | null
   /** `enc`, hex. */
   readonly enc?: string | null
   readonly epoch?: number | null
@@ -431,7 +433,7 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
     case 'patch':
       return [doc.title, [doc.title, doc.body, doc.baseRefName, doc.sourceRefName]]
     case 'comment':
-      return [doc.body, [doc.body]]
+      return [doc.body, [doc.body, doc.path]]
     case 'review':
       return [null, [doc.body]]
     case 'refUpdate':

@@ -1,0 +1,19 @@
+{
+  "name": "split_view_key_epoch1",
+  "description": "HKDF-SHA256 subkeys of the epoch key for epoch 1 (§2.2).",
+  "case": "private_kdf",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "7777777777777777777777777777777777777777777777777777777777777777",
+    "epoch": 1
+  },
+  "expected": {
+    "prk": "3b4ba63103e5e4870c43c8c6a61491c01d8a74e6bbda84df2a61dbdde6652951",
+    "doc": "8efc320af98f8dd5ad4b41652834e15ec2d9830c06ac5078e0b02a229d449fd1",
+    "ref": "099af74b33767181eda29c497ac534fc12d5ddcb81285bbbbfbeddc61dac74e4",
+    "kcv": "ab390e38b7a796a9c493dcd32880",
+    "commit": "89f8dd4eb6cb38196f7958b1b644b4f761f82979c8d965aa291f3a2820ca7775",
+    "hedge": "937414fc7bd217a02752f42828119e70ced2c3d30505e979743f6dbdf91a5834"
+  }
+}

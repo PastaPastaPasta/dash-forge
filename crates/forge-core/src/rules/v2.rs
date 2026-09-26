@@ -621,7 +621,8 @@ pub enum ContentKind {
     /// `patch`: plaintext `title` (required), `body`, `baseRefName`, `sourceRefName`; the two
     /// names are bound to the indexed `baseRefNameHash` / `sourceRefNameHash`.
     Patch,
-    /// `comment`: plaintext `body` (required).
+    /// `comment`: plaintext `body` (required) and `path` (an inline comment's file, a content
+    /// field so it is encrypted in a private repo: `docs/security/private-repos.md` §8.1).
     Comment,
     /// `review`: plaintext `body` (optional: a review's content is its verdict and
     /// `commitOid`, which are never encrypted).
@@ -664,6 +665,9 @@ pub struct ContentDoc {
     /// `sourceRefNameHash` (patches), hex.
     #[serde(default)]
     pub source_ref_name_hash: Option<String>,
+    /// `path` (inline comments).
+    #[serde(default)]
+    pub path: Option<String>,
     /// `defaultBranch` (config).
     #[serde(default)]
     pub default_branch: Option<String>,
@@ -707,7 +711,10 @@ impl ContentDoc {
                     self.source_ref_name.as_ref(),
                 ]),
             ),
-            ContentKind::Comment => (Some(self.body.as_ref()), present(self.body.as_ref())),
+            ContentKind::Comment => (
+                Some(self.body.as_ref()),
+                any(&[self.body.as_ref(), self.path.as_ref()]),
+            ),
             ContentKind::Review => (None, present(self.body.as_ref())),
             ContentKind::RefUpdate => (
                 Some(self.ref_name.as_ref()),

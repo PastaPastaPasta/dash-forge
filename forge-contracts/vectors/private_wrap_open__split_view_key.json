@@ -1,0 +1,17 @@
+{
+  "name": "split_view_key",
+  "description": "a wrap of K_x (commit 89f8dd…7775) against the K_1 anchor: KeyMismatch.",
+  "case": "private_wrap_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 1,
+    "wrapped": "0f0e0d0c0b0a09080706050403020100e3ec51a605d18d48724cc10c9a9a216a0004fbc8ef73281a60c49ae647e2da29cd572bafbdc3094d847d6312466d37d0",
+    "readerPriv": "f16baad1b1863c015869f5a6a2db471537d06a31d3bd78d961300f13f6b14239",
+    "counterpartyPub": "03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948",
+    "anchorCommit": "307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33"
+  },
+  "expected": {
+    "error": "keyMismatch"
+  }
+}

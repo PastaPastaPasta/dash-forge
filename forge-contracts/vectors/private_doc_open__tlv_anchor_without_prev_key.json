@@ -1,0 +1,37 @@
+{
+  "name": "tlv_anchor_without_prev_key",
+  "description": "an epoch-1 anchor without prevEpochKey is malformed.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "config",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d656625c241c4e91cea1af062eac8148fc",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

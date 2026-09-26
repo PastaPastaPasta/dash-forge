@@ -1,0 +1,17 @@
+{
+  "name": "wrong_epoch",
+  "description": "K_0 wrapped for epoch 0, read as epoch 1: the KCV is per epoch, WrapUnreadable.",
+  "case": "private_wrap_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 1,
+    "wrapped": "0f0e0d0c0b0a09080706050403020100828afa35dca4dbd8eb40591d52f363f10671f7b77f5f619a25ee6d03fb88043c7fa0037e5c0d83ea667f9ba7289a82cc",
+    "readerPriv": "f16baad1b1863c015869f5a6a2db471537d06a31d3bd78d961300f13f6b14239",
+    "counterpartyPub": "03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948",
+    "anchorCommit": "307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33"
+  },
+  "expected": {
+    "error": "wrapUnreadable"
+  }
+}

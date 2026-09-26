@@ -18,6 +18,46 @@
       "varsIgnorePattern": "^_"
     }]
   },
+  "overrides": [
+    {
+      "files": ["**/*.ts", "**/*.tsx"],
+      "excludedFiles": ["**/*.test.ts", "**/*.test.tsx", "lib/private/testing.ts"],
+      "rules": {
+        "no-restricted-imports": ["error", {
+          "patterns": [
+            {
+              "group": ["**/private/testing", "**/private/testing.*"],
+              "message": "lib/private/testing holds the deterministic (fixed nonce/fileId) seals for the conformance vectors: tests only (private-repos.md §3.6)."
+            },
+            {
+              "group": ["**/private/doc", "**/private/pack", "**/private/doc.*", "**/private/pack.*"],
+              "importNamePattern": "^__unsafe",
+              "message": "__unsafe* seals take a caller-chosen nonce/fileId; only lib/private/testing.ts may import them."
+            }
+          ]
+        }]
+      }
+    },
+    {
+      "files": ["lib/private/**/*.ts"],
+      "excludedFiles": ["**/*.test.ts", "lib/private/testing.ts"],
+      "rules": {
+        "no-restricted-imports": ["error", {
+          "patterns": [
+            {
+              "group": ["./testing", "./testing.*", "**/private/testing", "**/private/testing.*"],
+              "message": "lib/private/testing holds the deterministic (fixed nonce/fileId) seals for the conformance vectors: tests only (private-repos.md §3.6)."
+            },
+            {
+              "group": ["./doc", "./pack", "./doc.*", "./pack.*", "**/private/doc", "**/private/pack"],
+              "importNamePattern": "^__unsafe",
+              "message": "__unsafe* seals take a caller-chosen nonce/fileId; only lib/private/testing.ts may import them."
+            }
+          ]
+        }]
+      }
+    }
+  ],
   "ignorePatterns": [
     "node_modules/",
     ".next/",

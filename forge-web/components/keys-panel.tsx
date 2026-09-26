@@ -2,13 +2,14 @@
 
 /**
  * Settings → This browser's key (`ux-dx-spec.md` §2.3): which key signs here, what is left of
- * its budget, when it expires, and how to renew it. Renewal registers a fresh limited key (it
- * needs the master key once: import the identity file or phrase again); raising an existing
- * key's limits (`IdentityKeyLimitsUpdate`) is P1. Also: lock now, and sign out + forget.
+ * its budget, when it expires, and how to extend it. **Top up** raises this key's budget and
+ * expiry in place (`IdentityKeyLimitsUpdate`; same key). **Renew** registers a fresh limited key
+ * and disables this one. Both need the master key once (identity file or phrase), which is not
+ * stored. Also: lock now, and sign out + forget.
  */
 
 import { useRef, useState } from 'react'
-import { Lock, LogOut, RefreshCw, ShieldOff } from 'lucide-react'
+import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff } from 'lucide-react'
 import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -16,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { INSIGHT_OVERRIDE_KEY } from '@/lib/auth/asset-lock'
+import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM =
@@ -39,6 +41,9 @@ export function KeysPanel(): JSX.Element {
     typeof window === 'undefined' ? '' : window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) ?? '',
   )
   const low = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
+  const [topUpOpen, setTopUpOpen] = useState(false)
+  // Only a stored Forge browser key (a budget on a group-bound key) can be topped up here.
+  const canTopUp = storage === 'vault' && keyLimits?.total != null
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
@@ -61,9 +66,14 @@ export function KeysPanel(): JSX.Element {
         <p className="text-anvil-500 dark:text-anvil-400">This key has no budget or expiry.</p>
       )}
       {low ? (
-        <p className="text-caution">This browser&apos;s key is nearly used up. Renew it (uses your master key once).</p>
+        <p className="text-caution">This browser&apos;s key is nearly used up. Top it up or renew it (uses your master key once).</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
+        {canTopUp ? (
+          <Button variant="primary" size="sm" onClick={() => setTopUpOpen(true)}>
+            <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
+          </Button>
+        ) : null}
         <Button variant="outline" size="sm" onClick={() => openLogin('import')}>
           <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Renew key
         </Button>
@@ -99,6 +109,11 @@ export function KeysPanel(): JSX.Element {
           </>
         ) : null}
       </div>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        Top-up keeps this key and adds budget (or a later expiry). Renew replaces it with a new key and disables this one.
+        Both use your master key once and do not store it.
+      </p>
+      {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
       </p>

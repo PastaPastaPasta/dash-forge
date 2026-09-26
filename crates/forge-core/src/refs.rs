@@ -137,6 +137,7 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         ref_name_hash: d.field_hex("refNameHash"),
         base_ref_name_hash: None,
         source_ref_name_hash: None,
+        path: None,
         default_branch: d.field_str("defaultBranch"),
         protected_patterns: Some(crate::scope::doc_text_list(d, "protectedPatterns"))
             .filter(|p| !p.is_empty()),
