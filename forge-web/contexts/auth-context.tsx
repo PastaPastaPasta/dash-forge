@@ -12,7 +12,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { AuthController, type AuthSession, type LimitedKey, type LimitedKeyRequest, type Protection, type VaultInfo } from '../lib/auth'
+import {
+  AuthController,
+  type AuthSession,
+  type LimitedKey,
+  type LimitedKeyRequest,
+  type MasterInput,
+  type Protection,
+  type TopUpRequest,
+  type VaultInfo,
+} from '../lib/auth'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
 import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { recordSpend } from '../lib/spend'
@@ -74,7 +83,9 @@ interface AuthContextValue {
   /** Delete the stored key of `identityId` from this device (does not revoke it on chain). */
   forget: (identityId: string) => Promise<void>
   /** Disable this device's key on chain with the master key (file or phrase), then forget it. */
-  revokeStored: (identityId: string, input: { fileText: string } | { mnemonic: string }) => Promise<void>
+  revokeStored: (identityId: string, input: MasterInput) => Promise<void>
+  /** Raise this browser key's budget / expiry in place (the master key signs once). */
+  topUpKey: (input: MasterInput, request: TopUpRequest) => Promise<KeyLimits>
   reloadVaults: () => void
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
@@ -123,6 +134,7 @@ export function AuthProvider({
       logout: () => controller.logout(),
       forget: withReload(controller.forget.bind(controller)),
       revokeStored: withReload(controller.revokeStored.bind(controller)),
+      topUpKey: (input: MasterInput, request: TopUpRequest) => controller.topUpKey(input, request),
     }),
     [controller, withReload],
   )

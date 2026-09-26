@@ -215,12 +215,124 @@ export async function assertGroupHolds(sdk: EvoSDK, group: string, contracts: re
 }
 
 /**
- * A key Forge may renew over or revoke: HIGH, bound to a contract group, with a budget. Any
- * group, not just the current one, so a key left on an old group by a contract
+ * A key Forge may renew over, revoke or top up: HIGH, bound to a contract group, with a
+ * budget. Any group, not just the current one, so a key left on an old group by a contract
  * re-registration can still be disabled.
  */
-function isForgeBrowserKey(k: WasmKey): boolean {
+export function isForgeBrowserKey(k: Pick<WasmKey, 'securityLevelNumber' | 'contractBounds' | 'totalBudget'>): boolean {
   return k.securityLevelNumber === 2 && k.contractBounds?.toJSON().$type === 'contractGroup' && k.totalBudget !== undefined
+}
+
+/** The top-up defaults: +0.05 DASH, and an expiry pushed out to 90 days from now if sooner. */
+export const TOP_UP_DEFAULTS = { addDash: 0.05, days: 90 } as const
+/** The most one top-up adds (a typo guard, not a protocol limit). */
+export const TOP_UP_MAX_DASH = 10
+
+/**
+ * Parse a DASH amount typed by a person into credits: a plain decimal, at most 11 decimal
+ * places (1 credit = 10⁻¹¹ DASH), above zero and at most {@link TOP_UP_MAX_DASH}. Exact: the
+ * digits are converted as integers, never through a float.
+ */
+export function parseDashAmount(input: string): bigint {
+  const s = input.trim()
+  const m = /^(\d{1,6})(?:\.(\d{1,11}))?$|^\.(\d{1,11})$/.exec(s)
+  if (m === null) throw new Error('enter an amount in DASH, like 0.05')
+  const whole = m[1] ?? '0'
+  const frac = (m[2] ?? m[3] ?? '').padEnd(11, '0')
+  const credits = BigInt(whole) * BigInt(CREDITS_PER_DASH) + BigInt(frac)
+  if (credits <= 0n) throw new Error('the amount must be more than 0')
+  if (credits > BigInt(TOP_UP_MAX_DASH * CREDITS_PER_DASH)) throw new Error(`at most ${TOP_UP_MAX_DASH} DASH per top-up`)
+  return credits
+}
+
+/**
+ * The expiry a top-up asks for: `wanted` when it is later than the key's current expiry, else
+ * none (the protocol refuses an expiry that is not later, and an unchanged one is not a
+ * change). `wanted` must be in the future.
+ */
+export function topUpExpiry(current: number | null, wanted: number | null, now = Date.now()): number | null {
+  if (wanted === null) return null
+  if (wanted <= now) throw new Error('the new expiry must be in the future')
+  return current === null || wanted > current ? wanted : null
+}
+
+/** What a top-up will send: at least one of the two (the protocol requires one). */
+export interface TopUpRequest {
+  readonly addCredits: bigint | null
+  readonly expiresAt: number | null
+}
+
+/** Check a top-up request has something to do. */
+export function assertTopUp(req: TopUpRequest): void {
+  if ((req.addCredits === null || req.addCredits <= 0n) && req.expiresAt === null) {
+    throw new Error('nothing to change: add budget, or pick an expiry later than the current one')
+  }
+}
+
+interface KeyLimitsFacade {
+  identities: { updateKeyLimits(options: unknown): Promise<unknown> }
+}
+
+/**
+ * Raise a Forge browser key's limits in place (`IdentityKeyLimitsUpdate`, protocol 14): add
+ * budget and/or push the expiry out. The key id and private key stay the same. Signed once by
+ * `masterWif` (checked to be a live MASTER key of the identity first), which is not retained.
+ * Refuses a key that is not a live Forge browser key ({@link isForgeBrowserKey}). Reads the
+ * key back from the chain and returns its limits.
+ */
+export async function topUpLimitedKey(
+  sdk: EvoSDK,
+  params: {
+    readonly network: Network
+    readonly identityId: string
+    readonly masterWif: string
+    readonly keyId: number
+    readonly request: TopUpRequest
+  },
+): Promise<KeyLimits> {
+  assertTopUp(params.request)
+  const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
+  if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
+  if (k.disabledAt !== undefined) throw new Error(`key ${params.keyId} is disabled; renew instead`)
+  if (!isForgeBrowserKey(k)) throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to change its limits here`)
+  const expiresAt = topUpExpiry(k.expiresAt === undefined ? null : Number(k.expiresAt), params.request.expiresAt)
+  const addBudget = params.request.addCredits !== null && params.request.addCredits > 0n ? params.request.addCredits : null
+  assertTopUp({ addCredits: addBudget, expiresAt })
+  const before = k.totalBudget ?? 0n
+
+  const master = PrivateKey.fromWIF(params.masterWif)
+  const signer = new IdentitySigner()
+  try {
+    const bytes = master.toBytes()
+    const isMaster = identity.publicKeys.some(
+      (x) => x.securityLevelNumber === 0 && x.disabledAt === undefined && safeValidate(x, bytes, params.network),
+    )
+    bytes.fill(0)
+    if (!isMaster) throw new Error("that key is not this identity's master key")
+    signer.addKey(master)
+    await (sdk as unknown as KeyLimitsFacade).identities.updateKeyLimits({
+      identity,
+      keyId: params.keyId,
+      ...(addBudget !== null ? { addBudget } : {}),
+      ...(expiresAt !== null ? { expiresAt: BigInt(expiresAt) } : {}),
+      signer,
+    })
+  } finally {
+    signer.free()
+    master.free()
+  }
+
+  // Read it back: a node a block behind still shows the old limits for a moment.
+  const wantTotal = before + (addBudget ?? 0n)
+  const limits = await retryWhileMissing(async () => {
+    const l = await readKeyLimits(sdk, params.identityId, params.keyId)
+    const landed = l !== null && (l.total ?? 0n) >= wantTotal && (expiresAt === null || (l.expiresAt ?? 0) >= expiresAt)
+    return landed ? l : null
+  }, 6)
+  if (limits === null) throw new Error('the update was sent, but the chain does not show the new limits yet; reload in a minute')
+  return limits
 }
 
 /**

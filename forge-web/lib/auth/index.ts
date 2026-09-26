@@ -37,7 +37,16 @@ export {
   type Protection,
   type VaultInfo,
 } from './vault'
-export { BROWSER_KEY_DEFAULTS, defaultLimits, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+export {
+  BROWSER_KEY_DEFAULTS,
+  TOP_UP_DEFAULTS,
+  defaultLimits,
+  parseDashAmount,
+  topUpExpiry,
+  type LimitedKey,
+  type LimitedKeyRequest,
+  type TopUpRequest,
+} from './limited-key'
 export {
   masterMaterialFromFile,
   parseIdentityFile,
@@ -50,5 +59,6 @@ export {
   purgeLegacyKeystore,
   type AuthSession,
   type AuthState,
+  type MasterInput,
   type SdkProvider,
 } from './controller'
