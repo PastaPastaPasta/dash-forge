@@ -63,9 +63,9 @@ pub struct DocHeader {
     /// patch `sourceRefNameHash`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex32")]
     pub source_ref_name_hash: Option<[u8; 32]>,
-    /// The document `$id` (base58 or any stable string; configs need it to know the anchor).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    /// The document `$id`, 32 bytes (configs need it to know whether they are the anchor).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex32")]
+    pub id: Option<[u8; 32]>,
     /// `$createdAtBlockHeight` (the late-content rule).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_block_height: Option<u64>,
@@ -143,9 +143,12 @@ impl DocHeader {
 /// The ref-name hash check of §4.5 (H3), after decryption: each hash field present on the
 /// document must equal the keyed hash of the name inside `enc`.
 fn ref_names_match(header: &DocHeader, fields: &Fields, keys: &EpochKeys) -> bool {
+    // a present hash requires its name (§4.5): a patch indexed under a branch it does not name
+    // is the reader disagreement the check exists to prevent; an absent hash is not checked
     let check = |hash: Option<[u8; 32]>, name: Option<&String>| match (hash, name) {
         (Some(h), Some(n)) => ct_eq(&h, &keys.ref_name_hash(n)),
-        _ => true,
+        (Some(_), None) => false,
+        (None, _) => true,
     };
     match header.kind {
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
@@ -261,8 +264,9 @@ pub enum Opened {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnchorRef {
-    /// The anchor config's `$id`.
-    pub id: String,
+    /// The anchor config's `$id` (32 bytes, compared as bytes).
+    #[serde(with = "hex32")]
+    pub id: [u8; 32],
     /// Its `$createdAtBlockHeight`.
     pub height: u64,
 }
@@ -370,10 +374,14 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
     let Some(keys) = ctx.keys.get(&header.epoch) else {
         return Opened::Unreadable(Unreadable::NoKey);
     };
-    let is_anchor = header.id.as_deref() == Some(anchor.id.as_str());
+    let is_anchor = header.id == Some(anchor.id);
     match decrypt(keys, header, enc, is_anchor) {
         Opened::Readable(fields) => {
-            let height = header.created_at_block_height.unwrap_or(0);
+            // step 7; `$createdAtBlockHeight` is required by the schema (§13), and without it
+            // the late rule cannot be judged
+            let Some(height) = header.created_at_block_height else {
+                return Opened::Malformed;
+            };
             if ctx.is_late(header.epoch, height, &header.owner_id) {
                 Opened::Unreadable(Unreadable::Late)
             } else {
@@ -440,6 +448,7 @@ mod tests {
     fn issue() -> (DocHeader, Fields) {
         let mut h = DocHeader::new(DocKind::Issue, [0x22; 32], 0);
         h.number = Some(1);
+        h.created_at_block_height = Some(5);
         let f = Fields {
             title: Some("t".into()),
             ..Fields::default()
@@ -463,7 +472,7 @@ mod tests {
         ctx.anchors.insert(
             0,
             AnchorRef {
-                id: "c0".into(),
+                id: [0xc0; 32],
                 height: 1,
             },
         );

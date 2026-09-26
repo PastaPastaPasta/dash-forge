@@ -2,21 +2,12 @@
  * Encrypted document fields (`docs/security/private-repos.md` §4) and the key-dependent read
  * path `open_content` (§8.1, §8.2).
  *
- * Identities in this module are lowercase hex of the 32-byte identifier; callers convert at
- * the boundary.
+ * Identities and ids are raw 32-byte values ({@link PrivateId}); convert at the boundary with
+ * `privateId`.
  */
 
-import {
-  bytes,
-  bytesToHex,
-  concat,
-  constantTimeEqual,
-  randomBytes,
-  sha256,
-  u32,
-  utf8,
-  type Bytes,
-} from './bytes'
+import { bytes, concat, constantTimeEqual, isU32, randomBytes, sha256, u32, utf8, type Bytes } from './bytes'
+import { bytesEqual, type PrivateId } from './ids'
 import { hedgeNonce, refNameHash, type EpochKeyring, type EpochKeys } from './keys'
 import { MalformedError, buildTlv, parseTlv, type DocFields, type PrivateDocType } from './tlv'
 
@@ -51,15 +42,16 @@ export function maxPlaintext(type: PrivateDocType): number {
 /** The plaintext (non-`enc`) fields of a private document that the AD and checks use. */
 export interface PrivateDoc {
   readonly type: PrivateDocType
-  /** `$ownerId`, 32 bytes. */
-  readonly ownerId: Uint8Array
+  /** `$ownerId`. */
+  readonly ownerId: PrivateId
+  /** u32. */
   readonly epoch: number
-  /** issue, patch. */
+  /** issue, patch: u32. */
   readonly number?: number
   /** comment. */
-  readonly targetId?: Uint8Array
+  readonly targetId?: PrivateId
   /** review. */
-  readonly patchId?: Uint8Array
+  readonly patchId?: PrivateId
   /** refUpdate, protectedRefUpdate. */
   readonly refNameHash?: Uint8Array
   readonly newOid?: Uint8Array
@@ -73,8 +65,9 @@ export interface PrivateDoc {
 /** A stored private document, as the read path sees it. */
 export interface StoredPrivateDoc extends PrivateDoc {
   /** `$id` (compared with the epoch's anchor id for a config). */
-  readonly id?: string
-  readonly createdAtBlockHeight: number
+  readonly id?: PrivateId
+  /** `$createdAtBlockHeight`; a document without it is malformed (§8.1 step 7). */
+  readonly createdAtBlockHeight?: number
   readonly enc: Uint8Array
 }
 
@@ -89,6 +82,12 @@ function fixed(v: Uint8Array | undefined, len: number, what: string): Uint8Array
   return b
 }
 
+function u32Field(v: number | undefined, what: string): Bytes {
+  const n = need(v, what)
+  if (!isU32(n)) throw new MalformedError(`${what} must be a u32`)
+  return u32(n)
+}
+
 function oidf(oid: Uint8Array): Bytes {
   if (oid.length > 0xff) throw new MalformedError('oid over 255 bytes')
   return concat(new Uint8Array([oid.length]), oid)
@@ -98,7 +97,7 @@ function bind(doc: PrivateDoc, keys: EpochKeys): Bytes {
   switch (doc.type) {
     case 'issue':
     case 'patch':
-      return u32(need(doc.number, 'number'))
+      return u32Field(doc.number, 'number')
     case 'comment':
       return bytes(fixed(doc.targetId, 32, 'targetId'))
     case 'review':
@@ -116,22 +115,30 @@ function bind(doc: PrivateDoc, keys: EpochKeys): Bytes {
   }
 }
 
-/** The §4.4 associated data of `doc` under `keys` (whose epoch must be the document's). */
+/**
+ * The §4.4 associated data of `doc` under `keys`. Throws {@link MalformedError} for a document
+ * whose bind fields are missing or out of range, and `RangeError` when `keys` is for another
+ * epoch.
+ */
 export function docAd(doc: PrivateDoc, keys: EpochKeys): Bytes {
+  const epoch = u32Field(doc.epoch, 'epoch')
   if (keys.epoch !== doc.epoch) throw new RangeError('the key is not for the document epoch')
   return concat(
     utf8('dash-forge/v2/doc'),
     new Uint8Array([0, doc.type === 'config' ? V2 : V1]),
     keys.repoId,
     fixed(doc.ownerId, 32, 'ownerId'),
-    u32(doc.epoch),
+    epoch,
     utf8(doc.type),
     new Uint8Array([0]),
     bind(doc, keys),
   )
 }
 
-/** The §4.5 check: each name present in `fields` hashes to the document's hash, if it has one. */
+/**
+ * The §4.5 check: every hash field the document carries names a ref in `fields` that hashes to
+ * it. A present hash with the name missing fails, like a mismatch.
+ */
 async function refHashesMatch(doc: PrivateDoc, fields: DocFields, keys: EpochKeys): Promise<boolean> {
   const pairs: [Uint8Array | undefined, string | undefined][] =
     doc.type === 'patch'
@@ -143,8 +150,8 @@ async function refHashesMatch(doc: PrivateDoc, fields: DocFields, keys: EpochKey
         ? [[doc.refNameHash, fields.refName]]
         : []
   for (const [hash, name] of pairs) {
-    if (hash === undefined || name === undefined) continue
-    if (!constantTimeEqual(await refNameHash(keys, name), hash)) return false
+    if (hash === undefined) continue
+    if (name === undefined || !constantTimeEqual(await refNameHash(keys, name), hash)) return false
   }
   return true
 }
@@ -155,14 +162,6 @@ export interface SealDocOptions {
   readonly anchor?: boolean
 }
 
-/** A validated seal waiting for its nonce: the AD, the TLV and the `enc` prefix. */
-export interface PreparedDocSeal {
-  readonly ad: Bytes
-  readonly tlv: Bytes
-  /** `0x01`, or `0x02 ‖ COMMIT_e` for a config. */
-  readonly prefix: Bytes
-}
-
 /** The TLV is valid but does not fit the type's `enc` (`maxItems` minus the framing). */
 export class TooLargeError extends Error {
   constructor(readonly limit: number) {
@@ -171,23 +170,32 @@ export class TooLargeError extends Error {
   }
 }
 
+/** Chooses the nonce of a seal from its AD and TLV. */
+type NonceOf = (ad: Bytes, tlv: Bytes) => Promise<Bytes>
+
 /**
- * Validate `fields` for `doc` exactly as a reader will and build the AD and TLV: the §4.3
- * parser ({@link MalformedError}), then the per-type size cap ({@link TooLargeError}), then
- * the §4.5 hash check ({@link MalformedError}).
+ * The seal pipeline: the AD (bind fields), the §4.3 parser ({@link MalformedError}), the
+ * per-type size cap ({@link TooLargeError}), the §4.5 hash check ({@link MalformedError}),
+ * then AES-GCM under the nonce `nonceOf` picks. Not exported: production seals go through
+ * {@link sealDoc}; the deterministic variant is `testing.ts`'s, through
+ * {@link __unsafeSealDocWithNonce}.
  */
-export async function prepareDocSeal(
+async function sealDocWith(
   keys: EpochKeys,
   doc: PrivateDoc,
   fields: DocFields,
-  options: SealDocOptions = {},
-): Promise<PreparedDocSeal> {
+  options: SealDocOptions,
+  nonceOf: NonceOf,
+): Promise<{ ad: Bytes; tlv: Bytes; enc: Bytes }> {
+  const ad = docAd(doc, keys)
   const tlv = buildTlv(fields, { type: doc.type, epoch: doc.epoch, anchor: options.anchor === true })
   if (tlv.length > maxPlaintext(doc.type)) throw new TooLargeError(maxPlaintext(doc.type))
   if (!(await refHashesMatch(doc, fields, keys))) throw new MalformedError('a ref name does not match its hash')
-  const ad = docAd(doc, keys)
   const prefix = doc.type === 'config' ? concat(new Uint8Array([V2]), keys.commit) : new Uint8Array([V1])
-  return { ad, tlv, prefix }
+  const nonce = await nonceOf(ad, tlv)
+  if (nonce.length !== NONCE_LEN) throw new RangeError('a nonce is 12 bytes')
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: ad }, keys.docKey, tlv)
+  return { ad, tlv, enc: concat(prefix, nonce, new Uint8Array(ct)) }
 }
 
 /**
@@ -201,10 +209,23 @@ export async function sealDoc(
   fields: DocFields,
   options: SealDocOptions = {},
 ): Promise<Bytes> {
-  const { ad, tlv, prefix } = await prepareDocSeal(keys, doc, fields, options)
-  const nonce = await hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: ad }, keys.docKey, tlv)
-  return concat(prefix, nonce, new Uint8Array(ct))
+  const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
+  return (await sealDocWith(keys, doc, fields, options, hedged)).enc
+}
+
+/**
+ * INTERNAL, TEST-ONLY: {@link sealDoc} with a caller-chosen nonce, for the §11 vectors. Only
+ * `lib/private/testing.ts` may import it (ESLint `no-restricted-imports` enforces that); it is
+ * not re-exported from `index.ts`.
+ */
+export function __unsafeSealDocWithNonce(
+  keys: EpochKeys,
+  doc: PrivateDoc,
+  fields: DocFields,
+  nonce: Uint8Array,
+  options: SealDocOptions = {},
+): Promise<{ ad: Bytes; tlv: Bytes; enc: Bytes }> {
+  return sealDocWith(keys, doc, fields, options, async () => new Uint8Array(nonce))
 }
 
 export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late'
@@ -219,9 +240,14 @@ const unreadable = (reason: UnreadableReason): OpenResult => ({ status: 'unreada
 
 /** An existing epoch's anchor, as the read path needs it. */
 export interface AnchorRef {
-  readonly id: string
+  readonly id: PrivateId
   /** The anchor's `$createdAtBlockHeight`. */
   readonly height: number
+}
+
+/** A set of identities, by bytes (`IdSet`). */
+export interface IdentitySet {
+  has(id: PrivateId): boolean
 }
 
 /** What a reader knows about a private repo: its keys, its epochs and its members. */
@@ -229,8 +255,8 @@ export interface OpenContext {
   readonly keys: EpochKeyring
   /** Existing epochs (§5.3) and their anchors. */
   readonly anchors: ReadonlyMap<number, AnchorRef>
-  /** Current members (hex identities). */
-  readonly members: ReadonlySet<string>
+  /** Current members. */
+  readonly members: IdentitySet
 }
 
 /** Whether `enc` has the shape its type demands (§8.1 step 1). */
@@ -245,7 +271,7 @@ function encShapeOk(type: PrivateDocType, enc: Uint8Array): boolean {
  */
 export async function openWithKey(doc: StoredPrivateDoc, keys: EpochKeys, anchor: boolean): Promise<OpenResult> {
   const enc = doc.enc
-  if (!encShapeOk(doc.type, enc)) return MALFORMED
+  if (!encShapeOk(doc.type, enc) || !isU32(doc.epoch)) return MALFORMED
   let body = enc.subarray(1)
   if (doc.type === 'config') {
     if (!constantTimeEqual(keys.commit, enc.subarray(1, 33))) return unreadable('commitMismatch')
@@ -297,27 +323,30 @@ function nextAnchor(anchors: ReadonlyMap<number, AnchorRef>, epoch: number): Anc
  */
 export function isLate(
   anchors: ReadonlyMap<number, AnchorRef>,
-  members: ReadonlySet<string>,
+  members: IdentitySet,
   epoch: number,
   height: number,
-  owner: string,
+  owner: PrivateId,
 ): boolean {
   const next = nextAnchor(anchors, epoch)
   return next !== undefined && height > next.height + GRACE_BLOCKS && !members.has(owner)
 }
 
+function isHeight(h: number | undefined): h is number {
+  return h !== undefined && Number.isSafeInteger(h) && h >= 0
+}
+
 /** `open_content` (§8.1): decrypt and check a private document, in the normative order. */
 export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Promise<OpenResult> {
-  if (!encShapeOk(doc.type, doc.enc)) return MALFORMED
+  if (!encShapeOk(doc.type, doc.enc) || !isU32(doc.epoch)) return MALFORMED
   const anchor = ctx.anchors.get(doc.epoch)
   if (anchor === undefined) return unreadable('noEpoch')
   const keys = ctx.keys.get(doc.epoch)
   if (keys === undefined) return unreadable('noKey')
-  const isAnchor = doc.type === 'config' && doc.id !== undefined && doc.id === anchor.id
+  const isAnchor = doc.type === 'config' && doc.id !== undefined && bytesEqual(doc.id, anchor.id)
   const result = await openWithKey(doc, keys, isAnchor)
   if (result.status !== 'readable') return result
-  if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, bytesToHex(doc.ownerId))) {
-    return unreadable('late')
-  }
+  if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
+  if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId)) return unreadable('late')
   return result
 }

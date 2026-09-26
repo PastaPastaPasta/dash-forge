@@ -101,6 +101,29 @@ def ref_hash(K, e, name):
 # ---------------------------------------------------------------------------------------------
 
 
+# Document $ids are 32 bytes and are compared as raw bytes (§5.3), never as strings. Vectors
+# carry them as hex; the `idEncoding: "base58"` vectors carry every identity and id in base58,
+# the form the apps use, to hold both harnesses' boundary converters in parity.
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58(b):
+    n = int.from_bytes(b, "big")
+    out = ""
+    while n:
+        n, r = divmod(n, 58)
+        out = B58[r] + out
+    return "1" * (len(b) - len(b.lstrip(b"\x00"))) + out
+
+
+EXPLICIT_IDS = {"c1-a": bytes([0x0a]) * 32, "c1-b": bytes([0x0b]) * 32}
+
+
+def cid(label):
+    """The 32-byte $id a vector names `label`."""
+    return EXPLICIT_IDS.get(label) or sha256(b"dash-forge vectors: id " + label.encode())
+
+
 def rec(tag, value):
     return bytes([tag]) + struct.pack(">H", len(value)) + value
 
@@ -444,6 +467,8 @@ def doc_seal_vectors():
          "tags 8/9 are not allowed in a config that is not an anchor."),
         ("tag_not_for_kind", ISSUE, K0, {"title": "t", "refName": "refs/heads/main"}, None,
          "refName is not an issue field."),
+        ("patch_base_hash_without_name", PATCH, K0, {"title": "Add the feature", "sourceRefName": "refs/heads/feature"},
+         None, "a writer never seals a patch whose baseRefNameHash names no baseRefName (H3)."),
         ("body_over_enc_cap", ISSUE, K0, {"title": "t", "body": "b" * 5085}, None,
          "title + body over 5085 bytes does not fit a 5120-byte enc (§4.3 combined size)."),
     ]
@@ -456,7 +481,7 @@ def doc_seal_vectors():
 
 def ctx(keys, anchors, members=()):
     return dict(keys={str(e): H(K) for e, K in keys.items()},
-                anchors={str(e): dict(id=i, height=h) for e, (i, h) in anchors.items()},
+                anchors={str(e): dict(id=H(cid(i)), height=h) for e, (i, h) in anchors.items()},
                 members=list(members))
 
 
@@ -476,11 +501,14 @@ MALFORMED = dict(status="malformed")
 
 
 def doc_open_vectors():
-    def v(name, desc, doc, K, pt, context, expected, enc=None):
+    def v(name, desc, doc, K, pt, context, expected, enc=None, height=50):
         if enc is None:
             _, enc = seal_doc(doc, K, pt)
         d = dict(doc, enc=H(enc))
-        d.setdefault("createdAtBlockHeight", 50)
+        if "id" in d:
+            d["id"] = H(cid(d["id"]))
+        if height is not None:
+            d.setdefault("createdAtBlockHeight", height)
         vector("private_doc_open", name, desc, dict(repoId=H(repoId), context=context, doc=d), expected)
 
     v("issue", "the §11 issue opens under K_0.", ISSUE, K0, ISSUE_TLV, CTX0, readable(ISSUE_FIELDS))
@@ -506,6 +534,13 @@ def doc_open_vectors():
       dict(ISSUE, createdAtBlockHeight=1000 + GRACE_BLOCKS), K0, ISSUE_TLV, CTX01, readable(ISSUE_FIELDS))
     v("issue_late_from_current_member", "late content by a current member is shown.", late, K0, ISSUE_TLV,
       ctx({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}, [H(ownerId)]), readable(ISSUE_FIELDS))
+    v("issue_without_block_height", "a document without $createdAtBlockHeight is malformed: the late rule cannot be "
+      "judged (the schema requires it).", ISSUE, K0, ISSUE_TLV, CTX0, MALFORMED, height=None)
+    v("tampered_without_block_height", "the height is judged at step 7: a tampered document without one is still "
+      "Unreadable(BadTag), not Malformed.", dict(ISSUE, number=8), K0, None, CTX0, unreadable("badTag"), enc=issue_enc,
+      height=None)
+    v("title_with_leading_bom", "UTF-8 values are taken byte for byte: a leading U+FEFF is part of the title, never "
+      "stripped.", ISSUE, K0, tlv((1, "\ufeffRotate".encode())), CTX0, readable({"title": "\ufeffRotate"}))
     v("ref_update", "the §11 refUpdate opens and its refName hashes to refNameHash.", REF_UPDATE, K0, REF_TLV, CTX0,
       readable({"refName": "refs/heads/main"}))
     v("protected_ref_update_force", "a protectedRefUpdate with prevOid and force.", PROTECTED, K0, REF_TLV, CTX0,
@@ -529,6 +564,11 @@ def doc_open_vectors():
     no_hash = {k: v_ for k, v_ in PATCH.items() if k != "sourceRefNameHash"}
     v("patch_without_source_hash", "a hash field that is absent is not checked.", no_hash, K0, PATCH_TLV, CTX0,
       readable(PATCH_FIELDS))
+    v("patch_base_hash_without_name", "a present baseRefNameHash with no baseRefName in enc is malformed (H3): the "
+      "patch would be indexed under a branch it does not name.", PATCH, K0,
+      tlv((1, b"Add the feature"), (5, b"refs/heads/feature")), CTX0, MALFORMED)
+    v("patch_source_hash_without_name", "a present sourceRefNameHash with no sourceRefName in enc is malformed (H3).",
+      PATCH, K0, tlv((1, b"Add the feature"), (4, b"refs/heads/main")), CTX0, MALFORMED)
     v("review_empty", "a review's plaintext may be empty.", REVIEW, K0, b"", CTX0, readable({}))
     c0 = dict(CONFIG0, id="c0")
     c1 = dict(CONFIG1, id="c1")
@@ -714,20 +754,47 @@ def member(identity, role, at=1):
     return dict(identity=identity, role=role, createdAt=at)
 
 
-def config(cid, owner, epoch, K, height, prev=None, created_at=None, fields=b""):
+def config(label, owner, epoch, K, height, prev=None, created_at=None, fields=b""):
     pt = fields
     if prev is not None:
         pt = pt + tlv((8, u32(prev[0])), (9, prev[1]))
     _, enc = seal_doc(dict(type="config", ownerId=owner, epoch=epoch), K, pt)
-    return dict(id=cid, owner=owner, epoch=epoch, createdAtBlockHeight=height,
+    return dict(id=H(cid(label)), owner=owner, epoch=epoch, createdAtBlockHeight=height,
                 createdAt=height * 1000 if created_at is None else created_at, enc=H(enc))
 
 
 def wrap(wid, owner, member_id, epoch, K=None, enabled=True, key_id=4):
-    w = dict(id=wid, owner=owner, memberId=member_id, epoch=epoch, recipientKeyId=key_id, keyEnabled=enabled)
+    w = dict(id=H(cid(wid)), owner=owner, memberId=member_id, epoch=epoch, recipientKeyId=key_id, keyEnabled=enabled)
     if K is not None:
         w["key"] = H(K)
     return w
+
+
+def tie_ids():
+    """Two ids whose raw-byte order and base58 string order disagree (base58 strings of 32-byte
+    ids are 43 or 44 characters long)."""
+    i = 0
+    while True:
+        a, b = sha256(b"tie a %d" % i), sha256(b"tie b %d" % i)
+        lo, hi = min(a, b), max(a, b)
+        if b58(lo) > b58(hi):
+            return lo, hi
+        i += 1
+
+
+ID_FIELDS = ("identity", "owner", "memberId", "reader", "author", "id")
+
+
+def to_base58(x, key=None):
+    """Every 32-byte identity / id in `x` (hex) as base58, as the apps carry them."""
+    if isinstance(x, dict):
+        # the values of `anchors` (keyed by epoch) are ids too
+        return {k: to_base58(v, "anchors" if key == "anchors" else k) for k, v in x.items()}
+    if isinstance(x, list):
+        return [to_base58(v, key) for v in x]
+    if isinstance(x, str) and len(x) == 64 and key in ID_FIELDS + ("anchors", "members", "nonMembers", "missingWraps"):
+        return b58(bytes.fromhex(x))
+    return x
 
 
 def epoch_vectors():
@@ -735,7 +802,8 @@ def epoch_vectors():
     c0 = config("c0", ALICE, 0, K0, 10)
     c1 = config("c1", ALICE, 1, K1, 1000, prev=(0, K0))
 
-    def ev(name, desc, memberships, configs, wraps, expected, reader=BOB, content=None, manifests=None):
+    def ev(name, desc, memberships, configs, wraps, expected, reader=BOB, content=None, manifests=None,
+           base58=False):
         inp = dict(repoId=H(repoId), reader=reader, memberships=memberships, configs=configs, wraps=wraps)
         if content is not None:
             inp["contentQueries"] = content
@@ -744,6 +812,10 @@ def epoch_vectors():
         full = dict(currentEpoch=None, anchors={}, readable=[], writeEpoch=None, unanchored=[], alerts=[],
                     repair=None)
         full.update(expected)
+        full["anchors"] = {e: H(cid(label)) for e, label in full["anchors"].items()}
+        if base58:
+            inp, full = to_base58(inp), to_base58(full)
+            inp["idEncoding"] = "base58"
         vector("private_epoch", name, desc, inp, full)
 
     def repair(rotate=False, non_members=(), missing=()):
@@ -777,6 +849,22 @@ def epoch_vectors():
         wrap("w1ee", ERIN, ERIN, 1), wrap("w1ec", ERIN, CAROL, 1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1-a"}, readable=[0, 1], writeEpoch=1,
             alerts=[dict(kind="keyMismatch", epoch=1, author=ALICE)], repair=ok_repair))
+    lo, hi = tie_ids()
+    assert lo < hi and b58(lo) > b58(hi)
+    EXPLICIT_IDS["tie-lo"], EXPLICIT_IDS["tie-hi"] = lo, hi
+    tie = dict(
+        memberships=team + [member(ERIN, "maintainer")],
+        configs=[c0, config("tie-hi", ALICE, 1, Ky, 1000, prev=(0, K0)), config("tie-lo", ERIN, 1, K1, 1000, prev=(0, K0))],
+        wraps=[wrap("w1e", ERIN, BOB, 1, K1), wrap("w1a", ALICE, BOB, 1, Ky), wrap("w1ea", ERIN, ALICE, 1),
+               wrap("w1ee", ERIN, ERIN, 1)],
+        expected=dict(currentEpoch=1, anchors={"0": "c0", "1": "tie-lo"}, readable=[0, 1], writeEpoch=1,
+                      alerts=[dict(kind="keyMismatch", epoch=1, author=ALICE)], repair=ok_repair),
+    )
+    ev("anchor_tie_by_raw_id_bytes_not_base58",
+       "at equal block heights the anchor is the smaller $id as raw bytes; here the base58 strings sort the other way "
+       "(a 43- against a 44-character id), so a string compare would pick the wrong anchor (M2).", **tie)
+    ev("base58_identities", "the same tie with every identity and id in base58, the apps' form: both harnesses convert "
+       "at the boundary and resolve identically.", **tie, base58=True)
     ev("anchor_created_at_ms_not_used_for_order",
        "the client-set $createdAt is not an order: the lower block height wins though its $createdAt is later.",
        team + [member(ERIN, "maintainer")],

@@ -411,7 +411,7 @@ impl<'a> RepoService<'a> {
         }
         let (scope, contract) = self.writable(repo).await?;
         let hasher = crate::private::Public;
-        let ref_name_hash = hasher.hash(ref_name);
+        let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
 
         let configs = self.fetch_config_history(&scope, &contract).await?;
         let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));

@@ -20,7 +20,7 @@
     ],
     "configs": [
       {
-        "id": "c0",
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 0,
         "createdAtBlockHeight": 10,
@@ -30,7 +30,7 @@
     ],
     "wraps": [
       {
-        "id": "w0a",
+        "id": "7821e4726b0b9f2404421149c8c00bf6a74b8619a6c02256c04febd587703ea1",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 0,
@@ -38,7 +38,7 @@
         "keyEnabled": true
       },
       {
-        "id": "w0b",
+        "id": "cd824834ae1415564fb0e0699c445a2dc71f190baa00d7bcd74a6907c6707c36",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
         "epoch": 0,
@@ -50,7 +50,7 @@
   "expected": {
     "currentEpoch": 0,
     "anchors": {
-      "0": "c0"
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926"
     },
     "readable": [],
     "writeEpoch": null,

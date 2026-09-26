@@ -1,6 +1,6 @@
 {
-  "name": "tlv_length_past_end",
-  "description": "a record whose length runs past the end is malformed.",
+  "name": "title_with_leading_bom",
+  "description": "UTF-8 values are taken byte for byte: a leading U+FEFF is part of the title, never stripped.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -22,11 +22,14 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094821cf8ffa62d6aad84fc448f25ae10a080b71a8948",
+      "enc": "01000102030405060708090a0b1f70261d788dbe162b1d60d6ff1248b2d045f0b9d4d167e7b6611a86",
       "createdAtBlockHeight": 50
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "readable",
+    "fields": {
+      "title": "﻿Rotate"
+    }
   }
 }

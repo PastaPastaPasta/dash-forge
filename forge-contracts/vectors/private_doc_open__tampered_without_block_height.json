@@ -1,6 +1,6 @@
 {
-  "name": "tlv_length_past_end",
-  "description": "a record whose length runs past the end is malformed.",
+  "name": "tampered_without_block_height",
+  "description": "the height is judged at step 7: a tampered document without one is still Unreadable(BadTag), not Malformed.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -21,12 +21,12 @@
       "type": "issue",
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
-      "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094821cf8ffa62d6aad84fc448f25ae10a080b71a8948",
-      "createdAtBlockHeight": 50
+      "number": 8,
+      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c48cdfc7b2d5d8c2c6a98c23a1320093aa"
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "unreadable",
+    "reason": "badTag"
   }
 }

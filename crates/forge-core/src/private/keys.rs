@@ -12,9 +12,45 @@ use super::PrivateError;
 /// The 14-byte key-check value (§2.3, §5.1): error detection, never authorization.
 pub type Kcv = [u8; 14];
 
-/// A 32-byte epoch key `K_e` (§2.1). Zeroized on drop; its `Debug` never shows the bytes.
-#[derive(Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
+/// A 32-byte epoch key `K_e` (§2.1). Zeroized on drop; its `Debug` never shows the bytes, its
+/// equality is constant-time, and it serializes as hex only in test / `vectors` builds.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct EpochKey([u8; 32]);
+
+impl PartialEq for EpochKey {
+    fn eq(&self, other: &Self) -> bool {
+        ct_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for EpochKey {}
+
+/// Serde for an `Option<EpochKey>` field: hex in, and hex out only in test / `vectors` builds;
+/// any other build writes `"<redacted>"`, so no `serde_json::to_string` can leak a key.
+pub(crate) mod opt_key_serde {
+    use super::EpochKey;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: Serializer>(k: &Option<EpochKey>, s: S) -> Result<S::Ok, S::Error> {
+        match k {
+            #[cfg(any(test, feature = "vectors"))]
+            Some(k) => s.serialize_str(&hex::encode(k.expose())),
+            #[cfg(not(any(test, feature = "vectors")))]
+            Some(_) => s.serialize_str("<redacted>"),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<EpochKey>, D::Error> {
+        let s = zeroize::Zeroizing::new(String::deserialize(d)?);
+        let bytes =
+            zeroize::Zeroizing::new(hex::decode(s.as_str()).map_err(serde::de::Error::custom)?);
+        EpochKey::from_slice(&bytes)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("an epoch key is 32 bytes"))
+    }
+}
 
 impl EpochKey {
     /// A fresh key from the OS CSPRNG, for a maintainer creating an epoch.

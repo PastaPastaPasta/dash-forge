@@ -28,18 +28,15 @@ const MIN_SEG_LOG2: u8 = 10;
 const MAX_SEG_LOG2: u8 = 20;
 const TAG_LEN: u64 = 16;
 
-/// A parsed, length-checked sealed-artifact header.
+/// A parsed, length-checked sealed-artifact header. Its fields are read-only views of the 36
+/// raw bytes (which are the AD of every segment), so they can never drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackHeader {
     raw: [u8; HEADER_LEN],
-    /// `L`: segments are `2^L` plaintext bytes.
-    pub seg_log2: u8,
-    /// The epoch whose key sealed the artifact.
-    pub epoch: u32,
-    /// The exact plaintext length.
-    pub plaintext_len: u64,
-    /// The per-artifact file id.
-    pub file_id: [u8; 16],
+    seg_log2: u8,
+    epoch: u32,
+    plaintext_len: u64,
+    file_id: [u8; 16],
 }
 
 impl PackHeader {
@@ -97,6 +94,30 @@ impl PackHeader {
         &self.raw
     }
 
+    /// `L`: segments are `2^L` plaintext bytes (`10 ≤ L ≤ 20`).
+    #[must_use]
+    pub fn seg_log2(&self) -> u8 {
+        self.seg_log2
+    }
+
+    /// The epoch whose key sealed the artifact.
+    #[must_use]
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    /// The exact plaintext length.
+    #[must_use]
+    pub fn plaintext_len(&self) -> u64 {
+        self.plaintext_len
+    }
+
+    /// The per-artifact file id.
+    #[must_use]
+    pub fn file_id(&self) -> &[u8; 16] {
+        &self.file_id
+    }
+
     /// `S = 2^L`.
     #[must_use]
     pub fn seg_size(&self) -> u64 {
@@ -145,51 +166,67 @@ pub struct SealedRange {
 }
 
 impl PackHeader {
-    /// The sealed bytes to fetch for plaintext `[a, b)`.
+    /// The sealed bytes to fetch for plaintext `[a, b)` (§3.5). Checked arithmetic throughout:
+    /// a header that passed [`PackHeader::parse`] cannot overflow, but nothing here relies on it.
     pub fn sealed_range(&self, a: u64, b: u64) -> Result<SealedRange, PrivateError> {
         if a >= b || b > self.plaintext_len {
             return Err(PrivateError::OutOfRange);
         }
-        let seg = self.seg_size() + TAG_LEN;
+        let corrupt = || PrivateError::SealedPackCorrupt;
+        let seg = self.seg_size().checked_add(TAG_LEN).ok_or_else(corrupt)?;
         let (s0, s1) = (a >> self.seg_log2, (b - 1) >> self.seg_log2);
-        let sealed = self.sealed_len().ok_or(PrivateError::SealedPackCorrupt)?;
+        let sealed = self.sealed_len().ok_or_else(corrupt)?;
+        let at = |segments: u64| {
+            segments
+                .checked_mul(seg)
+                .and_then(|n| n.checked_add(HEADER_LEN as u64))
+                .ok_or_else(corrupt)
+        };
         Ok(SealedRange {
             first_segment: s0,
             last_segment: s1,
-            start: HEADER_LEN as u64 + s0 * seg,
-            end: (HEADER_LEN as u64 + (s1 + 1) * seg).min(sealed),
+            start: at(s0)?,
+            end: at(s1.checked_add(1).ok_or_else(corrupt)?)?.min(sealed),
         })
     }
 
-    /// Decrypt the segments of `range` from `sealed` (exactly the bytes `[range.start,
-    /// range.end)`) and return plaintext `[a, b)`.
+    /// Plaintext `[a, b)` from `sealed`, which must be exactly the sealed bytes
+    /// [`PackHeader::sealed_range`]`(a, b)` names (computed here, never taken from the caller).
     pub fn open_range(
         &self,
         keys: &EpochKeys,
-        range: &SealedRange,
         sealed: &[u8],
         a: u64,
         b: u64,
     ) -> Result<Vec<u8>, PrivateError> {
+        let range = self.sealed_range(a, b)?;
         if sealed.len() as u64 != range.end - range.start {
             return Err(PrivateError::SealedPackCorrupt);
         }
         let cipher = self.cipher(keys)?;
-        let mut out = Vec::with_capacity(usize::try_from(b - a).unwrap_or(0));
+        let mut out = zeroize::Zeroizing::new(Vec::new());
         let mut off = 0usize;
         for i in range.first_segment..=range.last_segment {
             let len = usize::try_from(self.seg_plain_len(i) + TAG_LEN)
                 .map_err(|_| PrivateError::SealedPackCorrupt)?;
-            let seg = sealed
-                .get(off..off + len)
+            let end = off
+                .checked_add(len)
                 .ok_or(PrivateError::SealedPackCorrupt)?;
-            out.extend(self.open_segment(&cipher, i, seg)?);
-            off += len;
+            let seg = sealed
+                .get(off..end)
+                .ok_or(PrivateError::SealedPackCorrupt)?;
+            out.extend_from_slice(&zeroize::Zeroizing::new(
+                self.open_segment(&cipher, i, seg)?,
+            ));
+            off = end;
         }
-        let skip = usize::try_from(a - range.first_segment * self.seg_size())
+        // a >= first_segment·S by construction of first_segment = a >> L
+        let skip = usize::try_from(a - (range.first_segment << self.seg_log2))
             .map_err(|_| PrivateError::OutOfRange)?;
         let take = usize::try_from(b - a).map_err(|_| PrivateError::OutOfRange)?;
-        Ok(out[skip..skip + take].to_vec())
+        out.get(skip..skip + take)
+            .map(<[u8]>::to_vec)
+            .ok_or(PrivateError::SealedPackCorrupt)
     }
 
     fn cipher(&self, keys: &EpochKeys) -> Result<Aes256Gcm, PrivateError> {
@@ -405,11 +442,42 @@ pub fn open_streaming<'k, R: Read, W: Write>(
     Ok(h.plaintext_len)
 }
 
-/// Sealed-artifact headers cached per `packHash` for the session (§3.5): a ranged reader reads
-/// the header once and never derives a key or nonce from one it has not read.
+/// Why a ranged read failed: the storage fetch, or the sealed bytes.
+#[derive(Debug)]
+pub enum RangeError<E> {
+    /// The caller's fetch failed.
+    Fetch(E),
+    /// The sealed artifact failed a check (§3.5).
+    Sealed(PrivateError),
+}
+
+impl<E> From<PrivateError> for RangeError<E> {
+    fn from(e: PrivateError) -> Self {
+        Self::Sealed(e)
+    }
+}
+
+/// One storage copy of a sealed artifact, as a ranged read names it.
+#[derive(Debug, Clone, Copy)]
+pub struct PackCopy<'a> {
+    /// The manifest's `packHash`.
+    pub pack_hash: &'a [u8; 32],
+    /// A stable id of this copy (its manifest `$id`, or its URI).
+    pub copy: &'a str,
+    /// The manifest's `sizeBytes`.
+    pub size_bytes: u64,
+}
+
+/// Sealed-artifact headers cached for the session per `(packHash, copy)` (§3.5): a ranged
+/// reader reads a copy's header once and never derives a key or nonce from one it has not read.
+///
+/// A ranged read cannot check `packHash`, so a header is cached only after a segment tag has
+/// verified under it (the header is every segment's AD: a verified tag authenticates it), after
+/// it was checked against the manifest's `sizeBytes`; a copy that turns out corrupt is evicted.
+/// One hostile copy can therefore never poison the pack's other copies.
 #[derive(Debug, Default)]
 pub struct HeaderCache {
-    headers: Mutex<HashMap<[u8; 32], PackHeader>>,
+    headers: Mutex<HashMap<([u8; 32], String), PackHeader>>,
 }
 
 impl HeaderCache {
@@ -419,32 +487,57 @@ impl HeaderCache {
         Self::default()
     }
 
-    /// The cached header of `pack_hash`, or the one `fetch` returns (the first 36 sealed bytes),
-    /// parsed against `size_bytes` and cached.
-    pub fn get_or_fetch<E>(
-        &self,
-        pack_hash: &[u8; 32],
-        size_bytes: u64,
-        fetch: impl FnOnce() -> Result<Vec<u8>, E>,
-    ) -> Result<PackHeader, E>
-    where
-        E: From<PrivateError>,
-    {
-        if let Some(h) = self
-            .headers
-            .lock()
-            .expect("header cache poisoned")
-            .get(pack_hash)
-        {
-            return Ok(*h);
-        }
-        let bytes = fetch()?;
-        let h = PackHeader::parse(&bytes, size_bytes)?;
+    fn get(&self, key: &([u8; 32], String)) -> Option<PackHeader> {
         self.headers
             .lock()
             .expect("header cache poisoned")
-            .insert(*pack_hash, h);
-        Ok(h)
+            .get(key)
+            .copied()
+    }
+
+    /// Read plaintext `[a, b)` of `copy`. `fetch(start, end)` returns sealed bytes
+    /// `[start, end)` of that copy: the header (`0..36`) on a cache miss, then only the range's
+    /// segments.
+    pub fn read_range<'k, E>(
+        &self,
+        copy: &PackCopy<'_>,
+        keys_for: impl Fn(u32) -> Option<&'k EpochKeys>,
+        mut fetch: impl FnMut(u64, u64) -> Result<Vec<u8>, E>,
+        a: u64,
+        b: u64,
+    ) -> Result<Vec<u8>, RangeError<E>> {
+        let key = (*copy.pack_hash, copy.copy.to_owned());
+        let cached = self.get(&key);
+        let header = if let Some(h) = cached {
+            h
+        } else {
+            let bytes = fetch(0, HEADER_LEN as u64).map_err(RangeError::Fetch)?;
+            PackHeader::parse(&bytes, copy.size_bytes)?
+        };
+        let keys = keys_for(header.epoch).ok_or(PrivateError::NoKey(header.epoch))?;
+        let range = header.sealed_range(a, b)?;
+        let sealed = fetch(range.start, range.end).map_err(RangeError::Fetch)?;
+        match header.open_range(keys, &sealed, a, b) {
+            Ok(out) => {
+                // the header verified under a segment tag: now it may be cached
+                if cached.is_none() {
+                    self.headers
+                        .lock()
+                        .expect("header cache poisoned")
+                        .insert(key, header);
+                }
+                Ok(out)
+            }
+            Err(e) => {
+                if e == PrivateError::SealedPackCorrupt {
+                    self.headers
+                        .lock()
+                        .expect("header cache poisoned")
+                        .remove(&key);
+                }
+                Err(e.into())
+            }
+        }
     }
 
     /// How many headers are cached.
@@ -496,7 +589,7 @@ mod tests {
             }
             w.finish().unwrap();
             let h = PackHeader::parse(&sealed, sealed.len() as u64).unwrap();
-            assert_eq!(h.plaintext_len, n as u64);
+            assert_eq!(h.plaintext_len(), n as u64);
             let mut out = Vec::new();
             open_streaming(&sealed[..], sealed.len() as u64, |_| Some(&k), &mut out).unwrap();
             assert_eq!(out, p, "n = {n}");
@@ -513,24 +606,125 @@ mod tests {
         assert!(matches!(w.finish(), Err(PrivateError::OutOfRange)));
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    fn slice(sealed: &[u8], start: u64, end: u64) -> Result<Vec<u8>, ()> {
+        Ok(sealed[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()].to_vec())
+    }
+
+    fn copy<'a>(pack_hash: &'a [u8; 32], copy: &'a str, size_bytes: u64) -> PackCopy<'a> {
+        PackCopy {
+            pack_hash,
+            copy,
+            size_bytes,
+        }
+    }
+
     #[test]
-    fn header_cache_reads_once() {
+    fn header_cache_reads_a_verified_header_once() {
+        let k = keys();
+        let p = plain(40_000);
+        let sealed = seal(&k, &p).unwrap();
+        let cache = HeaderCache::new();
+        let hash = sha256(&sealed);
+        let size = sealed.len() as u64;
+        let mut header_reads = 0;
+        for _ in 0..3 {
+            let out = cache
+                .read_range(
+                    &copy(&hash, "copy-a", size),
+                    |_| Some(&k),
+                    |s, e| {
+                        header_reads += usize::from(s == 0);
+                        slice(&sealed, s, e)
+                    },
+                    20_000,
+                    20_100,
+                )
+                .unwrap();
+            assert_eq!(out, p[20_000..20_100]);
+        }
+        assert_eq!(header_reads, 1);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn a_forged_header_is_never_cached_and_never_poisons_another_copy() {
+        let k = keys();
+        let p = plain(40_000);
+        let honest = seal(&k, &p).unwrap();
+        let hash = sha256(&honest);
+        let size = honest.len() as u64;
+        // a well-formed header with another fileId: parses, but every tag fails under it
+        let mut forged = honest.clone();
+        forged[20] ^= 1;
+        let cache = HeaderCache::new();
+        let bad = cache.read_range(
+            &copy(&hash, "hostile", size),
+            |_| Some(&k),
+            |s, e| slice(&forged, s, e),
+            0,
+            10,
+        );
+        assert!(matches!(
+            bad,
+            Err(RangeError::Sealed(PrivateError::SealedPackCorrupt))
+        ));
+        assert!(cache.is_empty(), "an unauthenticated header is not cached");
+        let good = cache
+            .read_range(
+                &copy(&hash, "honest", size),
+                |_| Some(&k),
+                |s, e| slice(&honest, s, e),
+                0,
+                10,
+            )
+            .unwrap();
+        assert_eq!(good, p[..10]);
+        // the forged copy's reads keep failing, and never through the honest copy's header
+        let again = cache.read_range(
+            &copy(&hash, "hostile", size),
+            |_| Some(&k),
+            |s, e| slice(&forged, s, e),
+            0,
+            10,
+        );
+        assert!(again.is_err());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn a_size_mismatch_is_refused_before_caching() {
         let k = keys();
         let sealed = seal(&k, &plain(100)).unwrap();
         let cache = HeaderCache::new();
-        let hash = sha256(&sealed);
-        let mut fetches = 0;
-        for _ in 0..3 {
-            let h = cache
-                .get_or_fetch::<PrivateError>(&hash, sealed.len() as u64, || {
-                    fetches += 1;
-                    Ok(sealed[..HEADER_LEN].to_vec())
-                })
-                .unwrap();
-            assert_eq!(h.plaintext_len, 100);
-        }
-        assert_eq!(fetches, 1);
-        assert_eq!(cache.len(), 1);
+        let r = cache.read_range(
+            &copy(&sha256(&sealed), "c", sealed.len() as u64 + 1),
+            |_| Some(&k),
+            |s, e| slice(&sealed, s, e),
+            0,
+            1,
+        );
+        assert!(r.is_err());
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn open_range_refuses_a_range_outside_the_plaintext() {
+        let k = keys();
+        let sealed = seal(&k, &plain(100)).unwrap();
+        let h = PackHeader::parse(&sealed, sealed.len() as u64).unwrap();
+        assert_eq!(
+            h.open_range(&k, &sealed[36..], 50, 101),
+            Err(PrivateError::OutOfRange)
+        );
+        assert_eq!(
+            h.open_range(&k, &sealed[36..], 5, 5),
+            Err(PrivateError::OutOfRange)
+        );
+        assert_eq!(
+            h.open_range(&k, &sealed[37..], 0, 100),
+            Err(PrivateError::SealedPackCorrupt)
+        );
     }
 
     #[test]

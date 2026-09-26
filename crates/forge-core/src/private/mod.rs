@@ -21,6 +21,11 @@
 //! fetch and the web UI adopt them in later changes; until then [`for_visibility`] still refuses a
 //! private repository, so nothing writes one half-finished.
 
+// The deterministic seal constructors behind `vectors` reuse nonces and file ids by design; a
+// release build must never carry them.
+#[cfg(all(feature = "vectors", not(debug_assertions)))]
+compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
+
 pub mod doc;
 pub mod epoch;
 pub mod keys;
@@ -134,10 +139,13 @@ impl From<PrivateError> for Error {
     }
 }
 
-/// How a ref name becomes its indexed `refNameHash`.
+/// How a ref name becomes its indexed `refNameHash`: `sha256(refName)` in a public repo,
+/// `HMAC(K_ref,e, refName)` under the epoch `e` the update is written under in a private one
+/// (§4.5, §12.4).
 pub trait RefNameHasher: Send + Sync {
-    /// The 32-byte `refNameHash` of `ref_name`.
-    fn hash(&self, ref_name: &str) -> [u8; 32];
+    /// The 32-byte `refNameHash` of `ref_name` under `epoch` (ignored by a public repo). A
+    /// private repo without the keys of `epoch` refuses.
+    fn hash(&self, epoch: u32, ref_name: &str) -> Result<[u8; 32]>;
 }
 
 /// How a document's content fields are carried: plaintext, or sealed in `enc`.
@@ -150,14 +158,15 @@ pub trait RepoCodec: Send + Sync {
 pub trait PackCipher: Send + Sync {
     /// The bytes to upload for `pack`.
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>>;
-    /// The pack bytes from uploaded `sealed` bytes.
-    fn open(&self, sealed: Vec<u8>) -> Result<Vec<u8>>;
+    /// The pack bytes from uploaded `sealed` bytes, whose manifest says `size_bytes`: a length
+    /// that differs is refused before anything is decrypted (§3.5 step 1).
+    fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>>;
 }
 
 /// Where a member's repository key for an epoch comes from.
 pub trait RepoKeyReader: Send + Sync {
-    /// The 32-byte content key of `epoch`.
-    fn epoch_key(&self, epoch: u32) -> Result<[u8; 32]>;
+    /// The content key of `epoch` (zeroized on drop).
+    fn epoch_key(&self, epoch: u32) -> Result<EpochKey>;
 }
 
 /// The public-repository implementation of every seam: sha256 ref hashes, plaintext
@@ -166,8 +175,8 @@ pub trait RepoKeyReader: Send + Sync {
 pub struct Public;
 
 impl RefNameHasher for Public {
-    fn hash(&self, ref_name: &str) -> [u8; 32] {
-        crate::backends::sha256(ref_name.as_bytes())
+    fn hash(&self, _epoch: u32, ref_name: &str) -> Result<[u8; 32]> {
+        Ok(crate::backends::sha256(ref_name.as_bytes()))
     }
 }
 
@@ -181,13 +190,16 @@ impl PackCipher for Public {
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>> {
         Ok(pack)
     }
-    fn open(&self, sealed: Vec<u8>) -> Result<Vec<u8>> {
+    fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>> {
+        if sealed.len() as u64 != size_bytes {
+            return Err(Error::Integrity);
+        }
         Ok(sealed)
     }
 }
 
 impl RepoKeyReader for Public {
-    fn epoch_key(&self, _epoch: u32) -> Result<[u8; 32]> {
+    fn epoch_key(&self, _epoch: u32) -> Result<EpochKey> {
         Err(not_supported())
     }
 }
@@ -271,8 +283,11 @@ impl Private {
 }
 
 impl RefNameHasher for Private {
-    fn hash(&self, ref_name: &str) -> [u8; 32] {
-        self.writer().ref_name_hash(ref_name)
+    fn hash(&self, epoch: u32, ref_name: &str) -> Result<[u8; 32]> {
+        self.keys
+            .get(&epoch)
+            .map(|k| k.ref_name_hash(ref_name))
+            .ok_or_else(|| PrivateError::NoKey(epoch).into())
     }
 }
 
@@ -286,17 +301,16 @@ impl PackCipher for Private {
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>> {
         Ok(pack::seal(self.writer(), &pack)?)
     }
-    fn open(&self, sealed: Vec<u8>) -> Result<Vec<u8>> {
-        let len = sealed.len() as u64;
-        Ok(self.open_pack(&sealed, len)?)
+    fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>> {
+        Ok(self.open_pack(&sealed, size_bytes)?)
     }
 }
 
 impl RepoKeyReader for Private {
-    fn epoch_key(&self, epoch: u32) -> Result<[u8; 32]> {
+    fn epoch_key(&self, epoch: u32) -> Result<EpochKey> {
         self.raw
             .get(&epoch)
-            .map(|k| *k.expose())
+            .cloned()
             .ok_or_else(|| PrivateError::NoKey(epoch).into())
     }
 }
@@ -322,11 +336,15 @@ mod tests {
     fn public_seams_are_the_identity_and_sha256() {
         let p = for_visibility(Visibility::Public).unwrap();
         assert_eq!(
-            hex::encode(p.hash("refs/heads/main")),
+            hex::encode(p.hash(7, "refs/heads/main").unwrap()),
             hex::encode(crate::backends::sha256(b"refs/heads/main"))
         );
         assert!(p.plaintext());
-        assert_eq!(p.open(p.seal(b"pack".to_vec()).unwrap()).unwrap(), b"pack");
+        assert_eq!(
+            p.open(p.seal(b"pack".to_vec()).unwrap(), 4).unwrap(),
+            b"pack"
+        );
+        assert!(p.open(b"pack".to_vec(), 5).is_err(), "sizeBytes is checked");
         assert!(p.epoch_key(0).is_err());
     }
 

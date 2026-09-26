@@ -25,7 +25,7 @@
     ],
     "configs": [
       {
-        "id": "c0",
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 0,
         "createdAtBlockHeight": 10,
@@ -33,7 +33,7 @@
         "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
       },
       {
-        "id": "c1-x",
+        "id": "9b01f0e9b38da5f0fa69d74ef1d1bdd87da0c38db18f76177fcd10859998dd68",
         "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
         "epoch": 1,
         "createdAtBlockHeight": 1100,
@@ -41,7 +41,7 @@
         "enc": "0264b54197f9563fa637b1b520041479cbd48eebdd390e6e2e6b4f91ad40640fd4000102030405060708090a0b61a7a4f7210961a6fc25784cac3443fa3bd94e1f61613dc7b025a41f06c1dcacb27b714fdb45e6b3806bf2aec5bc83be1bc0cac9460f500742e0"
       },
       {
-        "id": "c1-y",
+        "id": "d798d52db120bcadf01f672296620501f8322a761e152c52ff5eea8134c4670e",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 1,
         "createdAtBlockHeight": 1000,
@@ -51,7 +51,7 @@
     ],
     "wraps": [
       {
-        "id": "w1a",
+        "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
         "epoch": 1,
@@ -60,7 +60,7 @@
         "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
       },
       {
-        "id": "w1e",
+        "id": "25c096e6e15a1071b9496163844ff62e95516c508d3f457793397599b51e832a",
         "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
         "epoch": 1,
@@ -69,7 +69,7 @@
         "key": "5555555555555555555555555555555555555555555555555555555555555555"
       },
       {
-        "id": "w1aa",
+        "id": "54743c8e10ef36acfb554f6b6cfaaf28b30866c449fe685b217774d6535aac36",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 1,
@@ -77,7 +77,7 @@
         "keyEnabled": true
       },
       {
-        "id": "w1ae",
+        "id": "7a7c43feb21200466165637605c8280b8f2fcb5c3c09f5481c126ac0dddedfd1",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
         "epoch": 1,
@@ -89,8 +89,8 @@
   "expected": {
     "currentEpoch": 1,
     "anchors": {
-      "0": "c0",
-      "1": "c1-y"
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "d798d52db120bcadf01f672296620501f8322a761e152c52ff5eea8134c4670e"
     },
     "readable": [
       0,

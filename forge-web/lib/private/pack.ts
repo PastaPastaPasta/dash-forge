@@ -45,6 +45,7 @@ export function sealedLength(plaintextLen: number, segLog2: number): number {
 
 export function encodeHeader(epoch: number, plaintextLen: number, fileId: Uint8Array, segLog2 = WRITER_SEG_LOG2): Bytes {
   if (!isU32(epoch)) throw new RangeError('epoch must be a u32')
+  if (!Number.isInteger(segLog2) || segLog2 < MIN_SEG_LOG2 || segLog2 > MAX_SEG_LOG2) throw new RangeError('bad segLog2')
   if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')
   if (!Number.isSafeInteger(plaintextLen) || plaintextLen < 0) throw new RangeError('bad plaintext length')
   return concat(new Uint8Array([...MAGIC, PACK_VERSION, segLog2, 0, 0]), u32(epoch), u64(plaintextLen), fileId)
@@ -77,8 +78,8 @@ function segmentNonce(i: number, final: boolean): Bytes {
   return concat(u64(i), new Uint8Array([0, 0, 0, final ? 1 : 0]))
 }
 
-/** Seal `plain` segment by segment with an explicit `fileId` (the test-only seam uses it). */
-export async function sealPackWith(keys: EpochKeys, plain: Uint8Array, fileId: Uint8Array): Promise<Bytes> {
+/** Seal `plain` segment by segment under `fileId`. Not exported: see {@link sealPack}. */
+async function sealPackWith(keys: EpochKeys, plain: Uint8Array, fileId: Uint8Array): Promise<Bytes> {
   const header = encodeHeader(keys.epoch, plain.length, fileId)
   const key = await keys.packKey(fileId)
   const S = 2 ** WRITER_SEG_LOG2
@@ -101,6 +102,15 @@ export async function sealPackWith(keys: EpochKeys, plain: Uint8Array, fileId: U
 /** Seal a pack, locator or flat index under `keys` with a hedged random `fileId` (§3.6). */
 export async function sealPack(keys: EpochKeys, plain: Uint8Array): Promise<Bytes> {
   return sealPackWith(keys, plain, await hedgeFileId(keys, randomBytes(32), await sha256(plain)))
+}
+
+/**
+ * INTERNAL, TEST-ONLY: {@link sealPack} with a caller-chosen `fileId`, for the §11 vectors.
+ * Only `lib/private/testing.ts` may import it (ESLint enforces that); it is not re-exported
+ * from `index.ts`.
+ */
+export function __unsafeSealPackWithFileId(keys: EpochKeys, plain: Uint8Array, fileId: Uint8Array): Promise<Bytes> {
+  return sealPackWith(keys, plain, fileId)
 }
 
 /** `packHash`: the SHA-256 of the sealed bytes (§3.4), lowercase hex. */
@@ -205,23 +215,34 @@ export function planRange(header: PackHeader, a: number, b: number): RangePlan {
 }
 
 /**
- * The session's parsed headers by `packHash` (§3.5: fetch the header once, never derive a key
- * or nonce from a header not read).
+ * The session's authenticated headers by `(packHash, copy)` (§3.5). A header enters only after
+ * it has been checked against the manifest's `sizeBytes` and a segment tag has verified under
+ * it (the header is every segment's AD, so a verified tag authenticates it); a
+ * `sealedPackCorrupt` from a copy evicts that copy's entry. A ranged read cannot check
+ * `packHash`, so caching earlier would let one hostile copy poison every honest copy.
  */
 export class PackHeaderCache {
   private readonly headers = new Map<string, PackHeader>()
 
-  /** The header of `packHash`, fetching its 36 bytes only on a miss. */
-  async get(packHash: string, fetchRange: RangeFetcher): Promise<PackHeader> {
-    const hit = this.headers.get(packHash)
-    if (hit !== undefined) return hit
-    const header = parseHeader(await fetchRange(0, HEADER_LEN))
-    this.headers.set(packHash, header)
-    return header
+  private static key(packHash: string, copy: string): string {
+    return JSON.stringify([packHash, copy])
   }
 
-  has(packHash: string): boolean {
-    return this.headers.has(packHash)
+  get(packHash: string, copy: string): PackHeader | undefined {
+    return this.headers.get(PackHeaderCache.key(packHash, copy))
+  }
+
+  has(packHash: string, copy: string): boolean {
+    return this.headers.has(PackHeaderCache.key(packHash, copy))
+  }
+
+  /** Only for a header a segment tag has verified under. */
+  set(packHash: string, copy: string, header: PackHeader): void {
+    this.headers.set(PackHeaderCache.key(packHash, copy), header)
+  }
+
+  evict(packHash: string, copy: string): void {
+    this.headers.delete(PackHeaderCache.key(packHash, copy))
   }
 
   clear(): void {
@@ -229,31 +250,48 @@ export class PackHeaderCache {
   }
 }
 
+/** One stored copy of a sealed artifact: its manifest's `packHash` and `sizeBytes`, and a reader. */
+export interface PackCopySource {
+  readonly packHash: string
+  /** The caller's id for this copy (its manifest `$id`, or a storage URI). */
+  readonly copy: string
+  /** The manifest's `sizeBytes`. */
+  readonly sizeBytes: number
+  readonly fetchRange: RangeFetcher
+}
+
 /**
- * Read plaintext `[a, b)` of the sealed artifact `packHash` of `sizeBytes` sealed bytes:
- * the header (cached), then only the segments covering the range. Throws {@link PackError}.
+ * Read plaintext `[a, b)` of one copy of a sealed artifact: the header (cached per copy once
+ * authenticated), then only the segments covering the range. Throws {@link PackError}; on
+ * `sealedPackCorrupt` the copy's cached header is evicted, and the caller tries another copy.
  */
 export async function readPackRange(
-  packHash: string,
-  sizeBytes: number,
+  source: PackCopySource,
   a: number,
   b: number,
   keys: EpochKeyring,
-  fetchRange: RangeFetcher,
   cache: PackHeaderCache,
 ): Promise<Bytes> {
-  const header = await cache.get(packHash, fetchRange)
-  const o = await checkAndKey(header, sizeBytes, keys)
-  const plan = planRange(header, a, b)
-  const [s0, s1] = plan.segments
-  const [start, end] = plan.sealedRange
-  const sealed = await fetchRange(start, end)
-  if (sealed.length !== end - start) throw new PackError('sealedPackCorrupt')
-  const parts: Uint8Array[] = []
-  for (let i = s0; i <= s1; i++) {
-    const [ss, se] = segmentSpan(o, i, sizeBytes)
-    parts.push(await decryptSegment(o, i, sealed.subarray(ss - start, se - start)))
+  const { packHash, copy, sizeBytes, fetchRange } = source
+  const cached = cache.get(packHash, copy)
+  try {
+    const header = cached ?? parseHeader(await fetchRange(0, HEADER_LEN))
+    const o = await checkAndKey(header, sizeBytes, keys)
+    const plan = planRange(header, a, b)
+    const [s0, s1] = plan.segments
+    const [start, end] = plan.sealedRange
+    const sealed = await fetchRange(start, end)
+    if (sealed.length !== end - start) throw new PackError('sealedPackCorrupt')
+    const parts: Uint8Array[] = []
+    for (let i = s0; i <= s1; i++) {
+      const [ss, se] = segmentSpan(o, i, sizeBytes)
+      parts.push(await decryptSegment(o, i, sealed.subarray(ss - start, se - start)))
+      if (cached === undefined && i === s0) cache.set(packHash, copy, header)
+    }
+    const S = 2 ** header.segLog2
+    return concat(...parts).slice(a - s0 * S, b - s0 * S)
+  } catch (e) {
+    if (e instanceof PackError && e.code === 'sealedPackCorrupt') cache.evict(packHash, copy)
+    throw e
   }
-  const S = 2 ** header.segLog2
-  return concat(...parts).slice(a - s0 * S, b - s0 * S)
 }

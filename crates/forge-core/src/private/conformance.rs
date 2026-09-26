@@ -16,7 +16,7 @@ use super::pack::{self, PackHeader};
 use super::tlv::Fields;
 use super::{wrap, PrivateError};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Vector {
     name: String,
@@ -26,6 +26,36 @@ struct Vector {
     rules: String,
     input: Value,
     expected: Value,
+}
+
+/// The fields of a `private_epoch` vector that hold 32-byte identities or ids.
+const ID_KEYS: &[&str] = &["identity", "owner", "memberId", "reader", "author", "id"];
+const ID_LIST_KEYS: &[&str] = &["anchors", "members", "nonMembers", "missingWraps"];
+
+/// `value` with every identity / id string re-encoded by `f` (the `idEncoding: "base58"`
+/// vectors: base58 in the vector, hex in the rule types).
+fn recode_ids(value: &Value, key: Option<&str>, f: &dyn Fn(&str) -> String) -> Value {
+    match value {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, v)| {
+                    let inner = if key == Some("anchors") {
+                        "anchors"
+                    } else {
+                        k.as_str()
+                    };
+                    (k.clone(), recode_ids(v, Some(inner), f))
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(|v| recode_ids(v, key, f)).collect()),
+        Value::String(s)
+            if key.is_some_and(|k| ID_KEYS.contains(&k) || ID_LIST_KEYS.contains(&k)) =>
+        {
+            Value::String(f(s))
+        }
+        other => other.clone(),
+    }
 }
 
 fn h32(s: &str) -> [u8; 32] {
@@ -224,6 +254,8 @@ struct ManifestQuery {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EpochIn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id_encoding: Option<String>,
     repo_id: String,
     reader: String,
     memberships: Vec<MemberRow>,
@@ -385,14 +417,42 @@ fn run(v: &Vector) -> Value {
             let i: PackRangeIn = input(v);
             let (sealed, _) = i.seal.seal();
             let keys = EpochKeys::derive(&h32(&i.seal.repo_id), i.seal.epoch, &key(&i.seal.key));
-            // the header is read first (36 bytes), then only the range's segments
-            let header = PackHeader::parse(&sealed[..36], sealed.len() as u64).unwrap();
+            let size = sealed.len() as u64;
             let [from, to] = i.range;
+            // the planned range, from the header alone
+            let header = PackHeader::parse(&sealed[..36], size).unwrap();
             match header.sealed_range(from, to) {
                 Ok(range) => {
-                    let slice = &sealed[usize::try_from(range.start).unwrap()
-                        ..usize::try_from(range.end).unwrap()];
-                    let out = header.open_range(&keys, &range, slice, from, to).unwrap();
+                    // the read through the session cache: the header (0..36) first, then only
+                    // the range's segments
+                    let cache = pack::HeaderCache::new();
+                    let mut fetched = Vec::new();
+                    let out = cache
+                        .read_range(
+                            &pack::PackCopy {
+                                pack_hash: &sha256(&sealed),
+                                copy: "copy",
+                                size_bytes: size,
+                            },
+                            |e| (e == keys.epoch()).then_some(&keys),
+                            |a, b| {
+                                fetched.push([a, b]);
+                                Ok::<_, ()>(
+                                    sealed
+                                        [usize::try_from(a).unwrap()..usize::try_from(b).unwrap()]
+                                        .to_vec(),
+                                )
+                            },
+                            from,
+                            to,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        fetched,
+                        vec![[0, 36], [range.start, range.end]],
+                        "vector `{}`",
+                        v.name
+                    );
                     json!({
                         "segments": [range.first_segment, range.last_segment],
                         "sealedRange": [range.start, range.end],
@@ -483,6 +543,18 @@ fn run(v: &Vector) -> Value {
             }
         }
         "private_epoch" => {
+            let base58 = v.input.get("idEncoding").is_some();
+            let v = &if base58 {
+                assert_eq!(v.input["idEncoding"], "base58", "vector `{}`", v.name);
+                Vector {
+                    input: recode_ids(&v.input, None, &|s| {
+                        hex::encode(crate::platform::decode_identifier(s).expect("base58 id"))
+                    }),
+                    ..v.clone()
+                }
+            } else {
+                v.clone()
+            };
             let i: EpochIn = input(v);
             let repo_id = h32(&i.repo_id);
             let r = resolve_epochs(
@@ -494,7 +566,7 @@ fn run(v: &Vector) -> Value {
             );
             let mut out = json!({
                 "currentEpoch": r.current_epoch,
-                "anchors": r.anchors.iter().map(|(e, a)| (e.to_string(), json!(a.id))).collect::<serde_json::Map<_, _>>(),
+                "anchors": r.anchors.iter().map(|(e, a)| (e.to_string(), json!(hex::encode(a.id)))).collect::<serde_json::Map<_, _>>(),
                 "readable": r.keys.keys().collect::<Vec<_>>(),
                 "writeEpoch": r.write_epoch,
                 "unanchored": r.unanchored,
@@ -523,7 +595,11 @@ fn run(v: &Vector) -> Value {
                     ))
                     .collect::<Vec<_>>());
             }
-            out
+            if base58 {
+                recode_ids(&out, None, &|s| crate::platform::encode_identifier(h32(s)))
+            } else {
+                out
+            }
         }
         "private_hedge" => {
             let i: HedgeIn = input(v);
@@ -572,6 +648,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 138, "ran {ran} private vectors, expected 138+");
+    assert!(ran >= 146, "ran {ran} private vectors, expected 146+");
     println!("private conformance: {ran} vectors green");
 }

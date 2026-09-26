@@ -34,8 +34,9 @@ pub struct MemberRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigRow {
-    /// `$id`.
-    pub id: String,
+    /// `$id`, 32 bytes: anchors tie-break on it as raw bytes (§5.3), never as a string.
+    #[serde(with = "hex32")]
+    pub id: [u8; 32],
     /// `$ownerId`.
     #[serde(with = "hex32")]
     pub owner: [u8; 32],
@@ -56,7 +57,8 @@ pub struct ConfigRow {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WrapRow {
     /// `$id`.
-    pub id: String,
+    #[serde(with = "hex32")]
+    pub id: [u8; 32],
     /// `$ownerId`, the wrapping maintainer.
     #[serde(with = "hex32")]
     pub owner: [u8; 32],
@@ -70,7 +72,11 @@ pub struct WrapRow {
     /// Whether `recipientKeyId` is still an enabled key on the member's identity (§5.6).
     pub key_enabled: bool,
     /// The recovered epoch key (reader's own wraps only).
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_key")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::keys::opt_key_serde"
+    )]
     pub key: Option<EpochKey>,
 }
 
@@ -135,7 +141,7 @@ pub struct Repair {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anchor {
     /// The anchor config's `$id`.
-    pub id: String,
+    pub id: [u8; 32],
     /// Its author, a current maintainer.
     pub owner: [u8; 32],
     /// Its `$createdAtBlockHeight`.
@@ -199,7 +205,7 @@ impl EpochResolution {
                 (
                     e,
                     AnchorRef {
-                        id: a.id.clone(),
+                        id: a.id,
                         height: a.height,
                     },
                 )
@@ -278,7 +284,7 @@ fn anchor_of(c: &ConfigRow) -> Anchor {
     let commit = (c.enc.len() >= MIN_V2 && c.enc[0] == V2)
         .then(|| c.enc[1..33].try_into().expect("32 bytes"));
     Anchor {
-        id: c.id.clone(),
+        id: c.id,
         owner: c.owner,
         height: c.created_at_block_height,
         commit,
@@ -474,25 +480,5 @@ mod hex32_vec {
                 <[u8; 32]>::try_from(b).map_err(|_| serde::de::Error::custom("expected 32 bytes"))
             })
             .collect()
-    }
-}
-
-mod opt_key {
-    use super::EpochKey;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    #[allow(clippy::ref_option)]
-    pub fn serialize<S: Serializer>(k: &Option<EpochKey>, s: S) -> Result<S::Ok, S::Error> {
-        match k {
-            Some(k) => s.serialize_str(&hex::encode(k.expose())),
-            None => s.serialize_none(),
-        }
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<EpochKey>, D::Error> {
-        let s = zeroize::Zeroizing::new(String::deserialize(d)?);
-        let b = zeroize::Zeroizing::new(hex::decode(s.as_str()).map_err(serde::de::Error::custom)?);
-        EpochKey::from_slice(&b)
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("expected a 32-byte key"))
     }
 }

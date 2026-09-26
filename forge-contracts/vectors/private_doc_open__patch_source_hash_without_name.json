@@ -1,6 +1,6 @@
 {
-  "name": "tlv_length_past_end",
-  "description": "a record whose length runs past the end is malformed.",
+  "name": "patch_source_hash_without_name",
+  "description": "a present sourceRefNameHash with no sourceRefName in enc is malformed (H3).",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -18,11 +18,13 @@
       "members": []
     },
     "doc": {
-      "type": "issue",
+      "type": "patch",
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
-      "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094821cf8ffa62d6aad84fc448f25ae10a080b71a8948",
+      "number": 3,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "d84cb3ab7e73838aa281dc31df409a61ec404c3c5ba7c19eea8ba0f40d3261be",
+      "enc": "01000102030405060708090a0b1f7020b3a756cc0d371934d5a54a897bcb787bc66a806ae12ab9ea39f8f9b6de7c0159e588394eb0702c118327ac61f3f822d0d5",
       "createdAtBlockHeight": 50
     }
   },

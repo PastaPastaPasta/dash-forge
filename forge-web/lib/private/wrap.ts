@@ -33,9 +33,16 @@ export class WrapError extends Error {
   }
 }
 
-/** `0x01 ‖ KCV_e ‖ K_e` for the epoch key `raw` (whose subkeys are `keys`). */
-export function buildWrapPlaintext(keys: EpochKeys, raw: Uint8Array): Bytes {
+/**
+ * `0x01 ‖ KCV_e ‖ K_e` for the epoch key `raw` (whose subkeys are `keys`). Throws `RangeError`
+ * when `raw` is not the key behind `keys`.
+ */
+export async function buildWrapPlaintext(keys: EpochKeys, raw: Uint8Array): Promise<Bytes> {
   if (raw.length !== 32) throw new RangeError('an epoch key is 32 bytes')
+  // `raw` must be the key behind `keys`: a wrap of any other key would carry `keys`' KCV and
+  // pass the reader's KCV check only to fail its anchor check (§5.4). Re-derive and compare.
+  const check = await EpochKeys.import(keys.repoId, keys.epoch, raw)
+  if (!constantTimeEqual(check.commit, keys.commit)) throw new RangeError('the epoch key does not match its subkeys')
   return concat(new Uint8Array([WRAP_VERSION]), keys.kcv, raw)
 }
 
@@ -81,7 +88,8 @@ export interface WrapSealParams {
 }
 
 /**
- * Wrap the epoch key `raw` (subkeys `keys`) for a recipient. Returns the properties to set on
+ * Wrap the epoch key `raw` (subkeys `keys`) for a recipient; throws `RangeError` when `raw` is
+ * not the key behind `keys`. Returns the properties to set on
  * the `repoKey` document (`wrapped`, `recipientKeyId`, `senderKeyId`); the caller sets
  * `repoId`, `memberId` and `epoch`.
  */
@@ -91,7 +99,7 @@ export async function sealWrap(
   raw: Uint8Array,
   params: WrapSealParams,
 ): Promise<Record<string, unknown>> {
-  const plaintext = buildWrapPlaintext(keys, raw)
+  const plaintext = await buildWrapPlaintext(keys, raw)
   try {
     return await facade.encrypt({
       dataContract: params.dataContract,

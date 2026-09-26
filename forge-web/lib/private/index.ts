@@ -6,10 +6,20 @@
  * caller passes in. The Rust twin is `crates/forge-core/src/private.rs`; the `private_*`
  * conformance vectors in `forge-contracts/vectors/` hold the two byte-for-byte in parity
  * (`conformance.test.ts`). Deterministic seal variants for those vectors live in
- * `./testing`, which this module deliberately does not re-export.
+ * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
+ * outside tests); `__unsafe*` symbols of `./doc` and `./pack` are likewise not re-exported.
  */
 
 export { bytesToHex, constantTimeEqual, hexToBytes, type Bytes } from './bytes'
+export {
+  IdSet,
+  bytesEqual,
+  compareBytes,
+  encodePrivateId,
+  privateId,
+  type IdEncoding,
+  type PrivateId,
+} from './ids'
 export {
   EpochKeys,
   generateEpochKey,
@@ -33,6 +43,7 @@ export {
   openContent,
   sealDoc,
   type AnchorRef,
+  type IdentitySet,
   type OpenContext,
   type OpenResult,
   type PrivateDoc,
@@ -52,6 +63,7 @@ export {
   readPackRange,
   sealPack,
   sealedLength,
+  type PackCopySource,
   type PackErrorCode,
   type PackHeader,
   type RangeFetcher,
@@ -82,6 +94,8 @@ export {
   type EpochAlert,
   type EpochResolution,
   type ManifestStanding,
+  type PrivateMembership,
   type Repair,
+  type Role,
   type WrapRow,
 } from './epoch'

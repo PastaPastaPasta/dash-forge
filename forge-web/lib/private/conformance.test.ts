@@ -20,13 +20,20 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { bytesToHex, concat, hexToBytes, sha256 } from './bytes'
 import { TooLargeError, openContent, type OpenContext, type OpenResult, type PrivateDoc, type StoredPrivateDoc } from './doc'
-import { resolveEpochs, contentIsLate, manifestStanding, type ConfigRow, type WrapRow } from './epoch'
+import {
+  contentIsLate,
+  manifestStanding,
+  resolveEpochs,
+  type ConfigRow,
+  type PrivateMembership,
+  type WrapRow,
+} from './epoch'
 import { EpochKeys, refNameHash, subkeyInfo, type EpochKeyring } from './keys'
 import { PackError, PackHeaderCache, openPack, parseHeader, planRange, readPackRange, segmentCount } from './pack'
 import { buildTlv, MalformedError, type DocFields, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
 import { hedgedFileId, hedgedNonce, sealDocWithNonce, sealPackWithFileId } from './testing'
-import type { Membership } from '../rules/v2'
+import { IdSet, encodePrivateId, privateId, type IdEncoding } from './ids'
 
 type Evo = typeof import('@dashevo/evo-sdk')
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
@@ -91,7 +98,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   private_wrap_seal: leaves('repoId', 'senderPriv', 'senderPub', 'recipientPriv', 'recipientPub', 'key', 'epoch', 'iv'),
   private_wrap_open: leaves('repoId', 'epoch', 'wrapped', 'readerPriv', 'counterpartyPub', 'anchorCommit'),
   private_epoch: object({
-    ...leafFields('repoId', 'reader'),
+    ...leafFields('repoId', 'reader', 'idEncoding'),
     memberships: each(leaves('identity', 'role', 'createdAt')),
     configs: each(leaves('id', 'owner', 'epoch', 'createdAtBlockHeight', 'createdAt', 'enc')),
     wraps: each(leaves('id', 'owner', 'memberId', 'epoch', 'recipientKeyId', 'keyEnabled', 'key')),
@@ -174,7 +181,7 @@ function importKey(o: Obj): Promise<EpochKeys> {
 function toDoc(d: Obj): PrivateDoc {
   return {
     type: str(d, 'type') as PrivateDocType,
-    ownerId: hex(d, 'ownerId'),
+    ownerId: privateId(str(d, 'ownerId')),
     epoch: num(d, 'epoch'),
     number: 'number' in d ? num(d, 'number') : undefined,
     targetId: optHex(d, 'targetId'),
@@ -356,15 +363,15 @@ async function run(v: Vector): Promise<Json> {
         anchors: new Map(
           Object.entries(obj(c, 'anchors')).map(([e, a]) => [
             Number(e),
-            { id: str(a as Obj, 'id'), height: num(a as Obj, 'height') },
+            { id: privateId(str(a as Obj, 'id')), height: num(a as Obj, 'height') },
           ]),
         ),
-        members: new Set(Array.isArray(members) ? members.map(String) : []),
+        members: new IdSet(Array.isArray(members) ? members.map((m) => privateId(String(m))) : []),
       }
       const doc: StoredPrivateDoc = {
         ...toDoc(d),
-        id: 'id' in d ? str(d, 'id') : undefined,
-        createdAtBlockHeight: num(d, 'createdAtBlockHeight'),
+        id: 'id' in d ? privateId(str(d, 'id')) : undefined,
+        createdAtBlockHeight: 'createdAtBlockHeight' in d ? num(d, 'createdAtBlockHeight') : undefined,
         enc: hex(d, 'enc'),
       }
       return openJson(await openContent(doc, ctx))
@@ -414,9 +421,12 @@ async function run(v: Vector): Promise<Json> {
       }
       return packErrorOf(async () => {
         const plan = planRange(parseHeader(sealed), a, b)
-        const output = await readPackRange('vector', sealed.length, a, b, new Map([[keys.epoch, keys]]), fetchRange, new PackHeaderCache())
-        // Exactly the header, then exactly the planned sealed range
+        const source = { packHash: bytesToHex(await sha256(sealed)), copy: 'vector', sizeBytes: sealed.length, fetchRange }
+        const cache = new PackHeaderCache()
+        const output = await readPackRange(source, a, b, new Map([[keys.epoch, keys]]), cache)
+        // Exactly the header, then exactly the planned sealed range; the header is cached once authenticated
         expect(fetched).toEqual([[0, 36], [...plan.sealedRange]])
+        expect(cache.has(source.packHash, source.copy)).toBe(true)
         return { segments: [...plan.segments], sealedRange: [...plan.sealedRange], output: bytesToHex(output) }
       })
     }
@@ -425,7 +435,7 @@ async function run(v: Vector): Promise<Json> {
       const epoch = num(inp, 'epoch')
       const raw = hex(inp, 'key')
       const keys = await EpochKeys.import(repoId, epoch, raw)
-      const plaintext = buildWrapPlaintext(keys, raw)
+      const plaintext = await buildWrapPlaintext(keys, raw)
       const want = v.expected as Obj
       // The raw primitive: AES-256-CBC (PKCS#7) under the vector's shared key and IV
       const iv = hex(inp, 'iv')
@@ -492,14 +502,17 @@ async function run(v: Vector): Promise<Json> {
 
 async function runEpoch(inp: Obj): Promise<Json> {
   const repoId = hex(inp, 'repoId')
-  const memberships: Membership[] = arr(inp, 'memberships').map((m) => ({
-    identity: str(m, 'identity'),
-    role: str(m, 'role') as Membership['role'],
-    createdAt: num(m, 'createdAt'),
+  const encoding: IdEncoding = 'idEncoding' in inp ? (str(inp, 'idEncoding') as IdEncoding) : 'hex'
+  expect(['hex', 'base58']).toContain(encoding)
+  const id = (o: Obj, k: string) => privateId(str(o, k))
+  const out = (b: Uint8Array) => encodePrivateId(b, encoding)
+  const memberships: PrivateMembership[] = arr(inp, 'memberships').map((m) => ({
+    identity: id(m, 'identity'),
+    role: str(m, 'role') as PrivateMembership['role'],
   }))
   const configs: ConfigRow[] = arr(inp, 'configs').map((c) => ({
-    id: str(c, 'id'),
-    owner: str(c, 'owner'),
+    id: id(c, 'id'),
+    owner: id(c, 'owner'),
     epoch: num(c, 'epoch'),
     createdAtBlockHeight: num(c, 'createdAtBlockHeight'),
     enc: hex(c, 'enc'),
@@ -508,36 +521,44 @@ async function runEpoch(inp: Obj): Promise<Json> {
   for (const w of arr(inp, 'wraps')) {
     const epoch = num(w, 'epoch')
     wraps.push({
-      id: str(w, 'id'),
-      owner: str(w, 'owner'),
-      memberId: str(w, 'memberId'),
+      id: id(w, 'id'),
+      owner: id(w, 'owner'),
+      memberId: id(w, 'memberId'),
       epoch,
       recipientKeyId: num(w, 'recipientKeyId'),
       keyEnabled: w['keyEnabled'] === true,
       keys: 'key' in w ? await EpochKeys.import(repoId, epoch, hex(w, 'key')) : undefined,
     })
   }
-  const r = await resolveEpochs({ repoId, reader: str(inp, 'reader'), memberships, configs, wraps })
-  const out: { [k: string]: Json } = {
+  const r = await resolveEpochs({ repoId, reader: id(inp, 'reader'), memberships, configs, wraps })
+  const result: { [k: string]: Json } = {
     currentEpoch: r.currentEpoch,
-    anchors: Object.fromEntries([...r.anchors].map(([e, a]) => [String(e), a.id])),
+    anchors: Object.fromEntries([...r.anchors].map(([e, a]) => [String(e), out(a.id)])),
     readable: [...r.keys.keys()].sort((a, b) => a - b),
     writeEpoch: r.writeEpoch,
     unanchored: [...r.unanchored],
-    alerts: r.alerts.map((a) => ({ ...a }) as Json),
-    repair: r.repair === null ? null : { ...r.repair, nonMembers: [...r.repair.nonMembers], missingWraps: [...r.repair.missingWraps] },
+    alerts: r.alerts.map(
+      (a): Json =>
+        'author' in a
+          ? { kind: a.kind, epoch: a.epoch, author: out(a.author) }
+          : { kind: a.kind, epoch: a.epoch, members: a.members.map(out) },
+    ),
+    repair:
+      r.repair === null
+        ? null
+        : { rotate: r.repair.rotate, nonMembers: r.repair.nonMembers.map(out), missingWraps: r.repair.missingWraps.map(out) },
   }
   if ('contentQueries' in inp) {
-    out['content'] = arr(inp, 'contentQueries').map((q) =>
-      contentIsLate(r, num(q, 'epoch'), num(q, 'createdAtBlockHeight'), str(q, 'owner')) ? 'late' : 'shown',
+    result['content'] = arr(inp, 'contentQueries').map((q) =>
+      contentIsLate(r, num(q, 'epoch'), num(q, 'createdAtBlockHeight'), id(q, 'owner')) ? 'late' : 'shown',
     )
   }
   if ('manifestQueries' in inp) {
-    out['manifests'] = arr(inp, 'manifestQueries').map((q) => ({
-      ...manifestStanding(r, num(q, 'headerEpoch'), num(q, 'createdAtBlockHeight'), str(q, 'owner')),
+    result['manifests'] = arr(inp, 'manifestQueries').map((q) => ({
+      ...manifestStanding(r, num(q, 'headerEpoch'), num(q, 'createdAtBlockHeight'), id(q, 'owner')),
     }))
   }
-  return out
+  return result
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -567,7 +588,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(138)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(146)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })

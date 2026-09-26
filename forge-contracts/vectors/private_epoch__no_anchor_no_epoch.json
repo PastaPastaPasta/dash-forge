@@ -20,7 +20,7 @@
     ],
     "configs": [
       {
-        "id": "c0-dave",
+        "id": "1c7cef048bf7e72d566816505ba91646900186f74824df5214d8a27bcea7ada7",
         "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
         "epoch": 0,
         "createdAtBlockHeight": 10,
@@ -30,7 +30,7 @@
     ],
     "wraps": [
       {
-        "id": "w0b",
+        "id": "cd824834ae1415564fb0e0699c445a2dc71f190baa00d7bcd74a6907c6707c36",
         "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
         "epoch": 0,

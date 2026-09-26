@@ -3,21 +3,29 @@
  * (`docs/security/private-repos.md` §5.3–§5.6), over flattened documents. Pure apart from
  * the key derivations and AES-GCM the chain walk needs.
  *
- * Identities are lowercase hex of the 32-byte identifier.
+ * Identities and ids are raw 32-byte values, ordered and compared as bytes (§5.3); convert at
+ * the boundary with `privateId`.
  */
 
-import { RoleOracle, type Membership } from '../rules/v2'
-import { compareStrings } from '../rules/oid'
-import { constantTimeEqual, hexToBytes, type Bytes } from './bytes'
+import { constantTimeEqual, isU32, type Bytes } from './bytes'
 import { isLate, openWithKey, type AnchorRef, type OpenContext } from './doc'
+import { IdSet, bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys, importEpochKeyAndWipe } from './keys'
 
-export type { Membership }
+/** A membership role; maintainer outranks writer. */
+export type Role = 'maintainer' | 'writer'
+
+/** One current `maintainer` or `writer` document of the repo. */
+export interface PrivateMembership {
+  /** `memberId`. */
+  readonly identity: PrivateId
+  readonly role: Role
+}
 
 /** A `config` document of the repo. */
 export interface ConfigRow {
-  readonly id: string
-  readonly owner: string
+  readonly id: PrivateId
+  readonly owner: PrivateId
   readonly epoch: number
   readonly createdAtBlockHeight: number
   readonly enc: Uint8Array
@@ -25,9 +33,9 @@ export interface ConfigRow {
 
 /** A `repoKey` document of the repo. */
 export interface WrapRow {
-  readonly id: string
-  readonly owner: string
-  readonly memberId: string
+  readonly id: PrivateId
+  readonly owner: PrivateId
+  readonly memberId: PrivateId
   readonly epoch: number
   readonly recipientKeyId: number
   /** Whether `recipientKeyId` is still an enabled key on `memberId`'s identity. */
@@ -41,7 +49,7 @@ export interface WrapRow {
 
 /** An epoch's anchor (§5.3). */
 export interface Anchor extends AnchorRef {
-  readonly owner: string
+  readonly owner: PrivateId
   /** `enc[1..33]` of a well-shaped v0x02 config; null when the shape is wrong (matches nothing). */
   readonly commit: Bytes | null
   /** The anchor's config document. */
@@ -49,15 +57,15 @@ export interface Anchor extends AnchorRef {
 }
 
 export type EpochAlert =
-  | { readonly kind: 'keyMismatch'; readonly epoch: number; readonly author: string }
-  | { readonly kind: 'chainBroken'; readonly epoch: number; readonly author: string }
-  | { readonly kind: 'rotationRequired'; readonly epoch: number; readonly members: readonly string[] }
+  | { readonly kind: 'keyMismatch'; readonly epoch: number; readonly author: PrivateId }
+  | { readonly kind: 'chainBroken'; readonly epoch: number; readonly author: PrivateId }
+  | { readonly kind: 'rotationRequired'; readonly epoch: number; readonly members: readonly PrivateId[] }
 
-/** The repair check's findings for the current epoch (§5.6). */
+/** The repair check's findings for the current epoch (§5.6); ids in byte order. */
 export interface Repair {
   readonly rotate: boolean
-  readonly nonMembers: readonly string[]
-  readonly missingWraps: readonly string[]
+  readonly nonMembers: readonly PrivateId[]
+  readonly missingWraps: readonly PrivateId[]
 }
 
 export interface EpochResolution {
@@ -74,7 +82,7 @@ export interface EpochResolution {
   /** Null when no epoch exists. */
   readonly repair: Repair | null
   /** Current members. */
-  readonly members: ReadonlySet<string>
+  readonly members: IdSet
 }
 
 const MIN_CONFIG_ENC = 61
@@ -83,11 +91,11 @@ function anchorCommit(enc: Uint8Array): Bytes | null {
   return enc.length >= MIN_CONFIG_ENC && enc[0] === 0x02 ? enc.slice(1, 33) : null
 }
 
-/** Anchor of each epoch: the first current-maintainer config by (block height, id) (§5.3). */
-export function selectAnchors(configs: readonly ConfigRow[], oracle: RoleOracle): Map<number, Anchor> {
+/** Anchor of each epoch: the first current-maintainer config by (block height, id bytes) (§5.3). */
+export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet): Map<number, Anchor> {
   const ordered = configs
-    .filter((c) => oracle.currentRole(c.owner) === 'maintainer')
-    .sort((a, b) => a.createdAtBlockHeight - b.createdAtBlockHeight || compareStrings(a.id, b.id))
+    .filter((c) => maintainers.has(c.owner) && isU32(c.epoch))
+    .sort((a, b) => a.createdAtBlockHeight - b.createdAtBlockHeight || compareBytes(a.id, b.id))
   const anchors = new Map<number, Anchor>()
   for (const c of ordered) {
     if (anchors.has(c.epoch)) continue
@@ -107,13 +115,19 @@ function matchesAnchor(keys: EpochKeys, anchor: Anchor): boolean {
 }
 
 const KIND_ORDER = { keyMismatch: 0, chainBroken: 1, rotationRequired: 2 } as const
+const EMPTY = new Uint8Array(0)
+
+function alertKey(a: EpochAlert): string {
+  const ids = 'author' in a ? [a.author] : a.members
+  return JSON.stringify([a.kind, a.epoch, ids.map((id) => [...id])])
+}
 
 function sortAlerts(alerts: readonly EpochAlert[]): EpochAlert[] {
   const unique = new Map<string, EpochAlert>()
-  for (const a of alerts) unique.set(JSON.stringify(a), a)
-  const author = (a: EpochAlert) => ('author' in a ? a.author : '')
+  for (const a of alerts) unique.set(alertKey(a), a)
+  const author = (a: EpochAlert) => ('author' in a ? a.author : EMPTY)
   return [...unique.values()].sort(
-    (a, b) => a.epoch - b.epoch || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || compareStrings(author(a), author(b)),
+    (a, b) => a.epoch - b.epoch || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || compareBytes(author(a), author(b)),
   )
 }
 
@@ -127,7 +141,7 @@ async function chainStep(
   const opened = await openWithKey(
     {
       type: 'config',
-      ownerId: hexToBytes(config.owner),
+      ownerId: config.owner,
       epoch: config.epoch,
       id: config.id,
       createdAtBlockHeight: config.createdAtBlockHeight,
@@ -155,15 +169,15 @@ async function chainStep(
  */
 export async function resolveEpochs(input: {
   readonly repoId: Uint8Array
-  readonly reader: string
-  readonly memberships: readonly Membership[]
+  readonly reader: PrivateId
+  readonly memberships: readonly PrivateMembership[]
   readonly configs: readonly ConfigRow[]
   readonly wraps: readonly WrapRow[]
 }): Promise<EpochResolution> {
   const { repoId, reader, memberships, configs, wraps } = input
-  const oracle = new RoleOracle(memberships)
-  const isMaintainer = (id: string) => oracle.currentRole(id) === 'maintainer'
-  const anchors = selectAnchors(configs, oracle)
+  const members = new IdSet(memberships.map((m) => m.identity))
+  const maintainers = new IdSet(memberships.filter((m) => m.role === 'maintainer').map((m) => m.identity))
+  const anchors = selectAnchors(configs, maintainers)
   const epochs = [...anchors.keys()].sort((a, b) => a - b)
   const currentEpoch = epochs.length > 0 ? (epochs[epochs.length - 1] as number) : null
   const alerts: EpochAlert[] = []
@@ -171,9 +185,9 @@ export async function resolveEpochs(input: {
   // §5.4: accepted wraps
   const keys = new Map<number, EpochKeys>()
   for (const w of wraps) {
-    if (w.memberId !== reader || w.keys === undefined || !isMaintainer(w.owner)) continue
+    if (!bytesEqual(w.memberId, reader) || w.keys === undefined || !maintainers.has(w.owner)) continue
     const anchor = anchors.get(w.epoch)
-    if (anchor === undefined || w.keys.epoch !== w.epoch) continue
+    if (anchor === undefined || w.keys.epoch !== w.epoch || !bytesEqual(w.keys.repoId, repoId)) continue
     if (matchesAnchor(w.keys, anchor)) {
       if (!keys.has(w.epoch)) keys.set(w.epoch, w.keys)
     } else {
@@ -200,17 +214,16 @@ export async function resolveEpochs(input: {
   const unanchored = [...new Set([...configs, ...wraps].map((r) => r.epoch))]
     .filter((e) => !anchors.has(e))
     .sort((a, b) => a - b)
-  const members = new Set(memberships.map((m) => m.identity))
 
   // §5.6: the repair check for the current epoch
   let repair: Repair | null = null
   if (currentEpoch !== null) {
-    const current = wraps.filter((w) => w.epoch === currentEpoch && isMaintainer(w.owner))
-    const nonMembers = [...new Set(current.map((w) => w.memberId))].filter((m) => !members.has(m)).sort(compareStrings)
-    const covered = new Set(current.filter((w) => w.keyEnabled).map((w) => w.memberId))
-    const missingWraps = [...members].filter((m) => !covered.has(m)).sort(compareStrings)
+    const current = wraps.filter((w) => w.epoch === currentEpoch && maintainers.has(w.owner))
+    const nonMembers = new IdSet(current.map((w) => w.memberId).filter((m) => !members.has(m))).sorted()
+    const covered = new IdSet(current.filter((w) => w.keyEnabled).map((w) => w.memberId))
+    const missingWraps = members.sorted().filter((m) => !covered.has(m))
     repair = { rotate: nonMembers.length > 0, nonMembers, missingWraps }
-    if (repair.rotate && isMaintainer(reader)) {
+    if (repair.rotate && maintainers.has(reader)) {
       alerts.push({ kind: 'rotationRequired', epoch: currentEpoch, members: nonMembers })
     }
   }
@@ -233,7 +246,7 @@ export function openContextOf(r: EpochResolution): OpenContext {
 }
 
 /** Whether content under `epoch` at `height` by `owner` is hidden as late (§8.2). */
-export function contentIsLate(r: EpochResolution, epoch: number, height: number, owner: string): boolean {
+export function contentIsLate(r: EpochResolution, epoch: number, height: number, owner: PrivateId): boolean {
   return isLate(r.anchors, r.members, epoch, height, owner)
 }
 
@@ -250,7 +263,7 @@ export function manifestStanding(
   r: EpochResolution,
   headerEpoch: number,
   height: number,
-  owner: string,
+  owner: PrivateId,
 ): ManifestStanding {
   let currentAt: number | null = null
   for (const [e, a] of r.anchors) if (a.height <= height && (currentAt === null || e > currentAt)) currentAt = e

@@ -11,7 +11,7 @@
       },
       "anchors": {
         "0": {
-          "id": "c0",
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
           "height": 10
         }
       },
@@ -21,7 +21,7 @@
       "type": "config",
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
-      "id": "c0-later",
+      "id": "c035c8e7198f81e502dd833a7fcb76d628f71d6beb6812fb70f2a9cb67398bcc",
       "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0b19702080a6549f56371975d7b304906fd07378c665f50f8b2bf3e42fb6e9a496624f1aa1a1b5a5cbe08198ba7131eb09b09c55b5",
       "createdAtBlockHeight": 50
     }

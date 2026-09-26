@@ -25,9 +25,10 @@ import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { evoSdkService } from '../sdk'
-import { bytesToHex, hexToBytes } from './bytes'
+import { hexToBytes } from './bytes'
 import { openContent, sealDoc, type PrivateDoc } from './doc'
 import { resolveEpochs, openContextOf } from './epoch'
+import { privateId } from './ids'
 import { EpochKeys, generateEpochKey, refNameHash } from './keys'
 import { packHash, sealPack } from './pack'
 import { sealWrap, unwrapKey } from './wrap'
@@ -89,7 +90,6 @@ describe.skipIf(!LIVE)('live private repository (moutai)', () => {
       const encPriv = evo.PrivateKey.fromHex(enc.privateKeyHex, 'testnet')
       const owner = evo.Identifier.fromBase58(rec.identityId)
       const ownerBytes = owner.toBytes()
-      const ownerHex = bytesToHex(ownerBytes)
 
       const create = async (contractId: string, type: string, data: Record<string, unknown>) => {
         const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractId, ownerId: owner })
@@ -204,17 +204,17 @@ describe.skipIf(!LIVE)('live private repository (moutai)', () => {
       const configEncRead = bytesOf(config.doc.properties['enc'])
       const resolution = await resolveEpochs({
         repoId: R,
-        reader: ownerHex,
-        memberships: [{ identity: ownerHex, role: 'maintainer', createdAt: 0 }],
-        configs: [{ id: configId, owner: ownerHex, epoch: 0, createdAtBlockHeight: config.height, enc: configEncRead }],
-        wraps: [{ id: wrapId, owner: ownerHex, memberId: ownerHex, epoch: 0, recipientKeyId: enc.id, keyEnabled: true, keys: unwrapped }],
+        reader: ownerBytes,
+        memberships: [{ identity: ownerBytes, role: 'maintainer' }],
+        configs: [{ id: privateId(configId), owner: ownerBytes, epoch: 0, createdAtBlockHeight: config.height, enc: configEncRead }],
+        wraps: [{ id: privateId(wrapId), owner: ownerBytes, memberId: ownerBytes, epoch: 0, recipientKeyId: enc.id, keyEnabled: true, keys: unwrapped }],
       })
       expect(resolution.currentEpoch).toBe(0)
       expect(resolution.writeEpoch).toBe(0)
       expect(resolution.alerts).toEqual([])
       const ctx = openContextOf(resolution)
       const open = async (doc: PrivateDoc, read: { doc: { properties: Record<string, unknown> }; height: number }, id?: string) =>
-        openContent({ ...doc, id, createdAtBlockHeight: read.height, enc: bytesOf(read.doc.properties['enc']) }, ctx)
+        openContent({ ...doc, id: id === undefined ? undefined : privateId(id), createdAtBlockHeight: read.height, enc: bytesOf(read.doc.properties['enc']) }, ctx)
       expect(await open(configDoc, config, configId)).toEqual({
         status: 'readable',
         fields: { defaultBranch: 'refs/heads/main', protectedPatterns: ['refs/heads/main'] },

@@ -55,7 +55,7 @@ pub struct Fields {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "prev_key_hex"
+        with = "super::keys::opt_key_serde"
     )]
     pub prev_epoch_key: Option<EpochKey>,
     /// Tag 10: an inline comment's `path`.
@@ -63,43 +63,23 @@ pub struct Fields {
     pub path: Option<String>,
 }
 
+/// Decrypted content is private: `Debug` shows only which fields are present and their byte
+/// lengths, never the text.
 impl std::fmt::Debug for Fields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = |v: &Option<String>| v.as_ref().map(String::len);
         f.debug_struct("Fields")
-            .field("title", &self.title)
-            .field("body", &self.body.as_ref().map(String::len))
-            .field("ref_name", &self.ref_name)
-            .field("base_ref_name", &self.base_ref_name)
-            .field("source_ref_name", &self.source_ref_name)
-            .field("default_branch", &self.default_branch)
-            .field("protected_patterns", &self.protected_patterns)
+            .field("title_len", &len(&self.title))
+            .field("body_len", &len(&self.body))
+            .field("ref_name_len", &len(&self.ref_name))
+            .field("base_ref_name_len", &len(&self.base_ref_name))
+            .field("source_ref_name_len", &len(&self.source_ref_name))
+            .field("default_branch_len", &len(&self.default_branch))
+            .field("protected_patterns", &self.protected_patterns.len())
             .field("prev_epoch", &self.prev_epoch)
             .field("prev_epoch_key", &self.prev_epoch_key)
-            .field("path", &self.path)
+            .field("path_len", &len(&self.path))
             .finish()
-    }
-}
-
-/// `prevEpochKey` as hex in JSON (the vectors' form).
-mod prev_key_hex {
-    use super::EpochKey;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    #[allow(clippy::ref_option)]
-    pub fn serialize<S: Serializer>(k: &Option<EpochKey>, s: S) -> Result<S::Ok, S::Error> {
-        match k {
-            Some(k) => s.serialize_str(&hex::encode(k.expose())),
-            None => s.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<EpochKey>, D::Error> {
-        let s = zeroize::Zeroizing::new(String::deserialize(d)?);
-        let bytes =
-            zeroize::Zeroizing::new(hex::decode(s.as_str()).map_err(serde::de::Error::custom)?);
-        EpochKey::from_slice(&bytes)
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("prevEpochKey is not 32 bytes"))
     }
 }
 
@@ -297,7 +277,11 @@ mod tests {
     #[test]
     fn debug_hides_body_and_key() {
         let f = Fields {
+            title: Some("secret title".into()),
             body: Some("secret text".into()),
+            ref_name: Some("refs/heads/secret".into()),
+            protected_patterns: vec!["refs/heads/secret".into()],
+            path: Some("src/secret.rs".into()),
             prev_epoch_key: Some(EpochKey::from_bytes([7; 32])),
             ..Fields::default()
         };

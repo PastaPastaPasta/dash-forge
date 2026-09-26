@@ -1,0 +1,115 @@
+{
+  "name": "base58_identities",
+  "description": "the same tie with every identity and id in base58, the apps' form: both harnesses convert at the boundary and resolve identically.",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "Ctj2Bzxo5VGsYw2KmaQiD4qFxx2RYBqKLpJVFttSVdmR",
+    "memberships": [
+      {
+        "identity": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "Ctj2Bzxo5VGsYw2KmaQiD4qFxx2RYBqKLpJVFttSVdmR",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "role": "maintainer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "Fa1jmjgpHeQfEZcgQWHArWFQC6P5AapV3itEBJi9Rf41",
+        "owner": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "3KwyN5qP3SKRhjAHK8CwQaFMXCKNeq5JC6FrqWRmKpaW",
+        "owner": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "0264b54197f9563fa637b1b520041479cbd48eebdd390e6e2e6b4f91ad40640fd4000102030405060708090a0b61a7a4f7210961a6fc25784cac3443fa3bd94e1f61613dc7b025a41f06c1dcacb27b714fdb45e6b3806b7ed6f35710cc9089c9d28d59792064e1"
+      },
+      {
+        "id": "wiTXZWkNZ7wBdFh7Us6F3SvVGwf22iLQ2dEAZRVjjh2",
+        "owner": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4937e9722cc8a130d9d5bb176679b47d6"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "3YNQtg2uBoquxfWDGX2TVSBV7MBDDCjXiGjyZR25oDBf",
+        "owner": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "memberId": "Ctj2Bzxo5VGsYw2KmaQiD4qFxx2RYBqKLpJVFttSVdmR",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "D1PherHms5wfqfdugF36S6dTNjUzKBbzhhWBACYegQY3",
+        "owner": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "memberId": "Ctj2Bzxo5VGsYw2KmaQiD4qFxx2RYBqKLpJVFttSVdmR",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      {
+        "id": "A45dudiY99GoZbHwdXaUj5QtL98fgLZsHBjqfNFWFwc3",
+        "owner": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "memberId": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "67EUWyBFCUFgPQLpsxyKNH1XuYNnrNDm2vuKguEq4N8B",
+        "owner": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "memberId": "G8qD4TKHToXkFH2ghv4pB5ssga85sEngAQHz493CMdFM",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      }
+    ],
+    "idEncoding": "base58"
+  },
+  "expected": {
+    "currentEpoch": 1,
+    "anchors": {
+      "0": "Fa1jmjgpHeQfEZcgQWHArWFQC6P5AapV3itEBJi9Rf41",
+      "1": "wiTXZWkNZ7wBdFh7Us6F3SvVGwf22iLQ2dEAZRVjjh2"
+    },
+    "readable": [
+      0,
+      1
+    ],
+    "writeEpoch": 1,
+    "unanchored": [],
+    "alerts": [
+      {
+        "kind": "keyMismatch",
+        "epoch": 1,
+        "author": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+      }
+    ],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}
