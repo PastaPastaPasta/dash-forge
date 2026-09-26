@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     let client = PlatformClient::connect(target).await?;
     let repo = forge_core::resolve::resolve_named(&client, owner, name).await?;
     let c = Collab::reader(&client);
-    let (issues, _) = c.list_issues(&repo, 100).await?;
+    let issues = c.list_issues(&repo, 100).await?.rows;
     for i in issues.iter().rev() {
         let s = c.issue_state(&repo, i).await?;
         let comments = c.comments(&repo, &i.document_id).await?.len();
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
             i.imported.as_ref().map_or("", |x| x.url.as_str())
         );
     }
-    let (patches, _) = c.list_patches(&repo, 100).await?;
+    let patches = c.list_patches(&repo, 100).await?.rows;
     for p in patches.into_iter().rev() {
         let comments = c.comments(&repo, &p.document_id).await?.len();
         let reviews = c.reviews(&repo, &p.document_id).await?;

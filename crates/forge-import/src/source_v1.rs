@@ -500,7 +500,14 @@ fn public_assets(json: Option<String>) -> Vec<ReleaseAsset> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|mut a| {
+            // forge-web's writer records a single `uri`; it is never written back.
+            if let Some(u) = a.uri.take() {
+                if !a.uris.contains(&u) {
+                    a.uris.push(u);
+                }
+            }
             a.uris.retain(|u| model::is_public_uri(u));
+            a.uris.truncate(4);
             (!a.uris.is_empty()).then_some(a)
         })
         .collect()

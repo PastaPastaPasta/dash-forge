@@ -323,6 +323,7 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
                 .to_string(),
             size_bytes: a.size,
             uris: vec![model::clip(&a.browser_download_url, 300, 300)],
+            uri: None,
         })
         .collect::<Vec<_>>();
     SrcRelease {
