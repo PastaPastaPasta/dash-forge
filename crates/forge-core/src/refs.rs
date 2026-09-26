@@ -321,6 +321,9 @@ pub(crate) async fn read_all_with(src: &impl RefDocSource) -> Result<RefHistorie
         );
     } else {
         let by_hash = group(src, &docs)?;
+        // Runs on well-formed rows only (as forge-web's does): a skipped malformed update
+        // whose `newOid` a later update names as its parent sends every read to the full
+        // reflog below. Slower, never wrong, and the same in both clients.
         let dangling = by_hash.values().filter(|u| has_missing_parent(u)).count();
         if dangling == 0 {
             return Ok(by_hash);

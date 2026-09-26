@@ -3110,6 +3110,24 @@ mod tests {
         assert_eq!((nb, nw), (1, 0));
     }
 
+    /// An indexOnly create whose nonce was found spent is settled by its probe: present means
+    /// ours landed and nothing is re-signed. (The all-absent case is `landed`'s own loop: ten
+    /// polls 1.5 s apart, too slow for a unit test without tokio's paused clock.)
+    #[tokio::test]
+    async fn poll_confirm_settles_on_the_probe() {
+        let calls = std::cell::Cell::new(0u32);
+        let present_on_second = || {
+            calls.set(calls.get() + 1);
+            std::future::ready(Ok(calls.get() >= 2))
+        };
+        assert!(super::poll_confirm(&present_on_second).await.unwrap());
+        assert_eq!(calls.get(), 2, "stops as soon as the entry shows up");
+
+        // A failed read is an error, never "lost" (which would sign a second copy).
+        let failing = || std::future::ready(Err(Error::NotFound));
+        assert!(super::poll_confirm(&failing).await.is_err());
+    }
+
     /// The same cases as forge-web's `isNonceSpent` tests.
     #[test]
     fn nonce_is_spent_follows_drive() {
