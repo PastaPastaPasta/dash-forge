@@ -182,7 +182,7 @@ export const PASSPHRASE = 'e2e passphrase for the vault'
  * per identity instead of registering a new one on every test (identities would otherwise
  * accumulate keys without bound). Gitignored (e2e/.playwright/).
  */
-function stateFile(name: string): string {
+export function stateFile(name: string): string {
   return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${name}.json`)
 }
 

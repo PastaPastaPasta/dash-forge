@@ -51,7 +51,11 @@ module.exports = {
           DEFAULT: '#d97706', // degraded availability — icons, borders, tints; text on dark
           700: '#b45309', // TEXT on light surfaces (5.02:1 on white; the base value is 3.19:1)
         },
-        danger: '#dc2626', // force-push, delete, failed verification
+        danger: {
+          DEFAULT: '#dc2626', // force-push, delete, failed verification: icons, borders, tints, text on light
+          400: '#f87171', // TEXT on dark surfaces (the base value is 4.01:1 on anvil-950)
+          700: '#b91c1c', // TEXT on light surfaces (the base value is 4.4:1 on anvil-100)
+        },
         // Dash brand blue — identity/credits/network UI only. The brand value is for fills,
         // tints and icons; it is under 4.5:1 as TEXT on every surface in both themes, so
         // text uses the WCAG AA shades: `text-dash-600 dark:text-dash-400` (the same

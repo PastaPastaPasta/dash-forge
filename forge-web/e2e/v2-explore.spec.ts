@@ -1,5 +1,11 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, runAxe, shot } from './helpers'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { collectPageErrors, E2E_DEVNET, runAxe, shot } from './helpers'
+
+/** The read fixture's owner (`forge-contracts/scripts/seed-v2-fixture.mjs`). */
+const DEMO_OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 
 /**
  * Explore, the header and the notifications page, signed out, on a devnet (reads only):
@@ -47,25 +53,71 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
   await jump.fill('#1')
   await jump.press('Enter')
   await expect(page.getByRole('status').filter({ hasText: /inside a repo/ })).toBeVisible()
-  await jump.fill('9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD/forge-v2-demo')
+  await jump.fill(`${DEMO_OWNER}/forge-v2-demo`)
   await jump.press('Enter')
   await expect(page).toHaveURL(/\/repo\/?\?owner=9r27/)
 })
 
-test('x3. #n in a repo opens that issue', async ({ page }) => {
-  await page.goto('/repo/?owner=9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD&name=forge-v2-demo', { waitUntil: 'domcontentloaded' })
+/**
+ * Which numbers the demo repo has as issues and as PRs, read from Platform in Node. Issues and
+ * PRs number independently (forge-v2.md §6), and other suites keep opening PRs on this repo,
+ * so the spec picks its cases from what is on chain instead of hard-coding them.
+ */
+async function demoNumbers(): Promise<{ issues: Set<number>; pulls: Set<number> }> {
+  const root = resolve(__dirname, '../..')
+  const evo = await import(pathToFileURL(join(root, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
+  const dep = JSON.parse(readFileSync(join(root, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
+  const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: dep.dapiAddresses })
+  await sdk.connect()
+  const docs = async (dataContractId: string, documentTypeName: string, where: unknown[]): Promise<Record<string, unknown>[]> => {
+    const r: Map<string, { toJSON(v: number): Record<string, unknown> } | undefined> = await sdk.documents.query({ dataContractId, documentTypeName, where, limit: 100 })
+    return [...r.values()].filter((d): d is { toJSON(v: number): Record<string, unknown> } => d !== undefined).map((d) => d.toJSON(14))
+  }
+  const [repo] = await docs(dep.v2.forgeCore.contractId, 'repo', [['$ownerId', '==', DEMO_OWNER], ['name', '==', 'forge-v2-demo']])
+  const numbers = async (type: string): Promise<Set<number>> =>
+    new Set((await docs(dep.v2.forgeCollab.contractId, type, [['repoId', '==', repo?.['$id']]])).map((d) => Number(d['number'])))
+  return { issues: await numbers('issue'), pulls: await numbers('patch') }
+}
+
+test('x3. #n in a repo opens the issue or PR, and offers both when both exist', async ({ page }) => {
+  const { issues, pulls } = await demoNumbers()
+  const both = [...issues].find((n) => pulls.has(n))
+  const issueOnly = [...issues].find((n) => !pulls.has(n))
+  const pullOnly = [...pulls].find((n) => !issues.has(n))
+  const absent = Math.max(0, ...issues, ...pulls) + 1000
+  test.info().annotations.push({ type: 'numbers', description: `issues ${[...issues]} · PRs ${[...pulls]}` })
+  expect(both, 'the fixture has an issue and a PR with the same number').toBeDefined()
+
+  await page.goto(`/repo/?owner=${DEMO_OWNER}&name=forge-v2-demo`, { waitUntil: 'domcontentloaded' })
   const jump = page.getByLabel(/jump to a repo/i).first()
-  // The fixture has issue #1 and PR #1: both are offered.
-  await jump.fill('#1')
-  await jump.press('Enter')
-  const note = page.getByRole('status').filter({ hasText: /#1 is both/ })
+  const go = async (n: number): Promise<void> => {
+    await jump.fill(`#${n}`)
+    await jump.press('Enter')
+  }
+
+  // Both exist: the chooser offers each, and the issue link opens the issue.
+  await go(both ?? 1)
+  const note = page.getByRole('status').filter({ hasText: new RegExp(`#${both} is both`) })
   await expect(note).toBeVisible({ timeout: 60_000 })
-  await note.getByRole('link', { name: 'issue #1' }).click()
-  await expect(page).toHaveURL(/\/repo\/issue\/?\?.*number=1/)
-  // #3 is an issue only: straight there.
-  await page.getByLabel(/jump to a repo/i).first().fill('#3')
-  await page.getByLabel(/jump to a repo/i).first().press('Enter')
-  await expect(page).toHaveURL(/\/repo\/issue\/?\?.*number=3/, { timeout: 60_000 })
+  await expect(note.getByRole('link', { name: `PR #${both}` })).toHaveAttribute('href', new RegExp(`/repo/pull/?\\?.*number=${both}`))
+  await note.getByRole('link', { name: `issue #${both}` }).click()
+  await expect(page).toHaveURL(new RegExp(`/repo/issue/?\\?.*number=${both}`))
+
+  // Only one exists: straight there.
+  if (issueOnly !== undefined) {
+    await go(issueOnly)
+    await expect(page).toHaveURL(new RegExp(`/repo/issue/?\\?.*number=${issueOnly}(&|$)`), { timeout: 60_000 })
+  }
+  if (pullOnly !== undefined) {
+    await go(pullOnly)
+    await expect(page).toHaveURL(new RegExp(`/repo/pull/?\\?.*number=${pullOnly}(&|$)`), { timeout: 60_000 })
+  }
+
+  // Neither: say so, stay put.
+  const url = page.url()
+  await go(absent)
+  await expect(page.getByRole('status').filter({ hasText: `No issue or PR #${absent}` })).toBeVisible({ timeout: 60_000 })
+  expect(page.url()).toBe(url)
 })
 
 test('x4. notifications, signed out, say what they are', async ({ page }) => {

@@ -85,6 +85,33 @@ export async function idbPut<T>(store: StoreName, key: string, value: T): Promis
   await run(store, 'readwrite', (s) => s.put(value, key))
 }
 
+/**
+ * Several puts and deletes in ONE store, atomically: one transaction, so a crash or a failed
+ * write leaves either all of them or none (`value: undefined` deletes the key).
+ */
+export async function idbBatch(store: StoreName, ops: readonly (readonly [string, unknown])[]): Promise<void> {
+  if (!hasIndexedDb()) {
+    const m = mem(store)
+    for (const [k, v] of ops) {
+      if (v === undefined) m.delete(k)
+      else m.set(k, structuredClone(v))
+    }
+    return
+  }
+  const db = await open()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite')
+    const s = tx.objectStore(store)
+    for (const [k, v] of ops) {
+      if (v === undefined) s.delete(k)
+      else s.put(v, k)
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'))
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'))
+  })
+}
+
 /** Delete one value (no-op when absent). */
 export async function idbDelete(store: StoreName, key: string): Promise<void> {
   if (!hasIndexedDb()) {

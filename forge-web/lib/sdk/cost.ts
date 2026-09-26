@@ -31,6 +31,10 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   label: 45_000_000,
   refUpdate: 45_000_000,
   protectedRefUpdate: 45_000_000,
+  // Not yet measured from the browser: forge-core's per-byte model (fixed shape plus the
+  // storage of its byte fields, which `textBytes` does not count — see `estimateBytesCredits`).
+  packManifest: 60_000_000,
+  chunk: 20_000_000,
   // forge-collab
   issue: 57_400_000,
   patch: 112_000_000,
@@ -105,6 +109,21 @@ export function estimateCreateCredits(documentType: string, data: Readonly<Recor
 /** Preview for creating one document. */
 export function previewCreate(documentType: string, data: Readonly<Record<string, unknown>> = {}): CostPreview {
   return previewCredits(estimateCreateCredits(documentType, data))
+}
+
+/** Estimated credits for a document that also stores `byteLen` bytes of byte-array fields. */
+export function estimateBytesCredits(documentType: string, byteLen: number, data: Readonly<Record<string, unknown>> = {}): number {
+  return estimateCreateCredits(documentType, data) + CREDITS_PER_TEXT_BYTE * byteLen
+}
+
+/**
+ * Estimated credits to store `bytes` as Platform `chunk` documents (three 4,900-byte fields
+ * each, forge-core `pack::split`): every chunk's fixed cost plus the storage of its bytes.
+ * Roughly 0.28 DASH per MiB — Platform storage is permanent.
+ */
+export function estimateChunkCredits(bytes: number): number {
+  const chunks = Math.max(1, Math.ceil(bytes / (4900 * 3)))
+  return chunks * (BASE_CREDITS['chunk'] ?? DEFAULT_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
 }
 
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */

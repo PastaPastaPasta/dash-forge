@@ -375,6 +375,9 @@ async function main() {
   await comment('issue:3:comment:1', MAINTAINER, i3, 'Done in docs/rules.md; closing.');
 
   // --- pull requests ------------------------------------------------------------------
+  // Numbered independently of issues (forge-v2.md §6): PR #1 and issue #1 both exist on
+  // purpose, and the jump-box spec relies on one such pair. Other suites open more PRs here,
+  // so readers must not assume these are the only numbers.
   const patch = (n, who, title, body, headOid, sourceRef) =>
     create(`patch:${n}`, who, collab, 'patch', {
       repoId: R,
