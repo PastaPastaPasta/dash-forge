@@ -57,6 +57,7 @@ match replicas "${INPUT_REPLICAS:-}" '^[1-9]$' "must be a whole number from 1 to
 bool dry-run "${INPUT_DRY_RUN:-}"
 bool install "${INPUT_INSTALL:-}"
 bool state-cache "${INPUT_STATE_CACHE:-}"
+bool fail-on-partial "${INPUT_FAIL_ON_PARTIAL:-false}"
 if [ "${INPUT_INSTALL:-}" = true ]; then
     match version "${INPUT_VERSION:-}" '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
         "must be a release version like 0.1.0"

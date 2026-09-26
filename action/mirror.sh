@@ -104,4 +104,20 @@ cmd=(forge-import "$INPUT_GITHUB_REPO" --repo "$INPUT_REPO" --sync "$INPUT_SYNC"
     --state "$FORGE_STATE" --work-dir "$FORGE_WORK_DIR" --max-spend "$INPUT_COST_CAP"
     --yes --summary-json "$FORGE_SUMMARY" "${net[@]}")
 [ "$INPUT_DRY_RUN" = false ] || cmd+=(--dry-run)
-exec "${cmd[@]}"
+
+# Exit codes: 0 ok / dry run, 1 error, 3 cost cap reached, 4 partial (some items skipped;
+# the sync state did not advance, so the next run retries them). The Summary step runs
+# whatever happens here and explains the outcome.
+rc=0
+"${cmd[@]}" || rc=$?
+case "$rc" in
+    0) ;;
+    4)
+        if [ "${INPUT_FAIL_ON_PARTIAL:-false}" = true ]; then
+            echo "forge-import skipped some items (exit 4) and fail-on-partial is true."
+            exit 4
+        fi
+        echo "forge-import skipped some items (exit 4); the next run retries them."
+        ;;
+    *) exit "$rc" ;;
+esac

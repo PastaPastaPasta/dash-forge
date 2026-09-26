@@ -33,7 +33,8 @@ expect md '| Ref updates | 3 |'
 expect md '| Packs | 2 (3.00 MiB) |'
 expect md '| Comments | 7 |'
 expect md '| Labels | 6 |'
-expect md '| **Platform charged** | **0.025 DASH** |'
+reject md 'Skipped'
+expect md '| **Spent** | **0.025 DASH** |'
 expect md '| Estimate | 0.026 DASH |'
 expect md '| Runner key budget left | 0.45 of 0.5 DASH, expires 2100-01-01 |'
 expect md '| Identity balance | 0.4 DASH |'
@@ -50,7 +51,7 @@ expect md 'dry run (estimate only, nothing was written)'
 expect md '| Would write | |'
 expect md '| Issues | 40 |'
 expect md '| **Estimated cost** | **0.042 DASH** |'
-reject md 'Platform charged'
+reject md '| **Spent**'
 expect md 'no budget (not a limited key)'
 reject md 'Identity balance'
 expect ann '::warning title=Not a limited key::'
@@ -67,6 +68,17 @@ expect ann '::warning title=Forge mirror::line one ::error::injected'
 expect ann '::error title=Forge mirror cap_exceeded::estimate 0.09 DASH exceeds'
 [ "$(grep -c '^::' "$tmp/ann")" = 4 ] || { echo "FAIL [$case] an annotation was split or injected"; fails=$((fails + 1)); }
 expect out 'status=cap_exceeded'
+
+case=partial
+run_summary partial.json
+expect md '### Forge mirror updated with skipped items'
+expect md '| Skipped (retried next run) | 2 |'
+expect md '| **Spent** | **0.013 DASH** |'
+expect ann '::warning title=Forge mirror::issue #7: number already taken in the destination; skipped'
+expect ann '::warning title=Forge mirror skipped items::2 item(s) were skipped'
+reject ann '::error'
+expect out 'status=partial'
+expect out 'spent-dash=0.013'
 
 case=error
 run_summary error.json
@@ -139,6 +151,7 @@ bad INPUT_COST_CAP=0
 bad INPUT_COST_CAP=1e3
 bad INPUT_REPLICAS=0
 bad INPUT_DRY_RUN=yes
+bad INPUT_FAIL_ON_PARTIAL=maybe
 bad INPUT_STORAGE_KIND=gcs
 bad INPUT_STORAGE_KIND=s3
 bad INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=http://insecure INPUT_S3_BUCKET=b
@@ -149,7 +162,7 @@ bad INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT='https://x.example/$(id)' INPUT_S3_B
 
 # mirror.sh with stub binaries that record their arguments and environment.
 mkdir -p "$tmp/bin"
-printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"$STUB_OUT/args"\nenv >"$STUB_OUT/env"\n' >"$tmp/bin/forge-import"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"$STUB_OUT/args"\nenv >"$STUB_OUT/env"\nexit "${STUB_RC:-0}"\n' >"$tmp/bin/forge-import"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"$STUB_OUT/dg"\n' >"$tmp/bin/dg"
 printf '#!/bin/sh\n' >"$tmp/bin/git-remote-dash"
 chmod +x "$tmp/bin"/*
@@ -192,6 +205,16 @@ expect env 'GIT_CONFIG_VALUE_0=mirror'
 expect env 'GIT_CONFIG_KEY_2=dash.platformFallback'
 expect env 'GIT_CONFIG_COUNT=3'
 reject args '--dry-run'
+
+case="mirror exit codes"
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 || { echo "FAIL [$case] partial (4) failed the step"; fails=$((fails + 1)); }
+expect log 'the next run retries them'
+if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 INPUT_FAIL_ON_PARTIAL=true; then
+    echo "FAIL [$case] partial with fail-on-partial passed"; fails=$((fails + 1))
+fi
+for rc in 1 3; do
+    if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=$rc; then echo "FAIL [$case] exit $rc passed"; fails=$((fails + 1)); fi
+done
 
 case="mirror empty key"
 if mirror DASH_FORGE_KEY=''; then echo "FAIL [$case] accepted"; fails=$((fails + 1)); fi

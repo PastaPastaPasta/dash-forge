@@ -56,6 +56,9 @@ inputs:
   dry-run:
     description: "true: enumerate, diff and estimate; write nothing."
     default: "false"
+  fail-on-partial:
+    description: "true: fail the step when some items were skipped (status partial). Default: a warning, since the next run retries them."
+    default: "false"
   github-repo:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
@@ -71,10 +74,10 @@ inputs:
 
 outputs:
   status:
-    description: "ok, dry_run, cap_exceeded or error."
+    description: "ok, partial, dry_run, cap_exceeded or error."
     value: ${{ steps.summary.outputs.status }}
   spent-dash:
-    description: "DASH charged by this run."
+    description: "DASH spent by this run."
     value: ${{ steps.summary.outputs.spent-dash }}
   summary-json:
     description: "Path of forge-import's run summary JSON."
@@ -106,6 +109,7 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_INSTALL: ${{ inputs.install }}
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
+        INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
 
     # A fresh directory per invocation: two mirrors in one job, or a failed earlier
@@ -165,6 +169,7 @@ runs:
         INPUT_REPLICAS: ${{ inputs.replicas }}
         INPUT_COST_CAP: ${{ inputs.cost-cap }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
         FORGE_BIN_DIR: ${{ inputs.install == 'true' && steps.paths.outputs.bin || '' }}
         FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
@@ -184,7 +189,8 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/summary.sh" "$SUMMARY_JSON"
 
     # Only a successful real run advances the saved state; a dry run, a capped run or a
-    # failure leaves the previous state in the cache.
+    # failure leaves the previous state in the cache. (A partial run succeeds, but
+    # forge-import leaves the state file where it was, so the skipped items are retried.)
     - name: Check for sync state
       id: state
       if: inputs.state-cache == 'true' && inputs.dry-run != 'true'
