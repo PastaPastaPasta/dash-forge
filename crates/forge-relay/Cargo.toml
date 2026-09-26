@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "forge-relay — interchangeable daemon bridging the Platform ST firehose to webhooks/notifications/CI."
+description = "forge-relay — interchangeable daemon delivering forge-v2 activity as GitHub-shaped webhooks."
 
 [[bin]]
 name = "forge-relay"
@@ -27,6 +27,9 @@ toml = "0.8"
 
 # Webhook delivery: reqwest on rustls (no system OpenSSL), matching forge-core's setup.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# The WHATWG URL parser reqwest itself uses (its `Host` enum), so the SSRF guard checks the
+# host reqwest will connect to.
+url = "2"
 
 # HMAC-SHA256 signatures (X-Hub-Signature-256) and delivery-id entropy.
 hmac = "0.12"

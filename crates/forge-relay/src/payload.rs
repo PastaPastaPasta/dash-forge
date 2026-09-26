@@ -2,9 +2,9 @@
 //!
 //! The relay's value proposition is that existing CI tooling
 //! (Blacksmith/Depot/Jenkins/GitHub Actions runners) integrates with near-zero work:
-//! the JSON bodies here reuse GitHub's field names and shapes for the four core event
-//! types — `push`, `pull_request`, `issue_comment`, `check_run` (plus `issues`, which
-//! falls out for free). Fields GitHub derives server-side (compare/commit URLs, the
+//! the JSON bodies here reuse GitHub's field names and shapes for `push`, `issues`,
+//! `pull_request`, `issue_comment`, `pull_request_review`, `release` and `check_run`.
+//! Fields GitHub derives server-side (compare/commit URLs, the
 //! integer `repository.id`) are mapped onto forge-web URL conventions or a deterministic
 //! surrogate; nothing here trusts the relay — a verifying consumer re-fetches from
 //! Platform (see the reference `examples/ci_consumer.rs`).
@@ -25,16 +25,18 @@ pub fn is_zero_oid(oid: &str) -> bool {
 }
 
 /// Static metadata describing the repository a payload is about, mapped to GitHub's
-/// `repository` object shape. Built once per watched repo and cloned into every payload.
+/// `repository` object shape. Built from the forge-v2 `repo` document (and its newest
+/// `config`) and cloned into every payload.
 #[derive(Debug, Clone)]
 pub struct RepositoryMeta {
-    /// The repo data-contract id (base58) — GitHub's `node_id` / our `dash_contract_id`.
-    pub contract_id: String,
+    /// The forge-v2 `repo` document id (base58) — GitHub's `node_id` / our `dash_repo_id`.
+    /// Consumers must verify against a repo id they configured, never this one.
+    pub repo_id: String,
     /// The repo owner identity id (base58) — GitHub's `owner.login`.
     pub owner_id: String,
-    /// The repository name (from the registry `repoListing`), e.g. `dash-forge`.
+    /// The repository name (`repo.name`, the immutable slug), e.g. `dash-forge`.
     pub name: String,
-    /// The default branch (from the newest `config`), e.g. `main`.
+    /// The default branch (newest `config`, else `repo.defaultBranch`), e.g. `main`.
     pub default_branch: String,
     /// The forge-web base URL used to synthesize `html_url` / `compare` links.
     pub web_base_url: String,
@@ -42,10 +44,10 @@ pub struct RepositoryMeta {
 
 impl RepositoryMeta {
     /// A deterministic unsigned surrogate for GitHub's integer `repository.id` (some
-    /// tooling insists the field is numeric). Derived from the contract id so it is
-    /// stable across relay instances and restarts.
+    /// tooling insists the field is numeric). Derived from the repo id so it is stable
+    /// across relay instances and restarts.
     fn numeric_id(&self) -> u64 {
-        let digest = Sha256::digest(self.contract_id.as_bytes());
+        let digest = Sha256::digest(self.repo_id.as_bytes());
         u64::from_be_bytes(digest[..8].try_into().expect("sha256 has 8+ bytes"))
     }
 
@@ -69,8 +71,8 @@ impl RepositoryMeta {
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.numeric_id(),
-            "node_id": self.contract_id,
-            "dash_contract_id": self.contract_id,
+            "node_id": self.repo_id,
+            "dash_repo_id": self.repo_id,
             "name": self.name,
             "full_name": self.full_name(),
             "private": false,
@@ -326,6 +328,108 @@ pub fn issue_comment_event(
     }
 }
 
+/// Build a `pull_request_review` event (`action` = `submitted`). `verdict` is the `review`
+/// document's (1 approve, 2 request changes, 3 comment); GitHub's `state` is lowercase.
+pub fn pull_request_review_event(
+    repo: &RepositoryMeta,
+    source_doc_id: &str,
+    pr: &PullRequestObj,
+    reviewer: &str,
+    verdict: u64,
+    commit_oid: &str,
+    body: &str,
+) -> WebhookEvent {
+    let state = match verdict {
+        1 => "approved",
+        2 => "changes_requested",
+        _ => "commented",
+    };
+    let pr_event = pull_request_event(repo, &pr.document_id, "submitted", pr);
+    let html_url = format!(
+        "{}/{}/{}/pull/{}#review-{}",
+        repo.web_base_url.trim_end_matches('/'),
+        repo.owner_id,
+        repo.name,
+        pr.number,
+        source_doc_id
+    );
+    let payload = json!({
+        "action": "submitted",
+        "review": {
+            "id": source_doc_id,
+            "node_id": source_doc_id,
+            "state": state,
+            "body": body,
+            "commit_id": if commit_oid.is_empty() { Value::Null } else { Value::from(commit_oid) },
+            "html_url": html_url,
+            "user": repo.user_json(reviewer),
+        },
+        "pull_request": pr_event.payload["pull_request"].clone(),
+        "repository": repo.to_json(),
+        "sender": repo.user_json(reviewer),
+    });
+    WebhookEvent {
+        event: "pull_request_review",
+        action: Some("submitted"),
+        payload,
+        source_doc_id: source_doc_id.to_string(),
+    }
+}
+
+/// A release (subset of GitHub's `release` object).
+#[derive(Debug, Clone)]
+pub struct ReleaseObj {
+    /// Document id.
+    pub document_id: String,
+    /// The tag (`v1.2.0`).
+    pub tag_name: String,
+    /// The display name.
+    pub name: String,
+    /// Release notes.
+    pub body: String,
+    /// Whether the release is yanked (reported as `prerelease: false`, `dash_yanked: true`).
+    pub yanked: bool,
+    /// The publishing maintainer.
+    pub author: String,
+    /// The `assets` field as stored (a JSON list), parsed when it is valid JSON.
+    pub assets: Value,
+}
+
+/// Build a `release` event (`action` = `published`).
+pub fn release_event(repo: &RepositoryMeta, source_doc_id: &str, r: &ReleaseObj) -> WebhookEvent {
+    let html_url = format!(
+        "{}/{}/{}/releases/tag/{}",
+        repo.web_base_url.trim_end_matches('/'),
+        repo.owner_id,
+        repo.name,
+        r.tag_name
+    );
+    let payload = json!({
+        "action": "published",
+        "release": {
+            "id": r.document_id,
+            "node_id": r.document_id,
+            "tag_name": r.tag_name,
+            "name": r.name,
+            "body": r.body,
+            "draft": false,
+            "prerelease": false,
+            "dash_yanked": r.yanked,
+            "html_url": html_url,
+            "author": repo.user_json(&r.author),
+            "assets": r.assets,
+        },
+        "repository": repo.to_json(),
+        "sender": repo.user_json(&r.author),
+    });
+    WebhookEvent {
+        event: "release",
+        action: Some("published"),
+        payload,
+        source_doc_id: source_doc_id.to_string(),
+    }
+}
+
 /// A check-run object (mirrors GitHub's modern check-runs shape — the legacy
 /// commit-status API is an explicit non-goal, PRD 05).
 #[derive(Debug, Clone)]
@@ -395,7 +499,7 @@ mod tests {
 
     fn repo() -> RepositoryMeta {
         RepositoryMeta {
-            contract_id: "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX".into(),
+            repo_id: "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX".into(),
             owner_id: "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB".into(),
             name: "dash-forge".into(),
             default_branch: "main".into(),
@@ -543,6 +647,59 @@ mod tests {
         assert_eq!(e.event, "issues");
         assert_eq!(e.payload["action"], "closed");
         assert_eq!(e.payload["issue"]["state"], "closed");
+    }
+
+    #[test]
+    fn review_payload_maps_verdicts_to_github_states() {
+        let pr = PullRequestObj {
+            number: 4,
+            document_id: "pr4".into(),
+            author: "author1".into(),
+            title: "T".into(),
+            body: String::new(),
+            base_ref: "refs/heads/main".into(),
+            head_oid: "cafe".into(),
+            open: true,
+            merged: false,
+        };
+        for (verdict, state) in [(1, "approved"), (2, "changes_requested"), (3, "commented")] {
+            let e = pull_request_review_event(&repo(), "rv1", &pr, "rev", verdict, "cafe", "ok");
+            assert_eq!(e.event, "pull_request_review");
+            assert_eq!(e.payload["action"], "submitted");
+            assert_eq!(e.payload["review"]["state"], state);
+            assert_eq!(e.payload["review"]["commit_id"], "cafe");
+            assert_eq!(e.payload["review"]["user"]["login"], "rev");
+            assert_eq!(e.payload["pull_request"]["number"], 4);
+            assert_eq!(e.source_doc_id, "rv1");
+        }
+        let e = pull_request_review_event(&repo(), "rv2", &pr, "rev", 1, "", "");
+        assert!(e.payload["review"]["commit_id"].is_null());
+    }
+
+    #[test]
+    fn release_payload_shape() {
+        let r = ReleaseObj {
+            document_id: "rel1".into(),
+            tag_name: "v1.0.0".into(),
+            name: "One".into(),
+            body: "notes".into(),
+            yanked: false,
+            author: "maint".into(),
+            assets: serde_json::json!([{"name": "a.tgz"}]),
+        };
+        let e = release_event(&repo(), "rel1", &r);
+        assert_eq!(e.event, "release");
+        assert_eq!(e.payload["action"], "published");
+        assert_eq!(e.payload["release"]["tag_name"], "v1.0.0");
+        assert_eq!(e.payload["release"]["assets"][0]["name"], "a.tgz");
+        assert!(e.payload["release"]["html_url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/releases/tag/v1.0.0"));
+        assert_eq!(
+            e.payload["repository"]["dash_repo_id"],
+            "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"
+        );
     }
 
     #[test]

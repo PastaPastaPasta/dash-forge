@@ -20,6 +20,7 @@ mod pr;
 mod release;
 mod repo;
 mod storage;
+mod webhook;
 
 use std::path::PathBuf;
 
@@ -150,6 +151,9 @@ pub enum Command {
     /// Storage availability.
     #[command(subcommand)]
     Storage(StorageCommand),
+    /// Webhooks a relay delivers (forge-v2).
+    #[command(subcommand)]
+    Webhook(webhook::WebhookCommand),
     /// Import a repository from GitHub (thin wrapper over forge-import).
     Import {
         /// The GitHub repository URL.
@@ -832,6 +836,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
+        Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Repack {
             repo,
             backend,

@@ -14,10 +14,6 @@ pub enum RelayError {
     #[error("ssrf guard: {0}")]
     Ssrf(String),
 
-    /// A webhook secret could not be resolved (no config secret, encrypted-only path).
-    #[error("secret unavailable: {0}")]
-    SecretUnavailable(String),
-
     /// Delivery failed after exhausting retries (dead-lettered).
     #[error("delivery failed after {attempts} attempts: {reason}")]
     DeliveryExhausted {

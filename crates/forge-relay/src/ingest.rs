@@ -1,118 +1,180 @@
-//! Ingest: poll each watched repo contract for new documents and translate them into
-//! GitHub-shape [`WebhookEvent`]s (PRD 05 §Ingest/§Translate; Platform has no document
-//! push subscriptions, so we poll indexed queries with cursors — spike S0.8 / D6).
+//! Ingest: poll a forge-v2 repository's documents and translate them into GitHub-shaped
+//! [`WebhookEvent`]s (PRD 05 §Ingest/§Translate). Platform has no document push
+//! subscriptions, so each source is a **stream**: an index that ends in `$createdAt`, with
+//! its leading properties pinned by equality, read in ascending order past a cursor.
 //!
-//! The two halves are kept separate so the mapping is fully unit-testable offline:
-//!  * [`poll_new`] — the cursor primitive that returns only documents created since the
-//!    last cycle (baselined to "now" at startup unless a lookback is configured).
-//!  * the `translate_*` free functions — pure `FetchedDocument` → [`WebhookEvent`] maps.
+//! | Stream | Contract | Index (pinned prefix) | GitHub event |
+//! |---|---|---|---|
+//! | `refUpdate`, `protectedRefUpdate` | forge-core | `reflog (repoId)` | `push` |
+//! | `release` | forge-core | `created (repoId)` | `release` published |
+//! | `issue` | forge-collab | `created (repoId)` | `issues` opened |
+//! | `patch` | forge-collab | `created (repoId)` | `pull_request` opened |
+//! | `event`, `authorEvent` | forge-collab | `feed (repoId)` | `issues` / `pull_request` closed, reopened, merged, labeled, ... |
+//! | `comment` | forge-collab | `target (targetId)`, per issue/PR | `issue_comment` created |
+//! | `review` | forge-collab | `patch (patchId)`, per PR | `pull_request_review` submitted |
+//! | `checkRun` | forge-collab | `head (repoId, headOid)`, per head seen | `check_run` |
+//!
+//! ## Cursors
+//!
+//! Stateless across restarts. A stream's first read establishes its baseline ([`Baseline`]):
+//!
+//! * [`Baseline::Tail`] (repos found at startup): the newest document becomes the cursor and
+//!   nothing older is delivered, except the last `lookback` documents when one is configured.
+//! * [`Baseline::Since`] (repos whose first hook appears while running): every document with
+//!   `$createdAt` at or after the hook's own is delivered, so activity between writing the hook
+//!   and the relay noticing it (up to one refresh interval) is not lost.
+//! * [`Baseline::Beginning`] (the comment/review stream of an issue or PR created while
+//!   running): everything, since all of it is new.
+//!
+//! After that each read pages ascending with `start_after` = the last document seen, to a
+//! short page. forge-v2 is protocol 14, where `start_after` is bounded by document id, so
+//! documents of the cursor's own block that sort after it are not skipped (the protocol-13
+//! whole-timestamp exclusion `PlatformClient::query_all_documents` works around does not
+//! apply). A failed read leaves the cursor where it was, so the next cycle retries: delivery
+//! is at-least-once and consumers dedupe on `X-GitHub-Delivery`.
+//!
+//! The `translate_*` functions are pure (`FetchedDocument` → [`WebhookEvent`]) and tested
+//! offline.
 
 use std::collections::BTreeMap;
 
 use forge_core::platform::{
-    encode_identifier, FetchedDocument, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
+    encode_identifier, FetchedDocument, LoadedContract, PlatformClient, QueryFilter, QueryOp,
+    QueryOrder,
 };
 
 use crate::error::Result;
 use crate::payload::{
     check_run_event, is_zero_oid, issue_comment_event, issues_event, pull_request_event,
-    push_event, CheckRunObj, IssueObj, PullRequestObj, RepositoryMeta, WebhookEvent,
+    pull_request_review_event, push_event, release_event, CheckRunObj, IssueObj, PullRequestObj,
+    ReleaseObj, RepositoryMeta, WebhookEvent,
 };
 
-/// Repo-contract document type names the relay ingests.
+/// forge-core document types the relay reads.
 pub const DOC_REF_UPDATE: &str = "refUpdate";
+/// Maintainer-only ref updates (protected refs).
 pub const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
+/// Releases.
+pub const DOC_RELEASE: &str = "release";
+/// forge-collab document types the relay reads.
 pub const DOC_ISSUE: &str = "issue";
+/// Pull requests.
 pub const DOC_PATCH: &str = "patch";
-pub const DOC_COMMENT: &str = "comment";
+/// Member state changes (close, reopen, merge, label, ...).
 pub const DOC_EVENT: &str = "event";
+/// Author state changes (close, reopen).
+pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
+/// Comments on an issue or PR.
+pub const DOC_COMMENT: &str = "comment";
+/// PR reviews.
+pub const DOC_REVIEW: &str = "review";
+/// CI check runs.
 pub const DOC_CHECK_RUN: &str = "checkRun";
-const DOC_CONFIG: &str = "config";
-const DOC_REPO_LISTING: &str = "repoListing";
 
-/// A per-(repo, docType) ingest cursor. `primed` marks that the startup baseline has been
-/// taken (so historical docs are not replayed); `last_id` is the newest document `$id`
-/// delivered so far (the `$createdAt asc` traversal seeks past it).
-#[derive(Debug, Default, Clone)]
-pub struct Cursor {
-    /// The last delivered document `$id`, or `None` when the repo had no docs at prime.
-    pub last_id: Option<String>,
-    /// Whether the startup baseline has been established.
-    pub primed: bool,
+/// Rows per page (Drive's maximum).
+const PAGE: u32 = 100;
+
+/// Where a stream starts on its first read. See the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Baseline {
+    /// At the current newest document, replaying the last `lookback` (0..=100).
+    Tail {
+        /// Documents to replay.
+        lookback: u32,
+    },
+    /// Every document with `$createdAt >= since` (ms).
+    Since(u64),
+    /// Every document.
+    Beginning,
 }
 
-/// Fetch documents of `doc_type` created since the cursor last advanced, updating the
-/// cursor.
+/// One stream's position.
+#[derive(Debug, Clone)]
+pub struct Cursor {
+    baseline: Baseline,
+    /// The last document delivered (or the baseline tail).
+    last_id: Option<String>,
+    primed: bool,
+}
+
+impl Cursor {
+    /// A fresh cursor that starts at `baseline`.
+    pub fn new(baseline: Baseline) -> Self {
+        Self {
+            baseline,
+            last_id: None,
+            primed: false,
+        }
+    }
+}
+
+/// Read the documents of one stream that are new since `cursor`, advancing a copy of it; the
+/// caller commits the copy only when every page was read (see the module docs).
 ///
-/// Both the priming pass and steady-state seek traverse in **`$createdAt` ascending**
-/// order — the same direction — so the cursor stays consistent even for doc types whose
-/// only usable `$createdAt` index is a compound one (`comment` = `(targetId, $createdAt)`,
-/// `checkRun` = `(headOid, $createdAt)`): a mixed desc-prime / asc-seek would surface
-/// historical rows on those types because the "newest by desc" is not the "last by asc".
-///
-/// On the first call (`!primed`) it pages to the true chronological tail to establish the
-/// baseline: with `lookback == 0` it delivers nothing (start from "now"); with
-/// `lookback > 0` it replays the last `lookback` docs so a fresh relay can catch up recent
-/// history. Steady-state seeks past the cursor and pages to exhaustion.
-/// Poll new documents of `doc_type` since `cursor`, with an optional index `filters`
-/// prefix. An empty filter suits types with a standalone `$createdAt` index (`refUpdate`,
-/// `issue`, `patch`, `event`); a leading-property filter is required for types whose only
-/// `$createdAt` index is compound (`comment` = `(targetId, $createdAt)`, `checkRun` =
-/// `(headOid, $createdAt)`) — a global `orderBy $createdAt` on those is not servable, so
-/// the caller polls them keyed by the leading index property (per target / per head-oid)
-/// with a per-key cursor.
-pub async fn poll_new_filtered(
+/// `prefix` pins the leading properties of an index that ends in `$createdAt`.
+pub async fn poll_stream(
     client: &PlatformClient,
     contract: &LoadedContract,
     doc_type: &str,
-    filters: &[QueryFilter],
+    prefix: &[QueryFilter],
     cursor: &mut Cursor,
-    lookback: u32,
 ) -> Result<Vec<FetchedDocument>> {
-    // Page the whole ascending traversal past the current cursor. On prime the cursor is
-    // None, so this walks all history to the tail (bounded by real doc count — fine for M2
-    // small repos); steady-state it starts after the last-seen id and returns only new docs.
-    let priming = !cursor.primed;
-    let mut fresh: Vec<FetchedDocument> = Vec::new();
-    let mut start_after = cursor.last_id.clone();
+    if let (false, Baseline::Tail { lookback }) = (cursor.primed, cursor.baseline) {
+        // The tail in one descending page (no cursor, which every protocol proves).
+        let tail = client
+            .query_documents(
+                contract,
+                doc_type,
+                prefix,
+                &[QueryOrder::desc("$createdAt")],
+                lookback.clamp(1, PAGE),
+                None,
+            )
+            .await?;
+        cursor.last_id = tail.first().map(|d| d.id.clone());
+        cursor.primed = true;
+        let mut replay: Vec<_> = tail.into_iter().take(lookback as usize).collect();
+        replay.reverse();
+        return Ok(replay);
+    }
+
+    let mut out = Vec::new();
     loop {
+        let mut filters = prefix.to_vec();
+        // Until a first document is seen, a `Since` stream stays bounded below by its time
+        // (an empty first read must not fall back to the whole history).
+        if let (None, Baseline::Since(ts)) = (&cursor.last_id, cursor.baseline) {
+            filters.push(QueryFilter {
+                field: "$createdAt".into(),
+                op: QueryOp::Gte,
+                value: forge_core::platform::FieldValue::uint64(ts),
+            });
+        }
         let page = client
             .query_documents(
                 contract,
                 doc_type,
-                filters,
+                &filters,
                 &[QueryOrder::asc("$createdAt")],
-                100,
-                start_after.as_deref(),
+                PAGE,
+                cursor.last_id.as_deref(),
             )
             .await?;
         let n = page.len();
         if let Some(last) = page.last() {
-            start_after = Some(last.id.clone());
             cursor.last_id = Some(last.id.clone());
         }
-        fresh.extend(page);
-        if n < 100 {
+        out.extend(page);
+        if n < PAGE as usize {
             break;
         }
     }
-
-    if priming {
-        cursor.primed = true;
-        if lookback == 0 {
-            // Baseline established (cursor at the tail); deliver nothing historical.
-            return Ok(Vec::new());
-        }
-        // Replay only the last `lookback` docs (they are chronological; keep the tail).
-        let start = fresh.len().saturating_sub(lookback as usize);
-        return Ok(fresh.split_off(start));
-    }
-
-    Ok(fresh)
+    cursor.primed = true;
+    Ok(out)
 }
 
-/// What an `event`/`comment` `targetId` points at — enough to fill the embedded
-/// issue/PR object faithfully without a second fetch per event.
+/// What an `event`/`comment`/`review` `targetId` points at: enough to fill the embedded
+/// issue or PR object without a fetch per event.
 #[derive(Debug, Clone)]
 pub struct TargetInfo {
     /// Whether the target is a pull request (`patch`) rather than an issue.
@@ -121,196 +183,99 @@ pub struct TargetInfo {
     pub number: u64,
     /// The author identity id.
     pub author: String,
-    /// The title.
+    /// The title (empty in a private repo: it is inside `enc`).
     pub title: String,
     /// The base ref (PRs only).
     pub base_ref: String,
     /// The head oid (PRs only, hex).
     pub head_oid: String,
+    /// Where this target's comment and review streams start.
+    pub baseline: Baseline,
 }
 
-/// The resolved static context for one watched repo, held across poll cycles.
-pub struct RepoContext {
-    /// The repo contract handle.
-    pub contract: LoadedContract,
-    /// GitHub-shape repository metadata.
-    pub meta: RepositoryMeta,
-    /// Per-cursor-key cursors (`"issue"`, `"comment:<targetId>"`, `"checkRun:<oid>"`, …).
-    pub cursors: BTreeMap<String, Cursor>,
-    /// `$id` → target info for issues/PRs (for comment/event translation, and the set of
-    /// targets whose comments are polled per-target).
-    pub targets: BTreeMap<String, TargetInfo>,
-    /// Head oids seen on ingested pushes/PRs — the keys whose `checkRun` docs are polled
-    /// per-oid (`checkRun` has no standalone `$createdAt` index). Hex.
-    pub head_oids: std::collections::BTreeSet<String>,
-    /// Cached webhook subscriptions (refreshed every `SUBS_REFRESH_CYCLES`, not every
-    /// cycle — reading the on-Platform `webhook` docs every poll would sit on the hot path
-    /// ahead of the fast push poll and inflate push-delivery latency under flaky nodes).
-    pub subs: Vec<crate::subscriptions::WebhookSub>,
-    /// Poll cycles elapsed (drives the subscription-refresh cadence).
-    pub cycle: u64,
-}
-
-impl RepoContext {
-    /// A mutable cursor for `doc_type` (created on first use).
-    pub fn cursor(&mut self, doc_type: &str) -> &mut Cursor {
-        self.cursors.entry(doc_type.to_string()).or_default()
-    }
-}
-
-/// Build the GitHub-shape [`RepositoryMeta`] for a repo contract: owner from the contract,
-/// name from the registry `repoListing`, default branch from the newest `config`.
-pub async fn build_repo_meta(
-    client: &PlatformClient,
-    contract: &LoadedContract,
-    web_base_url: &str,
-) -> Result<RepositoryMeta> {
-    let owner_id = contract.owner_id();
-    let contract_id = contract.id();
-
-    // Default branch from the newest config.
-    let default_branch = client
-        .query_documents(
-            contract,
-            DOC_CONFIG,
-            &[],
-            &[QueryOrder::desc("$createdAt")],
-            1,
-            None,
-        )
-        .await?
-        .first()
-        .and_then(|d| d.field_str("defaultBranch"))
-        .unwrap_or_else(|| "main".to_string());
-
-    // Name from the registry listing (best-effort; owner-scoped scan, match contract id).
-    let name = resolve_repo_name(client, &owner_id, &contract_id)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| contract_id.clone());
-
-    Ok(RepositoryMeta {
-        contract_id,
-        owner_id,
-        name,
-        default_branch,
-        web_base_url: web_base_url.to_string(),
-    })
-}
-
-/// Find the repo name by scanning the registry owner's `repoListing`s for one whose
-/// `repoContractId` matches, in the client network's registry. Errors (including no
-/// registry deployed on this network) are the caller's to swallow; `None` if not found.
-async fn resolve_repo_name(
-    client: &PlatformClient,
-    owner_id: &str,
-    contract_id: &str,
-) -> Result<Option<String>> {
-    let registry = client.fetch_registry().await?;
-    let owner_bytes = forge_core::platform::decode_identifier(owner_id)?;
-    let want = forge_core::platform::decode_identifier(contract_id)?;
-    let mut start_after: Option<String> = None;
-    loop {
-        let page = client
-            .query_documents(
-                &registry,
-                DOC_REPO_LISTING,
-                &[QueryFilter::eq(
-                    "$ownerId",
-                    forge_core::platform::FieldValue::identifier(owner_bytes),
-                )],
-                // Order by normalizedName to match the registry's compound `ownerName`
-                // index ($ownerId, normalizedName) — the registry has no ($ownerId,
-                // $createdAt) index, so ordering by $createdAt is rejected as non-indexed.
-                &[QueryOrder::asc("normalizedName")],
-                100,
-                start_after.as_deref(),
-            )
-            .await?;
-        let n = page.len();
-        for d in &page {
-            if d.field_bytes("repoContractId").as_deref() == Some(want.as_slice()) {
-                return Ok(d.field_str("name"));
-            }
+impl TargetInfo {
+    /// From an `issue` document.
+    pub fn from_issue(d: &FetchedDocument, baseline: Baseline) -> Self {
+        Self {
+            is_pr: false,
+            number: d.field_u64("number").unwrap_or_default(),
+            author: d.owner_id.clone(),
+            title: d.field_str("title").unwrap_or_default(),
+            base_ref: String::new(),
+            head_oid: String::new(),
+            baseline,
         }
-        if n < 100 {
-            return Ok(None);
+    }
+
+    /// From a `patch` (PR) document.
+    pub fn from_patch(d: &FetchedDocument, baseline: Baseline) -> Self {
+        Self {
+            is_pr: true,
+            number: d.field_u64("number").unwrap_or_default(),
+            author: d.owner_id.clone(),
+            title: d.field_str("title").unwrap_or_default(),
+            base_ref: d.field_str("baseRefName").unwrap_or_default(),
+            head_oid: d.field_hex("headOid").unwrap_or_default(),
+            baseline,
         }
-        start_after = page.last().map(|d| d.id.clone());
+    }
+
+    fn issue_obj(&self, id: &str, open: bool) -> IssueObj {
+        IssueObj {
+            number: self.number,
+            document_id: id.to_string(),
+            author: self.author.clone(),
+            title: self.title.clone(),
+            body: String::new(),
+            open,
+        }
+    }
+
+    fn pr_obj(&self, id: &str, open: bool, merged: bool) -> PullRequestObj {
+        PullRequestObj {
+            number: self.number,
+            document_id: id.to_string(),
+            author: self.author.clone(),
+            title: self.title.clone(),
+            body: String::new(),
+            base_ref: self.base_ref.clone(),
+            head_oid: self.head_oid.clone(),
+            open,
+            merged,
+        }
     }
 }
 
-/// Preload the `$id` → [`TargetInfo`] index from existing issues and patches so events and
-/// comments on pre-existing threads translate to the correct event type.
-pub async fn preload_targets(
-    client: &PlatformClient,
-    contract: &LoadedContract,
-) -> Result<BTreeMap<String, TargetInfo>> {
-    // Complete reads: this index maps every event's `targetId` back to its issue/PR, so a
-    // target missing from it is an event the relay cannot describe. It also must not depend
-    // on how many issues a repo has.
-    let mut map = BTreeMap::new();
-    for issue in client
-        .query_all_documents(contract, DOC_ISSUE, &[], &[QueryOrder::desc("$createdAt")])
-        .await?
-    {
-        map.insert(issue.id.clone(), target_info_from_issue(&issue));
-    }
-    for pr in client
-        .query_all_documents(contract, DOC_PATCH, &[], &[QueryOrder::desc("$createdAt")])
-        .await?
-    {
-        map.insert(pr.id.clone(), target_info_from_patch(&pr));
-    }
-    Ok(map)
-}
-
-/// Build a [`TargetInfo`] from an `issue` document.
-pub fn target_info_from_issue(d: &FetchedDocument) -> TargetInfo {
-    TargetInfo {
-        is_pr: false,
-        number: d.field_u64("number").unwrap_or_default(),
-        author: d.owner_id.clone(),
-        title: d.field_str("title").unwrap_or_default(),
-        base_ref: String::new(),
-        head_oid: String::new(),
-    }
-}
-
-/// Build a [`TargetInfo`] from a `patch` (PR) document.
-pub fn target_info_from_patch(d: &FetchedDocument) -> TargetInfo {
-    TargetInfo {
-        is_pr: true,
-        number: d.field_u64("number").unwrap_or_default(),
-        author: d.owner_id.clone(),
-        title: d.field_str("title").unwrap_or_default(),
-        base_ref: d.field_str("baseRefName").unwrap_or_default(),
-        head_oid: d.field_hex("headOid").unwrap_or_default(),
-    }
+/// A 32-byte identifier field as base58.
+fn id_field(d: &FetchedDocument, field: &str) -> Option<String> {
+    d.field_bytes32(field).map(encode_identifier)
 }
 
 // ===========================================================================
 // Pure translations (unit-tested offline)
 // ===========================================================================
 
-/// Translate a `refUpdate` / `protectedRefUpdate` document into a `push` event.
+/// A `refUpdate` / `protectedRefUpdate` → `push`. `None` for a private repo's update (its
+/// `refName` is inside `enc`).
 pub fn translate_ref_update(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
     let ref_name = d.field_str("refName")?;
-    let after = d.field_hex("newOid").unwrap_or_default();
-    let before = d.field_hex("prevOid").unwrap_or_default();
-    let forced = d.field_bool("force");
     Some(push_event(
         repo,
         &d.id,
         &ref_name,
-        &before,
-        &after,
-        forced,
+        &d.field_hex("prevOid").unwrap_or_default(),
+        &d.field_hex("newOid").unwrap_or_default(),
+        d.field_bool("force"),
         &d.owner_id,
     ))
 }
 
-/// Translate an `issue` create into an `issues` `opened` event.
+/// Whether a ref update deletes its ref (all-zero or absent `newOid`).
+pub fn is_ref_deletion(d: &FetchedDocument) -> bool {
+    d.field_hex("newOid").is_none_or(|o| is_zero_oid(&o))
+}
+
+/// An `issue` → `issues` opened.
 pub fn translate_issue(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
     let issue = IssueObj {
         number: d.field_u64("number")?,
@@ -323,7 +288,7 @@ pub fn translate_issue(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
     Some(issues_event(repo, &d.id, "opened", &issue))
 }
 
-/// Translate a `patch` create into a `pull_request` `opened` event.
+/// A `patch` → `pull_request` opened.
 pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
     let pr = PullRequestObj {
         number: d.field_u64("number")?,
@@ -339,28 +304,15 @@ pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
     Some(pull_request_event(repo, &d.id, "opened", &pr))
 }
 
-/// Translate a `comment` into an `issue_comment` `created` event. Uses `targets` to fill
-/// the embedded issue object; an unknown target falls back to a minimal stub.
+/// A `comment` → `issue_comment` created. An unknown target yields a minimal stub.
 pub fn translate_comment(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
 ) -> Option<WebhookEvent> {
-    let target_id = d
-        .field_bytes("targetId")
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
-        .map(encode_identifier)?;
-    let body = d.field_str("body").unwrap_or_default();
-    let issue = match targets.get(&target_id) {
-        Some(t) => IssueObj {
-            number: t.number,
-            document_id: target_id.clone(),
-            author: t.author.clone(),
-            title: t.title.clone(),
-            body: String::new(),
-            open: true,
-        },
-        None => IssueObj {
+    let target_id = id_field(d, "targetId")?;
+    let issue = targets.get(&target_id).map_or_else(
+        || IssueObj {
             number: 0,
             document_id: target_id.clone(),
             author: String::new(),
@@ -368,25 +320,60 @@ pub fn translate_comment(
             body: String::new(),
             open: true,
         },
-    };
+        |t| t.issue_obj(&target_id, true),
+    );
     Some(issue_comment_event(
         repo,
         &d.id,
         &issue,
         &d.id,
         &d.owner_id,
-        &body,
+        &d.field_str("body").unwrap_or_default(),
     ))
 }
 
-/// Translate a `checkRun` into a `check_run` event.
+/// A `review` → `pull_request_review` submitted. Needs its PR in `targets`.
+pub fn translate_review(
+    repo: &RepositoryMeta,
+    d: &FetchedDocument,
+    targets: &BTreeMap<String, TargetInfo>,
+) -> Option<WebhookEvent> {
+    let patch_id = id_field(d, "patchId")?;
+    let target = targets.get(&patch_id).filter(|t| t.is_pr)?;
+    Some(pull_request_review_event(
+        repo,
+        &d.id,
+        &target.pr_obj(&patch_id, true, false),
+        &d.owner_id,
+        d.field_u64("verdict")?,
+        &d.field_hex("commitOid").unwrap_or_default(),
+        &d.field_str("body").unwrap_or_default(),
+    ))
+}
+
+/// A `release` → `release` published.
+pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
+    let assets = d
+        .field_str("assets")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let r = ReleaseObj {
+        document_id: d.id.clone(),
+        tag_name: d.field_str("tagName")?,
+        name: d.field_str("name").unwrap_or_default(),
+        body: d.field_str("notes").unwrap_or_default(),
+        yanked: d.field_bool("yanked"),
+        author: d.owner_id.clone(),
+        assets,
+    };
+    Some(release_event(repo, &d.id, &r))
+}
+
+/// A `checkRun` → `check_run`. `None` without a head oid.
 pub fn translate_check_run(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
-    // A checkRun without a head oid is malformed (there is nothing to attach the run to);
-    // skip it rather than emit a check_run with an empty head_sha.
-    let head_oid = d.field_hex("headOid")?;
     let cr = CheckRunObj {
         document_id: d.id.clone(),
-        head_oid,
+        head_oid: d.field_hex("headOid")?,
         name: d.field_str("name").unwrap_or_default(),
         status: d
             .field_str("status")
@@ -399,75 +386,58 @@ pub fn translate_check_run(repo: &RepositoryMeta, d: &FetchedDocument) -> Option
     Some(check_run_event(repo, &d.id, &cr))
 }
 
-/// Map an event `kind` (data-contracts §2.3) to a GitHub action for an issue vs a PR.
-/// Returns `None` for kinds that have no clean GitHub analogue.
-fn event_action(kind: u64, is_pr: bool) -> Option<(&'static str, bool)> {
-    // (action, sets_merged)
+/// An event `kind` (`forge-v2.md` §3) as a GitHub action for an issue or a PR:
+/// `(action, open, merged)`. `None` for kinds with no GitHub analogue on that target.
+fn event_action(kind: u64, is_pr: bool) -> Option<(&'static str, bool, bool)> {
     Some(match kind {
-        1 => ("closed", false),                      // close
-        2 => ("reopened", false),                    // reopen
-        3 if is_pr => ("closed", true),              // merge (PR only)
-        4 => ("labeled", false),                     // label+
-        5 => ("unlabeled", false),                   // label-
-        6 => ("assigned", false),                    // assign
-        7 => ("unassigned", false),                  // unassign
-        8 if is_pr => ("edited", false),             // retarget (PR base changed)
-        9 if is_pr => ("converted_to_draft", false), // draft
-        10 if is_pr => ("ready_for_review", false),  // ready
+        1 => ("closed", false, false),
+        2 => ("reopened", true, false),
+        // Merge: `merged` is what the event claims. Whether `oid` is reachable from the base
+        // tip is a client rule the relay does not check; a consumer verifies it.
+        3 if is_pr => ("closed", false, true),
+        4 => ("labeled", true, false),
+        5 => ("unlabeled", true, false),
+        6 => ("assigned", true, false),
+        7 => ("unassigned", true, false),
+        8 if is_pr => ("edited", true, false),
+        9 if is_pr => ("converted_to_draft", true, false),
+        10 if is_pr => ("ready_for_review", true, false),
         _ => return None,
     })
 }
 
-/// Translate an `event` document into an `issues` or `pull_request` action event, using
-/// `targets` to know which and to fill the embedded object. Unknown targets or kinds with
-/// no GitHub analogue yield `None` (the cursor still advances past them).
+/// An `event` or `authorEvent` → `issues` / `pull_request` with the matching action. Needs
+/// the target in `targets`. The `open` state is the action's own (an event about an issue
+/// carries no fold); a label or assignee event adds GitHub's `label` / `assignee` object.
 pub fn translate_event(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
 ) -> Option<WebhookEvent> {
-    let target_id = d
-        .field_bytes("targetId")
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
-        .map(encode_identifier)?;
-    let kind = d.field_u64("kind")?;
+    let target_id = id_field(d, "targetId")?;
     let target = targets.get(&target_id)?;
-    let (action, merged) = event_action(kind, target.is_pr)?;
-    let open = !matches!(action, "closed");
-
-    if target.is_pr {
-        let pr = PullRequestObj {
-            number: target.number,
-            document_id: target_id.clone(),
-            author: target.author.clone(),
-            title: target.title.clone(),
-            body: String::new(),
-            base_ref: target.base_ref.clone(),
-            head_oid: target.head_oid.clone(),
-            open,
-            merged,
-        };
-        Some(pull_request_event(repo, &d.id, action, &pr))
+    let kind = d.field_u64("kind")?;
+    let (action, open, merged) = event_action(kind, target.is_pr)?;
+    let mut e = if target.is_pr {
+        pull_request_event(
+            repo,
+            &d.id,
+            action,
+            &target.pr_obj(&target_id, open, merged),
+        )
     } else {
-        let issue = IssueObj {
-            number: target.number,
-            document_id: target_id.clone(),
-            author: target.author.clone(),
-            title: target.title.clone(),
-            body: String::new(),
-            open,
-        };
-        Some(issues_event(repo, &d.id, action, &issue))
+        issues_event(repo, &d.id, action, &target.issue_obj(&target_id, open))
+    };
+    // The actor is the event's writer, not the target's author.
+    e.payload["sender"] = repo.user_json(&d.owner_id);
+    if let Some(value) = d.field_str("value") {
+        match kind {
+            4 | 5 => e.payload["label"] = serde_json::json!({ "name": value }),
+            6 | 7 => e.payload["assignee"] = repo.user_json(&value),
+            _ => {}
+        }
     }
-}
-
-/// Whether a push doc represents a branch deletion (all-zero `newOid`) — surfaced so the
-/// daemon can log it distinctly.
-pub fn is_ref_deletion(d: &FetchedDocument) -> bool {
-    match d.field_hex("newOid") {
-        Some(o) => is_zero_oid(&o),
-        None => true,
-    }
+    Some(e)
 }
 
 #[cfg(test)]
@@ -477,7 +447,7 @@ mod tests {
 
     fn meta() -> RepositoryMeta {
         RepositoryMeta {
-            contract_id: "CONTRACT".into(),
+            repo_id: "REPO".into(),
             owner_id: "OWNER".into(),
             name: "repo".into(),
             default_branch: "main".into(),
@@ -497,40 +467,68 @@ mod tests {
         }
     }
 
+    fn target(is_pr: bool, number: u64) -> TargetInfo {
+        TargetInfo {
+            is_pr,
+            number,
+            author: "AUTH".into(),
+            title: "T".into(),
+            base_ref: if is_pr {
+                "refs/heads/main".into()
+            } else {
+                String::new()
+            },
+            head_oid: if is_pr { "cafe".into() } else { String::new() },
+            baseline: Baseline::Beginning,
+        }
+    }
+
+    fn targets(id: [u8; 32], t: TargetInfo) -> BTreeMap<String, TargetInfo> {
+        BTreeMap::from([(encode_identifier(id), t)])
+    }
+
     #[test]
     fn ref_update_translates_to_push() {
         let d = doc(
             "ref1",
-            "OWNER",
+            "PUSHER",
             vec![
+                ("repoId", FieldValue::identifier([1; 32])),
                 ("refName", FieldValue::text("refs/heads/main")),
-                ("newOid", FieldValue::bytes(hex::decode("22").unwrap())),
-                ("prevOid", FieldValue::bytes(hex::decode("11").unwrap())),
+                ("newOid", FieldValue::bytes(vec![0x22; 20])),
+                ("prevOid", FieldValue::bytes(vec![0x11; 20])),
                 ("force", FieldValue::boolean(true)),
             ],
         );
         let e = translate_ref_update(&meta(), &d).unwrap();
         assert_eq!(e.event, "push");
         assert_eq!(e.payload["ref"], "refs/heads/main");
-        assert_eq!(e.payload["after"], "22");
-        assert_eq!(e.payload["before"], "11");
+        assert_eq!(e.payload["after"], "22".repeat(20));
+        assert_eq!(e.payload["before"], "11".repeat(20));
         assert_eq!(e.payload["forced"], true);
+        assert_eq!(e.payload["pusher"]["name"], "PUSHER");
+        assert_eq!(e.payload["repository"]["dash_repo_id"], "REPO");
         assert_eq!(e.source_doc_id, "ref1");
+        assert!(!is_ref_deletion(&d));
     }
 
     #[test]
-    fn ref_update_without_prev_is_branch_create() {
+    fn a_private_ref_update_is_not_delivered() {
         let d = doc(
             "ref2",
-            "OWNER",
+            "PUSHER",
             vec![
-                ("refName", FieldValue::text("refs/heads/feature")),
-                ("newOid", FieldValue::bytes(hex::decode("aa").unwrap())),
+                ("enc", FieldValue::bytes(vec![1; 48])),
+                ("newOid", FieldValue::bytes(vec![0x22; 20])),
             ],
         );
-        let e = translate_ref_update(&meta(), &d).unwrap();
-        assert_eq!(e.payload["created"], true);
-        assert!(!is_ref_deletion(&d));
+        assert!(translate_ref_update(&meta(), &d).is_none());
+        let del = doc(
+            "ref3",
+            "P",
+            vec![("refName", FieldValue::text("refs/heads/x"))],
+        );
+        assert!(is_ref_deletion(&del));
     }
 
     #[test]
@@ -545,8 +543,10 @@ mod tests {
             ],
         );
         let e = translate_issue(&meta(), &issue).unwrap();
-        assert_eq!(e.event, "issues");
-        assert_eq!(e.payload["action"], "opened");
+        assert_eq!(
+            (e.event, e.payload["action"].as_str()),
+            ("issues", Some("opened"))
+        );
         assert_eq!(e.payload["issue"]["number"], 5);
 
         let patch = doc(
@@ -556,7 +556,7 @@ mod tests {
                 ("number", FieldValue::integer(9)),
                 ("title", FieldValue::text("PR")),
                 ("baseRefName", FieldValue::text("refs/heads/main")),
-                ("headOid", FieldValue::bytes(hex::decode("cafe").unwrap())),
+                ("headOid", FieldValue::bytes(vec![0xca, 0xfe])),
             ],
         );
         let e = translate_patch(&meta(), &patch).unwrap();
@@ -566,33 +566,76 @@ mod tests {
     }
 
     #[test]
-    fn comment_uses_target_index() {
-        let target_id = forge_core::platform::encode_identifier([7u8; 32]);
-        let mut targets = BTreeMap::new();
-        targets.insert(
-            target_id.clone(),
-            TargetInfo {
-                is_pr: false,
-                number: 42,
-                author: "AUTH".into(),
-                title: "Bug".into(),
-                base_ref: String::new(),
-                head_oid: String::new(),
-            },
-        );
+    fn comment_uses_the_target_index() {
         let c = doc(
             "c1",
             "COMMENTER",
             vec![
-                ("targetId", FieldValue::identifier([7u8; 32])),
+                ("targetId", FieldValue::identifier([7; 32])),
                 ("body", FieldValue::text("nice")),
             ],
         );
-        let e = translate_comment(&meta(), &c, &targets).unwrap();
+        let e = translate_comment(&meta(), &c, &targets([7; 32], target(false, 42))).unwrap();
         assert_eq!(e.event, "issue_comment");
         assert_eq!(e.payload["issue"]["number"], 42);
         assert_eq!(e.payload["comment"]["body"], "nice");
         assert_eq!(e.payload["comment"]["user"]["login"], "COMMENTER");
+        // Unknown target: a stub, still delivered.
+        let e = translate_comment(&meta(), &c, &BTreeMap::new()).unwrap();
+        assert_eq!(e.payload["issue"]["number"], 0);
+    }
+
+    #[test]
+    fn review_translates_with_its_pr() {
+        let r = doc(
+            "rv1",
+            "REVIEWER",
+            vec![
+                ("patchId", FieldValue::identifier([3; 32])),
+                ("verdict", FieldValue::integer(2)),
+                ("commitOid", FieldValue::bytes(vec![0xab; 20])),
+                ("body", FieldValue::text("needs work")),
+            ],
+        );
+        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8))).unwrap();
+        assert_eq!(e.event, "pull_request_review");
+        assert_eq!(e.payload["review"]["state"], "changes_requested");
+        assert_eq!(e.payload["review"]["commit_id"], "ab".repeat(20));
+        assert_eq!(e.payload["pull_request"]["number"], 8);
+        assert_eq!(e.payload["sender"]["login"], "REVIEWER");
+        // A review of an issue id, or of an unknown PR, is not delivered.
+        assert!(translate_review(&meta(), &r, &targets([3; 32], target(false, 8))).is_none());
+        assert!(translate_review(&meta(), &r, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn release_translates() {
+        let d = doc(
+            "rel1",
+            "MAINT",
+            vec![
+                ("tagName", FieldValue::text("v1.2.0")),
+                ("name", FieldValue::text("Twelve")),
+                ("notes", FieldValue::text("changes")),
+                ("assets", FieldValue::text(r#"[{"name":"x.tgz"}]"#)),
+            ],
+        );
+        let e = translate_release(&meta(), &d).unwrap();
+        assert_eq!(e.event, "release");
+        assert_eq!(e.payload["action"], "published");
+        assert_eq!(e.payload["release"]["tag_name"], "v1.2.0");
+        assert_eq!(e.payload["release"]["body"], "changes");
+        assert_eq!(e.payload["release"]["assets"][0]["name"], "x.tgz");
+        let bad_assets = doc(
+            "rel2",
+            "M",
+            vec![
+                ("tagName", FieldValue::text("v2")),
+                ("assets", FieldValue::text("not json")),
+            ],
+        );
+        let e = translate_release(&meta(), &bad_assets).unwrap();
+        assert_eq!(e.payload["release"]["assets"], serde_json::json!([]));
     }
 
     #[test]
@@ -601,92 +644,54 @@ mod tests {
             "cr1",
             "RUNNER",
             vec![
-                (
-                    "headOid",
-                    FieldValue::bytes(hex::decode("deadbeef").unwrap()),
-                ),
+                ("headOid", FieldValue::bytes(vec![0xde, 0xad])),
                 ("name", FieldValue::text("build")),
-                ("status", FieldValue::text("completed")),
                 ("conclusion", FieldValue::text("success")),
-                ("summary", FieldValue::text("ok")),
             ],
         );
         let e = translate_check_run(&meta(), &d).unwrap();
-        assert_eq!(e.event, "check_run");
-        assert_eq!(e.payload["check_run"]["head_sha"], "deadbeef");
-        assert_eq!(e.payload["check_run"]["conclusion"], "success");
+        assert_eq!(e.payload["check_run"]["head_sha"], "dead");
+        assert_eq!(e.payload["action"], "completed");
     }
 
     #[test]
-    fn event_close_on_pr_sets_merged_for_merge_kind() {
-        let target_id = forge_core::platform::encode_identifier([9u8; 32]);
-        let mut targets = BTreeMap::new();
-        targets.insert(
-            target_id,
-            TargetInfo {
-                is_pr: true,
-                number: 3,
-                author: "AUTH".into(),
-                title: "PR".into(),
-                base_ref: "refs/heads/main".into(),
-                head_oid: "cafe".into(),
-            },
-        );
-        // kind 3 = merge.
-        let d = doc(
-            "ev1",
-            "MAINT",
-            vec![
-                ("targetId", FieldValue::identifier([9u8; 32])),
-                ("kind", FieldValue::integer(3)),
-            ],
-        );
-        let e = translate_event(&meta(), &d, &targets).unwrap();
+    fn member_and_author_events_translate() {
+        let ev = |id: &str, kind: u64, value: Option<&str>, t: [u8; 32]| {
+            let mut f = vec![
+                ("targetId", FieldValue::identifier(t)),
+                ("kind", FieldValue::integer(kind)),
+            ];
+            if let Some(v) = value {
+                f.push(("value", FieldValue::text(v)));
+            }
+            doc(id, "ACTOR", f)
+        };
+        let prs = targets([9; 32], target(true, 3));
+        let e = translate_event(&meta(), &ev("m", 3, None, [9; 32]), &prs).unwrap();
         assert_eq!(e.event, "pull_request");
         assert_eq!(e.payload["action"], "closed");
         assert_eq!(e.payload["pull_request"]["merged"], true);
-        assert_eq!(e.payload["pull_request"]["state"], "closed");
-    }
+        assert_eq!(e.payload["sender"]["login"], "ACTOR");
 
-    #[test]
-    fn event_close_on_issue() {
-        let target_id = forge_core::platform::encode_identifier([1u8; 32]);
-        let mut targets = BTreeMap::new();
-        targets.insert(
-            target_id,
-            TargetInfo {
-                is_pr: false,
-                number: 8,
-                author: "AUTH".into(),
-                title: "Bug".into(),
-                base_ref: String::new(),
-                head_oid: String::new(),
-            },
-        );
-        let d = doc(
-            "ev2",
-            "MAINT",
-            vec![
-                ("targetId", FieldValue::identifier([1u8; 32])),
-                ("kind", FieldValue::integer(1)),
-            ],
-        );
-        let e = translate_event(&meta(), &d, &targets).unwrap();
+        let issues = targets([1; 32], target(false, 8));
+        let e = translate_event(&meta(), &ev("c", 1, None, [1; 32]), &issues).unwrap();
         assert_eq!(e.event, "issues");
-        assert_eq!(e.payload["action"], "closed");
         assert_eq!(e.payload["issue"]["state"], "closed");
-    }
+        let e = translate_event(&meta(), &ev("r", 2, None, [1; 32]), &issues).unwrap();
+        assert_eq!(e.payload["action"], "reopened");
+        assert_eq!(e.payload["issue"]["state"], "open");
 
-    #[test]
-    fn event_unknown_target_is_skipped() {
-        let d = doc(
-            "ev3",
-            "MAINT",
-            vec![
-                ("targetId", FieldValue::identifier([5u8; 32])),
-                ("kind", FieldValue::integer(1)),
-            ],
-        );
-        assert!(translate_event(&meta(), &d, &BTreeMap::new()).is_none());
+        let e = translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues).unwrap();
+        assert_eq!(e.payload["action"], "labeled");
+        assert_eq!(e.payload["label"]["name"], "bug");
+        let e = translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues).unwrap();
+        assert_eq!(e.payload["assignee"]["login"], "BOB");
+
+        // Merge, retarget, draft and ready mean nothing on an issue; unknown targets and
+        // kinds are skipped.
+        for kind in [3, 8, 9, 10, 11] {
+            assert!(translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues).is_none());
+        }
+        assert!(translate_event(&meta(), &ev("x", 1, None, [5; 32]), &issues).is_none());
     }
 }

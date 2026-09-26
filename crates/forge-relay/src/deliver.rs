@@ -1,22 +1,37 @@
-//! Signed webhook delivery: HMAC-SHA256 signatures, exponential-backoff retry, and a
-//! dead-letter log (PRD 05 §Deliver).
+//! Signed webhook delivery: HMAC-SHA256 signatures, exponential-backoff retry, bounded
+//! concurrency per destination host, and a dead-letter log (PRD 05 §Deliver).
 //!
-//! Delivery is **at-least-once**: a retried POST may duplicate, so every delivery carries
-//! a stable `X-GitHub-Delivery` id (derived from the source document id + hook id, so a
-//! re-poll of the same document produces the *same* delivery id) and consumers dedupe on
-//! it. The body is signed with the webhook secret and sent as `X-Hub-Signature-256:
-//! sha256=<hex>` exactly as GitHub does, so existing verification code works unchanged.
+//! Delivery is **at-least-once**: a retried POST may duplicate, so every delivery carries a
+//! stable `X-GitHub-Delivery` id (derived from the hook id + source document id, so a re-poll
+//! of the same document, on this relay or another, produces the *same* id) and consumers
+//! dedupe on it. The body is signed with the webhook secret and sent as
+//! `X-Hub-Signature-256: sha256=<hex>` exactly as GitHub does, so existing verification code
+//! works unchanged. Secrets and payload bodies are never logged; URLs are logged without their
+//! query string.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use tokio::sync::Semaphore;
 
 use crate::error::{RelayError, Result};
 use crate::payload::WebhookEvent;
 use crate::ssrf;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// The largest body the relay will POST. Payloads are small (a document's fields plus the
+/// repository object); a bigger one means something is wrong, and it is refused rather than
+/// sent. (GitHub's own cap is 25 MB.)
+pub const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Deliveries in flight at once to one host, across every hook and repo: one slow receiver
+/// cannot take every connection, and hooks pointed at someone else's server cannot turn the
+/// relay into a flood.
+pub const MAX_IN_FLIGHT_PER_HOST: usize = 2;
 
 /// Compute the GitHub-style `X-Hub-Signature-256` header value (`sha256=<hex>`) for
 /// `body` under `secret`.
@@ -51,11 +66,15 @@ pub fn verify_signature(secret: &[u8], body: &[u8], signature_header: &str) -> b
 /// across relay restarts and interchangeable relay instances.
 pub fn delivery_id(hook_id: &str, source_doc_id: &str) -> String {
     let digest = <Sha256 as sha2::Digest>::digest(format!("{hook_id}:{source_doc_id}").as_bytes());
-    let b = &digest[..16];
-    // Format as a UUID-shaped string (not a real UUIDv4, but the shape tooling expects).
+    let h = hex::encode(&digest[..16]);
+    // UUID-shaped (8-4-4-4-12), not a real UUIDv4: the shape tooling expects.
     format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
     )
 }
 
@@ -68,8 +87,8 @@ pub struct DeliverConfig {
     pub base_backoff: Duration,
     /// Per-request timeout.
     pub timeout: Duration,
-    /// Overall wall-clock budget for one delivery (all retries + backoff + DNS). A hung or
-    /// tar-pitting target cannot stall the poll cycle past this, even with retries.
+    /// Overall wall-clock budget for one delivery (waiting for a per-host slot, DNS, every
+    /// retry and backoff). A hung or tar-pitting target cannot stall the poll cycle past it.
     pub overall_timeout: Duration,
     /// Timeout for the SSRF pre-flight DNS resolution.
     pub dns_timeout: Duration,
@@ -104,23 +123,42 @@ pub struct DeliveryReceipt {
 /// A webhook deliverer.
 pub struct Deliverer {
     config: DeliverConfig,
+    /// One permit pool per destination host ([`MAX_IN_FLIGHT_PER_HOST`]).
+    per_host: Mutex<HashMap<String, Arc<Semaphore>>>,
 }
 
 impl Deliverer {
     /// Build a deliverer with the given config. Clients are built per-delivery (pinned to
     /// the SSRF-validated addresses), so construction itself is infallible.
     pub fn new(config: DeliverConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            per_host: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The permit pool for `host`.
+    fn host_permits(&self, host: &str) -> Arc<Semaphore> {
+        let mut map = self
+            .per_host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            map.entry(host.to_string())
+                .or_insert_with(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT_PER_HOST))),
+        )
     }
 
     /// Build an HTTP client for one validated target. For a hostname target the client is
     /// **pinned** (`resolve_to_addrs`) to the exact addresses [`ssrf::resolve_and_validate`]
     /// validated, so reqwest performs no second DNS resolution — closing the rebinding
-    /// TOCTOU. Redirects are disabled (a 30x to an internal host would bypass the check).
+    /// TOCTOU. Redirects are disabled (a 30x to an internal host would bypass the check), and
+    /// so are proxies from the environment (a proxy would resolve the host itself).
     fn client_for(&self, target: &ssrf::ValidatedTarget) -> Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .timeout(self.config.timeout)
-            .redirect(reqwest::redirect::Policy::none());
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy();
         if let Some(addrs) = &target.pinned_addrs {
             builder = builder.resolve_to_addrs(&target.host, addrs);
         }
@@ -132,9 +170,9 @@ impl Deliverer {
     /// Deliver `event` to `url`, signed with `secret`, identified by `hook_id`.
     ///
     /// Resolves + validates the target once and pins the connection to the validated IPs
-    /// (SSRF + rebinding defense), signs the body, and retries with exponential backoff up
-    /// to `max_attempts` — the whole sequence bounded by `overall_timeout` so one hung
-    /// target cannot stall the caller. A run that never gets a 2xx returns
+    /// (SSRF + rebinding defense), waits for a slot of the host's pool, signs the body, and
+    /// retries with exponential backoff up to `max_attempts` — the whole sequence bounded by
+    /// `overall_timeout`. A run that never gets a 2xx returns
     /// [`RelayError::DeliveryExhausted`] (the caller dead-letters it).
     pub async fn deliver(
         &self,
@@ -153,7 +191,8 @@ impl Deliverer {
             Err(_) => Err(RelayError::DeliveryExhausted {
                 attempts: self.config.max_attempts,
                 reason: format!(
-                    "overall delivery budget of {:?} exceeded (target hung/tar-pitting)",
+                    "overall delivery budget of {:?} exceeded (target hung or tar-pitting, or \
+                     its host kept {MAX_IN_FLIGHT_PER_HOST} deliveries busy)",
                     self.config.overall_timeout
                 ),
             }),
@@ -167,15 +206,30 @@ impl Deliverer {
         hook_id: &str,
         event: &WebhookEvent,
     ) -> Result<DeliveryReceipt> {
+        let body = serde_json::to_vec(&event.payload)
+            .map_err(|e| RelayError::Config(format!("serializing payload: {e}")))?;
+        if body.len() > MAX_BODY_BYTES {
+            return Err(RelayError::DeliveryExhausted {
+                attempts: 0,
+                reason: format!(
+                    "payload of {} bytes exceeds the {MAX_BODY_BYTES}-byte cap",
+                    body.len()
+                ),
+            });
+        }
         let target =
             ssrf::resolve_and_validate(url, self.config.allow_private, self.config.dns_timeout)
                 .await?;
         let http = self.client_for(&target)?;
+        let permits = self.host_permits(target.url.host_str().unwrap_or_default());
+        let _permit = permits
+            .acquire_owned()
+            .await
+            .map_err(|_| RelayError::Config("per-host delivery pool closed".into()))?;
 
-        let body = serde_json::to_vec(&event.payload)
-            .map_err(|e| RelayError::Config(format!("serializing payload: {e}")))?;
         let signature = sign_body(secret, &body);
         let delivery = delivery_id(hook_id, &event.source_doc_id);
+        let shown = ssrf::redact(url);
 
         let mut last_reason = String::new();
         for attempt in 1..=self.config.max_attempts {
@@ -184,11 +238,12 @@ impl Deliverer {
                 tokio::time::sleep(backoff).await;
             }
             match http
-                .post(url)
+                .post(target.url.clone())
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "dash-forge-relay")
                 .header("X-GitHub-Event", event.event)
                 .header("X-GitHub-Delivery", &delivery)
+                .header("X-GitHub-Hook-ID", hook_id)
                 .header("X-Hub-Signature-256", &signature)
                 .body(body.clone())
                 .send()
@@ -204,24 +259,41 @@ impl Deliverer {
                         });
                     }
                     last_reason = format!("HTTP {status}");
-                    // 4xx (except 408/429) is unlikely to recover; still retry-cheaply per
-                    // the simple policy, but a client error other than throttling breaks early.
+                    // A client error other than throttling will not recover; stop early.
                     if status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429
                     {
                         break;
                     }
                 }
-                Err(e) => {
-                    last_reason = e.to_string();
-                }
+                // reqwest's own message can include the full URL; keep only the kind.
+                Err(e) => last_reason = describe(&e),
             }
-            tracing::warn!(url, attempt, reason = %last_reason, "webhook delivery attempt failed");
+            tracing::warn!(url = %shown, attempt, reason = %last_reason, "webhook delivery attempt failed");
         }
 
         Err(RelayError::DeliveryExhausted {
             attempts: self.config.max_attempts,
             reason: last_reason,
         })
+    }
+}
+
+/// A reqwest error without its URL (which may carry a token in its query).
+fn describe(e: &reqwest::Error) -> String {
+    let kind = if e.is_timeout() {
+        "timed out"
+    } else if e.is_connect() {
+        "connection failed"
+    } else if e.is_body() {
+        "body error"
+    } else if e.is_request() {
+        "request failed"
+    } else {
+        "transport error"
+    };
+    match std::error::Error::source(e) {
+        Some(s) => format!("{kind}: {s}"),
+        None => kind.to_string(),
     }
 }
 
@@ -251,15 +323,12 @@ mod tests {
         let body = br#"{"ref":"refs/heads/main"}"#;
         let sig = sign_body(secret, body);
         assert!(verify_signature(secret, body, &sig));
-        // Tampered body.
         assert!(!verify_signature(
             secret,
             br#"{"ref":"refs/heads/evil"}"#,
             &sig
         ));
-        // Wrong secret.
         assert!(!verify_signature(b"guessed", body, &sig));
-        // Malformed header.
         assert!(!verify_signature(secret, body, "not-a-signature"));
         assert!(!verify_signature(secret, body, "sha256=zzzz"));
     }
@@ -267,14 +336,38 @@ mod tests {
     #[test]
     fn delivery_id_is_deterministic_and_uuid_shaped() {
         let a = delivery_id("hook1", "docA");
-        let b = delivery_id("hook1", "docA");
-        assert_eq!(a, b, "same inputs → same delivery id (dedupe key)");
+        assert_eq!(a, delivery_id("hook1", "docA"), "same inputs, same id");
         assert_ne!(delivery_id("hook1", "docB"), a);
-        // UUID shape: 8-4-4-4-12 hex.
-        let parts: Vec<&str> = a.split('-').collect();
-        assert_eq!(
-            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
-            vec![8, 4, 4, 4, 12]
-        );
+        assert_ne!(delivery_id("hook2", "docA"), a);
+        let parts: Vec<usize> = a.split('-').map(str::len).collect();
+        assert_eq!(parts, vec![8, 4, 4, 4, 12]);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_payload_is_refused_before_any_network() {
+        let d = Deliverer::new(DeliverConfig::default());
+        let event = WebhookEvent {
+            event: "push",
+            action: None,
+            payload: serde_json::json!({ "x": "a".repeat(MAX_BODY_BYTES) }),
+            source_doc_id: "doc".into(),
+        };
+        let err = d
+            .deliver("https://1.1.1.1/hook", b"s", "h", &event)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cap"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_host_pool_is_shared_and_bounded() {
+        let d = Deliverer::new(DeliverConfig::default());
+        let a = d.host_permits("ci.example");
+        let b = d.host_permits("ci.example");
+        assert!(Arc::ptr_eq(&a, &b));
+        let _p1 = Arc::clone(&a).acquire_owned().await.unwrap();
+        let _p2 = Arc::clone(&a).acquire_owned().await.unwrap();
+        assert!(a.clone().try_acquire_owned().is_err());
+        assert!(d.host_permits("other.example").try_acquire_owned().is_ok());
     }
 }

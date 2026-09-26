@@ -1,0 +1,8 @@
+# The release image: the static x86_64-unknown-linux-musl forge-relay from the release build,
+# on distroless/static (CA certificates, a nonroot user, nothing else). Built by the
+# `relay-image` job of .github/workflows/release.yml with the binary at ./forge-relay.
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --chmod=0755 forge-relay /usr/local/bin/forge-relay
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/forge-relay", "run"]

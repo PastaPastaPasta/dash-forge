@@ -10,8 +10,12 @@ Stateless Rust daemon (workspace member alongside dg/helper):
 1. **Ingest**: subscribes to blocks/state transitions via DAPI (Core gRPC streams + platform polling where needed — Platform has no document push subscriptions, reconciliation D6), filters for registered repo contracts.
 2. **Translate**: emits **GitHub-compatible webhook payloads** — `push`, `pull_request`, `issue_comment`, `check_run` schemas — so Blacksmith/Depot/Jenkins/existing tooling integrates with near-zero work. Payload fields that GitHub derives server-side (compare URLs etc.) map to forge-web URLs.
 3. **Deliver**: HMAC-SHA256 signatures (`X-Hub-Signature-256`), exponential retry with dead-letter log.
-4. **Subscriptions live on Platform**: `webhook` docs in each repo contract (MAINTAIN-gated) carry url, event list, and the secret **encrypted to the relay's identity key** → relay instances are interchangeable; killing one and pointing at another requires **no repo-side changes** (re-encrypt secret to new relay identity = one doc update).
+4. **Subscriptions live on Platform**: forge-collab `webhook` docs (maintainer-gated) carry url, event list, and the secret **encrypted to the relay's identity key** → relay instances are interchangeable; killing one and pointing at another requires **no repo-side changes** (re-encrypt secret to new relay identity = one doc update).
 5. **Optional add-ons** (same daemon, feature-flagged): email/web-push notification fan-out; global search indexer host (explicitly *optional* — the core product never depends on it).
+
+### As built (forge-v2, protocol 14)
+
+The relay serves forge-v2 repositories only; v1 repositories are read-only and have no webhooks. It polls rather than subscribing to the firehose (item 1): per repo, the `$createdAt`-ending indexes of `refUpdate`/`protectedRefUpdate`, `release`, `issue`, `patch`, `event`/`authorEvent` (feed), `comment` (per target), `review` (per PR) and `checkRun` (per head). Subscriptions are forge-collab `webhook` documents, gated to maintainers at consensus; the relay finds its hooks through the `relay` index, resolves newest per `(repoId, hookId)`, requires the writer to still be a maintainer, and decrypts the `encryptedFor` secret with its ENCRYPTION key (`forge_core::envelope`, `forge_core::webhooks`). Retries are bounded per delivery (5 attempts in 30 s) and dead-lettered to the log; there is no durable retry queue. Operator docs: `crates/forge-relay/README.md`.
 
 ## Deployment
 - Docker one-liner; config = relay identity key + network. DCG/community run public instances; anyone can run their own (per-repo choice via `webhook.relayIdentityId`).
