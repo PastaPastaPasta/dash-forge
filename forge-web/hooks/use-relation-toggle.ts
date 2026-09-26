@@ -1,8 +1,8 @@
 'use client'
 
 /**
- * useRegistryToggle — the viewer's own on/off registry relation (a star on a listing, a follow
- * of an identity) with an honest initial state and honest failures.
+ * useRelationToggle — the viewer's own on/off relation (a star on a repo, a follow of an
+ * identity; forge-collab on v2, the registry on v1) with an honest initial state and honest failures.
  *
  * The initial state is READ, not assumed: until the viewer's own documents have been checked
  * the toggle reports `on: null` and callers must not offer an action. A read failure or a write
@@ -15,7 +15,7 @@ import { useCallback, useState } from 'react'
 import { useAsync } from '@/hooks/use-async'
 import { errorMessage } from '@/lib/utils'
 
-export interface RegistryToggle {
+export interface RelationToggle {
   /** Current relation; `null` while unknown (logged out, loading, or the read failed). */
   readonly on: boolean | null
   readonly busy: boolean
@@ -33,7 +33,7 @@ export interface RegistryToggle {
  */
 const known = new Map<string, boolean>()
 
-export function useRegistryToggle(params: {
+export function useRelationToggle(params: {
   /** False until the SDK is connected and the viewer + target are known. */
   readonly enabled: boolean
   /** Changes whenever the viewer or target changes (reset + re-read). */
@@ -43,7 +43,7 @@ export function useRegistryToggle(params: {
   readonly add: () => Promise<boolean>
   /** Remove the relation; resolve `false` if it broadcast but was not confirmed in time. */
   readonly remove: () => Promise<boolean>
-}): RegistryToggle {
+}): RelationToggle {
   const { enabled, key, read, add, remove } = params
   const initial = useAsync<boolean>(
     async () => {

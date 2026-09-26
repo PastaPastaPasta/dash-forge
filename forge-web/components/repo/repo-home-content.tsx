@@ -7,6 +7,7 @@
  */
 
 import { FileText, Rocket } from 'lucide-react'
+import { CopyRow } from '@/components/ui/copy-row'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import {
@@ -24,7 +25,7 @@ import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { FileList } from '@/components/repo/file-list'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView } from '@/components/markdown-view'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Oid } from '@/components/ui/oid'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -72,15 +73,7 @@ export function RepoHomeContent({
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
   }
 
-  if (!tipOid) {
-    return (
-      <EmptyState
-        icon={Rocket}
-        title="This repo has no commits yet"
-        body={`Nothing on ${selected.name}. Push your first commit with the git-remote-dash helper to bring it to life.`}
-      />
-    )
-  }
+  if (!tipOid) return <EmptyRepoState home={home} addr={addr} branch={selected.name} />
 
   return (
     <BrowseBoundary repo={home.repo}>
@@ -140,5 +133,45 @@ function RootBody({
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The empty-repository state (`ux-dx-spec.md` §5.5): the commands that push an existing
+ * repository, or start from scratch, and where the bytes will go.
+ */
+function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddress; branch: string }): JSX.Element {
+  const remote = `dash://${addr.owner}/${addr.name}`
+  const configured = home.backend.uris.length > 0
+  return (
+    <section
+      aria-label="Empty repository"
+      className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <Rocket className="h-5 w-5 text-forge-500" aria-hidden />
+        <h2 className="text-prose">
+          <span className="font-mono">{home.repo.name || addr.name}</span> is empty.
+        </h2>
+      </div>
+      <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
+      <CopyRow text={`git remote add origin ${remote}`} />
+      <CopyRow text={`git push -u origin ${branch.replace(/^refs\/heads\//, '')}`} />
+      <h3 className="mb-1.5 mt-4 text-dense font-medium">Or start from scratch</h3>
+      <CopyRow text={`dg repo clone ${addr.owner}/${addr.name} && cd ${addr.name}`} />
+      <p className="mt-4 text-[12px] text-anvil-500 dark:text-anvil-400">
+        {configured ? `Storage: packs go to ${home.backend.label} (set by the owner). ` : ''}
+        Platform keeps manifests and refs, about 0.0003 DASH per push. No git-remote-dash yet?{' '}
+        <a href="https://github.com/PastaPastaPasta/dash-forge#install" target="_blank" rel="noreferrer noopener" className="underline">
+          Install
+        </a>
+      </p>
+      {!configured ? (
+        <p className="mt-2 text-[12px] text-caution">
+          No storage configured: pushes will be stored on Platform at ~0.28 DASH/MiB. Configure storage with{' '}
+          <span className="font-mono">dg storage add</span>.
+        </p>
+      ) : null}
+    </section>
   )
 }

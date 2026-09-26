@@ -18,6 +18,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
+import { FundsPill } from '@/components/funds-pill'
 
 export function AppHeader(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
@@ -67,7 +68,10 @@ export function AppHeader(): JSX.Element {
         <div className="ml-auto flex items-center gap-1.5">
           <ThemeToggle />
           {identity ? (
-            <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+            <>
+              <FundsPill />
+              <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+            </>
           ) : (
             <Button variant="primary" size="sm" onClick={openLogin}>
               Sign in
@@ -127,6 +131,14 @@ function AccountMenu({
               {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
             </div>
           </div>
+          <Link
+            href="/settings"
+            role="menuitem"
+            className="block rounded-md px-3 py-2 text-dense hover:bg-anvil-100 dark:hover:bg-anvil-800"
+            onClick={() => setOpen(false)}
+          >
+            Settings &amp; spend
+          </Link>
           <Link
             href={`/u?name=${encodeURIComponent(identity)}`}
             role="menuitem"

@@ -9,6 +9,8 @@ import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
 import { LoginModal } from '@/components/login-modal'
+import { TopUpSheet } from '@/components/top-up-sheet'
+import { Toaster } from '@/components/ui/toaster'
 
 export function AppShell({
   children,
@@ -26,6 +28,8 @@ export function AppShell({
       </main>
       <AppFooter />
       <LoginModal />
+      <TopUpSheet />
+      <Toaster />
     </div>
   )
 }

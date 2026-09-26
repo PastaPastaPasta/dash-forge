@@ -13,18 +13,16 @@ import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import {
-  followIdentity,
-  isFollowing,
+  followRelation,
   readFollowerCount,
   readFollowingCount,
   readV2FollowCounts,
   resolveOwner,
-  unfollowIdentity,
 } from '@/lib/repo'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { useRegistryToggle } from '@/hooks/use-registry-toggle'
+import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { IdentityPill } from '@/components/ui/identity-pill'
@@ -84,16 +82,15 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
     { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
   )
   const identityId = data?.identityId ?? address
-  // Following is a v1 registry write; forge-v2 follows come with v2 writes.
-  const canFollow = isRegistryDeployed() && NETWORKS[network].v2 === null
+  // forge-v2 follows live in forge-collab; networks without it use the v1 registry.
+  const forge = NETWORKS[network].v2
+  const canFollow = forge !== null || isRegistryDeployed()
 
   const isSelf = identity === identityId
-  const follow = useRegistryToggle({
+  const follow = useRelationToggle({
     enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
-    read: () => isFollowing(sdk!, network, identity!, identityId),
-    add: async () => (await followIdentity(sdk!, signer!, identityId)).confirmed,
-    remove: async () => (await unfollowIdentity(sdk!, signer!, identityId)).deleted,
+    ...followRelation(sdk!, signer, identity ?? '', forge, identityId, network),
   })
 
   const toggleFollow = (): void => {

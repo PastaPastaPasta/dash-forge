@@ -5,16 +5,19 @@
  * findings and forge-core's on-chain doc encoding:
  *
  *  - **Manual ST assembly** (not `documents.create`): build `Document` → `DocumentCreateTransition`
- *    → `BatchedTransition` → `BatchTransition` → `StateTransition`, set the nonce, sign, and
- *    **broadcast-only** (`broadcastStateTransition`). `waitForResponse` / `broadcastAndWait`
- *    panic under Node/WASM (`time not implemented`, S0.3), so confirmation is a **documents.get
- *    poll**, exactly the broadcast+poll model the spike froze.
- *  - **DIP-30 nonce masking**: the identity-contract nonce carries a 24-bit missing-revision
- *    bitset in its high bits; mask to the low 40 before incrementing or the write desyncs.
- *  - **Idempotent retry**: the signed ST bytes are cached (localStorage) keyed by the
- *    deterministic document id; a retry re-broadcasts the *same* signed ST (no new nonce → no
- *    double post). An `AlreadyExists` / nonce-used error, or the doc appearing on a poll, is
- *    treated as success.
+ *    → `BatchedTransition` → `BatchTransition` → `StateTransition`, set the nonce, sign,
+ *    broadcast, then `waitForResponse` for the verdict (evo-sdk 4.2: it returns a proven
+ *    result, or the consensus error with its code). A wait that fails for transport reasons
+ *    falls back to a **documents.get poll**, the broadcast+poll model of the S0.3 spike.
+ *  - **Deletes** go through the SDK's delete builder, which emits an `indexOnlyDelete`
+ *    carrying the document's values for `indexOnly` types (star, follow).
+ *  - **Nonces**: DIP-30 masking (the high 24 bits are a missing-revision bitset; use the low
+ *    40), and `max(platform, last used here) + 1`, so a node a block behind never makes a
+ *    write reuse a nonce. One writer per identity (a tab queue plus a cross-tab Web Lock).
+ *  - **Idempotent retry**: the signed ST bytes are cached (localStorage) under the action's
+ *    intent token; retrying that action re-broadcasts the *same* signed ST (no new nonce, no
+ *    double post). Only "already in mempool/chain" or the doc appearing on a poll counts as
+ *    landed; a write not seen landing throws `UnconfirmedWriteError`, never resolves.
  *  - **Token gating**: WRITE/MAINTAIN-gated doc types carry a `TokenPaymentInfo` pinned to the
  *    contract-declared `tokenCost.create` (position + amount) so a later owner-side price change
  *    cannot overcharge — parity with forge-core's `token_payment_for`. Ungated types (issue /
@@ -33,6 +36,10 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
+import { previewCreate, previewDelete, type CostPreview } from './cost'
+import { base64ToBytes, bytesToBase64 } from './query'
+
+export type { CostPreview } from './cost'
 
 // ---------------------------------------------------------------------------
 // Signing-key selection (via the WASM SDK — no separate secp256k1 dependency)
@@ -55,6 +62,8 @@ interface WasmPublicKey {
   readonly keyId: number
   readonly purposeNumber: number
   readonly securityLevelNumber: number
+  readonly disabledAt?: bigint
+  readonly expiresAt?: bigint
   validatePrivateKey(privateKeyBytes: Uint8Array, network: string): boolean
 }
 interface WasmIdentity {
@@ -71,6 +80,7 @@ interface DocumentsFacadeLike {
 }
 interface StateTransitionsFacadeLike {
   broadcastStateTransition(st: StateTransition): Promise<void>
+  waitForResponse(st: StateTransition): Promise<unknown>
 }
 interface SdkFacades {
   identities: IdentitiesFacadeLike
@@ -98,6 +108,10 @@ export async function findSigningKey(
   const pkBytes = PrivateKey.fromWIF(wif).toBytes()
   for (const key of identity.publicKeys) {
     if (key.purposeNumber !== PURPOSE_AUTHENTICATION) continue
+    // A disabled or expired key would be refused at signature validation; skip it so a
+    // stale session reports "no usable key" instead of an opaque consensus error.
+    if (key.disabledAt !== undefined) continue
+    if (key.expiresAt !== undefined && key.expiresAt <= BigInt(Date.now())) continue
     let matches = false
     try {
       matches = key.validatePrivateKey(pkBytes, network)
@@ -150,112 +164,54 @@ export function createGateFor(documentType: string): TokenGate | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Cost preview (DASH) — heuristic pre-sign estimate for the confirm UI
+// Cost preview — the calibrated model lives in `./cost`
 // ---------------------------------------------------------------------------
 
-/** 1 DASH = 1e11 credits (parity with forge-core `credits_to_dash`). */
-export const CREDITS_PER_DASH = 100_000_000_000
-
-/** Credit → DASH (display). */
-export function creditsToDash(credits: number): number {
-  return credits / CREDITS_PER_DASH
-}
-
 /**
- * Heuristic pre-sign credit estimates per write kind. Document writes are order-of-magnitude
- * (processing + storage); the repo contract-create figures come from the S0.7 measurement
- * (~0.24 DASH for a token contract) and the repo-v1 template's larger footprint (~1.18 DASH).
- * These drive the confirm dialog's "≈ Ð" preview; the exact fee settles at consensus.
+ * The preview for a v1 repo-contract document create: the calibrated estimate plus the
+ * WRITE/MAINTAIN token its type spends, if gated. forge-v2 types spend no tokens; their
+ * previews come from {@link previewCreate} directly.
  */
-export const COST_ESTIMATE_CREDITS = {
-  documentCreate: 20_000_000,
-  documentDelete: 2_000_000,
-  tokenAdmin: 15_000_000,
-  repoCreate: 118_000_000_000,
-} as const
-
-/** A pre-sign cost preview for the confirm UI. */
-export interface CostPreview {
-  readonly credits: number
-  readonly dash: number
-  /** The token spend, when the action is token-gated (1 WRITE/MAINTAIN token), else 0. */
-  readonly tokenAmount: number
-  /** Token position spent (0 WRITE / 1 MAINTAIN), when gated. */
-  readonly tokenPosition?: number
-}
-
-/** Build the cost preview for a repo document create (folds in any token gate). */
-export function previewDocumentCreate(documentType: string): CostPreview {
+export function previewDocumentCreate(
+  documentType: string,
+  data: Readonly<Record<string, unknown>> = {},
+): CostPreview {
   const gate = createGateFor(documentType)
-  const credits = COST_ESTIMATE_CREDITS.documentCreate
   return {
-    credits,
-    dash: creditsToDash(credits),
+    ...previewCreate(documentType, data),
     tokenAmount: gate?.amount ?? 0,
     ...(gate ? { tokenPosition: gate.position } : {}),
   }
 }
 
-/** Cost preview for a plain (untyped-cost) credit amount. */
-export function previewCredits(credits: number): CostPreview {
-  return { credits, dash: creditsToDash(credits), tokenAmount: 0 }
-}
-
 // ---------------------------------------------------------------------------
-// Signed-ST idempotency cache (localStorage; keyed by the logical write)
+// Signed-ST idempotency cache (localStorage; keyed by the action's intent)
 // ---------------------------------------------------------------------------
 
-const ST_CACHE_PREFIX = 'forge:pending-st:v2:'
+const ST_CACHE_PREFIX = 'forge:pending-st:v3:'
 const ST_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 interface CachedST {
-  /** The signed state transition, base64. */
+  /** The signed state transition, base64 (public data: a signed, broadcastable write). */
   data: string
   /** The document id that transition creates. */
   documentId: string
   cachedAt: number
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] as number)
-  return btoa(bin)
-}
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-/** A JSON form of write data with sorted keys and bytes as hex, so equal writes key equally. */
-function canonical(value: unknown): unknown {
-  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) }
-  if (typeof value === 'bigint') return { $bigint: value.toString() }
-  if (Array.isArray(value)) return value.map(canonical)
-  if (value !== null && typeof value === 'object') {
-    const obj = value as Record<string, unknown>
-    return Object.fromEntries(
-      Object.keys(obj)
-        .sort()
-        .map((k) => [k, canonical(obj[k])]),
-    )
-  }
-  return value
-}
-
 /**
- * The cache key of a logical write: the same owner writing the same data of the same type to
- * the same contract. It does not depend on the (random) entropy or the nonce, so retrying a
- * timed-out write finds the transition the first attempt signed.
+ * A per-action intent token: made when the user starts an action (a confirm dialog opens, a
+ * composer submits) and reused if they retry that same action. Two separate actions with
+ * identical data — close, reopen, close again — get two tokens, so the second close can never
+ * be answered by the first one's cached transition.
  */
-export function pendingWriteKey(
-  ownerId: string,
-  contractId: string,
-  documentType: string,
-  data: Record<string, unknown>,
-): string {
-  const text = JSON.stringify([ownerId, contractId, documentType, canonical(data)])
+export function newIntent(): string {
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+}
+
+/** The cache key of one intent: owner, contract and type bound in, so a token cannot leak across. */
+export function pendingWriteKey(ownerId: string, contractId: string, documentType: string, intent: string): string {
+  const text = JSON.stringify([ownerId, contractId, documentType, intent])
   return ST_CACHE_PREFIX + bytesToHex(sha256(new TextEncoder().encode(text)))
 }
 
@@ -293,7 +249,7 @@ function clearPendingST(key: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Error classification (broadcast is best-effort; some "errors" mean success)
+// Error classification
 // ---------------------------------------------------------------------------
 
 function errorMessage(e: unknown): string {
@@ -323,16 +279,22 @@ function errorMessage(e: unknown): string {
   return 'unknown error'
 }
 
-/** An already-processed ST (mempool/chain/nonce-used) — the broadcast effectively succeeded. */
+/**
+ * This exact transition is already in the mempool or the chain (a re-broadcast of cached
+ * bytes, or a lost response). Only these mean "mine landed".
+ */
 export function isAlreadyExistsError(e: unknown): boolean {
   const m = errorMessage(e).toLowerCase()
-  return (
-    m.includes('already in mempool') ||
-    m.includes('already in chain') ||
-    m.includes('nonce already present') ||
-    m.includes('already exists') ||
-    m.includes('invalid identity nonce')
-  )
+  return m.includes('already in mempool') || m.includes('already in chain') || m.includes('already exists')
+}
+
+/**
+ * The nonce was already used — by *another* transition. For bytes just signed this means the
+ * nonce source lagged (a node a block behind); the write did not land.
+ */
+export function isNonceUsedError(e: unknown): boolean {
+  const m = errorMessage(e).toLowerCase()
+  return m.includes('nonce already present') || m.includes('invalid identity nonce') || m.includes('identity contract nonce')
 }
 
 /** Raised when a required signing key is unavailable / does not match the identity. */
@@ -343,9 +305,131 @@ export class WriteAuthError extends Error {
   }
 }
 
+/**
+ * Platform refused the write with a consensus error: the transition was checked and rejected
+ * (a duplicate unique index, a membership gate, a spent key). `code` is the consensus error
+ * code (`40105` duplicate unique properties, `40120` gate not satisfied, ...).
+ */
+export class ConsensusRefusal extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ConsensusRefusal'
+  }
+
+  /** The key may not spend: budget exhausted/exceeded or expired (renew it, `ux-dx-spec.md` §4). */
+  get isKeyLimit(): boolean {
+    return KEY_LIMIT_CODES.has(this.code)
+  }
+}
+
+/**
+ * The write was broadcast but Platform has not shown it yet. It may still land: never report
+ * it as done, and never as failed-and-safe-to-redo without checking.
+ */
+export class UnconfirmedWriteError extends Error {
+  constructor(readonly documentId: string) {
+    super("Sent, not yet visible on Platform — we'll keep checking. Reload in a moment before trying again.")
+    this.name = 'UnconfirmedWriteError'
+  }
+}
+
+/** Consensus codes for "this key may not spend": budget exhausted/exceeded, key expired. */
+export const KEY_LIMIT_CODES: ReadonlySet<number> = new Set([20015, 20016, 40218])
+
+/** Duplicate unique properties: someone already holds the unique slot (an issue number). */
+export const DUPLICATE_UNIQUE_CODE = 40105
+
+/** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
+export const GATE_REFUSED_CODE = 40120
+
+/** The numeric consensus code a wasm error carries, if any. */
+function consensusCodeOf(e: unknown): number | null {
+  if (e === null || typeof e !== 'object') return null
+  try {
+    const code = (e as { code?: unknown }).code
+    if (typeof code === 'number' && code >= 10000 && code < 50000) return code
+  } catch {
+    /* freed wasm pointer */
+  }
+  return null
+}
+
+/** The consensus refusal `e` is, or null when it is transport noise or unclassified. */
+export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
+  if (e instanceof ConsensusRefusal) return e
+  const code = consensusCodeOf(e)
+  return code === null ? null : new ConsensusRefusal(code, errorMessage(e))
+}
+
+/**
+ * The SDK proves an indexOnly write (star, follow) by the state it affected, not by the
+ * transition, and says so by rejecting the strict wait with this message. Only an indexOnly
+ * write may read this as "landed".
+ */
+function isAffectedStateSnapshot(e: unknown): boolean {
+  return errorMessage(e).includes('VerifiedDocuments snapshot')
+}
+
+/**
+ * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
+ * {@link ConsensusRefusal} when consensus rejected it, `'unknown'` when the wait itself failed
+ * (timeout, transport) — the caller then polls for the document instead.
+ */
+async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean): Promise<'landed' | 'unknown'> {
+  try {
+    await facades(sdk).stateTransitions.waitForResponse(st)
+    return 'landed'
+  } catch (e) {
+    if (indexOnly && isAffectedStateSnapshot(e)) return 'landed'
+    const refusal = asConsensusRefusal(e)
+    if (refusal !== null) throw refusal
+    return 'unknown'
+  }
+}
+
+/** Read a balance until it moves off `before` (a write's fee settles a block later). */
+async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Promise<bigint | null> {
+  for (let i = 0; i < 8; i++) {
+    try {
+      const now = (await facades(sdk).identities.fetch(identityId))?.balance
+      if (now !== undefined && now !== before) return now
+    } catch {
+      /* transient read failure: try again */
+    }
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  return null
+}
+
+/** The credits a write took (negative: refunded), from the balance on each side of it. */
+export async function measureActual(sdk: EvoSDK, identityId: string, before: bigint | null): Promise<number | null> {
+  if (before === null) return null
+  const after = await balanceAfter(sdk, identityId, before)
+  return after === null ? null : Number(before - after)
+}
+
 // ---------------------------------------------------------------------------
 // The write context (who is acting; how to reach their key — never React state)
 // ---------------------------------------------------------------------------
+
+/** One broadcast write, as the spend ledger records it. */
+export interface SpendEvent {
+  readonly identityId: string
+  readonly network: Network
+  /** `create:issue`, `delete:star`, `refused:issue` (a refused write still pays its fee), … */
+  readonly kind: string
+  /** The repo the write belongs to (base58 `repoId` / v1 contract id), when it has one. */
+  readonly repo: string | null
+  readonly documentId: string
+  readonly estimateCredits: number
+  /** The balance change the write caused, or null when it could not be read in time. */
+  readonly actualCredits: number | null
+  /** The identity's balance right before the write (the ledger's reconciliation baseline). */
+  readonly balanceBefore: bigint | null
+}
 
 /** Identifies the acting identity and yields its signing key (WIF) on demand. */
 export interface WriteAuth {
@@ -353,61 +437,100 @@ export interface WriteAuth {
   readonly network: Network
   /** Return the acting identity's signing-key WIF, or throw {@link WriteAuthError}. */
   getSigningKeyWif(): string
+  /** Told about every write that was charged (the local spend ledger listens here). */
+  readonly onSpend?: (event: SpendEvent) => void
 }
 
-/** The outcome of an idempotent write. */
+/** The outcome of a write. A write that did not confirm throws {@link UnconfirmedWriteError}. */
 export interface WriteResult {
   readonly documentId: string
-  /** True once the document is query-visible on Platform (poll confirmed). */
+  /** True once Platform proved the write (or the document became query-visible). */
   readonly confirmed: boolean
-  /** The pre-sign cost preview shown to the user. */
+  /** The pre-sign estimate shown to the user. */
   readonly cost: CostPreview
+  /**
+   * What the write took from the balance (credits; negative = refund). Measured after the
+   * write, outside the per-identity lock: `null` here, reported through `onSpend`.
+   */
+  readonly actualCredits: number | null
 }
 
-async function documentExists(
-  sdk: EvoSDK,
-  contractId: string,
-  documentType: string,
-  documentId: string,
-): Promise<boolean> {
+/** The repo a write's data names (`repoId` bytes), for the ledger. */
+function repoOf(data: Readonly<Record<string, unknown>>, contractId: string): string | null {
+  const repoId = data['repoId']
+  if (repoId instanceof Uint8Array && repoId.length === 32) return base58Encode(repoId)
+  return contractId
+}
+
+/** Whether a stored document exists: `null` when the read failed (unknown is not "gone"). */
+async function documentExists(sdk: EvoSDK, contractId: string, documentType: string, documentId: string): Promise<boolean | null> {
   try {
     const doc = await facades(sdk).documents.get(contractId, documentType, documentId)
     return doc !== undefined && doc !== null
-  } catch (e) {
-    const m = errorMessage(e).toLowerCase()
-    if (m.includes('not found') || m.includes('no document') || m.includes('404')) return false
-    // Transport hiccup — treat as "unknown", not "exists".
-    return false
+  } catch {
+    return null
   }
 }
 
 const SEQUENCE_MASK = (1n << 40n) - 1n
 
-async function nextContractNonce(
-  sdk: EvoSDK,
-  identityId: string,
-  contractId: string,
-): Promise<bigint> {
+// ---------------------------------------------------------------------------
+// One writer per identity (tab-wide queue + cross-tab Web Lock)
+// ---------------------------------------------------------------------------
+
+/**
+ * One write at a time per identity. Each write takes a nonce and signs nonce + 1, and the
+ * balance is identity-wide, so writes of one identity queue — in this tab through a promise
+ * chain, across tabs through the Web Locks API where the browser has it.
+ */
+const writeLocks = new Map<string, Promise<unknown>>()
+
+interface LockManagerLike {
+  request<T>(name: string, cb: () => Promise<T>): Promise<T>
+}
+
+function crossTab<T>(identityId: string, run: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined' ? (navigator as { locks?: LockManagerLike }).locks : undefined
+  return locks ? locks.request(`dash-forge-writer:${identityId}`, run) : run()
+}
+
+/** Run `run` as this identity's only writer. Exported for the v1 token-admin path. */
+export function serialized<T>(identityId: string, run: () => Promise<T>): Promise<T> {
+  const prev = writeLocks.get(identityId) ?? Promise.resolve()
+  const next = prev.then(
+    () => crossTab(identityId, run),
+    () => crossTab(identityId, run),
+  )
+  const tail = next.catch(() => undefined)
+  writeLocks.set(identityId, tail)
+  void tail.then(() => {
+    if (writeLocks.get(identityId) === tail) writeLocks.delete(identityId)
+  })
+  return next
+}
+
+/**
+ * The last identity-contract nonce this tab signed. A node one block behind answers the
+ * nonce query with a value this tab already used; signing `max(platform, lastUsed) + 1`
+ * never reuses one.
+ */
+const lastUsedNonce = new Map<string, bigint>()
+
+async function nextContractNonce(sdk: EvoSDK, identityId: string, contractId: string): Promise<bigint> {
   const raw = (await facades(sdk).identities.contractNonce(identityId, contractId)) ?? 0n
-  return (raw & SEQUENCE_MASK) + 1n
+  const platform = raw & SEQUENCE_MASK
+  const used = lastUsedNonce.get(`${identityId}:${contractId}`) ?? 0n
+  return (platform > used ? platform : used) + 1n
+}
+
+function markNonceUsed(identityId: string, contractId: string, nonce: bigint): void {
+  const key = `${identityId}:${contractId}`
+  if (nonce > (lastUsedNonce.get(key) ?? 0n)) lastUsedNonce.set(key, nonce)
 }
 
 /** Poll `documents.get` until the document appears or the budget elapses. */
-async function pollForDocument(
-  sdk: EvoSDK,
-  contractId: string,
-  documentType: string,
-  documentId: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  const step = 1500
-  // First check is immediate; then poll on an interval until the deadline.
-  for (;;) {
-    if (await documentExists(sdk, contractId, documentType, documentId)) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, step))
-  }
+function pollForDocument(sdk: EvoSDK, contractId: string, documentType: string, documentId: string, timeoutMs: number): Promise<boolean> {
+  return pollUntil(async () => (await documentExists(sdk, contractId, documentType, documentId)) === true, timeoutMs)
 }
 
 /**
@@ -421,7 +544,7 @@ async function pollForDocument(
  * top-level field. So the system fields come from a property-less constructor call and the
  * content is merged in through `fromObject`.
  */
-export function documentForCreate(
+function documentForCreate(
   DocumentClass: typeof import('@dashevo/evo-sdk').Document,
   params: {
     readonly data: Record<string, unknown>
@@ -449,112 +572,192 @@ export function documentForCreate(
   )
 }
 
-/**
- * Create a document with idempotent retry. Builds + signs a broadcast-only state transition,
- * caches the signed bytes keyed by the logical write ({@link pendingWriteKey}: owner, contract,
- * type and data), broadcasts, and polls for confirmation. A retry of the same write while a
- * cached transition is pending re-broadcasts those exact bytes (same nonce and id, so it can
- * land at most once) instead of signing a second document. An already-processed error, or the
- * doc appearing on a poll, resolves as success.
- *
- * If the network refuses the create because its id was derived at a stale protocol version
- * (a 13 -> 14 upgrade under an open tab), the version is re-read with a proved query and the
- * write is prepared once more. The refused transition never executed, so this cannot
- * double-post.
- *
- * `requiredLevel` defaults to HIGH (document ops accept a HIGH-or-CRITICAL key).
- */
-export async function createDocumentIdempotent(
+/** Report a charged write (after the lock is released: measuring takes up to 8 s). */
+function reportSpend(
   sdk: EvoSDK,
   auth: WriteAuth,
-  params: {
-    readonly contractId: string
-    readonly documentType: string
-    readonly data: Record<string, unknown>
-    /** Explicit token payment. Defaults to the repo-v1 gate for `documentType`. */
-    readonly gate?: TokenGate | null
-    readonly requiredLevel?: number
-    readonly confirmTimeoutMs?: number
-  },
-): Promise<WriteResult> {
+  event: Omit<SpendEvent, 'actualCredits' | 'identityId' | 'network'>,
+): void {
+  if (!auth.onSpend) return
+  void measureActual(sdk, auth.identityId, event.balanceBefore).then((actualCredits) =>
+    auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits }),
+  )
+}
+
+/**
+ * Create a document with idempotent retry. Builds + signs a state transition, caches the
+ * signed bytes under the action's {@link newIntent intent token}, broadcasts, and waits for
+ * Platform's verdict. Retrying the same action while its transition is pending re-broadcasts
+ * those exact bytes (same nonce and id, so it can land at most once) instead of signing a
+ * second document.
+ *
+ * The verdict: a proven result resolves; a consensus refusal (a duplicate issue number, a
+ * membership gate, a spent key) throws {@link ConsensusRefusal} with its code, and its fee is
+ * reported to the ledger as `refused:<type>`; a write not visible after the wait and a poll
+ * throws {@link UnconfirmedWriteError}. It never resolves for a write it has not seen land.
+ *
+ * Nonces: `max(platform, last used) + 1`. A fresh transition refused because its nonce was
+ * taken is re-signed once with the next nonce.
+ */
+export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
+  return serialized(auth.identityId, () => createDocumentUnlocked(sdk, auth, params)).then((r) => {
+    reportSpend(sdk, auth, r.spend)
+    return r.result
+  })
+}
+
+export interface CreateParams {
+  readonly contractId: string
+  readonly documentType: string
+  readonly data: Record<string, unknown>
+  /** The action this write belongs to ({@link newIntent}); a fresh token when omitted. */
+  readonly intent?: string
+  /** A v1 repo contract's token payment for this type (`createGateFor`); none by default. */
+  readonly gate?: TokenGate | null
+  readonly requiredLevel?: number
+  readonly confirmTimeoutMs?: number
+  /** Whether the write landed, for types `documents.get` cannot fetch (indexOnly). */
+  readonly probe?: () => Promise<boolean>
+}
+
+type Spend = Omit<SpendEvent, 'actualCredits' | 'identityId' | 'network'>
+
+async function createDocumentUnlocked(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  params: CreateParams,
+): Promise<{ result: WriteResult; spend: Spend }> {
   const { contractId, documentType, data } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
-  const gate = params.gate === undefined ? createGateFor(documentType) : params.gate ?? undefined
-  const cost = previewDocumentCreate(documentType)
+  const gate = params.gate ?? undefined
+  const indexOnly = params.probe !== undefined
+  const cost: CostPreview = {
+    ...previewCreate(documentType, data),
+    tokenAmount: gate?.amount ?? 0,
+    ...(gate ? { tokenPosition: gate.position } : {}),
+  }
+  const landed = (documentId: string, timeoutMs: number): Promise<boolean> =>
+    params.probe ? pollUntil(params.probe, timeoutMs) : pollForDocument(sdk, contractId, documentType, documentId, timeoutMs)
 
   const wif = auth.getSigningKeyWif()
   const ownerId = auth.identityId
-  const cacheKey = pendingWriteKey(ownerId, contractId, documentType, data)
+  const cacheKey = pendingWriteKey(ownerId, contractId, documentType, params.intent ?? newIntent())
+  const identity = await facades(sdk).identities.fetch(ownerId)
+  if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
+  const balanceBefore = identity.balance
+  const spend = (kind: string, documentId: string): Spend => ({
+    kind: `${kind}:${documentType}`,
+    repo: repoOf(data, contractId),
+    documentId,
+    estimateCredits: cost.credits,
+    balanceBefore,
+  })
 
-  // A previous attempt at this same write timed out: finish it, never sign a second one.
+  const done = (documentId: string, confirmed: boolean): { result: WriteResult; spend: Spend } => {
+    if (!confirmed) throw new UnconfirmedWriteError(documentId)
+    clearPendingST(cacheKey)
+    return { result: { documentId, confirmed, cost, actualCredits: null }, spend: spend('create', documentId) }
+  }
+  /** A refusal was charged (a paid consensus failure): record it, then rethrow. */
+  const refused = (refusal: ConsensusRefusal, documentId: string): never => {
+    clearPendingST(cacheKey)
+    if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused', documentId))
+    throw refusal
+  }
+
+  // A previous attempt at this same action timed out: finish it, never sign a second one.
   const cached = loadPendingST(cacheKey)
   if (cached) {
     const { documentId } = cached
-    if (!(await documentExists(sdk, contractId, documentType, documentId))) {
+    if (!(await landed(documentId, 0))) {
       const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
       try {
-        await facades(sdk).stateTransitions.broadcastStateTransition(
-          StateTransitionClass.fromBytes(cached.bytes),
-        )
+        await facades(sdk).stateTransitions.broadcastStateTransition(StateTransitionClass.fromBytes(cached.bytes))
       } catch (e) {
-        // Already processed / nonce consumed: the poll below decides whether it landed.
-        if (!isAlreadyExistsError(e)) throw e
+        // Refused: the cached bytes cannot land. A used nonce: they landed (the poll sees
+        // them) or never will, so a retry may sign afresh. Already in, or a transport error:
+        // the poll decides, and the bytes stay cached until it sees them.
+        const refusal = asConsensusRefusal(e)
+        if (refusal) {
+          clearPendingST(cacheKey)
+          throw refusal
+        }
+        if (isNonceUsedError(e)) clearPendingST(cacheKey)
       }
     }
-    const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, confirmTimeoutMs)
-    // One re-broadcast per cached transition. If it still has not landed (its nonce was
-    // overtaken, say), drop it so the next attempt signs afresh rather than re-polling a
-    // write that cannot land until the entry expires.
-    clearPendingST(cacheKey)
-    return { documentId, confirmed, cost }
+    return done(documentId, await landed(documentId, confirmTimeoutMs))
   }
 
-  const identity = await facades(sdk).identities.fetch(ownerId)
-  if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) {
-    throw new WriteAuthError(
-      'no matching AUTHENTICATION key for the stored signing key at the required security level',
-    )
+    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
   }
 
-  const build = () =>
-    signCreate(sdk, { ownerId, contractId, documentType, data, gate, wif, publicKey: signing.publicKey })
+  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, gate, wif, publicKey: signing.publicKey })
 
   let signed = await build()
-  savePendingST(cacheKey, signed.documentId, signed.bytes)
-  try {
-    await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
-  } catch (e) {
-    if (isAlreadyExistsError(e)) {
-      const confirmed = await pollForDocument(sdk, contractId, documentType, signed.documentId, 5_000)
-      clearPendingST(cacheKey)
-      return { documentId: signed.documentId, confirmed, cost }
-    }
-    if (!isStaleDocumentIdError(e)) {
-      clearPendingST(cacheKey)
-      throw e
-    }
-    // Refused at basic validation (nothing landed): learn the network's version from a
-    // proved read and prepare the write once more.
-    await facades(sdk).epoch.current()
-    signed = await build()
+  for (let attempt = 0; ; attempt++) {
     savePendingST(cacheKey, signed.documentId, signed.bytes)
     try {
       await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
-    } catch (e2) {
-      if (!isAlreadyExistsError(e2)) {
-        clearPendingST(cacheKey)
-        throw e2
+      markNonceUsed(ownerId, contractId, signed.nonce)
+      break
+    } catch (e) {
+      if (isAlreadyExistsError(e)) {
+        markNonceUsed(ownerId, contractId, signed.nonce)
+        return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
       }
+      if (attempt === 0 && isNonceUsedError(e)) {
+        // The nonce source lagged: that nonce belongs to an earlier write. Skip past it.
+        markNonceUsed(ownerId, contractId, signed.nonce)
+        signed = await build()
+        continue
+      }
+      if (attempt === 0 && isStaleDocumentIdError(e)) {
+        // Refused at basic validation (nothing landed): learn the network's version from a
+        // proved read and prepare the write once more.
+        await facades(sdk).epoch.current()
+        signed = await build()
+        continue
+      }
+      const refusal = asConsensusRefusal(e)
+      if (refusal) refused(refusal, signed.documentId)
+      if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
+        clearPendingST(cacheKey)
+        throw e
+      }
+      // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
+      // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
+      // same bytes instead of signing a second document.
+      markNonceUsed(ownerId, contractId, signed.nonce)
+      return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
     }
   }
 
   const { documentId } = signed
-  const confirmed = await pollForDocument(sdk, contractId, documentType, documentId, confirmTimeoutMs)
-  if (confirmed) clearPendingST(cacheKey)
-  return { documentId, confirmed, cost }
+  let outcome: 'landed' | 'unknown'
+  try {
+    outcome = await awaitOutcome(sdk, signed.st, indexOnly)
+  } catch (e) {
+    // Consensus checked the transition and refused it: nothing will land under this id.
+    return refused(e as ConsensusRefusal, documentId)
+  }
+  return done(documentId, outcome === 'landed' || (await landed(documentId, confirmTimeoutMs)))
+}
+
+/** Poll `check` until it holds or the budget elapses (one immediate check). */
+async function pollUntil(check: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      if (await check()) return true
+    } catch {
+      /* a failed read is "not yet" */
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, 1500))
+  }
 }
 
 /** Consensus refused a create because its id was derived at another protocol version. */
@@ -575,22 +778,14 @@ async function signCreate(
     readonly wif: string
     readonly publicKey: unknown
   },
-): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string }> {
+): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string; nonce: bigint }> {
   const { ownerId, contractId, documentType, data, gate } = p
-  const {
-    Document,
-    DocumentCreateTransition,
-    BatchedTransition,
-    BatchTransition,
-    PrivateKey,
-    TokenPaymentInfo,
-  } = await import('@dashevo/evo-sdk')
+  const { Document, DocumentCreateTransition, BatchedTransition, BatchTransition, PrivateKey, TokenPaymentInfo } = await import('@dashevo/evo-sdk')
 
   // The nonce is fetched once and used for both the id and the transition. From protocol 14
   // the document id commits to it (protocol 13: entropy only), and the create transition
   // re-derives the id at the version it is given — so the id, the `Document` and the
-  // transition all use this nonce and one version: the SDK's latest learned one. Every proved
-  // response raises it, but it can be stale (the nonce may come from a cache). Drive refuses
+  // transition all use this nonce and one version: the SDK's latest learned one. Drive refuses
   // a stale-version id and the caller retries; it is never silently misreported.
   const nonce = await nextContractNonce(sdk, ownerId, contractId)
   const platformVersion = sdk.version()
@@ -599,22 +794,11 @@ async function signCreate(
   const idBytes = Document.generateId(documentType, ownerId, contractId, entropy, nonce, platformVersion)
   const documentId = base58Encode(idBytes)
 
-  const document = documentForCreate(Document, {
-    data,
-    documentType,
-    contractId,
-    ownerId,
-    documentId,
-    entropy,
-    platformVersion,
-  })
+  const document = documentForCreate(Document, { data, documentType, contractId, ownerId, documentId, entropy, platformVersion })
 
   let tokenPaymentInfo: TokenPaymentInfo | undefined
   if (gate) {
-    tokenPaymentInfo = new TokenPaymentInfo({
-      tokenContractPosition: gate.position,
-      maximumTokenCost: BigInt(gate.amount),
-    })
+    tokenPaymentInfo = new TokenPaymentInfo({ tokenContractPosition: gate.position, maximumTokenCost: BigInt(gate.amount) })
   }
 
   // `platformVersion` is load-bearing: without it the transition re-derives the id at the
@@ -637,66 +821,115 @@ async function signCreate(
   const st = batch.toStateTransition()
   st.setIdentityContractNonce(nonce)
   st.sign(PrivateKey.fromWIF(p.wif), p.publicKey as Parameters<StateTransition['sign']>[1])
-  return { st, bytes: st.toBytes(), documentId }
+  return { st, bytes: st.toBytes(), documentId, nonce }
+}
+
+/** The outcome of a delete. A delete that did not confirm throws {@link UnconfirmedWriteError}. */
+export interface DeleteResult {
+  /** True once the document is gone (proven, or cleanly no longer found). */
+  readonly deleted: boolean
+  /** Measured after the lock; reported through `onSpend`. */
+  readonly actualCredits: number | null
+}
+
+interface DocumentsDeleteFacadeLike {
+  delete(options: { document: unknown; identityKey: unknown; signer: unknown; settings?: unknown }): Promise<void>
 }
 
 /**
- * Delete a document (broadcast-only, idempotent). Fetches the live `Document`, wraps it in a
- * `DocumentDeleteTransition`, signs, broadcasts, and polls for its disappearance. If the doc
- * is already gone this resolves as a no-op success. Used by unstar / unfollow.
+ * Delete one of the signer's own documents through the SDK's delete builder, which picks the
+ * transition kind from the document type: a stored document is deleted by id; an `indexOnly`
+ * one (`star`, `follow`) has no stored row, so its delete must carry the document's values,
+ * and Drive checks them against the committed index entry (`indexOnlyDelete`, protocol 14).
+ *
+ * - Stored types: pass `documentId`; the live document is checked first and a delete of a
+ *   document cleanly not found resolves as a no-op success (a failed read does not).
+ * - indexOnly types: pass `document`, the wasm `Document` a query returned (its values are the
+ *   delete), and `probeGone` to confirm it disappeared.
+ *
+ * The SDK takes the nonce from its own cache; `identityNonceStaleTimeS: 0` makes it re-read
+ * the chain each time (its max-merge then steps past nonces this module's creates used).
  */
-export async function deleteDocumentIdempotent(
+export function deleteDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
+  return serialized(auth.identityId, () => deleteDocumentUnlocked(sdk, auth, params)).then((r) => {
+    if (r.spend) reportSpend(sdk, auth, r.spend)
+    return r.result
+  })
+}
+
+export interface DeleteParams {
+  readonly contractId: string
+  readonly documentType: string
+  readonly documentId: string
+  /** The repo the document belongs to, for the ledger. */
+  readonly repo?: string | null
+  /** The wasm `Document` to delete by its values (indexOnly types). */
+  readonly document?: unknown
+  /** Whether the document is gone, for types `documents.get` cannot fetch (indexOnly). */
+  readonly probeGone?: () => Promise<boolean>
+  readonly requiredLevel?: number
+  readonly confirmTimeoutMs?: number
+}
+
+async function deleteDocumentUnlocked(
   sdk: EvoSDK,
   auth: WriteAuth,
-  params: {
-    readonly contractId: string
-    readonly documentType: string
-    readonly documentId: string
-    readonly gate?: TokenGate | null
-    readonly requiredLevel?: number
-    readonly confirmTimeoutMs?: number
-  },
-): Promise<{ deleted: boolean }> {
+  params: DeleteParams,
+): Promise<{ result: DeleteResult; spend: Spend | null }> {
   const { contractId, documentType, documentId } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
+  const indexOnly = params.document !== undefined
+  const gone = params.probeGone ?? (async () => (await documentExists(sdk, contractId, documentType, documentId)) === false)
 
-  const live = await facades(sdk).documents.get(contractId, documentType, documentId)
-  if (live === undefined || live === null) return { deleted: true }
+  if (!indexOnly && (await documentExists(sdk, contractId, documentType, documentId)) === false) {
+    return { result: { deleted: true, actualCredits: 0 }, spend: null }
+  }
 
   const wif = auth.getSigningKeyWif()
   const ownerId = auth.identityId
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
-  if (!signing) throw new WriteAuthError('no matching signing key for delete')
-
-  const { DocumentDeleteTransition, BatchedTransition, BatchTransition, PrivateKey } =
-    await import('@dashevo/evo-sdk')
-  const nonce = await nextContractNonce(sdk, ownerId, contractId)
-  const deleteTransition = new DocumentDeleteTransition({
-    document: live as ConstructorParameters<typeof DocumentDeleteTransition>[0]['document'],
-    identityContractNonce: nonce,
+  if (!signing) {
+    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
+  }
+  const spend = (kind: string): Spend => ({
+    kind: `${kind}:${documentType}`,
+    repo: params.repo ?? null,
+    documentId,
+    estimateCredits: previewDelete(documentType).credits,
+    balanceBefore: identity.balance,
   })
-  const batched = new BatchedTransition(deleteTransition.toDocumentTransition())
-  const batch = BatchTransition.fromBatchedTransitions([batched], ownerId, 0)
-  const st = batch.toStateTransition()
-  st.setIdentityContractNonce(nonce)
-  const privateKey = PrivateKey.fromWIF(wif)
-  st.sign(privateKey, signing.publicKey as Parameters<StateTransition['sign']>[1])
 
+  const { IdentitySigner } = await import('@dashevo/evo-sdk')
+  const signer = new IdentitySigner()
+  signer.addKeyFromWif(wif)
+  const document = params.document ?? { id: documentId, ownerId, dataContractId: contractId, documentTypeName: documentType }
+  let proven = false
   try {
-    await facades(sdk).stateTransitions.broadcastStateTransition(st)
+    await (sdk as unknown as { documents: DocumentsDeleteFacadeLike }).documents.delete({
+      document,
+      identityKey: signing.publicKey,
+      signer,
+      settings: { identityNonceStaleTimeS: 0 },
+    })
+    proven = true
   } catch (e) {
-    if (!isAlreadyExistsError(e)) throw e
+    if (indexOnly && isAffectedStateSnapshot(e)) proven = true
+    else {
+      const refusal = asConsensusRefusal(e)
+      if (refusal !== null) {
+        if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
+        throw refusal
+      }
+      if (!isAlreadyExistsError(e)) throw e
+    }
+  } finally {
+    signer.free()
   }
-
-  const deadline = Date.now() + confirmTimeoutMs
-  for (;;) {
-    if (!(await documentExists(sdk, contractId, documentType, documentId))) return { deleted: true }
-    if (Date.now() >= deadline) return { deleted: false }
-    await new Promise((r) => setTimeout(r, 1500))
-  }
+  if (!(proven || (await pollUntil(gone, confirmTimeoutMs)))) throw new UnconfirmedWriteError(documentId)
+  return { result: { deleted: true, actualCredits: null }, spend: spend('delete') }
 }
 
 /** Read an identity's credit balance (for the auth surface / cost affordability checks). */
