@@ -550,18 +550,40 @@ async fn read_v1_pack(
     p: &PackPlan,
     pack_reader: &PackReader,
 ) -> Result<Vec<u8>> {
-    let manifest = if p.reupload() {
-        p.manifest.clone()
-    } else {
-        PackManifestInfo {
-            uris: p.external.clone(),
-            ..p.manifest.clone()
-        }
-    };
-    reader
-        .fetch_artifact(v1, &manifest, pack_reader)
-        .await
-        .with_context(|| format!("reading v1 pack {}", hex::encode(p.manifest.pack_hash)))
+    let hash = hex::encode(p.manifest.pack_hash);
+    if p.reupload() {
+        return reader
+            .fetch_artifact(v1, &p.manifest, pack_reader)
+            .await
+            .with_context(|| format!("reading v1 pack {hash}"));
+    }
+    // External only, so there are no chunks to fall back on and the reader would try every
+    // candidate (each CID on every gateway) at its full deadline: minutes per dead pack. A
+    // migrate bounds it instead: no new candidate after EXTERNAL_START_BUDGET, and the
+    // whole read within external_deadline(size).
+    let size = (p.manifest.size_bytes > 0).then_some(p.manifest.size_bytes);
+    let read = pack_reader.fetch_verified(&p.external, &hash, size, Some(EXTERNAL_START_BUDGET));
+    match tokio::time::timeout(external_deadline(size), read).await {
+        Ok(r) => r.with_context(|| format!("reading v1 pack {hash}")),
+        Err(_) => bail!(
+            "reading v1 pack {hash}: no public copy answered within {}s",
+            external_deadline(size).as_secs()
+        ),
+    }
+}
+
+/// How long a migrate keeps starting new candidates for one external pack.
+const EXTERNAL_START_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The whole-read deadline for one external pack: 45 s, or twice the time to stream it at
+/// the reader's minimum rate (1 MiB/s), whichever is longer. A dead mirror costs at most
+/// this; a large pack streaming from a healthy one is not cut off.
+fn external_deadline(size: Option<u64>) -> std::time::Duration {
+    let stream = size
+        .unwrap_or(0)
+        .div_ceil(forge_core::storage::read::MIN_TRANSFER_RATE)
+        .saturating_mul(2);
+    std::time::Duration::from_secs(45.max(stream))
 }
 
 /// Which of `tips` have their whole history in the live packs outside `skip`: the packs
@@ -716,6 +738,14 @@ mod tests {
             "ftp://x".into(),
         ]);
         assert_eq!(u, vec!["https://bucket.example/p.pack", "ipfs://bafy"]);
+    }
+
+    #[test]
+    fn a_dead_external_pack_costs_under_a_minute_but_a_big_one_may_stream() {
+        assert_eq!(external_deadline(None).as_secs(), 45);
+        assert_eq!(external_deadline(Some(10_000)).as_secs(), 45);
+        // 200 MiB at 1 MiB/s, doubled.
+        assert_eq!(external_deadline(Some(200 * 1024 * 1024)).as_secs(), 400);
     }
 
     #[test]
