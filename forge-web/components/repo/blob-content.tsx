@@ -80,7 +80,7 @@ export function BlobContent({
         <RefSwitcher home={home} addr={addr} current={selected} path={path} />
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
-      <BrowseBoundary repo={home.repo}>
+      <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader) => <BlobBody reader={reader} tipOid={tipOid} path={path} />}
       </BrowseBoundary>
     </div>

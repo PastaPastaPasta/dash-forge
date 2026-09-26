@@ -27,7 +27,14 @@ export type BrowseReaderState =
       /** Live external packs the in-browser clone could not fetch (empty: nothing skipped). */
       readonly unavailable: readonly UnavailablePack[]
     }
-  | { readonly kind: 'error'; readonly title?: string; readonly message: string; readonly retry: () => void }
+  | {
+      readonly kind: 'error'
+      readonly title?: string
+      readonly message: string
+      /** The thrown value (a StorageUnreachableError renders the storage card). */
+      readonly cause?: unknown
+      readonly retry: () => void
+    }
   | { readonly kind: 'no-packs' }
   /** Too large to clone without asking: `start()` downloads `sizeBytes` of packs. */
   | { readonly kind: 'offer'; readonly behind: boolean; readonly sizeBytes: number; readonly start: () => void }
@@ -42,14 +49,15 @@ function progressLabel(p: FallbackProgress | null): string {
 
 /** Resolve `repo`'s reader. `null` holds every read (the state stays `loading`). */
 export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
-  const { data, loading, error, settled, reload } = useBrowse(repo)
+  const state = useBrowse(repo)
+  const { data, loading, error, settled, reload } = state
   const unindexed = data?.kind === 'unindexed' ? data : null
   const fallback = useFallbackBrowse(repo, unindexed?.livePacks ?? null)
 
   // A warm navigation has `data` seeded from the session browse cache — use it immediately;
   // the loading state is only for a cold (no-cache) resolve.
   if (repo === null || (loading && !settled)) return { kind: 'loading', label: 'Loading browse index' }
-  if (error) return { kind: 'error', message: error, retry: reload }
+  if (error) return { kind: 'error', message: error, cause: state.cause, retry: reload }
   if (data === null || data.kind === 'no-packs') return { kind: 'no-packs' }
   if (data.kind === 'ready') {
     return { kind: 'ready', reader: data.context.reader, local: false, behind: false, unavailable: [] }
@@ -71,6 +79,7 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
       kind: 'error',
       title: 'In-browser clone failed',
       message: fallback.error ?? 'unknown error',
+      cause: fallback.cause,
       retry: fallback.start,
     }
   }

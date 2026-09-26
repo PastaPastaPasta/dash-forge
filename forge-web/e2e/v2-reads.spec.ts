@@ -68,9 +68,9 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
     }
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
-    await expect(page.getByText(`dash://${OWNER}/${NAME}`)).toBeVisible()
-    // The assay panel attests the ref by FORGE_RULES_V2 and names the repo id.
-    await page.getByRole('button', { name: /assay/i }).click()
+    await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
+    // The Verification card attests the ref by FORGE_RULES_V2.
+    await page.getByRole('button', { name: /verification/i }).click()
     await expect(page.getByText(/FORGE_RULES_V2/).first()).toBeVisible()
     await shot(page, 'v2-02-repo-home')
     expect(errors, errors.join('\n')).toEqual([])

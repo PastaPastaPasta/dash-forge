@@ -40,6 +40,11 @@ export interface ContentChecks {
    * serving bad data, reported distinctly from an outage.
    */
   readonly corruptMirrorPacks: readonly string[]
+  /**
+   * Places that did not serve a pack, with why, as the card lists them
+   * (`pub-9a1.r2.dev (timed out)`, `ipfs (not found on 3 gateways)`).
+   */
+  readonly unreachable: readonly string[]
 }
 
 export const NO_CONTENT_CHECKS: ContentChecks = {
@@ -51,9 +56,10 @@ export const NO_CONTENT_CHECKS: ContentChecks = {
   sources: [],
   unavailablePacks: [],
   corruptMirrorPacks: [],
+  unreachable: [],
 }
 
-type Counter = Exclude<keyof ContentChecks, 'sources' | 'unavailablePacks' | 'corruptMirrorPacks'>
+type Counter = Exclude<keyof ContentChecks, 'sources' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable'>
 
 /**
  * A change to one repo's ledger: counter increments, a byte source seen, and/or a live pack
@@ -64,6 +70,8 @@ export type ContentCheckDelta = Partial<Record<Counter, number>> & {
   readonly unavailablePack?: string
   /** With `unavailablePack`: a mirror served bytes that failed the sha256 check. */
   readonly corruptMirror?: boolean
+  /** Places that did not answer (see {@link ContentChecks.unreachable}). */
+  readonly unreachable?: readonly string[]
 }
 
 const ledger = new Map<string, ContentChecks>()
@@ -85,14 +93,27 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   const newMissing = missing !== undefined && !prev.unavailablePacks.includes(missing)
   const newCorrupt =
     missing !== undefined && delta.corruptMirror === true && !prev.corruptMirrorPacks.includes(missing)
-  if (!newSource && !bumped && !newMissing && !newCorrupt) return
+  const newPlaces = (delta.unreachable ?? []).filter((p) => !prev.unreachable.includes(p))
+  if (!newSource && !bumped && !newMissing && !newCorrupt && newPlaces.length === 0) return
 
   const next: { -readonly [K in keyof ContentChecks]: ContentChecks[K] } = { ...prev }
   for (const k of counters) next[k] = prev[k] + Math.max(0, delta[k] ?? 0)
   if (newSource && delta.source !== undefined) next.sources = [...prev.sources, delta.source]
   if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
+  if (newPlaces.length > 0) next.unreachable = [...prev.unreachable, ...newPlaces]
   ledger.set(key, next)
+  for (const l of listeners) l()
+}
+
+/**
+ * "Try again": forget the places that did not answer and the packs they held, so the card
+ * reports what the retry finds rather than the last outage for the rest of the session.
+ */
+export function clearUnreachable(key: string): void {
+  const prev = ledger.get(key)
+  if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0)) return
+  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [] })
   for (const l of listeners) l()
 }
 

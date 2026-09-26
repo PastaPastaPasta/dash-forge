@@ -24,11 +24,12 @@ import {
   packFrame,
 } from '../browse/pack-fixtures'
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, V1RepoRef } from '../repo'
+import type { PackManifest, V1RepoRef, V2RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState } from './browse-source'
 import { contentChecks, resetContentChecks } from './content-checks'
+import { describeUnavailable } from './storage-status'
 import { deriveTrust } from './trust'
 
 /** Mock SDK serving each pack's bytes as `chunk` docs split at CHUNK_PAYLOAD_MAX. */
@@ -194,6 +195,38 @@ describe('startFallback with external-storage packs', () => {
     })
     expect(trust.content.state).toBe('partial')
     expect(trust.content.detail).toMatch(/1 pack could not be fetched from its storage; some objects may be missing|could not be fetched/)
+  })
+
+  it('reports a fork pack whose parent chunks are missing, naming Platform as the source', async () => {
+    const plat = blobPack("the fork's own pack\n")
+    const inherited = blobPack('only the parent had this\n')
+    const fork: V2RepoRef = {
+      kind: 'v2',
+      forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+      repoId: 'FORK',
+      ownerId: 'forker',
+      name: 'proj',
+      visibility: 'public',
+    }
+    const own = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a', uploader: 'forker' })
+    const hash = bytesToHex(sha256(inherited.pack))
+    const parentCopy = manifestFor(inherited.pack, 1, {
+      storage: 1,
+      chunkCount: 0,
+      uris: [`platform://CORE/PARENT/uploader/${hash}`],
+      createdAt: 2,
+      documentId: 'b',
+      uploader: 'forker',
+    })
+    // The parent's chunks are gone: only the fork's own pack is served.
+    const ctx = await startFallback(mockSdk(new Map([[own.packHash, plat.pack]])), fork, [own, parentCopy])
+    expect(ctx.unavailable).toHaveLength(1)
+    expect(ctx.unavailable?.[0]?.hosts).toEqual(['platform'])
+    const read = ctx.reader.readObject(inherited.oid)
+    await expect(read).rejects.toThrow(/the parent repo's chunks on Platform/)
+    await expect(read).rejects.not.toThrow(/external storage/)
+    expect(describeUnavailable(ctx.unavailable ?? [])).toEqual(["the parent repo's chunks on Platform (missing)"])
+    expect(contentChecks('FORK').unreachable).toEqual(["the parent repo's chunks on Platform (missing)"])
   })
 
   it('reports a pack named by several manifests once', async () => {
