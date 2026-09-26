@@ -19,6 +19,7 @@ import type { Collaborator, V1RepoRef, V2RepoRef } from '@/lib/repo'
 import {
   adminCollaborator,
   grantMember,
+  invalidateMembers,
   readCollaborators,
   readMembershipsCached,
   revokeMember,
@@ -31,6 +32,7 @@ import { decodeIdentifier } from '@/lib/auth'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -247,6 +249,15 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
     } else {
       await revokeMember(sdk, signer, repo, action.member, action.role)
     }
+    // The write landed, but the node the next read hits may be a block behind: re-read until
+    // the change shows (then it is what the cache holds), else keep the last answer.
+    const { kind, member, role: r } = action
+    const shows = (rows: Membership[]): boolean =>
+      rows.some((m) => m.identity === member && m.role === r) === (kind === 'grant')
+    await retryWhileMissing(async () => {
+      invalidateMembers(repo, network)
+      return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
+    }, 8)
     members.reload()
   }
   return (
