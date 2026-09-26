@@ -10,10 +10,10 @@
 import { Star } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
-import { useRegistryToggle } from '@/hooks/use-registry-toggle'
+import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
-import { hasStarred, hasStarredV2, starRepo, starRepoV2, unstarRepo, unstarRepoV2, type RepoRef } from '@/lib/repo'
+import { starRelation, type RepoRef } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 
@@ -31,15 +31,12 @@ export function StarButton({
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
-  const v2 = repo.kind === 'v2' ? repo : null
-  const target = v2?.repoId ?? listingId
+  const target = repo.kind === 'v2' ? repo.repoId : listingId
 
-  const star = useRegistryToggle({
+  const star = useRelationToggle({
     enabled: ready && sdk !== null && identity !== null && target !== null,
     key: `${network}:${identity ?? ''}:${target ?? ''}`,
-    read: () => (v2 ? hasStarredV2(sdk!, v2, identity!) : hasStarred(sdk!, network, identity!, listingId!)),
-    add: async () => (v2 ? await starRepoV2(sdk!, signer!, v2) : await starRepo(sdk!, signer!, listingId!)).confirmed,
-    remove: async () => (v2 ? await unstarRepoV2(sdk!, signer!, v2) : await unstarRepo(sdk!, signer!, listingId!)).deleted,
+    ...starRelation(sdk!, signer, identity ?? '', repo, listingId, network),
   })
 
   const starred = star.on === true

@@ -20,7 +20,7 @@ import type { RepoHome, PullThread } from '@/lib/view'
 import { loadPullThread, pullActions, timeAgo } from '@/lib/view'
 import { addEvent, createComment, createReview, readViewerPermissions, repoContractIds, repoKey, setTargetState, type VerdictInput } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { previewDocumentCreate } from '@/lib/sdk'
+import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
@@ -95,7 +95,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
-  const commentCost = previewDocumentCreate('comment', { body: comment.trim() })
+  const commentCost = previewCreate('comment', { body: comment.trim() })
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const target = { id: pull.id, number: pull.number }
 
@@ -133,8 +133,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   }
   const pendingCost =
     pending !== null && typeof pending === 'object'
-      ? previewDocumentCreate('review', { body: comment.trim() })
-      : previewDocumentCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
+      ? previewCreate('review', { body: comment.trim() })
+      : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -233,7 +233,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant={v === 'approve' ? 'primary' : 'outline'}
                 disabled={guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewDocumentCreate('review').credits)) setPending({ review: v })
+                  if (guard.check(previewCreate('review').credits)) setPending({ review: v })
                 }}
               >
                 {VERDICT_TEXT[v]}

@@ -17,7 +17,7 @@ import type { RepoHome, IssueThread } from '@/lib/view'
 import { aclName, loadIssueThread, timeAgo } from '@/lib/view'
 import { addEvent, createComment, readViewerPermissions, repoContractIds, repoKey, setTargetState } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { previewDocumentCreate, type CostPreview as Cost } from '@/lib/sdk'
+import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useParam } from '@/hooks/use-query-param'
@@ -81,9 +81,9 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
       ? `Couldn't read this repo's ${aclName(home.repo.kind)}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = previewDocumentCreate('comment', { body: comment.trim() })
+  const commentCost = previewCreate('comment', { body: comment.trim() })
   // A member's close is an `event`; the author who is not a member uses `authorEvent`.
-  const stateCost = previewDocumentCreate(isMember ? 'event' : 'authorEvent')
+  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
 
   const postComment = async (): Promise<void> => {
     if (comment.trim() === '' || !guard.check(commentCost.credits)) return
@@ -122,7 +122,7 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
   }
 
   const pendingCost: Cost =
-    pending?.kind === 'label' ? previewDocumentCreate('event', { value: pending.label }) : stateCost
+    pending?.kind === 'label' ? previewCreate('event', { value: pending.label }) : stateCost
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">

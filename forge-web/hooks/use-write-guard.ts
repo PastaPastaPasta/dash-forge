@@ -19,6 +19,12 @@ export interface WriteGuard {
   readonly disabledReason: string | null
 }
 
+const EMPTY_REASON: Readonly<Record<'balance' | 'key-budget' | 'key-expiry', string>> = {
+  balance: 'Balance is 0 — reading still works.',
+  'key-budget': "This browser's key budget is spent — reading still works.",
+  'key-expiry': "This browser's key has expired — reading still works.",
+}
+
 export function useWriteGuard(): WriteGuard {
   const { identity, signer, balance, funds, keyLimits } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
@@ -31,7 +37,7 @@ export function useWriteGuard(): WriteGuard {
         return false
       }
       if (funds?.level === 'empty') {
-        openTopUp({ blocker: funds.reason === 'balance' ? 'balance' : funds.reason === 'key-expiry' ? 'key-expiry' : 'key-budget' })
+        openTopUp({ blocker: funds.reason ?? 'balance' })
         return false
       }
       const a = affordability(estimateCredits, BigInt(balance ?? '0'), keyLimits)
@@ -44,13 +50,6 @@ export function useWriteGuard(): WriteGuard {
     [balance, funds, identity, keyLimits, openLogin, openTopUp, signer],
   )
 
-  const disabledReason =
-    funds?.level !== 'empty'
-      ? null
-      : funds.reason === 'balance'
-        ? 'Balance is 0 — reading still works.'
-        : funds.reason === 'key-expiry'
-          ? "This browser's key has expired — reading still works."
-          : "This browser's key budget is spent — reading still works."
+  const disabledReason = funds?.level === 'empty' ? EMPTY_REASON[funds.reason ?? 'balance'] : null
   return { check, disabledReason }
 }

@@ -9,9 +9,9 @@ import { CREDITS_PER_DASH } from '../sdk/cost'
 /** Below this balance the pill turns amber (0.01 DASH). */
 export const LOW_BALANCE_CREDITS = CREDITS_PER_DASH / 100
 /** A key with less than this fraction of its budget left is "low". */
-export const LOW_KEY_FRACTION = 0.2
+const LOW_KEY_FRACTION = 0.2
 /** A key expiring within this many ms is "low". */
-export const LOW_KEY_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
+const LOW_KEY_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
 
 export type FundsLevel = 'comfortable' | 'low' | 'empty'
 

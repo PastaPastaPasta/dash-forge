@@ -36,6 +36,7 @@ import {
   type RepoCreationJournal,
 } from '@/lib/repo'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
+import { errorMessage } from '@/lib/utils'
 
 const STEPS: readonly { step: CreateRepoStep; label: string }[] = [
   { step: 'repo', label: 'Repository document' },
@@ -44,6 +45,7 @@ const STEPS: readonly { step: CreateRepoStep; label: string }[] = [
 ]
 
 type StepState = 'todo' | 'running' | 'done'
+const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', maintainer: 'todo', config: 'todo' }
 
 export default function NewRepoPage(): JSX.Element {
   const router = useRouter()
@@ -71,7 +73,7 @@ export default function NewRepoPage(): JSX.Element {
       normalizeRepoName(name)
       return null
     } catch (e) {
-      return e instanceof Error ? e.message : 'invalid name'
+      return errorMessage(e, 'invalid name')
     }
   }, [name])
 
@@ -82,7 +84,7 @@ export default function NewRepoPage(): JSX.Element {
   })
   const costOf = (i: CreateRepoInput) =>
     sumPreviews([
-      previewCreate('repo', { name: i.name, description: i.description ?? '', defaultBranch: i.defaultBranch ?? '' }),
+      previewCreate('repo', { ...i, visibility: 'public' }),
       previewCreate('maintainer'),
       previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }),
     ])
@@ -90,9 +92,9 @@ export default function NewRepoPage(): JSX.Element {
 
   const create = async (i: CreateRepoInput): Promise<void> => {
     if (!sdk || !signer || !forge) throw new Error('sign in first')
-    setProgress({ repo: 'todo', maintainer: 'todo', config: 'todo' })
+    setProgress(INITIAL_PROGRESS)
     const result = await createRepoV2(sdk, signer, forge, i, (step, state) =>
-      setProgress((p) => ({ ...(p ?? { repo: 'todo', maintainer: 'todo', config: 'todo' }), [step]: state === 'start' ? 'running' : 'done' })),
+      setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
     )
     router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
   }

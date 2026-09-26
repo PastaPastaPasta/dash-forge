@@ -10,7 +10,7 @@ export { evoSdkService, type EvoSdkConfig } from './service'
 export {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
-  KEY_LIMIT_CODES,
+  GATE_REFUSED_CODE,
   REPO_CREATE_GATES,
   SECURITY_LEVEL,
   WriteAuthError,
@@ -32,18 +32,13 @@ export {
   type WriteResult,
 } from './write'
 export {
-  BASE_CREDITS,
   CREDITS_PER_DASH,
-  CREDITS_PER_TEXT_BYTE,
-  DELETE_CREDITS,
   TOKEN_ADMIN_CREDITS,
   creditsToDash,
-  estimateCreateCredits,
   previewCreate,
   previewCredits,
   previewDelete,
   sumPreviews,
-  textBytes,
   type CostPreview,
 } from './cost'
 export {

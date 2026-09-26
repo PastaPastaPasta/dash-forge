@@ -40,7 +40,7 @@ export function FundsPill(): JSX.Element | null {
       aria-label={`${tooltip}${level === 'comfortable' ? '' : ` — ${level}, click to fix`}`}
       onClick={() => {
         if (level !== 'comfortable') {
-          openTopUp({ blocker: funds.reason === 'balance' || funds.reason === null ? 'balance' : funds.reason })
+          openTopUp({ blocker: funds.reason ?? 'balance' })
         }
       }}
       className={cn(

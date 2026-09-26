@@ -29,7 +29,8 @@ import { allocateNumber, numberCeiling, normalizeRepoName as normalizeV2RepoName
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
-  TOKEN_ADMIN_CREDITS,
+  GATE_REFUSED_CODE,
+  createGateFor,
   countDocuments,
   createDocumentIdempotent,
   deleteDocumentIdempotent,
@@ -39,7 +40,6 @@ import {
   queryDocumentsWithProof,
   revokeRole,
   suspendRole,
-  type CostPreview,
   type DeleteResult,
   type WriteAuth,
   type WriteResult,
@@ -97,14 +97,9 @@ function isDuplicate(e: unknown): boolean {
   return e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE
 }
 
-/** The contract a forge-v2 document type lives in (forge-core or forge-collab). */
-function v2ContractFor(repo: V2RepoRef, documentType: string): string {
-  return repoSource(repo).repoQuery(documentType).dataContractId
-}
-
 /** The contract a write of `documentType` targets, for either data model. */
 function contractFor(repo: RepoRef, documentType: string): string {
-  return repo.kind === 'v1' ? repo.contractId : v2ContractFor(repo, documentType)
+  return repo.kind === 'v1' ? repo.contractId : repoSource(repo).repoQuery(documentType).dataContractId
 }
 
 /** `data` plus, on forge-v2, the `repoId` every repo-scoped type carries. */
@@ -118,6 +113,51 @@ function afterWrite(repo: RepoRef, network: Network): void {
     invalidateRepoFeed(repo)
     invalidateMembers(repo, network)
   }
+}
+
+/**
+ * Create one repo-scoped document: the right contract, `repoId` on v2, the v1 token gate on
+ * v1 (forge-v2 types carry none), then drop the caches the write invalidates.
+ */
+async function writeRepoDoc(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  documentType: string,
+  data: Record<string, unknown>,
+): Promise<WriteResult> {
+  const result = await createDocumentIdempotent(sdk, auth, {
+    contractId: contractFor(repo, documentType),
+    documentType,
+    data: scoped(repo, data),
+    gate: repo.kind === 'v1' ? createGateFor(documentType) ?? null : null,
+  })
+  afterWrite(repo, auth.network)
+  return result
+}
+
+/** A write that found its unique slot already held by the signer: success, nothing spent. */
+function alreadyThere(documentId: string | null): WriteResult {
+  return { documentId: documentId ?? '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
+}
+
+/** A delete of something already gone. */
+const ALREADY_GONE: DeleteResult = { deleted: true, actualCredits: 0 }
+
+/** Run a create; a duplicate-unique refusal (the signer's own earlier write) is success. */
+async function createOrExisting(create: () => Promise<WriteResult>, findExisting: () => Promise<string | null> = async () => null): Promise<WriteResult> {
+  try {
+    return await create()
+  } catch (e) {
+    if (!isDuplicate(e)) throw e
+    return alreadyThere(await findExisting())
+  }
+}
+
+/** The `$id` of the first row, or null. */
+function firstId(documents: readonly Record<string, unknown>[]): string | null {
+  const id = documents[0]?.['$id']
+  return typeof id === 'string' ? id : null
 }
 
 // ---------------------------------------------------------------------------
@@ -221,13 +261,7 @@ export async function createIssue(
     const data: Record<string, unknown> = { number, title: input.title }
     if (input.body.length > 0) data['body'] = input.body
     try {
-      const result = await createDocumentIdempotent(sdk, auth, {
-        contractId: contractFor(repo, DOC.issue),
-        documentType: DOC.issue,
-        data: scoped(repo, data),
-      })
-      afterWrite(repo, auth.network)
-      return { ...result, number }
+      return { ...(await writeRepoDoc(sdk, auth, repo, DOC.issue, data)), number }
     } catch (e) {
       if (!isDuplicate(e)) throw e
       const taken: number = number
@@ -248,13 +282,7 @@ export async function createComment(
 ): Promise<WriteResult> {
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  const result = await createDocumentIdempotent(sdk, auth, {
-    contractId: contractFor(repo, DOC.comment),
-    documentType: DOC.comment,
-    data: scoped(repo, data),
-  })
-  afterWrite(repo, auth.network)
-  return result
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, data)
 }
 
 /** The document data of a state event on `target`. */
@@ -268,7 +296,7 @@ function eventData(
   if (repo.kind === 'v2') data['targetNumber'] = target.number
   if (extra.value !== undefined && extra.value.length > 0) data['value'] = extra.value
   if (extra.oidHex !== undefined && extra.oidHex.length > 0) data['oid'] = hexToBytes(extra.oidHex)
-  return scoped(repo, data)
+  return data
 }
 
 /**
@@ -282,13 +310,7 @@ export async function addEvent(
   repo: RepoRef,
   input: { target: WriteTarget; kind: EventKindName; value?: string; oidHex?: string },
 ): Promise<WriteResult> {
-  const result = await createDocumentIdempotent(sdk, auth, {
-    contractId: contractFor(repo, DOC.event),
-    documentType: DOC.event,
-    data: eventData(repo, input.target, input.kind, input),
-  })
-  afterWrite(repo, auth.network)
-  return result
+  return writeRepoDoc(sdk, auth, repo, DOC.event, eventData(repo, input.target, input.kind, input))
 }
 
 /**
@@ -302,13 +324,7 @@ export async function addAuthorEvent(
   input: { target: WriteTarget; kind: 'close' | 'reopen' },
 ): Promise<WriteResult> {
   if (repo.kind === 'v1') return addEvent(sdk, auth, repo, input)
-  const result = await createDocumentIdempotent(sdk, auth, {
-    contractId: v2ContractFor(repo, V2_DOC.authorEvent),
-    documentType: V2_DOC.authorEvent,
-    data: eventData(repo, input.target, input.kind),
-  })
-  afterWrite(repo, auth.network)
-  return result
+  return writeRepoDoc(sdk, auth, repo, V2_DOC.authorEvent, eventData(repo, input.target, input.kind))
 }
 
 /** Which state-event type a close/reopen by the viewer should be. */
@@ -336,7 +352,7 @@ export async function setTargetState(
     return await addEvent(sdk, auth, repo, input)
   } catch (e) {
     // The membership read was stale (revoked meanwhile): the author path still holds.
-    const gateRefused = e instanceof ConsensusRefusal && e.code === 40120
+    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
     if (gateRefused && auth.identityId === input.author) return addAuthorEvent(sdk, auth, repo, input)
     throw e
   }
@@ -355,13 +371,7 @@ export async function createReview(
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body && input.body.length > 0) data['body'] = input.body
-  const result = await createDocumentIdempotent(sdk, auth, {
-    contractId: contractFor(repo, DOC.review),
-    documentType: DOC.review,
-    data: scoped(repo, data),
-  })
-  afterWrite(repo, auth.network)
-  return result
+  return writeRepoDoc(sdk, auth, repo, DOC.review, data)
 }
 
 // ---------------------------------------------------------------------------
@@ -387,11 +397,7 @@ export async function createRelease(
   if (input.name && input.name.length > 0) data['name'] = input.name
   if (input.notes && input.notes.length > 0) data['notes'] = input.notes
   if (input.assets && input.assets.length > 0) data['assets'] = JSON.stringify(input.assets)
-  return createDocumentIdempotent(sdk, auth, {
-    contractId: contractFor(repo, DOC.release),
-    documentType: DOC.release,
-    data: scoped(repo, data),
-  })
+  return writeRepoDoc(sdk, auth, repo, DOC.release, data)
 }
 
 // ---------------------------------------------------------------------------
@@ -429,76 +435,78 @@ async function findOwnIndexOnly(
   return null
 }
 
-/** Whether `viewer` has starred the forge-v2 repo. Throws on a read failure. */
-export async function hasStarredV2(sdk: EvoSDK, repo: V2RepoRef, viewer: string): Promise<boolean> {
-  return (await findOwnIndexOnly(sdk, repo.forge, 'star', viewer, repo.repoId)) !== null
-}
-
-/** Star a forge-v2 repo. Idempotent: a second star is refused as a duplicate, which is success. */
-export async function starRepoV2(sdk: EvoSDK, auth: WriteAuth, repo: V2RepoRef): Promise<WriteResult> {
-  const probe = (): Promise<boolean> => hasStarredV2(sdk, repo, auth.identityId)
-  try {
-    return await createDocumentIdempotent(sdk, auth, {
-      contractId: repo.forge.collab,
-      documentType: V2_DOC.star,
-      data: { repoId: decodeIdentifier(repo.repoId) },
-      probe,
-    })
-  } catch (e) {
-    if (isDuplicate(e)) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-    throw e
-  }
-}
-
-/** Unstar a forge-v2 repo: an index-only delete carrying the star's values. */
-export async function unstarRepoV2(sdk: EvoSDK, auth: WriteAuth, repo: V2RepoRef): Promise<DeleteResult> {
-  const own = await findOwnIndexOnly(sdk, repo.forge, 'star', auth.identityId, repo.repoId)
-  if (own === null) return { deleted: true, actualCredits: 0 }
-  return deleteDocumentIdempotent(sdk, auth, {
-    contractId: repo.forge.collab,
-    documentType: V2_DOC.star,
-    documentId: repo.repoId,
-    document: own,
-    probeGone: async () => !(await hasStarredV2(sdk, repo, auth.identityId)),
-  })
-}
-
-/** Whether `viewer` follows `target` (forge-collab `follow`). Throws on a read failure. */
-export async function isFollowingV2(sdk: EvoSDK, forge: ForgeIds, viewer: string, target: string): Promise<boolean> {
-  return (await findOwnIndexOnly(sdk, forge, 'follow', viewer, target)) !== null
-}
-
-/** Follow an identity on forge-v2. Idempotent. */
-export async function followIdentityV2(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, target: string): Promise<WriteResult> {
-  try {
-    return await createDocumentIdempotent(sdk, auth, {
+/** Create the signer's `star` / `follow` (indexOnly). Idempotent: a duplicate is success. */
+function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: 'star' | 'follow', targetId: string): Promise<WriteResult> {
+  const field = type === 'star' ? 'repoId' : 'identityId'
+  return createOrExisting(() =>
+    createDocumentIdempotent(sdk, auth, {
       contractId: forge.collab,
-      documentType: V2_DOC.follow,
-      data: { identityId: decodeIdentifier(target) },
-      probe: () => isFollowingV2(sdk, forge, auth.identityId, target),
-    })
-  } catch (e) {
-    if (isDuplicate(e)) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-    throw e
-  }
+      documentType: type,
+      data: { [field]: decodeIdentifier(targetId) },
+      probe: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) !== null,
+    }),
+  )
 }
 
-/** Unfollow on forge-v2: an index-only delete carrying the follow's values. */
-export async function unfollowIdentityV2(
-  sdk: EvoSDK,
-  auth: WriteAuth,
-  forge: ForgeIds,
-  target: string,
-): Promise<DeleteResult> {
-  const own = await findOwnIndexOnly(sdk, forge, 'follow', auth.identityId, target)
-  if (own === null) return { deleted: true, actualCredits: 0 }
+/** Delete the signer's `star` / `follow`: an index-only delete carrying its values. */
+async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: 'star' | 'follow', targetId: string): Promise<DeleteResult> {
+  const own = await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)
+  if (own === null) return ALREADY_GONE
   return deleteDocumentIdempotent(sdk, auth, {
     contractId: forge.collab,
-    documentType: V2_DOC.follow,
-    documentId: target,
+    documentType: type,
+    documentId: targetId,
     document: own,
-    probeGone: async () => !(await isFollowingV2(sdk, forge, auth.identityId, target)),
+    probeGone: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) === null,
   })
+}
+
+/** An on/off relation the viewer holds (a star, a follow), in the shape `useRelationToggle` drives. */
+export interface Relation {
+  read(): Promise<boolean>
+  add(): Promise<boolean>
+  remove(): Promise<boolean>
+}
+
+/**
+ * The viewer's star on a repo: forge-collab `star` on v2, the registry `star` on the v1
+ * listing (`listingId`) otherwise.
+ */
+export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef, listingId: string | null, network: Network): Relation {
+  if (repo.kind === 'v2') {
+    return {
+      read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'star', viewer, repo.repoId)) !== null,
+      add: async () => (await createIndexOnly(sdk, need(auth), repo.forge, 'star', repo.repoId)).confirmed,
+      remove: async () => (await deleteIndexOnly(sdk, need(auth), repo.forge, 'star', repo.repoId)).deleted,
+    }
+  }
+  const listing = listingId ?? ''
+  return {
+    read: async () => (await findOwnRegistryDoc(sdk, network, viewer, REGISTRY_DOC.star, 'listingId', listing)) !== null,
+    add: async () => (await createRegistryRelation(sdk, need(auth), REGISTRY_DOC.star, 'listingId', listing)).confirmed,
+    remove: async () => (await deleteRegistryRelation(sdk, need(auth), REGISTRY_DOC.star, 'listingId', listing)).deleted,
+  }
+}
+
+/** The viewer's follow of `target`: forge-collab `follow` where forge-v2 runs, else the registry. */
+export function followRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, forge: ForgeIds | null, target: string, network: Network): Relation {
+  if (forge !== null) {
+    return {
+      read: async () => (await findOwnIndexOnly(sdk, forge, 'follow', viewer, target)) !== null,
+      add: async () => (await createIndexOnly(sdk, need(auth), forge, 'follow', target)).confirmed,
+      remove: async () => (await deleteIndexOnly(sdk, need(auth), forge, 'follow', target)).deleted,
+    }
+  }
+  return {
+    read: async () => (await findOwnRegistryDoc(sdk, network, viewer, REGISTRY_DOC.follow, 'identityId', target)) !== null,
+    add: async () => (await createRegistryRelation(sdk, need(auth), REGISTRY_DOC.follow, 'identityId', target)).confirmed,
+    remove: async () => (await deleteRegistryRelation(sdk, need(auth), REGISTRY_DOC.follow, 'identityId', target)).deleted,
+  }
+}
+
+function need(auth: WriteAuth | null): WriteAuth {
+  if (auth === null) throw new Error('sign in first')
+  return auth
 }
 
 // ---------------------------------------------------------------------------
@@ -541,17 +549,15 @@ async function createRegistryRelation(
   field: string,
   targetId: string,
 ): Promise<WriteResult> {
-  try {
-    return await createDocumentIdempotent(sdk, auth, {
-      contractId: requireRegistryContractId(auth.network),
-      documentType,
-      data: { [field]: decodeIdentifier(targetId) },
-    })
-  } catch (e) {
-    if (!isDuplicate(e)) throw e
-    const existing = await findOwnRegistryDoc(sdk, auth.network, auth.identityId, documentType, field, targetId)
-    return { documentId: existing ?? '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-  }
+  return createOrExisting(
+    () =>
+      createDocumentIdempotent(sdk, auth, {
+        contractId: requireRegistryContractId(auth.network),
+        documentType,
+        data: { [field]: decodeIdentifier(targetId) },
+      }),
+    () => findOwnRegistryDoc(sdk, auth.network, auth.identityId, documentType, field, targetId),
+  )
 }
 
 async function deleteRegistryRelation(
@@ -562,42 +568,12 @@ async function deleteRegistryRelation(
   targetId: string,
 ): Promise<DeleteResult> {
   const existing = await findOwnRegistryDoc(sdk, auth.network, auth.identityId, documentType, field, targetId)
-  if (!existing) return { deleted: true, actualCredits: 0 }
+  if (!existing) return ALREADY_GONE
   return deleteDocumentIdempotent(sdk, auth, {
     contractId: requireRegistryContractId(auth.network),
     documentType,
     documentId: existing,
   })
-}
-
-/** Star a v1 repo listing. Idempotent. */
-export function starRepo(sdk: EvoSDK, auth: WriteAuth, listingId: string): Promise<WriteResult> {
-  return createRegistryRelation(sdk, auth, REGISTRY_DOC.star, 'listingId', listingId)
-}
-
-/** Unstar a v1 repo listing. No-op if not starred. */
-export function unstarRepo(sdk: EvoSDK, auth: WriteAuth, listingId: string): Promise<DeleteResult> {
-  return deleteRegistryRelation(sdk, auth, REGISTRY_DOC.star, 'listingId', listingId)
-}
-
-/** Follow an identity in the v1 registry. Idempotent. */
-export function followIdentity(sdk: EvoSDK, auth: WriteAuth, identityId: string): Promise<WriteResult> {
-  return createRegistryRelation(sdk, auth, REGISTRY_DOC.follow, 'identityId', identityId)
-}
-
-/** Unfollow an identity in the v1 registry. No-op if not following. */
-export function unfollowIdentity(sdk: EvoSDK, auth: WriteAuth, identityId: string): Promise<DeleteResult> {
-  return deleteRegistryRelation(sdk, auth, REGISTRY_DOC.follow, 'identityId', identityId)
-}
-
-/** Whether `identityId` has starred v1 `listingId`. Throws on a read failure. */
-export async function hasStarred(sdk: EvoSDK, network: Network, identityId: string, listingId: string): Promise<boolean> {
-  return (await findOwnRegistryDoc(sdk, network, identityId, REGISTRY_DOC.star, 'listingId', listingId)) !== null
-}
-
-/** Whether `identityId` follows `targetId` in the v1 registry. Throws on a read failure. */
-export async function isFollowing(sdk: EvoSDK, network: Network, identityId: string, targetId: string): Promise<boolean> {
-  return (await findOwnRegistryDoc(sdk, network, identityId, REGISTRY_DOC.follow, 'identityId', targetId)) !== null
 }
 
 // ---------------------------------------------------------------------------
@@ -612,8 +588,7 @@ async function findMembership(sdk: EvoSDK, repo: V2RepoRef, role: Role, memberId
     sdk,
     repoSource(repo).repoQuery(ROLE_DOC[role], { where: [['memberId', '==', memberId]], limit: 1 }),
   )
-  const id = documents[0]?.['$id']
-  return typeof id === 'string' ? id : null
+  return firstId(documents)
 }
 
 /**
@@ -628,21 +603,17 @@ export async function grantMember(
   role: Role,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
-  decodeIdentifier(memberId)
-  try {
-    const result = await createDocumentIdempotent(sdk, auth, {
-      contractId: repo.forge.core,
-      documentType: ROLE_DOC[role],
-      data: { repoId: decodeIdentifier(repo.repoId), memberId: decodeIdentifier(memberId) },
-    })
-    invalidateMembers(repo, auth.network)
-    return result
-  } catch (e) {
-    if (!isDuplicate(e)) throw e
-    invalidateMembers(repo, auth.network)
-    const existing = await findMembership(sdk, repo, role, memberId)
-    return { documentId: existing ?? '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-  }
+  const result = await createOrExisting(
+    () =>
+      createDocumentIdempotent(sdk, auth, {
+        contractId: repo.forge.core,
+        documentType: ROLE_DOC[role],
+        data: { repoId: decodeIdentifier(repo.repoId), memberId: decodeIdentifier(memberId) },
+      }),
+    () => findMembership(sdk, repo, role, memberId),
+  )
+  invalidateMembers(repo, auth.network)
+  return result
 }
 
 /** Revoke a role: the owner deletes the membership document. No-op when there is none. */
@@ -655,7 +626,7 @@ export async function revokeMember(
 ): Promise<DeleteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can remove members')
   const existing = await findMembership(sdk, repo, role, memberId)
-  if (existing === null) return { deleted: true, actualCredits: 0 }
+  if (existing === null) return ALREADY_GONE
   const result = await deleteDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.core,
     documentType: ROLE_DOC[role],
@@ -669,43 +640,23 @@ export async function revokeMember(
 // v1 collaborators (token admin — CRITICAL key)
 // ---------------------------------------------------------------------------
 
-/** Grant a v1 collaborator WRITE (`maintain=false`) or MAINTAIN — token mint. */
-export async function grantCollaborator(
+/**
+ * v1 collaborator token admin: grant (mint), suspend (freeze) or revoke (freeze + destroy) a
+ * WRITE (`maintain=false`) or MAINTAIN role.
+ */
+export async function adminCollaborator(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: V1RepoRef,
+  op: 'grant' | 'suspend' | 'revoke',
   memberId: string,
   maintain: boolean,
-): Promise<{ minted: boolean; cost: CostPreview }> {
-  const result = await grantRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
+): Promise<void> {
+  const role = maintain ? 'maintain' : 'write'
+  if (op === 'grant') await grantRole(sdk, auth, repo.contractId, memberId, role)
+  else if (op === 'suspend') await suspendRole(sdk, auth, repo.contractId, memberId, role)
+  else await revokeRole(sdk, auth, repo.contractId, memberId, role)
   invalidateAuthz(repo.contractId)
-  return { ...result, cost: previewCredits(TOKEN_ADMIN_CREDITS) }
-}
-
-/** Suspend (freeze) a v1 collaborator's role — token freeze. */
-export async function suspendCollaborator(
-  sdk: EvoSDK,
-  auth: WriteAuth,
-  repo: V1RepoRef,
-  memberId: string,
-  maintain: boolean,
-): Promise<{ frozen: boolean; cost: CostPreview }> {
-  const result = await suspendRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
-  invalidateAuthz(repo.contractId)
-  return { ...result, cost: previewCredits(TOKEN_ADMIN_CREDITS) }
-}
-
-/** Revoke a v1 collaborator's role — token freeze + destroy. */
-export async function revokeCollaborator(
-  sdk: EvoSDK,
-  auth: WriteAuth,
-  repo: V1RepoRef,
-  memberId: string,
-  maintain: boolean,
-): Promise<{ revoked: boolean; cost: CostPreview }> {
-  const result = await revokeRole(sdk, auth, repo.contractId, memberId, maintain ? 'maintain' : 'write')
-  invalidateAuthz(repo.contractId)
-  return { ...result, cost: previewCredits(TOKEN_ADMIN_CREDITS) }
 }
 
 // ---------------------------------------------------------------------------
@@ -814,8 +765,7 @@ export async function createRepoV2(
       ],
       limit: 1,
     })
-    const id = documents[0]?.['$id']
-    return typeof id === 'string' ? id : null
+    return firstId(documents)
   }
   let repoId = await existingRepo()
   await step('repo', async () => {

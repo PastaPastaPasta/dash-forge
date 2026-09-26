@@ -48,6 +48,8 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
 }
 
 const DEFAULT_BASE_CREDITS = 50_000_000
+/** A delete of a type never measured: a conservative refund estimate. */
+const DEFAULT_DELETE_CREDITS = -20_000_000
 
 /**
  * What deleting a document gives back, in credits (negative = a refund). Measured on moutai:
@@ -113,7 +115,7 @@ export function previewCreate(documentType: string, data: Readonly<Record<string
 
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */
 export function previewDelete(documentType: string): CostPreview {
-  return previewCredits(DELETE_CREDITS[documentType] ?? -20_000_000)
+  return previewCredits(DELETE_CREDITS[documentType] ?? DEFAULT_DELETE_CREDITS)
 }
 
 /** The sum of several previews (a repo creation is three documents). */

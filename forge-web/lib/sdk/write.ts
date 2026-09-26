@@ -36,6 +36,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 import { previewCreate, previewDelete, type CostPreview } from './cost'
+import { base64ToBytes, bytesToBase64 } from './query'
 
 export type { CostPreview } from './cost'
 
@@ -197,17 +198,6 @@ interface CachedST {
   cachedAt: number
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] as number)
-  return btoa(bin)
-}
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
 
 /** A JSON form of write data with sorted keys and bytes as hex, so equal writes key equally. */
 function canonical(value: unknown): unknown {
@@ -345,6 +335,9 @@ export const KEY_LIMIT_CODES: ReadonlySet<number> = new Set([20015, 20016, 40218
 /** Duplicate unique properties: someone already holds the unique slot (an issue number). */
 export const DUPLICATE_UNIQUE_CODE = 40105
 
+/** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
+export const GATE_REFUSED_CODE = 40120
+
 /** The numeric consensus code a wasm error carries, if any. */
 function consensusCodeOf(e: unknown): number | null {
   if (e === null || typeof e !== 'object') return null
@@ -465,10 +458,8 @@ async function documentExists(
   try {
     const doc = await facades(sdk).documents.get(contractId, documentType, documentId)
     return doc !== undefined && doc !== null
-  } catch (e) {
-    const m = errorMessage(e).toLowerCase()
-    if (m.includes('not found') || m.includes('no document') || m.includes('404')) return false
-    // Transport hiccup — treat as "unknown", not "exists".
+  } catch {
+    // Not found, or a transport hiccup: "unknown" is never "exists".
     return false
   }
 }
@@ -504,21 +495,8 @@ async function nextContractNonce(
 }
 
 /** Poll `documents.get` until the document appears or the budget elapses. */
-async function pollForDocument(
-  sdk: EvoSDK,
-  contractId: string,
-  documentType: string,
-  documentId: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  const step = 1500
-  // First check is immediate; then poll on an interval until the deadline.
-  for (;;) {
-    if (await documentExists(sdk, contractId, documentType, documentId)) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, step))
-  }
+function pollForDocument(sdk: EvoSDK, contractId: string, documentType: string, documentId: string, timeoutMs: number): Promise<boolean> {
+  return pollUntil(() => documentExists(sdk, contractId, documentType, documentId), timeoutMs)
 }
 
 /**
@@ -532,7 +510,7 @@ async function pollForDocument(
  * top-level field. So the system fields come from a property-less constructor call and the
  * content is merged in through `fromObject`.
  */
-export function documentForCreate(
+function documentForCreate(
   DocumentClass: typeof import('@dashevo/evo-sdk').Document,
   params: {
     readonly data: Record<string, unknown>
@@ -592,7 +570,7 @@ interface CreateParams {
     readonly contractId: string
     readonly documentType: string
     readonly data: Record<string, unknown>
-    /** Explicit token payment. Defaults to the repo-v1 gate for `documentType`. */
+    /** A v1 repo contract's token payment for this type (`createGateFor`); none by default. */
     readonly gate?: TokenGate | null
     readonly requiredLevel?: number
     readonly confirmTimeoutMs?: number
@@ -604,8 +582,12 @@ async function createDocumentUnlocked(sdk: EvoSDK, auth: WriteAuth, params: Crea
   const { contractId, documentType, data } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
-  const gate = params.gate === undefined ? createGateFor(documentType) : params.gate ?? undefined
-  const cost = previewDocumentCreate(documentType, data)
+  const gate = params.gate ?? undefined
+  const cost: CostPreview = {
+    ...previewCreate(documentType, data),
+    tokenAmount: gate?.amount ?? 0,
+    ...(gate ? { tokenPosition: gate.position } : {}),
+  }
   const landed = (documentId: string, timeoutMs: number): Promise<boolean> =>
     params.probe
       ? pollUntil(params.probe, timeoutMs)

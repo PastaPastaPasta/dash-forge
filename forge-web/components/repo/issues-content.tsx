@@ -13,7 +13,7 @@ import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
-import { previewDocumentCreate } from '@/lib/sdk'
+import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -175,7 +175,7 @@ function ComposeIssueDialog({
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
 
-  const cost = previewDocumentCreate('issue', { title: title.trim(), body })
+  const cost = previewCreate('issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
     if (!guard.check(cost.credits)) return

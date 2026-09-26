@@ -17,13 +17,11 @@ import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator, V1RepoRef, V2RepoRef } from '@/lib/repo'
 import {
-  grantCollaborator,
+  adminCollaborator,
   grantMember,
   readCollaborators,
   readMembershipsCached,
-  revokeCollaborator,
   revokeMember,
-  suspendCollaborator,
 } from '@/lib/repo'
 import type { Membership, Role as V2Role } from '@/lib/rules/v2'
 import { ACTIVE_NETWORK } from '@/lib/constants'
@@ -62,15 +60,12 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
   )
 
   const [grantId, setGrantId] = useState('')
-  const [grantRole, setGrantRole] = useState<Role>('write')
+  const [grantChoice, setGrantChoice] = useState<Role>('write')
   const [action, setAction] = useState<Action | null>(null)
 
   const runAction = async (): Promise<void> => {
     if (!sdk || !signer || !action) return
-    const maintain = action.role === 'maintain'
-    if (action.kind === 'grant') await grantCollaborator(sdk, signer, repo, action.member, maintain)
-    else if (action.kind === 'suspend') await suspendCollaborator(sdk, signer, repo, action.member, maintain)
-    else await revokeCollaborator(sdk, signer, repo, action.member, maintain)
+    await adminCollaborator(sdk, signer, repo, action.kind, action.member, action.role === 'maintain')
     collabs.reload()
   }
 
@@ -141,10 +136,10 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
                     {(['write', 'maintain'] as Role[]).map((r) => (
                       <button
                         key={r}
-                        onClick={() => setGrantRole(r)}
+                        onClick={() => setGrantChoice(r)}
                         className={
                           'rounded px-3 py-1.5 text-dense font-medium uppercase ' +
-                          (grantRole === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
+                          (grantChoice === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
                         }
                       >
                         {r}
@@ -154,7 +149,7 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
                   <Button
                     variant="primary"
                     disabled={grantId.trim() === ''}
-                    onClick={() => setAction({ kind: 'grant', member: grantId.trim(), role: grantRole })}
+                    onClick={() => setAction({ kind: 'grant', member: grantId.trim(), role: grantChoice })}
                   >
                     Grant
                   </Button>

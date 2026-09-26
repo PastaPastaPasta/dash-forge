@@ -22,7 +22,7 @@ import { NETWORKS } from '../constants'
 import { evoSdkService, queryDocumentsWithProof, type WriteAuth } from '../sdk'
 import { parseIdentityFileText } from '../auth'
 import { REGISTRY_DOC, type V1RepoRef } from './contract'
-import { createIssue, starRepo } from './writes'
+import { createIssue, starRelation } from './writes'
 import { asIdentifierString, fetchContractOwner, listIssues } from './index'
 
 const LIVE = process.env['FORGE_LIVE'] === '1'
@@ -109,12 +109,12 @@ describe.skipIf(!LIVE)('live testnet browser-path writes', () => {
         return stars.length
       }
       const before = await countStars()
-      const star = await starRepo(sdk, auth, listingId)
+      const confirmed = await starRelation(sdk, auth, auth.identityId, repo, listingId, 'testnet').add()
       const after = await countStars()
       // eslint-disable-next-line no-console
-      console.log('star:', { listingId, documentId: star.documentId, confirmed: star.confirmed, before, after })
+      console.log('star:', { listingId, confirmed, before, after })
       // Idempotent: a fresh star increments; a re-star leaves the count unchanged (already ours).
-      expect(star.documentId.length).toBeGreaterThan(0)
+      expect(confirmed).toBe(true)
       expect(after).toBeGreaterThanOrEqual(before)
       expect(after).toBeGreaterThanOrEqual(1)
     },

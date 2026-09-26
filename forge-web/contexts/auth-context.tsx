@@ -121,13 +121,11 @@ export function AuthProvider({
   )
 
   const session: AuthSession | null = state.session
-  const writeAuth = session ? controller.writeAuth : null
-  const signer = useMemo<WriteAuth | null>(
-    () => (writeAuth ? { ...writeAuth, getSigningKeyWif: writeAuth.getSigningKeyWif, onSpend } : null),
-    // `writeAuth` is rebuilt per render; the session identity is what it depends on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session?.identityId, onSpend],
-  )
+  const sessionIdentity = session?.identityId ?? null
+  const signer = useMemo<WriteAuth | null>(() => {
+    const auth = sessionIdentity !== null ? controller.writeAuth : null
+    return auth ? { ...auth, onSpend } : null
+  }, [controller, sessionIdentity, onSpend])
   const keyLimits = session?.keyLimits ?? null
   const funds = useMemo(
     () => (session ? fundsState(BigInt(session.balance), keyLimits) : null),
