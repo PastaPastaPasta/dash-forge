@@ -46,6 +46,7 @@ SCENARIOS=(
   "10-pr-from-fork"
   "11-release-asset"
   "12-star-unstar"
+  "13-init-push"
 )
 
 # Optional subset filter (match by leading number or substring).
@@ -59,12 +60,12 @@ if [[ $# -gt 0 ]]; then
   SCENARIOS=("${filtered[@]}")
 fi
 
-# 11 stores its asset on local MinIO (infra/docker-compose.yml). A runner without it does not
-# run 11 at all rather than spending the one tolerated SKIP on a missing service.
+# 11 and 13 store on local MinIO (infra/docker-compose.yml). A runner without it does not
+# run them at all rather than spending the one tolerated SKIP on a missing service.
 if ! curl -fsS -m 3 -o /dev/null "http://127.0.0.1:9000/minio/health/live" 2>/dev/null; then
   kept=()
-  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* ]] || kept+=("$s"); done
-  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "MinIO not up: not running 11-release-asset (make infra-up to include it)"
+  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* || "$s" == 13-* ]] || kept+=("$s"); done
+  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "MinIO not up: not running 11-release-asset / 13-init-push (make infra-up to include them)"
   SCENARIOS=("${kept[@]}")
 fi
 

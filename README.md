@@ -15,9 +15,10 @@ Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BU
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
 dg auth login --identity ~/Downloads/dash-identity-<id>.json
 export DASH_FORGE_KEY=~/.config/dash-forge/identities/testnet/<id>.identity.json
-dg repo create hello                    # a v1 repository: ~1.18 tDASH (forge-v2 will be ~0.001 DASH)
-git remote add forge dash://<id>/hello && git push -u forge main
+dg init --name hello --storage platform # create the repo, add remote origin, push the current branch
 ```
+
+`dg` creates forge-v2 repositories (~0.002 DASH), which run on devnet moutai today: add `--network devnet --devnet-name moutai` until they reach testnet. Run `dg storage add` first to keep the packs in your own bucket instead of on Platform (~0.28 DASH/MiB); `dg init` then uses it without `--storage`.
 
 Open `https://forge.dashhq.org/repo?owner=<id>&name=hello` to see it. The [quick start](docs/guides/quick-start.md) walks through each step.
 

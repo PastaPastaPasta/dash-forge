@@ -131,32 +131,67 @@ Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDA
 
 ## 4. Create a repository
 
+`dg` creates **forge-v2** repositories: three small documents, about **0.001–0.002 DASH**. forge-v2 runs on devnet moutai today (`--network devnet --devnet-name moutai`); on a network without it, `dg repo create` stops with [E702](../errors.md#e702) before spending anything.
+
+First decide where your pushes store their packs. Your own bucket or IPFS node is cheap; Dash Platform costs about **0.28 DASH per MiB**, permanently. `dg storage add` with no arguments asks for each value and tests the storage (see [Bring your own storage](bring-your-own-storage.md#the-quick-way-dg-storage-add-asks)):
+
 ```sh
-dg repo create my-project --description "My first Forge repo"
+dg storage add            # e.g. a profile named r2-main; offers to make it your default
+```
+
+Then, inside the repository you want to publish:
+
+```sh
+cd my-project
+dg init                   # = dg repo create --push, for this directory
 ```
 
 ```
-Creating repo "my-project" (platform storage) — estimated cost ~1.18 DASH ≈ $35.40
-Create repo "my-project"? This instantiates a contract (~1.18 DASH ≈ $35.40) [y/N] y
-Created 8hJm…/my-project
-  contract: 5rrw…
-  remote:   dash://8hJm…/my-project
-  cost:     ~1.18 DASH ≈ $35.40
+Creating 8hJm…/my-project on devnet-moutai
+  repo + maintainer + config     ~0.002 DASH ≈ $0.06
+  packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
+  (storage: git config dash.storage)
+Proceed? [Y/n] y
+✓ created  https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+✓ remote 'origin' → dash://8hJm…/my-project
+✓ git config dash.storage=r2-main
+dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
+dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
+dash: platform     manifest 2 · refUpdate 1     est 0.000275 DASH
+dash: done · Platform charged ≈0.00028 DASH · remaining 0.4812 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+✓ main → 8f3e2a1   this push ~0.00028 DASH ≈ $0.01
+  total ~0.0016 DASH ≈ $0.05 (create ~0.0013 DASH ≈ $0.04 + push ~0.00028 DASH ≈ $0.01) · balance 0.4812 DASH
+Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-On testnet this costs about **1.18 tDASH**, which is free test money. It is that expensive because a v1 repository is a whole Platform contract. `dg repo create` makes v1 repositories only. On forge-v2 a repository will be three small documents, about **0.001 DASH**. See [Costs](costs.md).
+What it does, in order:
 
-Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit.
+- **Picks the storage before spending anything**: `--storage <profiles>` (comma-separated; `platform` is built in), else `dash.storage` from git config (this repository's, then your global one), else your only storage profile. With none, it stops and prices the alternative: *"No storage profile. Packs would go to Platform at ~0.28 DASH/MiB (1.2 MiB ≈ 0.34 DASH). Run `dg storage add` first, or pass `--storage platform` to accept that price."* ([E508](../errors.md#e508)). In a terminal it offers a picker instead.
+- **Creates the repository**, named after the directory unless you pass `--name` (`dg repo create <name>`). Its first config records where the packs live, so readers and the web app know where to look.
+- **Adds the remote** `origin` (`--remote <name>` for another). If `origin` already points somewhere else it stops ([E206](../errors.md#e206)) rather than changing it.
+- **Writes this repository's git config**: `dash.storage` (and `dash.replicas` with `--replicas`), plus `dash.network` / `dash.devnetName` when `git push` would otherwise pick a different network than `dg`. From now on a plain `git push` goes to the same place.
+- **Pushes the current branch** with `-u`. A repository with no commits yet is created and configured, and the push is skipped.
+
+It is safe to run again: an existing repository is reused (nothing written), a matching remote is left alone, and an up-to-date branch pushes nothing. `--yes` skips the question (and the push's cost guard); `--json` prints one object with `repoId`, `remoteUrl`, `webUrl`, `storage`, the pushed branch and commit, and the costs.
+
+`dg repo create <name>` without `--push` only creates the repository and prints the `dg init` line that would finish the job.
+
+Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 
 ---
 
 ## 5. Push
 
-From an existing git repository:
+After `dg init`, pushing is plain git:
 
 ```sh
-cd my-project
-git remote add origin dash://<your identity id>/my-project
+git push
+```
+
+To push to a repository someone created without `dg init` (or from another clone), add the remote yourself:
+
+```sh
+git remote add origin dash://<owner identity id>/my-project
 git push -u origin main
 ```
 
@@ -182,7 +217,7 @@ dash: done · Platform charged ≈0.0006 DASH · remaining 0.8192 DASH · https:
 
 (The numbers are illustrative. Yours depend on the size of the push.)
 
-By default the pack bytes go on Dash Platform, which costs about **0.28 DASH per MiB**. For anything bigger than a toy, keep the packs in your own bucket or IPFS node instead. Then Platform stores only the small manifest and the ref update. [Bring your own storage](bring-your-own-storage.md) has the setup for R2, B2, S3, MinIO and IPFS:
+A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.28 DASH per MiB**. For anything bigger than a toy, keep the packs in your own bucket or IPFS node instead. Then Platform stores only the small manifest and the ref update. [Bring your own storage](bring-your-own-storage.md) has the setup for R2, B2, S3, MinIO and IPFS:
 
 ```sh
 dg storage add r2-main --kind s3 …     # once
