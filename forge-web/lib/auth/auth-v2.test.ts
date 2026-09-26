@@ -116,7 +116,7 @@ describe('vault', () => {
 
 describe('App Connect envelope (Yappr key exchange)', () => {
   it('builds a dash-key request that carries the ephemeral key and contract', () => {
-    const contract = 'GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L'
+    const contract = 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL'
     const req = newRequest('devnet', contract)
     expect(req.uri).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/)
     const body = base58Decode(req.uri.slice('dash-key:'.length, req.uri.indexOf('?')))
@@ -128,7 +128,7 @@ describe('App Connect envelope (Yappr key exchange)', () => {
   })
 
   it('opens what a wallet seals, and derives the auth key', async () => {
-    const req = newRequest('devnet', 'GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L')
+    const req = newRequest('devnet', 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL')
     const appPub = base58Decode(req.uri.slice(9, req.uri.indexOf('?'))).slice(1, 34)
     // The wallet side (BrowserLoginKeyProtocol.seal).
     const walletPriv = secp.utils.randomSecretKey()
