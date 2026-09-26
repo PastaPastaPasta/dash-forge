@@ -268,7 +268,7 @@ mod tests {
     use crate::network::ForgeIds;
     use crate::rules::v2::Visibility;
 
-    const PARENT: &str = "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L";
+    const PARENT: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
     const UPLOADER: &str = "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD";
 
     fn parent() -> RepoRef {

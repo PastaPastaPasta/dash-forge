@@ -1331,9 +1331,11 @@ impl<'a> Collab<'a> {
                     floor = number.saturating_add(1);
                     tracing::warn!(number, attempt, "number taken; allocating again");
                 }
-                // A consensus refusal proves nothing landed: forget the transition, or the
-                // same command would replay it (and be refused) forever.
-                Err(e @ (Error::NotAMember { .. } | Error::Platform(_) | Error::Config(_))) => {
+                // Refusals that prove nothing landed: forget the transition, or the same
+                // command would replay it (and be refused) forever. Anything else — a failed
+                // read after the broadcast, an unrecognised SDK error — may hide a landed
+                // create, so the journal stays and the next run resumes it.
+                Err(e @ (Error::NotAMember { .. } | Error::StaleProtocolVersion(_))) => {
                     CreateJournal::remove(&path);
                     return Err(e);
                 }
@@ -1837,7 +1839,7 @@ mod tests {
     fn target(author: &str) -> Target {
         Target {
             kind: TargetKind::Issue,
-            id: "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L".into(),
+            id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
             number: 3,
             author: author.into(),
         }
@@ -1886,7 +1888,7 @@ mod tests {
             title: "t".into(),
             body: String::new(),
             base_ref_name: "refs/heads/main".into(),
-            source_repo_id: "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L".into(),
+            source_repo_id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,
@@ -2092,7 +2094,7 @@ mod tests {
             title: "t".into(),
             body: String::new(),
             base_ref_name: "refs/heads/main".into(),
-            source_repo_id: "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L".into(),
+            source_repo_id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,

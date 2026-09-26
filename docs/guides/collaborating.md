@@ -183,7 +183,7 @@ Merging PR #7 of <owner>/project into refs/heads/main
 
 Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event.
 
-- **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the base branch, and run `dg pr merge --event-only`. A PR names a fixed head commit, so pushing the resolution to your source branch does not update the PR; open a new PR from it instead.
+- **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the base branch, and run `dg pr merge` again (it sees the head is already in the base and only records the merge). A PR names a fixed head commit, so pushing the resolution to your source branch does not update the PR; open a new PR from it instead.
 - **Protected base branch:** only a maintainer can push to it. A writer's merge stops at the push step with [`E601`](../errors.md#e601).
 - **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. The commit must already have been a tip of the base branch: a merge event is permanent, so `dg` refuses to post one that would not count.
 

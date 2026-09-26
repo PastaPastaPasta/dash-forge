@@ -954,7 +954,7 @@ fn build_merge(
                     short(base)
                 ))
                 .fix(format!(
-                    "`dg pr checkout {} {}`, merge {base_ref} into it and resolve, push the result to {base_ref}, then `dg pr merge --event-only`",
+                    "`dg pr checkout {} {}`, merge {base_ref} into it and resolve, push the result to {base_ref}, then run `dg pr merge` again (it sees the head is in {base_ref} and records the merge)",
                     handle.display(),
                     view.patch.number
                 ))
