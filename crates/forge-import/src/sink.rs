@@ -26,7 +26,7 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget};
-use crate::model::{same_item, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
+use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
 use crate::summary::Counts;
 
 /// The run's accounting: budget, counts, warnings.
@@ -105,13 +105,20 @@ impl<'a> Ledger<'a> {
         Ok(Some(out))
     }
 
-    /// Pull the measured balance drop into the budget.
-    pub async fn reconcile(&mut self) {
+    /// Pull the measured balance drop into the budget; whether the balance could be read.
+    pub async fn reconcile(&mut self) -> bool {
         if let Some(signer) = &self.signer {
             if let Ok(balance) = self.client.get_balance(signer).await {
                 self.budget.reconcile(balance);
+                return true;
             }
         }
+        false
+    }
+
+    /// `identity`'s balance now, when it can be read.
+    pub async fn balance(&self, identity: &str) -> Option<u64> {
+        self.client.get_balance(identity).await.ok()
     }
 
     fn is_mine(&self, author: &str) -> bool {
@@ -129,6 +136,9 @@ pub struct Sink<'a> {
     /// Every imported issue and PR in the destination, `(imported.url, target)`, whoever
     /// wrote it; loaded on the first miss of a point lookup.
     index: Option<Vec<(String, Target)>>,
+    /// The destination's members (maintainers and writers), read once: an imported item by
+    /// a member is an earlier mirror's copy; one by anyone else is a squatter.
+    members: Option<BTreeSet<String>>,
 }
 
 /// Attempts at finding a free number for one item.
@@ -139,13 +149,14 @@ const MAX_NUMBER_TRIES: usize = 4;
 /// long, an illegal ref name, a malformed oid, a required field missing, a duplicate); a
 /// run-level `Config` error (no identity, not a forge-v2 repo, ...) still fails the run.
 fn item_error(e: &anyhow::Error) -> bool {
-    const ITEM: [&str; 6] = [
+    const ITEM: [&str; 7] = [
         "too long",
         "illegal PR",
         "illegal retarget",
         "head oid must be",
         "is required",
         "needs a body",
+        "number above",
     ];
     e.chain()
         .any(|c| match c.downcast_ref::<forge_core::Error>() {
@@ -173,6 +184,19 @@ impl Current {
             labels: BTreeSet::new(),
         }
     }
+}
+
+/// Whether a destination document keyed `url` is the mirrored copy of the source item
+/// `wanted`: the same kind, and either the signer's own (a renamed source repo still
+/// matches) or a member's for the exact same repository and item. Anyone else's is a
+/// squatter: its number is taken, the item is created elsewhere.
+fn copy_rule(same_kind: bool, mine: bool, member: bool, url: &str, wanted: &str) -> bool {
+    same_kind
+        && if mine {
+            same_item_renamed(url, wanted)
+        } else {
+            member && same_item(url, wanted)
+        }
 }
 
 /// What [`Sink::create`] ended with.
@@ -205,7 +229,50 @@ impl<'a> Sink<'a> {
             repo,
             ledger,
             index: None,
+            members: None,
         }
+    }
+
+    /// Whether `author` may have mirrored an item: the signer, or a member of the
+    /// destination. Issues and PRs are ungated, so anyone else's `imported` is a claim, not a
+    /// copy.
+    async fn trusted(&mut self, author: &str) -> Result<bool> {
+        if self.ledger.is_mine(author) {
+            return Ok(true);
+        }
+        if self.members.is_none() {
+            let members = match &self.repo {
+                Some(repo) => forge_core::members::MemberReader::new(self.ledger.client)
+                    .list(repo)
+                    .await
+                    .context("reading the destination's members")?
+                    .into_iter()
+                    .map(|m| m.identity_id)
+                    .collect(),
+                None => BTreeSet::new(),
+            };
+            self.members = Some(members);
+        }
+        Ok(self.members.as_ref().is_some_and(|m| m.contains(author)))
+    }
+
+    /// Whether the document `target` (key `url`) is the mirrored copy of `t`: the same
+    /// source item, written by the signer (a renamed source repo still matches) or by a
+    /// member of the destination (exact repository only).
+    async fn is_copy(&mut self, url: &str, target: &Target, t: &SrcTarget) -> Result<bool> {
+        let mine = self.ledger.is_mine(&target.author);
+        // Membership is read only when it can change the answer.
+        let member = !mine
+            && target.kind == t.kind
+            && same_item(url, &t.imported.url)
+            && self.trusted(&target.author).await?;
+        Ok(copy_rule(
+            target.kind == t.kind,
+            mine,
+            member,
+            url,
+            &t.imported.url,
+        ))
     }
 
     /// Mirror everything in `src`: label definitions, releases, then issues and PRs.
@@ -357,8 +424,10 @@ impl<'a> Sink<'a> {
             },
         };
         if !fresh && !self.ledger.is_mine(&target.author) {
-            // Another identity mirrored this item (an earlier mirror identity, or a second
-            // mirror): writing to it, or recreating it at a new number, would duplicate it.
+            // A member mirrored this item (an earlier mirror identity, or a second mirror):
+            // writing to it, or recreating it at a new number, would duplicate it. (A
+            // non-member's claim never gets here: it is a squatter, and the item is created
+            // at another number.)
             self.ledger.skip(format!(
                 "{noun} #{} is already mirrored by {} (as #{}); not mirrored again",
                 t.number, target.author, target.number
@@ -448,23 +517,36 @@ impl<'a> Sink<'a> {
                 // Nothing there: new, unless it landed elsewhere (a taken number) earlier —
                 // `create` finds out when this number is taken, so skip the full read now.
                 None => return Ok(None),
-                Some((target, Some(i))) if same_item(&i.url, &t.imported.url) => {
+                Some((target, Some(i))) if self.is_copy(&i.url, &target, t).await? => {
                     return Ok(Some(target));
                 }
                 Some(_) => {}
             }
         }
         self.load_index().await?;
-        Ok(self.indexed(t))
+        self.indexed(t).await
     }
 
-    /// `t` in the full index, when it is loaded.
-    fn indexed(&self, t: &SrcTarget) -> Option<Target> {
-        self.index.as_ref().and_then(|idx| {
-            idx.iter()
-                .find(|(url, target)| target.kind == t.kind && same_item(url, &t.imported.url))
-                .map(|(_, target)| target.clone())
-        })
+    /// `t` in the full index (when loaded): the first entry that is its copy.
+    async fn indexed(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
+        let candidates: Vec<(String, Target)> = self
+            .index
+            .as_ref()
+            .map(|idx| {
+                idx.iter()
+                    .filter(|(url, target)| {
+                        target.kind == t.kind && same_item_renamed(url, &t.imported.url)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (url, target) in candidates {
+            if self.is_copy(&url, &target, t).await? {
+                return Ok(Some(target));
+            }
+        }
+        Ok(None)
     }
 
     /// Create `t`: at its source number when free, else at the next free number (the body's
@@ -479,7 +561,7 @@ impl<'a> Sink<'a> {
                 Err(why) => {
                     // Mirrored earlier at another number: the full index (loaded on the
                     // taken number) finds it.
-                    if let Some(found) = self.indexed(t) {
+                    if let Some(found) = self.indexed(t).await? {
                         return Ok(Created::Found(found));
                     }
                     tracing::info!(number, %why, "{noun} number taken; allocating another");
@@ -715,7 +797,7 @@ impl<'a> Sink<'a> {
         for c in t
             .comments
             .iter()
-            .filter(|c| !done.iter().any(|u| same_item(u, &c.imported.url)))
+            .filter(|c| !done.iter().any(|u| same_item_renamed(u, &c.imported.url)))
         {
             let credits = collab_doc_credits(text_doc(&c.body) + c.imported.url.len() as u64);
             self.ledger
@@ -760,7 +842,7 @@ impl<'a> Sink<'a> {
         for r in t
             .reviews
             .iter()
-            .filter(|r| !done.iter().any(|u| same_item(u, &r.imported.url)))
+            .filter(|r| !done.iter().any(|u| same_item_renamed(u, &r.imported.url)))
         {
             let credits = collab_doc_credits(text_doc(&r.body) + r.imported.url.len() as u64 + 40);
             self.ledger
@@ -797,6 +879,32 @@ fn fingerprint(name: &str, notes: &str, assets: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stranger_squatting_an_imported_url_is_not_the_mirror_copy() {
+        let ours = "https://github.com/o/r/issues/12";
+        // A non-member's document claiming our item (even the exact URL) is a squatter.
+        assert!(!copy_rule(true, false, false, ours, ours));
+        // A member's copy of the same repository's item counts; another repo's #12 does not.
+        assert!(copy_rule(true, false, true, ours, ours));
+        assert!(!copy_rule(
+            true,
+            false,
+            true,
+            "https://github.com/attacker/x/issues/12",
+            ours
+        ));
+        // The signer's own copy survives a renamed source repository.
+        assert!(copy_rule(
+            true,
+            true,
+            false,
+            "https://github.com/old/name/issues/12",
+            ours
+        ));
+        // Never across kinds.
+        assert!(!copy_rule(false, true, true, ours, ours));
+    }
     use forge_core::collab::Imported;
 
     fn target(kind: TargetKind) -> SrcTarget {

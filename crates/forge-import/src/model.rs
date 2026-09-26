@@ -116,23 +116,32 @@ pub struct SrcCollab {
     pub open_pulls: Vec<u64>,
 }
 
-/// The part of a GitHub item URL after `github.com/<owner>/<repo>/` (`issues/12`,
-/// `pull/3#pullrequestreview-9`), lower-cased: what survives a renamed or transferred repo.
-fn tail(url: &str) -> String {
+/// A GitHub item URL split into (`owner/repo`, the rest: `issues/12`,
+/// `pull/3#pullrequestreview-9`), lower-cased (GitHub names are case-insensitive).
+fn split_gh(url: &str) -> Option<(String, String)> {
     let path = url
-        .trim_start_matches("https://github.com/")
+        .strip_prefix("https://github.com/")?
         .to_ascii_lowercase();
     match path.splitn(3, '/').collect::<Vec<_>>().as_slice() {
-        [_, _, rest] => (*rest).to_string(),
-        _ => String::new(),
+        [owner, repo, rest] if !owner.is_empty() && !repo.is_empty() && !rest.is_empty() => {
+            Some((format!("{owner}/{repo}"), (*rest).to_string()))
+        }
+        _ => None,
     }
 }
 
-/// Whether two item keys name the same source item, tolerating a renamed or transferred
-/// source repository (same `issues/N`, `pull/N`, comment or review anchor).
+/// Whether two item keys name the same source item: the same key, or the same GitHub
+/// repository (case-insensitive) and item. The repository must match: a document anyone can
+/// write must not claim an item of this mirror by its number alone.
 pub fn same_item(a: &str, b: &str) -> bool {
-    let gh = |u: &str| u.starts_with("https://github.com/");
-    a == b || (gh(a) && gh(b) && !tail(a).is_empty() && tail(a) == tail(b))
+    a == b || matches!((split_gh(a), split_gh(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Whether two keys name the same item of possibly different repositories (a renamed or
+/// transferred GitHub repo keeps its item paths). Only for documents the mirror itself
+/// wrote: its own earlier copy of an item survives a rename.
+pub fn same_item_renamed(a: &str, b: &str) -> bool {
+    same_item(a, b) || matches!((split_gh(a), split_gh(b)), (Some((_, x)), Some((_, y))) if x == y)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -403,12 +412,24 @@ mod tests {
     }
 
     #[test]
-    fn items_survive_a_repo_rename_but_not_a_different_number() {
+    fn items_match_by_repository_and_number_and_renames_only_for_own_copies() {
         let a = "https://github.com/old/name/issues/12";
-        assert!(same_item(a, "https://github.com/new/renamed/issues/12"));
+        assert!(same_item(a, "https://github.com/OLD/Name/issues/12"));
+        // Another repository's #12 is not this item (a stranger's squat by number).
+        assert!(!same_item(a, "https://github.com/new/renamed/issues/12"));
+        assert!(!same_item(a, "https://github.com/attacker/x/issues/12"));
         assert!(!same_item(a, "https://github.com/old/name/issues/13"));
         assert!(!same_item(a, "https://github.com/old/name/pull/12"));
-        assert!(same_item(
+        // The mirror's own copy survives a rename.
+        assert!(same_item_renamed(
+            a,
+            "https://github.com/new/renamed/issues/12"
+        ));
+        assert!(!same_item_renamed(
+            a,
+            "https://github.com/new/renamed/issues/13"
+        ));
+        assert!(same_item_renamed(
             "https://github.com/o/r/pull/3#pullrequestreview-9",
             "https://github.com/x/y/pull/3#pullrequestreview-9"
         ));

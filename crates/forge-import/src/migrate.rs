@@ -626,6 +626,9 @@ struct Scratch {
     dir: tempfile::TempDir,
     /// Packs offered to [`Self::index`] (indexed or not).
     indexed: BTreeSet<[u8; 32]>,
+    /// Packs that failed to index, kept for one retry once every other pack is in (a thin
+    /// pack whose base arrives later indexes then).
+    failed: Vec<([u8; 32], Vec<u8>)>,
 }
 
 impl Scratch {
@@ -637,6 +640,7 @@ impl Scratch {
         let s = Self {
             dir,
             indexed: BTreeSet::new(),
+            failed: Vec::new(),
         };
         s.git(&["init", "--bare", "-q", "."], None)?;
         Ok(s)
@@ -645,9 +649,17 @@ impl Scratch {
     /// Index one pack; a failure is logged and leaves its objects out.
     fn index(&mut self, hash: [u8; 32], bytes: &[u8]) {
         self.indexed.insert(hash);
-        if let Err(e) = self.git(&["index-pack", "--stdin", "--fix-thin"], Some(bytes)) {
+        if self.index_pack(hash, bytes).is_err() {
+            self.failed.push((hash, bytes.to_vec()));
+        }
+    }
+
+    fn index_pack(&self, hash: [u8; 32], bytes: &[u8]) -> Result<()> {
+        let r = self.git(&["index-pack", "--stdin", "--fix-thin"], Some(bytes));
+        if let Err(e) = &r {
             tracing::info!(pack = %hex::encode(hash), error = %format!("{e:#}"), "pack not indexed for the history check");
         }
+        r
     }
 
     /// Index every live pack not offered yet and not in `skip` (the destination already
@@ -673,6 +685,11 @@ impl Scratch {
                     tracing::info!(error = %format!("{e:#}"), "pack unreadable for the history check");
                 }
             }
+        }
+        // One retry of the packs that failed: their bases may have arrived since (packs are
+        // indexed in copy order, not dependency order).
+        for (hash, bytes) in std::mem::take(&mut self.failed) {
+            let _ = self.index_pack(hash, &bytes);
         }
     }
 

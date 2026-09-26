@@ -47,8 +47,8 @@ impl Refs {
             ],
             // One wildcard over the mirror's local `refs/mirror/pull/*`, which
             // [`sync_pull_heads`] keeps to exactly the open PRs, so `--prune` deletes the
-            // heads of PRs that closed.
-            Refs::PullHeads(open) if open.is_empty() => Vec::new(),
+            // heads of PRs that closed (also when none is open any more: the push then only
+            // deletes).
             Refs::PullHeads(_) => vec!["+refs/mirror/pull/*:refs/mirror/pull/*".into()],
         }
     }
@@ -319,6 +319,13 @@ impl GitPusher {
     }
 }
 
+/// Whether a push error is the helper's cost guard refusing before it stored anything
+/// (E801 with its "nothing was stored or paid for" note).
+pub fn refused_before_storing(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    text.contains("E801") && text.contains("nothing was stored or paid for")
+}
+
 /// A credit amount as the DASH string `dash.costWarnThreshold` takes, rounded DOWN (to
 /// 10⁻⁸ DASH) so the guard never admits more than the budget.
 fn threshold_dash(credits: u64) -> String {
@@ -378,7 +385,8 @@ dash: some human line"#;
             Refs::PullHeads(vec![3, 7]).refspecs(),
             vec!["+refs/mirror/pull/*:refs/mirror/pull/*"]
         );
-        assert!(Refs::PullHeads(Vec::new()).refspecs().is_empty());
+        // No PR open: still pushed, so the last closed head is pruned.
+        assert_eq!(Refs::PullHeads(Vec::new()).refspecs().len(), 1);
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
