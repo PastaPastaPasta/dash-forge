@@ -7,6 +7,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import { AlertTriangle, CheckCircle2, CircleDashed, Loader2, MinusCircle, RotateCw, XCircle } from 'lucide-react'
 import {
   IPFS_ROWS,
@@ -38,7 +40,8 @@ function rowsFor(p: StorageProfile): ProbeRow[] {
 
 /** A stable fingerprint of what a test ran against (settings and secrets). */
 export function profileSnapshot(p: StorageProfile): string {
-  return JSON.stringify([p.name, p.settings, p.secrets])
+  // A digest, not the values: it becomes a React key and sits in state, where dev tools show it.
+  return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([p.name, p.settings, p.secrets]))))
 }
 
 /**

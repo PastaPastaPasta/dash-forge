@@ -12,7 +12,7 @@
 
 import { z } from 'zod'
 
-import { LOCAL_HTTP_ALLOWED, isPublicHttpsUrl } from '../net'
+import { isPublicHttpsUrl } from '../net'
 import { isHeaderSafe } from './util'
 
 /** The kinds a profile can be (parity with forge-core `Profile`). */
@@ -208,12 +208,10 @@ function checkUrl(field: string, value: string, use: UrlUse, opts: { originOnly?
   if (opts.originOnly && url.pathname !== '/' && url.pathname !== '') return `${field} must be an origin (scheme://host[:port]) with no path`
   // A published URL may point at this machine while testing (a local MinIO): the test runs and
   // its public row fails with the reason ({@link publishProblem}); uploads refuse it.
-  if (url.protocol === 'http:' && !(LOCAL_HTTP_ALLOWED && isLoopback(url.hostname))) {
+  if (url.protocol === 'http:' && !isLoopback(url.hostname)) {
     return use === 'published'
       ? `${field} must be https: it is recorded on chain for everyone to read`
-      : LOCAL_HTTP_ALLOWED
-        ? `${field} must be https (plain http is allowed only for a node on this machine, at 127.0.0.1 or localhost)`
-        : `${field} must be https`
+      : `${field} must be https (plain http is allowed only for a node on this machine, at 127.0.0.1 or localhost)`
   }
   return null
 }

@@ -177,14 +177,16 @@ export async function putPlatformChunks(
   repo: V2RepoRef,
   bytes: Uint8Array,
   packHashHex: string,
-  onProgress?: (done: number, total: number) => void,
+  /** `written`: chunks this call itself created (0 on the first report, before any write). */
+  onProgress?: (done: number, total: number, written: number) => void,
 ): Promise<{ locator: string; chunkCount: number }> {
   const chunks = splitChunks(bytes)
   const have = await storedSeqs(sdk, repo, auth.identityId, packHashHex, chunks.length)
   const R = decodeIdentifier(repo.repoId)
   const hash = hexToBytes(packHashHex)
   let done = have.size
-  onProgress?.(done, chunks.length)
+  let written = 0
+  onProgress?.(done, chunks.length, written)
   for (const chunk of chunks) {
     if (have.has(chunk.seq)) continue
     const data: Record<string, unknown> = { repoId: R, packHash: hash, seq: chunk.seq }
@@ -198,11 +200,12 @@ export async function putPlatformChunks(
         data,
         intent: `chunk:${repo.repoId}:${packHashHex}:${chunk.seq}`,
       })
+      written += 1
     } catch (e) {
       if (!isDuplicate(e)) throw e
     }
     done += 1
-    onProgress?.(done, chunks.length)
+    onProgress?.(done, chunks.length, written)
   }
   return { locator: `platform://${repo.forge.core}/${repo.repoId}/${auth.identityId}/${packHashHex}`, chunkCount: chunks.length }
 }

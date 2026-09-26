@@ -42,7 +42,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
       }
     case 'aws':
       return {
-        where: `Save as cors.json, then run: aws s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json`,
+        where: `If the endpoint is not the bucket's own region, AWS answers with a redirect the browser cannot follow, which looks like a CORS failure: check the endpoint first (https://s3.<region>.amazonaws.com). Then save as cors.json and run: aws s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json`,
         text: JSON.stringify({ CORSRules: s3Rules(origin) }, null, 2),
       }
     case 'b2':
@@ -83,12 +83,18 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
 export function kuboCorsLines(origin: string): string {
   const paths = JSON.stringify(FORGE_RPC_PATHS)
   return [
-    '# 1. A token that can only add, pin-check, unpin and identify (not the whole admin API):',
-    `TOKEN=$(openssl rand -hex 24)`,
+    '# 1. Once any API.Authorizations entry exists, kubo refuses EVERY RPC call without a token,',
+    '#    your own `ipfs` commands and IPFS WebUI included. So first an owner token with full',
+    '#    access (keep it; use it as `ipfs --api-auth bearer:$OWNER <cmd>`), then one for this app',
+    '#    that can only add, pin-check, unpin and identify:',
+    `OWNER=$(openssl rand -hex 24); TOKEN=$(openssl rand -hex 24)`,
+    `ipfs config --json API.Authorizations.owner "{\\"AuthSecret\\": \\"bearer:$OWNER\\", \\"AllowedPaths\\": [\\"/api/v0\\"]}"`,
     `ipfs config --json API.Authorizations.dash-forge "{\\"AuthSecret\\": \\"bearer:$TOKEN\\", \\"AllowedPaths\\": ${paths.replace(/"/g, '\\"')}}"`,
-    'echo "API Authorization for the profile: Bearer $TOKEN"',
-    '# 2. Allow this app (keeping the origins already allowed):',
-    `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin "$(ipfs config API.HTTPHeaders.Access-Control-Allow-Origin 2>/dev/null | jq -c '(. // []) + ["${origin}"] | unique' || echo '["${origin}"]')"`,
+    'echo "Owner token (for your own ipfs CLI): bearer:$OWNER"',
+    'echo "API Authorization for the Forge profile: Bearer $TOKEN"',
+    '# 2. Allow this app, keeping the origins already allowed (none on a fresh node):',
+    `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin "$( (ipfs config API.HTTPHeaders.Access-Control-Allow-Origin 2>/dev/null || echo null) | jq -c '(. // []) + ["${origin}"] | unique')"`,
+    `#    (no jq? ipfs config --json API.HTTPHeaders.Access-Control-Allow-Origin '["${origin}"]' replaces the list instead)`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Methods '["POST"]'`,
     `ipfs config --json API.HTTPHeaders.Access-Control-Allow-Headers '["Authorization"]'`,
     '# 3. Let any origin read the gateway (the content is public):',

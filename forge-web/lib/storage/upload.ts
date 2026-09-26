@@ -263,8 +263,8 @@ export async function storeArtifact(
   const platformCopy = async (target: string): Promise<void> => {
     step({ target, phase: 'start' })
     try {
-      const r = await putPlatformChunks(sdk, auth, repo, bytes, hashHex, (done, total) => {
-        platformWritten = true
+      const r = await putPlatformChunks(sdk, auth, repo, bytes, hashHex, (done, total, written) => {
+        if (written > 0) platformWritten = true
         step({ target, phase: 'progress', done, total })
       })
       chunkCount = r.chunkCount

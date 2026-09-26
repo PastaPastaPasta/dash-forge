@@ -122,6 +122,11 @@ export class AuthController {
     return this.state
   }
 
+  /** The UI showed the notice: clear it, so the next one (even the same text) shows too. */
+  clearNotice(): void {
+    if (this.state.notice) this.setState({ notice: null })
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener)
     return () => {

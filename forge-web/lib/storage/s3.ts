@@ -163,8 +163,9 @@ export async function getObject(s: S3Settings, secrets: ProfileSecrets, key: str
 /** Signed HEAD: the object's size, or null when it does not exist. */
 export async function headObject(s: S3Settings, secrets: ProfileSecrets, key: string): Promise<number | null> {
   const r = await send(s, secrets, 'signed HEAD', 'HEAD', key)
+  if (!r.resp.ok && r.resp.status !== 404) throw await failed('signed HEAD', r)
+  r.discard()
   if (r.resp.status === 404) return null
-  if (!r.resp.ok) throw await failed('signed HEAD', r)
   const len = Number(r.resp.headers.get('content-length'))
   return Number.isFinite(len) ? len : 0
 }
@@ -173,4 +174,5 @@ export async function headObject(s: S3Settings, secrets: ProfileSecrets, key: st
 export async function deleteObject(s: S3Settings, secrets: ProfileSecrets, key: string): Promise<void> {
   const r = await send(s, secrets, 'delete', 'DELETE', key)
   if (!r.resp.ok && r.resp.status !== 404) throw await failed('delete', r)
+  r.discard()
 }

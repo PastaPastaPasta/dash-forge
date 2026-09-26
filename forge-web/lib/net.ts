@@ -10,13 +10,13 @@
  */
 
 /**
- * Whether this build may talk plain http to this machine (a local MinIO or kubo): devnet and
- * dev builds only. The CSP (`app/layout.tsx`) and the storage profile checks both follow it,
- * so a production build never opens loopback http for any page.
+ * Whether `hostname` names this machine or a private / link-local network.
+ *
+ * Literal addresses and reserved names only: a page cannot resolve DNS, so a public name that
+ * resolves to a private address (`127.0.0.1.nip.io`, DNS rebinding) passes. That residual is
+ * bounded by the rest of the design: every byte read is hash-checked, requests carry no
+ * credentials, and responses are opaque to other origins.
  */
-export const LOCAL_HTTP_ALLOWED: boolean = process.env.NEXT_PUBLIC_NETWORK === 'devnet' || process.env.NEXT_PUBLIC_FORGE_DEV === '1'
-
-/** Whether `hostname` names this machine or a private / link-local network. */
 export function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true

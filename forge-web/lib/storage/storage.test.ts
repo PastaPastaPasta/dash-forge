@@ -10,7 +10,7 @@ import { resetMemoryStores, idbEntries, idbGet, idbPut } from '../idb'
 import { lockVault, storeInVault, unlockWithPassphrase } from '../auth/vault'
 import { splitChunks, manifestUrisProblem } from '../repo/push'
 import { CHUNK_PAYLOAD_MAX, FIELD_MAX } from '../constants'
-import { LOCAL_HTTP_ALLOWED, isPrivateHost, isPublicHttpsUrl } from '../net'
+import { isPrivateHost, isPublicHttpsUrl } from '../net'
 import { externalFetchUrls } from '../view/browse-source'
 import { corsFix } from './cors'
 import { cidV1RawLeaves } from './cid'
@@ -77,9 +77,10 @@ describe('profiles', () => {
     expect(bad({ endpoint: 'https://x.example/bucket' })).toMatch(/origin/)
     expect(bad({ endpoint: 'https://user:pw@x.example' })).toMatch(/user name/)
     expect(bad({ endpoint: 'http://minio.example.org' })).toMatch(/https/)
-    // Plain http to this machine is a dev/devnet-build allowance only (as is the CSP's).
-    if (LOCAL_HTTP_ALLOWED) expect(bad({ endpoint: 'http://127.0.0.1:9000' })).toBeNull()
-    else expect(bad({ endpoint: 'http://127.0.0.1:9000' })).toMatch(/https/)
+    // The API endpoint may be plain http on this machine (the user's own MinIO); what is
+    // published may not (the public URL, checked by publishProblem).
+    expect(bad({ endpoint: 'http://127.0.0.1:9000' })).toBeNull()
+    expect(bad({ endpoint: 'http://192.168.1.4:9000' })).toMatch(/https/)
     expect(bad({ bucket: 'Forge' })).toMatch(/lowercase/)
     expect(bad({ prefix: 'a/../b' })).toMatch(/segment/)
     expect(bad({ publicUrl: '' })).toMatch(/public URL/)
@@ -279,8 +280,12 @@ describe('CORS fix blocks', () => {
     expect(where).toMatch(/admin interface/)
     expect(text).toContain('API.Authorizations.dash-forge')
     for (const path of ['/api/v0/add', '/api/v0/pin/ls', '/api/v0/pin/rm', '/api/v0/id', '/api/v0/version']) expect(text).toContain(path)
-    expect(text).toMatch(/\(\. \/\/ \[\]\) \+ \["https:\/\/forge\.dashhq\.org"\] \| unique/)
-    expect(text).not.toMatch(/Access-Control-Allow-Origin '\["https:\/\/forge\.dashhq\.org"\]'/)
+    expect(text).toMatch(/\(ipfs config API\.HTTPHeaders\.Access-Control-Allow-Origin 2>\/dev\/null \|\| echo null\) \| jq -c '\(\. \/\/ \[\]\) \+ \["https:\/\/forge\.dashhq\.org"\] \| unique'/)
+    const commands = text.split('\n').filter((l) => !l.startsWith('#'))
+    expect(commands.join('\n')).not.toMatch(/Access-Control-Allow-Origin '\["https:\/\/forge\.dashhq\.org"\]'/)
+    // Any Authorizations entry locks the RPC API for everyone else: an owner token comes first.
+    expect(text).toMatch(/API\.Authorizations\.owner .*\\"AllowedPaths\\": \[\\"\/api\/v0\\"\]/)
+    expect(text.indexOf('API.Authorizations.owner')).toBeLessThan(text.indexOf('API.Authorizations.dash-forge'))
   })
 })
 

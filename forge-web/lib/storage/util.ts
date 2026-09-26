@@ -35,6 +35,8 @@ export interface TimedResponse {
   readonly resp: Response
   bytes(): Promise<Uint8Array>
   text(): Promise<string>
+  /** Done without the body (a HEAD, a status-only answer): clear the deadline, drop the body. */
+  discard(): void
 }
 
 /**
@@ -102,7 +104,11 @@ export async function timedFetch(
       done()
     }
   }
-  return { resp, bytes, text: async () => new TextDecoder().decode(await bytes()) }
+  const discard = (): void => {
+    done()
+    resp.body?.cancel().catch(() => undefined)
+  }
+  return { resp, bytes, text: async () => new TextDecoder().decode(await bytes()), discard }
 }
 
 /** Printable ASCII only: header values (`fetch` throws on anything else, quoting the value). */

@@ -62,11 +62,23 @@ async function reachable(url: string | URL): Promise<boolean> {
   }
 }
 
-/** Whether `url` answers with a redirect (opaque, so only its type is visible). */
+/**
+ * Whether `url` answers with a redirect. A redirect with a `Location` shows as an opaque
+ * redirect; AWS's wrong-region answer is a bare `301 PermanentRedirect` with no `Location`,
+ * which fetch hands back as an ordinary response, visible only through a CORS read of its
+ * status (a `no-cors` one is opaque) — so both are tried.
+ */
 async function redirects(url: string | URL): Promise<boolean> {
+  const opts = { redirect: 'manual' as const, credentials: 'omit' as const, cache: 'no-store' as const }
   try {
-    const r = await fetch(url, { mode: 'no-cors', redirect: 'manual', credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
-    return r.type === 'opaqueredirect'
+    const r = await fetch(url, { ...opts, mode: 'no-cors', signal: AbortSignal.timeout(10_000) })
+    if (r.type === 'opaqueredirect') return true
+  } catch {
+    return false
+  }
+  try {
+    const r = await fetch(url, { ...opts, signal: AbortSignal.timeout(10_000) })
+    return r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400)
   } catch {
     return false
   }
