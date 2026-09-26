@@ -15,6 +15,12 @@
 | 06 third-party verify | refs and manifests read raw from Platform bind to a locally hash-verified clone |
 | 07 depth / filter | `--depth` fails loudly, `--filter=blob:none` works |
 | 08 v1 read-compat | a testnet v1 repo clones by name and by contract id; a push to it is refused as read only |
+| 09 issue lifecycle | a non-member opens an issue (§6 numbering), closes and reopens it as the author (`authorEvent`); a stranger's close is refused by `dg` before signing (E601) and, with the pre-check off, **at consensus** (40120); a maintainer labels, comments and closes it (member `event`) |
+| 10 PR from a fork | `dg repo fork` records the parent's packs by reference (nothing re-uploaded) and the fork clones; a PR opened from the fork with no `--head-repo`; `pr view/diff/checkout` fetch the head from the fork; only a member's approval counts; `dg pr merge` builds a real 3-way merge commit, pushes it to the base and posts the merge event, and a fresh clone shows the merge |
+| 11 release asset | a non-maintainer is refused before uploading; a maintainer publishes a release whose asset goes to local MinIO with its sha256 recorded; a reader without storage credentials downloads and verifies it. SKIPs when MinIO is down (`make infra-up`) |
+| 12 star / unstar | star, star again (nothing written), unstar with the protocol-14 `indexOnly` delete, unstar again (nothing to remove); the star count follows |
+
+The binaries come from `target/`, `$CARGO_TARGET_DIR`, or `E2E_BIN_DIR` when set.
 
 ## Reserved fixture repos
 
@@ -26,7 +32,8 @@ The CLI suite's repos are forge-v2 repos owned by the moutai OWNER fixture, crea
 
 | Repo | Written by | Read by | Notes |
 |---|---|---|---|
-| `e2e-cli` (moutai) | `cli/scenarios/*` (`make e2e`) | the same | The CLI suite's repo. Platform-stored packs only. Each run pushes fresh `e2e/<run-id>/…` refs and deletes them afterwards. Override with `E2E_REPO_NAME`. |
+| `e2e-cli` (moutai) | `cli/scenarios/*` (`make e2e`) | the same | The CLI suite's repo. Platform-stored packs only. Each run pushes fresh `e2e/<run-id>/…` refs and deletes them afterwards. Override with `E2E_REPO_NAME`. Scenarios 09–12 also leave issues, PRs, reviews and releases (`e2e-<run-id>`) behind: those documents cannot be deleted on forge-v2. Release assets point at the runner's local MinIO. |
+| `e2e-cli-fork` (moutai, CONTRIB) | `cli/scenarios/10-pr-from-fork.sh` | the same | CONTRIB's fork of `e2e-cli`, created on first use and reused (resumable). Each run pushes an `e2e/<run-id>/feature` branch to it. Override with `E2E_FORK_NAME`. |
 | `storage-e2e-a` (moutai) | `cli/storage-byo.sh` steps 1–4 | the same script | Each run uses a fresh `e2e/<run-id>/byo` branch and deletes it afterwards. |
 | `storage-e2e-b` (moutai) | `cli/storage-byo.sh` steps 5–6 | the same script | Same, plus the step-5 "copy deleted" scenario. Step 6 restores that copy, so the repo stays clonable. |
 | `m1-5124` (testnet, v1) | nothing now (v1 is read only); `cli/seed-read-fixture.sh` verifies it | `forge-web/e2e/*` (read-paths, fallback-browse, zero-backend, a11y) | The read fixture: `main` holds one deterministic commit (`README.md`, `src/`, `lib/`) with its pack stored on Platform and no browse index. DEPLOYER-owned (`8hJmcHWT…`). Override with `NIGHTLY_FIXTURE_REPO` (seeder) and `E2E_FIXTURE_NAME` (Playwright). |

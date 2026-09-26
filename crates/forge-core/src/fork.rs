@@ -79,9 +79,14 @@ pub fn fork_manifest(parent: &RepoRef, m: &PackManifestInfo) -> Result<Option<Pa
     }))
 }
 
-/// The parent's manifests a fork records: one per pack hash (git packs and browse
-/// artifacts), preferring a Platform copy (its chunks are permanent), then the oldest. Packs
-/// the fork already has a manifest for are skipped.
+/// The parent's manifests a fork records: one per git pack (kind 0), preferring a Platform
+/// copy (its chunks are permanent), then the oldest. Packs the fork already has a manifest
+/// for are skipped.
+///
+/// Browse artifacts (object locators, flat indexes) are not copied: a locator's `packRef`s
+/// index the parent's pack list, which the fork's own list diverges from at its first push.
+/// The fork's first push publishes a locator of its own (a repack consolidates one over
+/// everything); until then the web app browses it by the whole-pack fallback.
 pub fn plan_manifests<'m>(
     parent: &'m [PackManifestInfo],
     fork_has: &BTreeSet<[u8; 32]>,
@@ -89,7 +94,7 @@ pub fn plan_manifests<'m>(
     let mut by_hash: std::collections::BTreeMap<[u8; 32], &PackManifestInfo> =
         std::collections::BTreeMap::new();
     for m in parent {
-        if fork_has.contains(&m.pack_hash) {
+        if m.kind != u64::from(crate::pack::KIND_GIT_PACK) || fork_has.contains(&m.pack_hash) {
             continue;
         }
         let better = by_hash.get(&m.pack_hash).is_none_or(|cur| {
@@ -106,24 +111,22 @@ pub fn plan_manifests<'m>(
     out
 }
 
-/// The ref updates a fork needs: every resolved ref of the parent (a diverged ref at its
-/// provisional tip) whose tip the fork does not already have, with the fork's current tip as
-/// `prevOid`.
+/// The refs a fork still needs: every ref of the parent that resolves to a tip (a diverged
+/// ref at its provisional tip) and that the fork does not have at all. A ref the fork already
+/// has is the fork owner's own from then on and is never moved, so re-running an
+/// interrupted fork finishes it without undoing the owner's pushes.
 pub fn plan_refs(
     parent: &[(String, RefState)],
     fork: &[(String, RefState)],
-) -> Vec<(String, String, Option<String>)> {
-    let tip = crate::rules::tip_of;
+) -> Vec<(String, String)> {
     parent
         .iter()
-        .filter_map(|(name, state)| {
-            let want = tip(state)?;
-            let have = fork
+        .filter(|(name, _)| {
+            !fork
                 .iter()
-                .find(|(n, _)| n == name)
-                .and_then(|(_, s)| tip(s));
-            (have.as_deref() != Some(want.as_str())).then(|| (name.clone(), want, have))
+                .any(|(n, s)| n == name && crate::rules::tip_of(s).is_some())
         })
+        .filter_map(|(name, state)| Some((name.clone(), crate::rules::tip_of(state)?)))
         .collect()
 }
 
@@ -203,14 +206,9 @@ pub async fn fork_repo(
     let parent_refs = svc.read_refs(parent).await?;
     let fork_refs = svc.read_refs(&fork).await?;
     let mut refs_written = Vec::new();
-    for (name, want, have) in plan_refs(&parent_refs, &fork_refs) {
+    for (name, want) in plan_refs(&parent_refs, &fork_refs) {
         let new = hex::decode(&want).map_err(|e| Error::Config(format!("ref tip: {e}")))?;
-        let prev = have
-            .as_deref()
-            .map(hex::decode)
-            .transpose()
-            .map_err(|e| Error::Config(format!("ref tip: {e}")))?;
-        svc.write_ref_update(&fork, &name, &new, prev.as_deref(), have.is_some())
+        svc.write_ref_update(&fork, &name, &new, None, false)
             .await?;
         refs_written.push(name);
     }
@@ -310,18 +308,22 @@ mod tests {
             manifest("plat", 1, 0, 5, &[]),
             manifest("other", 2, 1, 2, &["https://y"]),
             manifest("had", 3, 0, 3, &[]),
+            PackManifestInfo {
+                kind: 1,
+                ..manifest("locator", 4, 0, 1, &[])
+            },
         ];
         let has: BTreeSet<[u8; 32]> = [[3; 32]].into();
         let plan: Vec<&str> = plan_manifests(&all, &has)
             .iter()
             .map(|m| m.document_id.as_str())
             .collect();
-        // Upload order: "other" (t=2) before "plat" (t=5).
+        // Upload order: "other" (t=2) before "plat" (t=5); the browse locator is not copied.
         assert_eq!(plan, ["other", "plat"]);
     }
 
     #[test]
-    fn refs_are_copied_once_and_moved_forward_on_a_resumed_fork() {
+    fn refs_are_copied_once_and_the_forks_own_are_left_alone() {
         let r = |oid: &str| RefState::Resolved {
             oid: oid.into(),
             author: "a".into(),
@@ -330,21 +332,18 @@ mod tests {
         let parent = vec![
             ("refs/heads/main".to_string(), r("aa")),
             ("refs/heads/dev".to_string(), r("bb")),
+            ("refs/heads/new".to_string(), r("cc")),
             ("refs/heads/gone".to_string(), RefState::Unborn),
         ];
+        // A resumed fork: main copied, dev since moved by the fork's owner.
         let fork = vec![
             ("refs/heads/main".to_string(), r("aa")),
-            ("refs/heads/dev".to_string(), r("00bb")),
+            ("refs/heads/dev".to_string(), r("dd")),
         ];
-        let plan = plan_refs(&parent, &fork);
         assert_eq!(
-            plan,
-            vec![(
-                "refs/heads/dev".to_string(),
-                "bb".to_string(),
-                Some("00bb".to_string())
-            )]
+            plan_refs(&parent, &fork),
+            vec![("refs/heads/new".to_string(), "cc".to_string())]
         );
-        assert_eq!(plan_refs(&parent, &[]).len(), 2);
+        assert_eq!(plan_refs(&parent, &[]).len(), 3);
     }
 }
