@@ -1,27 +1,39 @@
 //! `dg release` — create / list / download releases.
+//!
+//! On forge-v2 a `release` is a maintainer-only forge-core document, newest per tag wins.
+//! `create --asset <file>` uploads each file to the repository's storage policy (the same
+//! `dash.storage` / `dash.replicas` profiles a `git push` uses, or `--storage`), verifies the
+//! copies, and records `{name, sha256, sizeBytes, uris}`; `download` accepts only bytes that
+//! hash to the recorded sha256. Assets are external-only: Platform stores packs, not
+//! arbitrary files, so a Platform-only policy is refused with the fix.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-use forge_core::collab::{ReleaseInput, ReleaseService};
-use forge_core::storage::PackReader;
+use forge_core::backends::PackMeta;
+use forge_core::collab::v2::Collab;
+use forge_core::collab::{Release, ReleaseAsset, ReleaseInput, ReleaseService};
+use forge_core::rules::v2::Role;
+use forge_core::storage::policy::git_config_scoped;
+use forge_core::storage::{
+    replicate, ExternalTarget, PackReader, StoragePolicy, StorageProfiles, StorageTarget,
+};
+use forge_core::user_error::{codes, UserError};
 
-use crate::common::{resolve, RepoRef};
+use crate::common::Session;
 use crate::context::Ctx;
-use crate::ReleaseCommand;
+use crate::fmt::{cost_json, cost_line, dash_usd_price, short};
+use crate::{ReleaseCommand, ReleaseCreateArgs};
+
+/// URIs an asset records (the contract's whole `assets` JSON is 4096 bytes).
+const MAX_ASSET_URIS: usize = 4;
 
 /// Dispatch a `release` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     match cmd {
-        ReleaseCommand::Create {
-            repo,
-            tag,
-            name,
-            notes,
-            yanked,
-        } => create(ctx, repo, tag, name, notes, *yanked).await,
+        ReleaseCommand::Create(args) => create(ctx, args).await,
         ReleaseCommand::List { repo } => list(ctx, repo).await,
         ReleaseCommand::Download {
             repo,
@@ -32,78 +44,211 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     }
 }
 
-async fn create(
-    ctx: &Ctx,
-    repo: &str,
-    tag: &str,
-    name: &str,
-    notes: &str,
-    yanked: bool,
-) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    if !ctx.confirm(&format!("Create release {tag:?}? (a MAINTAIN-gated write)"))? {
-        return Err(crate::errors::cancelled());
-    }
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = ReleaseService::new(&client, &identity, &bridge);
-    let input = ReleaseInput {
-        tag_name: tag.to_string(),
-        name: name.to_string(),
-        notes: notes.to_string(),
-        yanked,
-        assets: Vec::new(),
+/// The external targets assets go to, and how many must confirm.
+fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> {
+    let (list, replicas) = match storage {
+        Some(s) => (Some(s.to_string()), None),
+        None => (
+            git_config_scoped("dash.storage").map(|(_, v)| v),
+            git_config_scoped("dash.replicas").map(|(_, v)| v),
+        ),
     };
-    let doc_id = svc
-        .create_release(handle.v1_contract_id()?, &input)
-        .await
-        .context("create_release")?;
+    let policy = StoragePolicy::from_git_values(list.as_deref(), replicas.as_deref(), None)?
+        .resolve(&StorageProfiles::load()?)?;
+    if policy.external.is_empty() {
+        return Err(UserError::new(
+            codes::STORAGE_CONFIG,
+            "release not created: no storage for the assets",
+        )
+        .cause("release assets are stored on your own storage (S3, IPFS), and this repository's policy is Platform only")
+        .fix("`dg storage add <name> …` then pass `--storage <name>` (or `dg storage use <name>` in the repository)")
+        .note("nothing was uploaded or written")
+        .into());
+    }
+    let http = forge_core::storage::http_client();
+    let targets = policy
+        .external
+        .iter()
+        .map(|(n, p)| ExternalTarget::from_profile(n, p, &http).map_err(anyhow::Error::from))
+        .collect::<Result<Vec<_>>>()?;
+    let required = policy.replicas.min(targets.len()).max(1);
+    Ok((targets, required))
+}
 
+/// Upload one asset file and describe it.
+async fn upload_asset(
+    path: &Path,
+    targets: &[ExternalTarget],
+    required: usize,
+) -> Result<ReleaseAsset> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .context("an asset path needs a file name")?
+        .to_string();
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let meta = PackMeta::for_bytes(&bytes);
+    let dyn_targets: Vec<&dyn StorageTarget> =
+        targets.iter().map(|t| t as &dyn StorageTarget).collect();
+    let rep = replicate(&dyn_targets, &bytes, &meta, required)
+        .await
+        .map_err(|e| anyhow::Error::from(e).context(format!("uploading {name}")))?;
+    let mut uris = rep.uris();
+    // Credential-less readers use the public copies; drop private s3:// first.
+    if uris.len() > MAX_ASSET_URIS {
+        uris.retain(|u| !u.starts_with("s3://"));
+    }
+    uris.truncate(MAX_ASSET_URIS);
+    Ok(ReleaseAsset {
+        name,
+        sha256: meta.pack_hash,
+        size_bytes: bytes.len() as u64,
+        uris,
+        uri: None,
+    })
+}
+
+async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
+    let s = Session::open_v2(ctx, &args.repo).await?;
+    let collab = s.collab();
+    let tag = &args.tag;
+    // Maintainer-only at consensus: find out before uploading anything.
+    collab
+        .require_role(&s.repo, Role::Maintainer, &format!("publish release {tag}"))
+        .await?;
+    let targets = if args.assets.is_empty() {
+        None
+    } else {
+        Some(asset_targets(args.storage.as_deref())?)
+    };
+    let total = args
+        .assets
+        .iter()
+        .map(|p| std::fs::metadata(p).map(|m| m.len()))
+        .sum::<std::io::Result<u64>>()
+        .context("reading the asset files")?;
+    let with = if args.assets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " with {} asset(s), {}",
+            args.assets.len(),
+            forge_core::storage::human_bytes(total)
+        )
+    };
+    ctx.confirm_or_cancel(&format!(
+        "Publish release {tag} of {}{with}? (one small document, ~0.0002 DASH)",
+        s.repo.display()
+    ))?;
+    let mut uploaded = Vec::new();
+    if let Some((targets, required)) = &targets {
+        for p in &args.assets {
+            let a = upload_asset(p, targets, *required).await?;
+            if !ctx.json {
+                eprintln!(
+                    "  ✓ {} ({}) sha256 {} → {} cop(ies)",
+                    a.name,
+                    forge_core::storage::human_bytes(a.size_bytes),
+                    short(&a.sha256),
+                    a.uris.len()
+                );
+            }
+            uploaded.push(a);
+        }
+    }
+    let before = s.balance().await;
+    let input = ReleaseInput {
+        tag_name: tag.clone(),
+        name: args.name.clone(),
+        notes: args.notes.clone(),
+        yanked: args.yanked,
+        assets: uploaded,
+    };
+    let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
+        anyhow::Error::from(e).context(if input.assets.is_empty() {
+            "nothing was written"
+        } else {
+            "the assets were uploaded (content-addressed; re-running reuses them)"
+        })
+    })?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
     ctx.emit(
-        json!({ "status": "created", "tag": tag, "documentId": doc_id }),
-        || println!("Created release {tag} (document {doc_id})."),
+        json!({
+            "status": "created",
+            "tag": tag,
+            "documentId": doc_id,
+            "assets": input.assets.iter().map(asset_json).collect::<Vec<_>>(),
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ published release {tag} of {} ({} asset(s)) · {}",
+                s.repo.display(),
+                input.assets.len(),
+                cost_line(spent, price)
+            );
+        },
     );
     Ok(())
 }
 
+fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
+    json!({ "name": a.name, "sha256": a.sha256, "sizeBytes": a.size_bytes, "uris": a.uris })
+}
+
+/// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
+    let s = Session::open(ctx, repo).await?;
+    if s.repo.is_v1() {
+        let r = ReleaseService::new(&s.client, &s.identity, &s.bridge)
+            .list_releases(s.repo.v1_contract_id()?)
+            .await
+            .context("list_releases")?;
+        return Ok((r, Vec::new()));
+    }
+    Ok(Collab::reader(&s.client).releases(&s.repo).await?)
+}
+
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = ReleaseService::new(&client, &identity, &bridge);
-    let releases = svc
-        .list_releases(handle.v1_contract_id()?)
-        .await
-        .context("list_releases")?;
-
-    let rows: Vec<_> = releases
-        .iter()
-        .map(|r| {
-            json!({
-                "tag": r.tag_name,
-                "name": r.name,
-                "yanked": r.yanked,
-                "assets": r.assets.iter().map(|a| json!({
-                    "name": a.name,
-                    "sha256": a.sha256,
-                    "sizeBytes": a.size_bytes,
-                    "uris": a.uris,
-                })).collect::<Vec<_>>(),
-            })
+    let (current, previous) = read_releases(ctx, repo).await?;
+    let row = |r: &Release| {
+        json!({
+            "tag": r.tag_name,
+            "name": r.name,
+            "notes": r.notes,
+            "yanked": r.yanked,
+            "publishedBy": r.publisher,
+            "createdAt": r.created_at,
+            "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
         })
-        .collect();
-
-    ctx.emit(json!({ "count": rows.len(), "releases": rows }), || {
-        for r in &releases {
-            let y = if r.yanked { " (yanked)" } else { "" };
-            println!("{}{y}  {} asset(s)", r.tag_name, r.assets.len());
-        }
-    });
+    };
+    ctx.emit(
+        json!({
+            "count": current.len(),
+            "releases": current.iter().map(row).collect::<Vec<_>>(),
+            "previous": previous.iter().map(row).collect::<Vec<_>>(),
+        }),
+        || {
+            if current.is_empty() {
+                println!("no releases");
+            }
+            for r in &current {
+                let y = if r.yanked { " (yanked)" } else { "" };
+                println!(
+                    "{}{y}  {}  {} asset(s)  published by {}",
+                    r.tag_name,
+                    r.name,
+                    r.assets.len(),
+                    r.publisher
+                );
+            }
+        },
+    );
     Ok(())
 }
 
-/// Download a release asset via the reader-side backend registry (https + ipfs gateways),
-/// verifying the recorded SHA-256 before writing it out.
+/// Download a release asset, accepting only bytes that hash to the recorded sha256.
 async fn download(
     ctx: &Ctx,
     repo: &str,
@@ -111,12 +256,8 @@ async fn download(
     asset_name: Option<&str>,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = ReleaseService::new(&client, &identity, &bridge);
-    let releases = svc.list_releases(handle.v1_contract_id()?).await?;
-    let release = releases
+    let (current, _) = read_releases(ctx, repo).await?;
+    let release = current
         .into_iter()
         .find(|r| r.tag_name == tag)
         .ok_or_else(|| {
@@ -125,7 +266,6 @@ async fn download(
                 format!("`dg release list {repo}` lists its releases"),
             )
         })?;
-
     let asset = match asset_name {
         Some(n) => release.assets.into_iter().find(|a| a.name == n),
         None => release.assets.into_iter().next(),
@@ -136,16 +276,9 @@ async fn download(
             "omit --asset to download the first asset, or check the name with `dg release list`",
         )
     })?;
-
     if asset.uris.is_empty() {
-        bail!(
-            "asset {:?} records no mirror URIs to download from",
-            asset.name
-        );
+        bail!("asset {:?} records no URI to download from", asset.name);
     }
-
-    // Race the recorded URIs with the configured IPFS gateway list (storage.toml, else the
-    // shared defaults), accepting only bytes that hash to the release's sha256.
     let bytes = PackReader::from_user_config()
         .fetch_verified(
             &asset.uris,
@@ -154,11 +287,35 @@ async fn download(
             None,
         )
         .await
-        .context("downloading + verifying asset")?;
-
-    let out_path = output.unwrap_or_else(|| PathBuf::from(&asset.name));
-    std::fs::write(&out_path, &bytes).with_context(|| format!("writing {}", out_path.display()))?;
-
+        .context("downloading and verifying the asset")?;
+    // A recorded name is data anyone with the maintainer role wrote: never let it choose a
+    // path outside the current directory.
+    let safe_name = Path::new(&asset.name)
+        .file_name()
+        .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
+    // Without --output the file is new: an existing file (or a symlink) of that name is not
+    // overwritten, since the name came from someone else.
+    let explicit = output.is_some();
+    let out_path = output.unwrap_or(safe_name);
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true);
+    if explicit {
+        open.create(true).truncate(true);
+    } else {
+        open.create_new(true);
+    }
+    let mut f = open.open(&out_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            crate::errors::usage(format!(
+                "{} already exists; pass --output <path> to choose where the asset goes",
+                out_path.display()
+            ))
+        } else {
+            anyhow::Error::from(e).context(format!("writing {}", out_path.display()))
+        }
+    })?;
+    std::io::Write::write_all(&mut f, &bytes)
+        .with_context(|| format!("writing {}", out_path.display()))?;
     ctx.emit(
         json!({
             "status": "downloaded",
@@ -170,8 +327,8 @@ async fn download(
         }),
         || {
             println!(
-                "Downloaded {} ({} bytes, sha256 verified) → {}",
-                asset.name,
+                "✓ {} ({} bytes, sha256 verified) → {}",
+                crate::fmt::safe(&asset.name),
                 bytes.len(),
                 out_path.display()
             );

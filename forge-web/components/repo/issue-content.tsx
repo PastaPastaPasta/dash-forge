@@ -2,49 +2,54 @@
 
 /**
  * IssueContent — the issue detail: folded state header, the author's body, the merged
- * comment/event timeline, a comment composer, and close/reopen — each write shown with its
- * pre-sign cost + confirm. The fold honors close/reopen only from the issue's author or a
- * WRITE/MAINTAIN holder, so the control is shown only to them: anyone else's event would land,
- * cost credits, and change nothing.
+ * comment/event timeline, a comment composer, close/reopen and labels — each write shown with
+ * its pre-sign cost + confirm.
+ *
+ * Who may do what (`forge-v2.md` §3): the author closes and reopens their own issue with an
+ * `authorEvent`; maintainers and writers close, reopen and label with an `event`. Consensus
+ * refuses anyone else on forge-v2, so the controls are offered only to them. On v1 the author's
+ * or a WRITE/MAINTAIN holder's plain `event` is what the fold honours.
  */
 
 import { useState } from 'react'
-import { CheckCircle2, CircleDot } from 'lucide-react'
+import { CheckCircle2, CircleDot, Tag, X } from 'lucide-react'
 import type { RepoHome, IssueThread } from '@/lib/view'
 import { aclName, loadIssueThread, timeAgo } from '@/lib/view'
-import { closeTarget, createComment, readViewerPermissions, reopenTarget, repoContractIds, repoKey } from '@/lib/repo'
+import { addEvent, createComment, readViewerPermissions, repoContractIds, repoKey, setTargetState } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { previewDocumentCreate } from '@/lib/sdk'
+import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useIntent } from '@/hooks/use-intent'
+import { writeErrorMessage } from '@/lib/view/write-errors'
+import { useParam } from '@/hooks/use-query-param'
+import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
+import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/input'
+import { Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { V2WritesNote } from '@/components/repo/v2-writes-note'
-import { errorMessage } from '@/lib/utils'
 
-export function IssueContent({
-  home,
-  number,
-}: {
-  home: RepoHome
-  number: number
-}): JSX.Element {
+type Pending =
+  | { kind: 'state' }
+  | { kind: 'label'; label: string; remove: boolean }
+  | null
+
+export function IssueContent({ home, number }: { home: RepoHome; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  // The web app writes to v1 repos only; forge-v2 writes are the next step (`V2WritesNote`).
-  const v1 = home.repo.kind === 'v1' ? home.repo : null
   const { identity, signer } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
+  const guard = useWriteGuard()
 
+  // Just created here: a node that has not applied the block yet answers "not found", so keep
+  // asking for a few seconds rather than telling the author their issue does not exist.
+  const justCreated = useParam('created') === '1'
   const { data, loading, error, reload } = useAsync<IssueThread | null>(
-    () => loadIssueThread(sdk!, home.repo, number),
+    () => retryWhileMissing(() => loadIssueThread(sdk!, home.repo, number), justCreated ? 8 : 0),
     [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
@@ -57,51 +62,72 @@ export function IssueContent({
   )
 
   const [comment, setComment] = useState('')
+  const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
-  const [confirmToggle, setConfirmToggle] = useState(false)
+  const [pending, setPending] = useState<Pending>(null)
+  const [newLabel, setNewLabel] = useState('')
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
-  if (loading) return <LoadingBlock label="Folding issue" />
+  if (loading && !data) return <LoadingBlock label="Folding issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
   const { issue, timeline } = data
   const open = issue.state.open
-  const holder = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
-  const canToggle = identity !== null && (identity === issue.author || holder)
-  // A token history that could not be read leaves a maintainer's permission unknown: say so
-  // rather than silently withholding the control (the PR page does the same for merge).
+  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const isAuthor = identity !== null && identity === issue.author
+  const canToggle = identity !== null && (isAuthor || isMember)
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
       ? `Couldn't read this repo's ${aclName(home.repo.kind)}, so close/reopen permission is unknown.`
       : null
+  const target = { id: issue.id, number: issue.number }
+  const commentCost = previewCreate('comment', { body: comment.trim() })
+  // A member's close is an `event`; the author who is not a member uses `authorEvent`.
+  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
 
   const postComment = async (): Promise<void> => {
-    if (!identity || !signer) {
-      openLogin()
-      return
-    }
-    if (!sdk || !v1 || comment.trim() === '') return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, v1, { targetId: issue.id, body: comment.trim() })
+      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent })
       setComment('')
+      draft.renew()
       reload()
     } catch (e) {
-      setCommentError(errorMessage(e))
+      setCommentError(writeErrorMessage(e).message)
     } finally {
       setPosting(false)
     }
   }
 
-  const toggleState = async (): Promise<void> => {
-    if (!sdk || !signer || !v1) return
-    if (open) await closeTarget(sdk, signer, v1, issue.id)
-    else await reopenTarget(sdk, signer, v1, issue.id)
+  const runPending = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
+    if (pending.kind === 'state') {
+      await setTargetState(sdk, signer, home.repo, {
+        target,
+        kind: open ? 'close' : 'reopen',
+        author: issue.author,
+        isMember,
+        intent,
+      })
+    } else {
+      await addEvent(sdk, signer, home.repo, {
+        target,
+        kind: pending.remove ? 'labelRemove' : 'labelAdd',
+        value: pending.label,
+        intent,
+      })
+      setNewLabel('')
+    }
     reload()
   }
+
+  const pendingCost: Cost =
+    pending?.kind === 'label' ? previewCreate('event', { value: pending.label }) : stateCost
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -111,7 +137,10 @@ export function IssueContent({
           {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-400">#{issue.number}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : 'bg-forge-700'}`}>
+          <span
+            data-testid="issue-state"
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : 'bg-forge-700'}`}
+          >
             {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
             {open ? 'Open' : 'Closed'}
           </span>
@@ -119,7 +148,19 @@ export function IssueContent({
             <Author identityId={issue.author} link={false} /> opened this {timeAgo(issue.createdAt)}
           </span>
           {issue.state.labels.map((l) => (
-            <span key={l} className="rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-600 dark:text-forge-400">{l}</span>
+            <span key={l} className="inline-flex items-center gap-1 rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-600 dark:text-forge-400">
+              {l}
+              {isMember ? (
+                <button
+                  type="button"
+                  aria-label={`Remove label ${l}`}
+                  onClick={() => setPending({ kind: 'label', label: l, remove: true })}
+                  className="hover:text-danger"
+                >
+                  <X className="h-3 w-3" aria-hidden />
+                </button>
+              ) : null}
+            </span>
           ))}
         </div>
       </div>
@@ -138,40 +179,79 @@ export function IssueContent({
       {/* Timeline */}
       {timeline.length > 0 ? <Timeline items={timeline} /> : null}
 
+      {/* Labels (members) */}
+      {isMember ? (
+        <div className="flex flex-wrap items-end gap-2 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800">
+          <Tag className="mb-2 h-4 w-4 text-anvil-400" aria-hidden />
+          <div className="min-w-[12rem] flex-1">
+            <label htmlFor="label-name" className="sr-only">Label</label>
+            <Input id="label-name" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Add a label (e.g. bug)" maxLength={120} />
+          </div>
+          <Button
+            variant="outline"
+            disabled={newLabel.trim() === '' || guard.disabledReason !== null}
+            onClick={() => setPending({ kind: 'label', label: newLabel.trim(), remove: false })}
+          >
+            Add label
+          </Button>
+        </div>
+      ) : null}
+
       {/* Composer */}
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-        <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a comment (markdown supported)…" />
+        <label htmlFor="comment-body" className="sr-only">Comment</label>
+        <Textarea id="comment-body" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a comment (markdown supported)…" />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <CostPreview cost={previewDocumentCreate('comment')} />
+          <CostPreview cost={commentCost} />
           <div className="flex items-center gap-2">
             {canToggle ? (
-              <Button variant="outline" onClick={() => setConfirmToggle(true)} disabled={!signer || !v1}>
+              <Button
+                variant="outline"
+                onClick={() => setPending({ kind: 'state' })}
+                disabled={!signer || guard.disabledReason !== null}
+                title={guard.disabledReason ?? undefined}
+              >
                 {open ? 'Close issue' : 'Reopen issue'}
               </Button>
             ) : null}
-            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === '' || !v1}>
+            <Button
+              variant="primary"
+              onClick={postComment}
+              loading={posting}
+              disabled={comment.trim() === '' || guard.disabledReason !== null}
+              title={guard.disabledReason ?? undefined}
+            >
               {identity ? 'Comment' : 'Sign in to comment'}
             </Button>
           </div>
         </div>
-        {!v1 ? <V2WritesNote /> : null}
-        {toggleHint !== null ? (
-          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p>
-        ) : null}
+        {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
         {commentError ? (
-          <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
+          <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
         ) : null}
       </div>
 
       <ConfirmDialog
-        open={confirmToggle}
-        onClose={() => setConfirmToggle(false)}
-        title={open ? `Close issue #${issue.number}` : `Reopen issue #${issue.number}`}
-        description="Appends a state event to the append-only log. It counts because you are the issue's author or hold WRITE or MAINTAIN on this repo."
-        cost={previewDocumentCreate('event')}
-        confirmLabel={open ? 'Close issue' : 'Reopen issue'}
-        onConfirm={toggleState}
+        open={pending !== null}
+        onClose={() => setPending(null)}
+        title={
+          pending?.kind === 'label'
+            ? `${pending.remove ? 'Remove' : 'Add'} label "${pending.label}"`
+            : open
+              ? `Close issue #${issue.number}`
+              : `Reopen issue #${issue.number}`
+        }
+        description={
+          pending?.kind === 'label'
+            ? 'Appends a label event. Only maintainers and writers can label.'
+            : isMember
+              ? 'Appends a state event, as a maintainer or writer of this repo.'
+              : 'Appends an author event: you opened this issue, so you can close and reopen it.'
+        }
+        cost={pendingCost}
+        confirmLabel={pending?.kind === 'label' ? 'Sign & label' : open ? 'Close issue' : 'Reopen issue'}
+        onConfirm={runPending}
       />
     </div>
   )

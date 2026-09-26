@@ -18,13 +18,15 @@ import { useState } from 'react'
 import { GitMerge, GitPullRequest, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
 import { loadPullThread, pullActions, timeAgo } from '@/lib/view'
-import { addEvent, closeTarget, createComment, readViewerPermissions, reopenTarget, repoContractIds, repoKey } from '@/lib/repo'
+import { addEvent, createComment, createReview, readViewerPermissions, repoContractIds, repoKey, setTargetState, type VerdictInput } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { previewDocumentCreate } from '@/lib/sdk'
+import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useIntent } from '@/hooks/use-intent'
+import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
+import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
 import { PullDiff } from '@/components/repo/pull-diff'
@@ -36,18 +38,20 @@ import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
-import { V2WritesNote } from '@/components/repo/v2-writes-note'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { errorMessage } from '@/lib/utils'
 
-type Pending = 'merge' | 'close' | 'reopen' | null
+type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
+
+const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
+  approve: 'Approve',
+  requestChanges: 'Request changes',
+  comment: 'Comment only',
+}
 
 export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  // The web app writes to v1 repos only; forge-v2 writes are the next step (`V2WritesNote`).
-  const v1 = home.repo.kind === 'v1' ? home.repo : null
   const { identity, signer } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
+  const guard = useWriteGuard()
 
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     () => loadPullThread(sdk!, home.repo, number),
@@ -65,12 +69,13 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   )
 
   const [comment, setComment] = useState('')
+  const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading) return <LoadingBlock label="Folding PR" />
+  if (loading && !data) return <LoadingBlock label="Folding PR" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
 
@@ -92,32 +97,49 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
+  const commentCost = previewCreate('comment', { body: comment.trim() })
+  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const target = { id: pull.id, number: pull.number }
+
   const postComment = async (): Promise<void> => {
-    if (!identity || !signer) {
-      openLogin()
-      return
-    }
-    if (!sdk || !v1 || comment.trim() === '') return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, v1, { targetId: pull.id, body: comment.trim() })
+      await createComment(sdk, signer, home.repo, { targetId: pull.id, body: comment.trim(), intent: draft.intent })
       setComment('')
+      draft.renew()
       reload()
     } catch (e) {
-      setCommentError(errorMessage(e))
+      setCommentError(writeErrorMessage(e).message)
     } finally {
       setPosting(false)
     }
   }
 
-  const runPending = async (): Promise<void> => {
-    if (!sdk || !signer || !v1) return
-    if (pending === 'merge') await addEvent(sdk, signer, v1, { targetId: pull.id, kind: 'merge', oidHex: pull.headOid })
-    else if (pending === 'close') await closeTarget(sdk, signer, v1, pull.id)
-    else if (pending === 'reopen') await reopenTarget(sdk, signer, v1, pull.id)
+  const runPending = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
+    if (pending === 'merge') await addEvent(sdk, signer, home.repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
+    else if (pending === 'close' || pending === 'reopen') {
+      await setTargetState(sdk, signer, home.repo, { target, kind: pending, author: pull.author, isMember, intent })
+    } else {
+      await createReview(sdk, signer, home.repo, {
+        patchId: pull.id,
+        verdict: pending.review,
+        commitOid: pull.headOid,
+        body: pending.body,
+        intent,
+      })
+      setComment('')
+      draft.renew()
+    }
     reload()
   }
+  const pendingCost =
+    pending !== null && typeof pending === 'object'
+      ? previewCreate('review', { body: pending.body })
+      : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -181,24 +203,52 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         <h3 className="mb-2 text-dense font-medium">Review</h3>
         <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <CostPreview cost={previewDocumentCreate('comment')} />
-          <div className="flex items-center gap-2">
+          <CostPreview cost={commentCost} />
+          <div className="flex flex-wrap items-center gap-2">
             {actions.canCloseReopen ? (
-              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || !v1}>
+              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null}>
                 {open ? 'Close' : 'Reopen'}
               </Button>
             ) : null}
             {actions.canMarkMerged ? (
-              <Button variant="primary" onClick={() => setPending('merge')} disabled={!signer || !v1}>
+              <Button variant="primary" onClick={() => setPending('merge')} disabled={!signer || guard.disabledReason !== null}>
                 <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged
               </Button>
             ) : null}
-            <Button variant="primary" onClick={postComment} loading={posting} disabled={comment.trim() === '' || !v1}>
+            <Button
+              variant="primary"
+              onClick={postComment}
+              loading={posting}
+              disabled={comment.trim() === '' || guard.disabledReason !== null}
+              title={guard.disabledReason ?? undefined}
+            >
               {identity ? 'Comment' : 'Sign in'}
             </Button>
           </div>
         </div>
-        {!v1 ? <V2WritesNote /> : null}
+        {open && identity !== null && pull.headOid ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+            <span className="text-dense text-anvil-500 dark:text-anvil-400">
+              Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
+            </span>
+            {(Object.keys(VERDICT_TEXT) as VerdictInput[]).map((v) => (
+              <Button
+                key={v}
+                size="sm"
+                variant={v === 'approve' ? 'primary' : 'outline'}
+                disabled={guard.disabledReason !== null}
+                onClick={() => {
+                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits)) setPending({ review: v, body: comment.trim() })
+                }}
+              >
+                {VERDICT_TEXT[v]}
+              </Button>
+            ))}
+            {!isMember && holdings.settled ? (
+              <span className="text-[12px] text-anvil-400">Only approvals from maintainers and writers count.</span>
+            ) : null}
+          </div>
+        ) : null}
         {actions.canMarkMerged ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             {actions.markCountsNow
@@ -216,7 +266,15 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
-        title={pending === 'merge' ? `Mark PR #${pull.number} as merged` : pending === 'close' ? `Close PR #${pull.number}` : `Reopen PR #${pull.number}`}
+        title={
+          pending !== null && typeof pending === 'object'
+            ? `${VERDICT_TEXT[pending.review]} PR #${pull.number}`
+            : pending === 'merge'
+              ? `Mark PR #${pull.number} as merged`
+              : pending === 'close'
+                ? `Close PR #${pull.number}`
+                : `Reopen PR #${pull.number}`
+        }
         description={
           pending === 'merge'
             ? `Appends a merge event naming ${pull.headOid.slice(0, 9)}. This does not merge any code. ${
@@ -224,10 +282,20 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                   ? `That commit is already on ${base}, so the PR will show as merged.`
                   : `That commit is not on ${base} yet, so the PR stays open until a push puts it there. If ${base} has moved on, the commit that lands will be a merge commit, not this head; record that merge with the CLI instead (dg pr merge --merge-oid).`
               }`
-            : 'Appends a state event to the append-only log.'
+            : pending !== null && typeof pending === 'object'
+              ? `Records a ${VERDICT_TEXT[pending.review].toLowerCase()} review on ${pull.headOid.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale.`
+              : 'Appends a state event to the append-only log.'
         }
-        cost={previewDocumentCreate('event')}
-        confirmLabel={pending === 'merge' ? 'Sign & mark merged' : pending === 'close' ? 'Close PR' : 'Reopen PR'}
+        cost={pendingCost}
+        confirmLabel={
+          pending !== null && typeof pending === 'object'
+            ? 'Sign & submit review'
+            : pending === 'merge'
+              ? 'Sign & mark merged'
+              : pending === 'close'
+                ? 'Close PR'
+                : 'Reopen PR'
+        }
         onConfirm={runPending}
       />
     </div>

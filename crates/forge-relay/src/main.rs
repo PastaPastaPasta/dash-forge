@@ -1,22 +1,25 @@
-//! `forge-relay` — the availability-only webhook daemon (PRD 05).
+//! `forge-relay` — the availability-only webhook daemon (PRD 05), for forge-v2 repositories.
 //!
-//! Anyone can run a relay: it polls the watched repo contracts for new documents
-//! (Platform has no document push subscriptions — spike S0.8) and translates state
-//! transitions into GitHub-compatible webhooks (`push` / `pull_request` / `issue_comment`
-//! / `check_run`) so existing CI tooling (Blacksmith/Depot/Jenkins/GitHub Actions runners)
-//! integrates with near-zero work. Payload consumers re-fetch and verify from Platform, so
-//! relay instances are interchangeable and integrity-irrelevant; the subscription lives on
-//! Platform as a `webhook` doc addressed to a relay identity, so pointing a repo at a
-//! different relay is a single doc update.
+//! A maintainer writes a forge-collab `webhook` document (`dg webhook add`) naming a URL, the
+//! events it wants, and a relay identity, with the HMAC secret encrypted to that relay's
+//! encryption key. A relay started with that identity finds every hook addressed to it
+//! (`relay` index), decrypts the secrets in memory, polls those repos' documents (Platform has
+//! no document push subscriptions), and POSTs GitHub-shaped `push` / `issues` /
+//! `pull_request` / `issue_comment` / `pull_request_review` / `release` / `check_run`
+//! webhooks, signed with `X-Hub-Signature-256`. Relays are interchangeable: re-pointing a hook
+//! at another relay is one document. Consumers re-fetch and verify from Platform, so a relay
+//! is trusted for availability only.
+//!
+//! forge-v1 repositories (one contract each) are read-only and not served.
 //!
 //! Module map:
 //!  * [`config`] — TOML + CLI configuration.
+//!  * [`subscriptions`] — discovery of the `webhook` documents addressed to this relay.
+//!  * [`ingest`] — per-repo streams, cursors, and document → event translation.
 //!  * [`payload`] — GitHub-shape payload construction (pure, unit-tested).
-//!  * [`ingest`] — cursor-based polling + document → event translation.
-//!  * [`subscriptions`] — `webhook` doc resolution (Platform + static) and secrets.
-//!  * [`deliver`] — HMAC-SHA256 signing, retry/backoff, dead-letter.
+//!  * [`deliver`] — HMAC-SHA256 signing, retry/backoff, per-host bounds, dead-letter.
 //!  * [`ssrf`] — delivery-target SSRF guard.
-//!  * [`daemon`] — the poll → translate → deliver loop.
+//!  * [`daemon`] — the discover → poll → translate → deliver loop.
 //!  * [`health`] — optional liveness listener.
 
 mod config;
@@ -49,31 +52,35 @@ struct Cli {
 
 #[derive(Debug, clap::Subcommand)]
 enum Command {
-    /// Run the relay daemon (poll watched repos → deliver GitHub-shape webhooks).
+    /// Run the relay daemon (discover hooks → poll repos → deliver GitHub-shape webhooks).
     Run(RunArgs),
 }
 
 /// `forge-relay run` arguments (all override the config file).
 #[derive(Debug, Parser)]
 struct RunArgs {
-    /// Path to the relay configuration file (TOML). Optional — the relay can run purely
-    /// from CLI flags.
+    /// Path to the relay configuration file (TOML). Optional.
     #[arg(long = "config", short = 'c')]
     config: Option<PathBuf>,
 
-    /// Path to the relay identity (bridge-format JSON). Its identity id is used to filter
-    /// on-Platform `webhook` docs addressed to this relay; the relay never needs its keys
-    /// for delivery (it only READS on-chain).
+    /// Path to the relay key file: a minimal `{identityId, identityKeys: [ENCRYPTION key]}` file
+    /// or a full bridge identity export. Its id selects the webhooks addressed to this relay and
+    /// its ENCRYPTION key decrypts their secrets. Mount it read-only; the relay never signs.
     #[arg(long)]
     identity: Option<PathBuf>,
 
-    /// Comma-separated repo contract ids to watch.
+    /// Serve only these repos (comma-separated `owner/name` or repo ids). Default: every
+    /// repo with a hook addressed to this relay.
     #[arg(long, value_delimiter = ',')]
     repos: Vec<String>,
 
     /// Poll interval in seconds (default 15).
     #[arg(long = "poll-interval")]
     poll_interval: Option<u64>,
+
+    /// Re-read the webhook documents every N poll cycles (default 4).
+    #[arg(long = "refresh-cycles")]
+    refresh_cycles: Option<u64>,
 
     /// Dash network.
     #[arg(long, value_enum)]
@@ -88,12 +95,13 @@ struct RunArgs {
     #[arg(long = "dapi-addresses")]
     dapi_addresses: Option<String>,
 
-    /// Allow delivery to private/loopback/link-local targets (LOCAL TESTING ONLY — the M2
-    /// test delivers to 127.0.0.1).
+    /// Allow delivery to private/loopback/link-local targets (LOCAL TESTING ONLY: a public
+    /// relay with this flag lets any maintainer of any repo probe its network).
     #[arg(long)]
     allow_private: bool,
 
-    /// Deliver the last N pre-existing docs per type at startup (default 0 = start from now).
+    /// Deliver the last N pre-existing documents per stream at startup (default 0 = start
+    /// from now).
     #[arg(long)]
     lookback: Option<u32>,
 
@@ -146,31 +154,21 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             args.dapi_addresses,
         ),
         identity: args.identity,
-        repos: if args.repos.is_empty() {
-            None
-        } else {
-            Some(args.repos)
-        },
+        repos: (!args.repos.is_empty()).then_some(args.repos),
         poll_interval_secs: args.poll_interval,
-        allow_private: if args.allow_private { Some(true) } else { None },
+        refresh_cycles: args.refresh_cycles,
+        allow_private: args.allow_private.then_some(true),
         lookback: args.lookback,
         listen: args.listen,
         web_base_url: args.web_base_url,
     };
 
     let cfg = RelayConfig::load(args.config.as_deref(), &overrides)?;
-    if let Err(e) = cfg.target.require_registry() {
-        tracing::warn!(error = %e, "repos will be named by contract id in payloads");
+    if cfg.allow_private {
+        tracing::warn!(
+            "--allow-private: delivering to private and loopback addresses (local testing only)"
+        );
     }
-    tracing::info!(
-        network = %cfg.target.network,
-        repos = cfg.repos.len(),
-        poll_interval_s = cfg.poll_interval.as_secs(),
-        allow_private = cfg.allow_private,
-        use_platform_webhooks = cfg.use_platform_webhooks,
-        "forge-relay configured"
-    );
-
     daemon::run(cfg).await?;
     Ok(())
 }

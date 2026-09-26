@@ -142,6 +142,19 @@ pub enum Error {
         detail: String,
     },
 
+    /// The signer may not perform `action`, decided before anything was signed: the client
+    /// read the repository's membership (or the target's author) and found no role that
+    /// consensus would admit. Consensus remains the authority; this only saves the fee.
+    #[error("{action}: {reason}")]
+    NotPermitted {
+        /// What was attempted ("close issue #3").
+        action: String,
+        /// Why the signer cannot ("you are neither a member of alice/proj nor the author").
+        reason: String,
+        /// The role or relationship that would allow it ("writer", "maintainer", "author").
+        needs: String,
+    },
+
     /// An error surfaced by the Dash Platform SDK (connect, fetch, sign, broadcast).
     ///
     /// The SDK's rich error type is flattened to a message here so the SDK stays

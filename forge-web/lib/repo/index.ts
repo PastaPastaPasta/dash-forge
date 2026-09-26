@@ -7,8 +7,9 @@
  * and derive the collaborators (v2 membership documents, v1 token balances). Every query is
  * built by a {@link RepoSource}, the one place the two data models differ.
  *
- * WRITE paths (issues, comments, events, stars, follows, releases, collaborator token admin,
- * repo creation, minimal ref push) sign + broadcast via the `./writes` WriteEngine.
+ * WRITE paths (forge-v2 repo creation and membership, issues, comments, events, author events,
+ * reviews, releases, stars, follows; v1 issue/comment/event/star/follow and token admin) sign
+ * + broadcast via the `./writes` WriteEngine.
  */
 
 export {
@@ -134,30 +135,28 @@ export {
   type Stargazer,
 } from './collab'
 export {
-  WriteNotImplementedError,
+  addAuthorEvent,
   addEvent,
-  closeTarget,
+  adminCollaborator,
+  checkRepoInput,
   createComment,
   createIssue,
-  createLabel,
   createRelease,
-  createRepo,
-  followIdentity,
-  grantCollaborator,
-  hasStarred,
-  isFollowing,
-  labelTarget,
+  createRepoV2,
+  createReview,
+  discardRepoCreation,
+  followRelation,
+  grantMember,
+  nextNumberV2,
   normalizeRepoName,
-  pushRefUpdate,
-  reopenTarget,
-  revokeCollaborator,
-  starRepo,
-  suspendCollaborator,
-  unfollowIdentity,
-  unstarRepo,
-  type CreateIssueResult,
-  type CreateRepoOptions,
-  type CreateRepoResult,
-  type EventKindName,
-  type ReleaseAsset,
+  pendingRepoCreations,
+  revokeMember,
+  setTargetState,
+  starRelation,
+  stateEventRoute,
+  type CreateRepoInput,
+  type CreateRepoStep,
+  type Relation,
+  type RepoCreationJournal,
+  type VerdictInput,
 } from './writes'

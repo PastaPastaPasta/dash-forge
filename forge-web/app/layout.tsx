@@ -10,12 +10,16 @@ export const metadata: Metadata = {
 }
 
 // CSP is delivered via <meta> so it survives static export (yappr pattern).
-// - script 'unsafe-eval' + 'wasm-unsafe-eval': required by the evo-sdk WASM runtime.
+// - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is not granted
+//   (verified: reads, writes and sign-in run without it). 'unsafe-inline' stays for Next's
+//   inline bootstrap scripts.
+// - frame-ancestors is ignored in a <meta> CSP; the host must send it as a header (GitHub
+//   Pages cannot; see docs/guides/identity-and-keys.md).
 // - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends.
 // - worker-src blob:: materialization / search / pack workers run off-main-thread.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'unsafe-inline'",
+  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https: blob:",
   "font-src 'self'",

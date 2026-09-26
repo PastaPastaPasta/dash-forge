@@ -3,26 +3,40 @@
 /**
  * AuthContext — the React surface over {@link AuthController}.
  *
- * Exposes `{ identity, balance, login, logout, signer }` where `signer` is the key-free
- * {@link WriteAuth} the write paths consume (it reads the stored WIF at signing time; the key
- * never enters React state). Login imports a bridge-format identity file or a pasted WIF +
- * identity id. The SDK is obtained lazily from the process-wide `evoSdkService`, initialized on
- * the configured network with the registry contract preloaded.
+ * Exposes `{ identity, balance, funds, signer, … }` where `signer` is the key-free
+ * {@link WriteAuth} the write paths consume (it reads the key at signing time; the key never
+ * enters React state). Every write the signer makes reports back here: it lands in the local
+ * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { AuthController, type AuthSession } from '../lib/auth'
+import { AuthController, type AuthSession, type LimitedKey, type LimitedKeyRequest, type Protection, type VaultInfo } from '../lib/auth'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
-import { evoSdkService, type WriteAuth } from '../lib/sdk'
+import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { recordSpend } from '../lib/spend'
+import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
+import { toast } from '../hooks/use-toasts'
 
-async function ensureSdk(network: Network): Promise<EvoSDK> {
-  const registry = NETWORKS[network].registryContractId
-  const dpns = NETWORKS[network].dpnsContractId
-  const contractIds = [registry, dpns].filter((id): id is string => id !== null)
-  await evoSdkService.initialize({ network, contractIds, timeoutMs: 15000 })
-  return evoSdkService.getSdk()
+/** A write kind (`create:issue`) → the toast title. */
+const SPEND_TITLES: Readonly<Record<string, string>> = {
+  'create:repo': 'Repository created',
+  'create:maintainer': 'Maintainer added',
+  'create:writer': 'Writer added',
+  'create:config': 'Repository config written',
+  'create:issue': 'Issue created',
+  'create:comment': 'Comment posted',
+  'create:event': 'State event recorded',
+  'create:authorEvent': 'State event recorded',
+  'create:review': 'Review submitted',
+  'create:release': 'Release published',
+  'create:star': 'Starred',
+  'create:follow': 'Following',
+  'delete:star': 'Unstarred',
+  'delete:follow': 'Unfollowed',
+  'delete:maintainer': 'Maintainer removed',
+  'delete:writer': 'Writer removed',
 }
 
 interface AuthContextValue {
@@ -30,14 +44,40 @@ interface AuthContextValue {
   readonly identity: string | null
   /** Credit balance as a decimal string (bigint-safe), or null when logged out. */
   readonly balance: string | null
+  /** Balance and key-budget state (`ux-dx-spec.md` §4), or null when logged out. */
+  readonly funds: FundsState | null
+  /** The signing key's limits (a PV14 limited key), when it has any. */
+  readonly keyLimits: KeyLimits | null
   readonly isLoading: boolean
   readonly error: string | null
   /** The key-free write signer for the WriteEngine, or null when logged out. */
   readonly signer: WriteAuth | null
-  login: (identityId: string, privateKey: string) => Promise<void>
-  loginWithIdentityFile: (text: string) => Promise<void>
+  /** How this session's key is held: a vault-stored limited key, or a tab-only raw key. */
+  readonly storage: AuthSession['storage'] | null
+  /** Whether this network supports limited keys (forge-v2, protocol 14). */
+  readonly limitedKeys: boolean
+  /** Keys stored (encrypted) on this device for this network. */
+  readonly vaults: readonly VaultInfo[]
+  /** The limited-key ceremony: import an identity file or a mnemonic once. */
+  importIdentity: (
+    input: { fileText: string } | { mnemonic: string; identityId: string },
+    protection: Protection,
+    request?: LimitedKeyRequest,
+  ) => Promise<void>
+  adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
+  unlock: (identityId: string, method: { passphrase: string } | 'passkey') => Promise<void>
+  /** Advanced: a pasted key, for this tab only. */
+  loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
   refreshBalance: () => Promise<void>
+  /** Lock: end the session, keep the stored key (unlock to continue). */
   logout: () => void
+  /** Delete the stored key of `identityId` from this device (does not revoke it on chain). */
+  forget: (identityId: string) => Promise<void>
+  /** Disable this device's key on chain with the master key (file or phrase), then forget it. */
+  revokeStored: (identityId: string, input: { fileText: string } | { mnemonic: string }) => Promise<void>
+  reloadVaults: () => void
+  /** The headless controller (identity creation stores its key before registering it). */
+  readonly controller: AuthController
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -54,52 +94,82 @@ export function AuthProvider({
 
   useEffect(() => controller.subscribe(setState), [controller])
 
-  const login = useCallback(
-    async (identityId: string, privateKey: string) => {
-      await controller.login(identityId, privateKey)
+  const [vaults, setVaults] = useState<readonly VaultInfo[]>([])
+  const reloadVaults = useCallback(() => {
+    controller.storedVaults().then(setVaults, () => setVaults([]))
+  }, [controller])
+  useEffect(reloadVaults, [reloadVaults])
+
+  // Every sign-in path ends with a reload of the stored-key list, success or not: a key stored
+  // before a later step failed must show up in Unlock.
+  const withReload = useCallback(
+    <A extends unknown[]>(fn: (...args: A) => Promise<unknown>) =>
+      async (...args: A): Promise<void> => {
+        try {
+          await fn(...args)
+        } finally {
+          reloadVaults()
+        }
+      },
+    [reloadVaults],
+  )
+  const actions = useMemo(
+    () => ({
+      importIdentity: withReload(controller.importIdentity.bind(controller)),
+      adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
+      unlock: withReload(controller.unlock.bind(controller)),
+      loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
+      refreshBalance: () => controller.refreshBalance(),
+      logout: () => controller.logout(),
+      forget: withReload(controller.forget.bind(controller)),
+      revokeStored: withReload(controller.revokeStored.bind(controller)),
+    }),
+    [controller, withReload],
+  )
+
+  const onSpend = useCallback(
+    (event: SpendEvent) => {
+      const refused = event.kind.startsWith('refused:')
+      toast({
+        title: refused ? 'Platform refused that write' : SPEND_TITLES[event.kind] ?? 'Write confirmed',
+        credits: event.actualCredits ?? null,
+        ...(refused ? { tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
+      })
+      void recordSpend(event).catch(() => undefined)
+      void controller.refreshBalance().catch(() => undefined)
     },
     [controller],
   )
-
-  const loginWithIdentityFile = useCallback(
-    async (text: string) => {
-      await controller.loginWithIdentityFile(text)
-    },
-    [controller],
-  )
-
-  const refreshBalance = useCallback(async () => {
-    await controller.refreshBalance()
-  }, [controller])
-
-  const logout = useCallback(() => {
-    controller.logout()
-  }, [controller])
 
   const session: AuthSession | null = state.session
+  const sessionIdentity = session?.identityId ?? null
+  const signer = useMemo<WriteAuth | null>(() => {
+    const auth = sessionIdentity !== null ? controller.writeAuth : null
+    return auth ? { ...auth, onSpend } : null
+  }, [controller, sessionIdentity, onSpend])
+  const keyLimits = session?.keyLimits ?? null
+  const funds = useMemo(
+    () => (session ? fundsState(BigInt(session.balance), keyLimits) : null),
+    [session, keyLimits],
+  )
 
   const value = useMemo<AuthContextValue>(
     () => ({
       identity: session?.identityId ?? null,
       balance: session?.balance ?? null,
+      funds,
+      keyLimits,
       isLoading: state.isLoading,
       error: state.error,
-      signer: controller.writeAuth,
-      login,
-      loginWithIdentityFile,
-      refreshBalance,
-      logout,
-    }),
-    [
+      signer,
+      storage: session?.storage ?? null,
+      limitedKeys: controller.supportsLimitedKeys(),
+      vaults,
+      reloadVaults,
       controller,
-      login,
-      loginWithIdentityFile,
-      logout,
-      refreshBalance,
-      session,
-      state.error,
-      state.isLoading,
-    ],
+      ...actions,
+    }),
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, vaults],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

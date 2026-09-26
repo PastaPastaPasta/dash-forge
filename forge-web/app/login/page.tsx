@@ -38,7 +38,7 @@ export default function LoginPage(): JSX.Element {
           icon={KeyRound}
           title="Sign in to Dash Forge"
           body="Import an identity file or paste a key + id. Read-only browsing works without signing in."
-          action={<Button variant="primary" onClick={openLogin}>Open sign-in</Button>}
+          action={<Button variant="primary" onClick={() => openLogin()}>Open sign-in</Button>}
         />
       )}
     </AppShell>

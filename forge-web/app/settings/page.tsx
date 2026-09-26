@@ -1,9 +1,9 @@
 'use client'
 
-/** `/settings` — account settings: identity, network, running balance/spend, sign out. */
+/** `/settings` — account settings: identity, network, balance, the local spend ledger, sign out. */
 
 import Link from 'next/link'
-import { LogOut, Wallet } from 'lucide-react'
+import { Wallet } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
@@ -12,12 +12,15 @@ import { Oid } from '@/components/ui/oid'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { NetworkBadge } from '@/components/ui/network-badge'
+import { SpendPanel } from '@/components/spend-panel'
+import { KeysPanel } from '@/components/keys-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
 export default function SettingsPage(): JSX.Element {
-  const { identity, balance, logout } = useAuth()
+  const { identity, balance } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
+  const openTopUp = useUiStore((s) => s.openTopUp)
 
   if (!identity) {
     return (
@@ -26,7 +29,7 @@ export default function SettingsPage(): JSX.Element {
           icon={Wallet}
           title="Not signed in"
           body="Sign in to see your balance and account settings."
-          action={<Button variant="primary" onClick={openLogin}>Sign in</Button>}
+          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
         />
       </AppShell>
     )
@@ -47,7 +50,7 @@ export default function SettingsPage(): JSX.Element {
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>
-            <Oid value={identity} chars={12} label="identity id" />
+            <span data-testid="settings-identity" data-identity={identity}><Oid value={identity} chars={12} label="identity id" /></span>
           </div>
         </section>
 
@@ -57,21 +60,19 @@ export default function SettingsPage(): JSX.Element {
           <div className="mt-1 font-mono text-dense text-anvil-400">
             {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
           </div>
-          <a href="https://bridge.thepasta.org" target="_blank" rel="noreferrer noopener" className="mt-3 inline-block text-dense text-forge-600 underline dark:text-forge-400">
-            Top up at the bridge →
-          </a>
+          <button type="button" onClick={() => openTopUp()} className="mt-3 inline-block text-dense text-forge-600 underline dark:text-forge-400">
+            Top up →
+          </button>
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-dense font-medium">Sign out</div>
-              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Wipes your signing key from the browser keystore on this device.</p>
-            </div>
-            <Button variant="danger" onClick={logout}>
-              <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
-            </Button>
-          </div>
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Spend</h2>
+          <SpendPanel />
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
+          <KeysPanel />
         </section>
 
         <p className="text-center text-[12px] text-anvil-400">

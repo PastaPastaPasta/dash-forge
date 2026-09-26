@@ -175,6 +175,85 @@ impl LoadedIdentity {
     pub fn balance(&self) -> u64 {
         self.0.balance()
     }
+
+    /// The identity's public keys as SDK-free [`IdentityKeyInfo`]s, ordered by key id.
+    pub fn public_keys(&self) -> Vec<IdentityKeyInfo> {
+        use dash_sdk::dpp::identity::contract_bounds::ContractBounds;
+        self.0
+            .public_keys()
+            .values()
+            .map(|k| IdentityKeyInfo {
+                id: k.id(),
+                // The names a bridge identity file uses, spelled out (not rs-dpp's Debug).
+                purpose: match k.purpose() {
+                    Purpose::AUTHENTICATION => "AUTHENTICATION",
+                    Purpose::ENCRYPTION => "ENCRYPTION",
+                    Purpose::DECRYPTION => "DECRYPTION",
+                    Purpose::TRANSFER => "TRANSFER",
+                    Purpose::SYSTEM => "SYSTEM",
+                    Purpose::VOTING => "VOTING",
+                    Purpose::OWNER => "OWNER",
+                }
+                .to_string(),
+                security_level: match k.security_level() {
+                    SecurityLevel::MASTER => "MASTER",
+                    SecurityLevel::CRITICAL => "CRITICAL",
+                    SecurityLevel::HIGH => "HIGH",
+                    SecurityLevel::MEDIUM => "MEDIUM",
+                }
+                .to_string(),
+                key_type: match k.key_type() {
+                    KeyType::ECDSA_SECP256K1 => "ECDSA_SECP256K1",
+                    KeyType::BLS12_381 => "BLS12_381",
+                    KeyType::ECDSA_HASH160 => "ECDSA_HASH160",
+                    KeyType::BIP13_SCRIPT_HASH => "BIP13_SCRIPT_HASH",
+                    KeyType::EDDSA_25519_HASH160 => "EDDSA_25519_HASH160",
+                }
+                .to_string(),
+                public_key: k.data().to_vec(),
+                disabled: k.is_disabled(),
+                bound_to: k.contract_bounds().map(|b| match b {
+                    ContractBounds::SingleContract { id }
+                    | ContractBounds::SingleContractDocumentType { id, .. } => {
+                        id.to_string(Encoding::Base58)
+                    }
+                    ContractBounds::ContractGroup { .. } => "contract-group".to_string(),
+                }),
+            })
+            .collect()
+    }
+}
+
+/// One public key of an identity, SDK-free ([`LoadedIdentity::public_keys`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityKeyInfo {
+    /// The key id.
+    pub id: u32,
+    /// `AUTHENTICATION`, `ENCRYPTION`, `DECRYPTION`, `TRANSFER`, ...
+    pub purpose: String,
+    /// `MASTER`, `CRITICAL`, `HIGH` or `MEDIUM`.
+    pub security_level: String,
+    /// `ECDSA_SECP256K1`, `BLS12_381`, ...
+    pub key_type: String,
+    /// The key data (a 33-byte compressed point for `ECDSA_SECP256K1`).
+    pub public_key: Vec<u8>,
+    /// Whether the key is disabled.
+    pub disabled: bool,
+    /// The contract (base58) the key is bound to, `contract-group` for a group bound key,
+    /// `None` for an unbound key.
+    pub bound_to: Option<String>,
+}
+
+impl IdentityKeyInfo {
+    /// An enabled `ECDSA_SECP256K1` key of purpose `ENCRYPTION`, usable for the
+    /// `ecdh-secp256k1-aes256-cbc` scheme (`crate::envelope`), unbound or bound to
+    /// `contract_id`.
+    pub fn is_usable_encryption_key(&self, contract_id: &str) -> bool {
+        !self.disabled
+            && self.purpose == "ENCRYPTION"
+            && self.key_type == "ECDSA_SECP256K1"
+            && self.bound_to.as_deref().is_none_or(|b| b == contract_id)
+    }
 }
 
 impl std::fmt::Debug for LoadedIdentity {
@@ -798,6 +877,15 @@ impl QueryFilter {
             value,
         }
     }
+
+    /// A `field <= value` filter.
+    pub fn lte(field: impl Into<String>, value: QueryValue) -> Self {
+        Self {
+            field: field.into(),
+            op: QueryOp::Lte,
+            value,
+        }
+    }
 }
 
 /// A traversal-order clause. `ascending: false` is the query-time reverse traversal the
@@ -1126,15 +1214,40 @@ impl<'a> WriteEngine<'a> {
         document_type: &str,
         document_id: &str,
     ) -> Result<PreparedWrite> {
+        self.prepare_delete_with_values(contract, document_type, document_id, BTreeMap::new(), None)
+            .await
+    }
+
+    /// [`Self::prepare_delete`] carrying the document's property `values` (and its
+    /// `$createdAt`, when the type requires one).
+    ///
+    /// A protocol-14 `indexOnly` type (forge-v2 `star`, `follow`) has no stored row to delete
+    /// by id: its delete names the document's values, from which Drive recomputes every index
+    /// entry and checks each entry's row commitment. rs-dpp's deletion factory builds that
+    /// `indexOnlyDelete` transition itself when the type is `indexOnly`, provided the document
+    /// handed to it carries the values; for a stored type the values are ignored and an
+    /// ordinary by-id delete is built. The delete is scoped to the signer, so another owner's
+    /// values delete nothing (consensus answers `DocumentNotFound`, [`Error::NotFound`]).
+    pub async fn prepare_delete_with_values(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        values: BTreeMap<String, FieldValue>,
+        created_at: Option<u64>,
+    ) -> Result<PreparedWrite> {
         let contract = &contract.0;
         let doc_id = parse_id(document_id, "document id")?;
 
         let document = Document::V0(DocumentV0 {
             id: doc_id,
             owner_id: self.owner_id,
-            properties: BTreeMap::new(),
+            properties: values
+                .into_iter()
+                .map(|(k, v)| (k, v.into_value()))
+                .collect(),
             revision: Some(INITIAL_REVISION),
-            created_at: None,
+            created_at,
             updated_at: None,
             transferred_at: None,
             created_at_block_height: None,
@@ -1197,9 +1310,8 @@ impl<'a> WriteEngine<'a> {
     /// **indexOnly types (protocol 14, forge-v2 `star` / `follow`):** their proofs only
     /// attest the resulting state, so a create that finds an identical entry already present
     /// reports `Applied`, and the `document_id` of such a create names no stored row. Deleting
-    /// one needs the protocol-14 indexOnly delete, which carries the document's values;
-    /// [`Self::prepare_delete`] does not build it yet, so unstar / unfollow on a forge-v2
-    /// contract is not supported by this engine.
+    /// one needs the protocol-14 indexOnly delete, which carries the document's values: build
+    /// it with [`Self::prepare_delete_with_values`].
     pub async fn execute(&self, prepared: &PreparedWrite) -> Result<BroadcastOutcome> {
         // Deserialize the SAME signed bytes we captured at prepare time. Every broadcast
         // in the loop below re-sends these exact bytes (identical nonce, entropy and
@@ -1395,6 +1507,24 @@ impl<'a> WriteEngine<'a> {
             }
         }
         Err(Error::Nonce)
+    }
+
+    /// Prepare + execute a values-carrying delete ([`Self::prepare_delete_with_values`]): the
+    /// only delete an `indexOnly` type accepts. On [`BroadcastOutcome::NonceConsumed`] the
+    /// caller decides by re-reading: an `indexOnly` document has no id [`Self::landed`] could
+    /// fetch.
+    pub async fn delete_with_values(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        values: BTreeMap<String, FieldValue>,
+        created_at: Option<u64>,
+    ) -> Result<BroadcastOutcome> {
+        let prepared = self
+            .prepare_delete_with_values(contract, document_type, document_id, values, created_at)
+            .await?;
+        self.execute(&prepared).await
     }
 }
 
@@ -1913,6 +2043,9 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             // by an earlier (identical) broadcast → the intended write has landed.
             StateError::DocumentAlreadyPresentError(_) => return WriteFailure::AlreadyLanded,
             StateError::InvalidIdentityNonceError(_) => return WriteFailure::NonceConsumed,
+            // A delete of a document that is not there (an unstar of a repo not starred, or
+            // one another process already removed).
+            StateError::DocumentNotFoundError(_) => return WriteFailure::Fatal(Error::NotFound),
             // A resumed push re-uploading a content-addressed chunk / manifest collides on
             // its UNIQUE index — the content is already stored, so this is idempotent
             // success (never charged the storage twice), scoped to those doc types only.

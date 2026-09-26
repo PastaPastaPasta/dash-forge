@@ -17,19 +17,22 @@ import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator, V1RepoRef, V2RepoRef } from '@/lib/repo'
 import {
-  grantCollaborator,
+  adminCollaborator,
+  grantMember,
+  invalidateMembers,
   readCollaborators,
   readMembershipsCached,
-  revokeCollaborator,
-  suspendCollaborator,
+  revokeMember,
 } from '@/lib/repo'
-import type { Membership } from '@/lib/rules/v2'
-import { V2WritesNote } from '@/components/repo/v2-writes-note'
+import type { Membership, Role as V2Role } from '@/lib/rules/v2'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NetworkBadge } from '@/components/ui/network-badge'
-import { previewCredits, COST_ESTIMATE_CREDITS } from '@/lib/sdk'
+import { previewCreate, previewCredits, previewDelete, TOKEN_ADMIN_CREDITS } from '@/lib/sdk'
+import { decodeIdentifier } from '@/lib/auth'
+import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -59,19 +62,16 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
   )
 
   const [grantId, setGrantId] = useState('')
-  const [grantRole, setGrantRole] = useState<Role>('write')
+  const [grantChoice, setGrantChoice] = useState<Role>('write')
   const [action, setAction] = useState<Action | null>(null)
 
   const runAction = async (): Promise<void> => {
-    if (!sdk || !signer || !action) return
-    const maintain = action.role === 'maintain'
-    if (action.kind === 'grant') await grantCollaborator(sdk, signer, repo, action.member, maintain)
-    else if (action.kind === 'suspend') await suspendCollaborator(sdk, signer, repo, action.member, maintain)
-    else await revokeCollaborator(sdk, signer, repo, action.member, maintain)
+    if (!sdk || !signer || !action) throw new Error('sign in to continue')
+    await adminCollaborator(sdk, signer, repo, action.kind, action.member, action.role === 'maintain')
     collabs.reload()
   }
 
-  const cost = previewCredits(COST_ESTIMATE_CREDITS.tokenAdmin)
+  const cost = previewCredits(TOKEN_ADMIN_CREDITS)
   const registryContractId = ACTIVE_NETWORK.registryContractId
 
   return (
@@ -138,10 +138,10 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
                     {(['write', 'maintain'] as Role[]).map((r) => (
                       <button
                         key={r}
-                        onClick={() => setGrantRole(r)}
+                        onClick={() => setGrantChoice(r)}
                         className={
                           'rounded px-3 py-1.5 text-dense font-medium uppercase ' +
-                          (grantRole === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
+                          (grantChoice === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
                         }
                       >
                         {r}
@@ -151,7 +151,7 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
                   <Button
                     variant="primary"
                     disabled={grantId.trim() === ''}
-                    onClick={() => setAction({ kind: 'grant', member: grantId.trim(), role: grantRole })}
+                    onClick={() => setAction({ kind: 'grant', member: grantId.trim(), role: grantChoice })}
                   >
                     Grant
                   </Button>
@@ -215,17 +215,51 @@ function V1Settings({ home, repo }: { home: RepoHome; repo: V1RepoRef }): JSX.El
 
 /**
  * forge-v2 settings: the repo's members (its current `maintainer` / `writer` documents — the
- * ACL consensus enforces), and the ids a CLI or SDK user needs. Adding and removing members
- * from the browser comes with forge-v2 writes.
+ * ACL consensus enforces), and the ids a CLI or SDK user needs. The owner adds a member by
+ * creating their document and removes one by deleting it; consensus refuses anyone else.
  */
 function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const { identity, signer } = useAuth()
+  const guard = useWriteGuard()
+  const isOwner = identity === repo.ownerId
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  const [memberId, setMemberId] = useState('')
+  const [role, setRole] = useState<V2Role>('writer')
+  const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: V2Role } | null>(null)
+  const idError = (() => {
+    if (memberId.trim() === '') return null
+    try {
+      decodeIdentifier(memberId.trim())
+      return null
+    } catch {
+      return 'Not an identity id (base58, 32 bytes).'
+    }
+  })()
+  const runAction = async (intent: string): Promise<void> => {
+    if (!sdk || !signer || !action) throw new Error('sign in to continue')
+    if (action.kind === 'grant') {
+      await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      setMemberId('')
+    } else {
+      await revokeMember(sdk, signer, repo, action.member, action.role)
+    }
+    // The write landed, but the node the next read hits may be a block behind: re-read until
+    // the change shows (then it is what the cache holds), else keep the last answer.
+    const { kind, member, role: r } = action
+    const shows = (rows: Membership[]): boolean =>
+      rows.some((m) => m.identity === member && m.role === r) === (kind === 'grant')
+    await retryWhileMissing(async () => {
+      invalidateMembers(repo, network)
+      return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
+    }, 8)
+    members.reload()
+  }
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
@@ -253,17 +287,82 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
                   <RoleTag role={m.role === 'maintainer' ? 'MAINTAINER' : 'WRITER'} />
                   {m.identity === repo.ownerId ? (
                     <span className="text-[12px] text-anvil-400">owner</span>
+                  ) : isOwner ? (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      className="ml-auto"
+                      disabled={guard.disabledReason !== null}
+                      onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}
+                    >
+                      Remove
+                    </Button>
                   ) : null}
                 </div>
               ))
             )}
           </div>
         )}
+        {isOwner ? (
+          <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+            <h4 className="mb-2 text-dense font-medium">Add a member</h4>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <Field label="Identity ID" htmlFor="member-id">
+                  <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="base58 identity id" className="font-mono" spellCheck={false} />
+                </Field>
+              </div>
+              <div role="radiogroup" aria-label="Role" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+                {(['writer', 'maintainer'] as V2Role[]).map((r) => (
+                  <button
+                    key={r}
+                    role="radio"
+                    aria-checked={role === r}
+                    onClick={() => setRole(r)}
+                    className={
+                      'rounded px-3 py-1.5 text-dense font-medium ' +
+                      (role === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
+                    }
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+              <Button
+                variant="primary"
+                disabled={memberId.trim() === '' || idError !== null || guard.disabledReason !== null}
+                onClick={() => {
+                  if (guard.check(previewCreate(role).credits)) setAction({ kind: 'grant', member: memberId.trim(), role })
+                }}
+              >
+                Add
+              </Button>
+            </div>
+            {idError ? <p className="mt-1 text-[12px] text-danger">{idError}</p> : null}
+            <p className="mt-2 text-[12px] text-anvil-400">
+              Writers can push, open refs and act on issues and PRs; maintainers can also update
+              protected branches, config and releases.
+            </p>
+          </div>
+        ) : null}
         <p className="mt-2 text-[12px] text-anvil-400">
           Members are the repo&apos;s maintainer and writer documents. Consensus checks them on
           every push, ref update and state event; removing one revokes it.
+          {!isOwner ? ' Only the owner can add or remove members.' : ''}
         </p>
-        <V2WritesNote />
+        <ConfirmDialog
+          open={action !== null}
+          onClose={() => setAction(null)}
+          title={action?.kind === 'grant' ? `Add ${action.role}` : `Remove ${action?.role ?? 'member'}`}
+          description={
+            action?.kind === 'grant'
+              ? `Creates a ${action.role} document for ${action.member.slice(0, 8)}… on this repo.`
+              : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
+          }
+          cost={action?.kind === 'revoke' ? previewDelete(action.role) : previewCreate(action?.role ?? 'writer')}
+          confirmLabel={action?.kind === 'grant' ? 'Sign & add' : 'Sign & remove'}
+          onConfirm={runAction}
+        />
       </Section>
 
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>

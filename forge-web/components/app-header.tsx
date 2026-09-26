@@ -18,6 +18,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
+import { FundsPill } from '@/components/funds-pill'
 
 export function AppHeader(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
@@ -67,9 +68,12 @@ export function AppHeader(): JSX.Element {
         <div className="ml-auto flex items-center gap-1.5">
           <ThemeToggle />
           {identity ? (
-            <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+            <>
+              <FundsPill />
+              <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+            </>
           ) : (
-            <Button variant="primary" size="sm" onClick={openLogin}>
+            <Button variant="primary" size="sm" onClick={() => openLogin()}>
               Sign in
             </Button>
           )}
@@ -86,7 +90,7 @@ function AccountMenu({
 }: {
   identity: string
   balance: string | null
-  onLogout: () => void
+  onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -128,6 +132,14 @@ function AccountMenu({
             </div>
           </div>
           <Link
+            href="/settings"
+            role="menuitem"
+            className="block rounded-md px-3 py-2 text-dense hover:bg-anvil-100 dark:hover:bg-anvil-800"
+            onClick={() => setOpen(false)}
+          >
+            Settings &amp; spend
+          </Link>
+          <Link
             href={`/u?name=${encodeURIComponent(identity)}`}
             role="menuitem"
             className="block rounded-md px-3 py-2 text-dense hover:bg-anvil-100 dark:hover:bg-anvil-800"
@@ -139,11 +151,11 @@ function AccountMenu({
             role="menuitem"
             onClick={() => {
               setOpen(false)
-              onLogout()
+              onLogout(false)
             }}
             className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger hover:bg-danger/5"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+            <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
           </button>
         </div>
       ) : null}

@@ -42,6 +42,10 @@ SCENARIOS=(
   "06-third-party-verify"
   "07-depth-and-filter"
   "08-v1-read-compat"
+  "09-issue-lifecycle"
+  "10-pr-from-fork"
+  "11-release-asset"
+  "12-star-unstar"
 )
 
 # Optional subset filter (match by leading number or substring).
@@ -53,6 +57,15 @@ if [[ $# -gt 0 ]]; then
     done
   done
   SCENARIOS=("${filtered[@]}")
+fi
+
+# 11 stores its asset on local MinIO (infra/docker-compose.yml). A runner without it does not
+# run 11 at all rather than spending the one tolerated SKIP on a missing service.
+if ! curl -fsS -m 3 -o /dev/null "http://127.0.0.1:9000/minio/health/live" 2>/dev/null; then
+  kept=()
+  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* ]] || kept+=("$s"); done
+  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "MinIO not up: not running 11-release-asset (make infra-up to include it)"
+  SCENARIOS=("${kept[@]}")
 fi
 
 declare -a NAMES RESULTS

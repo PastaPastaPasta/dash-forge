@@ -35,6 +35,8 @@ test.describe('auth + write (opt-in via E2E_AUTH=1)', () => {
     // Open the login modal from the header sign-in affordance.
     await page.getByRole('button', { name: /sign in/i }).first().click()
     await expect(page.getByText(/Sign in to Dash Forge/i)).toBeVisible()
+    // Testnet has no Forge contract group, so the only tile is the v1 identity-file import.
+    await page.getByTestId('tile-import').click()
 
     // Upload the identity file straight into the (visually hidden) file input.
     await page.setInputFiles('input[type="file"]', IDENTITY_PATH)

@@ -4,10 +4,11 @@ name: Testnet Nightly
 #
 # The suites this drives are implemented and live in the repo:
 #   * forge-web/e2e/          — Playwright: read paths, fallback browse, zero-backend, a11y
-#   * e2e/cli/run.sh          — 8 CLI scenarios on devnet moutai (forge-v2): clone/push
+#   * e2e/cli/run.sh          — 12 CLI scenarios on devnet moutai (forge-v2): clone/push
 #                               round-trip, non-ff, ref delete, revoked-writer push, non-member
-#                               push, third-party verify, depth+filter; plus a testnet v1
-#                               read-compat clone
+#                               push, third-party verify, depth+filter, issue lifecycle, PR from
+#                               a fork with a real merge, release asset (SKIPs: no MinIO on the
+#                               runner), star/unstar; plus a testnet v1 read-compat clone
 #
 # They split by what they need:
 #   * READ-ONLY specs need only a network path to testnet DAPI and the read fixture repo

@@ -483,3 +483,22 @@ describe('BrowseReader copy failover', () => {
     expect(served).toContain(1)
   })
 })
+
+describe('issue numbering (allocate_number over the live index)', () => {
+  const issues = (...numbers: number[]): Store => ({
+    COLLAB: { issue: numbers.map((n) => doc({ $ownerId: AUTHOR, repoId: REPO, number: n, title: `#${n}` })) },
+  })
+  it('claims base + 1, ignoring a far squatter', async () => {
+    const { nextNumberV2 } = await import('./writes')
+    expect(await nextNumberV2(mockSdk(issues(1, 2, 3, 4_294_967_295)), V2, 'issue')).toBe(4)
+  })
+  it('starts at 1 in an empty repo', async () => {
+    const { nextNumberV2 } = await import('./writes')
+    expect(await nextNumberV2(mockSdk(issues()), V2, 'issue')).toBe(1)
+  })
+  it('steps over squatters sitting on and just above the ceiling', async () => {
+    const { nextNumberV2 } = await import('./writes')
+    // count 4 → ceiling 108; 108, 109, 110 are taken, 111 is free.
+    expect(await nextNumberV2(mockSdk(issues(1, 108, 109, 110)), V2, 'issue')).toBe(111)
+  })
+})

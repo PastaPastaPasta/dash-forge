@@ -203,6 +203,16 @@ pub enum RefState {
     },
 }
 
+/// The tip a ref points at: its resolved oid, a diverged ref's provisional tip
+/// (`heads[0]`), or `None` when unborn.
+pub fn tip_of(state: &RefState) -> Option<String> {
+    match state {
+        RefState::Resolved { oid, .. } => Some(oid.clone()),
+        RefState::Diverged { heads } => heads.first().map(|h| h.oid.clone()),
+        RefState::Unborn => None,
+    }
+}
+
 /// Fold a ref's `refUpdate`/`protectedRefUpdate` history into its [`RefState`].
 ///
 /// `updates` may contain updates for *other* refs; only those whose `refNameHash`
@@ -471,8 +481,11 @@ pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Op
         .map(|u| u.ref_name.as_str())
 }
 
-/// The as-of-time protection check from §4: is update `u` a valid mover of its ref?
-fn is_update_valid(u: &RefUpdate, config_history: &[ConfigDoc]) -> bool {
+/// The as-of-time protection check from §4: is update `u` a valid mover of its ref? A legal
+/// `refName` that hashes to its `refNameHash`, and — when the config in force at its
+/// `$createdAt` protects the ref — a `protectedRefUpdate`. Public so that anything reporting a
+/// single update (the relay's `push` webhook) applies the fold's own rule.
+pub fn is_update_valid(u: &RefUpdate, config_history: &[ConfigDoc]) -> bool {
     // (0) Injection / key-decoupling defense (fold-side enforcement of the normative
     // invariant, defense-in-depth with the write guard): an illegal `refName` is inert,
     // and — when a real 32-byte `refNameHash` is present — it MUST be `sha256(refName)`.

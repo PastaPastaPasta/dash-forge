@@ -64,7 +64,7 @@ A deposit only comes back when the document is deleted. Some documents can never
 | Action | v1 (testnet today) | forge-v2 (planned: devnet moutai once client support lands; mainnet after protocol 14) |
 |---|---|---|
 | Create a repository | **~1.18 DASH**, not refundable | **~0.001 DASH** (three small documents; estimated, still being measured) |
-| Fork a repository | same as create (`dg repo fork` is not built yet) | ~0.001 DASH, sharing the parent's packs |
+| Fork a repository | not supported on v1 | ~0.001 DASH plus one small manifest per pack and one ref update per branch (measured on moutai: 0.03 DASH for a 36-pack repo); the parent's packs are referenced, never re-uploaded |
 | Push to **your own bucket** | ~0.0002–0.0004 DASH: manifest + ref update | same |
 | Push with packs **on Platform** | ~0.28 DASH per MiB of packed data, plus the above | same, and the storage is permanent |
 | Issue or comment (~500 bytes) | ~0.00014 DASH | same |
