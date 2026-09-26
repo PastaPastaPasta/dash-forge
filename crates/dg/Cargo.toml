@@ -28,6 +28,8 @@ hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # `dg pr merge` builds the merge in a throwaway repository.
 tempfile = "3"
+# `dg storage add` prompts: a pasted secret is read from the terminal without echo.
+rpassword = "7"
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
 # publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level

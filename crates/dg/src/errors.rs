@@ -109,7 +109,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Auth(A::Login) => ("login failed", None),
         Command::Auth(A::Status) => ("could not show auth status", None),
         Command::Auth(A::Balance) => ("could not read the balance", None),
-        Command::Repo(Rp::Create { name, .. }) => ("repository not created", Some(name)),
+        Command::Repo(Rp::Create(a)) => ("repository not created", a.name.as_ref()),
+        Command::Init(a) => ("repository not published", a.name.as_ref()),
         Command::Repo(Rp::Clone { repo } | Rp::View { repo }) => {
             ("could not show the repository", Some(repo))
         }
@@ -159,6 +160,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Storage(S::Status { repo } | S::Advertise { repo, .. }) => {
             ("storage command failed", Some(repo))
         }
+        Command::Storage(S::Add(_)) => ("storage profile not added", None),
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),

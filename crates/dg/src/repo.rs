@@ -1,5 +1,5 @@
 //! `dg repo` — repository lifecycle: create / fork / view / list / star / backend set
-//! (+ clone).
+//! (+ clone). `create` (and `dg init`) live in [`crate::publish`].
 //!
 //! New repositories are forge-v2: a `repo` document plus the owner's `maintainer`
 //! membership and an initial `config` in the network's shared forge-core contract, written
@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
+use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
@@ -24,27 +24,14 @@ use crate::context::Ctx;
 use crate::fmt::{
     cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
 };
+
+pub use crate::publish::init;
 use crate::{RepoBackendCommand, RepoCommand};
 
 /// Dispatch a `repo` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
     match cmd {
-        RepoCommand::Create {
-            name,
-            storage,
-            description,
-            display_name,
-            default_branch,
-        } => {
-            let opts = CreateRepoOpts {
-                display_name: display_name.clone(),
-                description: description.clone(),
-                default_branch: default_branch.clone(),
-                backend_mode: storage.mode(),
-                ..CreateRepoOpts::public(name.clone())
-            };
-            create(ctx, &opts, storage.label()).await
-        }
+        RepoCommand::Create(args) => crate::publish::create(ctx, args).await,
         RepoCommand::Clone { repo } => clone(ctx, repo),
         RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
         RepoCommand::Star { repo } => star(ctx, repo, true).await,
@@ -55,73 +42,6 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
     }
-}
-
-/// Create a forge-v2 repository. Shows the estimate and prompts unless `--yes`, then reports
-/// the measured cost. Re-running a create that was interrupted finishes it without paying
-/// for any step twice; re-running one that finished changes nothing.
-async fn create(ctx: &Ctx, opts: &CreateRepoOpts, storage_label: &str) -> Result<()> {
-    let slug = repo_slug(&opts.name)?;
-    if ctx.target.v2.is_none() {
-        return Err(forge_core::Error::V2NotDeployed {
-            network: ctx.network_label(),
-        }
-        .into());
-    }
-    let price = dash_usd_price();
-    if !ctx.json {
-        println!(
-            "Creating {slug} on {} ({storage_label} storage)\n  repo + maintainer + config     {}",
-            ctx.network_label(),
-            cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
-        );
-    }
-    if !ctx.confirm(&format!("Create {slug}?"))? {
-        return Err(crate::errors::cancelled());
-    }
-
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let result = create_repo(&client, &identity, &bridge, opts, &default_journal_dir()?)
-        .await
-        .context("creating the repository")?;
-    let repo = &result.repo;
-    let credits = result.cost_credits;
-    let steps: serde_json::Map<_, _> = result
-        .steps
-        .iter()
-        .map(|(name, o)| ((*name).to_string(), json!(o)))
-        .collect();
-
-    ctx.emit(
-        json!({
-            "status": if result.already_existed() { "exists" } else { "created" },
-            "generation": "v2",
-            "repoId": repo.id(),
-            "ownerId": repo.owner_id(),
-            "name": repo.name(),
-            "storage": storage_label,
-            "remoteUrl": repo.remote_url(),
-            "steps": steps,
-            "network": ctx.network_label(),
-            "cost": cost_json(credits, price),
-        }),
-        || {
-            if result.already_existed() {
-                println!("{} already exists; nothing was written.", repo.display());
-            } else {
-                println!("✓ created  {}", repo.display());
-                for (name, o) in &result.steps {
-                    if *o == StepOutcome::Resumed {
-                        println!("  {name}: finished an interrupted create (not paid twice)");
-                    }
-                }
-            }
-            println!("  repo id:  {}", repo.id());
-            println!("  remote:   {}", repo.remote_url());
-            println!("  cost:     {}", cost_line(credits, price));
-        },
-    );
-    Ok(())
 }
 
 /// Print the `git clone` invocation for a repo (cloning itself is the remote helper's job).
