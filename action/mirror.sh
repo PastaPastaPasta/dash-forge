@@ -65,8 +65,9 @@ export DASH_FORGE_STORAGE_CONFIG="$FORGE_STORAGE_CONFIG"
 rm -f "$DASH_FORGE_STORAGE_CONFIG"
 case "$INPUT_STORAGE_KIND" in
     s3)
-        [ -n "${S3_ACCESS_KEY_ID:-}" ] && [ -n "${S3_SECRET_ACCESS_KEY:-}" ] ||
+        if [ -z "${S3_ACCESS_KEY_ID:-}" ] || [ -z "${S3_SECRET_ACCESS_KEY:-}" ]; then
             die "storage-kind s3 needs the S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY secrets in 'env:'."
+        fi
         args=(--kind s3 --endpoint "$INPUT_S3_ENDPOINT" --bucket "$INPUT_S3_BUCKET"
             --access-key-id env:S3_ACCESS_KEY_ID --secret-access-key env:S3_SECRET_ACCESS_KEY)
         [ -z "$INPUT_S3_REGION" ] || args+=(--region "$INPUT_S3_REGION")
