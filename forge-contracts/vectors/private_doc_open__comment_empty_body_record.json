@@ -1,0 +1,32 @@
+{
+  "name": "comment_empty_body_record",
+  "description": "a required field must be non-empty: a zero-length body record does not make a comment.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "01000102030405060708090a0b1c702ff36807e5b1e34452fe6077e417081018",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

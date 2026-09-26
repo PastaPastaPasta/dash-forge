@@ -25,6 +25,15 @@ glob-match = "0.2"
 toml = "0.8"
 hmac = "0.12"
 
+# private repositories (docs/security/private-repos.md §10): AES-256-GCM with the segment nonce
+# built by hand (not aead::stream), HKDF-SHA256 subkeys, constant-time comparisons, key material
+# zeroized on drop, and the OS CSPRNG for epoch keys and the rnd(32) hedge inputs.
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+hkdf = "0.12"
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
+getrandom = "0.2"
+
 # storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);
 # multipart for the kubo `/api/v0/add` upload. async-trait keeps `PackBackend`
 # object-safe (heterogeneous backends behind `dyn` in the failover registry);
@@ -57,6 +66,9 @@ test-hooks = []
 # host's libssl version (release.yml builds with it; dev builds use the system library).
 # No effect on macOS/Windows, where native-tls uses the OS TLS stack.
 vendored-openssl = ["dep:openssl", "openssl/vendored"]
+# The deterministic seal constructors (caller-supplied nonce / fileId) that reproduce the
+# conformance vectors. Release builds never set it; the crate's own tests get them via cfg(test).
+vectors = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

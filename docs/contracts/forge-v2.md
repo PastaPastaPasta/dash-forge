@@ -134,17 +134,18 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
   - `wrapped` is `encryptedFor {recipient: memberId, recipientKey: recipientKeyId, senderKey: senderKeyId, scheme: ecdh-secp256k1-aes256-cbc}`. Consensus checks its shape: at least 32 bytes and a multiple of 16.
   - `memberId` carries `refersTo identityPublicKey` with `keyIdProperty: recipientKeyId` and `keyRequirements {purpose: encryption}`, and `senderKeyId` carries the owner form (`identityProperty: $ownerId`, purpose encryption). Consensus refuses a wrap to a key that does not exist, is disabled, or is not an encryption key.
   - Unique `(repoId, memberId, epoch, $ownerId)`; gated to maintainers; immutable and non-deletable. `$ownerId` is in the key so one maintainer cannot claim a member's slot for an epoch before another.
-  - **Reader rule.** A member accepts a wrapped key for `(repo, epoch)` only if its writer was a maintainer when it was written (the gate proves it held then), and only if the unwrapped key verifies against the epoch's key-check value. A key-check value is `HMAC-SHA256(key, "forge-v2 key check" ‖ repoId ‖ epoch)`, carried by the epoch's first `config` (Phase 3 fixes the exact field). When several maintainers wrapped for the same epoch, any copy that verifies is the key.
+  - **Reader rule** (`docs/security/private-repos.md` §5.4, which is normative and wins over this summary). A member accepts a wrapped key for `(repo, epoch)` only if its writer is a **current** maintainer (a removed maintainer's wraps and configs are withdrawn with their membership), the epoch exists (it has an anchor: the first config for it, by `($createdAtBlockHeight, $id)`, written by a current maintainer), the unwrapped plaintext `0x01 ‖ KCV_e ‖ K_e` has a matching 14-byte key-check value (error detection only), and `COMMIT_e` derived from the key equals the commitment the anchor's `enc` v0x02 carries. A key that fails the last check raises a `KeyMismatch` alert naming the wrap's author; the reader never looks for another config the key opens. Older epochs are reached only through the anchors' `prevEpochKey` chain.
   - Consensus cannot also require `memberId` to be a member: an `identityPublicKey` reference cannot be combined with other operands. Wrapping the key to a non-member amounts to leaking it, which a maintainer can always do anyway.
-- **Rotation.** On removing a member, a maintainer posts epoch `n+1` wraps for the remaining members. Future content uses the new key. Past content stays readable to past members, and the product says so plainly.
-- **Encrypted fields.** `issue`, `patch`, `comment` and `review` take `enc` (a byte array, AES-256-GCM under the epoch key, including title and body) plus `epoch`, and leave the plaintext `title`/`body` empty. `refUpdate`, `protectedRefUpdate` and `config` take the same `enc`/`epoch` pair.
-  - A private ref update puts `refName` inside `enc` and sets `refNameHash = HMAC-SHA256(epoch key, refName)`, so ref names cannot be recovered by dictionary. `refName` is optional for this reason.
+- **Rotation.** On removing a member, a maintainer posts epoch `n+1` wraps for the remaining members (self first), then the anchor `config` for `n+1` (carrying `prevEpoch = n` and `K_n`), and writes under `n+1` only after a proof-verified read shows its anchor is first. Future content uses the new key. Past content stays readable to past members, and the product says so plainly. Content written under a superseded epoch more than 240 blocks after the next anchor by a non-member is hidden (the late-content rule).
+- **Encrypted fields.** `issue`, `patch`, `comment` and `review` take `enc` plus `epoch`, and leave the plaintext `title`/`body` (and an inline comment's `path`) empty. `refUpdate`, `protectedRefUpdate` and `config` take the same `enc`/`epoch` pair. `enc` is `0x01 ‖ nonce ‖ AES-256-GCM(K_doc,e, TLV plaintext, AD) ‖ tag` under an HKDF-SHA256 subkey of the epoch key, with the associated data binding the repo, `$ownerId`, the epoch, the type and the document's plaintext identity; `config` always uses the key-committing `0x02 ‖ COMMIT_e ‖ …` layout. Layouts, TLV tags and AD are in `docs/security/private-repos.md` §4.
+  - A private ref update puts `refName` inside `enc` and sets `refNameHash = HMAC-SHA256(K_ref,e, refName)` under the epoch's ref subkey, so ref names cannot be recovered by dictionary and differ across epochs. `refName` is optional for this reason. A reader recomputes the hash from the decrypted name and treats a mismatch as malformed.
   - `dependentRequired {enc: [epoch]}` makes consensus refuse ciphertext without an epoch.
   - **"Plaintext or `enc`, not both, not neither" is a client rule** (`is_well_formed`, vectors `well_formed__*`). `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Each kind has plaintext fields and at most one required one: `issue` (`title` required, `body`), `patch` (`title` required, `body`, `baseRefName`, `sourceRefName`), `comment` (`body` required), `review` (`body`, optional: a review's content is its verdict and `commitOid`, which are never encrypted), a ref update (`refName` required), `config` (`defaultBranch`, `protectedPatterns`, neither required). In a **public** repo a document is well-formed when it has no `enc` and has its required field, if its kind has one. In a **private** repo it is well-formed when it has a non-empty `enc`, an `epoch`, and none of its plaintext fields, so a private repo's `refUpdate` carrying a plaintext `refName` is malformed. An empty string, or an empty `protectedPatterns` list, counts as absent. Clients skip a malformed document, and every other rule (approvals included) only sees well-formed ones.
-  - Packs are encrypted before upload (Platform chunks or external storage). Oids, sizes and timing stay visible.
+  - Packs are encrypted before upload (Platform chunks or external storage): a 36-byte header and 16 KiB AES-256-GCM STREAM segments under a per-file key, so a browser decrypts any byte range. `packHash` is the sealed bytes' hash. Oids, sizes and timing stay visible.
+  - `$createdAtBlockHeight` is required on `config`, `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`, `issue`, `patch`, `comment` and `review` (private-repos.md §13): anchors are ordered and late content is judged by the network-set height, never the client-set `$createdAt`. forge-core's `enc` holds up to 1536 bytes (a config anchor carries up to 8 patterns, the default branch and the previous epoch's key).
 - **What a stranger can still do.** Issues and PRs are un-gated, so anyone can post plaintext into a private repo's namespace. Clients show only documents that decrypt under a key the reader holds, or that come from a member.
 
-The concrete AEAD layout, key derivation and test vectors are Phase 3 work and need their own security review (roadmap Phase 3). The contract fields above are what that design writes into.
+The AEAD layouts, key derivation, anchors, rotation and conformance vectors are specified in `docs/security/private-repos.md` (reviewed; normative where it differs from this section). The cryptographic core is `forge-core::private` and `forge-web/lib/private`, held in byte-for-byte parity by the `private_*` vectors.
 
 ## 6. What moves from client rules to consensus
 
@@ -184,8 +185,12 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Approvals | `count_approvals` | `approvals__*` |
 | Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
+| Private content: key derivation, ref-name hashes, `enc` seal/open with the ref-name hash check and the late-content rule (private-repos.md §2–§4, §8) | `EpochKeys::derive`, `ref_name_hash`, `open_content`, `is_late` | `private_kdf__*`, `private_ref_hash__*`, `private_doc_seal__*`, `private_doc_open__*`, `private_hedge__*` |
+| Sealed artifacts (§3) | `pack::{seal, open, open_streaming}`, `PackHeader::{sealed_range, open_range}` | `private_pack_seal__*`, `private_pack_open__*`, `private_pack_range__*` |
+| Wraps (§5.1) | `wrap::{plaintext, parse, check_against_anchor}`, `platform::wrap::{seal_wrap, open_wrap}` | `private_wrap_seal__*`, `private_wrap_open__*` |
+| Anchors, current epoch, chain walk, alerts, repair check (§5.3–§5.6) | `resolve_epochs` (`select_anchors`, `current_epoch`, `chain_walk`, `repair_check`) | `private_epoch__*` |
 
-The v2 fold takes no membership input: an `event`'s existence is its authorization. `RoleOracle` answers "was X a member at time t" from the repo's *current* `maintainer`/`writer` documents, so a revoked member (whose document was deleted) is not a member at any time, and a re-added member counts from their new document. The repoKey reader rule of §5 is Phase 3 work and has no vectors yet.
+The v2 fold takes no membership input: an `event`'s existence is its authorization. `RoleOracle` answers "was X a member at time t" from the repo's *current* `maintainer`/`writer` documents, so a revoked member (whose document was deleted) is not a member at any time, and a re-added member counts from their new document. The repoKey reader rule of §5 is `resolve_epochs`, a pure function over flattened rows with `private_epoch__*` vectors; `comment.path` is a content field of `is_well_formed` (vector `well_formed__private_comment_plaintext_path`).
 
 **Holdings vectors.** The `holdings__*` conformance vectors (token-history reconstruction) and the v1 `fold_issue__*` / `fold_pr__*` vectors do not apply to v2 repos. They stay, unchanged, for reading v1 repos.
 
@@ -196,24 +201,24 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 | | forge-core | forge-collab |
 |---|---|---|
 | Document types / indexes | 12 / 26 | 11 / 23 |
-| Serialized contract | 11,761 B | 12,043 B |
-| Signed `DataContractCreate` v1 | **11,924 B** | **12,149 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.2% | 59.3% |
+| Serialized contract | 11,876 B | 12,135 B |
+| Signed `DataContractCreate` v1 | **12,039 B** | **12,241 B** |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.8% | 59.8% |
 | Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.55 DASH** |
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
 Total one-time registration fees are **1.15 DASH**, paid once by the deployer, plus storage. A new repository is now three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate, compared with ~1.18 DASH for a v1 repo contract. The per-repo figure is an estimate still to be measured on moutai.
 
-**Measured on devnet moutai (2026-09-25)**, as the deployer's balance change:
+**Measured on devnet moutai**, as the deployer's balance change. The current pair (2026-09-26, with the private-repository changes of `docs/security/private-repos.md` §13):
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Total cost | 0.605711 DASH (60,571,079,360 credits) | 0.555523 DASH (55,552,297,710 credits) |
+| Total cost | 0.605726 DASH (60,572,562,220 credits) | 0.555554 DASH (55,555,374,110 credits) |
 | of which the registration fee | 0.60 | 0.55 |
-| storage + processing | 0.0057 | 0.0055 |
+| storage + processing | 0.0057 | 0.0056 |
 
-Together that is **1.161234 DASH**. The two superseded forge-collab registrations (§8) cost a further 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
+Together that is **1.161280 DASH**. The superseded registrations (§8) cost: the 2026-09-25 pair 0.605711 DASH (60,571,079,360 credits) + 0.555523 DASH (55,552,297,710 credits); the first two forge-collab attempts 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
 
 ## 8. Deploying
 

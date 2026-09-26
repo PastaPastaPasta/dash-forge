@@ -127,7 +127,7 @@ doc nonce  = HMAC-SHA256(K_hedge,e, 0x02 ‖ rnd(32) ‖ AD ‖ SHA-256(plaintex
 enc = 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_doc,e, nonce, plaintext, AD) ‖ tag(16)
 ```
 
-Minimum length 29 bytes (schema `minItems` 28 admits it). Maximum plaintext per type is `maxItems − 29`: **5091 bytes** for collab types, **995 bytes** for `refUpdate`/`protectedRefUpdate` under the current forge-core schema.
+Minimum length 29 bytes (schema `minItems` 28 admits it). Maximum plaintext per type is `maxItems − 29`: **5091 bytes** for collab types, **1507 bytes** for `refUpdate`/`protectedRefUpdate` under the forge-core `enc.maxItems` of 1536 (§13; 995 bytes under the earlier 1024).
 
 ### 4.2 `enc` layout, version 0x02 (config, always)
 
@@ -138,7 +138,7 @@ enc = 0x02 ‖ COMMIT_e(32) ‖ nonce(12) ‖ AES-256-GCM(K_doc,e, nonce, plaint
 COMMIT_e = HKDF-Expand(PRK_e, "dash-forge/v2/commit" ‖ 0x00 ‖ u32(e), 32)
 ```
 
-A reader **compares `COMMIT_e` against the commitment derived from its own key before running GCM**; a mismatch is `CommitMismatch`, not `BadTag`, and is surfaced as in §5.4. Overhead is 61 bytes; the maximum config plaintext under the current 1024-byte cap is 963 bytes (§13 raises the cap).
+A reader **compares `COMMIT_e` against the commitment derived from its own key before running GCM**; a mismatch is `CommitMismatch`, not `BadTag`, and is surfaced as in §5.4. Overhead is 61 bytes; the maximum config plaintext is 1475 bytes under the 1536-byte cap of §13 (963 bytes under the earlier 1024).
 
 ### 4.3 Plaintext: TLV
 
@@ -413,7 +413,7 @@ New vector cases in `forge-contracts/vectors/` with `"rules": "v2"`, one file pe
 
 ## 13. Contract changes required before mainnet registration
 
-These are schema changes to `forge-core.json` / `forge-collab.json`; they must land before the mainnet registration (roadmap D-J) and should be re-registered on moutai first. Adding a required system field or raising `maxItems` is fine for a fresh registration; on the existing moutai contracts, raising a byte array's `maxItems` is a compatible update, while adding to `required` is not, so moutai needs a `--force-new` re-registration.
+These are schema changes to `forge-core.json` / `forge-collab.json`; they must land before the mainnet registration (roadmap D-J) and should be re-registered on moutai first. **Status:** changes 1–3 are in the schemas and were re-registered on moutai on 2026-09-26 (forge-core `GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL`, forge-collab `GCBfP3cMdxPNyAwEQC6ppfKCDEoNS9HHyF6aBrsK7fRr`; `docs/contracts/forge-v2.md` §8), and a live create of every changed type under them succeeded (`forge-web/lib/private/private.live.test.ts`). Adding a required system field or raising `maxItems` is fine for a fresh registration; on the existing moutai contracts, raising a byte array's `maxItems` is a compatible update, while adding to `required` is not, so moutai needs a `--force-new` re-registration.
 
 | # | Contract | Change | Why |
 |---|---|---|---|

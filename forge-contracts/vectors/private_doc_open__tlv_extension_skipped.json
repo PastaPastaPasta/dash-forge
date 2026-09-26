@@ -1,0 +1,36 @@
+{
+  "name": "tlv_extension_skipped",
+  "description": "extension tag 200 is skipped.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c4c96ac775b3c8a75f4d68840afee64efdf31abc1a8f432a526c",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "Rotate the signing key",
+      "body": "See the runbook."
+    }
+  }
+}

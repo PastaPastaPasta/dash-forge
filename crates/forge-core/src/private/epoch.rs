@@ -1,0 +1,498 @@
+//! Epochs, anchors and membership (`docs/security/private-repos.md` §5.3–§5.6, §8.2), as one
+//! pure function over flattened rows: which epochs exist, which is current, which the reader can
+//! read (accepted wraps plus the `prevEpochKey` chain), the alerts to raise, and the repair
+//! check a maintainer's client runs on every visit.
+//!
+//! Every statement counts only while its author is a **current maintainer** (C1): anchors,
+//! wraps, and so the current epoch.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+use super::doc::{
+    hex32, is_late, open_with, AnchorRef, DocHeader, OpenContext, Opened, MIN_V2, V2,
+};
+use super::keys::{EpochKey, EpochKeys};
+use super::DocKind;
+use crate::rules::v2::Role;
+
+/// A current `maintainer` or `writer` document of the repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemberRow {
+    /// `memberId`.
+    #[serde(with = "hex32")]
+    pub identity: [u8; 32],
+    /// Which document type.
+    pub role: Role,
+    /// `$createdAt` (ms).
+    pub created_at: u64,
+}
+
+/// A `config` document of the repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigRow {
+    /// `$id`.
+    pub id: String,
+    /// `$ownerId`.
+    #[serde(with = "hex32")]
+    pub owner: [u8; 32],
+    /// `epoch`.
+    pub epoch: u32,
+    /// `$createdAtBlockHeight`, the network-set order of anchors (M1).
+    pub created_at_block_height: u64,
+    /// `$createdAt` (client-set; never used to order anchors).
+    pub created_at: u64,
+    /// `enc`.
+    #[serde(with = "hex_bytes")]
+    pub enc: Vec<u8>,
+}
+
+/// A `repoKey` document of the repository, with the key the reader recovered from it, if the
+/// wrap is addressed to the reader and unwrapped to a version-1 plaintext with a matching KCV.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WrapRow {
+    /// `$id`.
+    pub id: String,
+    /// `$ownerId`, the wrapping maintainer.
+    #[serde(with = "hex32")]
+    pub owner: [u8; 32],
+    /// `memberId`.
+    #[serde(with = "hex32")]
+    pub member_id: [u8; 32],
+    /// `epoch`.
+    pub epoch: u32,
+    /// `recipientKeyId`.
+    pub recipient_key_id: u32,
+    /// Whether `recipientKeyId` is still an enabled key on the member's identity (§5.6).
+    pub key_enabled: bool,
+    /// The recovered epoch key (reader's own wraps only).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_key")]
+    pub key: Option<EpochKey>,
+}
+
+/// An alert the UI shows the affected member and maintainers (§9); never a silent downgrade.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Alert {
+    /// A current maintainer gave the reader a key that does not commit to the epoch's anchor.
+    #[serde(rename_all = "camelCase")]
+    KeyMismatch {
+        /// The epoch.
+        epoch: u32,
+        /// The wrap's author.
+        #[serde(with = "hex32")]
+        author: [u8; 32],
+    },
+    /// The `prevEpochKey` chain stops at this epoch's anchor.
+    #[serde(rename_all = "camelCase")]
+    ChainBroken {
+        /// The epoch whose anchor breaks the chain.
+        epoch: u32,
+        /// The anchor's author.
+        #[serde(with = "hex32")]
+        author: [u8; 32],
+    },
+    /// The current epoch is wrapped to identities that are not members: rotate (H2).
+    #[serde(rename_all = "camelCase")]
+    RotationRequired {
+        /// The current epoch.
+        epoch: u32,
+        /// The wrapped non-members.
+        #[serde(with = "hex32_vec")]
+        members: Vec<[u8; 32]>,
+    },
+}
+
+impl Alert {
+    fn sort_key(&self) -> (u32, u8, [u8; 32]) {
+        match self {
+            Self::KeyMismatch { epoch, author } => (*epoch, 0, *author),
+            Self::ChainBroken { epoch, author } => (*epoch, 1, *author),
+            Self::RotationRequired { epoch, .. } => (*epoch, 2, [0; 32]),
+        }
+    }
+}
+
+/// The repair check of §5.6 for the current epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Repair {
+    /// Rotate (§5.5 steps 1–4): the current epoch is wrapped to a non-member.
+    pub rotate: bool,
+    /// Wrapped identities that are not members.
+    #[serde(with = "hex32_vec")]
+    pub non_members: Vec<[u8; 32]>,
+    /// Members with no wrap for the current epoch to an enabled key: wrap them, no rotation.
+    #[serde(with = "hex32_vec")]
+    pub missing_wraps: Vec<[u8; 32]>,
+}
+
+/// One existing epoch's anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    /// The anchor config's `$id`.
+    pub id: String,
+    /// Its author, a current maintainer.
+    pub owner: [u8; 32],
+    /// Its `$createdAtBlockHeight`.
+    pub height: u64,
+    /// The commitment its `enc` carries (`None` for an `enc` that is not v0x02: it matches no
+    /// key).
+    pub commit: Option<[u8; 32]>,
+}
+
+/// Everything [`resolve_epochs`] decides.
+#[derive(Clone, Default)]
+pub struct EpochResolution {
+    /// The highest existing epoch.
+    pub current_epoch: Option<u32>,
+    /// The anchor of every existing epoch.
+    pub anchors: BTreeMap<u32, Anchor>,
+    /// The key of every epoch the reader can read.
+    pub keys: BTreeMap<u32, EpochKey>,
+    /// The epoch the reader writes under: the current epoch, if readable (§5.3).
+    pub write_epoch: Option<u32>,
+    /// Epochs that appear in configs or wraps but have no anchor (not epochs; §5.3).
+    pub unanchored: Vec<u32>,
+    /// Alerts, deduplicated and ordered by `(epoch, kind, author)`.
+    pub alerts: Vec<Alert>,
+    /// The repair check for the current epoch.
+    pub repair: Option<Repair>,
+    /// Current members (whose late content is still shown, §8.2).
+    pub members: BTreeSet<[u8; 32]>,
+}
+
+impl std::fmt::Debug for EpochResolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpochResolution")
+            .field("current_epoch", &self.current_epoch)
+            .field("readable", &self.keys.keys().collect::<Vec<_>>())
+            .field("write_epoch", &self.write_epoch)
+            .field("unanchored", &self.unanchored)
+            .field("alerts", &self.alerts)
+            .field("repair", &self.repair)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a manifest stands under the late-content rule (§8.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestStanding {
+    /// Its sealed header's epoch is older than the epoch current at its block height: shown to
+    /// maintainers as "uploaded under an old key".
+    pub suspect: bool,
+    /// Whether to read it: always for a current member's upload, else only when neither suspect
+    /// nor late.
+    pub readable: bool,
+}
+
+impl EpochResolution {
+    fn anchor_refs(&self) -> BTreeMap<u32, AnchorRef> {
+        self.anchors
+            .iter()
+            .map(|(&e, a)| {
+                (
+                    e,
+                    AnchorRef {
+                        id: a.id.clone(),
+                        height: a.height,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The [`OpenContext`] for [`super::open_content`]: subkeys of every readable epoch, the
+    /// anchors and the members.
+    #[must_use]
+    pub fn open_context(&self, repo_id: &[u8; 32]) -> OpenContext {
+        OpenContext {
+            keys: self
+                .keys
+                .iter()
+                .map(|(&e, k)| (e, EpochKeys::derive(repo_id, e, k)))
+                .collect(),
+            anchors: self.anchor_refs(),
+            members: self.members.clone(),
+        }
+    }
+
+    /// Whether content under `epoch` at block height `height` by `owner` is late (§8.2).
+    #[must_use]
+    pub fn is_late(&self, epoch: u32, height: u64, owner: &[u8; 32]) -> bool {
+        is_late(
+            &self.anchor_refs(),
+            epoch,
+            height,
+            self.members.contains(owner),
+        )
+    }
+
+    /// How a manifest whose sealed header names `header_epoch`, written at `height` by `owner`,
+    /// stands (§8.2).
+    #[must_use]
+    pub fn manifest_standing(
+        &self,
+        header_epoch: u32,
+        height: u64,
+        owner: &[u8; 32],
+    ) -> ManifestStanding {
+        let current_at = self
+            .anchors
+            .iter()
+            .filter(|(_, a)| a.height <= height)
+            .map(|(&e, _)| e)
+            .max();
+        let suspect = current_at.is_some_and(|c| header_epoch < c);
+        let member = self.members.contains(owner);
+        let late = self.is_late(header_epoch, height, owner);
+        ManifestStanding {
+            suspect,
+            readable: member || (!suspect && !late),
+        }
+    }
+}
+
+/// anchor(e) for every epoch (§5.3): the first config for `e` by `($createdAtBlockHeight, $id)`
+/// whose author is a current maintainer, whether or not the reader can open it.
+fn select_anchors<'c>(
+    configs: &'c [ConfigRow],
+    maintainers: &BTreeSet<[u8; 32]>,
+) -> BTreeMap<u32, &'c ConfigRow> {
+    let mut first: BTreeMap<u32, &ConfigRow> = BTreeMap::new();
+    for c in configs.iter().filter(|c| maintainers.contains(&c.owner)) {
+        let slot = first.entry(c.epoch).or_insert(c);
+        if (c.created_at_block_height, &c.id) < (slot.created_at_block_height, &slot.id) {
+            *slot = c;
+        }
+    }
+    first
+}
+
+fn anchor_of(c: &ConfigRow) -> Anchor {
+    let commit = (c.enc.len() >= MIN_V2 && c.enc[0] == V2)
+        .then(|| c.enc[1..33].try_into().expect("32 bytes"));
+    Anchor {
+        id: c.id.clone(),
+        owner: c.owner,
+        height: c.created_at_block_height,
+        commit,
+    }
+}
+
+/// Walk the `prevEpochKey` chain down from `start` (§5.3, L2), adding every epoch it reaches to
+/// `keys`, and raising `ChainBroken` where it stops early.
+fn walk_chain(
+    repo_id: &[u8; 32],
+    start: u32,
+    first: &BTreeMap<u32, &ConfigRow>,
+    commits_to: &impl Fn(u32, &EpochKey) -> bool,
+    keys: &mut BTreeMap<u32, EpochKey>,
+    alerts: &mut BTreeSet<Alert>,
+) {
+    let mut e = start;
+    while e > 0 {
+        let config = first[&e];
+        let broken = Alert::ChainBroken {
+            epoch: e,
+            author: config.owner,
+        };
+        let header = DocHeader::new(DocKind::Config, config.owner, e);
+        let opened = open_with(
+            &EpochKeys::derive(repo_id, e, &keys[&e]),
+            &header,
+            &config.enc,
+            true,
+        );
+        let Opened::Readable(fields) = opened else {
+            alerts.insert(broken);
+            return;
+        };
+        let (Some(p), Some(pk)) = (fields.prev_epoch, fields.prev_epoch_key.clone()) else {
+            alerts.insert(broken);
+            return;
+        };
+        if p >= e || !commits_to(p, &pk) {
+            alerts.insert(broken);
+            return;
+        }
+        if keys.contains_key(&p) {
+            return;
+        }
+        keys.insert(p, pk);
+        e = p;
+    }
+}
+
+/// The repair check of §5.6 for the current epoch `n`.
+fn repair_check(
+    n: u32,
+    wraps: &[WrapRow],
+    maintainers: &BTreeSet<[u8; 32]>,
+    members: &BTreeSet<[u8; 32]>,
+) -> Repair {
+    let from_maintainer = |w: &&WrapRow| w.epoch == n && maintainers.contains(&w.owner);
+    let wrapped: BTreeSet<[u8; 32]> = wraps
+        .iter()
+        .filter(from_maintainer)
+        .map(|w| w.member_id)
+        .collect();
+    let enabled: BTreeSet<[u8; 32]> = wraps
+        .iter()
+        .filter(from_maintainer)
+        .filter(|w| w.key_enabled)
+        .map(|w| w.member_id)
+        .collect();
+    let non_members: Vec<[u8; 32]> = wrapped.difference(members).copied().collect();
+    let missing_wraps: Vec<[u8; 32]> = members.difference(&enabled).copied().collect();
+    Repair {
+        rotate: !non_members.is_empty(),
+        non_members,
+        missing_wraps,
+    }
+}
+
+/// Resolve a repository's epochs for `reader` from its current membership documents, all of its
+/// `config` documents and its `repoKey` documents (§5.3–§5.6).
+#[must_use]
+pub fn resolve_epochs(
+    repo_id: &[u8; 32],
+    reader: &[u8; 32],
+    memberships: &[MemberRow],
+    configs: &[ConfigRow],
+    wraps: &[WrapRow],
+) -> EpochResolution {
+    let maintainers: BTreeSet<[u8; 32]> = memberships
+        .iter()
+        .filter(|m| m.role == Role::Maintainer)
+        .map(|m| m.identity)
+        .collect();
+    let members: BTreeSet<[u8; 32]> = memberships.iter().map(|m| m.identity).collect();
+
+    let first = select_anchors(configs, &maintainers);
+    let anchors: BTreeMap<u32, Anchor> = first.iter().map(|(&e, c)| (e, anchor_of(c))).collect();
+    let current_epoch = anchors.keys().next_back().copied();
+    let unanchored: Vec<u32> = configs
+        .iter()
+        .map(|c| c.epoch)
+        .chain(wraps.iter().map(|w| w.epoch))
+        .filter(|e| !anchors.contains_key(e))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let commits_to = |e: u32, key: &EpochKey| {
+        anchors
+            .get(&e)
+            .and_then(|a| a.commit)
+            .is_some_and(|c| EpochKeys::derive(repo_id, e, key).commits_to(&c))
+    };
+
+    // accepted wraps (§5.4): to the reader, from a current maintainer, for an existing epoch; a
+    // key that does not commit to the anchor is a KeyMismatch, never a reason to look elsewhere
+    let mut alerts: BTreeSet<Alert> = BTreeSet::new();
+    let mut keys: BTreeMap<u32, EpochKey> = BTreeMap::new();
+    let mut starts: Vec<u32> = Vec::new();
+    for w in wraps {
+        let Some(key) = &w.key else { continue };
+        if w.member_id != *reader
+            || !maintainers.contains(&w.owner)
+            || !anchors.contains_key(&w.epoch)
+        {
+            continue;
+        }
+        if commits_to(w.epoch, key) {
+            keys.insert(w.epoch, key.clone());
+            starts.push(w.epoch);
+        } else {
+            alerts.insert(Alert::KeyMismatch {
+                epoch: w.epoch,
+                author: w.owner,
+            });
+        }
+    }
+    for start in starts {
+        walk_chain(repo_id, start, &first, &commits_to, &mut keys, &mut alerts);
+    }
+
+    let repair = current_epoch.map(|n| repair_check(n, wraps, &maintainers, &members));
+    if let (Some(r), Some(n)) = (&repair, current_epoch) {
+        if r.rotate && maintainers.contains(reader) {
+            alerts.insert(Alert::RotationRequired {
+                epoch: n,
+                members: r.non_members.clone(),
+            });
+        }
+    }
+    let mut alerts: Vec<Alert> = alerts.into_iter().collect();
+    alerts.sort_by_key(Alert::sort_key);
+
+    let write_epoch = current_epoch.filter(|n| keys.contains_key(n));
+    EpochResolution {
+        current_epoch,
+        anchors,
+        keys,
+        write_epoch,
+        unanchored,
+        alerts,
+        repair,
+        members,
+    }
+}
+
+mod hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        hex::decode(String::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
+mod hex32_vec {
+    use serde::ser::SerializeSeq;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[[u8; 32]], s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for id in v {
+            seq.serialize_element(&hex::encode(id))?;
+        }
+        seq.end()
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<[u8; 32]>, D::Error> {
+        Vec::<String>::deserialize(d)?
+            .into_iter()
+            .map(|s| {
+                let b = hex::decode(s).map_err(serde::de::Error::custom)?;
+                <[u8; 32]>::try_from(b).map_err(|_| serde::de::Error::custom("expected 32 bytes"))
+            })
+            .collect()
+    }
+}
+
+mod opt_key {
+    use super::EpochKey;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: Serializer>(k: &Option<EpochKey>, s: S) -> Result<S::Ok, S::Error> {
+        match k {
+            Some(k) => s.serialize_str(&hex::encode(k.expose())),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<EpochKey>, D::Error> {
+        let s = zeroize::Zeroizing::new(String::deserialize(d)?);
+        let b = zeroize::Zeroizing::new(hex::decode(s.as_str()).map_err(serde::de::Error::custom)?);
+        EpochKey::from_slice(&b)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("expected a 32-byte key"))
+    }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "within_one_segment",
+  "description": "[20000, 20100) reads segment 1 only: sealed range [16436, 32836) (§3.5).",
+  "case": "private_pack_range",
+  "rules": "v2",
+  "input": {
+    "seal": {
+      "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "epoch": 0,
+      "fileId": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+      "plaintextMod251": 40000
+    },
+    "range": [
+      20000,
+      20100
+    ]
+  },
+  "expected": {
+    "segments": [
+      1,
+      1
+    ],
+    "sealedRange": [
+      16436,
+      32836
+    ],
+    "output": "abacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa000102030405060708090a0b0c0d0e0f10111213"
+  }
+}

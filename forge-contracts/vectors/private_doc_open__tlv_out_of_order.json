@@ -1,0 +1,32 @@
+{
+  "name": "tlv_out_of_order",
+  "description": "tags out of order (2 then 1) are malformed.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "01000102030405060708090a0b1c703fa1a657cc0d371934c1b5459f61d67651c765e45de82df7f639b9e9ad94311359ecbc284d702e2a3f93d56c676543fe58f1565e44c6c1be1acd",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "ref_name_hash_mismatch",
+  "description": "a writer never seals a refName that does not hash to the document's refNameHash (H3).",
+  "case": "private_doc_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "doc": {
+      "type": "refUpdate",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "eef70d7506d9e18be1005f88cd0889a9fa321fb0bce4dc1209442c41cc0c47e2",
+      "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "force": false
+    },
+    "fields": {
+      "refName": "refs/heads/main"
+    },
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

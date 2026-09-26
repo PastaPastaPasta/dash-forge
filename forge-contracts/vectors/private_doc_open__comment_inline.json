@@ -1,0 +1,36 @@
+{
+  "name": "comment_inline",
+  "description": "the inline comment yields body and path.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "01000102030405060708090a0b1c70249caa46d6592d197ad2ad4ef70eb36e0da54a9e66e577e4f16f2a8e55d2c8ed09dc06cd085c7a26e3",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "body": "nit: rename",
+      "path": "src/lib.rs"
+    }
+  }
+}

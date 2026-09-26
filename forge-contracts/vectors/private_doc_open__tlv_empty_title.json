@@ -1,0 +1,32 @@
+{
+  "name": "tlv_empty_title",
+  "description": "a zero-length title counts as absent, so the required title is missing.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "01000102030405060708090a0b1f702ff0c322bf1c3a5c60dba50b8f7bd77f10a90edcae674749951e5594e757ed374c0ef0e0",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

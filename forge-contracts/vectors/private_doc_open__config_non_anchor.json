@@ -1,0 +1,40 @@
+{
+  "name": "config_non_anchor",
+  "description": "a later config of epoch 1 that is not the anchor, without tags 8/9.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "c0",
+          "height": 10
+        },
+        "1": {
+          "id": "c1",
+          "height": 1000
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "config",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "id": "c1-later",
+      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9cd2c71a2a510ad23e4af9dc28cbb244dd6969da904d5fda8b5e83095fe3df3",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "defaultBranch": "refs/heads/dev"
+    }
+  }
+}
