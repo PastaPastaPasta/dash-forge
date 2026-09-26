@@ -11,7 +11,7 @@
  * storage, hashed and verified, then one `release` document names them.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -28,20 +28,24 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NewReleaseButton } from '@/components/repo/new-release'
 import { useSdk } from '@/hooks/use-sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
+import { repoKey } from '@/lib/repo'
 import { errorMessage, cn } from '@/lib/utils'
 
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const [showPrevious, setShowPrevious] = useState(false)
   const { network } = useSdk()
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
   // After a publish the node answering may be a block behind: re-read a few times.
   const refreshAfterPublish = (): void => {
-    for (const delay of [0, 3000, 8000]) {
+    timers.current.forEach(clearTimeout)
+    timers.current = [0, 3000, 8000].map((delay) =>
       setTimeout(() => {
-        invalidateSessionCache(`releases:${network}:`)
+        invalidateSessionCache(`releases:${network}:${repoKey(home.repo)}`)
         reload()
-      }, delay)
-    }
+      }, delay),
+    )
   }
 
   return (

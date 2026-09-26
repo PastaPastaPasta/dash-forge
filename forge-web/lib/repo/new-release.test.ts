@@ -65,6 +65,14 @@ describe('release input rules', () => {
     expect(assets).toEqual([{ name: 'app.tar.gz', sha256: 'ab'.repeat(32), size: 12, uris: asset.uris }])
   })
 
+  it('a retry with the stored assets derives the same intent (the same signed write)', async () => {
+    const input = { tagName: 'v1', name: 'x', notes: '' }
+    const stored = [{ name: 'a', sha256: 'ab'.repeat(32), sizeBytes: 1, uris: ['https://pub.example/a', 's3://b/a'] }]
+    expect(await releaseIntent('draft', input, stored)).toBe(await releaseIntent('draft', input, [...stored]))
+    // Had the retry re-uploaded and one target failed, the URIs (and so the intent) would differ.
+    expect(await releaseIntent('draft', input, [{ ...stored[0]!, uris: ['https://pub.example/a'] }])).not.toBe(await releaseIntent('draft', input, stored))
+  })
+
   it('binds a publish intent to its content', async () => {
     const a = await releaseIntent('draft', { tagName: 'v1', name: 'x', notes: '' }, [])
     expect(await releaseIntent('draft', { tagName: 'v1', name: 'x', notes: '' }, [])).toBe(a)

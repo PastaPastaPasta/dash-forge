@@ -27,7 +27,7 @@ import {
 import { gatewayUrl } from '../storage/ipfs'
 import { publicObjectUrl, s3Uri } from '../storage/s3'
 import { sha256Hex } from '../storage/sigv4'
-import type { V2RepoRef } from './contract'
+import type { RepoRef } from './contract'
 import { invalidateMembers, readViewerPermissions } from './members'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 
@@ -74,6 +74,9 @@ export function releaseTextProblem(input: { name: string; notes: string }): stri
   return fits('the title', input.name, RELEASE_LIMITS.name) ?? fits('the notes', input.notes, RELEASE_LIMITS.notes)
 }
 
+/** C0 controls, DEL, bidi embeddings/overrides/isolates, LRM/RLM and ALM: they disguise a name. */
+const DISGUISING = /[\u0000-\u001f\u007f‪-‮⁦-⁩‎‏؜]/
+
 /** Why a set of asset files cannot be published, or null. */
 export function assetFilesProblem(files: readonly { readonly name: string; readonly size: number }[]): string | null {
   const names = files.map((f) => f.name)
@@ -81,8 +84,9 @@ export function assetFilesProblem(files: readonly { readonly name: string; reado
   for (const f of files) {
     if (f.name === '' || f.name.includes('/') || f.name.includes('\\') || f.name === '.' || f.name === '..') return 'an asset name must be a plain file name'
     // Control and text-direction characters disguise a file name.
-    if (/[\x00-\x1f\x7f‪-‮⁦-⁩‎‏]/.test(f.name)) return `${f.name}: the name holds control or text-direction characters`
-    if (chars(f.name) > MAX_ASSET_NAME) return `${f.name.slice(0, 40)}…: asset names hold at most ${MAX_ASSET_NAME} characters`
+    if (DISGUISING.test(f.name)) return `${f.name}: the name holds control or text-direction characters`
+    // UTF-16 length, as the reader's zod `.max(255)` counts it.
+    if (f.name.length > MAX_ASSET_NAME) return `${f.name.slice(0, 40)}…: asset names hold at most ${MAX_ASSET_NAME} characters`
     if (f.size === 0) return `${f.name} is empty`
     if (f.size > MAX_ASSET_BYTES) return `${f.name} is over ${MAX_ASSET_BYTES / 1024 / 1024} MiB: publish large assets with dg release create`
   }
@@ -159,10 +163,15 @@ export type PublishEvent =
 export class ReleaseWriteError extends Error {
   constructor(
     readonly cause: unknown,
-    readonly assetsStored: number,
+    /** The assets stored for this release: a retry writes the release with exactly these. */
+    readonly assets: readonly ReleaseAsset[],
   ) {
     super('the release document was not written')
     this.name = 'ReleaseWriteError'
+  }
+
+  get assetsStored(): number {
+    return this.assets.length
   }
 }
 
@@ -170,7 +179,7 @@ export class ReleaseWriteError extends Error {
  * Re-read the signer's role, uncached (the CLI's `require_role` before uploading): a maintainer
  * revoked since the page loaded must not upload for a write consensus will refuse.
  */
-export async function requireMaintainer(sdk: EvoSDK, repo: V2RepoRef, identityId: string, network: Network): Promise<void> {
+export async function requireMaintainer(sdk: EvoSDK, repo: RepoRef, identityId: string, network: Network): Promise<void> {
   invalidateMembers(repo, network)
   const holdings = await readViewerPermissions(sdk, repo, identityId, network)
   if (holdings === null) throw new Error("couldn't read this repo's members to confirm you are a maintainer; try again")
@@ -186,7 +195,7 @@ export async function requireMaintainer(sdk: EvoSDK, repo: V2RepoRef, identityId
 export async function publishRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
-  repo: V2RepoRef,
+  repo: RepoRef,
   input: {
     readonly tagName: string
     readonly name: string
@@ -194,18 +203,26 @@ export async function publishRelease(
     readonly files: readonly { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }[]
     /** The dialog's draft token; bound to the content digest here. */
     readonly draft: string
+    /**
+     * Assets already stored by an attempt whose release write went unconfirmed: the retry
+     * writes the release with exactly these (same content, same intent: the same signed write)
+     * and uploads nothing.
+     */
+    readonly stored?: readonly ReleaseAsset[]
   },
   storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
   onEvent?: (e: PublishEvent) => void,
 ): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
   const problem =
-    tagProblem(input.tagName) ?? releaseTextProblem(input) ?? assetFilesProblem(input.files) ?? assetPlanProblem(input.files, storage.policy, storage.profiles)
+    tagProblem(input.tagName) ??
+    releaseTextProblem(input) ??
+    (input.stored ? null : assetFilesProblem(input.files) ?? assetPlanProblem(input.files, storage.policy, storage.profiles))
   if (problem) throw new Error(problem)
   onEvent?.({ step: 'role' })
   await requireMaintainer(sdk, repo, auth.identityId, auth.network)
 
-  const assets: ReleaseAsset[] = []
-  for (const f of input.files) {
+  const assets: ReleaseAsset[] = input.stored ? [...input.stored] : []
+  for (const f of input.stored ? [] : input.files) {
     // One file in memory at a time.
     const bytes = new Uint8Array(await f.arrayBuffer())
     const hash = await sha256Hex(bytes)
@@ -226,6 +243,6 @@ export async function publishRelease(
     })
     return { release, assets }
   } catch (e) {
-    throw new ReleaseWriteError(e, assets.length)
+    throw new ReleaseWriteError(e, assets)
   }
 }

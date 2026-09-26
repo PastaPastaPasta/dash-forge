@@ -18,6 +18,7 @@ import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Plus, XCircle } from '
 import type { RepoHome } from '@/lib/view'
 import { formatBytes } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
+import type { ReleaseAsset } from '@/lib/repo/writes'
 import {
   ReleaseWriteError,
   assetFilesProblem,
@@ -70,11 +71,12 @@ function stateText(s: AssetState | undefined): string {
 }
 
 export function NewReleaseButton({ home, releases, onPublished }: { home: RepoHome; releases: ReleaseList | null; onPublished: () => void }): JSX.Element | null {
-  const { role } = useViewerRole(home.repo)
+  const { role, known } = useViewerRole(home.repo)
   const [open, setOpen] = useState(false)
   // Held here, not in the dialog: closing it must not lose a write's intent.
   const draft = useIntent()
-  if (home.repo.kind !== 'v2' || role !== 'maintainer') return null
+  // A settled marker (no visible output): tests can tell "no button" from "not decided yet".
+  if (role !== 'maintainer') return known ? <span hidden data-testid="new-release-role" data-role={role ?? 'none'} /> : null
   return (
     <>
       <Button variant="primary" size="sm" onClick={() => setOpen(true)}>
@@ -109,7 +111,7 @@ function NewReleaseDialog({
   onClose: () => void
   onPublished: () => void
 }): JSX.Element {
-  const repo = home.repo.kind === 'v2' ? home.repo : null
+  const repo = home.repo
   const { sdk, network } = useSdk()
   const { signer } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
@@ -124,6 +126,8 @@ function NewReleaseDialog({
   const [touched, setTouched] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // After an unconfirmed release write: the assets it named. Retry writes exactly these.
+  const [pendingAssets, setPendingAssets] = useState<readonly ReleaseAsset[] | null>(null)
 
   const policy = config && repo ? policyForRepo(config, repo.repoId) : null
   const profiles = useMemo(() => config?.profiles ?? [], [config])
@@ -146,21 +150,22 @@ function NewReleaseDialog({
     setPhase('publishing')
     setError(null)
     setStatus('Checking you are a maintainer…')
-    setProgress(Object.fromEntries(files.map((f) => [f.name, { state: 'waiting' } as AssetState])))
+    if (pendingAssets === null) setProgress(Object.fromEntries(files.map((f) => [f.name, { state: 'waiting' } as AssetState])))
     let stored = 0
+    let current: string | null = null
     try {
       await publishRelease(
         sdk,
         signer,
         repo,
-        { tagName: trimmedTag, name: title.trim(), notes: notes.trimEnd(), files, draft },
+        { tagName: trimmedTag, name: title.trim(), notes: notes.trimEnd(), files, draft, ...(pendingAssets ? { stored: pendingAssets } : {}) },
         { policy, profiles },
         (e) => {
           if (e.step === 'upload' && e.event.phase === 'start') {
+            current = e.asset
             setProgress((p) => ({ ...p, [e.asset]: { state: 'uploading' } }))
             setStatus(`Uploading ${e.asset}…`)
           }
-          if (e.step === 'upload' && e.event.phase === 'failed') setProgress((p) => ({ ...p, [e.asset]: p[e.asset]?.state === 'done' ? p[e.asset] as AssetState : { state: 'failed' } }))
           if (e.step === 'uploaded') {
             stored += 1
             setProgress((p) => ({ ...p, [e.asset]: { state: 'done', copies: e.copies, of: e.copies + e.failures.length } }))
@@ -169,11 +174,15 @@ function NewReleaseDialog({
           if (e.step === 'release') setStatus('Writing the release…')
         },
       )
-      invalidateSessionCache(`releases:${network}:`)
+      invalidateSessionCache(`releases:${network}:${repo.repoId}`)
+      setPendingAssets(null)
       setPhase('done')
       setStatus('Release published.')
       onPublished()
     } catch (e) {
+      // The file whose upload threw (a single target failing is not the file failing).
+      const failedFile = current
+      if (!(e instanceof ReleaseWriteError) && failedFile !== null) setProgress((p) => (p[failedFile]?.state === 'done' ? p : { ...p, [failedFile]: { state: 'failed' } }))
       const inner = e instanceof ReleaseWriteError ? e.cause : e
       const { message, keyLimit } = writeErrorMessage(inner)
       if (keyLimit) openTopUp({ blocker: 'key-budget' })
@@ -183,8 +192,10 @@ function NewReleaseDialog({
           : stored > 0
             ? ` ${stored} ${stored === 1 ? 'asset was' : 'assets were'} stored before this; publishing again reuses them.`
             : ''
-      if (inner instanceof UnconfirmedWriteError) {
-        // The write may still land: keep the content fixed, so a retry finishes the same one.
+      if (inner instanceof UnconfirmedWriteError && e instanceof ReleaseWriteError) {
+        // The write may still land: keep the content AND its stored assets fixed, so a retry
+        // uploads nothing and finishes the same signed write.
+        setPendingAssets(e.assets)
         setPhase('unconfirmed')
         setError(`${message}${context} Retry finishes the same write; nothing is signed twice.`)
       } else {
@@ -196,19 +207,24 @@ function NewReleaseDialog({
   }
 
   const busy = phase === 'publishing'
+  const close = (): void => {
+    if (busy) return
+    if (phase === 'unconfirmed' && !window.confirm('The release write may still land. Close anyway? Reopening with other content signs a new release; retry here to finish this one.')) return
+    onClose()
+  }
   const shownProblem = touched || trimmedTag !== '' ? problem : null
   const disabledReason = guard.disabledReason ?? (shownProblem ?? (problem !== null ? 'fill in the tag' : null))
 
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={close}
       title="Publish a release"
       description="Maintainers only. Assets go to your own storage, hashed; the release itself is one small Platform document."
       className="max-w-lg"
       footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={busy}>
+          <Button variant="ghost" onClick={close} disabled={busy}>
             {phase === 'done' ? 'Close' : 'Cancel'}
           </Button>
           {phase !== 'done' ? (

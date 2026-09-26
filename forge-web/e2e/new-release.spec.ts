@@ -40,6 +40,9 @@ test.afterAll(() => {
   if (existsSync(BACKUP)) {
     copyFileSync(BACKUP, stateFile('MAINTAINER'))
     rmSync(BACKUP)
+  } else if (existsSync(stateFile('MAINTAINER'))) {
+    // First run: there was no saved state; do not leave the tunnel-backed profile behind.
+    rmSync(stateFile('MAINTAINER'))
   }
 })
 
@@ -56,8 +59,8 @@ test('r1. a non-maintainer is not offered "New release"', async ({ browser }) =>
   test.skip(!existsSync(idFile('CONTRIB')), 'CONTRIB identity not found')
   const page = await signedIn(browser, 'CONTRIB', releasesPath())
   await expect(page.getByRole('heading', { name: 'Releases' })).toBeVisible({ timeout: 60_000 })
-  // The role read settles quickly; give it time before asserting absence.
-  await page.waitForLoadState('networkidle')
+  // Wait until the page has DECIDED the viewer's role, then assert the button is absent.
+  await expect(page.getByTestId('new-release-role')).toHaveAttribute('data-role', 'none', { timeout: 60_000 })
   await expect(page.getByRole('button', { name: /new release/i })).toHaveCount(0)
 })
 
