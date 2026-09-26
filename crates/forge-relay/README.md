@@ -60,10 +60,31 @@ docker run --rm --read-only \
 Both images keep the retry queue in `/state` (`FORGE_RELAY_STATE_DIR=/state`, owned by the
 image's non-root user, mode 0700). The named volume `relay-state` keeps pending retries across
 container restarts; a fresh named volume takes the image's ownership. Without `-v ...:/state`,
-Docker gives the container an anonymous volume there, which `--rm` deletes. If the relay
-cannot use its state dir (not writable, not owned by the relay user, or not mode 0700), it
-still starts, on an in-memory queue, and logs `THE DELIVERY QUEUE IS NOT DURABLE`: retries
-then work but are lost on restart.
+Docker gives the container an anonymous volume there, which `--rm` deletes.
+
+If the state dir cannot be used (not writable, a symlink, or owned by another user; a
+directory of the relay user's with looser permissions is tightened to 0700):
+
+- when it was set explicitly (`--state-dir`, or `state-dir` in the config file) the relay
+  exits with an error;
+- when it is the default (including `FORGE_RELAY_STATE_DIR`), the relay starts on an
+  in-memory queue: retries work but are lost on restart. It logs a warning on every start, and
+  the health endpoint reports `"durable": false`.
+
+**Upgrading from an image without `/state`:** a `relay-state` volume that an older image
+created (or that was first mounted somewhere else) can be owned by root, which the non-root
+relay cannot write. Give it to the image's user once, then start the relay as usual:
+
+```sh
+# the release image (ghcr.io/...; distroless, user nonroot = uid 65532)
+docker run --rm -v relay-state:/state busybox sh -c 'chown 65532:65532 /state && chmod 700 /state'
+# an image built from crates/forge-relay/Dockerfile (user relay = uid 10001)
+docker run --rm -v relay-state:/state busybox sh -c 'chown 10001:10001 /state && chmod 700 /state'
+```
+
+`docker stop` (SIGTERM) and ctrl-c stop the relay gracefully: it stops delivering, writes each
+hook's undelivered events (the in-flight one and those still in its in-memory queue) to the
+retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -72,9 +93,9 @@ then work but are lost on restart.
 | `--poll-interval <s>` | 15 | Seconds between polls. |
 | `--refresh-cycles <n>` | 4 | Re-read the webhook documents every n polls. |
 | `--lookback <n>` | 0 | At startup, deliver the last n documents of each stream. |
-| `--listen <addr>` | off | Health endpoint (`200 ok`). |
+| `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
-| `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`, which must be a real directory owned by the relay user, mode 0700; created so if missing). One relay per state dir: a second relay on the same dir refuses to start. |
+| `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
 | `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
 
 ## Delivery semantics
@@ -83,11 +104,12 @@ then work but are lost on restart.
   lost.** Each delivery gets up to 5 attempts within 30 s. If they all fail, the delivery goes
   to the relay's **retry queue** on local disk and is retried 1 min, 5 min, 30 min, 2 h, 12 h
   and 24 h later (then every 24 h), across restarts, until it succeeds or is 48 h old; then it
-  is dropped with one `DEAD-LETTER` log line. Events still waiting in a hook's in-memory queue,
-  or in flight, when the relay stops are not written anywhere and are lost (cursors are not
-  persisted either; see "No cursor state" below). A failure retrying cannot fix is not queued:
-  a body over 1 MiB, or a receiver answering 4xx other than 408 or 429, is logged as
-  `DEAD-LETTER` at once. See [Delivery queue](#delivery-queue).
+  is dropped with one `DEAD-LETTER` log line. A graceful stop (SIGTERM, ctrl-c) also writes
+  the events still waiting in a hook's in-memory queue, or in flight; a crash or `kill -9`
+  loses them, and documents not yet polled are not replayed either (cursors are not persisted;
+  see "No cursor state" below). A failure retrying cannot fix is not queued: a body over
+  1 MiB, a receiver answering 4xx other than 408 or 429, or a URL the SSRF guard refuses, is
+  logged as `DEAD-LETTER` at once. See [Delivery queue](#delivery-queue).
 - `X-GitHub-Delivery` is derived from the hook id and the source document id, so every relay
   and every retry sends the same id for the same document; dedupe on it.
 - Polling never waits on a receiver. Each hook has its own worker and in-memory queue (256

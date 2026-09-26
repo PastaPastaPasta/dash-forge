@@ -111,6 +111,9 @@ pub struct RelayConfig {
     pub static_webhooks: Vec<StaticWebhook>,
     /// Where the durable delivery queue lives (`<state dir>/deliveries`).
     pub state_dir: PathBuf,
+    /// Whether the state dir was chosen explicitly (`--state-dir` or `state-dir` in the
+    /// config file): then a queue that cannot be durable is fatal, not a fallback to memory.
+    pub state_dir_explicit: bool,
     /// Retry delays after the 1st, 2nd, ... failed delivery (the last repeats).
     pub retry_schedule: Vec<Duration>,
 }
@@ -201,6 +204,7 @@ impl RelayConfig {
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
             listen: cli.listen.clone().or(file.listen),
             static_webhooks: file.webhook,
+            state_dir_explicit: cli.state_dir.is_some() || file.state_dir.is_some(),
             state_dir: match cli.state_dir.clone().or(file.state_dir) {
                 Some(d) => d,
                 None => crate::queue::default_state_dir()?,
@@ -235,7 +239,7 @@ pub fn state_dir_from_file(path: &std::path::Path) -> Result<PathBuf> {
 fn parse_toml<T: serde::de::DeserializeOwned>(path: &std::path::Path, raw: &str) -> Result<T> {
     toml::from_str(raw).map_err(|e| {
         let at = e.span().map_or_else(String::new, |span| {
-            let before = &raw[..span.start.min(raw.len())];
+            let before = raw.get(..span.start).unwrap_or(raw);
             let line = before.matches('\n').count() + 1;
             let col = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
             format!(" at line {line}, column {col}")

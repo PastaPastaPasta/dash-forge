@@ -3,13 +3,14 @@
 //! A delivery that fails every attempt of its in-window retries ([`crate::deliver`]) is
 //! written here and retried later, on a backoff schedule ([`DEFAULT_SCHEDULE`]: 1 min, 5 min,
 //! 30 min, 2 h, 12 h, 24 h, then every 24 h), until it succeeds or is [`EXPIRY`] old (48 h), when
-//! it is dropped with one log line. The queue survives restarts. Only failed deliveries are
-//! written: events still waiting in a hook's in-memory queue, or in flight, when the relay
-//! stops are lost. A failure retrying cannot fix (a body over the cap, a 4xx other than
-//! 408/429) is not queued at all.
+//! it is dropped with one log line. The queue survives restarts. Failed deliveries are
+//! written, and on a graceful stop so are the events still waiting in a hook's in-memory
+//! queue or in flight; a crash loses those. A failure retrying cannot fix (a body over the
+//! cap, a 4xx other than 408/429, a URL the SSRF guard refuses) is not queued at all.
 //!
 //! **On disk:** `<state dir>/deliveries/<delivery id>.json`, one file per delivery, mode 0600
-//! in a 0700 directory the relay user owns (checked at startup; a symlink is refused), written
+//! in a 0700 directory the relay user owns (checked at startup and tightened to 0700 if looser;
+//! a symlink or another owner is refused), written
 //! by a background thread through a fresh temp file and a rename, so a crash never leaves half
 //! a file and no fsync runs on the async threads. An entry holds what a retry needs and nothing
 //! secret: repo id, hook id, GitHub event name, the source document id, the JSON body (public
@@ -291,6 +292,21 @@ impl State {
             .get(id)
             .is_some_and(|e| e.status == Status::Pending)
     }
+
+    /// Remove every pending-index key of `id` (an index out of step with `entries`; should
+    /// not happen, but a housekeeping loop must not spin on it).
+    fn purge_pending_keys(&mut self, id: &str) {
+        let hit = |k: &(u64, String)| k.1 != id;
+        self.aged.retain(hit);
+        for t in self.repos.values_mut() {
+            t.aged.retain(hit);
+        }
+        self.repos.retain(|_, t| !t.aged.is_empty());
+        for a in self.hooks.values_mut() {
+            a.retain(hit);
+        }
+        self.hooks.retain(|_, a| !a.is_empty());
+    }
 }
 
 /// What the writer thread still has to do: the latest content of each changed entry (`None`
@@ -331,7 +347,6 @@ impl Disk {
     }
 
     /// Wait until everything sent so far is on disk.
-    #[cfg(test)]
     fn flush(&self) {
         let mut p = self.shared.lock();
         while !p.ops.is_empty() || p.busy {
@@ -433,7 +448,9 @@ fn write_entry(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// `dir` must be a real directory (not a symlink), owned by this user, mode 0700.
+/// `dir` must be a real directory (not a symlink) owned by this user; its mode is tightened
+/// to 0700 if it is looser (the directory is ours, so that is safe; a symlink or a directory
+/// someone else owns is refused).
 fn check_private_dir(dir: &Path) -> std::io::Result<()> {
     let md = std::fs::symlink_metadata(dir)?;
     if !md.file_type().is_dir() {
@@ -453,9 +470,11 @@ fn check_private_dir(dir: &Path) -> std::io::Result<()> {
         }
         let mode = md.mode() & 0o777;
         if mode != 0o700 {
-            return Err(std::io::Error::other(format!(
-                "its mode is {mode:o}, not 700 (chmod 700 it)"
-            )));
+            use std::os::unix::fs::PermissionsExt;
+            tracing::warn!(dir = %dir.display(), mode = format!("{mode:o}"), "tightening the delivery queue directory to mode 700");
+            // `set_permissions` follows symlinks; the entry was checked to be a real
+            // directory just above, in a parent only this user can replace it in.
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
     }
     Ok(())
@@ -594,8 +613,12 @@ impl RetryQueue {
             }
         }
         let mut state = State::default();
+        let mut bodiless = Vec::new();
         for mut e in read_dir(&dir)? {
             e.bytes = e.payload.as_ref().map_or(0, |p| p.get().len());
+            if e.status == Status::Pending && e.payload.is_none() {
+                bodiless.push(e.id.clone());
+            }
             state.index(&e);
             state.entries.insert(e.id.clone(), e);
         }
@@ -607,7 +630,7 @@ impl RetryQueue {
                 .spawn(move || writer_loop(&dir, &shared))
                 .map_err(|e| io("starting the writer for", e))?
         };
-        Ok(Self {
+        let q = Self {
             disk: Some(Disk {
                 dir,
                 shared,
@@ -616,7 +639,18 @@ impl RetryQueue {
             }),
             ..Self::in_memory(schedule)
         }
-        .with_state(state))
+        .with_state(state);
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, ms);
+            let mut st = q.lock();
+            for id in bodiless {
+                q.mark_dropped(&mut st, &id, "no body stored (unreadable entry)", now);
+            }
+            q.enforce_all(&mut st, now);
+        }
+        Ok(q)
     }
 
     /// A queue kept in memory only (the state dir is unusable): retries work the same, but
@@ -640,7 +674,6 @@ impl RetryQueue {
     }
 
     /// Whether entries reach the disk.
-    #[cfg(test)]
     pub fn is_durable(&self) -> bool {
         self.disk.is_some()
     }
@@ -673,8 +706,8 @@ impl RetryQueue {
         }
     }
 
-    /// Wait until every change so far is on disk (dropping the queue also drains the writer).
-    #[cfg(test)]
+    /// Wait until every change so far is on disk (at shutdown; dropping the queue also drains
+    /// the writer).
     pub fn flush(&self) {
         if let Some(disk) = &self.disk {
             disk.flush();
@@ -685,6 +718,7 @@ impl RetryQueue {
     /// trim the dropped records to [`MAX_DROPPED`].
     fn mark_dropped(&self, st: &mut State, id: &str, reason: &str, now: u64) {
         let Some(mut e) = st.entries.remove(id) else {
+            st.purge_pending_keys(id);
             return;
         };
         if e.status == Status::Pending {
@@ -706,6 +740,8 @@ impl RetryQueue {
             e.bytes = 0;
             st.index(&e);
             self.persist(&e);
+        } else {
+            st.purge_pending_keys(id);
         }
         st.entries.insert(e.id.clone(), e);
         while st.dropped.len() > MAX_DROPPED {
@@ -931,6 +967,19 @@ impl RetryQueue {
         }
     }
 
+    /// Enforce every bound (a queue loaded from disk, possibly written under other limits).
+    fn enforce_all(&self, st: &mut State, now: u64) {
+        let hooks: Vec<(String, String)> = st.hooks.keys().cloned().collect();
+        for (repo, hook) in hooks {
+            self.enforce_bounds(st, &repo, &hook, now);
+        }
+        let repos: Vec<String> = st.repos.keys().cloned().collect();
+        for repo in repos {
+            // The hook bound was enforced above; this runs the repo and global bounds.
+            self.enforce_bounds(st, &repo, "", now);
+        }
+    }
+
     /// Every entry (for tests and diagnostics).
     #[cfg(test)]
     pub fn snapshot(&self) -> Vec<Entry> {
@@ -1077,16 +1126,20 @@ mod tests {
         std::fs::remove_dir_all(&d).ok();
         std::fs::remove_dir_all(&elsewhere).ok();
 
-        // A group- or world-readable queue dir.
+        // A group- or world-readable queue dir of ours is tightened, not refused.
         let d = dir("loose");
         std::fs::create_dir_all(queue_dir(&d)).unwrap();
         std::fs::set_permissions(queue_dir(&d), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let err = RetryQueue::open(&d, Vec::new()).unwrap_err();
-        assert!(err.to_string().contains("755"), "{err}");
+        drop(RetryQueue::open(&d, Vec::new()).unwrap());
+        let mode = std::fs::metadata(queue_dir(&d))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
 
         // A symlinked entry is not read, and a planted temp-file symlink is not written
         // through.
-        std::fs::set_permissions(queue_dir(&d), std::fs::Permissions::from_mode(0o700)).unwrap();
         let victim = d.join("victim");
         std::fs::write(&victim, "untouched").unwrap();
         let good = serde_json::json!({
@@ -1243,6 +1296,53 @@ mod tests {
             .count();
         assert_eq!(flood, 8, "the flooding repo pays for the global bound");
         assert!(q.is_pending("f049"), "its newest are kept");
+    }
+
+    #[test]
+    fn loading_drops_bodiless_entries_and_enforces_the_bounds() {
+        let d = dir("load");
+        private_dir().recursive(true).create(queue_dir(&d)).unwrap();
+        let entry = |i: usize, body: bool| {
+            let id = format!("{i:08x}-0000-0000-0000-000000000000");
+            let mut v = serde_json::json!({
+                "id": id, "repoId": "R", "hookId": "h", "event": "push", "sourceDocId": "doc",
+                "createdMs": i, "tries": 1, "nextMs": 0, "lastError": "", "status": "pending",
+            });
+            if body {
+                v["payload"] = serde_json::json!({ "i": i });
+            }
+            std::fs::write(queue_dir(&d).join(format!("{id}.json")), v.to_string()).unwrap();
+            id
+        };
+        let bodiless = entry(0, false);
+        for i in 1..=MAX_PENDING_PER_HOOK + 2 {
+            entry(i, true);
+        }
+        let q = RetryQueue::open(&d, Vec::new()).unwrap();
+        assert!(!q.is_pending(&bodiless), "no body: dropped");
+        let pending = q
+            .snapshot()
+            .into_iter()
+            .filter(|e| e.status == Status::Pending)
+            .count();
+        assert_eq!(
+            pending, MAX_PENDING_PER_HOOK,
+            "the hook's bound holds after a load"
+        );
+        assert!(!q.is_pending(&format!("{:08x}-0000-0000-0000-000000000000", 1)));
+        drop(q);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn an_index_out_of_step_does_not_hang_housekeeping() {
+        let q = RetryQueue::in_memory(Vec::new());
+        let p = serde_json::json!({});
+        q.fail(&failure("a", "h", &p), 0, true, None);
+        // The entry vanishes but its index keys stay (a bug elsewhere): expiry must still end.
+        q.lock().entries.remove("a");
+        assert!(q.due(100 * H).is_empty());
+        assert!(q.lock().aged.is_empty() && q.lock().hooks.is_empty());
     }
 
     #[test]

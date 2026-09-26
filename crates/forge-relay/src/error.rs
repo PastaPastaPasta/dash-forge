@@ -10,9 +10,14 @@ pub enum RelayError {
     #[error("configuration error: {0}")]
     Config(String),
 
-    /// A delivery target was refused by the SSRF policy.
+    /// A delivery target was refused by the SSRF policy (malformed, or a non-public
+    /// address): permanent until the hook's URL changes.
     #[error("ssrf guard: {0}")]
     Ssrf(String),
+
+    /// The delivery host did not resolve (in time): retried like any receiver failure.
+    #[error("delivery host unresolved: {0}")]
+    Unresolved(String),
 
     /// Delivery failed after exhausting retries (dead-lettered).
     #[error("delivery failed after {attempts} attempts: {reason}")]

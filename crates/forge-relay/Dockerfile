@@ -45,7 +45,7 @@ RUN apt-get update \
  && install -d -o 10001 -g 10001 -m 0700 /state
 COPY --from=builder /forge-relay /usr/local/bin/forge-relay
 # The retry queue's state dir, owned by the runtime user (a named volume mounted here starts
-# with this ownership). Without a writable state dir the relay runs on an in-memory queue.
+# with this ownership). See the README for the state-dir rules (explicit vs default, the fallback).
 ENV FORGE_RELAY_STATE_DIR=/state
 VOLUME /state
 USER 10001:10001

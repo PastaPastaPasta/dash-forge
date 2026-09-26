@@ -199,9 +199,11 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         ));
     }
 
+    let queue = Arc::new(open_queue(&cfg)?);
     if let Some(addr) = cfg.listen.clone() {
+        let durable = queue.is_durable();
         tokio::spawn(async move {
-            if let Err(e) = crate::health::serve(&addr).await {
+            if let Err(e) = crate::health::serve(&addr, durable).await {
                 tracing::error!(error = %e, "health listener stopped");
             }
         });
@@ -215,7 +217,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
                 allow_private: cfg.allow_private,
                 ..Default::default()
             }),
-            Some(Arc::new(open_queue(&cfg)?)),
+            Some(queue),
         ),
         started_ms: now_ms(),
         cfg,
@@ -229,7 +231,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     );
 
     let repos: Repos = Arc::new(Mutex::new(BTreeMap::new()));
-    let mut discovery = Discovery {
+    spawn_discovery(Discovery {
         shared: Arc::clone(&shared),
         repos: Arc::clone(&repos),
         identity,
@@ -237,7 +239,20 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         statics,
         subs: Vec::new(),
         resume_at: BTreeMap::new(),
-    };
+    });
+
+    tokio::select! {
+        () = poll_loop(&shared, &repos) => {}
+        () = shutdown_signal() => {}
+    }
+    tracing::info!("stopping: writing undelivered events to the retry queue");
+    shared.dispatcher.shutdown(SHUTDOWN_GRACE).await;
+    tracing::info!("stopped");
+    Ok(())
+}
+
+/// Run discovery in its own task, every `refresh_cycles` poll intervals.
+fn spawn_discovery(mut discovery: Discovery) {
     tokio::spawn(async move {
         let every = shared_refresh_interval(&discovery.shared.cfg);
         let mut ticker = tokio::time::interval(every);
@@ -252,8 +267,30 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
             }
         }
     });
+}
 
-    poll_loop(&shared, &repos).await
+/// How long a graceful stop waits for the hook workers (within `docker stop`'s default 10 s).
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// SIGTERM (`docker stop`, systemd) or ctrl-c.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot watch for SIGTERM; only ctrl-c stops gracefully");
+            }
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Every poll interval, poll each served repo in its own task, at most
@@ -303,22 +340,31 @@ fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
         .saturating_mul(u32::try_from(cfg.refresh_cycles).unwrap_or(u32::MAX))
 }
 
-/// The durable retry queue in the state dir. When the dir cannot be used (a read-only root,
-/// a volume the relay user cannot write, an unsafe directory), the relay still starts, on an
-/// in-memory queue, with a loud warning: webhooks are delivered and retried, but pending
-/// retries are lost on restart. Another relay holding the queue is fatal (two relays would
-/// deliver the same retries).
+/// The durable retry queue in the state dir.
+///
+/// * A state dir chosen explicitly (`--state-dir`, `state-dir`) that cannot be used is fatal:
+///   the operator asked for durability.
+/// * The default one (a read-only root, a volume the relay user cannot write) falls back to an
+///   in-memory queue, with a warning on every start and `"durable": false` on the health
+///   endpoint: webhooks are delivered and retried, but pending retries are lost on restart.
+/// * Another relay holding the queue is always fatal (two relays would deliver the same
+///   retries).
 fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
     match RetryQueue::open(&cfg.state_dir, cfg.retry_schedule.clone()) {
         Ok(q) => Ok(q),
         Err(e @ RelayError::StateLocked(_)) => Err(e),
+        Err(e) if cfg.state_dir_explicit => Err(RelayError::Config(format!(
+            "the delivery queue's state dir cannot be used: {e}. Fix it (a directory this user \
+             owns and can write), or leave --state-dir / state-dir unset to run with a \
+             non-durable queue"
+        ))),
         Err(e) => {
-            tracing::error!(
+            tracing::warn!(
                 state_dir = %cfg.state_dir.display(),
                 error = %e,
-                "THE DELIVERY QUEUE IS NOT DURABLE: the state dir cannot be used, so failed \
-                 deliveries are retried from memory only and lost when the relay restarts. \
-                 Give the relay a writable state dir it owns (mode 0700): --state-dir, \
+                "the delivery queue is NOT durable: the default state dir cannot be used, so \
+                 failed deliveries are retried from memory only and lost when the relay \
+                 restarts. Give the relay a writable state dir it owns: --state-dir, \
                  FORGE_RELAY_STATE_DIR, or a volume at /state in the container images"
             );
             Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()))
@@ -1200,7 +1246,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unusable_state_dir_falls_back_to_memory_but_a_locked_one_is_fatal() {
+    fn an_unusable_default_state_dir_falls_back_to_memory_but_not_an_explicit_one() {
         let base = std::env::temp_dir().join(format!("relay-openq-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -1214,10 +1260,14 @@ mod tests {
             )
             .unwrap()
         };
-        // Not a directory at all (as a read-only root or a foreign-owned volume would fail).
+        // Not a directory at all (as a read-only root or a foreign-owned volume would fail):
+        // fatal when chosen explicitly, a fallback to memory when it is the default.
         let file = base.join("not-a-dir");
         std::fs::write(&file, "x").unwrap();
-        let q = open_queue(&cfg_for(file)).unwrap();
+        let mut cfg = cfg_for(file);
+        assert!(matches!(open_queue(&cfg), Err(RelayError::Config(_))));
+        cfg.state_dir_explicit = false;
+        let q = open_queue(&cfg).unwrap();
         assert!(!q.is_durable(), "runs, in memory");
         // A usable dir is durable; a second relay on it does not start.
         let cfg = cfg_for(base.join("state"));
