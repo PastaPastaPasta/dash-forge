@@ -1642,9 +1642,17 @@ impl<'a> Collab<'a> {
         if self.own_star(&collab, repo).await?.is_some() {
             return Ok(false);
         }
+        // indexOnly: a star has no stored row, so a spent nonce is settled by looking for
+        // this identity's star, not by reading the (row-less) document id back.
+        let probe = || async { Ok(self.own_star(&collab, repo).await?.is_some()) };
         match self
             .engine()?
-            .create_document(&collab, DOC_STAR, Self::with_repo(repo, BTreeMap::new())?)
+            .create_index_only(
+                &collab,
+                DOC_STAR,
+                Self::with_repo(repo, BTreeMap::new())?,
+                probe,
+            )
             .await
         {
             Ok(_) => Ok(true),

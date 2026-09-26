@@ -281,8 +281,29 @@ describe('write engine', () => {
     expect(r.confirmed).toBe(true)
     // Nonce 2 once (dropped, never re-broadcast into the cache), then 3, which landed.
     expect(signed).toEqual([2n, 3n])
-    // Every wait was the bounded one.
+    // Every wait was the bounded one, with no wasm-side overall timeout (see WaitSettings).
     expect(waits.every((w) => w === WAIT_SETTINGS)).toBe(true)
+    expect(Object.keys(WAIT_SETTINGS)).not.toContain('waitTimeoutMs')
+  })
+
+  it('a delete answered "already exists" is proven by the gone-poll, not assumed', async () => {
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => ({}), // still there
+      del: async () => {
+        throw new Error('tx already exists in cache')
+      },
+    }
+    await expect(
+      deleteDocumentIdempotent(sdkOf(script, []), auth([]), {
+        contractId: 'N10',
+        documentType: 'writer',
+        documentId: 'X',
+        confirmTimeoutMs: 0,
+      }),
+    ).rejects.toBeInstanceOf(UnconfirmedWriteError)
   })
 
   it('a silent wait whose nonce is still free re-broadcasts the same bytes and waits again', async () => {
@@ -308,6 +329,7 @@ describe('isNonceSpent (Drive validate_identity_nonce_update)', () => {
   const skipped = (behind: bigint) => 1n << (behind - 1n + 40n)
   it('is free above the tip and spent at it', () => {
     expect(isNonceSpent(10n, 11n)).toBe(false)
+    expect(isNonceSpent(10n, 40n)).toBe(false)
     expect(isNonceSpent(10n, 10n)).toBe(true)
   })
   it('is spent below the tip unless it is a skipped one', () => {

@@ -1415,7 +1415,6 @@ impl<'a> WriteEngine<'a> {
     /// another write — took it. `false` when it is still free, when the transition is not a
     /// document batch, or when the read fails (the loop then re-broadcasts as before).
     async fn nonce_spent(&self, transition: &StateTransition, nonce: u64) -> bool {
-        use dash_sdk::dpp::identity::identity_nonce::validate_identity_nonce_update;
         use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
         use drive_proof_verifier::types::IdentityContractNonceFetcher;
 
@@ -1434,7 +1433,7 @@ impl<'a> WriteEngine<'a> {
         {
             Ok(current) => {
                 let current = current.map_or(0, |f| f.0);
-                let spent = !validate_identity_nonce_update(current, nonce, owner).is_valid();
+                let spent = nonce_is_spent(current, nonce, owner);
                 tracing::debug!(
                     nonce,
                     current = current & NONCE_MASK,
@@ -1495,8 +1494,43 @@ impl<'a> WriteEngine<'a> {
         contract: &LoadedContract,
         document_type: &str,
         properties: BTreeMap<String, FieldValue>,
-        mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
+        persist: impl FnMut(&PreparedWrite) -> Result<()>,
     ) -> Result<PreparedWrite> {
+        self.create_probed(contract, document_type, properties, persist, NO_PROBE)
+            .await
+    }
+
+    /// A create of an `indexOnly` type (forge-v2 `star` / `follow`), whose entry has no stored
+    /// row to read back by id: when the write's nonce is found spent, `probe` (an owner-scoped
+    /// query, polled like [`Self::landed`]) says whether ours is the entry that landed, instead
+    /// of a by-id read that could never find it and would sign a second copy.
+    pub async fn create_index_only<F, Fut>(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        probe: F,
+    ) -> Result<PreparedWrite>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<bool>>,
+    {
+        self.create_probed(contract, document_type, properties, |_| Ok(()), Some(probe))
+            .await
+    }
+
+    async fn create_probed<F, Fut>(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
+        probe: Option<F>,
+    ) -> Result<PreparedWrite>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<bool>>,
+    {
         // Two retries: a stale protocol version (nothing landed) and a nonce another write by
         // this identity took first (ours can then never land). Each re-prepares with a fresh
         // nonce and entropy, persisting the replacement before it is broadcast.
@@ -1507,10 +1541,14 @@ impl<'a> WriteEngine<'a> {
             persist(&prepared)?;
             match self.execute(&prepared).await {
                 Ok(BroadcastOutcome::NonceConsumed) => {
-                    if self
-                        .landed(contract, document_type, prepared.document_id(), true)
-                        .await?
-                    {
+                    let ours = match &probe {
+                        Some(probe) => poll_confirm(probe).await?,
+                        None => {
+                            self.landed(contract, document_type, prepared.document_id(), true)
+                                .await?
+                        }
+                    };
+                    if ours {
                         return Ok(prepared);
                     }
                     tracing::warn!(
@@ -1618,6 +1656,38 @@ impl<'a> WriteEngine<'a> {
             .await?;
         self.execute(&prepared).await
     }
+}
+
+/// Whether `nonce` can no longer be used by a transition, given the raw identity-contract
+/// nonce Platform holds: Drive's own `validate_identity_nonce_update`, for nonces at or below
+/// the tip (the tip, one more than 24 behind it, or a skipped one since filled). A nonce above
+/// the tip is free. Parity: forge-web `isNonceSpent` (same cases in both test suites).
+fn nonce_is_spent(current: u64, nonce: u64, owner: Identifier) -> bool {
+    use dash_sdk::dpp::identity::identity_nonce::validate_identity_nonce_update;
+    nonce <= current & NONCE_MASK
+        && !validate_identity_nonce_update(current, nonce, owner).is_valid()
+}
+
+/// The "no probe" of [`WriteEngine::create_journaled`]: confirm a spent nonce by reading the
+/// document back by id.
+type NoProbe = fn() -> std::future::Ready<Result<bool>>;
+const NO_PROBE: Option<NoProbe> = None;
+
+/// Poll `probe` like [`WriteEngine::landed`]: `true` as soon as it holds.
+async fn poll_confirm<F, Fut>(probe: &F) -> Result<bool>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    for attempt in 0..CONFIRM_ATTEMPTS {
+        if probe().await? {
+            return Ok(true);
+        }
+        if attempt + 1 < CONFIRM_ATTEMPTS {
+            tokio::time::sleep(CONFIRM_DELAY).await;
+        }
+    }
+    Ok(false)
 }
 
 /// How many proved reads [`WriteEngine::landed`] makes, and the pause between them (about
@@ -3038,6 +3108,24 @@ mod tests {
         .await;
         assert!(matches!(out, Err(Error::Unauthorized)));
         assert_eq!((nb, nw), (1, 0));
+    }
+
+    /// The same cases as forge-web's `isNonceSpent` tests.
+    #[test]
+    fn nonce_is_spent_follows_drive() {
+        use dash_sdk::platform::Identifier;
+        let spent =
+            |current: u64, nonce: u64| super::nonce_is_spent(current, nonce, Identifier::default());
+        let skipped = |behind: u64| 1u64 << (behind - 1 + 40);
+        assert!(!spent(10, 11));
+        assert!(!spent(10, 40), "far above the tip is free, not spent");
+        assert!(spent(10, 10));
+        assert!(spent(10, 9));
+        assert!(!spent(skipped(1) + 10, 9));
+        assert!(spent(skipped(2) + 10, 9));
+        assert!(!spent(skipped(2) + 10, 8));
+        assert!(!spent(skipped(24) + 100, 76));
+        assert!(spent(100, 75));
     }
 
     /// The wait is bounded per node and never bans: silence about a dropped transition is

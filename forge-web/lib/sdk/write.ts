@@ -83,12 +83,15 @@ interface StateTransitionsFacadeLike {
   waitForResponse(st: StateTransition, settings?: WaitSettings): Promise<unknown>
 }
 
-/** The subset of evo-sdk's `PutSettings` the result wait takes. */
+/**
+ * The subset of evo-sdk's `PutSettings` the result wait takes. Never `waitTimeoutMs`: rs-sdk
+ * runs it through `tokio::time::timeout`, which panics in the browser ("time not implemented
+ * on this platform", `docs/research/spike-results.md`); the overall deadline is a JS race.
+ */
 interface WaitSettings {
   readonly retries?: number
   readonly timeoutMs?: number
   readonly banFailedAddress?: boolean
-  readonly waitTimeoutMs?: number
 }
 interface SdkFacades {
   identities: IdentitiesFacadeLike
@@ -386,7 +389,7 @@ function isAffectedStateSnapshot(e: unknown): boolean {
 
 /**
  * One result wait: a single node, 20 s, no banning, and a 45 s hard deadline (proof checking
- * included). A transition a node accepted can still never produce a result: when two writers
+ * included; a JS race, see {@link WaitSettings}). A transition a node accepted can still never produce a result: when two writers
  * sign with one identity's contract nonce at once (this tab and the CLI, or another browser),
  * both pass CheckTx, the block takes one, and Tenderdash quietly drops the other from its
  * mempool. The SDK's default wait read that silence as a dead node and rotated through every
@@ -395,12 +398,7 @@ function isAffectedStateSnapshot(e: unknown): boolean {
  */
 const WAIT_REQUEST_MS = 20_000
 const WAIT_DEADLINE_MS = 45_000
-export const WAIT_SETTINGS: WaitSettings = {
-  retries: 0,
-  timeoutMs: WAIT_REQUEST_MS,
-  banFailedAddress: false,
-  waitTimeoutMs: WAIT_DEADLINE_MS,
-}
+export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST_MS, banFailedAddress: false }
 
 /**
  * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
@@ -412,7 +410,7 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
   try {
     await Promise.race([
       facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
-      // Belt and braces: the deadline holds even if the wasm wait ignored its settings.
+      // The overall deadline (proof verification can add a quorum fetch to the 20 s request).
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('result wait deadline exceeded')), WAIT_DEADLINE_MS)
       }),
@@ -459,7 +457,7 @@ async function nonceSpent(sdk: EvoSDK, identityId: string, contractId: string, n
 /** How long a spent-nonce write is given to show up before it is called lost (a block). */
 const LANDED_CHECK_MS = 15_000
 /** Bounded waits after the first, each preceded by a re-broadcast of the same bytes. */
-const SETTLE_ROUNDS = 3
+const SETTLE_ROUNDS = 2
 
 /**
  * A broadcast transition whose result wait ended without an answer: find out what happened.
@@ -1057,8 +1055,10 @@ async function deleteDocumentUnlocked(
       document,
       identityKey: signing.publicKey,
       signer,
-      // The per-request and overall bounds of WAIT_SETTINGS; broadcast retries stay default.
-      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, waitTimeoutMs: WAIT_DEADLINE_MS },
+      // Bounded waits (at most 3 × 20 s) rather than the SDK's rotation through every node at
+      // 30 s each, which a transition dropped from the mempool (a same-nonce race) would sit
+      // through; the gone-poll below then decides. No `waitTimeoutMs`: see WaitSettings.
+      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
     })
     proven = true
   } catch (e) {
@@ -1069,9 +1069,13 @@ async function deleteDocumentUnlocked(
         if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
         throw refusal
       }
-      // Anything else (a bounded wait that ran out): the gone-poll decides, and the original
-      // error stands if the document is still there.
-      if (!isAlreadyExistsError(e) && !(await pollUntil(gone, confirmTimeoutMs))) throw e
+      // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
+      // decides. Still there: an unclassified error stands, and "already exists" (which a
+      // transition dropped after a same-nonce race also answers) is unconfirmed.
+      if (!(await pollUntil(gone, confirmTimeoutMs))) {
+        if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
+        throw e
+      }
       proven = true
     }
   } finally {
