@@ -14,6 +14,7 @@
  */
 
 import { cidV1RawLeaves, isCid } from './cid'
+import { plain } from './sigv4'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
 import { TimeoutError, isHeaderSafe, timedFetch } from './util'
 
@@ -85,7 +86,7 @@ export async function kuboVersion(s: IpfsSettings, secrets: ProfileSecrets): Pro
 /** Add `bytes` with the pinned parameters; the CID must equal the local derivation and be pinned. */
 export async function addVerified(s: IpfsSettings, secrets: ProfileSecrets, bytes: Uint8Array): Promise<string> {
   const form = new FormData()
-  form.append('file', new Blob([new Uint8Array(bytes)]), 'pack')
+  form.append('file', new Blob([plain(bytes)]), 'pack')
   const text = await rpc(s, secrets, 'ipfs add', `add?${ADD_PARAMS}`, form, bytes.length)
   const line = text.trim().split('\n').pop() ?? ''
   const cid = /"Hash"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? ''

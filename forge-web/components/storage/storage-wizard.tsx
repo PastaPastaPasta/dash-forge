@@ -119,7 +119,7 @@ export function StorageWizard(): JSX.Element {
 
       <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
 
-      <DefaultPolicy key={config.profiles.map((p) => p.name).join(',')} config={config} storable={storable} save={save} />
+      <DefaultPolicy config={config} storable={storable} save={save} />
 
       <CostCard />
     </div>
@@ -352,11 +352,13 @@ const CHOICES: readonly { id: ReplicationChoice; label: string }[] = [
 
 function DefaultPolicy({ config, storable, save }: { config: StorageConfig; storable: boolean; save: (c: StorageConfig) => Promise<void> }): JSX.Element | null {
   const current = config.defaultPolicy
-  const [targets, setTargets] = useState<string[]>(() => current?.targets.slice() ?? [])
+  const [picked, setTargets] = useState<string[]>(() => current?.targets.slice() ?? [])
   const [choice, setChoice] = useState<ReplicationChoice>(() => (current ? choiceOf(current) : 'one'))
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   if (config.profiles.length === 0) return null
+  // A profile removed since the choice was made is no longer a target (unsaved edits survive).
+  const targets = picked.filter((t) => config.profiles.some((p) => p.name === t))
   const policy = targets.length > 0 ? policyFor(targets, choice) : null
   const problem = policy ? policyProblem(config, policy) : null
 

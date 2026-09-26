@@ -147,13 +147,13 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
   if (s.kind === 's3') {
     const key = artifactKey(s, hashHex)
     const existing = await headObject(s, p.secrets, key).catch(() => null)
-    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes)
+    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
     try {
       await verifyS3(s, p, key, bytes, hashHex)
     } catch (first) {
       // A same-size but corrupt object at a content-addressed key would fail every push:
       // re-upload once, unconditionally, and check again.
-      await putObject(s, p.secrets, key, bytes)
+      await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
       try {
         await verifyS3(s, p, key, bytes, hashHex)
       } catch (second) {
@@ -252,6 +252,21 @@ export function fitManifestUris(uris: readonly string[]): string[] {
   throw new Error("the confirmed copies' URIs do not fit a manifest (at most 8, each up to 300 bytes); use shorter public URLs or fewer targets")
 }
 
+export const NO_EXTERNAL_STORAGE =
+  'Release assets are stored on your own storage (S3 or IPFS), and no such storage is chosen for this repo. Add one in Settings → Storage.'
+
+/**
+ * The policy's targets that are external storage known to this browser (S3, IPFS), in policy
+ * order: not Platform, and not a name whose profile is missing here.
+ */
+export function externalTargets(policy: StoragePolicy | null, profiles: readonly StorageProfile[]): string[] {
+  const byName = new Map(profiles.map((p) => [p.name, p]))
+  return (policy?.targets ?? []).filter((t) => {
+    const kind = byName.get(t)?.settings.kind
+    return kind !== undefined && kind !== 'platform'
+  })
+}
+
 /** A file stored on the user's own storage (a release asset). */
 export interface StoredFile {
   readonly sha256: string
@@ -269,15 +284,23 @@ export interface StoredFile {
  */
 export async function storeFile(
   bytes: Uint8Array,
-  opts: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[]; readonly onStep?: (e: UploadEvent) => void; readonly maxUris?: number },
+  opts: {
+    readonly policy: StoragePolicy | null
+    readonly profiles: readonly StorageProfile[]
+    readonly onStep?: (e: UploadEvent) => void
+    readonly maxUris?: number
+    /** The file's hex SHA-256 when the caller has it already (it is not hashed again). */
+    readonly sha256Hex?: string
+  },
 ): Promise<StoredFile> {
+  if (bytes.length === 0) throw new Error('an empty file cannot be stored as an asset')
   const byName = new Map(opts.profiles.map((p) => [p.name, p]))
-  const external = (opts.policy?.targets ?? []).filter((t) => byName.get(t)?.settings.kind !== 'platform')
+  const external = externalTargets(opts.policy, opts.profiles)
   if (opts.policy === null || external.length === 0) {
-    throw new Error('Release assets are stored on your own storage (S3 or IPFS), and no such storage is chosen for this repo. Add one in Settings → Storage.')
+    throw new Error(NO_EXTERNAL_STORAGE)
   }
   const required = Math.min(opts.policy.replicas, external.length)
-  const hashHex = await sha256Hex(bytes)
+  const hashHex = opts.sha256Hex ?? (await sha256Hex(bytes))
   const { confirmed, failures } = await storeOnExternalTargets(external, byName, bytes, hashHex, opts.onStep ?? (() => undefined))
   if (confirmed.length < required) throw new ReplicationError(required, confirmed.map((c) => c.target), failures, false)
   confirmed.sort((a, b) => external.indexOf(a.target) - external.indexOf(b.target))

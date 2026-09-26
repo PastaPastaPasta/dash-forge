@@ -10,7 +10,7 @@
  * bucket's CORS rules to allow it, which the wizard tests before a push depends on it.
  */
 
-import { EMPTY_PAYLOAD_SHA256, amzDate, keyHasBadSegment, sha256Hex, signRequest, uriEncode } from './sigv4'
+import { EMPTY_PAYLOAD_SHA256, amzDate, keyHasBadSegment, plain, sha256Hex, signRequest, uriEncode } from './sigv4'
 import type { ProfilePublic, ProfileSecrets } from './profiles'
 import { TimeoutError, isHeaderSafe, timedFetch, type TimedResponse } from './util'
 
@@ -58,10 +58,10 @@ async function send(
   op: string,
   method: 'GET' | 'PUT' | 'HEAD' | 'DELETE',
   key: string,
-  opts: { body?: Uint8Array; contentType?: string; range?: string; signal?: AbortSignal | undefined } = {},
+  opts: { body?: Uint8Array; bodySha256?: string; contentType?: string; range?: string; signal?: AbortSignal | undefined } = {},
 ): Promise<TimedResponse> {
   const url = objectUrl(s, key)
-  const payloadHash = opts.body ? await sha256Hex(opts.body) : EMPTY_PAYLOAD_SHA256
+  const payloadHash = opts.body ? opts.bodySha256 ?? (await sha256Hex(opts.body)) : EMPTY_PAYLOAD_SHA256
   const extra: [string, string][] = []
   if (opts.contentType) extra.push(['content-type', opts.contentType])
   if (opts.range) extra.push(['range', opts.range])
@@ -95,7 +95,7 @@ async function send(
       {
         method,
         headers,
-        ...(opts.body ? { body: new Uint8Array(opts.body) } : {}),
+        ...(opts.body ? { body: plain(opts.body) } : {}),
         redirect: 'error',
         credentials: 'omit',
         cache: 'no-store',
@@ -147,8 +147,15 @@ export async function getPublic(s: S3Settings, key: string, range?: string): Pro
 }
 
 /** Signed PUT of `bytes` at `key`. */
-export async function putObject(s: S3Settings, secrets: ProfileSecrets, key: string, bytes: Uint8Array, contentType = 'application/octet-stream', signal?: AbortSignal): Promise<void> {
-  const r = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, signal })
+export async function putObject(
+  s: S3Settings,
+  secrets: ProfileSecrets,
+  key: string,
+  bytes: Uint8Array,
+  contentType = 'application/octet-stream',
+  opts: { readonly signal?: AbortSignal; readonly sha256Hex?: string } = {},
+): Promise<void> {
+  const r = await send(s, secrets, 'signed PUT', 'PUT', key, { body: bytes, contentType, signal: opts.signal, ...(opts.sha256Hex ? { bodySha256: opts.sha256Hex } : {}) })
   if (!r.resp.ok) throw await failed('signed PUT', r)
   await r.bytes()
 }

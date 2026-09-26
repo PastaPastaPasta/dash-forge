@@ -1,20 +1,25 @@
-import { test, expect } from '@playwright/test'
-import { existsSync } from 'node:fs'
-import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile } from './helpers'
+import { test, expect, type Page } from '@playwright/test'
+import { copyFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
 
 /**
  * Publishing a release from the browser, live on a devnet with the local MinIO reachable at a
- * PUBLIC https address (a manifest or release may record only addresses anyone can read):
+ * PUBLIC https address (a release may record only addresses anyone can read):
  *
  *   docker compose -f infra/docker-compose.yml up -d minio minio-init
  *   cloudflared tunnel --url http://127.0.0.1:9000        # prints https://<name>.trycloudflare.com
  *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_PUBLIC_MINIO=https://<name>.trycloudflare.com/forge-byo \
  *     pnpm exec playwright test new-release.spec.ts
  *
- * As MAINTAINER, on its own forge-v2-empty: add the bucket in Settings → Storage (the API over
- * loopback, the public URL over the tunnel; every row passes), then publish a release with one
- * asset. The asset is uploaded with SigV4, verified through the public URL, and the release
- * lists it; downloading it re-hashes it and saves only on a match.
+ * r1. A non-maintainer (CONTRIB) sees no "New release" button on MAINTAINER's repo.
+ * r2. As MAINTAINER, on its own forge-v2-empty: add the bucket in Settings → Storage (the API
+ *     over loopback, the public URL over the tunnel; every row passes); the dialog refuses a bad
+ *     tag and an empty file before anything uploads; then publish a release with one asset. The
+ *     asset is uploaded with SigV4, verified through the public URL, and listed; downloading it
+ *     re-hashes it and saves only on a match.
+ *
+ * MAINTAINER's saved browser state (its sealed vault) is backed up first and restored after, so
+ * the tunnel-backed profile added here never leaks into other specs.
  */
 
 const PUBLIC = (process.env['E2E_PUBLIC_MINIO'] ?? '').replace(/\/+$/, '')
@@ -22,17 +27,45 @@ test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1' || !PUBLIC.start
 test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
-const REPO = '/repo/releases/?owner=GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79&name=forge-v2-empty'
+const OWNER = (): string => String((JSON.parse(readFileSync(idFile('MAINTAINER'), 'utf8')) as { identityId: string }).identityId)
+const releasesPath = (): string => `/repo/releases/?owner=${OWNER()}&name=forge-v2-empty`
 const TAG = `e2e-${Date.now().toString(36)}`
+const BACKUP = `${stateFile('MAINTAINER')}.bak-new-release`
 
-test('r1. a maintainer adds public storage and publishes a release with an asset', async ({ browser }) => {
+test.beforeAll(() => {
+  if (existsSync(stateFile('MAINTAINER'))) copyFileSync(stateFile('MAINTAINER'), BACKUP)
+})
+
+test.afterAll(() => {
+  if (existsSync(BACKUP)) {
+    copyFileSync(BACKUP, stateFile('MAINTAINER'))
+    rmSync(BACKUP)
+  }
+})
+
+/** Remove every saved storage profile, waiting for each removal to show (no fixed sleeps). */
+async function removeAllProfiles(page: Page): Promise<void> {
+  const remove = page.getByRole('button', { name: /^remove /i })
+  for (let n = await remove.count(); n > 0; n = await remove.count()) {
+    await remove.first().click()
+    await expect(remove).toHaveCount(n - 1, { timeout: 30_000 })
+  }
+}
+
+test('r1. a non-maintainer is not offered "New release"', async ({ browser }) => {
+  test.skip(!existsSync(idFile('CONTRIB')), 'CONTRIB identity not found')
+  const page = await signedIn(browser, 'CONTRIB', releasesPath())
+  await expect(page.getByRole('heading', { name: 'Releases' })).toBeVisible({ timeout: 60_000 })
+  // The role read settles quickly; give it time before asserting absence.
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByRole('button', { name: /new release/i })).toHaveCount(0)
+})
+
+test('r2. a maintainer adds public storage and publishes a release with an asset', async ({ browser }) => {
   const page = await signedIn(browser, 'MAINTAINER', '/settings/storage/')
   await expect(page.getByRole('heading', { name: 'Your storage' })).toBeVisible({ timeout: 30_000 })
   page.on('dialog', (d) => void d.accept())
-  while ((await page.getByRole('button', { name: /^remove /i }).count()) > 0) {
-    await page.getByRole('button', { name: /^remove /i }).first().click()
-    await page.waitForTimeout(500)
-  }
+  await removeAllProfiles(page)
   await page.getByTestId('tile-minio').click()
   await page.getByLabel('Profile name', { exact: true }).fill('minio-public')
   await page.getByLabel('S3 endpoint', { exact: true }).fill('http://127.0.0.1:9000')
@@ -54,33 +87,41 @@ test('r1. a maintainer adds public storage and publishes a release with an asset
   await expect(page.getByText('Saved.')).toBeVisible()
   await page.context().storageState({ path: stateFile('MAINTAINER'), indexedDB: true })
 
-  await page.goto(REPO, { waitUntil: 'domcontentloaded' })
-  const { unlock } = await import('./helpers')
+  await page.goto(releasesPath(), { waitUntil: 'domcontentloaded' })
   await unlock(page)
   await page.getByRole('button', { name: /new release/i }).click({ timeout: 60_000 })
   const dialog = page.getByRole('dialog')
+  const publish = dialog.getByRole('button', { name: /sign & publish/i })
+
+  // Refused before anything uploads: a tag git would refuse, then an empty file.
+  await dialog.getByLabel('Tag').fill('bad tag')
+  await expect(dialog.locator('#release-problem')).toContainText('not a valid git tag name')
+  await expect(publish).toBeDisabled()
   await dialog.getByLabel('Tag').fill(TAG)
+  await dialog.locator('input[type="file"]').setInputFiles({ name: 'empty.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) })
+  await expect(dialog.locator('#release-problem')).toContainText('empty.bin is empty')
+  await expect(publish).toBeDisabled()
+
   await dialog.getByLabel('Title (optional)').fill(`Release ${TAG}`)
   await dialog.getByLabel('Notes (optional)').fill('Published from the browser by the e2e suite.')
   await dialog.locator('input[type="file"]').setInputFiles({ name: `${TAG}.txt`, mimeType: 'text/plain', buffer: Buffer.from(`asset for ${TAG}\n`) })
   await expect(dialog.getByTestId('cost-preview')).toBeVisible()
+  await expect(publish).toBeEnabled()
   expect(await runAxe(page, 'new release dialog')).toEqual([])
   await shot(page, 'r-01-new-release')
-  await dialog.getByRole('button', { name: /sign & publish/i }).click()
+  await publish.click()
   await expect(dialog.getByTestId(`asset-${TAG}.txt`)).toHaveAttribute('data-state', 'done', { timeout: 120_000 })
-  await expect(dialog).toBeHidden({ timeout: 120_000 })
+  await expect(dialog.getByTestId(`asset-${TAG}.txt`)).toContainText('1 copy')
+  await expect(dialog.getByRole('status')).toContainText('Release published.', { timeout: 120_000 })
+  await dialog.getByRole('button', { name: /^close$/i }).click()
 
-  // The node answering may be a block behind: reload until the release shows.
-  await expect(async () => {
-    await page.reload({ waitUntil: 'domcontentloaded' })
-    await expect(page.getByText(`Release ${TAG}`)).toBeVisible({ timeout: 15_000 })
-  }).toPass({ timeout: 120_000 })
+  // The page re-reads a few times after a publish (the node answering may lag a block).
+  await expect(page.getByText(`Release ${TAG}`)).toBeVisible({ timeout: 60_000 })
   await shot(page, 'r-02-published')
 
   // Download: streamed through SHA-256, saved only on a match.
   const card = page.locator('li', { hasText: `Release ${TAG}` }).first()
   const download = page.waitForEvent('download')
   await card.getByRole('button', { name: new RegExp(`${TAG}\\.txt`) }).click()
-  const file = await download
-  expect(file.suggestedFilename()).toBe(`${TAG}.txt`)
+  expect((await download).suggestedFilename()).toBe(`${TAG}.txt`)
 })

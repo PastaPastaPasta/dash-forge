@@ -22,6 +22,8 @@ export {
   orderUris,
   storeArtifact,
   storeFile,
+  externalTargets,
+  NO_EXTERNAL_STORAGE,
   type StoredFile,
   type PlatformQuestion,
   type StoreOptions,

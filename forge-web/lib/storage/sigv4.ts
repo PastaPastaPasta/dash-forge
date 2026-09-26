@@ -65,9 +65,15 @@ function hex(bytes: ArrayBuffer | Uint8Array): string {
   return s
 }
 
-function buf(b: Uint8Array): Uint8Array<ArrayBuffer> {
+/**
+ * `b` as a view WebCrypto and fetch accept (backed by a plain ArrayBuffer), copying only when it
+ * is not one already or is a window into a larger buffer: a large asset is not duplicated.
+ */
+export function plain(b: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (b.buffer instanceof ArrayBuffer && b.byteOffset === 0 && b.byteLength === b.buffer.byteLength) return b as Uint8Array<ArrayBuffer>
   return new Uint8Array(b)
 }
+const buf = plain
 
 /** Lowercase-hex SHA-256 of `bytes`. */
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {

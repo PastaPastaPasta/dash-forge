@@ -26,11 +26,23 @@ import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NewReleaseButton } from '@/components/repo/new-release'
+import { useSdk } from '@/hooks/use-sdk'
+import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { errorMessage, cn } from '@/lib/utils'
 
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const [showPrevious, setShowPrevious] = useState(false)
+  const { network } = useSdk()
+  // After a publish the node answering may be a block behind: re-read a few times.
+  const refreshAfterPublish = (): void => {
+    for (const delay of [0, 3000, 8000]) {
+      setTimeout(() => {
+        invalidateSessionCache(`releases:${network}:`)
+        reload()
+      }, delay)
+    }
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -38,7 +50,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
           <CopyLinkButton repo={addr} target={{ kind: 'releases' }} />
-          <NewReleaseButton home={home} onPublished={reload} />
+          <NewReleaseButton home={home} releases={data} onPublished={refreshAfterPublish} />
         </div>
       </div>
       {error ? (
