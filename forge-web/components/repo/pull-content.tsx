@@ -73,7 +73,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const [pending, setPending] = useState<Pending>(null)
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading) return <LoadingBlock label="Folding PR" />
+  if (loading && !data) return <LoadingBlock label="Folding PR" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
 

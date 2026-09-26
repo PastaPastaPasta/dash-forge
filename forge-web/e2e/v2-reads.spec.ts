@@ -107,7 +107,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
     const approvals = page.getByRole('region', { name: 'Approvals' })
-    await expect(approvals.getByText(/approved · maintainer/)).toBeVisible()
+    // MAINTAINER's seeded approval; the write spec (v2-writes w6) may have added OWNER's.
+    await expect(approvals.getByText(/approved · maintainer/).first()).toBeVisible()
     await expect(page.getByText(/Objects live in this repo/)).toBeVisible()
     // The diff reads both sides through the browse plane.
     await expect(page.getByText('src/main.rs').first()).toBeVisible({ timeout: 45_000 })
@@ -137,7 +138,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
 
     await page.goto(url('', '', MAINTAINER, 'forge-v2-empty'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByText(/no commits yet/i))
+    await expectLanded(page, page.getByRole('region', { name: 'Empty repository' }))
+    await expect(page.getByText(/remote add origin dash:\/\//)).toBeVisible()
   })
 
   test('v2-9. a11y: no serious/critical violations on the v2 pages', async ({ page }) => {

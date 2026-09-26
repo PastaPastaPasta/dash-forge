@@ -475,6 +475,25 @@ async function documentExists(
 
 const SEQUENCE_MASK = (1n << 40n) - 1n
 
+/**
+ * One write at a time per (identity, contract). Each write reads the identity-contract nonce
+ * and signs nonce + 1, so two concurrent writes to one contract (a comment still in flight
+ * when the close button is clicked) would sign the same nonce and one would be refused.
+ */
+const writeLocks = new Map<string, Promise<unknown>>()
+
+function serialized<T>(ownerId: string, contractId: string, run: () => Promise<T>): Promise<T> {
+  const key = `${ownerId}:${contractId}`
+  const prev = writeLocks.get(key) ?? Promise.resolve()
+  const next = prev.then(run, run)
+  const tail = next.catch(() => undefined)
+  writeLocks.set(key, tail)
+  void tail.then(() => {
+    if (writeLocks.get(key) === tail) writeLocks.delete(key)
+  })
+  return next
+}
+
 async function nextContractNonce(
   sdk: EvoSDK,
   identityId: string,
@@ -561,10 +580,15 @@ export function documentForCreate(
  *
  * `requiredLevel` defaults to HIGH (document ops accept a HIGH-or-CRITICAL key).
  */
-export async function createDocumentIdempotent(
+export function createDocumentIdempotent(
   sdk: EvoSDK,
   auth: WriteAuth,
-  params: {
+  params: CreateParams,
+): Promise<WriteResult> {
+  return serialized(auth.identityId, params.contractId, () => createDocumentUnlocked(sdk, auth, params))
+}
+
+interface CreateParams {
     readonly contractId: string
     readonly documentType: string
     readonly data: Record<string, unknown>
@@ -574,8 +598,9 @@ export async function createDocumentIdempotent(
     readonly confirmTimeoutMs?: number
     /** Whether the write landed, for types `documents.get` cannot fetch (indexOnly). */
     readonly probe?: () => Promise<boolean>
-  },
-): Promise<WriteResult> {
+}
+
+async function createDocumentUnlocked(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
   const { contractId, documentType, data } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
@@ -811,10 +836,15 @@ interface DocumentsDeleteFacadeLike {
  * A consensus refusal throws {@link ConsensusRefusal}; a proven outcome (or the document
  * gone on a poll) resolves `deleted`.
  */
-export async function deleteDocumentIdempotent(
+export function deleteDocumentIdempotent(
   sdk: EvoSDK,
   auth: WriteAuth,
-  params: {
+  params: DeleteParams,
+): Promise<DeleteResult> {
+  return serialized(auth.identityId, params.contractId, () => deleteDocumentUnlocked(sdk, auth, params))
+}
+
+interface DeleteParams {
     readonly contractId: string
     readonly documentType: string
     readonly documentId: string
@@ -824,8 +854,9 @@ export async function deleteDocumentIdempotent(
     readonly probeGone?: () => Promise<boolean>
     readonly requiredLevel?: number
     readonly confirmTimeoutMs?: number
-  },
-): Promise<DeleteResult> {
+}
+
+async function deleteDocumentUnlocked(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
   const { contractId, documentType, documentId } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000

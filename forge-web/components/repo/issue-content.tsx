@@ -20,6 +20,8 @@ import type { Holdings } from '@/lib/rules'
 import { previewDocumentCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useParam } from '@/hooks/use-query-param'
+import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
@@ -42,8 +44,11 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
 
+  // Just created here: a node that has not applied the block yet answers "not found", so keep
+  // asking for a few seconds rather than telling the author their issue does not exist.
+  const justCreated = useParam('created') === '1'
   const { data, loading, error, reload } = useAsync<IssueThread | null>(
-    () => loadIssueThread(sdk!, home.repo, number),
+    () => retryWhileMissing(() => loadIssueThread(sdk!, home.repo, number), justCreated ? 8 : 0),
     [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
@@ -62,7 +67,7 @@ export function IssueContent({ home, number }: { home: RepoHome; number: number 
   const [newLabel, setNewLabel] = useState('')
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
-  if (loading) return <LoadingBlock label="Folding issue" />
+  if (loading && !data) return <LoadingBlock label="Folding issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 

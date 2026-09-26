@@ -21,6 +21,8 @@ import { useCallback } from 'react'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
+import { retryWhileMissing } from '@/lib/view/retry'
+import { useParam } from '@/hooks/use-query-param'
 import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -90,8 +92,15 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const { sdk, ready, error: sdkError, network } = useSdk()
   const enabled = ready && sdk !== null && addr.owner !== '' && (addr.name !== '' || !!addr.repoId)
   const key = homeCacheKey(network, addr)
+  // Just created in this tab (`/new` adds `created=1`): ride out a node one block behind.
+  const justCreated = useParam('created') === '1'
   const state = useAsync<RepoHome | null>(
-    () => loadRepoHomeCached(sdk!, network, addr),
+    () =>
+      retryWhileMissing(async () => {
+        const home = await loadRepoHomeCached(sdk!, network, addr)
+        if (home === null && justCreated) homeCache.delete(key)
+        return home
+      }, justCreated ? 8 : 0),
     [ready, key],
     {
       enabled,

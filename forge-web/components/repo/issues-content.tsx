@@ -132,7 +132,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         open={composing}
         onClose={() => setComposing(false)}
         repo={home.repo}
-        onCreated={(n) => router.push(repoHref('/repo/issue', addr, { number: String(n) }))}
+        onCreated={(n) => router.push(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))}
         addr={addr}
       />
     </div>
