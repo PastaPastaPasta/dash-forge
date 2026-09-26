@@ -26,26 +26,37 @@ use crate::create::{create_repo, CreateRepoOpts, CreateRepoResult};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{self, LoadedIdentity, PlatformClient};
-use crate::repo::{PackManifestInfo, PackManifestInput, RepoService, MANIFEST_URIS_V2};
+use crate::repo::{
+    order_copies, PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2,
+};
 use crate::rules::RefState;
 use crate::scope::RepoRef;
 
-/// The fork manifest for `parent`'s copy `m` of a pack: the same pack facts, no chunks of
-/// its own, and every URI a reader of the parent could use, the parent's chunk locator
-/// first when the copy is on Platform. `None` when nothing a fork could name is readable
-/// (a copy whose only URIs are too long for the manifest, say).
-pub fn fork_manifest(parent: &RepoRef, m: &PackManifestInfo) -> Result<Option<PackManifestInput>> {
+/// The fork manifest for one pack of `parent`, from all of the parent's `copies` of it
+/// (manifests with the same pack hash) in the order a reader should try them: the same pack
+/// facts as the first, no chunks of the fork's own, and every URI a reader of the parent
+/// could use. A Platform copy is recorded as its chunk locator in the parent's scope. `None`
+/// when nothing a fork could name is readable (only over-long URIs, say).
+pub fn fork_manifest(
+    parent: &RepoRef,
+    copies: &[&PackManifestInfo],
+) -> Result<Option<PackManifestInput>> {
+    let Some(first) = copies.first() else {
+        return Ok(None);
+    };
+    let scope = parent.scope()?;
     let mut uris: Vec<String> = Vec::new();
-    if m.storage == 0 {
-        uris.push(
-            parent
-                .scope()?
-                .locator(&m.owner_id, &hex::encode(m.pack_hash)),
-        );
+    let mut push = |u: String| {
+        if !uris.contains(&u) {
+            uris.push(u);
+        }
+    };
+    for m in copies.iter().filter(|m| m.storage == 0) {
+        push(scope.locator(&m.owner_id, &hex::encode(m.pack_hash)));
     }
-    for u in &m.uris {
-        if !uris.contains(u) {
-            uris.push(u.clone());
+    for m in copies {
+        for u in &m.uris {
+            push(u.clone());
         }
     }
     // Private `s3://` locators go first when the list is too long: they only serve readers
@@ -63,22 +74,25 @@ pub fn fork_manifest(parent: &RepoRef, m: &PackManifestInfo) -> Result<Option<Pa
         return Ok(None);
     }
     Ok(Some(PackManifestInput {
-        pack_hash: m.pack_hash,
-        kind: m.kind,
-        size_bytes: m.size_bytes,
-        object_count: m.object_count,
+        pack_hash: first.pack_hash,
+        kind: first.kind,
+        size_bytes: first.size_bytes,
+        object_count: first.object_count,
         chunk_count: 0,
         storage: 1,
-        offset_index_parts: m.offset_index_parts,
+        offset_index_parts: first.offset_index_parts,
         uris,
-        supersedes: m.supersedes.clone(),
+        supersedes: first.supersedes.clone(),
         tips: Vec::new(),
     }))
 }
 
-/// The parent's manifests a fork records: one per git pack (kind 0), preferring a Platform
-/// copy (its chunks are permanent), then the oldest. Packs the fork already has a manifest
-/// for are skipped.
+/// The parent's git packs (kind 0) a fork records, each with all of its copies in the
+/// `FORGE_RULES_V2` reader order (uploaders who are currently maintainers, then writers, then
+/// anyone else; each by `($createdAt, $id)`), so the fork's manifest lists the trustworthy
+/// copies first and every one of them as a fallback. Packs the fork already records are
+/// skipped. Output is in the order of each pack's first upload, so the fork's pack list
+/// (the `packRef` space) lines up with the parent's.
 ///
 /// Browse artifacts (object locators, flat indexes) are not copied: a locator's `packRef`s
 /// index the parent's pack list, which the fork's own list diverges from at its first push.
@@ -86,24 +100,26 @@ pub fn fork_manifest(parent: &RepoRef, m: &PackManifestInfo) -> Result<Option<Pa
 /// everything); until then the web app browses it by the whole-pack fallback.
 pub fn plan_manifests<'m>(
     parent: &'m [PackManifestInfo],
+    roles: &RoleMap,
     fork_has: &BTreeSet<[u8; 32]>,
-) -> Vec<&'m PackManifestInfo> {
-    let mut by_hash: BTreeMap<[u8; 32], &PackManifestInfo> = BTreeMap::new();
+) -> Vec<Vec<&'m PackManifestInfo>> {
+    let mut by_hash: BTreeMap<[u8; 32], Vec<&PackManifestInfo>> = BTreeMap::new();
     for m in parent {
-        if m.kind != u64::from(crate::pack::KIND_GIT_PACK) || fork_has.contains(&m.pack_hash) {
-            continue;
-        }
-        let better = by_hash.get(&m.pack_hash).is_none_or(|cur| {
-            (u8::from(m.storage != 0), m.created_at, &m.document_id)
-                < (u8::from(cur.storage != 0), cur.created_at, &cur.document_id)
-        });
-        if better {
-            by_hash.insert(m.pack_hash, m);
+        if m.kind == u64::from(crate::pack::KIND_GIT_PACK) && !fork_has.contains(&m.pack_hash) {
+            by_hash.entry(m.pack_hash).or_default().push(m);
         }
     }
-    let mut out: Vec<&PackManifestInfo> = by_hash.into_values().collect();
-    // Record in the parent's upload order, so the fork's pack list (packRef space) lines up.
-    out.sort_by(|a, b| (a.created_at, &a.document_id).cmp(&(b.created_at, &b.document_id)));
+    let mut out: Vec<Vec<&PackManifestInfo>> = by_hash
+        .into_values()
+        .map(|copies| order_copies(&copies, roles))
+        .collect();
+    let first = |g: &Vec<&PackManifestInfo>| {
+        g.iter()
+            .map(|m| (m.created_at, m.document_id.clone()))
+            .min()
+            .unwrap_or_default()
+    };
+    out.sort_by_key(first);
     out
 }
 
@@ -137,8 +153,8 @@ pub struct ForkResult {
     pub platform_referenced: usize,
     /// Packs the fork already recorded (a resumed fork).
     pub manifests_existing: usize,
-    /// Parent packs with no copy a fork could reference (their objects are missing from
-    /// the fork until someone pushes them).
+    /// Parent packs with no copy a fork could reference. When there are any, no ref is
+    /// copied (it could point at objects the fork cannot serve): push the branches instead.
     pub unreferenceable: Vec<[u8; 32]>,
     /// Refs written.
     pub refs_written: Vec<String>,
@@ -157,9 +173,33 @@ pub async fn fork_repo(
 ) -> Result<ForkResult> {
     parent.require_v2()?;
     parent.require_readable()?;
+    let forge = parent.require_v2()?;
     let mut opts = opts.clone();
+    opts.name = crate::resolve::repo_slug(&opts.name)?;
     opts.fork_of = Some(platform::decode_identifier(parent.id())?);
     let owner = identity.id();
+
+    // A repo of the signer's with this name already exists: continue only if it is a fork
+    // of this parent (an interrupted fork). Anything else would have the parent's manifests
+    // and refs written into an unrelated repository, permanently.
+    if let Some(existing) = crate::resolve::find_v2(
+        client,
+        forge,
+        platform::decode_identifier(&owner)?,
+        &opts.name,
+    )
+    .await?
+    {
+        let of = crate::resolve::fork_parent(client, &existing).await?;
+        if of.as_deref() != Some(parent.id()) {
+            return Err(Error::Config(format!(
+                "you already have a repository named {} and it is not a fork of {}; pass \
+                 --name <another name>",
+                opts.name,
+                parent.display()
+            )));
+        }
+    }
     let before = client.get_balance(&owner).await?;
 
     let created = create_repo(client, identity, bridge, &opts, journal_dir).await?;
@@ -172,6 +212,7 @@ pub async fn fork_repo(
     let svc = RepoService::new(client, identity, bridge);
 
     let parent_manifests = svc.read_pack_manifests(parent).await?;
+    let roles = svc.copy_roles(parent).await.unwrap_or_default();
     let fork_has: BTreeSet<[u8; 32]> = svc
         .read_pack_manifests(&fork)
         .await?
@@ -179,27 +220,30 @@ pub async fn fork_repo(
         .filter(|m| m.owner_id == owner)
         .map(|m| m.pack_hash)
         .collect();
-    let plan = plan_manifests(&parent_manifests, &fork_has);
+    let plan = plan_manifests(&parent_manifests, &roles, &fork_has);
     let mut written = 0;
     let mut platform_referenced = 0;
     let mut unreferenceable = Vec::new();
-    for m in plan {
-        let Some(input) = fork_manifest(parent, m)? else {
-            unreferenceable.push(m.pack_hash);
+    for copies in plan {
+        let Some(input) = fork_manifest(parent, &copies)? else {
+            unreferenceable.push(copies[0].pack_hash);
             continue;
         };
         // A Platform copy is recorded as the parent's chunk locator.
-        if m.storage == 0 {
+        if copies.iter().any(|m| m.storage == 0) {
             platform_referenced += 1;
         }
         svc.write_pack_manifest(&fork, &input).await?;
         written += 1;
     }
 
-    let parent_refs = svc.read_refs(parent).await?;
-    let fork_refs = svc.read_refs(&fork).await?;
     let mut refs_written = Vec::new();
-    for (name, want) in plan_refs(&parent_refs, &fork_refs) {
+    let refs_plan = if unreferenceable.is_empty() {
+        plan_refs(&svc.read_refs(parent).await?, &svc.read_refs(&fork).await?)
+    } else {
+        Vec::new()
+    };
+    for (name, want) in refs_plan {
         let new = hex::decode(&want).map_err(|e| Error::Config(format!("ref tip: {e}")))?;
         svc.write_ref_update(&fork, &name, &new, None, false)
             .await?;
@@ -261,7 +305,7 @@ mod tests {
     #[test]
     fn a_platform_pack_is_referenced_by_the_parents_chunk_locator_not_re_uploaded() {
         let m = manifest("a", 1, 0, 1, &[]);
-        let f = fork_manifest(&parent(), &m).unwrap().unwrap();
+        let f = fork_manifest(&parent(), &[&m]).unwrap().unwrap();
         assert_eq!(
             (f.storage, f.chunk_count),
             (1, 0),
@@ -286,19 +330,25 @@ mod tests {
             1,
             &["https://x/p.pack", "ipfs://bafy", "s3://b/p.pack"],
         );
-        let f = fork_manifest(&parent(), &m).unwrap().unwrap();
+        let f = fork_manifest(&parent(), &[&m]).unwrap().unwrap();
         assert_eq!(f.storage, 1);
         assert_eq!(f.uris, ["https://x/p.pack", "ipfs://bafy", "s3://b/p.pack"]);
         // Nothing usable: no manifest.
         let empty = manifest("b", 3, 1, 1, &[]);
-        assert!(fork_manifest(&parent(), &empty).unwrap().is_none());
+        assert!(fork_manifest(&parent(), &[&empty]).unwrap().is_none());
     }
 
     #[test]
-    fn one_manifest_per_pack_preferring_platform_and_skipping_what_the_fork_has() {
+    fn one_manifest_per_pack_with_every_copy_members_first() {
+        let stranger = "Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7";
         let all = [
-            manifest("ext-old", 1, 1, 1, &["https://x"]),
-            manifest("plat", 1, 0, 5, &[]),
+            // A former member's early, chunkless copy of pack 1 ...
+            PackManifestInfo {
+                owner_id: stranger.into(),
+                ..manifest("hostile", 1, 0, 1, &[])
+            },
+            // ... and the maintainer's later one.
+            manifest("plat", 1, 0, 5, &["https://x/p1"]),
             manifest("other", 2, 1, 2, &["https://y"]),
             manifest("had", 3, 0, 3, &[]),
             PackManifestInfo {
@@ -306,13 +356,27 @@ mod tests {
                 ..manifest("locator", 4, 0, 1, &[])
             },
         ];
+        let roles: RoleMap = [(UPLOADER.to_string(), crate::rules::v2::Role::Maintainer)].into();
         let has: BTreeSet<[u8; 32]> = [[3; 32]].into();
-        let plan: Vec<&str> = plan_manifests(&all, &has)
+        let plan = plan_manifests(&all, &roles, &has);
+        let ids: Vec<Vec<&str>> = plan
             .iter()
-            .map(|m| m.document_id.as_str())
+            .map(|g| g.iter().map(|m| m.document_id.as_str()).collect())
             .collect();
-        // Upload order: "other" (t=2) before "plat" (t=5); the browse locator is not copied.
-        assert_eq!(plan, ["other", "plat"]);
+        // Pack 1 first (first upload t=1), the maintainer's copy ahead of the stranger's; the
+        // browse locator and the pack the fork has are not copied.
+        assert_eq!(ids, vec![vec!["plat", "hostile"], vec!["other"]]);
+        let f = fork_manifest(&parent(), &plan[0]).unwrap().unwrap();
+        let h = "01".repeat(32);
+        assert_eq!(
+            f.uris,
+            [
+                format!("platform://CORE/{PARENT}/{UPLOADER}/{h}"),
+                format!("platform://CORE/{PARENT}/{stranger}/{h}"),
+                "https://x/p1".to_string(),
+            ],
+            "every copy, the maintainer's first"
+        );
     }
 
     #[test]

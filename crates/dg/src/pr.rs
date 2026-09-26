@@ -29,7 +29,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, resolve, RepoRef, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, short};
+use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe, short};
 use crate::git::{self, MergePlan};
 use crate::{PrCommand, VerdictArg};
 
@@ -123,20 +123,19 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let forge = handle.require_v2()?;
     let cwd = std::env::current_dir().context("reading the current directory")?;
 
-    // The source repo: --head-repo, else the signer's fork of the target, else the target.
-    let source = match &args.head_repo {
-        Some(r) => resolve(&s.client, &s.identity, &RepoRef::parse(r)?).await?,
-        None => {
+    // Where the branch may live: --head-repo, else the signer's forks of the target, then the
+    // target itself. The first that has the branch is the source.
+    let candidates = if let Some(r) = &args.head_repo {
+        vec![resolve(&s.client, &s.identity, &RepoRef::parse(r)?).await?]
+    } else {
+        let mut c =
             forge_core::resolve::find_forks(&s.client, forge, handle.id(), Some(&s.identity.id()))
-                .await?
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| handle.clone())
-        }
+                .await?;
+        c.push(handle.clone());
+        c
     };
-    source.require_v2()?;
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-    let (head_ref, head_oid) = resolve_head(args, &cwd, &svc, &source).await?;
+    let (source, head_ref, head_oid) = resolve_head(args, &cwd, &svc, candidates).await?;
     // The base branch: --base, else the target's default branch.
     let base = if let Some(b) = &args.base {
         git::full_ref(b)
@@ -195,8 +194,13 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "cost": cost_json(spent, price),
         }),
         || {
+            let how = if created.resumed {
+                " (finished an interrupted create; not paid twice)"
+            } else {
+                ""
+            };
             println!(
-                "✓ opened PR #{} in {} · {}",
+                "✓ opened PR #{} in {}{how} · {}",
                 created.number,
                 handle.display(),
                 cost_line(spent, price)
@@ -206,15 +210,16 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     Ok(())
 }
 
-/// The PR's source branch and head commit: `--head` (else the current branch) and
-/// `--head-oid` (else where that branch points in the source repo now, so the PR names a
-/// commit reviewers can fetch).
+/// The PR's source repository, branch and head commit. The branch is `--head` (else the
+/// current branch); the source is the first of `candidates` holding it; the head is
+/// `--head-oid`, else where the branch points there now, so the PR names a commit reviewers
+/// can fetch.
 async fn resolve_head(
     args: &crate::PrCreateArgs,
     cwd: &Path,
     svc: &forge_core::repo::RepoService<'_>,
-    source: &Repo,
-) -> Result<(String, String)> {
+    candidates: Vec<Repo>,
+) -> Result<(Repo, String, String)> {
     let head_ref =
         match (&args.head, git::current_branch(cwd)) {
             (Some(h), _) => git::full_ref(h),
@@ -223,45 +228,56 @@ async fn resolve_head(
                 "no --head given and not on a branch: pass --head <branch> (in the source repo)",
             )),
         };
-    let refs = svc.read_refs(source).await?;
-    let remote_tip = refs
-        .iter()
-        .find(|(n, _)| *n == head_ref)
-        .and_then(|(_, s)| forge_core::rules::tip_of(s));
-    let head_oid = match (&args.head_oid, &remote_tip) {
-        (Some(o), _) => o.to_ascii_lowercase(),
-        (None, Some(t)) => t.clone(),
-        (None, None) => {
-            return Err(UserError::new(
-                codes::NOT_FOUND,
-                format!(
-                    "pull request not created: {head_ref} is not in {}",
-                    source.display()
-                ),
-            )
-            .cause("the PR must name a commit reviewers can fetch from the source repository")
-            .fix(format!(
-                "push it first: `git push {} {head_ref}`",
-                source.remote_url()
-            ))
-            .into())
+    let mut found = None;
+    for repo in &candidates {
+        repo.require_v2()?;
+        let refs = svc.read_refs(repo).await?;
+        if let Some(tip) = refs
+            .iter()
+            .find(|(n, _)| *n == head_ref)
+            .and_then(|(_, st)| forge_core::rules::tip_of(st))
+        {
+            found = Some((repo.clone(), tip));
+            break;
         }
+    }
+    let Some((source, remote_tip)) = found else {
+        let first = &candidates[0];
+        return Err(UserError::new(
+            codes::NOT_FOUND,
+            format!(
+                "pull request not created: {head_ref} is not in {}",
+                candidates
+                    .iter()
+                    .map(Repo::display)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ),
+        )
+        .cause("the PR must name a commit reviewers can fetch from the source repository")
+        .fix(format!(
+            "push it first: `git push {} {head_ref}`",
+            first.remote_url()
+        ))
+        .into());
+    };
+    let head_oid = match &args.head_oid {
+        Some(o) => o.to_ascii_lowercase(),
+        None => remote_tip.clone(),
     };
     if !git::is_oid(&head_oid) {
         return Err(crate::errors::usage(
             "--head-oid must be a full hex commit id",
         ));
     }
-    if let (Some(given), Some(tip)) = (&args.head_oid, &remote_tip) {
-        if !given.eq_ignore_ascii_case(tip) {
-            eprintln!(
-                "warning: {head_ref} in {} is at {}, not {given}; the PR names {given}",
-                source.display(),
-                short(tip)
-            );
-        }
+    if !head_oid.eq_ignore_ascii_case(&remote_tip) {
+        eprintln!(
+            "warning: {head_ref} in {} is at {}, not {head_oid}; the PR names {head_oid}",
+            source.display(),
+            short(&remote_tip)
+        );
     }
-    Ok((head_ref, head_oid))
+    Ok((source, head_ref, head_oid))
 }
 
 // ---------------------------------------------------------------------------
@@ -279,16 +295,22 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         let rows: Vec<_> = prs.iter().map(v1_row).collect();
         ctx.emit(json!({ "count": rows.len(), "prs": rows }), || {
             for p in &prs {
-                println!("#{:<4} {}  ({})", p.number, p.title, short(&p.head_oid));
+                println!(
+                    "#{:<4} {}  ({})",
+                    p.number,
+                    safe(&p.title),
+                    short(&p.head_oid)
+                );
             }
         });
         return Ok(());
     }
     let collab = Collab::reader(&s.client);
-    let (patches, hidden) = collab.list_patches(handle, limit).await?;
+    let page = collab.list_patches(handle, limit).await?;
+    let (hidden, more) = (page.hidden, page.more);
     let oracle = collab.member_oracle(handle).await?;
     let mut rows = Vec::new();
-    for p in patches {
+    for p in page.rows {
         let v = collab.patch_view(handle, p).await?;
         if !state.matches(v.state.open) {
             continue;
@@ -313,7 +335,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden }),
+        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more }),
         || {
             if rows.is_empty() {
                 println!("no pull requests");
@@ -331,12 +353,17 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                     "#{:<4} {:<6} {}  ({}){extra}",
                     v.patch.number,
                     state_label(v),
-                    v.patch.title,
+                    safe(&v.patch.title),
                     short(&v.patch.head_oid)
                 );
             }
             if hidden > 0 {
                 println!("({hidden} malformed document(s) hidden)");
+            }
+            if more {
+                println!(
+                    "(the newest pull requests only; older ones exist: raise --limit, up to 100)"
+                );
             }
         },
     );
@@ -359,7 +386,7 @@ fn view_v1(ctx: &Ctx, pw: &forge_core::collab::PullRequestWithState) {
     row["body"] = json!(pw.pr.body);
     row["state"] = serde_json::to_value(&pw.state).unwrap_or_default();
     ctx.emit(row, || {
-        println!("#{} {}", pw.pr.number, pw.pr.title);
+        println!("#{} {}", pw.pr.number, safe(&pw.pr.title));
         println!("base: {}  head: {}", pw.pr.base_ref_name, pw.pr.head_oid);
         println!("(v1 repository, read only)");
     });
@@ -421,12 +448,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "comments": comments.iter().map(|c| json!({"author": c.author, "body": c.body})).collect::<Vec<_>>(),
         }),
         || {
-            println!("#{} [{}] {}", v.patch.number, state_label(&v), v.patch.title);
+            println!(
+                "#{} [{}] {}",
+                v.patch.number,
+                state_label(&v),
+                safe(&v.patch.title)
+            );
             println!("author: {}", v.patch.author);
             println!(
                 "{} {} ({}) → {}",
                 source,
-                v.patch.source_ref_name.as_deref().unwrap_or("(no branch)"),
+                safe(v.patch.source_ref_name.as_deref().unwrap_or("(no branch)")),
                 short(&v.patch.head_oid),
                 v.patch.base_ref_name
             );
@@ -439,7 +471,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 println!("changes requested by {}", who.join(", "));
             }
             if !v.patch.body.is_empty() {
-                println!("\n{}", v.patch.body);
+                println!("\n{}", safe(&v.patch.body));
             }
             for r in &reviews {
                 let stale = if r.commit_oid == v.patch.head_oid {
@@ -449,11 +481,11 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 };
                 println!("\n{} — {}{stale}", r.verdict.label(), r.reviewer);
                 if !r.body.is_empty() {
-                    println!("  {}", r.body);
+                    println!("  {}", safe(&r.body));
                 }
             }
             for c in &comments {
-                println!("\n— {}:\n{}", c.author, c.body);
+                println!("\n— {}:\n{}", c.author, safe(&c.body));
             }
         },
     );
@@ -556,8 +588,18 @@ async fn merge(
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
     if view.state.merged {
-        return Err(UserError::new(codes::USAGE, format!("PR #{number} is already merged")).into());
+        ctx.emit(
+            json!({ "status": "already_merged", "pr": number, "merged": true }),
+            || println!("PR #{number} is already merged; nothing to do"),
+        );
+        return Ok(());
     }
+    refuse_retargeted(&view, number)?;
+    let merge_oid = if event_only {
+        Some(event_only_oid(&view, merge_oid, number)?)
+    } else {
+        None
+    };
     // Only members can merge (the merge event is member-gated at consensus): refuse before
     // any git work.
     collab
@@ -587,16 +629,7 @@ async fn merge(
         }
     ))?;
 
-    let merge_oid = if event_only {
-        let oid = merge_oid.map_or_else(
-            || {
-                view.base_tip
-                    .clone()
-                    .filter(|_| view.head_on_base)
-                    .unwrap_or(view.patch.head_oid.clone())
-            },
-            str::to_ascii_lowercase,
-        );
+    let merge_oid = if let Some(oid) = merge_oid {
         steps.ok("plan", format!("event only, naming {}", short(&oid)));
         oid
     } else {
@@ -604,7 +637,7 @@ async fn merge(
             Ok(oid) => oid,
             Err(e) => {
                 return Err(crate::errors::reported(
-                    merge_failure(&e, number),
+                    merge_failure(&e, number, repo),
                     json!({ "status": "failed", "pr": number, "steps": steps.done }),
                 ))
             }
@@ -701,8 +734,65 @@ async fn post_merge_event(
     })
 }
 
+/// A retarget event moves the PR's base; `dg pr merge` merges only into the base the PR was
+/// opened against, so it refuses rather than merge into a branch the PR no longer names.
+fn refuse_retargeted(view: &PatchView, number: u64) -> Result<()> {
+    let Some(retargeted) = view
+        .state
+        .base_ref
+        .as_deref()
+        .filter(|b| *b != view.patch.base_ref_name)
+    else {
+        return Ok(());
+    };
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "merge not attempted: PR #{number} was retargeted to {}",
+            safe(retargeted)
+        ),
+    )
+    .cause(format!(
+        "it was opened against {}; `dg pr merge` merges only into that base",
+        view.patch.base_ref_name
+    ))
+    .fix("merge it by hand into the new base, then `dg pr merge --event-only --merge-oid <commit>`")
+    .into())
+}
+
+/// The commit a `--event-only` merge event names: `--merge-oid`, else the PR head. Either
+/// must already have been a tip of the base branch: a merge event is permanent, and one
+/// naming a commit the base never held would not count now and would flip the PR to merged
+/// the day that commit is pushed.
+fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<String> {
+    let oid = given.map_or_else(|| view.patch.head_oid.clone(), str::to_ascii_lowercase);
+    if !git::is_oid(&oid) {
+        return Err(crate::errors::usage(
+            "--merge-oid must be a full hex commit id",
+        ));
+    }
+    if !view.base_tips.contains(&oid) {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "merge event not posted: {} has never been a tip of {}",
+                short(&oid),
+                view.patch.base_ref_name
+            ),
+        )
+        .cause("a merge event counts only for a commit the base branch has held, and it cannot be deleted")
+        .fix(format!(
+            "push the merge to {} first, or run `dg pr merge` without --event-only to merge PR #{number}",
+            view.patch.base_ref_name
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    Ok(oid)
+}
+
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
-fn merge_failure(e: &anyhow::Error, number: u64) -> UserError {
+fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
     if let Some(u) = e.downcast_ref::<UserError>() {
         return u.clone();
     }
@@ -710,6 +800,7 @@ fn merge_failure(e: &anyhow::Error, number: u64) -> UserError {
         e.chain(),
         &forge_core::user_error::ErrorContext {
             goal: Some("merge failed"),
+            repo: Some(repo),
             ..Default::default()
         },
     )
@@ -796,6 +887,11 @@ fn push_merge(
     for kv in git::storage_overrides(&cwd) {
         argv.push("-c".into());
         argv.push(kv);
+    }
+    // `--yes` was the confirmation: the helper's cost guard must not ask again (it has no
+    // terminal here and would refuse with E801).
+    if ctx.yes {
+        argv.extend(["-c".into(), "dash.confirm=never".into()]);
     }
     argv.extend([
         "push".into(),

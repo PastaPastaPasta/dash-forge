@@ -83,6 +83,24 @@ pub(crate) fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
     Ok(())
 }
 
+/// [`check_len`] plus the contract's `maxBytes` (UTF-8 bytes): a non-ASCII text under the
+/// character limit can still be over the byte limit, and consensus refuses it.
+pub(crate) fn check_text(
+    field: &str,
+    value: &str,
+    max_chars: usize,
+    max_bytes: usize,
+) -> Result<()> {
+    check_len(field, value, max_chars)?;
+    if value.len() > max_bytes {
+        return Err(Error::Config(format!(
+            "{field} too long: {} bytes as UTF-8 (max {max_bytes})",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Importer provenance (the `imported` object on `issue` / `patch` / `comment` / `review`
 /// documents, data-contracts §2.3): the original author login, the original creation time
 /// (unix seconds), and the source URL. Recorded because Platform `$createdAt` is consensus
@@ -1114,11 +1132,16 @@ pub struct ReleaseAsset {
     pub name: String,
     /// Hex SHA-256 of the asset.
     pub sha256: String,
-    /// Size in bytes.
-    #[serde(alias = "size_bytes", default)]
+    /// Size in bytes (`size` in the web app's writer, `size_bytes` in older CLIs).
+    #[serde(alias = "size_bytes", alias = "size", default)]
     pub size_bytes: u64,
     /// Mirror URIs (≤ 4).
+    #[serde(default)]
     pub uris: Vec<String>,
+    /// The single `uri` forge-web's writer records; folded into `uris` on read
+    /// ([`release_from_doc`]) and never written.
+    #[serde(default, skip_serializing)]
+    pub uri: Option<String>,
 }
 
 /// Input for [`ReleaseService::create_release`].
@@ -1258,8 +1281,24 @@ impl<'a> ReleaseService<'a> {
 pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
     let assets = d
         .field_str("assets")
-        .and_then(|s| serde_json::from_str::<Vec<ReleaseAsset>>(&s).ok())
-        .unwrap_or_default();
+        .and_then(|s| match serde_json::from_str::<Vec<ReleaseAsset>>(&s) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::warn!(release = %d.id, error = %e, "release assets unreadable; listing none");
+                None
+            }
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut a| {
+            if let Some(u) = a.uri.take() {
+                if !a.uris.contains(&u) {
+                    a.uris.push(u);
+                }
+            }
+            a
+        })
+        .collect();
     Release {
         document_id: d.id.clone(),
         tag_name: d.field_str("tagName").unwrap_or_default(),
@@ -1698,6 +1737,28 @@ mod tests {
         }
         assert_eq!(u64_to_event_kind(0), None);
         assert_eq!(u64_to_event_kind(11), None);
+    }
+
+    #[test]
+    fn release_assets_read_both_writers_shapes() {
+        use super::ReleaseAsset;
+        let cli: Vec<ReleaseAsset> = serde_json::from_str(
+            r#"[{"name":"a","sha256":"ab","sizeBytes":3,"uris":["https://x/a"]}]"#,
+        )
+        .unwrap();
+        assert_eq!((cli[0].size_bytes, cli[0].uris.len()), (3, 1));
+        // forge-web's writer: `size` and a single `uri`.
+        let web: Vec<ReleaseAsset> =
+            serde_json::from_str(r#"[{"name":"a","sha256":"ab","size":3,"uri":"https://x/a"}]"#)
+                .unwrap();
+        assert_eq!(web[0].size_bytes, 3);
+        assert_eq!(web[0].uri.as_deref(), Some("https://x/a"));
+        // Written in the documented shape only.
+        let out = serde_json::to_string(&cli).unwrap();
+        assert!(
+            out.contains("\"sizeBytes\":3") && !out.contains("\"uri\""),
+            "{out}"
+        );
     }
 
     #[test]

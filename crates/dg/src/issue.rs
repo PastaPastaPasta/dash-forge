@@ -16,7 +16,7 @@ use forge_core::rules::{EventKind, IssueState};
 
 use crate::common::{number_arg, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text};
+use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe};
 use crate::{IssueCommand, StateArg};
 
 /// Dispatch an `issue` subcommand.
@@ -44,6 +44,9 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
     )
 }
 
+/// One listed issue: number, title, author, state.
+type Row = (u64, String, String, IssueState);
+
 fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
@@ -52,7 +55,7 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
     let s = Session::open(ctx, repo).await?;
 
     // (number, title, author, state)
-    let (rows, hidden): (Vec<(u64, String, String, IssueState)>, usize) = if s.repo.is_v1() {
+    let (rows, hidden, more): (Vec<Row>, usize, bool) = if s.repo.is_v1() {
         let issues = IssueService::new(&s.client, &s.identity, &s.bridge)
             .list_issues(s.repo.v1_contract_id()?, state.into(), limit, None)
             .await
@@ -61,18 +64,18 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
             .into_iter()
             .map(|iw| (iw.issue.number, iw.issue.title, iw.issue.author, iw.state))
             .collect();
-        (rows, 0)
+        (rows, 0, false)
     } else {
         let collab = Collab::reader(&s.client);
-        let (issues, hidden) = collab.list_issues(&s.repo, limit).await?;
+        let page = collab.list_issues(&s.repo, limit).await?;
         let mut rows = Vec::new();
-        for issue in issues {
+        for issue in page.rows {
             let st = collab.issue_state(&s.repo, &issue).await?;
             if state.matches(st.open) {
                 rows.push((u64::from(issue.number), issue.title, issue.author, st));
             }
         }
-        (rows, hidden)
+        (rows, page.hidden, page.more)
     };
 
     let json_rows: Vec<_> = rows
@@ -89,7 +92,7 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "issues": json_rows, "hidden": hidden }),
+        json!({ "count": rows.len(), "issues": json_rows, "hidden": hidden, "truncated": more }),
         || {
             if rows.is_empty() {
                 println!("no issues");
@@ -101,10 +104,13 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
                 } else {
                     format!("  [{}]", labels_of(st))
                 };
-                println!("#{n:<4} {mark:<6} {title}{labels}");
+                println!("#{n:<4} {mark:<6} {}{}", safe(title), safe(&labels));
             }
             if hidden > 0 {
                 println!("({hidden} malformed document(s) hidden)");
+            }
+            if more {
+                println!("(the newest issues only; older ones exist: raise --limit, up to 100)");
             }
         },
     );
@@ -165,16 +171,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         }),
         || {
             let mark = if state.open { "open" } else { "closed" };
-            println!("#{number} [{mark}] {title}");
+            println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {author}");
             if !state.labels.is_empty() {
-                println!("labels: {}", labels_of(&state));
+                println!("labels: {}", safe(&labels_of(&state)));
             }
             if !body.is_empty() {
-                println!("\n{body}");
+                println!("\n{}", safe(&body));
             }
             for (a, b) in &comments {
-                println!("\n— {a}:\n{b}");
+                println!("\n— {a}:\n{}", safe(b));
             }
         },
     );

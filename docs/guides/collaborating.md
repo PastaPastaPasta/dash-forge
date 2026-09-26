@@ -185,7 +185,7 @@ Each step is reported. If one fails, the output says what already happened. If t
 
 - **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push, and run `dg pr merge` again.
 - **Protected base branch:** only a maintainer can push to it. A writer's merge stops at the push step with [`E601`](../errors.md#e601).
-- **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event.
+- **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. The commit must already have been a tip of the base branch: a merge event is permanent, so `dg` refuses to post one that would not count.
 
 A PR shows as merged only when **both** are true: the `merge` event exists (consensus admits it only from a writer or maintainer), and its commit has been **a tip of the base branch**. `dg pr merge` reads the PR back and reports what readers will see.
 

@@ -772,11 +772,17 @@ impl<'a> RepoService<'a> {
         let own = Uri(scope.locator(&manifest.owner_id, &expected));
         // Platform copies to read, in order: chunks another repo's scope holds (a fork's
         // manifest names its parent's this way), then this manifest's own chunks.
+        // Only locators of THIS pack: a manifest naming another pack's chunks would have
+        // readers download them in full before the hash check refused them.
         let mut platform: Vec<Uri> = manifest
             .uris
             .iter()
             .map(|u| Uri(u.clone()))
-            .filter(|u| u.scheme() == Some(crate::backends::PLATFORM_SCHEME) && *u != own)
+            .filter(|u| {
+                *u != own
+                    && crate::backends::PlatformLocator::parse(u)
+                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
+            })
             .collect();
         if manifest.storage == 0 {
             platform.push(own);
@@ -1384,7 +1390,7 @@ pub fn group_by_hash(manifests: &[PackManifestInfo]) -> Vec<([u8; 32], Vec<&Pack
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
 /// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
 /// then writers, then anyone else, each by `($createdAt, $id)`.
-pub(crate) fn order_copies<'m>(
+pub fn order_copies<'m>(
     copies: &[&'m PackManifestInfo],
     roles: &RoleMap,
 ) -> Vec<&'m PackManifestInfo> {

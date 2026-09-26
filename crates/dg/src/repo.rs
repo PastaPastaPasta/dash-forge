@@ -8,6 +8,8 @@
 //! repositories (one contract each) remain viewable and cloneable but are read only.
 //! Repositories cannot be deleted.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use anyhow::{Context, Result};
 use serde_json::json;
 
@@ -159,7 +161,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         .read_pack_manifests(&parent)
         .await
         .map_or(0, |m| {
-            forge_core::fork::plan_manifests(&m, &std::collections::BTreeSet::new()).len()
+            forge_core::fork::plan_manifests(&m, &BTreeMap::new(), &BTreeSet::new()).len()
         });
     // repo + maintainer + config, one manifest per pack, and a few ref updates.
     let estimate = REPO_CREATE_ESTIMATE_CREDITS + FORK_PER_DOC_CREDITS * (packs as u64 + 4);
@@ -187,38 +189,69 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     )
     .await
     .context("forking the repository")?;
+    report_fork(ctx, &parent, &result, price)
+}
+
+/// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
+fn report_fork(
+    ctx: &Ctx,
+    parent: &forge_core::scope::RepoRef,
+    result: &forge_core::fork::ForkResult,
+    price: f64,
+) -> Result<()> {
     let fork = &result.created.repo;
     let nothing_new = result.created.already_existed()
         && result.manifests_written == 0
         && result.refs_written.is_empty();
+    let incomplete = !result.unreferenceable.is_empty();
+    let body = json!({
+        "status": if incomplete { "incomplete" } else if nothing_new { "exists" } else { "forked" },
+        "repoId": fork.id(),
+        "ownerId": fork.owner_id(),
+        "name": fork.name(),
+        "forkOf": parent.id(),
+        "parent": parent.display(),
+        "remoteUrl": fork.remote_url(),
+        "manifestsWritten": result.manifests_written,
+        "platformPacksReferenced": result.platform_referenced,
+        "manifestsExisting": result.manifests_existing,
+        "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
+        "refsWritten": result.refs_written,
+        "cost": cost_json(result.cost_credits, price),
+    });
+    if incomplete {
+        // Some objects are nowhere a fork can point at: refs were not copied (they could
+        // name commits the fork cannot serve). The repository exists; the user pushes.
+        return Err(crate::errors::reported(
+            forge_core::user_error::UserError::new(
+                forge_core::user_error::codes::PACKS_UNREADABLE,
+                format!(
+                    "fork incomplete: {} pack(s) of {} have no copy a fork can reference",
+                    result.unreferenceable.len(),
+                    parent.display()
+                ),
+            )
+            .cause("their only recorded copies are URLs too long for a manifest, or none at all")
+            .fix(format!(
+                "push your branches to {} from a full clone of the parent",
+                fork.remote_url()
+            ))
+            .note(format!(
+                "{} exists with {} pack(s) recorded; no ref was copied",
+                fork.display(),
+                result.manifests_written
+            )),
+            body,
+        ));
+    }
     ctx.emit(
-        json!({
-            "status": if nothing_new { "exists" } else { "forked" },
-            "repoId": fork.id(),
-            "ownerId": fork.owner_id(),
-            "name": fork.name(),
-            "forkOf": parent.id(),
-            "parent": parent.display(),
-            "remoteUrl": fork.remote_url(),
-            "manifestsWritten": result.manifests_written,
-            "platformPacksReferenced": result.platform_referenced,
-            "manifestsExisting": result.manifests_existing,
-            "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
-            "refsWritten": result.refs_written,
-            "cost": cost_json(result.cost_credits, price),
-        }),
+        body,
         || {
             println!("✓ forked {} → {}", parent.display(), fork.display());
             println!(
                 "  packs:   {} recorded ({} by reference to the parent's Platform chunks), nothing re-uploaded",
                 result.manifests_written, result.platform_referenced
             );
-            if !result.unreferenceable.is_empty() {
-                println!(
-                    "  warning: {} pack(s) have no copy a fork can reference; push those objects to the fork",
-                    result.unreferenceable.len()
-                );
-            }
             println!("  refs:    {} copied", result.refs_written.len());
             println!("  remote:  {}", fork.remote_url());
             println!("  cost:    {}", cost_line(result.cost_credits, price));

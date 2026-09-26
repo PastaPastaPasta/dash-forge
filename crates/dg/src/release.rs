@@ -104,6 +104,7 @@ async fn upload_asset(
         sha256: meta.pack_hash,
         size_bytes: bytes.len() as u64,
         uris,
+        uri: None,
     })
 }
 
@@ -292,8 +293,29 @@ async fn download(
     let safe_name = Path::new(&asset.name)
         .file_name()
         .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
+    // Without --output the file is new: an existing file (or a symlink) of that name is not
+    // overwritten, since the name came from someone else.
+    let explicit = output.is_some();
     let out_path = output.unwrap_or(safe_name);
-    std::fs::write(&out_path, &bytes).with_context(|| format!("writing {}", out_path.display()))?;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true);
+    if explicit {
+        open.create(true).truncate(true);
+    } else {
+        open.create_new(true);
+    }
+    let mut f = open.open(&out_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            crate::errors::usage(format!(
+                "{} already exists; pass --output <path> to choose where the asset goes",
+                out_path.display()
+            ))
+        } else {
+            anyhow::Error::from(e).context(format!("writing {}", out_path.display()))
+        }
+    })?;
+    std::io::Write::write_all(&mut f, &bytes)
+        .with_context(|| format!("writing {}", out_path.display()))?;
     ctx.emit(
         json!({
             "status": "downloaded",
@@ -306,7 +328,7 @@ async fn download(
         || {
             println!(
                 "✓ {} ({} bytes, sha256 verified) → {}",
-                asset.name,
+                crate::fmt::safe(&asset.name),
                 bytes.len(),
                 out_path.display()
             );

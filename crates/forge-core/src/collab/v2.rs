@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    check_len, doc_engine, event_kind_to_u64, insert_imported, label_from_doc, release_from_doc,
-    u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput, Verdict,
-    DEFAULT_PAGE,
+    check_len, check_text, doc_engine, event_kind_to_u64, insert_imported, label_from_doc,
+    release_from_doc, u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput,
+    Verdict, DEFAULT_PAGE,
 };
 use crate::backends::sha256;
 use crate::create::replay_landed;
@@ -37,8 +37,8 @@ use crate::keystore::BridgeIdentity;
 use crate::members::{self, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
-    self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryFilter,
-    QueryOrder, WriteEngine, WriteIntent,
+    self, BroadcastOutcome, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity,
+    PlatformClient, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::v2::{
     allocate_number, count_approvals, fold_issue_state_v2, fold_pr_state_v2, is_well_formed,
@@ -259,6 +259,27 @@ pub struct TargetLog {
     pub author_events: Vec<Event>,
 }
 
+/// One page of a list, newest first.
+#[derive(Debug, Clone)]
+pub struct Listed<T> {
+    /// The well-formed rows.
+    pub rows: Vec<T>,
+    /// How many rows of the page were skipped as not well-formed (§5).
+    pub hidden: usize,
+    /// The page was full: older rows exist beyond it.
+    pub more: bool,
+}
+
+impl<T> Listed<T> {
+    fn map<U>(self, f: impl FnMut(T) -> U) -> Listed<U> {
+        Listed {
+            rows: self.rows.into_iter().map(f).collect(),
+            hidden: self.hidden,
+            more: self.more,
+        }
+    }
+}
+
 /// An issue with its folded state.
 #[derive(Debug, Clone)]
 pub struct IssueView {
@@ -279,6 +300,8 @@ pub struct PatchView {
     pub base_tip: Option<String>,
     /// Whether the head has been a tip of the base ref (a merge naming it would count).
     pub head_on_base: bool,
+    /// Every commit the base ref has pointed at (what a merge event may name).
+    pub base_tips: BTreeSet<String>,
 }
 
 /// How a create with an explicit number ended.
@@ -444,8 +467,23 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
 
 /// Whether a fetched document is well-formed for a repo of `visibility` (§5). Readers skip
 /// the rest.
+///
+/// A patch must also carry ref names that hash to their indexed hashes: readers find the
+/// base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
+/// patch whose two disagree would be folded against one ref and merged into another.
 pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibility) -> bool {
     is_well_formed(&content_of(kind, d), visibility)
+        && (kind != ContentKind::Patch || patch_ref_hashes_agree(d))
+}
+
+/// `sha256(baseRefName) == baseRefNameHash`, and the same for the source ref when present
+/// (a private patch carries no plaintext names, so there is nothing to compare).
+fn patch_ref_hashes_agree(d: &FetchedDocument) -> bool {
+    let agrees = |name: &str, hash: &str| match d.field_str(name) {
+        Some(n) if !n.is_empty() => d.field_bytes32(hash) == Some(sha256(n.as_bytes())),
+        _ => true,
+    };
+    agrees("baseRefName", "baseRefNameHash") && agrees("sourceRefName", "sourceRefNameHash")
 }
 
 /// The creator-side properties of a new `issue`.
@@ -456,7 +494,7 @@ pub fn issue_props(
     imported: Option<&Imported>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(title)?;
-    check_len("issue body", body, 5120)?;
+    check_text("issue body", body, 5120, 5120)?;
     let mut p = BTreeMap::new();
     p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
     p.insert("title".to_string(), FieldValue::text(title));
@@ -474,7 +512,7 @@ pub fn patch_props(
     imported: Option<&Imported>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(&input.title)?;
-    check_len("PR body", &input.body, 5120)?;
+    check_text("PR body", &input.body, 5120, 5120)?;
     // Written into un-gated data a maintainer's client renders and hands to git: refuse a
     // name that could smuggle a newline or an option (the `refUpdate` guard, mirrored).
     if !rules::is_legal_ref_name(&input.base_ref_name) || input.base_ref_name.len() > 255 {
@@ -538,7 +576,7 @@ fn check_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
         return Err(Error::Config("a title is required".into()));
     }
-    check_len("title", title, 256)
+    check_text("title", title, 256, 1024)
 }
 
 /// The properties of a member `event` (without `repoId`, which the scope adds).
@@ -549,7 +587,7 @@ pub fn event_props(
     oid: Option<&[u8]>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     if let Some(v) = value {
-        check_len("event value", v, 120)?;
+        check_text("event value", v, 120, 480)?;
     }
     if kind == EventKind::Retarget && !value.is_some_and(rules::is_legal_ref_name) {
         return Err(Error::Config(format!(
@@ -829,7 +867,7 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         kind: TargetKind,
         limit: u32,
-    ) -> Result<(Vec<FetchedDocument>, usize)> {
+    ) -> Result<Listed<FetchedDocument>> {
         let collab = self.collab_contract(repo).await?;
         let limit = if limit == 0 {
             DEFAULT_PAGE
@@ -852,25 +890,32 @@ impl<'a> Collab<'a> {
             )
             .await?;
         let total = docs.len();
+        let more = total >= limit as usize;
         let shown: Vec<FetchedDocument> = docs
             .into_iter()
             .filter(|d| well_formed(content, d, Self::visibility(repo)))
             .collect();
-        let hidden = total - shown.len();
-        Ok((shown, hidden))
+        Ok(Listed {
+            hidden: total - shown.len(),
+            more,
+            rows: shown,
+        })
     }
 
-    /// The newest `limit` issues (0 = one page of 100), newest first, and how many were
-    /// skipped as not well-formed.
-    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<(Vec<V2Issue>, usize)> {
-        let (docs, hidden) = self.newest(repo, TargetKind::Issue, limit).await?;
-        Ok((docs.iter().map(issue_from_doc).collect(), hidden))
+    /// The newest `limit` issues (0 = one page of 100), newest first.
+    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Issue>> {
+        Ok(self
+            .newest(repo, TargetKind::Issue, limit)
+            .await?
+            .map(|d| issue_from_doc(&d)))
     }
 
-    /// The newest `limit` pull requests, newest first, and how many were skipped.
-    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<(Vec<V2Patch>, usize)> {
-        let (docs, hidden) = self.newest(repo, TargetKind::Patch, limit).await?;
-        Ok((docs.iter().map(patch_from_doc).collect(), hidden))
+    /// The newest `limit` pull requests (0 = one page of 100), newest first.
+    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Patch>> {
+        Ok(self
+            .newest(repo, TargetKind::Patch, limit)
+            .await?
+            .map(|d| patch_from_doc(&d)))
     }
 
     /// The pull requests whose objects live in `source_repo_id` (the `source` index), any
@@ -1015,6 +1060,7 @@ impl<'a> Collab<'a> {
             state,
             base_tip,
             head_on_base,
+            base_tips: tips,
         })
     }
 
@@ -1253,12 +1299,16 @@ impl<'a> Collab<'a> {
             );
             CreateJournal::remove(&path);
         }
+        // A read right after a collision can lag the block that took the number, so never
+        // try a number at or below one already refused.
+        let mut floor = 0u32;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
-            let number = self.next_number(repo, kind).await?;
+            let number = self.next_number(repo, kind).await?.max(floor);
             let all = Self::with_repo(repo, props(number)?)?;
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
                     CreateJournal {
+                        saved_at: unix_now(),
                         contract: collab.id(),
                         number,
                         intent: WriteIntent::for_prepared(0, p),
@@ -1278,7 +1328,14 @@ impl<'a> Collab<'a> {
                 // Someone claimed the number first: nothing landed; read again and retry.
                 Err(Error::DuplicateUniqueIndex(_)) => {
                     CreateJournal::remove(&path);
+                    floor = number.saturating_add(1);
                     tracing::warn!(number, attempt, "number taken; allocating again");
+                }
+                // A consensus refusal proves nothing landed: forget the transition, or the
+                // same command would replay it (and be refused) forever.
+                Err(e @ (Error::NotAMember { .. } | Error::Platform(_) | Error::Config(_))) => {
+                    CreateJournal::remove(&path);
+                    return Err(e);
                 }
                 Err(e) => return Err(e),
             }
@@ -1303,7 +1360,7 @@ impl<'a> Collab<'a> {
         if body.trim().is_empty() {
             return Err(Error::Config("a comment needs a body".into()));
         }
-        check_len("comment body", body, 5120)?;
+        check_text("comment body", body, 5120, 5120)?;
         let collab = self.collab_contract(repo).await?;
         let mut p = BTreeMap::new();
         p.insert(
@@ -1322,7 +1379,7 @@ impl<'a> Collab<'a> {
                 p.insert("commitOid".to_string(), FieldValue::bytes(o.clone()));
             }
             if let Some(path) = &a.path {
-                check_len("comment path", path, 500)?;
+                check_text("comment path", path, 500, 1000)?;
                 p.insert("path".to_string(), FieldValue::text(path));
             }
             if let Some(l) = a.line {
@@ -1350,7 +1407,7 @@ impl<'a> Collab<'a> {
         if !(1..=3).contains(&verdict.code()) {
             return Err(Error::Config(format!("unknown verdict {}", verdict.code())));
         }
-        check_len("review body", body, 5120)?;
+        check_text("review body", body, 5120, 5120)?;
         let collab = self.collab_contract(repo).await?;
         let mut p = BTreeMap::new();
         p.insert(
@@ -1615,17 +1672,28 @@ impl<'a> Collab<'a> {
         let Some(star) = self.own_star(&collab, repo).await? else {
             return Ok(false);
         };
-        let values = Self::with_repo(repo, BTreeMap::new())?;
-        match self
-            .engine()?
-            .delete_with_values(&collab, DOC_STAR, &star.id, values, None)
-            .await
-        {
-            Ok(_) => Ok(true),
-            // Already gone (another process unstarred it first).
-            Err(Error::NotFound) => Ok(false),
-            Err(e) => Err(e),
+        let engine = self.engine()?;
+        for _ in 0..2 {
+            let values = Self::with_repo(repo, BTreeMap::new())?;
+            match engine
+                .delete_with_values(&collab, DOC_STAR, &star.id, values, None)
+                .await
+            {
+                Ok(BroadcastOutcome::NonceConsumed) => {
+                    // Our delete landed earlier, or another write by this identity took the
+                    // nonce: the star's presence says which.
+                    if self.own_star(&collab, repo).await?.is_none() {
+                        return Ok(true);
+                    }
+                    tracing::warn!("another write took the unstar's nonce; re-preparing");
+                }
+                Ok(_) => return Ok(true),
+                // Already gone (another process unstarred it first).
+                Err(Error::NotFound) => return Ok(false),
+                Err(e) => return Err(e),
+            }
         }
+        Err(Error::Nonce)
     }
 }
 
@@ -1689,6 +1757,10 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateJournal {
+    /// When the transition was signed (unix seconds). A journal older than
+    /// [`JOURNAL_TTL_SECS`] is not resumed: it is an old command's, not an interrupted one.
+    #[serde(default)]
+    saved_at: u64,
     /// The contract the transition targets (a re-registered contract voids it).
     contract: String,
     /// The number the transition claims.
@@ -1699,10 +1771,17 @@ struct CreateJournal {
 
 impl CreateJournal {
     fn load(path: &Path, contract: &str) -> Option<Self> {
-        std::fs::read(path)
+        let j = std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice::<Self>(&b).ok())
-            .filter(|j| j.contract == contract)
+            .filter(|j| j.contract == contract);
+        if j.as_ref()
+            .is_some_and(|j| unix_now().saturating_sub(j.saved_at) > JOURNAL_TTL_SECS)
+        {
+            Self::remove(path);
+            return None;
+        }
+        j
     }
 
     fn save(&self, path: &Path) -> Result<()> {
@@ -1718,6 +1797,16 @@ impl CreateJournal {
     fn remove(path: &Path) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// How long an interrupted create is resumed by re-running the same command. After that the
+/// same title and body is a new issue (someone filing it again on purpose), not a resume.
+const JOURNAL_TTL_SECS: u64 = 60 * 60;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The journal of one pending create: per network, repo, kind, signer and content, so the
@@ -1989,6 +2078,91 @@ mod tests {
             &doc(enc),
             Visibility::Public
         ));
+    }
+
+    #[test]
+    fn a_patch_whose_ref_names_do_not_hash_to_their_keys_is_malformed() {
+        let input = PatchInput {
+            title: "t".into(),
+            body: String::new(),
+            base_ref_name: "refs/heads/main".into(),
+            source_repo_id: "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L".into(),
+            source_ref_name: Some("refs/heads/feature".into()),
+            head_oid: vec![0xab; 20],
+            patch_manifest_hash: None,
+        };
+        let doc = |fields: BTreeMap<String, FieldValue>| FetchedDocument {
+            id: "x".into(),
+            owner_id: "o".into(),
+            created_at: Some(1),
+            fields,
+        };
+        let honest = patch_props(1, &input, None).unwrap();
+        assert!(well_formed(
+            ContentKind::Patch,
+            &doc(honest.clone()),
+            Visibility::Public
+        ));
+        // Folded against one ref, merged into another: refused.
+        let mut lying = honest.clone();
+        lying.insert(
+            "baseRefNameHash".into(),
+            FieldValue::bytes32(sha256(b"refs/heads/other")),
+        );
+        assert!(!well_formed(
+            ContentKind::Patch,
+            &doc(lying),
+            Visibility::Public
+        ));
+        let mut lying_source = honest;
+        lying_source.insert("sourceRefNameHash".into(), FieldValue::bytes32([0; 32]));
+        assert!(!well_formed(
+            ContentKind::Patch,
+            &doc(lying_source),
+            Visibility::Public
+        ));
+    }
+
+    #[test]
+    fn text_limits_count_bytes_too() {
+        // 1500 three-byte characters: under 5120 characters, over 5120 bytes.
+        let body = "€".repeat(1800);
+        assert!(issue_props(1, "t", &body, None).is_err());
+        assert!(issue_props(1, "t", &"€".repeat(1700), None).is_ok());
+    }
+
+    #[test]
+    fn an_old_create_journal_is_not_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.json");
+        let intent = WriteIntent {
+            seq: 0,
+            document_id: "D".into(),
+            operation: platform::WriteOp::Create,
+            transition: platform::SignedTransition {
+                bytes: vec![1],
+                nonce: 1,
+            },
+        };
+        let fresh = CreateJournal {
+            saved_at: unix_now(),
+            contract: "C".into(),
+            number: 3,
+            intent: intent.clone(),
+        };
+        fresh.save(&path).unwrap();
+        assert_eq!(CreateJournal::load(&path, "C").unwrap().number, 3);
+        assert!(
+            CreateJournal::load(&path, "OTHER").is_none(),
+            "another contract's"
+        );
+        let stale = CreateJournal {
+            saved_at: unix_now() - JOURNAL_TTL_SECS - 1,
+            ..fresh
+        };
+        stale.save(&path).unwrap();
+        assert!(CreateJournal::load(&path, "C").is_none());
+        assert!(!path.exists(), "a stale journal is removed");
     }
 
     #[test]
