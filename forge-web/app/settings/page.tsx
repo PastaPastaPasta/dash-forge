@@ -84,6 +84,16 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">Storage</h2>
+          <p className="text-dense text-anvil-600 dark:text-anvil-300">
+            Your buckets and IPFS nodes for browser pushes, tested from this page, with their keys encrypted in this browser.
+          </p>
+          <Link href="/settings/storage" className="mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
+            Storage settings →
+          </Link>
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
           <KeysPanel />
         </section>

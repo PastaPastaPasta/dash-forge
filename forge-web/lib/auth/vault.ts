@@ -14,6 +14,11 @@
  *   record cannot be replayed under another identity.
  * - In memory: the unlocked record lives only in this module (never React state, never
  *   localStorage), for at most {@link AUTO_LOCK_MS} (12 h) or until {@link lockVault}.
+ * - Storage credentials (`ux-dx-spec.md` §3.1: bucket keys, pinning tokens) are a second
+ *   AES-GCM blob beside the record (`vault-storage:<network>:<identity>`), sealed under a key
+ *   HKDF-derived from the same data key. While unlocked, only that derived key is held, as a
+ *   non-extractable `CryptoKey`; it is dropped with the rest on lock. A renewal that replaces
+ *   the record re-seals the blob under the new data key.
  *
  * Per-origin by construction: IndexedDB and WebAuthn (`rpId` = this host) are origin-scoped.
  */
@@ -110,6 +115,53 @@ function key(network: Network, identityId: string): string {
 
 function aad(network: Network, identityId: string, slot: string): Uint8Array {
   return enc.encode(`dash-forge vault v1|${network}|${identityId}|${slot}`)
+}
+
+function storageBlobKey(network: Network, identityId: string): string {
+  return `vault-storage:${network}:${identityId}`
+}
+
+/** The sealed storage-credentials blob. */
+interface StorageBlob {
+  readonly iv: Uint8Array
+  readonly ciphertext: Uint8Array
+}
+
+/** The storage-blob key: HKDF(data key) → a non-extractable AES-GCM key. */
+async function deriveStorageKey(dataKey: Uint8Array, network: Network, identityId: string): Promise<CryptoKey> {
+  const raw = hkdf(sha256, dataKey, enc.encode('dash-forge vault storage v1'), enc.encode(`${network}|${identityId}`), 32)
+  try {
+    return await crypto.subtle.importKey('raw', buf(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  } finally {
+    raw.fill(0)
+  }
+}
+
+async function sealBlob(key: CryptoKey, network: Network, identityId: string, value: unknown): Promise<StorageBlob> {
+  const iv = random(12)
+  const plain = enc.encode(JSON.stringify(value))
+  try {
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(aad(network, identityId, 'storage')) }, key, buf(plain))
+    return { iv, ciphertext: new Uint8Array(ct) }
+  } finally {
+    plain.fill(0)
+  }
+}
+
+async function openBlob(key: CryptoKey, network: Network, identityId: string, blob: StorageBlob): Promise<unknown> {
+  let plain: Uint8Array
+  try {
+    plain = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(aad(network, identityId, 'storage')) }, key, buf(blob.ciphertext)),
+    )
+  } catch {
+    throw new VaultLockedError('the stored storage settings do not open with this key')
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(plain)) as unknown
+  } finally {
+    plain.fill(0)
+  }
 }
 
 function random(n: number): Uint8Array {
@@ -248,7 +300,11 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
     throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
   }
   const { identityId } = secret
+  // A renewal replaces the record (and its data key): carry the storage settings across when
+  // this session can open them; otherwise they cannot be opened any more and are dropped.
+  const carried = await readStorageBlob(network, identityId).catch(() => null)
   const dataKey = random(32)
+  let storageKey: CryptoKey
   try {
     const body = await seal(dataKey, enc.encode(JSON.stringify(secret)), aad(network, identityId, 'body'))
     const slots: Slot[] = []
@@ -275,11 +331,40 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
       ciphertext: body.ct,
       slots,
     }
+    storageKey = await deriveStorageKey(dataKey, network, identityId)
     await idbPut('vault', key(network, identityId), record)
+    if (carried !== null) await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(storageKey, network, identityId, carried))
+    else await idbDelete('vault', storageBlobKey(network, identityId))
   } finally {
     dataKey.fill(0)
   }
-  setUnlocked(network, secret)
+  setUnlocked(network, secret, storageKey)
+}
+
+/**
+ * The storage settings sealed for (network, identity), or null when none are stored. Needs the
+ * vault unlocked for that identity ({@link VaultLockedError} otherwise). The caller parses the
+ * value (it is the caller's schema).
+ */
+export async function readStorageBlob(network: Network, identityId: string): Promise<unknown> {
+  const k = unlockedStorageKey(network, identityId)
+  const blob = await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))
+  if (blob === undefined) return null
+  if (k === null) throw new VaultLockedError('unlock to read your storage settings')
+  return openBlob(k, network, identityId, blob)
+}
+
+/** Seal `value` as the storage settings of (network, identity). Needs the vault unlocked. */
+export async function writeStorageBlob(network: Network, identityId: string, value: unknown): Promise<void> {
+  assertDedicatedOrigin()
+  const k = unlockedStorageKey(network, identityId)
+  if (k === null) throw new VaultLockedError('unlock with a stored key to save storage settings')
+  await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(k, network, identityId, value))
+}
+
+function unlockedStorageKey(network: Network, identityId: string): CryptoKey | null {
+  if (unlockedSecret(network, identityId) === null) return null
+  return unlocked?.storageKey ?? null
 }
 
 /** The vaults stored for `network` (no secrets). */
@@ -293,14 +378,14 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
   }))
 }
 
-async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot): Promise<VaultSecret> {
+async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot): Promise<{ secret: VaultSecret; storageKey: CryptoKey }> {
   const dataKey = await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind))
   try {
     const body = await open(dataKey, record.iv, record.ciphertext, aad(network, record.identityId, 'body'))
     const secret = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
     body.fill(0)
     if (secret.identityId !== record.identityId) throw new VaultLockedError('vault record does not match its identity')
-    return secret
+    return { secret, storageKey: await deriveStorageKey(dataKey, network, record.identityId) }
   } finally {
     dataKey.fill(0)
     kek.fill(0)
@@ -316,8 +401,8 @@ export async function unlockWithPassphrase(network: Network, identityId: string,
   // The parameters are pinned, never read from the (unauthenticated) record: a tampered
   // record cannot make unlock allocate gigabytes.
   if (JSON.stringify(slot.params) !== JSON.stringify(ARGON2_PARAMS)) throw new VaultLockedError('this key was stored with unsupported settings')
-  const secret = await unwrapWith(network, record, await passphraseKey(passphrase, slot.salt), slot)
-  setUnlocked(network, secret)
+  const { secret, storageKey } = await unwrapWith(network, record, await passphraseKey(passphrase, slot.salt), slot)
+  setUnlocked(network, secret, storageKey)
   return secret
 }
 
@@ -332,8 +417,8 @@ export async function unlockWithPasskey(network: Network, identityId: string): P
   const raw = new Uint8Array(output)
   const kek = prfKey(raw, network, identityId)
   raw.fill(0)
-  const secret = await unwrapWith(network, record, kek, slot)
-  setUnlocked(network, secret)
+  const { secret, storageKey } = await unwrapWith(network, record, kek, slot)
+  setUnlocked(network, secret, storageKey)
   return secret
 }
 
@@ -341,6 +426,7 @@ export async function unlockWithPasskey(network: Network, identityId: string): P
 export async function forgetVault(network: Network, identityId: string): Promise<void> {
   lockVault()
   await idbDelete('vault', key(network, identityId))
+  await idbDelete('vault', storageBlobKey(network, identityId))
   clearSignedWrites()
 }
 
@@ -359,8 +445,8 @@ export function clearSignedWrites(): void {
   }
 }
 
-// The unlocked secret: module memory only.
-let unlocked: { network: Network; secret: VaultSecret; at: number } | null = null
+// The unlocked secret (and the storage-blob key, for a vault-stored key): module memory only.
+let unlocked: { network: Network; secret: VaultSecret; at: number; storageKey: CryptoKey | null } | null = null
 let lockTimer: ReturnType<typeof setTimeout> | null = null
 const lockListeners = new Set<() => void>()
 
@@ -372,8 +458,8 @@ export function onVaultLock(listener: () => void): () => void {
   }
 }
 
-function setUnlocked(network: Network, secret: VaultSecret): void {
-  unlocked = { network, secret, at: Date.now() }
+function setUnlocked(network: Network, secret: VaultSecret, storageKey: CryptoKey | null = null): void {
+  unlocked = { network, secret, at: Date.now(), storageKey }
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = setTimeout(lockVault, AUTO_LOCK_MS)
 }

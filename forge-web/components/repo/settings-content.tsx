@@ -13,7 +13,7 @@
  */
 
 import { useState } from 'react'
-import { Fingerprint, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
+import { Fingerprint, HardDrive, ShieldPlus, Snowflake, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Collaborator, V1RepoRef, V2RepoRef } from '@/lib/repo'
 import {
@@ -41,6 +41,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
+import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 
 type Role = 'write' | 'maintain'
 type Action = { kind: 'grant' | 'suspend' | 'revoke'; member: string; role: Role }
@@ -264,6 +265,10 @@ function V2Settings({ home, repo }: { home: RepoHome; repo: V2RepoRef }): JSX.El
     <div className="mx-auto max-w-2xl space-y-8">
       <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
         <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
+      </Section>
+
+      <Section title="Your browser pushes" icon={<HardDrive className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        <RepoStoragePolicy repoId={repo.repoId} />
       </Section>
 
       <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-400" aria-hidden />}>

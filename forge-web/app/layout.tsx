@@ -15,7 +15,9 @@ export const metadata: Metadata = {
 //   inline bootstrap scripts.
 // - frame-ancestors is ignored in a <meta> CSP; the host must send it as a header (GitHub
 //   Pages cannot; see docs/guides/identity-and-keys.md).
-// - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends.
+// - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http only to
+//   this machine (a local kubo node or MinIO, the storage guide's defaults); storage profiles
+//   refuse http anywhere else (`lib/storage/profiles.ts`).
 // - worker-src blob:: materialization / search / pack workers run off-main-thread.
 const CSP = [
   "default-src 'self'",
@@ -23,7 +25,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https: blob:",
   "font-src 'self'",
-  "connect-src 'self' https: wss:",
+  "connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:*",
   "worker-src 'self' blob:",
   "child-src 'self' blob:",
   "frame-ancestors 'none'",
