@@ -158,13 +158,14 @@ pub(crate) fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
 /// flow ([`crate::storage_wizard`]).
 async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     let Some(name) = args.name.as_deref() else {
-        if *args == StorageAddArgs::default() && ctx.interactive() {
+        let no_args = *args == StorageAddArgs::default();
+        if no_args && ctx.interactive() {
             return crate::storage_wizard::run(&mut crate::prompt::TtyPrompter)
                 .await
                 .map(drop);
         }
         return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")
-            .cause(if *args == StorageAddArgs::default() {
+            .cause(if no_args {
                 "the interactive setup needs a terminal, and runs only without --json and --yes"
             } else {
                 "flags were given without the profile name"
@@ -310,16 +311,16 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 }
 
 /// One storage check.
-pub(crate) struct Step {
-    pub name: &'static str,
-    pub ok: bool,
-    pub detail: String,
+struct Step {
+    name: &'static str,
+    ok: bool,
+    detail: String,
 }
 
 /// The checks [`run_checks`] ran, plus the provider fixes to print.
 #[derive(Default)]
 pub(crate) struct Report {
-    pub steps: Vec<Step>,
+    steps: Vec<Step>,
     pub fixes: Vec<String>,
     /// Print each row as it is recorded (human mode), so a slow check shows progress.
     live: bool,
@@ -328,7 +329,8 @@ pub(crate) struct Report {
 impl Report {
     fn record(&mut self, name: &'static str, ok: bool, detail: String) {
         if self.live {
-            println!("{}", step_row(name, ok, &detail));
+            let mark = if ok { " OK " } else { "FAIL" };
+            println!("  [{mark}] {name:<14} {detail}");
         }
         self.steps.push(Step { name, ok, detail });
     }
@@ -380,14 +382,6 @@ impl Report {
             .map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail}))
             .collect()
     }
-}
-
-/// One human check row: `  [ OK ] put            wrote …`.
-fn step_row(name: &str, ok: bool, detail: &str) -> String {
-    format!(
-        "  [{}] {name:<14} {detail}",
-        if ok { " OK " } else { "FAIL" }
-    )
 }
 
 /// Run every check for `profile` (the same ones for `dg storage test` and the end of the
@@ -691,7 +685,7 @@ pub(crate) fn git_config(global: bool, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn use_profiles(
+fn use_profiles(
     ctx: &Ctx,
     list: &str,
     replicas: Option<usize>,

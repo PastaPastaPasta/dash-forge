@@ -51,16 +51,22 @@ pub fn text_valid(
 /// Prompts on the terminal: questions and hints on stderr, answers from stdin.
 pub struct TtyPrompter;
 
-/// Dim text on a colour terminal.
-fn dim(s: &str) -> String {
+/// A hint line under a question, dim on a colour terminal.
+fn print_hint(hint: &str) {
+    if hint.is_empty() {
+        return;
+    }
     if forge_core::user_error::stderr_color() {
-        format!("\x1b[2m{s}\x1b[0m")
+        eprintln!("\x1b[2m  {hint}\x1b[0m");
     } else {
-        s.to_string()
+        eprintln!("  {hint}");
     }
 }
 
-fn read_line() -> Result<String> {
+/// Print `prompt` (no newline) and read the trimmed answer.
+fn read_answer(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
     let mut line = String::new();
     let n = std::io::stdin()
         .lock()
@@ -76,17 +82,13 @@ fn read_line() -> Result<String> {
 impl Prompter for TtyPrompter {
     fn text(&mut self, question: &str, hint: &str, default: Option<&str>) -> Result<String> {
         loop {
-            if !hint.is_empty() {
-                eprintln!("{}", dim(&format!("  {hint}")));
-            }
+            print_hint(hint);
             let shown = match default {
                 Some("") => " (optional)".to_string(),
                 Some(d) => format!(" [{d}]"),
                 None => String::new(),
             };
-            eprint!("? {question}{shown} › ");
-            std::io::stderr().flush().ok();
-            let answer = read_line()?;
+            let answer = read_answer(&format!("? {question}{shown} › "))?;
             match (answer.is_empty(), default) {
                 (false, _) => return Ok(answer),
                 (true, Some(d)) => return Ok(d.to_string()),
@@ -101,9 +103,7 @@ impl Prompter for TtyPrompter {
             eprintln!("  {}) {o}", i + 1);
         }
         loop {
-            eprint!("  › [{}] ", default + 1);
-            std::io::stderr().flush().ok();
-            let answer = read_line()?;
+            let answer = read_answer(&format!("  › [{}] ", default + 1))?;
             if answer.is_empty() {
                 return Ok(default);
             }
@@ -115,9 +115,7 @@ impl Prompter for TtyPrompter {
     }
 
     fn secret(&mut self, question: &str, hint: &str) -> Result<Secret> {
-        if !hint.is_empty() {
-            eprintln!("{}", dim(&format!("  {hint}")));
-        }
+        print_hint(hint);
         loop {
             let value = rpassword::prompt_password(format!("? {question} › "))
                 .context("reading the secret from the terminal")?;
@@ -132,9 +130,10 @@ impl Prompter for TtyPrompter {
     fn confirm(&mut self, question: &str, default: bool) -> Result<bool> {
         let shown = if default { "[Y/n]" } else { "[y/N]" };
         loop {
-            eprint!("? {question} {shown} ");
-            std::io::stderr().flush().ok();
-            match read_line()?.to_ascii_lowercase().as_str() {
+            match read_answer(&format!("? {question} {shown} "))?
+                .to_ascii_lowercase()
+                .as_str()
+            {
                 "" => return Ok(default),
                 "y" | "yes" => return Ok(true),
                 "n" | "no" => return Ok(false),

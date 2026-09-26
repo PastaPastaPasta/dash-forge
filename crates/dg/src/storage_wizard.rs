@@ -330,6 +330,7 @@ fn secret_ref(
     keychain_ok: bool,
     pasted: &mut Option<Secret>,
 ) -> Result<String> {
+    let keychain_ref = format!("keychain:{}/{profile}", keychain::SERVICE);
     let store = keychain::store_name();
     let paste = format!("paste it now; dg stores it in the {store} (recommended)");
     let mut options = vec![
@@ -349,9 +350,11 @@ fn secret_ref(
         0 => {
             *pasted = Some(p.secret(
                 what,
-                &format!("input is hidden; stored as keychain:{}/{profile}, never written to storage.toml", keychain::SERVICE),
+                &format!(
+                    "input is hidden; stored as {keychain_ref}, never written to storage.toml"
+                ),
             )?);
-            format!("keychain:{}/{profile}", keychain::SERVICE)
+            keychain_ref
         }
         1 => {
             let var = text_valid(
@@ -372,11 +375,12 @@ fn secret_ref(
             p,
             "Keychain reference",
             "keychain:<service>/<account> of the existing entry",
-            Some(&format!("keychain:{}/{profile}", keychain::SERVICE)),
+            Some(&keychain_ref),
             |v| {
-                v.strip_prefix("keychain:")
-                    .ok_or_else(|| "starts with keychain:".to_string())
-                    .and_then(|_| v.parse::<SecretRef>().map(drop).map_err(|e| e.to_string()))
+                if !v.starts_with("keychain:") {
+                    return Err("starts with keychain:".to_string());
+                }
+                v.parse::<SecretRef>().map(drop).map_err(|e| e.to_string())
             },
         )?,
     })
@@ -500,11 +504,10 @@ fn global_storage_set() -> bool {
 
 /// `path` with the home directory shown as `~`.
 fn tilde(path: &Path) -> String {
-    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        Some(home) if path.starts_with(&home) => {
-            format!("~/{}", path.strip_prefix(&home).unwrap_or(path).display())
-        }
-        _ => path.display().to_string(),
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 

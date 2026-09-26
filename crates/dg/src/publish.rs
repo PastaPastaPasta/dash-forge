@@ -197,7 +197,7 @@ fn platform_price(size: Option<u64>) -> String {
     // The rate is the storage deposit (what the spec and the guides quote); the size's
     // price includes processing fees.
     let per_mib = forge_core::cost::estimate(1024 * 1024).deposit;
-    let rate = format!("~{} DASH/MiB", dash_2(per_mib));
+    let rate = format!("~{:.2} DASH/MiB", crate::fmt::credits_to_dash(per_mib));
     match size.filter(|b| *b > 0) {
         Some(b) => format!(
             "{rate} ({} ≈ {} DASH)",
@@ -206,11 +206,6 @@ fn platform_price(size: Option<u64>) -> String {
         ),
         None => rate,
     }
-}
-
-/// A DASH amount to two decimals (`0.28`), for per-MiB prices.
-fn dash_2(credits: u64) -> String {
-    format!("{:.2}", crate::fmt::credits_to_dash(credits))
 }
 
 /// The plan's storage line: `packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only`.
@@ -527,8 +522,8 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         });
         return Ok(());
     };
-    let pushed = wire_and_push(ctx, &client, &plan, local, &repo.remote_url(), opts, body).await?;
-    let (mut body, push_cost, balance) = pushed;
+    let (mut body, push_cost, balance) =
+        wire_and_push(ctx, &client, &plan, local, &repo.remote_url(), opts, body).await?;
     body["totalCost"] = cost_json(result.cost_credits + push_cost.unwrap_or(0), price);
     ctx.emit(body, || {
         if let Some(push_cost) = push_cost {
@@ -630,31 +625,31 @@ fn configure_local(
             let _ = git(root, &["config", "--unset", "dash.replicas"], &[]);
         }
     }
-    // The network the helper would pick from env + git config; pin dg's when it differs.
-    let helper = || {
+    // Whether the helper would pick dg's network from env + git config; pin it when not.
+    let want = ctx.network();
+    let helper_agrees = || {
         NetworkSettings::from_env()
             .overlay(NetworkSettings::from_git_config(|k| {
                 git_config_scoped(k).map(|(_, v)| v)
             }))
             .resolve()
-            .map(|t| t.network)
+            .is_ok_and(|t| t.network == *want)
     };
-    let want = ctx.network();
-    if helper().ok().as_ref() != Some(want) {
+    if !helper_agrees() {
         set("dash.network", want.kind())?;
         out.push(format!("dash.network={}", want.kind()));
         if let Some(name) = want.devnet_name() {
             set("dash.devnetName", name)?;
             out.push(format!("dash.devnetName={name}"));
         }
-        if helper().ok().as_ref() != Some(want) {
+        if !helper_agrees() {
             if let forge_core::platform::Network::Devnet { dapi_addresses, .. } = want {
                 let list = dapi_addresses.join(",");
                 set("dash.dapiAddresses", &list)?;
                 out.push("dash.dapiAddresses".into());
             }
         }
-        if helper().ok().as_ref() != Some(want) {
+        if !helper_agrees() {
             tracing::warn!(
                 "git push may still resolve another network: DASH_FORGE_NETWORK and friends in the environment override git config"
             );
@@ -673,9 +668,10 @@ struct PushOutcome {
 fn error_code_in(line: &str) -> Option<&'static str> {
     let at = line.rfind("[E")?;
     let code = line.get(at + 1..at + 5)?;
-    (line.get(at + 5..at + 6) == Some("]"))
-        .then(|| CATALOGUE.iter().find(|(c, _)| *c == code).map(|(c, _)| *c))
-        .flatten()
+    if line.get(at + 5..at + 6) != Some("]") {
+        return None;
+    }
+    CATALOGUE.iter().find(|(c, _)| *c == code).map(|(c, _)| *c)
 }
 
 /// `git push -u <remote> <branch>` with this `dg`'s identity and network. The helper's
