@@ -50,6 +50,7 @@ SCENARIOS=(
   "16-private-burn-repair"
   "17-ref-force-back-and-pr-base"
   "19-private-collab"
+  "20-review-round-trip"
 )
 
 # Optional subset filter (match by leading number or substring).

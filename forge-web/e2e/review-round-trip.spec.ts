@@ -54,7 +54,7 @@ test('the web shows the fold dg read', async ({ page }) => {
 
   // Every review, with the commit it was on.
   for (const r of fold.reviews) await expect(page.getByTitle(r.commitOid).first()).toBeVisible()
-  const verdictText = (v: number): RegExp => (v === 1 ? /approved/i : v === 2 ? /requested changes/i : /commented/i)
+  const verdictText = (v: number): RegExp => (v === 1 ? /approved/i : v === 2 ? /changes requested/i : /commented/i)
   for (const v of new Set(fold.reviews.map((r) => r.verdict))) await expect(page.getByText(verdictText(v)).first()).toBeVisible()
 
   // Threads: the web marks the ones not on the head as "on an older version"; resolved ones
