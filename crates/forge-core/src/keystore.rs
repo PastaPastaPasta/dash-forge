@@ -572,7 +572,7 @@ fn configured_default_source_in(path: &Path) -> Result<Option<String>> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Io(format!("reading {}: {e}", path.display()))),
+        Err(e) => return Err(crate::config_file::config_read_error(path, &e).into()),
     };
     let v: toml::Value =
         toml::from_str(&raw).map_err(|e| crate::config_file::config_toml_error(path, &raw, &e))?;
@@ -893,6 +893,14 @@ mod tests {
         assert_eq!(u.code, crate::user_error::codes::INVALID_CONFIG);
         let cause = u.cause.clone().unwrap_or_default();
         assert!(cause.contains("config.toml: line 2, column 20"), "{cause}");
+        // A config.toml that cannot be read (here: a directory) is E204 too.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let err = read(&path).unwrap_err();
+        let crate::Error::User(u) = &err else {
+            panic!("expected a phrased error, got {err}")
+        };
+        assert_eq!(u.code, crate::user_error::codes::INVALID_CONFIG);
     }
 
     // All key material below is FAKE — non-functional placeholder strings only.

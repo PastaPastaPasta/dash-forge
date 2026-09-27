@@ -375,7 +375,7 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     };
     profiles.save_to(&path)?;
     // The profile is gone first: a keychain that cannot be reached must not keep it.
-    let secrets = remove_owned_secrets(&removed, &profiles, forge_core::keychain::delete);
+    let secrets = remove_owned_secrets(name, &removed, &profiles, forge_core::keychain::delete);
     ctx.emit(
         json!({ "status": "removed", "profile": name, "keychain": secrets.to_json() }),
         || {
@@ -389,26 +389,28 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 /// What `dg storage remove` did with the keychain entries the removed profile referenced.
 #[derive(Debug, Default, PartialEq)]
 struct SecretCleanup {
-    /// Storage-secret entries (`dash-forge/<profile>`) deleted.
+    /// The profile's own entry (`dash-forge/<profile>`), deleted.
     deleted: Vec<String>,
-    /// Storage-secret entries referenced but not in the keychain (nothing to delete).
+    /// The profile's own entry, referenced but not in the keychain (nothing to delete).
     absent: Vec<String>,
-    /// Storage-secret entries kept because another profile still names them:
+    /// The profile's own entry, kept because another profile still names it:
     /// `(reference, profile)`.
     shared: Vec<(String, String)>,
-    /// Storage-secret entries that could not be deleted: `(reference, why)`.
+    /// The profile's own entry, which could not be deleted: `(reference, why)`.
     failed: Vec<(String, String)>,
-    /// Entries dg does not own (another service, or a `dg auth` key): never touched.
+    /// Every other entry it referenced (another service, another profile's name, a
+    /// `dg auth` key): never touched.
     foreign: Vec<String>,
 }
 
-/// Delete the storage-secret keychain entries the removed profile referenced once no profile
-/// in `remaining` names them: `keychain:dash-forge/<profile name>`, where `dg storage add`
-/// stores a pasted secret (for this profile, or for one removed earlier whose entry was kept
-/// while this one shared it). Entries under another service are the user's own, and
-/// `dash-forge/<network>/<identity>` holds `dg auth` keys: both are left alone. `delete` is
-/// [`forge_core::keychain::delete`] (`Ok(false)`: no such entry).
+/// Delete the keychain entry `dg storage add` stores a pasted secret under for profile
+/// `name` (`keychain:dash-forge/<name>`), when the removed profile references it and no
+/// profile in `remaining` still does. Every other entry it references is left alone and
+/// reported: one under another service, a `dg auth` key (`dash-forge/<network>/<id>`), or
+/// another profile's `dash-forge/<other>` entry, which may be a secret the user stored by
+/// hand. `delete` is [`forge_core::keychain::delete`] (`Ok(false)`: no such entry).
 fn remove_owned_secrets(
+    name: &str,
     removed: &Profile,
     remaining: &StorageProfiles,
     mut delete: impl FnMut(&str, &str) -> forge_core::Result<bool>,
@@ -424,7 +426,7 @@ fn remove_owned_secrets(
         if !seen.insert(reference.clone()) {
             continue;
         }
-        if service != SERVICE || !valid_profile_name(account) {
+        if service != SERVICE || account != name {
             out.foreign.push(reference);
             continue;
         }
@@ -485,7 +487,7 @@ impl SecretCleanup {
             eprintln!("warning: could not delete {r} ({why}); remove it with {by_hand}");
         }
         for r in &self.foreign {
-            println!("Left {r} in place: it is not a dash-forge storage secret.");
+            println!("Left {r} in place: dg storage add did not create it for this profile.");
         }
     }
 }
@@ -1419,7 +1421,7 @@ pub(crate) mod tests {
         let mut all = profiles(all);
         let removed = all.profiles.remove(name).unwrap();
         let mut calls = Vec::new();
-        let report = remove_owned_secrets(&removed, &all, |svc, acct| {
+        let report = remove_owned_secrets(name, &removed, &all, |svc, acct| {
             calls.push(format!("{svc}/{acct}"));
             if fail {
                 return Err(forge_core::Error::Config("the keychain is locked".into()));
@@ -1460,18 +1462,16 @@ pub(crate) mod tests {
             r.shared,
             [("keychain:dash-forge/kc-s3".to_string(), "copy".to_string())]
         );
-        // Removing the last profile that names it deletes it, whichever profile that is.
-        let (r, calls) = cleanup(&both, "copy", &["kc-s3"], false);
-        assert!(r.shared.len() == 1, "kc-s3 still names it: {r:?}");
-        assert!(calls.is_empty());
+        // Another profile's entry is never deleted by removing this one: it may be a secret
+        // the user stored by hand under `dash-forge/<name>` and pointed several profiles at.
         let only_copy = both.replace(KC_S3, "");
         let (r, calls) = cleanup(&only_copy, "copy", &["kc-s3"], false);
-        assert_eq!(calls, ["dash-forge/kc-s3"]);
-        assert_eq!(r.deleted, ["keychain:dash-forge/kc-s3"]);
+        assert!(calls.is_empty(), "nothing deleted: {calls:?}");
+        assert_eq!(r.foreign, ["keychain:dash-forge/kc-s3"]);
     }
 
     #[test]
-    fn entries_that_are_not_storage_secrets_are_never_deleted() {
+    fn entries_dg_did_not_create_for_the_profile_are_never_deleted() {
         // The user's own entry (another service), and a `dg auth` identity key
         // (`dash-forge/<network>/<id>`) someone pointed a profile at.
         let own = "[profiles.p]\nkind = \"ipfs-pinning-service\"\napi = \"http://127.0.0.1:5001\"\n\

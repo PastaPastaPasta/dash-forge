@@ -48,7 +48,7 @@ check "dg auth status exits 2" assert_eq "2" "$?"
 check "E204" assert_file_contains "$LOG-status.err" "[E204]"
 check "names the file, line and column" assert_file_contains "$LOG-status.err" "config.toml: line 3, column 20:"
 check "fix names the line" assert_file_contains "$LOG-status.err" "fix line 3 of"
-check "does not fall back to testnet" assert_not_file_contains "$LOG-status.out" "testnet"
+check "prints no network (no fallback to testnet)" assert_not_file_contains "$LOG-status.out" "Network:"
 
 iso _tmo "$DG" --json doctor >"$LOG-doctor.json" 2>"$LOG-doctor.err"
 check "dg doctor exits 1 (checks failed), not a crash" assert_eq "1" "$?"
@@ -93,40 +93,48 @@ KEYCHAIN=0
 if [[ "$(uname)" == Darwin ]] && security default-keychain >/dev/null 2>&1 \
    && security add-generic-password -U -s dash-forge -a "$P1" -w "e2e-throwaway-${RUN_ID}" >/dev/null 2>&1; then
   KEYCHAIN=1
+  # Never leave the throwaway entry in a developer's login keychain, however this ends.
+  trap 'security delete-generic-password -s dash-forge -a "$P1" >/dev/null 2>&1' EXIT
 fi
+# P1 names its own entry (what a pasted secret becomes); P2 points at the same entry.
 if kc_add "$P1" && kc_add "$P2"; then
-  kc_remove "$P1" "$LOG-rm1.json"
-  check "remove exits 0" assert_eq "0" "$?"
-  check "kept while ${P2} still names it" \
-    assert_eq "$P2" "$(jq_py "$LOG-rm1.json" 'd["keychain"]["keptSharedWith"][0]["profile"]')"
-  kc_remove "$P2" "$LOG-rm2.json"
-  check "second remove exits 0" assert_eq "0" "$?"
+  kc_remove "$P2" "$LOG-rm1.json"
+  check "removing ${P2} exits 0" assert_eq "0" "$?"
+  check "it leaves ${P1}'s entry alone (not its own)" \
+    assert_eq "$REF" "$(jq_py "$LOG-rm1.json" 'd["keychain"]["notOwned"][0]')"
+  kc_add "$P2"
+  kc_remove "$P1" "$LOG-rm2.json"
+  check "removing ${P1} exits 0" assert_eq "0" "$?"
+  check "its entry is kept while ${P2} still names it" \
+    assert_eq "$P2" "$(jq_py "$LOG-rm2.json" 'd["keychain"]["keptSharedWith"][0]["profile"]')"
+  kc_remove "$P2" "$LOG-rm2b.json"
+  kc_add "$P1"
+  kc_remove "$P1" "$LOG-rm3.json"
+  check "removing ${P1} alone exits 0" assert_eq "0" "$?"
   if [[ $KEYCHAIN -eq 1 ]]; then
-    check "the last profile's remove deleted it" \
-      assert_eq "$REF" "$(jq_py "$LOG-rm2.json" 'd["keychain"]["deleted"][0]')"
+    check "and deletes its entry" assert_eq "$REF" "$(jq_py "$LOG-rm3.json" 'd["keychain"]["deleted"][0]')"
     check "the entry is gone from the keychain" bash -c "! security find-generic-password -s dash-forge -a '$P1' >/dev/null 2>&1"
     # Already gone: reported, not an error.
-    kc_add "$P1" && kc_remove "$P1" "$LOG-rm3.json"
+    kc_add "$P1" && kc_remove "$P1" "$LOG-rm4.json"
     check "a missing entry exits 0" assert_eq "0" "$?"
     check "and is reported as not found" \
-      assert_eq "$REF" "$(jq_py "$LOG-rm3.json" 'd["keychain"]["notFound"][0]')"
+      assert_eq "$REF" "$(jq_py "$LOG-rm4.json" 'd["keychain"]["notFound"][0]')"
   else
-    info "no OS keychain here: checking only that a missing entry does not fail the remove"
-    check "reported, not failed" \
-      bash -c "grep -q '$REF' '$LOG-rm2.json' && [[ \$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))[\"keychain\"][\"deleted\"]))' '$LOG-rm2.json') == 0 ]]"
+    info "no OS keychain here: checking only that the entry is reported, not deleted or failed"
+    check "reported as not found or failed, never as deleted" \
+      assert_eq "0" "$(jq_py "$LOG-rm3.json" 'len(d["keychain"]["deleted"])')"
   fi
 else
   bad "dg storage add (keychain reference) failed"
 fi
-[[ $KEYCHAIN -eq 1 ]] && security delete-generic-password -s dash-forge -a "$P1" >/dev/null 2>&1
-true
 
 
 step "3. D-403: a clone whose only copy is gone fails fast with E503"
 S3="http://127.0.0.1:9000"
 if ! curl -fsS -m 3 -o /dev/null "${S3}/health/ready" 2>/dev/null; then
-  info "the local S3 store (RustFS) is not up: step 3 not run (make infra-up)"
-  finish_scenario
+  # Steps 1-2 were judged above; with any of their checks failed this still FAILs.
+  [[ "$SCENARIO_FAILS" -eq 0 ]] || finish_scenario
+  skip_scenario "steps 1-2 passed; step 3 needs the local S3 store (RustFS): make infra-up"
 fi
 PUSH_CFG="${WORKROOT}/s20-pusher.toml"
 READ_CFG="${WORKROOT}/s20-reader.toml"

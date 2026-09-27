@@ -72,7 +72,7 @@ impl Config {
         let raw = match std::fs::read_to_string(path) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(e).with_context(|| format!("reading config {}", path.display())),
+            Err(e) => return Err(forge_core::config_file::config_read_error(path, &e).into()),
         };
         toml::from_str(&raw)
             .map_err(|e| forge_core::config_file::config_toml_error(path, &raw, &e).into())

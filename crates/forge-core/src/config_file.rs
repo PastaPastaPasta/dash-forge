@@ -48,6 +48,20 @@ pub fn config_toml_error(path: &Path, raw: &str, e: &toml::de::Error) -> UserErr
     .fix("or move it aside and sign in again with `dg auth login`, which writes a new one")
 }
 
+/// E204: `config.toml` at `path` exists but cannot be read (permissions, a directory).
+pub fn config_read_error(path: &Path, e: &std::io::Error) -> UserError {
+    UserError::new(
+        codes::INVALID_CONFIG,
+        "invalid configuration: config.toml cannot be read",
+    )
+    .cause(format!("{}: {e}", path.display()))
+    .fix(format!(
+        "make {} readable by you (`chmod 600 {}`)",
+        path.display(),
+        path.display()
+    ))
+}
+
 /// Replace every quoted run (`"…"`, `'…'`, `` `…` ``) in a parser message with `…`: serde
 /// quotes offending VALUES (`invalid type: string "wJalr…", expected a boolean`), and a
 /// value may be a pasted secret. Field names are unquoted in these messages or harmless to

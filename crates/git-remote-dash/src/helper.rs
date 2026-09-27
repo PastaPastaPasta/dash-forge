@@ -636,10 +636,7 @@ fn index_fetched(
         let sha = LocalRepo::index_pack(bytes)?;
         tracing::info!(pack = %sha, "indexed pack into local odb");
     }
-    if !unreadable.is_empty()
-        && !want_oids.is_empty()
-        && !LocalRepo::has_complete_history(want_oids)
-    {
+    if !unreadable.is_empty() && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
         return Err(incomplete());
     }
     Ok(())

@@ -60,10 +60,18 @@ fn describe_transport(e: &reqwest::Error) -> String {
     };
     // The innermost cause: the OS or resolver error.
     let root = std::iter::successors(std::error::Error::source(e), |c| c.source()).last();
-    match root {
-        Some(r) => format!("{kind}: {r}"),
-        None => kind.to_string(),
-    }
+    // No source (a builder, redirect or status error): reqwest's own text, minus the URL.
+    let detail = root.map_or_else(
+        || {
+            let mut e = e.to_string();
+            if let Some(url) = e.find(" for url (") {
+                e.truncate(url);
+            }
+            e
+        },
+        ToString::to_string,
+    );
+    format!("{kind}: {detail}")
 }
 
 #[async_trait::async_trait]
