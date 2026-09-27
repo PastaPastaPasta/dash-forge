@@ -259,6 +259,7 @@ export class EvoSdkService {
   private swapUrgent = false
   private progressAt = -Infinity
   private progressTimer: unknown = null
+  private latest: DownloadProgress = { loaded: 0, total: 0 }
   private readonly aborts = new Set<AbortController>()
   /** Calls running through the handle, per connection. */
   private readonly inFlight = new Map<Connection, number>()
@@ -415,12 +416,15 @@ export class EvoSdkService {
   /** Try a failed connect again now (the "Try again" button). */
   retryNow(): void {
     if (this.status.phase !== 'error') return
+    this.retryConnect()
+    // The live connection cannot read; nothing a write holds on it is worth waiting for.
+    this.urgeSwap()
+  }
+
+  /** Retry a failed connect: the first connect if there is none, else a refresh. */
+  private retryConnect(): void {
     if (this.current === null) void this.connectFirst().catch(() => undefined)
-    else {
-      // The live connection cannot read; nothing a write holds on it is worth waiting for.
-      void this.refresh()
-      this.urgeSwap()
-    }
+    else void this.refresh()
   }
 
   private scheduleRetry(): void {
@@ -435,8 +439,7 @@ export class EvoSdkService {
     this.setStatus({ ...this.status, retryAt: this.clock.now() + wait })
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null
-      if (this.current === null) void this.connectFirst().catch(() => undefined)
-      else void this.refresh()
+      this.retryConnect()
     }, wait)
   }
 
@@ -502,11 +505,7 @@ export class EvoSdkService {
       async (connection) => {
         // A write can hold the swap back; a connection that waited a whole refresh period
         // has keys as old as the one it would replace, so build a fresh one instead.
-        if (!(await this.writesSettled(REFRESH_MS))) {
-          dispose(connection)
-          return false
-        }
-        if (this.epoch !== epoch || this.current === null) {
+        if (!(await this.writesSettled(REFRESH_MS)) || this.epoch !== epoch || this.current === null) {
           dispose(connection)
           return false
         }
@@ -669,6 +668,7 @@ export class EvoSdkService {
     this.timeoutMs = undefined
     this.initPromise = null
     this.refreshing = null
+    this.swapUrgent = false
     this.recovering = null
     this.failures = 0
     this.usedContracts.clear()
@@ -686,9 +686,7 @@ export class EvoSdkService {
    * every byte is in, the connect shows "Connecting…".
    */
   private onProgress(progress: DownloadProgress): void {
-    const phase = this.status.phase
-    if (phase !== 'connecting' && phase !== 'downloading') return
-    if (this.initPromise === null) return
+    if (!this.showsProgress()) return
     const done = progress.total > 0 && progress.loaded >= progress.total
     if (done) {
       if (this.progressTimer !== null) this.clock.clearTimeout(this.progressTimer)
@@ -700,15 +698,18 @@ export class EvoSdkService {
     const show = (): void => {
       this.progressTimer = null
       this.progressAt = this.clock.now()
-      const p = this.status.phase
-      if ((p === 'connecting' || p === 'downloading') && this.initPromise !== null) this.setStatus({ phase: 'downloading', progress: this.latest })
+      if (this.showsProgress()) this.setStatus({ phase: 'downloading', progress: this.latest })
     }
     this.latest = progress
     if (now - this.progressAt >= PROGRESS_INTERVAL_MS) show()
     else if (this.progressTimer === null) this.progressTimer = this.clock.setTimeout(show, this.progressAt + PROGRESS_INTERVAL_MS - now)
   }
 
-  private latest: DownloadProgress = { loaded: 0, total: 0 }
+  /** Only a connect that is waiting on the download shows its progress. */
+  private showsProgress(): boolean {
+    const p = this.status.phase
+    return (p === 'connecting' || p === 'downloading') && this.initPromise !== null
+  }
 
   private setStatus(status: SdkStatus): void {
     this.status = status
@@ -760,15 +761,9 @@ export class EvoSdkService {
   /** Note the contract a read names (a refresh preloads the recently used ones). */
   private noteContract(args: unknown[]): void {
     const first = args[0] as { dataContractId?: unknown; contractId?: unknown } | string | undefined
-    const id =
-      typeof first === 'string'
-        ? first
-        : typeof first?.dataContractId === 'string'
-          ? first.dataContractId
-          : typeof first?.contractId === 'string'
-            ? first.contractId
-            : undefined
-    if (id !== undefined) this.usedContracts.set(id, this.clock.now())
+    let id: unknown = first
+    if (typeof first !== 'string') id = typeof first?.dataContractId === 'string' ? first.dataContractId : first?.contractId
+    if (typeof id === 'string') this.usedContracts.set(id, this.clock.now())
   }
 
   /**

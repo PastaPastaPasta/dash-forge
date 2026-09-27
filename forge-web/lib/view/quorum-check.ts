@@ -282,9 +282,8 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
 export const QUORUM_CHECK_MAX_AGE_MS = 60 * 60_000
 
 interface SessionCheck {
-  /** The latest run (settled or still going). */
-  run: Promise<QuorumCrossCheck>
-  running: boolean
+  /** The run in flight, if any. */
+  running?: Promise<QuorumCrossCheck>
   /** The latest settled outcome and when it settled (kept while a newer run goes). */
   settled?: { readonly result: QuorumCrossCheck; readonly at: number }
 }
@@ -316,20 +315,18 @@ export function crossCheckQuorumKeysCached(
   config: NetworkConfig,
   { now = Date.now, check = crossCheckQuorumKeys }: { now?: () => number; check?: (c: NetworkConfig) => Promise<QuorumCrossCheck> } = {},
 ): Promise<QuorumCrossCheck> {
-  const entry = sessionChecks.get(config.key) ?? { run: Promise.resolve({ state: 'unavailable', reason: '' } as QuorumCrossCheck), running: false }
+  const entry: SessionCheck = sessionChecks.get(config.key) ?? {}
   sessionChecks.set(config.key, entry)
-  const fresh = entry.settled !== undefined && now() - entry.settled.at < QUORUM_CHECK_MAX_AGE_MS && !isTransient(entry.settled.result)
-  if (entry.running || fresh) return entry.run
+  if (entry.running) return entry.running
+  if (entry.settled && quorumCheckDueInMs(config, now()) > 0) return Promise.resolve(entry.settled.result)
   // Never rejects: a check that throws is a transient `unavailable`, re-run by the next view.
   const run = check(config).catch((e: unknown): QuorumCrossCheck => ({
     state: 'unavailable',
     reason: e instanceof Error ? e.message : String(e),
   }))
-  entry.run = run
-  entry.running = true
+  entry.running = run
   void run.then((result) => {
-    if (entry.run !== run) return
-    entry.running = false
+    entry.running = undefined
     entry.settled = { result, at: now() }
   })
   return run

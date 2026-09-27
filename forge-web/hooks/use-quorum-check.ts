@@ -15,8 +15,9 @@ import { crossCheckQuorumKeysCached, lastQuorumCheck, quorumCheckDueInMs, type Q
 
 export function useQuorumCheck(network: Network, enabled: boolean): QuorumCrossCheck | undefined {
   const config = NETWORKS[network]
-  // Keyed by network, so a network switch never shows another network's result.
-  const [held, setHeld] = useState<{ key: string; result: QuorumCrossCheck } | null>(null)
+  // Re-renders when a check settles; the result itself is read from the per-network cache,
+  // so a network switch never shows another network's result.
+  const [, setSeen] = useState<QuorumCrossCheck>()
   // Bumped when the held result is due again, so a page left open re-checks on time.
   const [tick, setTick] = useState(0)
   useEffect(() => {
@@ -25,7 +26,7 @@ export function useQuorumCheck(network: Network, enabled: boolean): QuorumCrossC
     let timer: ReturnType<typeof setTimeout> | undefined
     void crossCheckQuorumKeysCached(config).then((result) => {
       if (!live) return
-      setHeld({ key: config.key, result })
+      setSeen(result)
       // Due from when the cached result settled, not from this mount; at least a minute
       // apart, so a transient outcome is retried without a tight loop.
       timer = setTimeout(() => setTick((t) => t + 1), Math.max(60_000, quorumCheckDueInMs(config)))
@@ -35,5 +36,5 @@ export function useQuorumCheck(network: Network, enabled: boolean): QuorumCrossC
       clearTimeout(timer)
     }
   }, [config, enabled, tick])
-  return held?.key === config.key ? held.result : lastQuorumCheck(config)
+  return lastQuorumCheck(config)
 }

@@ -806,3 +806,38 @@ describe('EvoSdkService: review follow-ups', () => {
     expect(a.free).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('EvoSdkService: cleanup clears an urgent swap', () => {
+  it('a later routine refresh still waits for a running write', async () => {
+    const clock = manualClock()
+    const dead = fakeSdk('dead', async () => {
+      throw QUORUM_GONE
+    })
+    const pending = deferred<Connection>()
+    const c = fakeSdk('c', async () => 'c')
+    const d = fakeSdk('d', async () => 'd')
+    const connector = vi
+      .fn()
+      .mockResolvedValueOnce(connection(dead.sdk))
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(connection(c.sdk))
+      .mockResolvedValueOnce(connection(d.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    // A failing read urges its recovery's swap; the network switch cleans up before it lands.
+    void svc.getSdk().documents.query({} as never).catch(() => undefined)
+    await flush()
+    svc.cleanup()
+    await svc.initialize(CONFIG)
+    const write = deferred<void>()
+    void svc.holdForWrite(() => write.promise)
+    const refreshed = svc.refresh()
+    await flush()
+    expect(svc.generation).toBe(2)
+    write.resolve()
+    await flush()
+    await clock.advance(WRITE_SETTLE_MS)
+    expect(await refreshed).toBe(true)
+    expect(svc.generation).toBe(3)
+  })
+})
