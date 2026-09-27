@@ -111,3 +111,38 @@ export function anchorLabel(a: Anchor): string {
   const lines = a.startLine !== null && a.startLine !== a.line ? `lines ${a.startLine}–${a.line}` : `line ${a.line}`
   return `${a.path} ${lines}${a.side === null ? '' : a.side === 1 ? ' (new)' : ' (old)'}`
 }
+
+/**
+ * The lines a multi-line thread covers (review-parity §4.2: the thread sits under `line`, the
+ * range `startLine..line` is tinted), as {@link lineKey}s, for every current thread. A range whose
+ * start is not in the diff still tints what is shown.
+ */
+export function rangeKeys(current: ReadonlyMap<string, readonly InlineThread[]>): Set<string> {
+  const out = new Set<string>()
+  for (const threads of current.values()) {
+    for (const t of threads) {
+      const a = t.root.anchor
+      if (a.line === null || a.side === null || a.startLine === null || a.startLine >= a.line) continue
+      for (let l = a.startLine; l <= a.line; l++) out.add(lineKey(a.path, a.side, l))
+    }
+  }
+  return out
+}
+
+/** A line selection in a diff: one line, or a range on one side of one file. */
+export interface LineSelection {
+  readonly path: string
+  readonly side: 0 | 1
+  readonly startLine: number
+  readonly line: number
+}
+
+/**
+ * Extend a selection to `line` (a shift-click or a drag, review-parity §4.2): a range on the same
+ * file and side, ordered; anything else starts a new one-line selection.
+ */
+export function extendSelection(prev: LineSelection | null, path: string, side: 0 | 1, line: number, extend: boolean): LineSelection {
+  if (!extend || prev === null || prev.path !== path || prev.side !== side) return { path, side, startLine: line, line }
+  const anchor = prev.startLine === prev.line ? prev.line : prev.startLine
+  return { path, side, startLine: Math.min(anchor, line), line: Math.max(anchor, line) }
+}

@@ -198,6 +198,7 @@ export {
   EVENT_KIND_CODE,
   anchorData,
   commentData,
+  deleteComment,
   discardReviewDraft,
   eventRoute,
   loadReviewDraft,

@@ -1,0 +1,97 @@
+/**
+ * The pending review's local edits (review-parity R1, §4.1): add, edit and remove a pending
+ * comment, set the verdict and summary, and what a submit will write. The draft is kept by
+ * `review-writes.ts` (IndexedDB; memory for a private repo) and submitted by
+ * `submitReviewDraft`, which is resumable and never writes a document twice. Once a submit has
+ * started (`attemptedAt`), the draft is frozen: editing it would make the resumed submit disagree
+ * with what already landed, so the page offers only "Retry" or "Discard".
+ */
+
+import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
+import { previewCreate, previewCredits, type CostPreview } from '../sdk'
+
+/** A fresh local draft for `prId` anchored to `headOid`. */
+export function newReviewDraft(input: { draftId: string; network: string; identity: string; repoId: string; prId: string; headOid: string; private: boolean; now: number }): ReviewDraft {
+  return {
+    draftId: input.draftId,
+    ...(input.private ? { private: true } : {}),
+    network: input.network,
+    identity: input.identity,
+    repoId: input.repoId,
+    prId: input.prId,
+    headOid: input.headOid,
+    verdict: 'comment',
+    summary: '',
+    comments: [],
+    startedAt: input.now,
+  }
+}
+
+/** Whether a submit already began: the draft can then only be retried or discarded. */
+export function submitStarted(d: ReviewDraft): boolean {
+  return d.attemptedAt !== undefined || d.reviewId !== undefined || d.comments.some((c) => c.landedId !== undefined)
+}
+
+function editable(d: ReviewDraft): void {
+  if (submitStarted(d)) throw new Error('this review is being submitted: retry or discard it first')
+}
+
+/** Add a pending comment (its anchor carries no commit: the submit uses the draft's head). */
+export function addDraftComment(d: ReviewDraft, localId: string, anchor: AnchorInput, body: string): ReviewDraft {
+  editable(d)
+  if (body.trim() === '') throw new Error('a comment needs a body')
+  const { commitOid: _drop, ...rest } = anchor
+  return { ...d, comments: [...d.comments, { localId, anchor: rest, body: body.trim() }] }
+}
+
+export function editDraftComment(d: ReviewDraft, localId: string, body: string): ReviewDraft {
+  editable(d)
+  if (body.trim() === '') throw new Error('a comment needs a body')
+  return { ...d, comments: d.comments.map((c) => (c.localId === localId ? { ...c, body: body.trim() } : c)) }
+}
+
+export function removeDraftComment(d: ReviewDraft, localId: string): ReviewDraft {
+  editable(d)
+  return { ...d, comments: d.comments.filter((c) => c.localId !== localId) }
+}
+
+export function setDraftVerdict(d: ReviewDraft, verdict: VerdictInput, summary: string): ReviewDraft {
+  editable(d)
+  return { ...d, verdict, summary }
+}
+
+/**
+ * Re-anchor a draft to a new head (the PR moved while it was pending, §4.1): comments whose line
+ * `exists` in the new diff move with it; the rest keep the old head and will show as outdated.
+ * Returns the new draft and how many comments could not move.
+ */
+export function reanchorDraft(d: ReviewDraft, headOid: string, exists: (path: string, side: 0 | 1, line: number) => boolean): { draft: ReviewDraft; stranded: number } {
+  editable(d)
+  let stranded = 0
+  const comments = d.comments.map((c): DraftComment => {
+    const a = c.anchor
+    const lines = a.line === undefined || a.side === undefined ? [] : Array.from({ length: a.line - (a.startLine ?? a.line) + 1 }, (_, i) => (a.startLine ?? a.line!) + i)
+    const moves = lines.every((l) => exists(a.path, a.side!, l))
+    if (moves) return c
+    stranded += 1
+    return { ...c, anchor: { ...a, commitOid: c.anchor.commitOid ?? d.headOid } }
+  })
+  return { draft: { ...d, headOid, comments }, stranded }
+}
+
+/** What the submit will write: the review and each comment, priced as the composers do. */
+export function draftCost(d: ReviewDraft): { documents: number; cost: CostPreview } {
+  const review = previewCreate('review', { body: d.summary })
+  const comments = d.comments.filter((c) => c.landedId === undefined).map((c) => previewCreate('comment', { body: c.body, path: c.anchor.path }))
+  const docs = (d.reviewId === undefined ? 1 : 0) + comments.length
+  const credits = (d.reviewId === undefined ? review.credits : 0) + comments.reduce((n, c) => n + c.credits, 0)
+  return { documents: docs, cost: previewCredits(credits) }
+}
+
+/** "Your Request changes is recorded with 2 of 6 comments; 4 are still pending in this browser." */
+export function partialSubmitMessage(d: ReviewDraft, verdictLabel: string): string {
+  const landed = d.comments.filter((c) => c.landedId !== undefined).length
+  const total = d.comments.length
+  if (d.reviewId === undefined) return `Nothing was written yet; your ${verdictLabel} and its ${total} comment${total === 1 ? '' : 's'} are still pending in this browser.`
+  return `Your ${verdictLabel} is recorded with ${landed} of ${total} comment${total === 1 ? '' : 's'}; ${total - landed} ${total - landed === 1 ? 'is' : 'are'} still pending in this browser. Retry to finish it: nothing is written twice.`
+}

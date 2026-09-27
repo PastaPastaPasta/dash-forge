@@ -23,6 +23,8 @@ import type { EventKind } from '../rules'
 import {
   ConsensusRefusal,
   precheckEdit,
+  deleteDocumentIdempotent,
+  type DeleteResult,
   GATE_REFUSED_CODE,
   queryAllDocuments,
   replaceDocumentIdempotent,
@@ -645,4 +647,17 @@ export function updateComment(
   const changes: Record<string, unknown> = { body: input.body }
   if (input.dropReviewId) changes['reviewId'] = undefined
   return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal)
+}
+
+/**
+ * Delete one of the signer's comments (its author only at consensus: the document is
+ * owner-deletable). Replies to it stay, and read as replies to a deleted comment. A private repo's
+ * comment is deleted the same way (a delete carries no content).
+ */
+export async function deleteComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, id: string): Promise<DeleteResult> {
+  try {
+    return await deleteDocumentIdempotent(sdk, auth, { contractId: contractFor(repo, DOC.comment), documentType: DOC.comment, documentId: id, repo: repo.repoId })
+  } finally {
+    invalidateRepoFeed(repo, { counts: false })
+  }
 }

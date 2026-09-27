@@ -54,6 +54,7 @@ import {
   createReview,
   eventFirsts,
   reviewFirsts,
+  deleteComment,
   defineLabel,
   postTargetEvent,
   readViewerPermissions,
@@ -70,10 +71,10 @@ import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type 
 import { headSync, readBranchState } from '@/lib/repo/source-branch'
 import type { EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
-import { SupersededWriteError, previewCreate, previewCredits, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
-import { inlineCommentIds } from '@/lib/view/inline-threads'
+import { inlineCommentIds, lineKey } from '@/lib/view/inline-threads'
 import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { tipOidOf } from '@/lib/view/refs'
@@ -100,7 +101,8 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { InlineCommentsProvider } from '@/components/repo/inline-comments'
+import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
+import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { PullMerge } from '@/components/repo/pull-merge'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
@@ -139,6 +141,8 @@ type Pending =
   | { kind: 'define-label'; name: string; color: string; description: string }
   | { kind: 'edit-pull'; title: string; body: string }
   | { kind: 'edit-comment'; id: string; body: string }
+  | { kind: 'delete-comment'; id: string }
+  | { kind: 'resolve'; root: string; resolve: boolean }
 
 export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
@@ -293,8 +297,6 @@ function PullPage({
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
-  const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
-
   // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
   // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
   // meanwhile, and a page view costs no reads.
@@ -306,6 +308,27 @@ function PullPage({
   const stateType = isMember ? 'event' : 'authorEvent'
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
 
+
+  const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
+
+  const eventCost = previewCreate(stateType, {}, eventFirst)
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
+  // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
+  const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
+  const rememberLines = useCallback((lines: ReadonlyMap<string, ReadonlySet<string>>) => {
+    knownLines.current = lines
+  }, [])
+  const canResolve = identity !== null && (isAuthor || isMember) && !writeBlocked && guard.disabledReason === null
+  const threadActions: ThreadActions = {
+    canResolve,
+    resolved: new Set(review.resolvedThreads),
+    onResolve: (root, resolve) => {
+      if (guard.check(eventCost.credits, 'collab')) setPending({ kind: 'resolve', root, resolve })
+    },
+    viewer: identity,
+    onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
+    onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
+  }
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
 
@@ -408,6 +431,14 @@ function PullPage({
         refresh((t) => t.pull.title === p.title && t.pull.body === p.body)
         return
       }
+      case 'delete-comment':
+        await deleteComment(sdk, signer, repo, p.id)
+        refresh((t) => !t.comments.some((x) => x.id === p.id))
+        return
+      case 'resolve':
+        await post(p.resolve ? 'threadResolve' : 'threadUnresolve', intent, { refId: p.root })
+        refresh((t) => t.review.resolvedThreads.includes(p.root) === p.resolve)
+        return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
         await updateComment(sdk, signer, repo, {
@@ -423,7 +454,6 @@ function PullPage({
     }
   }
 
-  const eventCost = previewCreate(stateType, {}, eventFirst)
   const pendingCost = ((): Cost => {
     if (pending === null) return eventCost
     switch (pending.kind) {
@@ -443,6 +473,8 @@ function PullPage({
         return previewReplace('patch', { title: pending.title, body: pending.body })
       case 'edit-comment':
         return previewReplace('comment', { body: pending.body })
+      case 'delete-comment':
+        return previewDelete('comment')
       default:
         return eventCost
     }
@@ -797,6 +829,20 @@ function PullPage({
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
+              action={
+                identity !== null && open && !writeBlocked ? (
+                  <ReviewDrawer
+                    repo={repo}
+                    pullId={pull.id}
+                    headOid={pull.headOid}
+                    draft={reviewDraft.draft}
+                    update={reviewDraft.update}
+                    isMember={isMember}
+                    lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
+                    onSubmitted={(id) => refresh((t) => t.reviews.some((r) => r.id === id))}
+                  />
+                ) : null
+              }
               wrap={(c, diff) => (
                 <InlineCommentsProvider
                   repo={repo}
@@ -805,7 +851,10 @@ function PullPage({
                   headOid={pull.headOid}
                   comments={thread.comments}
                   changedPaths={new Set(c.changes.map((x) => x.path))}
-                  onPosted={() => refresh()}
+                  onPosted={(id) => refresh(id === undefined ? undefined : (t) => t.comments.some((x) => x.id === id))}
+                  actions={threadActions}
+                  onLinesKnown={rememberLines}
+                  {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}
                 >
                   {diff}
                 </InlineCommentsProvider>
@@ -1045,6 +1094,12 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return { title: `Edit PR #${number}`, description: 'Replaces your PR document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
     case 'edit-comment':
       return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+    case 'delete-comment':
+      return { title: 'Delete comment', description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay.', label: 'Sign & delete' }
+    case 'resolve':
+      return pending.resolve
+        ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
+        : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
     default:
       return { title: '', description: '', label: 'Confirm' }
   }
