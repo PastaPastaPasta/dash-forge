@@ -6,8 +6,8 @@
  * accents; code blocks render monospace in an inset surface.
  */
 
-import { Fragment, type ReactNode } from 'react'
-import { parseMarkdown, type Block, type Inline, type TableAlignment } from '@/lib/view'
+import { Fragment, memo, type ReactNode } from 'react'
+import { formatBytes, MARKDOWN_MAX_CHARS, parseMarkdown, type Block, type Inline, type TableAlignment } from '@/lib/view'
 import { cn } from '@/lib/utils'
 
 function tableAlignClass(align: TableAlignment): string {
@@ -147,11 +147,30 @@ function renderBlock(b: Block, key: string): ReactNode {
   }
 }
 
-export function MarkdownView({ source, className }: { source: string; className?: string }): JSX.Element {
-  const blocks = parseMarkdown(source)
+/**
+ * Memoized on `source`, so a page that re-renders on every composer keystroke does not
+ * re-parse and re-render each issue, comment and README body it shows.
+ */
+export const MarkdownView = memo(function MarkdownView({
+  source,
+  className,
+}: {
+  source: string
+  className?: string
+}): JSX.Element {
+  if (source.length > MARKDOWN_MAX_CHARS) {
+    return (
+      <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
+        <p className="my-3 text-dense italic text-anvil-500 dark:text-anvil-400">
+          Too large to render as Markdown ({formatBytes(source.length)}); shown as plain text.
+        </p>
+        <pre className="whitespace-pre-wrap break-words font-mono text-[13px]">{source}</pre>
+      </div>
+    )
+  }
   return (
     <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
-      {blocks.map((b, i) => renderBlock(b, `b-${i}`))}
+      {parseMarkdown(source).map((b, i) => renderBlock(b, `b-${i}`))}
     </div>
   )
-}
+})

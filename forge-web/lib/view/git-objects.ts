@@ -4,6 +4,9 @@
  * The browse plane hands back `{ type, bytes }` for a git object; these helpers turn a
  * `tree` into its entries and a `commit` into its header fields for rendering. Pure byte
  * parsing, no network. Blob bytes are used as-is (text-decoded or offered as a raw download).
+ *
+ * Loaded by plain Node (type stripping) in `render-fuzz.test.ts`: keep imports relative and
+ * the syntax erasable (no enums, namespaces or `@/` aliases).
  */
 
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -53,14 +56,21 @@ export interface GitIdent {
   readonly when: number
 }
 
+/**
+ * "Name <email> 1700000000 +0000". Located with indexOf/lastIndexOf rather than a lazy
+ * `^(.*?) <(.*?)> …$` regex, which backtracks quadratically on a hostile author line (a
+ * pushed commit object can be any size): the name ends at the first " <", the email at the
+ * last ">", and only the short timestamp tail is matched by a regex.
+ */
 function parseIdent(line: string): GitIdent {
-  // "Name <email> 1700000000 +0000"
-  const m = line.match(/^(.*?) <(.*?)> (\d+) ([+-]\d{4})$/)
-  if (!m) return { name: line, email: '', when: 0 }
+  const open = line.indexOf(' <')
+  const close = line.lastIndexOf('>')
+  const tail = close > open + 1 && open !== -1 ? /^ (\d+) [+-]\d{4}$/.exec(line.slice(close + 1)) : null
+  if (!tail) return { name: line, email: '', when: 0 }
   return {
-    name: m[1] ?? '',
-    email: m[2] ?? '',
-    when: Number(m[3] ?? '0') * 1000,
+    name: line.slice(0, open),
+    email: line.slice(open + 2, close),
+    when: Number(tail[1] ?? '0') * 1000,
   }
 }
 

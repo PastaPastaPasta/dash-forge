@@ -27,7 +27,7 @@ export {
   type GitIdent,
   type TreeEntry,
 } from './git-objects'
-export { parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
+export { MARKDOWN_MAX_CHARS, parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
 export {
   compactDiffLines,
   diffStat,

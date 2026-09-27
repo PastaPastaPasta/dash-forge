@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseMarkdown, type Inline } from './markdown'
+import { runWithDeadline } from './fuzz-fixtures'
+import { MARKDOWN_MAX_NODES, parseMarkdown, type Block, type Inline } from './markdown'
 
 function inlineText(nodes: readonly Inline[]): string {
   return nodes
@@ -69,5 +70,165 @@ describe('parseMarkdown GFM tables', () => {
     const table = blocks[0]
     if (!table || table.t !== 'table') return
     expect(table.rows[0]?.map(inlineText)).toEqual(['one', 'two', ''])
+  })
+})
+
+describe('parseMarkdown line terminators (D-900)', () => {
+  const markdownUrl = new URL('./markdown.ts', import.meta.url)
+
+  /** Parse in a worker with a deadline, so a regression fails instead of hanging the run. */
+  async function parseWithDeadline(source: string): Promise<Block[]> {
+    const result = await runWithDeadline(markdownUrl, 'parseMarkdown', [[source]], 2_000, true)
+    expect(result.timedOut, `parseMarkdown(${JSON.stringify(source)}) did not return`).toBe(false)
+    return result.timedOut ? [] : (result.results[0] as Block[])
+  }
+
+  it.each([
+    ['bare CR', '\r'],
+    ['CRLF', '\r\n'],
+  ])('treats %s as a line ending', async (_name, nl) => {
+    const blocks = await parseWithDeadline(`# a${nl}## Feature${nl}${nl}- one${nl}- two${nl}${nl}text${nl}more`)
+    expect(blocks.map((b) => b.t)).toEqual(['heading', 'heading', 'list', 'paragraph'])
+    const [h1, h2, list, para] = blocks
+    if (h1?.t === 'heading') expect(inlineText(h1.c)).toBe('a')
+    if (h2?.t === 'heading') expect([h2.level, inlineText(h2.c)]).toEqual([2, 'Feature'])
+    if (list?.t === 'list') expect(list.items.map(inlineText)).toEqual(['one', 'two'])
+    if (para?.t === 'paragraph') expect(inlineText(para.c)).toBe('text more')
+  })
+
+  // CommonMark (and GitHub) end lines only on LF, CR and CRLF; the rest are spaces there.
+  it.each([
+    ['LINE SEPARATOR', '\u2028'],
+    ['PARAGRAPH SEPARATOR', '\u2029'],
+    ['NEL', '\u0085'],
+    ['form feed', '\f'],
+    ['vertical tab', '\v'],
+  ])('treats %s as a space, not a line ending', async (_name, sep) => {
+    expect(await parseWithDeadline(`# a${sep}b`)).toEqual([{ t: 'heading', level: 1, c: [{ t: 'text', v: 'a b' }] }])
+    expect(await parseWithDeadline(`one${sep}- two`)).toEqual([{ t: 'paragraph', c: [{ t: 'text', v: 'one - two' }] }])
+  })
+
+  it('returns for a heading ending in U+2028 (the preact 10.10.0 release notes)', async () => {
+    expect(await parseWithDeadline('# a\u2028')).toEqual([{ t: 'heading', level: 1, c: [{ t: 'text', v: 'a' }] }])
+    const notes = await parseWithDeadline('## Feature\u2028\r\n\r\n* Microtick')
+    expect(notes).toEqual([
+      { t: 'heading', level: 2, c: [{ t: 'text', v: 'Feature' }] },
+      { t: 'list', ordered: false, items: [[{ t: 'text', v: 'Microtick' }]] },
+    ])
+  })
+
+  it('caps blockquote nesting and renders the rest as text', async () => {
+    const blocks = await parseWithDeadline('>'.repeat(40) + ' deep')
+    let depth = 0
+    let node: Block | undefined = blocks[0]
+    while (node?.t === 'quote') {
+      depth += 1
+      node = node.c[0]
+    }
+    expect(depth).toBe(16)
+    expect(node?.t === 'paragraph' && inlineText(node.c)).toBe('>'.repeat(24) + ' deep')
+  })
+})
+
+describe('parseInline grammar (the linear rewrite keeps the old regex semantics)', () => {
+  const para = (source: string): Inline[] => {
+    const block = parseMarkdown(source)[0]
+    return block?.t === 'paragraph' ? [...block.c] : []
+  }
+
+  it('parses links, images, code, emphasis, strike and autolinks', () => {
+    expect(para('see [the *docs*](https://x.io/a "title") now')).toEqual([
+      { t: 'text', v: 'see ' },
+      { t: 'link', href: 'https://x.io/a', c: [{ t: 'text', v: 'the ' }, { t: 'em', c: [{ t: 'text', v: 'docs' }] }] },
+      { t: 'text', v: ' now' },
+    ])
+    expect(para('![logo](/a.png) `a*b` **b** __c__ ~~d~~ _e_')).toEqual([
+      { t: 'image', src: '/a.png', alt: 'logo' },
+      { t: 'text', v: ' ' },
+      { t: 'code', v: 'a*b' },
+      { t: 'text', v: ' ' },
+      { t: 'strong', c: [{ t: 'text', v: 'b' }] },
+      { t: 'text', v: ' ' },
+      { t: 'strong', c: [{ t: 'text', v: 'c' }] },
+      { t: 'text', v: ' ' },
+      { t: 'del', c: [{ t: 'text', v: 'd' }] },
+      { t: 'text', v: ' ' },
+      { t: 'em', c: [{ t: 'text', v: 'e' }] },
+    ])
+    expect(para('go https://x.io/p?q=1) end')).toEqual([
+      { t: 'text', v: 'go ' },
+      { t: 'link', href: 'https://x.io/p?q=1', c: [{ t: 'text', v: 'https://x.io/p?q=1' }] },
+      { t: 'text', v: ') end' },
+    ])
+  })
+
+  it('leaves unclosed and empty delimiters as text', () => {
+    for (const s of ['[a](b', '[](x)', '[a]( x)', '[a]()', '`', '``', 'a****', '~~a~', '*', 'http://', 'a ![b]']) {
+      expect(inlineText(para(s)), s).toBe(s)
+    }
+  })
+
+  it('refuses protocol-relative links and images (off-site tracking pixels)', () => {
+    for (const href of ['//evil.example/p.gif', '/\\evil.example/p.gif']) {
+      expect(para(`![x](${href})`)[0], href).toEqual({ t: 'image', src: '#', alt: 'x' })
+      expect(para(`[x](${href})`)[0], href).toEqual({ t: 'link', href: '#', c: [{ t: 'text', v: 'x' }] })
+    }
+    expect(para('[x](/docs/a.md)')[0]).toEqual({ t: 'link', href: '/docs/a.md', c: [{ t: 'text', v: 'x' }] })
+  })
+
+  it('neutralizes unsafe link schemes', () => {
+    expect(para('[x](javascript:alert(1))')[0]).toEqual({ t: 'link', href: '#', c: [{ t: 'text', v: 'x' }] })
+    expect(para('![x](data:text/html,hi)')[0]).toEqual({ t: 'image', src: '#', alt: 'x' })
+  })
+})
+
+describe('parseMarkdown node budget (SR-01)', () => {
+  const countNodes = (blocks: readonly Block[]): number => {
+    const inl = (xs: readonly Inline[]): number =>
+      xs.reduce((n, x) => n + 1 + ('c' in x ? inl(x.c) : 0), 0)
+    return blocks.reduce((n, b) => {
+      if (b.t === 'heading' || b.t === 'paragraph') return n + 1 + inl(b.c)
+      if (b.t === 'list') return n + 1 + b.items.reduce((m, it) => m + 1 + inl(it), 0)
+      if (b.t === 'quote') return n + 1 + countNodes(b.c)
+      if (b.t === 'table') return n + 1 + [...b.header, ...b.rows.flat()].reduce((m, c) => m + 1 + inl(c), 0)
+      return n + 1
+    }, 0)
+  }
+
+  it('stops emitting spans past the budget and keeps the rest as text', () => {
+    const blocks = parseMarkdown('*x* '.repeat(MARKDOWN_MAX_NODES * 2))
+    const para = blocks[0]
+    expect(blocks).toHaveLength(1)
+    if (para?.t !== 'paragraph') return
+    const last = para.c[para.c.length - 1]
+    expect(last?.t).toBe('text')
+    expect(last?.t === 'text' && last.v.endsWith('*x* *x*')).toBe(true)
+    expect(countNodes(blocks)).toBeLessThan(MARKDOWN_MAX_NODES * 2.5)
+  })
+
+  it('bounds blocks, list items and table rows the same way', () => {
+    for (const src of ['a\n\n'.repeat(MARKDOWN_MAX_NODES * 2), '- a\n'.repeat(MARKDOWN_MAX_NODES * 2), 'h|i\n---|---\n' + 'c|d\n'.repeat(MARKDOWN_MAX_NODES * 2)]) {
+      const blocks = parseMarkdown(src)
+      expect(countNodes(blocks), src.slice(0, 12)).toBeLessThan(MARKDOWN_MAX_NODES * 2.5)
+      const tail = blocks[blocks.length - 1]
+      expect(tail?.t === 'paragraph' && tail.c[0]?.t === 'text', src.slice(0, 12)).toBe(true)
+    }
+  })
+
+  it('leaves over-wide tables as text and charges the header row', () => {
+    const wide = 'a|'.repeat(174_000)
+    const blocks = parseMarkdown(`${wide}\n${'-|'.repeat(174_000)}\n${wide}`)
+    expect(blocks.every((b) => b.t !== 'table')).toBe(true)
+    expect(countNodes(blocks)).toBeLessThan(10)
+    const cols = 128
+    const header = 'h|'.repeat(cols)
+    const table = parseMarkdown(`${header}\n${'---|'.repeat(cols)}\n` + `${'c|'.repeat(cols)}\n`.repeat(1_000))
+    expect(table[0]?.t).toBe('table')
+    expect(countNodes(table)).toBeLessThan(MARKDOWN_MAX_NODES + 2 * cols + 10)
+  })
+
+  it('resets the budget for every document', () => {
+    parseMarkdown('*x* '.repeat(MARKDOWN_MAX_NODES * 2))
+    expect(parseMarkdown('*a*')).toEqual([{ t: 'paragraph', c: [{ t: 'em', c: [{ t: 'text', v: 'a' }] }] }])
   })
 })
