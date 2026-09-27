@@ -74,12 +74,12 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
       <div className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
         <h1 className="text-prose font-semibold">{commitSubject(commit.message) || '(no message)'}</h1>
         {body ? <pre className="mt-2 whitespace-pre-wrap font-sans text-dense text-anvil-600 dark:text-anvil-300">{body}</pre> : null}
-        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] coarse:gap-y-3 text-anvil-500 dark:text-anvil-400">
           <span className="font-medium text-anvil-700 dark:text-anvil-200">{commit.author.name || 'unknown'}</span>
           <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>
           <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
           {commit.parents.map((p) => (
-            <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
+            <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="hit-area flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
               parent <Oid value={p} chars={7} copyable={false} />
             </Link>
           ))}

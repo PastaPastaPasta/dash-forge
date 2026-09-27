@@ -168,7 +168,7 @@ function BlobBody({
             <a
               href={downloadHref}
               download={name}
-              className="inline-flex items-center gap-1 rounded border border-anvil-300 px-2 py-1 text-[12px] hover:bg-anvil-100 dark:border-anvil-700 dark:hover:bg-anvil-800"
+              className="inline-flex items-center gap-1 rounded border border-anvil-300 px-2 py-1 text-[12px] hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 dark:border-anvil-700 dark:hover:bg-anvil-800"
             >
               <Download className="h-3 w-3" aria-hidden /> Raw
             </a>

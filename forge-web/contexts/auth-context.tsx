@@ -51,6 +51,12 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'delete:follow': 'Unfollowed',
   'delete:maintainer': 'Maintainer removed',
   'delete:writer': 'Writer removed',
+  'key:register': "This browser's key registered",
+  'key:renew': "This browser's key renewed",
+  'key:topup': 'Key budget topped up',
+  'key:revoke': 'Key disabled on chain',
+  'key:encryption': 'Encryption key registered',
+  'identity:create': 'Identity created',
 }
 
 interface AuthContextValue {
@@ -185,6 +191,12 @@ export function AuthProvider({
     },
     [controller],
   )
+  // Identity updates the controller pays for (key register, renew, top-up, revoke) reach the
+  // same ledger and toast as document writes.
+  useEffect(() => {
+    controller.setSpendListener(onSpend)
+    return () => controller.setSpendListener(null)
+  }, [controller, onSpend])
 
   const session: AuthSession | null = state.session
   const sessionIdentity = session?.identityId ?? null

@@ -100,7 +100,7 @@ export function UnreachableBanner({
             {seconds !== null ? `Trying again in ${seconds} s.` : 'This page will try again when it is visible.'}
           </p>
           <details className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-            <summary className="cursor-pointer">Details</summary>
+            <summary className="w-fit cursor-pointer coarse:-mx-2 coarse:flex coarse:min-h-11 coarse:min-w-11 coarse:items-center coarse:px-2">Details</summary>
             <p className="mt-1 break-words font-mono text-[12px]">{status.message}</p>
           </details>
         </div>

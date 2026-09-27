@@ -80,13 +80,13 @@ export function FileList({
           <span className="hidden w-1/2 min-w-0 items-center justify-end gap-3 text-[12px] sm:flex">{commitColumn(e.name)}</span>
         ) : null
         const rowCls =
-          'group flex h-9 items-center gap-2.5 border-b border-anvil-100 px-3 text-dense last:border-b-0 dark:border-anvil-850'
+          'group flex h-9 items-center gap-2.5 border-b border-anvil-100 px-3 text-dense last:border-b-0 coarse:h-12 dark:border-anvil-850'
         // The commit cell holds its own link, so a row with one is a div around two links.
         if (commit !== null) {
           return (
             <div key={i} className={cn(rowCls, 'hover:bg-anvil-50 dark:hover:bg-anvil-900')}>
               {href ? (
-                <Link href={href} className="group flex min-w-0 flex-1 items-center gap-2.5">
+                <Link href={href} className="group flex min-w-0 flex-1 items-center gap-2.5 self-stretch">
                   {inner}
                 </Link>
               ) : (

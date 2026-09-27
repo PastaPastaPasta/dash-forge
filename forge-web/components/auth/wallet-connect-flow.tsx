@@ -242,7 +242,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
               <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in DashPay (Dash Wallet)' : 'Open in DashPay (Dash Wallet)'}
             </a>
             <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              <summary className="cursor-pointer">Wallet on another device? Show the QR code</summary>
+              <summary className="cursor-pointer coarse:py-3">Wallet on another device? Show the QR code</summary>
               <div className="pt-2">
                 <Qr value={uri} label={qrLabel} size={180} />
               </div>

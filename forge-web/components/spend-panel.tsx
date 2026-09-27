@@ -1,26 +1,66 @@
 'use client'
 
 /**
- * Settings → Spend (`ux-dx-spec.md` §4 rule 3): this device's ledger of confirmed writes —
- * month and all-time totals, per-repo totals, estimates that missed by more than 25 %, and the
- * reconciliation line against the identity's balance change since the ledger began.
+ * Settings → Spend (`ux-dx-spec.md` §4 rule 3): this device's ledger of confirmed writes and
+ * Forge's own identity updates (key register, renew, top-up, revoke) — month and all-time
+ * totals, per-repo totals (names read from Platform, the repo id when a name does not resolve),
+ * estimates that missed by more than 25 %, and the reconciliation line against the identity's
+ * balance change since the ledger began.
+ *
+ * Both lists are stacked rows rather than wide tables, so they read on a 320 px phone.
  */
 
+import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
-import { DEFAULT_NETWORK } from '@/lib/constants'
-import { estimateMissed, readBaseline, readLedger, reconcile, summarize, type SpendRow } from '@/lib/spend'
+import { useSdk } from '@/hooks/use-sdk'
+import { repoHref } from '@/hooks/use-query-param'
+import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
+import { readRepoById, type RepoDoc } from '@/lib/repo'
+import {
+  NO_REPO,
+  estimateMissed,
+  isIdentityAction,
+  readBaseline,
+  readLedger,
+  reconcile,
+  spendKindLabel,
+  summarize,
+  type SpendRow,
+} from '@/lib/spend'
 import { creditsAsDash, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
+import { cn } from '@/lib/utils'
 
 function Dash({ credits }: { credits: number }): JSX.Element {
   return (
-    <span className="font-mono">
+    <span className="whitespace-nowrap font-mono">
       {credits < 0 ? '−' : ''}
       {creditsAsDash(Math.abs(credits))} DASH
     </span>
   )
+}
+
+function writes(n: number): string {
+  return `${n} ${n === 1 ? 'write' : 'writes'}`
+}
+
+/** The repos a ledger names, read once each by id (null when one does not resolve). */
+function useRepoNames(ids: readonly string[]): ReadonlyMap<string, RepoDoc | null> {
+  const { sdk, ready } = useSdk()
+  const forge = ACTIVE_NETWORK.v2
+  const key = [...ids].sort().join(',')
+  const names = useAsync<ReadonlyMap<string, RepoDoc | null>>(
+    async () => {
+      const list = key === '' ? [] : key.split(',')
+      const docs = await Promise.all(list.map((id) => readRepoById(sdk!, forge!, id).catch(() => null)))
+      return new Map(list.map((id, i) => [id, docs[i] ?? null]))
+    },
+    [ready, sdk !== null, key],
+    { enabled: ready && sdk !== null && forge !== null && key !== '' },
+  )
+  return names.data ?? new Map()
 }
 
 export function SpendPanel(): JSX.Element {
@@ -33,8 +73,19 @@ export function SpendPanel(): JSX.Element {
     [identity ?? '', balance ?? ''],
     { enabled: identity !== null },
   )
-  if (ledger.loading && !ledger.settled) return <LoadingBlock label="Reading the spend ledger" />
   const rows = ledger.data?.rows ?? []
+  const s = summarize(rows)
+  const repoIds = s.byRepo.map((r) => r.repo).filter((r) => r !== NO_REPO)
+  const repos = useRepoNames(repoIds)
+
+  if (ledger.loading && !ledger.settled) return <LoadingBlock label="Reading the spend ledger" />
+  if (ledger.error) {
+    return (
+      <p className="text-dense text-anvil-500 dark:text-anvil-400" role="status">
+        The spend ledger on this device could not be read: {ledger.error}
+      </p>
+    )
+  }
   if (rows.length === 0) {
     return (
       <p className="text-dense text-anvil-500 dark:text-anvil-400">
@@ -42,20 +93,45 @@ export function SpendPanel(): JSX.Element {
       </p>
     )
   }
-  const s = summarize(rows)
   // Only rows since the baseline explain the balance change (earlier ones predate it).
   const baseline = ledger.data?.baseline ?? null
   const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
   const rec = reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance))
+  const identityOnly = rows.every((r) => r.repo === null && isIdentityAction(r.kind))
+  const latest = rows.slice(-50).reverse()
+
+  const repoLabel = (id: string, link = true): JSX.Element => {
+    if (id === NO_REPO) {
+      return <span className="text-anvil-600 dark:text-anvil-300">{identityOnly ? 'Keys and identity' : 'Keys, identity and other'}</span>
+    }
+    const doc = repos.get(id)
+    if (doc && !link) return <span className="font-mono">{doc.name}</span>
+    if (doc) {
+      return (
+        <Link
+          href={repoHref('/repo', { owner: doc.ownerId, name: doc.name, repoId: doc.repoId })}
+          className="inline-block max-w-full truncate align-bottom font-mono text-anvil-900 underline decoration-anvil-300 coarse:-my-3 coarse:py-3 underline-offset-2 hover:text-forge-800 dark:text-anvil-50 dark:decoration-anvil-600 dark:hover:text-forge-400"
+        >
+          {doc.name}
+        </Link>
+      )
+    }
+    return (
+      <span className="font-mono text-anvil-600 dark:text-anvil-300" title={id}>
+        {id.slice(0, 8)}…
+      </span>
+    )
+  }
+
   return (
-    <div className="space-y-3 text-dense" data-testid="spend-panel">
+    <div className="space-y-4 text-dense" data-testid="spend-panel">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[12px] text-anvil-500 dark:text-anvil-400">This month</div>
           <Dash credits={s.thisMonth} />
         </div>
         <div>
-          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({rows.length} writes)</div>
+          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({writes(rows.length)})</div>
           <Dash credits={s.allTime} />
         </div>
       </div>
@@ -67,32 +143,61 @@ export function SpendPanel(): JSX.Element {
       ) : null}
       {s.missed > 0 ? (
         <p className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400">
-          <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> {s.missed} estimate{s.missed === 1 ? '' : 's'} missed by more than 25 %.
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {s.missed} estimate{s.missed === 1 ? '' : 's'} missed by more than 25 %.
         </p>
       ) : null}
-      <table className="w-full text-left text-[12px]">
-        <caption className="sr-only">Writes from this browser, newest first</caption>
-        <thead className="text-anvil-500 dark:text-anvil-400">
-          <tr>
-            <th className="py-1 font-normal">When</th>
-            <th className="py-1 font-normal">What</th>
-            <th className="py-1 text-right font-normal">Estimate</th>
-            <th className="py-1 text-right font-normal">Actual</th>
-          </tr>
-        </thead>
-        <tbody>
-          {[...rows].reverse().slice(0, 50).map((r) => (
-            <tr key={`${r.at}:${r.documentId}`} className="border-t border-anvil-100 dark:border-anvil-850">
-              <td className="py-1">{timeAgo(r.at)}</td>
-              <td className="py-1 font-mono">{r.kind}</td>
-              <td className="py-1 text-right"><Dash credits={r.estimateCredits} /></td>
-              <td className={`py-1 text-right ${estimateMissed(r) ? 'text-caution-700 dark:text-caution-400' : ''}`}>
-                {r.actualCredits === null ? '—' : <Dash credits={r.actualCredits} />}
-              </td>
-            </tr>
+
+      <section aria-labelledby="spend-by-repo">
+        <h3 id="spend-by-repo" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
+          By repo, all time
+        </h3>
+        <ul className="divide-y divide-anvil-100 dark:divide-anvil-850" data-testid="spend-by-repo">
+          {s.byRepo.map((r) => (
+            <li key={r.repo} className="flex flex-wrap items-center justify-between gap-x-3 py-1.5 coarse:min-h-11" data-repo={r.repo}>
+              <span className="min-w-0 max-w-full">{repoLabel(r.repo)}</span>
+              <span className="flex items-baseline gap-2 text-[12px]">
+                <span className="text-anvil-500 dark:text-anvil-400">
+                  {writes(r.writes)}
+                </span>
+                <Dash credits={r.credits} />
+              </span>
+            </li>
           ))}
-        </tbody>
-      </table>
+        </ul>
+      </section>
+
+      <section aria-labelledby="spend-rows">
+        <h3 id="spend-rows" className="mb-1 text-[12px] font-medium text-anvil-500 dark:text-anvil-400">
+          Latest {latest.length}, newest first
+        </h3>
+        {/* A list, not a four-column table: each row wraps to two lines on a phone. */}
+        <ul className="divide-y divide-anvil-100 text-[12px] dark:divide-anvil-850" data-testid="spend-rows">
+          {latest.map((r) => {
+            const missed = estimateMissed(r)
+            return (
+              <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
+                <span className="min-w-0">
+                  <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
+                  <span className="text-anvil-500 dark:text-anvil-400">
+                    {timeAgo(r.at)}
+                    {r.repo !== null ? <> · {repoLabel(r.repo, false)}</> : null}
+                  </span>
+                </span>
+                <span className="text-right">
+                  <span className={cn('block', missed && 'text-caution-700 dark:text-caution-400')}>
+                    {r.actualCredits === null ? <span title="Not measured in time">—</span> : <Dash credits={r.actualCredits} />}
+                  </span>
+                  {r.estimateCredits !== 0 ? (
+                    <span className="text-anvil-500 dark:text-anvil-400">
+                      est. <Dash credits={r.estimateCredits} />
+                    </span>
+                  ) : null}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      </section>
     </div>
   )
 }

@@ -169,7 +169,7 @@ export function DiffView({
     <div className="space-y-3">
       <DiffToolbar />
       <details open={changes.length <= FILE_PAGE} className="group rounded-lg border border-anvil-200 dark:border-anvil-800">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-dense [&::-webkit-details-marker]:hidden">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 text-dense coarse:min-h-11 [&::-webkit-details-marker]:hidden">
           <ChevronRight className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
           <FileDiff className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span className="font-medium">
@@ -190,7 +190,7 @@ export function DiffView({
                 <button
                   type="button"
                   onClick={() => pick(index)}
-                  className="flex w-full items-center gap-3 px-3 py-1 text-left text-dense hover:bg-anvil-50 dark:hover:bg-anvil-850"
+                  className="flex w-full items-center gap-3 px-3 py-1 text-left text-dense hover:bg-anvil-50 coarse:min-h-11 dark:hover:bg-anvil-850"
                 >
                   <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={c.status}>
                     {meta.label}
@@ -258,7 +258,7 @@ function DiffToolbar(): JSX.Element {
       onClick={onClick}
       title={title}
       className={cn(
-        'rounded px-2 py-1 text-[12px] font-medium transition-colors',
+        'rounded px-2 py-1 text-[12px] font-medium transition-colors coarse:min-h-11',
         pressed ? 'bg-anvil-200 text-anvil-900 dark:bg-anvil-750 dark:text-anvil-50' : 'text-anvil-600 hover:text-anvil-900 dark:text-anvil-400 dark:hover:text-anvil-100',
       )}
     >
@@ -305,13 +305,13 @@ function FilePatchView({
 
   return (
     <div id={id} className="scroll-mt-4 overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-      <div className="flex items-center gap-2 bg-anvil-50 px-3 py-2 text-dense dark:bg-anvil-900">
+      <div className="flex items-center gap-2 bg-anvil-50 px-3 py-2 text-dense coarse:min-h-11 coarse:py-0 dark:bg-anvil-900">
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-label={`${open ? 'Collapse' : 'Expand'} ${change.path}`}
-          className="rounded p-0.5 text-anvil-500 dark:text-anvil-400 hover:bg-anvil-200 hover:text-anvil-700 dark:hover:bg-anvil-800 dark:hover:text-anvil-200"
+          className="rounded p-0.5 text-anvil-500 dark:text-anvil-400 hover:bg-anvil-200 hover:text-anvil-700 coarse:-ml-3 coarse:p-3.5 dark:hover:bg-anvil-800 dark:hover:text-anvil-200"
         >
           {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
         </button>
@@ -319,7 +319,7 @@ function FilePatchView({
           {meta.label}
         </span>
         {href ? (
-          <Link href={href} className="min-w-0 flex-1 truncate font-mono hover:text-forge-800 dark:hover:text-forge-400">
+          <Link href={href} className="min-w-0 flex-1 truncate font-mono hover:text-forge-800 coarse:py-3 dark:hover:text-forge-400">
             {change.path}
           </Link>
         ) : (
@@ -390,10 +390,13 @@ function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: num
   if (inline === null || !inline.canComment) return <td className={GUTTER}>{line}</td>
   return (
     <td className={cn(GUTTER, 'p-0')}>
+      {/* One per code line, so as tall as the line: 44px rows would halve what a phone shows of
+          the diff. The whole gutter cell is the target (e2e/mobile.spec.ts exempts it). */}
       <button
         type="button"
         onClick={() => inline.start(path, side, line)}
         aria-label={`Comment on ${side === 1 ? 'new' : 'old'} line ${line} of ${path}`}
+        data-tap-exempt="code-line"
         className="w-full px-2 text-right hover:bg-forge-500/15 hover:text-anvil-900 dark:hover:text-anvil-50"
       >
         {line}
@@ -410,8 +413,10 @@ function ThreadRow({ path, keys, colSpan }: { path: string; keys: readonly (read
   if (parts.length === 0) return null
   return (
     <tr>
-      <td colSpan={colSpan} className="border-y border-anvil-200 bg-anvil-50 px-3 py-2 font-sans text-dense dark:border-anvil-800 dark:bg-anvil-900">
-        {parts}
+      <td colSpan={colSpan} className="border-y border-anvil-200 bg-anvil-50 p-0 font-sans text-dense dark:border-anvil-800 dark:bg-anvil-900">
+        {/* As wide as the visible diff, not the (scrolling) table: a thread under a long line
+            stays readable on a phone without scrolling sideways. */}
+        <div className="sticky left-0 w-[100cqw] max-w-full px-3 py-2">{parts}</div>
       </td>
     </tr>
   )
@@ -447,7 +452,7 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
   )
   return (
     <>
-      <ScrollRegion label={`Changes to ${path}`} className="overflow-x-auto">
+      <ScrollRegion label={`Changes to ${path}`} className="overflow-x-auto [container-type:inline-size]">
         <table
           className={cn('w-full border-collapse font-mono text-[12px] leading-5', split && 'table-fixed')}
           aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}

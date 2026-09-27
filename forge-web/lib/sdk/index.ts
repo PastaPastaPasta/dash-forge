@@ -39,6 +39,7 @@ export {
 export {
   CREDITS_PER_DASH,
   KEY_LIMITS_UPDATE_CREDITS,
+  KEY_REGISTER_CREDITS,
   creditsToDash,
   previewCreate,
   previewCredits,

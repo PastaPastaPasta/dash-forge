@@ -19,7 +19,7 @@ export function PathBreadcrumb({
   const refExtra: Record<string, string> = refParam ? { ref: refParam } : {}
   return (
     <nav className="flex flex-wrap items-center gap-1 text-prose" aria-label="Path">
-      <Link href={repoHref('/repo', addr, refExtra)} className="font-mono font-semibold text-forge-700 hover:underline dark:text-forge-400">
+      <Link href={repoHref('/repo', addr, refExtra)} className="hit-area font-mono font-semibold text-forge-700 hover:underline dark:text-forge-400">
         {addr.name}
       </Link>
       {segments.map((seg, i) => {

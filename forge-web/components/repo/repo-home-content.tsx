@@ -139,7 +139,7 @@ function RootBody({
         <RefSwitcher home={home} addr={addr} current={selected} />
         <Link
           href={commitsHref}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-anvil-700 hover:bg-anvil-100 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800"
           data-testid="commit-count"
         >
           <GitCommit className="h-3.5 w-3.5" aria-hidden />
@@ -186,7 +186,7 @@ function CommitCell({ commit, loading, addr }: { commit: LastCommit | undefined;
     <>
       <Link
         href={repoHref('/repo/commit', addr, { oid: commit.oid })}
-        className="min-w-0 flex-1 truncate text-anvil-600 hover:text-forge-800 dark:text-anvil-300 dark:hover:text-forge-400"
+        className="min-w-0 flex-1 truncate text-anvil-600 hover:text-forge-800 coarse:-my-3 coarse:py-3 dark:text-anvil-300 dark:hover:text-forge-400"
       >
         {commit.subject || '(no message)'}
       </Link>

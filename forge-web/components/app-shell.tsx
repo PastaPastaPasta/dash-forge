@@ -8,6 +8,7 @@
 import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
+import { LowFundsBanner } from '@/components/low-funds-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
 import { StorageUpdated } from '@/components/storage-updated'
@@ -32,6 +33,7 @@ export function AppShell({
         Skip to content
       </a>
       <AppHeader />
+      <LowFundsBanner />
       <main
         id="main"
         tabIndex={-1}

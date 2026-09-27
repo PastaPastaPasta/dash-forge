@@ -87,7 +87,7 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
         if (item.kind === 'comment') {
           return (
             <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-              <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+              <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                 <Author identityId={item.comment.author} />
                 <span className="text-anvil-500 dark:text-anvil-400">commented {timeAgo(item.comment.createdAt)}</span>
               </div>
@@ -101,7 +101,7 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
           const { review } = item
           return (
             <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-              <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+              <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
                   {verdictIcon(review.verdict)}
                 </span>

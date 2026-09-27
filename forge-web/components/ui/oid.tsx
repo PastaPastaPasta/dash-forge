@@ -55,7 +55,7 @@ export function Oid({ value, chars = 7, copyable = true, label, className }: Oid
       onClick={copy}
       title={`${value}\n(click to copy)`}
       className={cn(
-        'group inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono ' +
+        'group inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono hit-area ' +
           'text-anvil-700 transition-colors hover:bg-anvil-200 ' +
           'dark:bg-anvil-800 dark:text-anvil-200 dark:hover:bg-anvil-750',
         className,
