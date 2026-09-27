@@ -23,8 +23,9 @@ import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
-  const { sdk, ready, trusted, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
-  const quorum = useQuorumCheck(network, ready && trusted)
+  const { sdk, ready, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
+  // Not while Platform is unreachable: a comparison run then only reports that it could not run.
+  const quorum = useQuorumCheck(network, connection === 'trusted')
   const proofs = deriveConnectionTrust(network, connection, quorum)
   const deployed = isForgeDeployed()
   const feed = useAsync(

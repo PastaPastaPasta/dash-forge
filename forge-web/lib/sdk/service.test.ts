@@ -724,3 +724,85 @@ describe('EvoSdkService: preloads count as calls on their connection', () => {
     expect(a.free).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('EvoSdkService: review follow-ups', () => {
+  it('reads failing during an outage neither reconnect nor push the scheduled retry back', async () => {
+    const clock = manualClock()
+    const dead = fakeSdk('dead', async () => {
+      throw QUORUM_GONE
+    })
+    const connector = vi.fn().mockResolvedValueOnce(connection(dead.sdk)).mockRejectedValue(new Error('down'))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    // Two scheduled retries fail: the next one is 30 s out, past the read-recovery gap.
+    await clock.advance(CONNECT_BACKOFF_MS[0]!)
+    await clock.advance(CONNECT_BACKOFF_MS[1]!)
+    expect(connector).toHaveBeenCalledTimes(4)
+    const scheduled = svc.getStatus()
+    const retryAt = scheduled.phase === 'error' ? scheduled.retryAt : null
+    expect(retryAt).toBe(clock.now() + CONNECT_BACKOFF_MS[2]!)
+    await clock.advance(RECOVER_GAP_MS + 1)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    expect(connector).toHaveBeenCalledTimes(4)
+    const later = svc.getStatus()
+    expect(later.phase === 'error' && later.retryAt).toBe(retryAt)
+  })
+
+  it('"Try again" swaps at once instead of waiting out the write settle', async () => {
+    const clock = manualClock()
+    const dead = fakeSdk('dead', async () => {
+      throw QUORUM_GONE
+    })
+    const fresh = fakeSdk('fresh', async () => 'back')
+    const connector = vi
+      .fn()
+      .mockResolvedValueOnce(connection(dead.sdk))
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(connection(fresh.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    await svc.holdForWrite(async () => 'a write just ended')
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    expect(svc.getStatus().phase).toBe('error')
+    svc.retryNow()
+    await flush()
+    expect(svc.getStatus().phase).toBe('ready')
+  })
+
+  it('a refresh held back by writes for a whole period gives up rather than install old keys', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => 'a')
+    const b = fakeSdk('b', async () => 'b')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockResolvedValueOnce(connection(b.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    const stuck = deferred<void>()
+    void svc.holdForWrite(() => stuck.promise)
+    const refreshed = svc.refresh()
+    await flush()
+    await clock.advance(REFRESH_MS)
+    expect(await refreshed).toBe(false)
+    expect(b.free).toHaveBeenCalledTimes(1)
+    expect(svc.generation).toBe(1)
+    stuck.resolve()
+  })
+
+  it('tracks top-level handle methods like facade calls', async () => {
+    const clock = manualClock()
+    const slow = deferred<unknown>()
+    const a = fakeSdk('a', async () => 'a')
+    ;(a.sdk as unknown as { getWasmSdkConnected: () => Promise<unknown> }).getWasmSdkConnected = () => slow.promise
+    const b = fakeSdk('b', async () => 'b')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockResolvedValueOnce(connection(b.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    const running = (svc.getSdk() as unknown as { getWasmSdkConnected: () => Promise<unknown> }).getWasmSdkConnected()
+    await svc.refresh()
+    expect(a.free).not.toHaveBeenCalled()
+    slow.resolve('w')
+    await running
+    await flush()
+    expect(a.free).toHaveBeenCalledTimes(1)
+  })
+})

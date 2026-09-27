@@ -233,3 +233,13 @@ describe('quorumCheckDueInMs', () => {
     expect(quorumCheckDueInMs({ key: 'devnet-none' } as NetworkConfig, t)).toBe(0)
   })
 })
+
+describe('quorumCheckDueInMs: a transient outcome', () => {
+  it('is due at once, so "the comparison couldn\'t run" does not stay up for an hour', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-transient-due' } as NetworkConfig
+    await crossCheckQuorumKeysCached(cfg, { now: () => 0, check: async () => ({ state: 'unavailable', reason: 'offline' }) })
+    await Promise.resolve()
+    expect(quorumCheckDueInMs(cfg, 1_000)).toBe(0)
+  })
+})

@@ -387,7 +387,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     overall,
     summary:
       input.connection === 'offline'
-        ? `${overall === 'failed' ? `${TRUST_LABEL.failed} · ` : ''}Not re-checked · Platform unreachable`
+        ? `${TRUST_LABEL[overall]} · Not re-checked · Platform unreachable`
         : summaryOf(overall, chain, input.checks),
   }
 }

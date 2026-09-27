@@ -136,7 +136,8 @@ test.describe('network resilience', () => {
     await expect(page.getByTestId('verification-summary')).not.toHaveText(/^Verified/)
     await expect(page.getByText(/^Verified/)).toHaveCount(0)
     // The live region announces the outage, not a per-second countdown (M5).
-    await expect(BANNER(page).getByRole('status')).not.toContainText(/Trying again in/)
+    await expect(BANNER(page).getByRole('alert')).toContainText("Can't reach Dash Platform right now")
+    await expect(BANNER(page).getByRole('alert')).not.toContainText(/Trying again in/)
     await shot(page, 'nr-3-outage')
     // Before the fix the SDK kept every node banned: Try again showed "no available
     // addresses" until a full reload.

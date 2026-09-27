@@ -29,13 +29,15 @@ const pkgDir = (name) => fs.realpathSync(path.join(__dirname, 'node_modules', na
 const evoSdkDist = path.join(pkgDir('@dashevo/evo-sdk'), 'dist');
 const WASM_FILE = path.join(pkgDir('@dashevo/wasm-sdk'), 'dist', 'raw', 'wasm_sdk_bg.wasm');
 // The shim runs evo-sdk's JS over wasm-sdk's glue and wasm, taken from forge-web's own
-// @dashevo/wasm-sdk. That copy must be the one evo-sdk was built against: a mismatch compiles
-// and then fails (or misbehaves) at runtime, so fail the build instead.
-const pkgJson = (name) => JSON.parse(fs.readFileSync(path.join(pkgDir(name), 'package.json'), 'utf8'));
-const evoWants = pkgJson('@dashevo/evo-sdk').dependencies['@dashevo/wasm-sdk'];
-const wasmHas = pkgJson('@dashevo/wasm-sdk').version;
-if (evoWants !== wasmHas) {
-  throw new Error(`@dashevo/wasm-sdk ${wasmHas} does not match the ${evoWants} @dashevo/evo-sdk depends on (lib/sdk/wasm-shim.ts); pin them to the same version`);
+// @dashevo/wasm-sdk. That must be the copy evo-sdk itself resolves (whatever range or peer
+// dependency it declares): a mismatch compiles and then fails at runtime, so fail the build.
+const evoOwnWasm = fs.realpathSync(path.join(pkgDir('@dashevo/evo-sdk'), '..', 'wasm-sdk'));
+const wasmVersion = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version;
+if (wasmVersion(evoOwnWasm) !== wasmVersion(pkgDir('@dashevo/wasm-sdk'))) {
+  throw new Error(
+    `@dashevo/evo-sdk runs on @dashevo/wasm-sdk ${wasmVersion(evoOwnWasm)}, but forge-web ships ` +
+      `${wasmVersion(pkgDir('@dashevo/wasm-sdk'))} (lib/sdk/wasm-shim.ts); pin them to the same version`,
+  );
 }
 
 const nextConfig = {

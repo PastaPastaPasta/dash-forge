@@ -29,6 +29,7 @@ import type { Network } from '../constants'
 import type { GroupTrust } from '../deployments'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk } from '../sdk/facade'
+import { serialized } from '../sdk/write'
 import {
   broadcastTx,
   buildAssetLock,
@@ -190,7 +191,11 @@ export async function createIdentityFromMnemonic(
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
     // the same update, so no key nobody holds stays live.
     // The group was checked at the start of this run (assertGroupHolds above).
-    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
+    // As this identity's only writer, like every other key update (and so the SDK connection
+    // is not swapped under the update's nonce).
+    const key = await serialized(identityId, () =>
+      registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true }),
+    )
     params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore: existingBalance })
     await params.persistKey(identityId, key)
     return { identityId, key }

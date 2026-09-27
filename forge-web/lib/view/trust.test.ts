@@ -265,3 +265,13 @@ describe('offline never hides a known failure', () => {
     expect(r.summary).toMatch(/^Failed · Not re-checked/)
   })
 })
+
+describe('the offline summary names the overall state', () => {
+  it('keeps "Couldn\'t verify" for unverified content', () => {
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: AGREED, checks: { ...NO_CONTENT_CHECKS, objectsUnchecked: 3 } }))
+    expect(r.overall).toBe('unverified')
+    expect(r.summary).toBe(`${TRUST_LABEL[r.overall]} · Not re-checked · Platform unreachable`)
+    const clean = deriveTrust(inputs({ connection: 'offline', quorum: AGREED }))
+    expect(clean.summary).toBe('Partly verified · Not re-checked · Platform unreachable')
+  })
+})

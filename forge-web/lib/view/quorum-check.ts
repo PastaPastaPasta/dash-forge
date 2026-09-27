@@ -296,10 +296,14 @@ export function lastQuorumCheck(config: NetworkConfig): QuorumCrossCheck | undef
   return sessionChecks.get(config.key)?.settled?.result
 }
 
-/** How long until `config`'s settled cross-check is due again (0 when due now or none settled). */
+/**
+ * How long until `config`'s settled cross-check is due again: 0 when due now, when none has
+ * settled, or when the last one was transient (it is re-run by the next check).
+ */
 export function quorumCheckDueInMs(config: NetworkConfig, now = Date.now()): number {
   const settled = sessionChecks.get(config.key)?.settled
-  return settled === undefined ? 0 : Math.max(0, settled.at + QUORUM_CHECK_MAX_AGE_MS - now)
+  if (settled === undefined || isTransient(settled.result)) return 0
+  return Math.max(0, settled.at + QUORUM_CHECK_MAX_AGE_MS - now)
 }
 
 /**

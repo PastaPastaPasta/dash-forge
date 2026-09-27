@@ -46,8 +46,9 @@ export function RepoRail({
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
 }): JSX.Element {
-  const { ready, trusted, connection, network } = useSdk(repoContractIds(home.repo))
-  const quorum = useQuorumCheck(network, ready && trusted)
+  const { connection, network } = useSdk(repoContractIds(home.repo))
+  // Not while Platform is unreachable: a comparison run then only reports that it could not run.
+  const quorum = useQuorumCheck(network, connection === 'trusted')
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
   const key = repoKey(home.repo)

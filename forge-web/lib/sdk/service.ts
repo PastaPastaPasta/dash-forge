@@ -416,7 +416,11 @@ export class EvoSdkService {
   retryNow(): void {
     if (this.status.phase !== 'error') return
     if (this.current === null) void this.connectFirst().catch(() => undefined)
-    else void this.refresh()
+    else {
+      // The live connection cannot read; nothing a write holds on it is worth waiting for.
+      void this.refresh()
+      this.urgeSwap()
+    }
   }
 
   private scheduleRetry(): void {
@@ -496,7 +500,12 @@ export class EvoSdkService {
     this.refreshDue = false
     const run = this.attempt(config).then(
       async (connection) => {
-        await this.writesSettled()
+        // A write can hold the swap back; a connection that waited a whole refresh period
+        // has keys as old as the one it would replace, so build a fresh one instead.
+        if (!(await this.writesSettled(REFRESH_MS))) {
+          dispose(connection)
+          return false
+        }
         if (this.epoch !== epoch || this.current === null) {
           dispose(connection)
           return false
@@ -510,12 +519,11 @@ export class EvoSdkService {
         return false
       },
     )
-    void run.then(() => {
-      this.swapUrgent = false
-    })
     this.refreshing = run
     void run.then(() => {
+      if (this.refreshing !== run) return
       this.refreshing = null
+      this.swapUrgent = false
       if (this.epoch === epoch && this.current !== null) this.scheduleRefresh()
     })
     return run
@@ -544,23 +552,33 @@ export class EvoSdkService {
   }
 
   /**
-   * Resolves once no write runs and the last ended {@link WRITE_SETTLE_MS} ago, or at once
-   * when a recovery needs the swap ({@link swapUrgent}).
+   * True once no write runs and the last ended {@link WRITE_SETTLE_MS} ago, or at once when a
+   * recovery or "Try again" needs the swap ({@link swapUrgent}); false if that takes longer
+   * than `maxWaitMs`.
    */
-  private async writesSettled(): Promise<void> {
+  private async writesSettled(maxWaitMs: number): Promise<boolean> {
+    const deadline = this.clock.now() + maxWaitMs
     for (;;) {
-      if (this.swapUrgent) return
-      if (this.runningWrites > 0) {
-        await new Promise<void>((r) => this.writeWaiters.push(r))
-        continue
-      }
-      const wait = this.lastWriteEnd + WRITE_SETTLE_MS - this.clock.now()
-      if (wait <= 0) return
+      if (this.swapUrgent) return true
+      const now = this.clock.now()
+      if (now >= deadline) return false
+      const settle = this.runningWrites > 0 ? Infinity : this.lastWriteEnd + WRITE_SETTLE_MS - now
+      if (settle <= 0) return true
       await new Promise<void>((r) => {
         this.writeWaiters.push(r)
-        this.clock.setTimeout(r, wait)
+        this.clock.setTimeout(r, Math.min(settle, deadline - now))
       })
     }
+  }
+
+  /**
+   * A swap is needed now (a failing connection, or the user asked): the refresh in flight
+   * stops waiting on writes. No-op without one, so the flag never outlives its refresh.
+   */
+  private urgeSwap(): void {
+    if (this.refreshing === null) return
+    this.swapUrgent = true
+    this.wakeWriteWaiters()
   }
 
   private wakeWriteWaiters(): void {
@@ -581,7 +599,7 @@ export class EvoSdkService {
       return await this.track(used, read)
     } catch (e) {
       if (!isStaleConnectionError(e)) throw e
-      if (this.current === used && !(await this.recover(e))) throw e
+      if (this.current === used && !(await this.recover(e, used))) throw e
       const now = this.current
       if (now === null || now === used) throw e
       return this.track(now, read)
@@ -589,14 +607,16 @@ export class EvoSdkService {
   }
 
   /** One recovery (the rate-limit wait and the reconnect) that every failing read shares. */
-  private recover(cause: unknown): Promise<boolean> {
+  private recover(cause: unknown, used: Connection): Promise<boolean> {
     if (this.recovering !== null) return this.recovering
     if (this.refreshing !== null) {
       // A routine refresh waiting on a write: this connection is failing, swap when ready.
-      this.swapUrgent = true
-      this.wakeWriteWaiters()
+      this.urgeSwap()
       return this.refreshing
     }
+    // During an outage the retry timer owns reconnects: reads failing meanwhile neither
+    // reconnect nor push the next retry back.
+    if (this.status.phase === 'error') return Promise.resolve(false)
     if (this.clock.now() - this.lastRecoverAt < RECOVER_GAP_MS) return Promise.resolve(false)
     this.lastRecoverAt = this.clock.now()
     const run = (async (): Promise<boolean> => {
@@ -605,9 +625,11 @@ export class EvoSdkService {
         const wait = Math.min(dapiBudget.retryAfterMs(), RECOVER_MAX_WAIT_MS)
         if (wait > 0) await new Promise((r) => this.clock.setTimeout(() => r(undefined), wait))
       }
-      this.swapUrgent = true
-      this.wakeWriteWaiters()
-      const renewed = await this.refresh()
+      // Replaced while waiting (a routine refresh went live): the read just runs again.
+      if (this.current !== used) return this.current !== null
+      const refreshing = this.refresh()
+      this.urgeSwap()
+      const renewed = await refreshing
       if (!renewed && this.current !== null && this.status.phase === 'ready') {
         // The connection can no longer read and a new one cannot be built: Platform is
         // unreachable. Pages drop to their cached content under the unreachable banner, and
@@ -785,9 +807,11 @@ export class EvoSdkService {
         // Never lower than a version a connection proved: a write derives its document id at
         // this version, and Drive refuses an id derived at an older one.
         if (prop === 'version') return () => this.learn(this.live().sdk) ?? this.live().sdk.version()
-        const sdk = this.current.sdk as unknown as Record<PropertyKey, unknown>
+        const connection = this.current
+        const sdk = connection.sdk as unknown as Record<PropertyKey, unknown>
         const value = sdk[prop]
-        return typeof value === 'function' ? (value as AnyFn).bind(sdk) : value
+        if (typeof value !== 'function') return value
+        return (...args: unknown[]) => this.track(connection, () => (value as AnyFn).apply(sdk, args))
       },
     })
   }
@@ -904,10 +928,13 @@ async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortS
   const controller = new AbortController()
   if (signal.aborted) controller.abort()
   else signal.addEventListener('abort', () => controller.abort(), { once: true })
-  return withTimeout(connectAndWarm(evo.EvoSDK, config, carry, controller.signal), CONNECT_TIMEOUT_MS, 'Connecting to Platform', controller)
+  const work = connectAndWarm(evo.EvoSDK, config, carry, controller.signal)
+  // A connect that finishes after its deadline fired (or after a cleanup) has no taker.
+  void work.then((c) => controller.signal.aborted && dispose(c), () => undefined)
+  return withTimeout(work, CONNECT_TIMEOUT_MS, 'Connecting to Platform', controller)
 }
 
-/** The step's result, unless the connect was abandoned meanwhile (its SDK is freed then). */
+/** Throw if the connect was abandoned during the last step, freeing the SDK it built. */
 function step(signal: AbortSignal, sdk: EvoSDK | null): void {
   if (!signal.aborted) return
   if (sdk !== null) dispose({ sdk, seeded: new Map() })
