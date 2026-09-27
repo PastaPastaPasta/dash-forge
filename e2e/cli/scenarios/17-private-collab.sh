@@ -22,8 +22,8 @@ harness_init
 
 : "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-[[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
-[[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
+[[ -n "${E2E_P_OWNER:-}" || -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
+[[ -n "${E2E_P_OWNER:-}" || -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
 
 LOG="${WORKROOT}/s17"
 IDS="${WORKROOT}/s17-ids"
@@ -35,8 +35,14 @@ mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for th
     --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
 }
 
-step "mint this run's identities"
-if mint P_OWNER && mint P_MEMBER; then
+step "this run's identities"
+if [[ -n "${E2E_P_OWNER:-}" && -n "${E2E_P_MEMBER:-}" ]]; then
+  # dedicated identities given by the caller (not the shared pool), e.g. when minting is down
+  cp "$E2E_P_OWNER" "$IDS/P_OWNER.identity.json" && cp "$E2E_P_MEMBER" "$IDS/P_MEMBER.identity.json"
+  P_OWNER="$IDS/P_OWNER.identity.json"; P_MEMBER="$IDS/P_MEMBER.identity.json"
+  ID_P_OWNER="$(_idid "$P_OWNER")"; ID_P_MEMBER="$(_idid "$P_MEMBER")"
+  ok "using dedicated P_OWNER ${ID_P_OWNER:0:10}… and P_MEMBER ${ID_P_MEMBER:0:10}…"
+elif mint P_OWNER && mint P_MEMBER; then
   P_OWNER="$IDS/P_OWNER.identity.json"; P_MEMBER="$IDS/P_MEMBER.identity.json"
   ID_P_OWNER="$(_idid "$P_OWNER")"; ID_P_MEMBER="$(_idid "$P_MEMBER")"
   ok "minted P_OWNER ${ID_P_OWNER:0:10}… and P_MEMBER ${ID_P_MEMBER:0:10}…"
@@ -89,7 +95,7 @@ fi
 
 step "the chain holds no plaintext: every document is sealed"
 if DASH_FORGE_KEY="$P_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remote-dash" --dump-collab "$ID_P_OWNER" "$NAME" >"$LOG-dump.txt" 2>"$LOG-dump.err"; then
-  rows="$(grep -c '^  id=' "$LOG-dump.txt")"
+  rows="$(grep -c "^  type=" "$LOG-dump.txt")"
   if [[ "$rows" -ge 4 ]] && ! grep -q "$RUN_ID" "$LOG-dump.txt" && ! grep -q 'plaintext=\[[^]]' "$LOG-dump.txt" \
      && ! grep -q 'epoch=- \| enc=0 ' "$LOG-dump.txt"; then
     ok "$rows documents, each with epoch + enc and no plaintext text"

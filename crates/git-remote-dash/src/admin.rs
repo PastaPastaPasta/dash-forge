@@ -157,13 +157,54 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
 }
 
 /// Dump the raw issue / patch / comment / review documents of a repo, as stored (diagnostic:
-/// in a private repo every free-text property is absent and `enc` carries it).
+/// in a private repo every free-text property is absent and `enc` carries it). Comments and
+/// reviews are found through their issue or patch (they are indexed by target, not by repo).
 async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let (client, _bridge) = connect().await?;
     let repo = resolve_named(&client, owner, repo).await?;
     let collab = client.fetch_contract(&repo.forge().collab).await?;
     let scope = repo.scope()?;
-    for doc_type in ["issue", "patch", "comment", "review"] {
+    let print = |doc_type: &str, docs: &[forge_core::platform::FetchedDocument]| {
+        for d in docs {
+            let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
+                .iter()
+                .filter_map(|f| d.field_str(f).map(|v| format!("{f}={v:?}")))
+                .collect();
+            println!(
+                "  type={doc_type} id={} epoch={} enc={} baseRefNameHash={} plaintext=[{}]",
+                d.id,
+                d.field_u64("epoch")
+                    .map_or_else(|| "-".into(), |e| e.to_string()),
+                d.field_bytes("enc").map_or(0, |e| e.len()),
+                d.field_hex("baseRefNameHash").unwrap_or_default(),
+                text.join(" ")
+            );
+        }
+    };
+    let by = |field: &'static str, id: String| {
+        let (client, collab) = (&client, &collab);
+        async move {
+            let id = forge_core::platform::decode_identifier(&id)?;
+            anyhow::Ok(
+                client
+                    .query_all_documents(
+                        collab,
+                        if field == "patchId" {
+                            "review"
+                        } else {
+                            "comment"
+                        },
+                        &[forge_core::platform::QueryFilter::eq(
+                            field,
+                            forge_core::platform::FieldValue::identifier(id),
+                        )],
+                        &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
+                    )
+                    .await?,
+            )
+        }
+    };
+    for doc_type in ["issue", "patch"] {
         let docs = client
             .query_all_documents(
                 &collab,
@@ -172,21 +213,12 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        println!("--- {doc_type}: {} docs ---", docs.len());
+        print(doc_type, &docs);
         for d in &docs {
-            let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
-                .iter()
-                .filter_map(|f| d.field_str(f).map(|v| format!("{f}={v:?}")))
-                .collect();
-            println!(
-                "  id={} epoch={} enc={} baseRefNameHash={} plaintext=[{}]",
-                d.id,
-                d.field_u64("epoch")
-                    .map_or_else(|| "-".into(), |e| e.to_string()),
-                d.field_bytes("enc").map_or(0, |e| e.len()),
-                d.field_hex("baseRefNameHash").unwrap_or_default(),
-                text.join(" ")
-            );
+            print("comment", &by("targetId", d.id.clone()).await?);
+            if doc_type == "patch" {
+                print("review", &by("patchId", d.id.clone()).await?);
+            }
         }
     }
     Ok(())

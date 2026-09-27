@@ -990,6 +990,8 @@ impl<'a> Collab<'a> {
             return Ok(Some(d));
         }
         let kr = self.keyring(repo).await?;
+        // no key at all: say why (E306 / E307), rather than list nothing with everything hidden
+        kr.require_key(repo)?;
         let opened = kr.open(doc_kind(kind), &d);
         Ok(super::private::open_doc(opened, &d).ok())
     }
@@ -1001,6 +1003,10 @@ impl<'a> Collab<'a> {
         kind: ContentKind,
         docs: Vec<FetchedDocument>,
     ) -> Result<(Vec<FetchedDocument>, usize)> {
+        if repo.visibility == Visibility::Private {
+            // even for an empty page: a non-member learns why, not "no issues"
+            self.keyring(repo).await?.require_key(repo)?;
+        }
         let total = docs.len();
         let mut out = Vec::with_capacity(total);
         for d in docs {
