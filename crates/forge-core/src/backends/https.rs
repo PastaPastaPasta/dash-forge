@@ -6,6 +6,7 @@
 //! honor Range → 206). Any static host or mirror works; writes are unsupported (a
 //! read-only mirror), so [`HttpsBackend::put`] errors.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use reqwest::{Client, StatusCode};
@@ -134,7 +135,7 @@ pub(crate) async fn http_get_watched(
     url: &str,
     range: Option<ByteRange>,
     max_bytes: Option<u64>,
-    flowing: Option<&std::sync::atomic::AtomicBool>,
+    flowing: Option<&AtomicBool>,
 ) -> Result<Vec<u8>> {
     let mut req = client.get(url);
     if let Some(r) = range {
@@ -171,7 +172,7 @@ pub(crate) async fn read_body_watched(
     mut resp: reqwest::Response,
     max_bytes: Option<u64>,
     what: &str,
-    flowing: Option<&std::sync::atomic::AtomicBool>,
+    flowing: Option<&AtomicBool>,
 ) -> Result<Vec<u8>> {
     let too_big = |n: u64| match max_bytes {
         Some(m) if n > m => Err(Error::Io(format!(
@@ -188,8 +189,10 @@ pub(crate) async fn read_body_watched(
         .await
         .map_err(|e| transport_err("reading response body", &e))?
     {
-        if let Some(f) = flowing.filter(|_| !chunk.is_empty()) {
-            f.store(true, std::sync::atomic::Ordering::Relaxed);
+        if !chunk.is_empty() {
+            if let Some(f) = flowing {
+                f.store(true, Ordering::Relaxed);
+            }
         }
         out.extend_from_slice(&chunk);
         too_big(out.len() as u64)?;

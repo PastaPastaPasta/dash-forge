@@ -255,17 +255,9 @@ impl PackReader {
         out
     }
 
+    /// Fetch candidate `c` (a `range` of it, or the whole body capped at `max_bytes`),
+    /// setting `flowing` once its body starts arriving.
     async fn fetch(
-        &self,
-        c: &Candidate,
-        range: Option<ByteRange>,
-        max_bytes: Option<u64>,
-    ) -> Result<Vec<u8>> {
-        self.fetch_watched(c, range, max_bytes, None).await
-    }
-
-    /// [`Self::fetch`], setting `flowing` once the candidate's body starts arriving.
-    async fn fetch_watched(
         &self,
         c: &Candidate,
         range: Option<ByteRange>,
@@ -313,7 +305,7 @@ impl PackReader {
         flowing: &AtomicBool,
     ) -> std::result::Result<Vec<u8>, (String, String)> {
         let bytes = self
-            .fetch_watched(c, None, size, Some(flowing))
+            .fetch(c, None, size, Some(flowing))
             .await
             .map_err(|e| (c.label(), e.to_string()))?;
         if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
@@ -380,28 +372,24 @@ impl PackReader {
                 in_flight.push(c.label());
                 race.push(self.fetch_one_verified(c, expected_sha256, size, &flowing));
             }
-            let res = if flowing.load(Ordering::Relaxed) {
-                race.next().await
-            } else {
-                tokio::select! {
-                    r = race.next() => r,
-                    () = &mut first_byte => {
-                        // A body may have started while this select was waiting.
-                        if flowing.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        let secs = self.first_byte_budget.as_secs();
-                        for label in &in_flight {
-                            reasons.push(format!("{label}: sent no data within {secs}s"));
-                        }
-                        let untried = pending.len();
-                        if untried > 0 {
-                            reasons.push(format!(
-                                "{untried} more not tried: no copy sent any data within {secs}s"
-                            ));
-                        }
-                        break;
+            let res = tokio::select! {
+                r = race.next() => r,
+                () = &mut first_byte, if !flowing.load(Ordering::Relaxed) => {
+                    // A body may have started while this select was waiting.
+                    if flowing.load(Ordering::Relaxed) {
+                        continue;
                     }
+                    let secs = self.first_byte_budget.as_secs();
+                    for label in &in_flight {
+                        reasons.push(format!("{label}: sent no data within {secs}s"));
+                    }
+                    let untried = pending.len();
+                    if untried > 0 {
+                        reasons.push(format!(
+                            "{untried} more not tried: no copy sent any data within {secs}s"
+                        ));
+                    }
+                    break;
                 }
             };
             let Some(res) = res else { break };
@@ -437,7 +425,7 @@ impl PackReader {
     pub async fn fetch_range(&self, uris: &[String], range: ByteRange) -> Result<Vec<u8>> {
         let mut last = Error::NotFound;
         for c in self.candidates(uris) {
-            match self.fetch(&c, Some(range), Some(range.len())).await {
+            match self.fetch(&c, Some(range), Some(range.len()), None).await {
                 Ok(b) if b.len() as u64 == range.len() => return Ok(b),
                 Ok(b) => {
                     last = Error::Io(format!(
@@ -1082,11 +1070,8 @@ mod tests {
                     );
                     for b in body {
                         std::thread::sleep(gap);
-                        if stream
-                            .write_all(&[b])
-                            .and_then(|()| stream.flush())
-                            .is_err()
-                        {
+                        // TcpStream is unbuffered: each byte is sent as it is written.
+                        if stream.write_all(&[b]).is_err() {
                             return;
                         }
                     }

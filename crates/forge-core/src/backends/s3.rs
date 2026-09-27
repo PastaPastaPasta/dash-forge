@@ -17,6 +17,8 @@
 //! The manifest records the public URL first (what browsers use) and the canonical
 //! `s3://bucket/key` second (what a credentialed CLI can resolve against the API endpoint).
 
+use std::sync::atomic::AtomicBool;
+
 use reqwest::{Client, Method, StatusCode, Url};
 
 use super::https::{http_get_capped, http_probe, read_body_watched, transport_err, truncate_chars};
@@ -504,7 +506,7 @@ impl S3Backend {
         key: &str,
         range: Option<ByteRange>,
         max_bytes: Option<u64>,
-        flowing: Option<&std::sync::atomic::AtomicBool>,
+        flowing: Option<&AtomicBool>,
     ) -> Result<Vec<u8>> {
         let extra: Vec<(String, String)> = range
             .map(|r| vec![("range".to_string(), r.http_header_value())])

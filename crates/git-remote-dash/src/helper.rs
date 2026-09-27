@@ -590,10 +590,11 @@ struct Unreadable {
 }
 
 /// Index a fetch's downloaded packs into the local odb (for a `--filter` partial clone:
-/// through a scratch repo that applies the filter, then as a promisor pack). When some packs
-/// were unreadable and the wanted history is incomplete without them, fail with E503
-/// ([`packs_unreadable`]) before git's own connectivity check says only "did not send all
-/// necessary objects".
+/// through a scratch repo that applies the filter, then as a promisor pack). When packs were
+/// set aside and the wanted history is incomplete without them, fail before git's own
+/// connectivity check says only "did not send all necessary objects": E503
+/// ([`packs_unreadable`]) when any was unreadable, else E510 ([`hidden_packs_needed`]) when
+/// only packs the late-content rule hides are missing.
 fn index_fetched(
     fetched: Vec<Got>,
     want_oids: &[String],
@@ -658,11 +659,8 @@ fn index_fetched(
 /// epoch number). No copy would help: the rule withholds them from every reader.
 fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserError {
     let what = if cloning { "clone" } else { "fetch" };
-    let first = hidden.first().map_or_else(String::new, |u| {
-        u.cause
-            .as_deref()
-            .map_or_else(|| u.message.clone(), |c| format!("{}: {c}", u.message))
-    });
+    // `message: cause`, as UserError displays itself.
+    let first = hidden.first().map_or_else(String::new, ToString::to_string);
     let cause = match hidden.len() {
         0 | 1 => first,
         n => format!("{first}; and {} more such pack(s)", n - 1),
