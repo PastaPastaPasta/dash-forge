@@ -12,7 +12,7 @@
  */
 
 import Link from 'next/link'
-import { useEffect, useRef, useState } from 'react'
+import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, FileDiff } from 'lucide-react'
 import {
   loadFilePatch,
@@ -22,10 +22,28 @@ import {
   type DiffSides,
   type FileChange,
   type FilePatch,
+  type TextDiffLine,
 } from '@/lib/view'
+import { splitRows } from '@/lib/view/text-diff'
+import { DIFF_PALETTES, type DiffPalette } from '@/lib/view/prefs'
+import { lineKey } from '@/lib/view/inline-threads'
+import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/states'
 import { cn } from '@/lib/utils'
+
+/**
+ * Inline comments on a diff (the PR view provides this; a commit diff has none): what to show
+ * under a line, and how to start a comment on one. `side` is 0 for the old file, 1 for the new.
+ */
+export interface InlineComments {
+  render(path: string, side: 0 | 1, line: number): ReactNode | null
+  start(path: string, side: 0 | 1, line: number): void
+  /** Told which lines a file's patch shows (`lineKey`s), or null once it shows none. */
+  report(path: string, keys: ReadonlySet<string> | null): void
+}
+
+export const InlineCommentsContext = createContext<InlineComments | null>(null)
 
 /** Files whose patches load per page. */
 const FILE_PAGE = 25
@@ -66,7 +84,13 @@ export function DiffView({
   fileHref?: (path: string) => string
 }): JSX.Element {
   const [shown, setShown] = useState(Math.min(FILE_PAGE, changes.length))
-  const [patches, setPatches] = useState<ReadonlyMap<string, FilePatch>>(() => new Map())
+  const [{ ignoreWhitespace }] = usePrefs()
+  // Patches are keyed by mode + path: toggling whitespace loads the other mode's patches
+  // without discarding these (toggling back is instant).
+  const keyOf = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
+  const [loaded, setPatches] = useState<ReadonlyMap<string, FilePatch>>(() => new Map())
+  const patches = { get: (path: string): FilePatch | undefined => loaded.get(keyOf(path)) }
+  const current = changes.map((c) => loaded.get(keyOf(c.path))).filter((p): p is FilePatch => p !== undefined)
   const [scrollTo, setScrollTo] = useState<number | null>(null)
   const requested = useRef(new Set<string>())
   // Patches land one by one; committing each would re-render the whole list per file.
@@ -86,13 +110,14 @@ export function DiffView({
       pending.current = new Map()
       setPatches((prev) => new Map([...prev, ...batch]))
     }
-    const todo = changes.slice(0, shown).filter((c) => !requested.current.has(c.path))
-    for (const c of todo) requested.current.add(c.path)
+    const key = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
+    const todo = changes.slice(0, shown).filter((c) => !requested.current.has(key(c.path)))
+    for (const c of todo) requested.current.add(key(c.path))
     void mapPooled(todo, PATCH_CONCURRENCY, async (change) => {
-      pending.current.set(change.path, await loadFilePatch(sides, change))
+      pending.current.set(key(change.path), await loadFilePatch(sides, change, { ignoreWhitespace }))
       flushTimer.current ??= setTimeout(flush, PATCH_FLUSH_MS)
     })
-  }, [changes, shown, sides])
+  }, [changes, shown, sides, ignoreWhitespace])
 
   // Jump to a file picked from the list once it has rendered (it may be past `shown`).
   useEffect(() => {
@@ -104,7 +129,7 @@ export function DiffView({
   let added = 0
   let deleted = 0
   let counted = 0
-  for (const p of patches.values()) {
+  for (const p of current) {
     if (p.kind !== 'text') continue
     added += p.added
     deleted += p.deleted
@@ -126,13 +151,14 @@ export function DiffView({
   // A size skip taken from the (unverified) browse index can be overridden: download the
   // blobs and let the measured size decide.
   const loadAnyway = (change: FileChange): void => {
+    const key = keyOf(change.path)
     setPatches((prev) => {
       const next = new Map(prev)
-      next.delete(change.path)
+      next.delete(key)
       return next
     })
-    void loadFilePatch(sides, change, { ignoreSizeHint: true }).then((patch) =>
-      setPatches((prev) => new Map(prev).set(change.path, patch)),
+    void loadFilePatch(sides, change, { ignoreSizeHint: true, ignoreWhitespace }).then((patch) =>
+      setPatches((prev) => new Map(prev).set(key, patch)),
     )
   }
 
@@ -143,6 +169,7 @@ export function DiffView({
 
   return (
     <div className="space-y-3">
+      <DiffToolbar />
       <details open={changes.length <= FILE_PAGE} className="group rounded-lg border border-anvil-200 dark:border-anvil-800">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-dense [&::-webkit-details-marker]:hidden">
           <ChevronRight className="h-3.5 w-3.5 text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
@@ -213,10 +240,48 @@ export function DiffView({
 }
 
 function DiffStat({ added, deleted }: { added: number; deleted: number }): JSX.Element {
+  const [{ palette }] = usePrefs()
+  const p = DIFF_PALETTES[palette]
   return (
     <span className="shrink-0 font-mono text-[12px]">
-      <span className={ADDED_TEXT}>+{added}</span> <span className={DELETED_TEXT}>−{deleted}</span>
+      <span className={p.added.marker}>+{added}</span> <span className={p.deleted.marker}>−{deleted}</span>
     </span>
+  )
+}
+
+/** Layout, whitespace and palette switches; remembered in this browser. */
+function DiffToolbar(): JSX.Element {
+  const [prefs, update] = usePrefs()
+  const wide = useMinWidth(1024)
+  const toggle = (label: string, pressed: boolean, onClick: () => void, title?: string): JSX.Element => (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      title={title}
+      className={cn(
+        'rounded px-2 py-1 text-[12px] font-medium transition-colors',
+        pressed ? 'bg-anvil-200 text-anvil-900 dark:bg-anvil-750 dark:text-anvil-50' : 'text-anvil-600 hover:text-anvil-900 dark:text-anvil-400 dark:hover:text-anvil-100',
+      )}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div role="toolbar" aria-label="Diff display" className="flex flex-wrap items-center gap-1">
+      {wide ? (
+        <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+          {toggle('Split', prefs.diffLayout === 'split', () => update({ diffLayout: 'split' }), 'Side by side')}
+          {toggle('Unified', prefs.diffLayout === 'unified', () => update({ diffLayout: 'unified' }))}
+        </div>
+      ) : null}
+      <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+        {toggle('Hide whitespace', prefs.ignoreWhitespace, () => update({ ignoreWhitespace: !prefs.ignoreWhitespace }), 'Compare lines ignoring whitespace (git diff -w)')}
+      </div>
+      <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+        {toggle('Blue/orange', prefs.palette === 'colorblind', () => update({ palette: prefs.palette === 'colorblind' ? 'standard' : 'colorblind' }), 'Color-blind friendly diff colors')}
+      </div>
+    </div>
   )
 }
 
@@ -294,46 +359,147 @@ function FilePatchView({
   )
 }
 
+/** Line numbers and markers on tinted rows: AA on both themes (see `contrast.test.ts`). */
+const GUTTER = 'w-12 select-none border-r border-anvil-100 px-2 text-right align-top text-anvil-600 dark:border-anvil-850 dark:text-anvil-400'
+
+function lineTint(kind: TextDiffLine['kind'] | null, palette: DiffPalette): string {
+  if (kind === 'added') return DIFF_PALETTES[palette].added.row
+  if (kind === 'deleted') return DIFF_PALETTES[palette].deleted.row
+  return ''
+}
+
+function Marker({ kind, palette }: { kind: TextDiffLine['kind']; palette: DiffPalette }): JSX.Element {
+  const p = DIFF_PALETTES[palette]
+  if (kind === 'added') return <span className={cn('select-none font-semibold', p.added.marker)}>+</span>
+  if (kind === 'deleted') return <span className={cn('select-none font-semibold', p.deleted.marker)}>−</span>
+  return <span className="select-none"> </span>
+}
+
+function LineText({ line }: { line: TextDiffLine }): JSX.Element {
+  return (
+    <>
+      {line.text || ' '}
+      {line.noNewline ? <span className="ml-2 select-none font-sans text-anvil-600 dark:text-anvil-400">(no newline at end of file)</span> : null}
+    </>
+  )
+}
+
+/** A line number that, in a PR, opens an inline comment on that line. */
+function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: number | null }): JSX.Element {
+  const inline = useContext(InlineCommentsContext)
+  if (line === null) return <td className={GUTTER} />
+  if (inline === null) return <td className={GUTTER}>{line}</td>
+  return (
+    <td className={cn(GUTTER, 'p-0')}>
+      <button
+        type="button"
+        onClick={() => inline.start(path, side, line)}
+        aria-label={`Comment on ${side === 1 ? 'new' : 'old'} line ${line} of ${path}`}
+        className="w-full px-2 text-right hover:bg-forge-500/15 hover:text-anvil-900 dark:hover:text-anvil-50"
+      >
+        {line}
+      </button>
+    </td>
+  )
+}
+
+/** The inline threads (and an open composer) under a row, if any. */
+function ThreadRow({ path, keys, colSpan }: { path: string; keys: readonly (readonly [0 | 1, number | null])[]; colSpan: number }): JSX.Element | null {
+  const inline = useContext(InlineCommentsContext)
+  if (inline === null) return null
+  const parts = keys.filter((k): k is readonly [0 | 1, number] => k[1] !== null).map(([side, line]) => inline.render(path, side, line)).filter((n) => n !== null)
+  if (parts.length === 0) return null
+  return (
+    <tr>
+      <td colSpan={colSpan} className="border-y border-anvil-200 bg-anvil-50 px-3 py-2 font-sans text-dense dark:border-anvil-800 dark:bg-anvil-900">
+        {parts}
+      </td>
+    </tr>
+  )
+}
+
 function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiffLine[] }): JSX.Element {
   const [limit, setLimit] = useState(LINE_PAGE)
+  const inline = useContext(InlineCommentsContext)
+  // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
+  // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
+  useEffect(() => {
+    if (inline === null) return
+    const keys = new Set<string>()
+    for (const l of lines.slice(0, limit)) {
+      if (l.kind === 'gap') continue
+      if (l.kind !== 'added' && l.oldLine !== null) keys.add(lineKey(path, 0, l.oldLine))
+      if (l.kind !== 'deleted' && l.newLine !== null) keys.add(lineKey(path, 1, l.newLine))
+    }
+    inline.report(path, keys)
+    return () => inline.report(path, null)
+  }, [inline, path, lines, limit])
+  const [prefs] = usePrefs()
+  const wide = useMinWidth(1024)
+  const split = wide && prefs.diffLayout === 'split'
+  const palette = prefs.palette
   const visible = lines.slice(0, limit)
+  const gap = (hidden: number, key: string, colSpan: number): JSX.Element => (
+    <tr key={key} className="bg-dash/5 text-anvil-600 dark:text-anvil-400">
+      <td colSpan={colSpan} className="px-3 py-0.5">
+        ⋯ {hidden} unchanged line{hidden === 1 ? '' : 's'}
+      </td>
+    </tr>
+  )
   return (
     <>
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse font-mono text-[12px] leading-5" aria-label={`Changes to ${path}`}>
+        <table
+          className={cn('w-full border-collapse font-mono text-[12px] leading-5', split && 'table-fixed')}
+          aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}
+          data-layout={split ? 'split' : 'unified'}
+        >
           <tbody>
-            {visible.map((line, index) => {
-              if (line.kind === 'gap') {
-                return (
-                  <tr key={`gap-${index}`} className="bg-dash/5 text-anvil-500 dark:text-anvil-400">
-                    <td colSpan={3} className="px-3 py-0.5">
-                      ⋯ {line.hidden} unchanged line{line.hidden === 1 ? '' : 's'}
-                    </td>
-                  </tr>
-                )
-              }
-              const marker = line.kind === 'added' ? '+' : line.kind === 'deleted' ? '-' : ' '
-              return (
-                <tr
-                  key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}
-                  className={cn(line.kind === 'added' && 'bg-verify/10', line.kind === 'deleted' && 'bg-danger/10')}
-                >
-                  <td className="w-12 select-none border-r border-anvil-100 px-2 text-right align-top text-anvil-400 dark:border-anvil-850">
-                    {line.oldLine ?? ''}
-                  </td>
-                  <td className="w-12 select-none border-r border-anvil-100 px-2 text-right align-top text-anvil-400 dark:border-anvil-850">
-                    {line.newLine ?? ''}
-                  </td>
-                  <td className="whitespace-pre px-3 text-anvil-800 dark:text-anvil-200">
-                    <span className="select-none text-anvil-400">{marker}</span>
-                    {line.text || ' '}
-                    {line.noNewline ? (
-                      <span className="ml-2 select-none font-sans text-anvil-400">(no newline at end of file)</span>
-                    ) : null}
-                  </td>
-                </tr>
-              )
-            })}
+            {split
+              ? splitRows(visible).map((row, index) => {
+                  if (row.kind === 'gap') return gap(row.hidden, `gap-${index}`, 4)
+                  const { left, right } = row
+                  const same = left === right
+                  return (
+                    <Fragment key={`${left?.oldLine ?? 'n'}-${right?.newLine ?? 'n'}-${index}`}>
+                      <tr>
+                        <LineNumber path={path} side={0} line={left?.oldLine ?? null} />
+                        <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : left?.kind ?? null, palette), left === null && 'bg-anvil-100 dark:bg-anvil-900')}>
+                          {left ? (
+                            <>
+                              <Marker kind={same ? 'context' : left.kind} palette={palette} /> <LineText line={left} />
+                            </>
+                          ) : null}
+                        </td>
+                        <LineNumber path={path} side={1} line={right?.newLine ?? null} />
+                        <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : right?.kind ?? null, palette), right === null && 'bg-anvil-100 dark:bg-anvil-900')}>
+                          {right ? (
+                            <>
+                              <Marker kind={same ? 'context' : right.kind} palette={palette} /> <LineText line={right} />
+                            </>
+                          ) : null}
+                        </td>
+                      </tr>
+                      <ThreadRow path={path} colSpan={4} keys={[[0, left?.oldLine ?? null], [1, right?.newLine ?? null]]} />
+                    </Fragment>
+                  )
+                })
+              : visible.map((line, index) => {
+                  if (line.kind === 'gap') return gap(line.hidden, `gap-${index}`, 3)
+                  return (
+                    <Fragment key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}>
+                      <tr className={lineTint(line.kind, palette)}>
+                        <LineNumber path={path} side={0} line={line.kind === 'added' ? null : line.oldLine} />
+                        <LineNumber path={path} side={1} line={line.kind === 'deleted' ? null : line.newLine} />
+                        <td className="whitespace-pre px-3 text-anvil-800 dark:text-anvil-200">
+                          <Marker kind={line.kind} palette={palette} />
+                          <LineText line={line} />
+                        </td>
+                      </tr>
+                      <ThreadRow path={path} colSpan={3} keys={[[0, line.oldLine], [1, line.kind === 'deleted' ? null : line.newLine]]} />
+                    </Fragment>
+                  )
+                })}
           </tbody>
         </table>
       </div>

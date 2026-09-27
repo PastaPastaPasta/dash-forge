@@ -12,6 +12,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
+  asIdentifierString,
+  byteFieldToHex,
   num,
   readIssue,
   readPull,
@@ -28,7 +30,8 @@ import {
 } from '../repo'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
-import { countApprovals, type Approvals, type Role } from '../rules/v2'
+import { anchorOf, countApprovals, groupReviewComments, type Anchor, type Approvals, type Role } from '../rules/v2'
+import { summarizeReviews, type ReviewSummary } from './review-fold'
 
 /** One comment on an issue/PR. */
 export interface CommentView {
@@ -36,6 +39,39 @@ export interface CommentView {
   readonly author: string
   readonly body: string
   readonly createdAt: number
+  /** The parent comment of a threaded reply (`replyTo`), or null. */
+  readonly replyTo: string | null
+  /**
+   * Where an inline comment points (`anchorOf` over the `path`/`line`/`startLine`/`side`/
+   * `commitOid` fields), or null for a general comment (a malformed anchor is null too).
+   */
+  readonly anchor: Anchor | null
+  /** The review this comment was submitted with (`reviewId`), or null. */
+  readonly reviewId: string | null
+}
+
+/** A comment document as a {@link CommentView}. */
+export function toCommentView(d: PlainDocument): CommentView {
+  const n = (f: string): number | null => {
+    const v = d[f]
+    return typeof v === 'number' ? v : null
+  }
+  const id = (f: string): string | null => asIdentifierString(d[f]) || null
+  return {
+    id: str(d, '$id'),
+    author: str(d, '$ownerId'),
+    body: str(d, 'body'),
+    createdAt: num(d, '$createdAt'),
+    replyTo: id('replyTo'),
+    anchor: anchorOf({
+      path: typeof d['path'] === 'string' ? d['path'] : null,
+      line: n('line'),
+      startLine: n('startLine'),
+      side: n('side'),
+      commitOid: byteFieldToHex(d, 'commitOid'),
+    }),
+    reviewId: id('reviewId'),
+  }
 }
 
 
@@ -63,12 +99,7 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
   return documents
     .filter((d) => wellFormed(repo, 'comment', d))
     .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
-    .map((d) => ({
-      id: str(d, '$id'),
-      author: str(d, '$ownerId'),
-      body: str(d, 'body'),
-      createdAt: num(d, '$createdAt'),
-    }))
+    .map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */
@@ -81,7 +112,18 @@ export type TimelineItem =
       /** An `authorEvent`: the author's own close/reopen (`forge-v2.md` §3). */
       readonly byAuthor?: boolean
     }
-  | { readonly kind: 'review'; readonly at: number; readonly review: ReviewView }
+  | {
+      readonly kind: 'review'
+      readonly at: number
+      readonly review: ReviewView
+      /**
+       * The comments submitted with the review (`groupReviewComments`: its `reviewId`, by its
+       * reviewer), oldest first. They show under the review, not on their own.
+       */
+      readonly comments: readonly CommentView[]
+      /** How many the review announced (`commentCount`, 0 when absent). */
+      readonly expected: number
+    }
 
 /** Find an issue or patch document by its `number` field, or null. */
 async function docByNumber(
@@ -125,12 +167,16 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
 export interface PullApprovals extends Approvals {
   /** Each counted reviewer's current role (null once revoked — then they do not count). */
   readonly roles: ReadonlyMap<string, Role | null>
+  /** Every reviewer's standing, counted or not, for the header (`summarizeReviews`). */
+  readonly summary: ReviewSummary
 }
 
 /** A full PR detail: the folded pull + its merged timeline. */
 export interface PullThread {
   readonly pull: PullView
   readonly timeline: TimelineItem[]
+  /** Every comment, for placing inline threads on the diff. */
+  readonly comments: readonly CommentView[]
   /**
    * The reviews that count on the current head (`countApprovals`). Null when the membership
    * could not be read.
@@ -156,8 +202,8 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
   ])
   const pull = await readPull(sdk, repo, doc, log)
   const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
-  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed)
-  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), approvals }
+  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed, pull.author)
+  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals }
 }
 
 /** A PR's counted approvals, or null when the membership could not be read. */
@@ -167,23 +213,24 @@ async function readApprovals(
   reviews: readonly ReviewView[],
   headOid: string,
   dismissed: ReadonlySet<string>,
+  author: string,
 ): Promise<PullApprovals | null> {
   try {
     const oracle = await readRoleOracle(sdk, repo)
-    const counted = countApprovals(
-      reviews.map((r) => ({
-        id: r.id,
-        reviewer: r.reviewer,
-        verdict: r.verdictCode,
-        commitOid: r.commitOid,
-        createdAt: r.createdAt,
-      })),
-      oracle,
-      headOid,
-      dismissed,
-    )
+    const input = reviews.map((r) => ({
+      id: r.id,
+      reviewer: r.reviewer,
+      verdict: r.verdictCode,
+      commitOid: r.commitOid,
+      createdAt: r.createdAt,
+    }))
+    const counted = countApprovals(input, oracle, headOid, dismissed)
     const reviewers = [...counted.approvers, ...counted.changesRequested]
-    return { ...counted, roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])) }
+    return {
+      ...counted,
+      roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
+      summary: summarizeReviews(input, oracle, headOid, author, dismissed),
+    }
   } catch {
     return null
   }
@@ -198,8 +245,11 @@ export async function readThread(sdk: EvoSDK, repo: RepoRef, targetId: string): 
   return mergeTimeline(comments, log.events, log.authorEvents, [])
 }
 
-/** Interleave a thread's parts by `($createdAt, $id)`. */
-function mergeTimeline(
+/**
+ * Interleave a thread's parts by `($createdAt, $id)`. A review's own comments
+ * (`groupReviewComments`) are nested under it; every other comment stands alone.
+ */
+export function mergeTimeline(
   comments: readonly CommentView[],
   events: readonly Event[],
   authorEvents: readonly Event[],
@@ -212,11 +262,19 @@ function mergeTimeline(
     event: e,
     ...(byAuthor ? { byAuthor } : {}),
   })
+  const byId = new Map(comments.map((c) => [c.id, c]))
+  const asReviewComments = comments.map((c) => ({ id: c.id, owner: c.author, reviewId: c.reviewId, createdAt: c.createdAt }))
+  const grouped = new Set<string>()
+  const reviewItems = reviews.map((r) => {
+    const group = groupReviewComments(r.id, r.reviewer, r.commentCount, asReviewComments)
+    for (const id of group.comments) grouped.add(id)
+    return { kind: 'review' as const, at: r.createdAt, id: r.id, review: r, comments: group.comments.flatMap((id) => byId.get(id) ?? []), expected: group.expected }
+  })
   const items: (TimelineItem & { readonly id: string })[] = [
-    ...comments.map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
+    ...comments.filter((c) => !grouped.has(c.id)).map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
-    ...reviews.map((r) => ({ kind: 'review' as const, at: r.createdAt, id: r.id, review: r })),
+    ...reviewItems,
   ]
   items.sort((a, b) => compareKey({ id: a.id, createdAt: a.at }, { id: b.id, createdAt: b.at }))
   return items

@@ -130,30 +130,36 @@ export function diffTextLines(
   before: string,
   after: string,
   limits: DiffLimits = DEFAULT_DIFF_LIMITS,
+  options: { readonly ignoreWhitespace?: boolean } = {},
 ): TextDiffLine[] | null {
   const oldLines = splitLines(before)
   const newLines = splitLines(after)
+  // Ignoring whitespace (`git diff -w`) compares lines with all whitespace removed; the lines
+  // shown keep their text (the new side's, for an unchanged line).
+  const key = options.ignoreWhitespace ? (l: string): string => l.replace(/\s+/g, '') : (l: string): string => l
+  const oldKeys = options.ignoreWhitespace ? oldLines.map(key) : oldLines
+  const newKeys = options.ignoreWhitespace ? newLines.map(key) : newLines
 
   let prefix = 0
   while (
-    prefix < oldLines.length &&
-    prefix < newLines.length &&
-    oldLines[prefix] === newLines[prefix]
+    prefix < oldKeys.length &&
+    prefix < newKeys.length &&
+    oldKeys[prefix] === newKeys[prefix]
   ) {
     prefix += 1
   }
   let suffix = 0
   while (
-    suffix < oldLines.length - prefix &&
-    suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+    suffix < oldKeys.length - prefix &&
+    suffix < newKeys.length - prefix &&
+    oldKeys[oldKeys.length - 1 - suffix] === newKeys[newKeys.length - 1 - suffix]
   ) {
     suffix += 1
   }
 
   const ops = myers(
-    oldLines.slice(prefix, oldLines.length - suffix),
-    newLines.slice(prefix, newLines.length - suffix),
+    oldKeys.slice(prefix, oldKeys.length - suffix),
+    newKeys.slice(prefix, newKeys.length - suffix),
     limits,
   )
   if (ops === null) return null
@@ -162,7 +168,7 @@ export function diffTextLines(
   let o = 0
   let w = 0
   const context = (): void => {
-    lines.push(toLine('context', oldLines[o] as string, o + 1, w + 1))
+    lines.push(toLine('context', (options.ignoreWhitespace ? newLines[w] : oldLines[o]) as string, o + 1, w + 1))
     o += 1
     w += 1
   }
@@ -219,4 +225,40 @@ export function compactDiffLines(
   }
   if (hidden > 0) out.push({ kind: 'gap', hidden })
   return out
+}
+
+/** One row of a side-by-side diff: the old line on the left, the new one on the right. */
+export type SplitRow =
+  | { readonly kind: 'gap'; readonly hidden: number }
+  | { readonly kind: 'pair'; readonly left: TextDiffLine | null; readonly right: TextDiffLine | null }
+
+/**
+ * Pair a compact diff for side-by-side display: context lines sit on both sides, and each run
+ * of deletions is laid beside the additions that follow it, row by row (the longer side runs
+ * on with blanks opposite).
+ */
+export function splitRows(lines: readonly CompactDiffLine[]): SplitRow[] {
+  const rows: SplitRow[] = []
+  let dels: TextDiffLine[] = []
+  let adds: TextDiffLine[] = []
+  const flush = (): void => {
+    for (let i = 0; i < Math.max(dels.length, adds.length); i++) {
+      rows.push({ kind: 'pair', left: dels[i] ?? null, right: adds[i] ?? null })
+    }
+    dels = []
+    adds = []
+  }
+  for (const line of lines) {
+    if (line.kind === 'deleted') {
+      if (adds.length > 0) flush()
+      dels.push(line)
+    } else if (line.kind === 'added') {
+      adds.push(line)
+    } else {
+      flush()
+      rows.push(line.kind === 'gap' ? line : { kind: 'pair', left: line, right: line })
+    }
+  }
+  flush()
+  return rows
 }

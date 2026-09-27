@@ -15,11 +15,11 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
-import { useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
-import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type PullComparison, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
@@ -75,7 +75,7 @@ function originalDiffUrl(value: string): string | null {
 }
 
 /** A side that did not yield a reader: what to say about it, and what the user can do. */
-interface SideProblem {
+export interface SideProblem {
   readonly message: string
   readonly action?: { readonly label: string; readonly run: () => void }
 }
@@ -153,8 +153,8 @@ function Unavailable({
   )
 }
 
-export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JSX.Element {
-  const baseRepo = home.repo
+/** The base-branch tips a PR's diff (and merge) start from, honoring a `retarget`. */
+export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string; baseTipOid: string; baseOidAtOpen: string } {
   // Diff against the branch the PR targets now: an authorized `retarget` moves it off the
   // patch's original `baseRefName`. `baseTipOid` / `baseOidAtOpen` were read from the
   // original ref's history, so they only apply while the PR still targets that ref.
@@ -163,12 +163,29 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   // The base branch's tip as every other view resolves it (validity- and protection-checked
   // by resolveRef), falling back to the newest raw update when the branch is not listed.
   const resolvedBase = home.branches.find((b) => b.refName === baseRefName)
-  const baseTipOid = tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid)
-  const baseOidAtOpen = retargeted ? '' : pull.baseOidAtOpen
+  return {
+    baseRefName,
+    baseTipOid: tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid),
+    baseOidAtOpen: retargeted ? '' : pull.baseOidAtOpen,
+  }
+}
+
+/** Both sides' readers for a comparison of `baseRepo` with the repo `sourceId` names. */
+export interface ComparisonSides {
+  readonly sides: DiffSides | null
+  readonly problems: readonly SideProblem[]
+  /** A side is still resolving; its progress label. */
+  readonly waiting: string | null
+  /** Changes when a side's reader does (the published index, or an in-browser clone). */
+  readonly sidesKey: string
+  readonly crossRepo: boolean
+}
+
+export function useComparisonSides(baseRepo: RepoRef, sourceId: string): ComparisonSides {
   // An empty source pointer only comes from a malformed document; the base repo is then the
   // only place the head could be.
   const baseKey = repoKey(baseRepo)
-  const sourceKey = pull.sourceId || baseKey
+  const sourceKey = sourceId || baseKey
   const crossRepo = sourceKey !== baseKey
   const source = useSourceRepo(baseRepo, crossRepo ? sourceKey : null)
 
@@ -204,33 +221,86 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   const readerKey = (state: BrowseReaderState): string =>
     state.kind === 'ready' ? (state.local ? 'local' : 'index') : 'none'
   const sidesKey = `${readerKey(baseState)}/${readerKey(headState)}`
+  const waiting =
+    baseState.kind === 'loading'
+      ? baseState.label
+      : headState.kind === 'loading'
+        ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
+        : null
+  return { sides, problems, waiting, sidesKey, crossRepo }
+}
 
-  const waiting = baseState.kind === 'loading' || headState.kind === 'loading'
+/** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */
+export interface ComparisonSpec {
+  readonly baseTipOid: string
+  readonly baseOidAtOpen: string
+  readonly headOid: string
+  readonly merged: boolean
+  readonly imported: boolean
+  readonly importedUrl: string
+}
+
+export function PullDiff({
+  pull,
+  home,
+  wrap,
+}: {
+  pull: PullView
+  home: RepoHome
+  /** Wrap the rendered diff (the PR page adds inline comment threads). */
+  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
+}): JSX.Element {
+  const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
+  return (
+    <ComparisonDiff
+      baseRepo={home.repo}
+      sourceId={pull.sourceId}
+      spec={{ baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl }}
+      noHead="This PR does not record a head commit."
+      {...(wrap ? { wrap } : {})}
+    />
+  )
+}
+
+/** A head compared with its merge base against a base branch, across two repos. */
+export function ComparisonDiff({
+  baseRepo,
+  sourceId,
+  spec,
+  noHead,
+  wrap,
+  onSides,
+}: {
+  baseRepo: RepoRef
+  sourceId: string
+  spec: ComparisonSpec
+  noHead: string
+  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
+  /** Told the readers the comparison uses, once both sides resolve (e.g. to read the head commit). */
+  onSides?: (sides: DiffSides | null) => void
+}): JSX.Element {
+  const { sides, problems, waiting, sidesKey, crossRepo } = useComparisonSides(baseRepo, sourceId)
+  useEffect(() => {
+    onSides?.(sides)
+  }, [onSides, sides])
+  const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
+  const { baseTipOid, baseOidAtOpen } = spec
   const { data, loading, error, reload } = useAsync(
     () =>
       loadPullComparison(sides as DiffSides, {
         baseTipOid,
         baseOidAtOpen,
-        headOid: pull.headOid,
-        merged: pull.state.merged,
-        imported: pull.imported,
+        headOid: spec.headOid,
+        merged: spec.merged,
+        imported: spec.imported,
       }),
-    [
-      baseKey,
-      sourceKey,
-      sidesKey,
-      baseTipOid,
-      baseOidAtOpen,
-      pull.headOid,
-      pull.state.merged,
-      pull.imported,
-    ],
-    { enabled: !waiting && sides !== null && pull.headOid !== '' },
+    [repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
+    { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
 
   const range =
     data !== null ? (
-      <div className="flex items-center gap-2 text-[12px] text-anvil-400">
+      <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         {data.comparedBaseOid ? <Oid value={data.comparedBaseOid} chars={7} copyable={false} /> : <span>(empty tree)</span>}
         <span>…</span>
         <Oid value={pull.headOid} chars={7} copyable={false} />
@@ -240,16 +310,15 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
   if (pull.headOid === '') {
     return (
       <Frame>
-        <Unavailable title="Diff unavailable" message="This PR does not record a head commit." />
+        <Unavailable title="Diff unavailable" message={noHead} />
       </Frame>
     )
   }
-  if (waiting) {
-    const label = baseState.kind === 'loading' ? baseState.label : headState.kind === 'loading' ? headState.label : ''
+  if (waiting !== null) {
     return (
       <Frame>
         <div className="rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
-          <Spinner label={`${crossRepo && baseState.kind !== 'loading' ? 'Source repo: ' : ''}${label}`} />
+          <Spinner label={waiting} />
         </div>
       </Frame>
     )
@@ -319,12 +388,17 @@ export function PullDiff({ pull, home }: { pull: PullView; home: RepoHome }): JS
           {data.comparisonNote}
         </p>
       ) : null}
-      <DiffView
-        key={`${data.comparedBaseOid}..${pull.headOid}@${sidesKey}`}
-        sides={data.sides}
-        changes={data.changes}
-        truncated={data.truncated}
-      />
+      {(() => {
+        const diff = (
+          <DiffView
+            key={`${data.comparedBaseOid}..${pull.headOid}@${sidesKey}`}
+            sides={data.sides}
+            changes={data.changes}
+            truncated={data.truncated}
+          />
+        )
+        return wrap ? wrap(data, diff) : diff
+      })()}
     </Frame>
   )
 }

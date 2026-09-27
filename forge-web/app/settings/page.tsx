@@ -15,6 +15,7 @@ import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
 import { KeysPanel } from '@/components/keys-panel'
 import { GatewaysField } from '@/components/gateways-field'
+import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
@@ -91,6 +92,11 @@ export default function SettingsPage(): JSX.Element {
           <Link href="/settings/storage" className="mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Storage settings →
           </Link>
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Diffs</h2>
+          <DisplayPrefsPanel />
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
