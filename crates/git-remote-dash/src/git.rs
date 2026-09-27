@@ -89,10 +89,12 @@ pub fn config_get(key: &str) -> Option<String> {
 /// the repository's refs already reach: git's own post-fetch connectivity check
 /// (`rev-list --objects --stdin --not --all`) failing on a missing or bad object. Anything
 /// else (git not runnable, an unsafe rev, another error) is `false`: git's own check after
-/// the fetch then decides, rather than a pack being blamed for it. `repo`: that
-/// repository's directory (tests), else the one git spawned the helper for. A missing
-/// object is never fetched: a lazy fetch here would re-enter this helper.
-fn objects_missing(oids: &[String], repo: Option<&Path>) -> bool {
+/// the fetch then decides, rather than a pack being blamed for it. Like git's own check, it
+/// takes the history local refs already reach as complete. `partial`: allow objects a
+/// promisor remote promised (`--missing=allow-promisor`). `repo`: that repository's
+/// directory (tests), else the one git spawned the helper for. A missing object is never
+/// fetched: a lazy fetch here would re-enter this helper.
+fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool {
     if oids.iter().any(|oid| ensure_safe_rev(oid).is_err()) {
         return false;
     }
@@ -107,15 +109,12 @@ fn objects_missing(oids: &[String], repo: Option<&Path>) -> bool {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE");
     }
+    cmd.args(["rev-list", "--objects", "--quiet"]);
+    if partial {
+        cmd.arg("--missing=allow-promisor");
+    }
     let child = cmd
-        .args([
-            "rev-list",
-            "--objects",
-            "--quiet",
-            "--stdin",
-            "--not",
-            "--all",
-        ])
+        .args(["--stdin", "--not", "--all"])
         .env("GIT_NO_LAZY_FETCH", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -193,10 +192,11 @@ impl LocalRepo {
 
     /// Whether the local odb provably lacks an object reachable from `oids`: git's own
     /// post-fetch connectivity check, run first so a gap can be explained
-    /// ([`objects_missing`]). `false` in a partial clone, whose filtered-out objects are
-    /// missing by design (git's own check knows which are promised; this one cannot tell).
+    /// ([`objects_missing`]). In a partial clone, objects its filter left out are missing by
+    /// design, so only an object nothing promised counts (`--missing=allow-promisor`).
     pub fn history_has_gaps(oids: &[String]) -> bool {
-        config_get("extensions.partialclone").is_none() && objects_missing(oids, None)
+        let partial = config_get("extensions.partialclone").is_some();
+        objects_missing(oids, None, partial)
     }
 
     /// Whether commit `ancestor` is an ancestor of (or equal to) commit `descendant`.
@@ -446,17 +446,25 @@ mod tests {
         let blob = git(d, &["rev-parse", "HEAD:a.txt"]);
         // Unreferenced, as a fetched commit is before git writes the ref.
         git(d, &["update-ref", "-d", "refs/heads/main"]);
-        assert!(!objects_missing(std::slice::from_ref(&tip), Some(d)));
+        assert!(!objects_missing(std::slice::from_ref(&tip), Some(d), false));
         let obj = d.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
         std::fs::remove_file(obj).unwrap();
-        assert!(objects_missing(&[tip], Some(d)), "the blob is gone");
         assert!(
-            !objects_missing(&["-bad".to_string()], Some(d)),
+            objects_missing(std::slice::from_ref(&tip), Some(d), false),
+            "the blob is gone"
+        );
+        // In partial-clone mode an object no promisor promised is still a gap.
+        assert!(
+            objects_missing(std::slice::from_ref(&tip), Some(d), true),
+            "not promised"
+        );
+        assert!(
+            !objects_missing(&["-bad".to_string()], Some(d), false),
             "an unsafe rev is not reported as a missing object"
         );
         let not_a_repo = tempfile::tempdir().unwrap();
         assert!(
-            !objects_missing(&[blob], Some(not_a_repo.path())),
+            !objects_missing(&[blob], Some(not_a_repo.path()), false),
             "a git failure that is not a missing object is left to git's own check"
         );
     }

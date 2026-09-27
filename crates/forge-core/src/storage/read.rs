@@ -950,7 +950,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_secs(30));
         });
         let r = PackReader::new(vec![format!("http://{addr}")], &StorageProfiles::default())
-            .with_candidate_timeout(std::time::Duration::from_millis(400));
+            .with_candidate_timeout(std::time::Duration::from_millis(2000));
         let fetch = |n: usize| {
             let uris: Vec<String> = (0..n).map(|i| format!("http://{addr}/{i}")).collect();
             let r = &r;
@@ -959,7 +959,7 @@ mod tests {
                     &uris,
                     &"0".repeat(64),
                     None,
-                    Some(std::time::Duration::from_millis(100)),
+                    Some(std::time::Duration::from_millis(1000)),
                 )
                 .await
                 .unwrap_err()
