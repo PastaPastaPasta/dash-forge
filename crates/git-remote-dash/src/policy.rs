@@ -26,10 +26,7 @@ use forge_core::user_error::{codes, dash, UserError};
 
 use crate::git::LocalRepo;
 
-/// Serialized size assumed for a `packManifest` document before its `uris` field.
-const MANIFEST_BASE_BYTES: u64 = 220;
-/// Serialized size assumed for a `refUpdate` document.
-const REF_UPDATE_BYTES: u64 = 200;
+use forge_core::cost::git_doc_sizes::{MANIFEST_BASE_BYTES, REF_UPDATE_BYTES};
 /// Per-object row size of a browse-index fragment (36-byte rows + fanout overhead).
 const LOCATOR_ROW_BYTES: u64 = 36;
 /// Fixed browse-index header (256-entry u32 fanout + header).

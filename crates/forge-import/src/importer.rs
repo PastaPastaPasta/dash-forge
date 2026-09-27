@@ -22,7 +22,7 @@ use forge_core::repo::credits_to_dash;
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::github::{GithubClient, GithubRepoRef};
-use crate::gitsync::{GitPusher, PushReport, Refs};
+use crate::gitsync::{GitPusher, PackStorage, PushReport, Refs};
 use crate::sink::Ledger;
 use crate::source_github::{self, Classes};
 use crate::state::{self, SyncState};
@@ -146,12 +146,26 @@ async fn run_inner<'a>(
         (true, false) => vec![Refs::Code],
         _ => Vec::new(),
     };
+    // Where the helper will put the packs: the same git config it reads.
+    let (storage, fallback) = if pushes.is_empty() {
+        (PackStorage::Platform, false)
+    } else {
+        let policy = crate::gitsync::storage_policy(&work).context("reading the storage policy")?;
+        let storage = if policy.is_platform_only() {
+            PackStorage::Platform
+        } else {
+            PackStorage::resolve(&policy, &forge_core::storage::StorageProfiles::load()?)
+                .context("reading the storage policy")?
+        };
+        (storage, policy.platform_fallback)
+    };
     let git_pusher = |url: String, refs: &Refs| GitPusher {
         git_dir: work.clone(),
         url,
         key: cfg.key.clone().unwrap_or_default(),
         network: cfg.network.clone(),
         refs: refs.clone(),
+        fallback,
     };
     let mut push_estimates = Vec::with_capacity(pushes.len());
     let mut heads_unpriced = None;
@@ -163,7 +177,7 @@ async fn run_inner<'a>(
             // A new repo (or no identity to ask the helper with): build the pack and price
             // what the storage policy writes on chain (all of it on Platform, or only the
             // manifests and refs when your own storage holds the pack).
-            crate::gitsync::estimate_fresh(&work, refs)
+            crate::gitsync::estimate_fresh(&work, refs, storage)
         };
         push_estimates.push(match (refs, est) {
             (_, Ok(e)) => e,

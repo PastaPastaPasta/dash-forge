@@ -381,8 +381,8 @@ impl Helper {
         specs: &[PushSpec],
         options: &OptionState,
     ) -> Result<Vec<PushOutcome>> {
-        // `HEAD` is derived from the default branch, never stored: a push to it (a delete
-        // from `git push --mirror`, or `HEAD:HEAD`) writes nothing and is never charged.
+        // `HEAD` is derived from the default branch, never stored: a push that names it
+        // (`:HEAD`, `HEAD:HEAD`) writes nothing and is never charged.
         let (head, refs): (Vec<PushSpec>, Vec<PushSpec>) =
             specs.iter().cloned().partition(|s| is_head(&s.dst));
         let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
@@ -652,8 +652,9 @@ fn is_head(dst: &str) -> bool {
 }
 
 /// The answer to a push to `HEAD`, which writes nothing: a delete (what `git push --mirror`
-/// sends for a `HEAD` it saw advertised) is `ok`, since `HEAD` is not a stored ref; any
-/// update is refused, since only the repository's default branch moves it.
+/// would send, were `HEAD` advertised to it; [`list_lines`] no longer does) is `ok`, since
+/// `HEAD` is not a stored ref; any update is refused, since only the repository's default
+/// branch moves it.
 fn head_outcome(spec: PushSpec) -> PushOutcome {
     if spec.src.is_empty() {
         PushOutcome::Ok(spec.dst)
@@ -748,8 +749,7 @@ impl PushContext<'_> {
     }
 }
 
-/// Rough JSON length of the manifest `uris` each external target adds (public URL + locator).
-const URIS_JSON_PER_TARGET: u64 = 180;
+use forge_core::cost::git_doc_sizes::URIS_PER_TARGET as URIS_JSON_PER_TARGET;
 
 /// Build one self-contained pack for `want_tips` (excluding remote tips already local as
 /// thin-pack bases), store it according to the repo's storage policy, and record the
@@ -1700,7 +1700,7 @@ mod tests {
         assert!(push.iter().all(|l| !l.ends_with(" HEAD")), "{push:?}");
     }
 
-    /// A push to `HEAD` (an older client's `--mirror` delete, or `HEAD:HEAD`) is answered
+    /// A push that names `HEAD` anyway (an explicit `:HEAD` or `HEAD:HEAD`) is answered
     /// without a write: a delete is a no-op `ok`, an update is refused.
     #[test]
     fn a_push_to_head_writes_nothing() {

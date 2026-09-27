@@ -12,8 +12,9 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-# The CLIs' shared stderr logger (`logging`), which hides the SDK's recovered-error noise.
-tracing-subscriber.workspace = true
+# The CLIs' shared stderr logger (`logging`, feature `cli-logging`), which hides the SDK's
+# recovered-error noise.
+tracing-subscriber = { workspace = true, optional = true }
 
 # pack pipeline (git object/pack handling, hashing, compression)
 sha2 = "0.10"
@@ -82,6 +83,8 @@ keyring = "4"
 openssl = { version = "0.10", optional = true }
 
 [features]
+# The CLIs' shared stderr logger (`forge_core::logging`).
+cli-logging = ["dep:tracing-subscriber"]
 # Fault-injection environment hooks for the e2e harness (DASH_FORGE_KILL_AFTER_CHUNK).
 # Off in normal builds; enabled through git-remote-dash's `test-hooks`.
 test-hooks = []
@@ -101,3 +104,7 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "logging_init"
+required-features = ["cli-logging"]

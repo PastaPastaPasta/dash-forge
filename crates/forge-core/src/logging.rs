@@ -75,11 +75,19 @@ impl Visit for Fields {
 /// Drops [`is_recovered_sdk_noise`] events unless `show` (debug logging was asked for).
 struct QuietRecovered {
     show: bool,
+    /// The inner env filter's most verbose level, reported as this filter's own. Without
+    /// it the outermost filter hints "anything" and the global max level becomes TRACE, so
+    /// every SDK, tonic and h2 trace site is evaluated (and its spans built) for nothing.
+    max_level: Option<tracing::level_filters::LevelFilter>,
 }
 
 impl<S> Filter<S> for QuietRecovered {
     fn enabled(&self, _meta: &Metadata<'_>, _cx: &Context<'_, S>) -> bool {
         true
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        self.max_level
     }
 
     fn event_enabled(&self, event: &Event<'_>, _cx: &Context<'_, S>) -> bool {
@@ -115,10 +123,11 @@ where
     W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
 {
     let (filter, show) = env_filter(spec);
+    let max_level = filter.max_level_hint();
     tracing_subscriber::fmt::layer()
         .with_writer(writer)
         .with_filter(filter)
-        .with_filter(QuietRecovered { show })
+        .with_filter(QuietRecovered { show, max_level })
 }
 
 /// Install the CLI logger on stderr: `RUST_LOG`, default `warn`, recovered SDK noise
@@ -206,6 +215,25 @@ mod tests {
         assert_eq!(out.lines().count(), 7, "{out}");
         // A bad RUST_LOG falls back to warn, as before.
         assert_eq!(run(Some("=[")).lines().count(), 3);
+    }
+
+    /// The logger must not raise the max level past what `RUST_LOG` asks for: an outermost
+    /// filter without a hint made it TRACE, so every trace site of the SDK, tonic and h2 was
+    /// evaluated in every CLI. (`LevelFilter::current()` after [`init_cli`] is checked in
+    /// tests/logging_init.rs, its own process: it is global, and other tests here set
+    /// debug subscribers.)
+    #[test]
+    fn the_max_level_is_the_env_filters() {
+        use tracing::level_filters::LevelFilter;
+        use tracing::Subscriber as _;
+        for (spec, want) in [
+            (None, LevelFilter::WARN),
+            (Some("info"), LevelFilter::INFO),
+            (Some("warn,forge_import::cost=debug"), LevelFilter::DEBUG),
+        ] {
+            let sub = tracing_subscriber::registry().with(layer(spec, Buf::default()));
+            assert_eq!(sub.max_level_hint(), Some(want), "{spec:?}");
+        }
     }
 
     #[test]

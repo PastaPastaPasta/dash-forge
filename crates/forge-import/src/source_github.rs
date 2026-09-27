@@ -126,7 +126,11 @@ pub fn collect(
     // threads, one request each: on a repository with thousands of items that is a few
     // requests instead of every comment it ever had. A full run reads the repository-wide
     // listings instead (100 per request beats a request per item).
-    let (mut items, truncated) = if limit > 0 {
+    // PRs only, and no `since` (the pulls listing cannot filter by update time): the pulls
+    // listing, so an issue-heavy repository's issues are not paged through.
+    let (mut items, truncated) = if limit > 0 && classes.prs && !classes.issues && since.is_none() {
+        gh.first_pulls(limit)?
+    } else if limit > 0 {
         gh.first_issues(since, limit, keep)?
     } else {
         (gh.issues(since)?.into_iter().filter(keep).collect(), false)
@@ -439,6 +443,10 @@ mod tests {
             if let Ok(n) = rest.parse::<u64>() {
                 return Ok(serde_json::to_vec(&pull_json(n))?);
             }
+            let issue = path.strip_prefix("repos/o/r/issues/").unwrap_or("");
+            if let Ok(n) = issue.parse::<u64>() {
+                return Ok(serde_json::to_vec(&issue_json(n))?);
+            }
             Ok(serde_json::to_vec(&Self::answer(path))?)
         }
 
@@ -491,6 +499,21 @@ mod tests {
         assert_eq!(out.targets[2].kind, TargetKind::Patch);
         assert!(!log.borrow().iter().any(repo_wide));
         assert!(log.borrow().iter().any(|p| p.ends_with("pulls/3")));
+    }
+
+    /// `--sync prs --limit`: the pulls listing, never the issue listing.
+    #[test]
+    fn a_limited_prs_only_run_reads_the_pulls_listing() {
+        let (gh, log) = big_repo();
+        let out = collect(&gh, &src(), Classes::parse("prs").unwrap(), None, 2).unwrap();
+        assert_eq!(
+            out.targets.iter().map(|t| t.number).collect::<Vec<_>>(),
+            [3, 6]
+        );
+        assert!(out.truncated);
+        assert!(out.targets.iter().all(|t| t.kind == TargetKind::Patch));
+        let log = log.borrow();
+        assert!(!log.iter().any(|p| p.contains("issues?")), "{log:#?}");
     }
 
     /// Without `--limit`, the repository-wide listings stay: one paged read per kind beats

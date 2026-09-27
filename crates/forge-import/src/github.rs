@@ -420,6 +420,37 @@ impl GithubClient {
         Ok((out, false))
     }
 
+    /// The first `want` pull requests (oldest created first) as issue records, for a
+    /// `--limit` run that mirrors PRs only: the pulls listing skips the issues, which on an
+    /// issue-heavy repository the issue listing would page through. Whether there were more.
+    pub fn first_pulls(&self, want: usize) -> Result<(Vec<GhIssue>, bool)> {
+        let path = self.path("pulls?state=all&sort=created&direction=asc&per_page=100");
+        let mut numbers = Vec::new();
+        for page in 1.. {
+            let batch: Vec<GhPull> =
+                self.get(&format!("{path}&page={page}"), "the pull request listing")?;
+            let last_page = batch.len() < 100;
+            for p in batch {
+                if numbers.len() == want {
+                    return Ok((self.issues_numbered(&numbers)?, true));
+                }
+                numbers.push(p.number);
+            }
+            if last_page {
+                break;
+            }
+        }
+        Ok((self.issues_numbered(&numbers)?, false))
+    }
+
+    /// The issue records (title, body, author, labels, state) of these numbers.
+    fn issues_numbered(&self, numbers: &[u64]) -> Result<Vec<GhIssue>> {
+        numbers
+            .iter()
+            .map(|n| self.get(&self.path(&format!("issues/{n}")), &format!("#{n}")))
+            .collect()
+    }
+
     /// The numbers of every open PR (their heads are what the mirror pushes).
     pub fn open_pulls(&self) -> Result<Vec<u64>> {
         Ok(self

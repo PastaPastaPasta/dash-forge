@@ -69,6 +69,18 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
     CostEstimate { deposit, burn }
 }
 
+/// Git-data document sizes a push is priced by (git-remote-dash's pre-flight estimate and
+/// forge-import's price of a first push both use these, so the two agree).
+pub mod git_doc_sizes {
+    /// Serialized size assumed for a `packManifest` document before its `uris` field.
+    pub const MANIFEST_BASE_BYTES: u64 = 220;
+    /// Rough JSON length of the manifest `uris` each external target adds (public URL +
+    /// locator).
+    pub const URIS_PER_TARGET: u64 = 180;
+    /// Serialized size assumed for a `refUpdate` document.
+    pub const REF_UPDATE_BYTES: u64 = 200;
+}
+
 /// Estimate the split `{deposit, burn}` cost of writing a single `bytes`-byte
 /// document. Convenience alias for [`estimate_document_storage`] matching the
 /// `CostEngine::estimate` name used in the PRDs and `economics.md` §2.
