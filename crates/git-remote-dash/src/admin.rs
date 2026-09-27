@@ -9,7 +9,10 @@ use tokio::runtime::Runtime;
 
 use forge_core::create::{create_repo as create_v2, default_journal_dir, CreateRepoOpts};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{PlatformClient, QueryOrder};
+use forge_core::platform::{
+    decode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
+    QueryOrder,
+};
 use forge_core::repo::{credits_to_dash, RepoService};
 use forge_core::resolve::resolve_named;
 
@@ -43,6 +46,10 @@ pub fn run(rt: &Runtime, args: &[String]) -> Result<()> {
                 _ => bail!("usage: git-remote-dash --dump-refs <owner> <repo>"),
             }
         }
+        Some("--dump-collab") => match (args.get(1), args.get(2)) {
+            (Some(o), Some(r)) => rt.block_on(dump_collab(o, r)),
+            _ => bail!("usage: git-remote-dash --dump-collab <owner> <repo>"),
+        },
         Some("--dump-pack-heads") => match (args.get(1), args.get(2)) {
             (Some(o), Some(r)) => rt.block_on(dump_pack_heads(o, r)),
             _ => bail!("usage: git-remote-dash --dump-pack-heads <owner> <repo>"),
@@ -150,6 +157,76 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Dump the raw issue / patch / comment / review documents of a repo, as stored (diagnostic:
+/// in a private repo every free-text property is absent and `enc` carries it). Comments and
+/// reviews are found through their issue or patch (they are indexed by target, not by repo).
+async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
+    let (client, _bridge) = connect().await?;
+    let repo = resolve_named(&client, owner, repo).await?;
+    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let scope = repo.scope()?;
+    let print = |doc_type: &str, docs: &[FetchedDocument]| {
+        for d in docs {
+            let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
+                .iter()
+                .filter_map(|f| d.field_str(f).map(|v| format!("{f}={v:?}")))
+                .collect();
+            println!(
+                "  type={doc_type} id={} epoch={} enc={} baseRefNameHash={} plaintext=[{}]",
+                d.id,
+                d.field_u64("epoch")
+                    .map_or_else(|| "-".into(), |e| e.to_string()),
+                d.field_bytes("enc").map_or(0, |e| e.len()),
+                d.field_hex("baseRefNameHash").unwrap_or_default(),
+                text.join(" ")
+            );
+        }
+    };
+    for doc_type in ["issue", "patch"] {
+        let docs = client
+            .query_all_documents(
+                &collab,
+                doc_type,
+                &scope.filters([]),
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        print(doc_type, &docs);
+        for d in &docs {
+            print(
+                "comment",
+                &by_target(&client, &collab, "comment", "targetId", &d.id).await?,
+            );
+            if doc_type == "patch" {
+                print(
+                    "review",
+                    &by_target(&client, &collab, "review", "patchId", &d.id).await?,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every `doc_type` document whose `field` names `id` (the `target` / `patch` indexes).
+async fn by_target(
+    client: &PlatformClient,
+    collab: &LoadedContract,
+    doc_type: &str,
+    field: &str,
+    id: &str,
+) -> Result<Vec<FetchedDocument>> {
+    let id = decode_identifier(id)?;
+    Ok(client
+        .query_all_documents(
+            collab,
+            doc_type,
+            &[QueryFilter::eq(field, FieldValue::identifier(id))],
+            &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
+        )
+        .await?)
 }
 
 /// Print the first bytes of every stored git pack, as stored (diagnostic: a private repo's

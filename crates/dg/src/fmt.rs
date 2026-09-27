@@ -5,6 +5,7 @@
 //! `--json` structs. Keeping them pure keeps them unit-testable without a network.
 
 use forge_core::cost::CREDITS_PER_DASH;
+use forge_core::rules::v2::Visibility;
 use serde_json::{json, Value};
 
 /// The fallback DASH/USD price used for the *secondary* USD display when no live price
@@ -105,6 +106,19 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
         "balanceCredits": credits,
         "balanceDash": dash,
     })
+}
+
+/// The line a list or view prints for documents it hid: malformed ones, and in a private
+/// repository also those this reader cannot open (another epoch, written late, not sealed for
+/// the repo; docs/security/private-repos.md §9 "Reading").
+pub fn hidden_note(repo: &forge_core::scope::RepoRef, hidden: usize) -> String {
+    if repo.visibility == Visibility::Private {
+        format!(
+            "({hidden} document(s) hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)"
+        )
+    } else {
+        format!("({hidden} malformed document(s) hidden)")
+    }
 }
 
 #[cfg(test)]

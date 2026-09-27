@@ -679,10 +679,18 @@ impl Keyring {
             return Opened::Malformed;
         };
         let opened = open_content(&self.ctx, &header, &enc);
+        // judged by the newest write, as the late rule is: an edit re-seals the text
+        let written = match (
+            header.created_at_block_height,
+            header.updated_at_block_height,
+        ) {
+            (Some(c), Some(u)) => Some(c.max(u)),
+            (c, u) => c.or(u),
+        };
         let earlier = matches!(
             opened,
             Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
-        ) && self.earlier_use(header.epoch, header.created_at_block_height);
+        ) && self.earlier_use(header.epoch, written);
         if earlier {
             Opened::Unreadable(Unreadable::EarlierUse)
         } else {
@@ -840,6 +848,7 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
     let mut h = DocHeader::new(kind, owner, epoch);
     h.id = platform::decode_identifier(&d.id).ok();
     h.created_at_block_height = d.created_at_block_height;
+    h.updated_at_block_height = d.updated_at_block_height;
     match kind {
         DocKind::Issue => h.number = u32::try_from(d.field_u64("number")?).ok(),
         DocKind::Patch => {
@@ -868,6 +877,9 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
             Some("not encrypted for this repo")
         }
         Opened::Unreadable(Unreadable::Late) => Some("written after the key was rotated"),
+        Opened::Unreadable(Unreadable::LateEdit) => {
+            Some("edited after its author was removed (the original text is gone)")
+        }
         Opened::Unreadable(Unreadable::EarlierUse) => {
             Some("sealed under an earlier use of its key epoch")
         }
@@ -2139,6 +2151,7 @@ mod tests {
             owner_id: platform::encode_identifier([0x22; 32]),
             created_at: Some(10),
             created_at_block_height: Some(5),
+            updated_at_block_height: None,
             fields: kind_fields
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))

@@ -1,0 +1,34 @@
+{
+  "name": "issue_imported",
+  "description": "an imported issue: imported.author and imported.url are sealed (TLV 13, 14; they name the source org, repo and people); imported.createdAt stays plaintext, alone in its object.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "issue",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "number": 12,
+      "title": "Imported",
+      "body": "from GitHub",
+      "imported": {
+        "author": "octocat",
+        "createdAt": 1700000000,
+        "url": "https://github.com/acme/secret/issues/12"
+      }
+    }
+  },
+  "expected": {
+    "props": {
+      "number": 12,
+      "imported": {
+        "createdAt": 1700000000
+      },
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1f7027bbae42830b2b1970b1c0209b7cd6705f810c8647f23b9b825bf6feb19e72014485d2694b637a3129d02e45a67ab2d4a74f06e5d470a4ab6332be8eab539a6b65ddf7bc3727d417d933399b9c0d24bea6a45e9ca6f936fabbc36c93"
+    }
+  }
+}

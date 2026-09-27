@@ -322,13 +322,18 @@ pub fn confirm(yes: bool, credits: u64) -> Result<()> {
 pub async fn dry_collab<'a>(
     client: &'a PlatformClient,
     existing: Option<RepoRef>,
-    signer_id: Option<String>,
+    signer: Option<&'a Signer>,
     src: &SrcCollab,
 ) -> Result<Ledger<'a>> {
+    // A private destination is read with the signer's keys (its documents are sealed).
+    let collab = match signer {
+        Some(s) => Collab::new(client, &s.identity, &s.bridge),
+        None => Collab::reader(client),
+    };
     let mut dry = Sink::new(
-        Collab::reader(client),
+        collab,
         existing,
-        Ledger::new(client, signer_id, true, Budget::new(None)),
+        Ledger::new(client, signer.map(Signer::id), true, Budget::new(None)),
     );
     dry.sync(src).await?;
     Ok(dry.ledger)
@@ -346,12 +351,25 @@ pub async fn write_collab<'a>(
     outcome: &mut Outcome<'a>,
 ) -> Result<()> {
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
-    let skip_releases =
-        role == Role::Writer && src.releases.as_ref().is_some_and(|r| !r.is_empty());
-    if skip_releases {
+    let has_releases = src.releases.as_ref().is_some_and(|r| !r.is_empty());
+    let private = repo.visibility == forge_core::rules::v2::Visibility::Private;
+    let skip_releases = has_releases && (role == Role::Writer || private);
+    if has_releases && private {
+        ledger.warn(
+            "releases were not mirrored: the destination is private, and release notes and \
+             assets are not encrypted in this release",
+        );
+    } else if skip_releases {
         ledger.warn(
             "releases were not mirrored: the mirror identity is a writer, and only maintainers \
              publish releases (`dg collab add … --role maintainer`)",
+        );
+    }
+    if private {
+        ledger.warn(
+            "the destination is private: issue, PR, comment and review text and their source \
+             URLs and authors are encrypted; labels, event values and numbers stay readable \
+             (docs/security/private-repos.md §7)",
         );
     }
     let mut sink = Sink::new(

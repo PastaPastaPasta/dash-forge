@@ -15,6 +15,7 @@ use super::keys::{sha256, EpochKey, EpochKeys};
 use super::pack::{self, PackHeader};
 use super::tlv::Fields;
 use super::{wrap, PrivateError};
+use crate::platform::FieldValue;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +60,10 @@ fn recode_ids(value: &Value, key: Option<&str>, f: &dyn Fn(&str) -> String) -> V
 }
 
 fn h32(s: &str) -> [u8; 32] {
+    hex::decode(s).unwrap().try_into().unwrap()
+}
+
+fn nonce12(s: &str) -> [u8; 12] {
     hex::decode(s).unwrap().try_into().unwrap()
 }
 
@@ -122,6 +127,66 @@ struct RefHashIn {
     key: String,
     epoch: u32,
     ref_name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CollabSealIn {
+    repo_id: String,
+    key: String,
+    epoch: u32,
+    owner_id: String,
+    doc_type: super::DocKind,
+    nonce: String,
+    props: BTreeMap<String, Value>,
+}
+
+/// Hex-encoded byte properties of a collaboration document (ids, oids, hashes, `enc`).
+const COLLAB_BYTES: &[&str] = &[
+    "targetId",
+    "patchId",
+    "sourceRepoId",
+    "replyTo",
+    "reviewId",
+    "headOid",
+    "commitOid",
+    "patchManifestHash",
+    "baseRefNameHash",
+    "sourceRefNameHash",
+    "enc",
+];
+
+fn collab_field(name: &str, v: &Value) -> FieldValue {
+    match v {
+        Value::String(h) if COLLAB_BYTES.contains(&name) => {
+            FieldValue::bytes(hex::decode(h).expect("hex"))
+        }
+        Value::String(t) => FieldValue::text(t.clone()),
+        Value::Bool(b) => FieldValue::boolean(*b),
+        // `imported.createdAt` is a full-width integer, as `Imported::to_field` writes it
+        Value::Number(n) if name == "createdAt" => FieldValue::uint64(n.as_u64().expect("u64")),
+        Value::Number(n) => FieldValue::integer(n.as_u64().expect("u64")),
+        Value::Object(m) => FieldValue::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), collab_field(k, v)))
+                .collect(),
+        ),
+        other => panic!("unexpected collab property {name}: {other}"),
+    }
+}
+
+fn collab_json(v: &FieldValue) -> Value {
+    match v {
+        FieldValue::Bytes(b) => json!(hex::encode(b)),
+        FieldValue::Bytes32(b) | FieldValue::Identifier(b) => json!(hex::encode(b)),
+        FieldValue::Text(t) => json!(t),
+        FieldValue::Bool(b) => json!(b),
+        FieldValue::Integer(n) | FieldValue::Uint64(n) => json!(n),
+        FieldValue::Object(m) => {
+            Value::Object(m.iter().map(|(k, v)| (k.clone(), collab_json(v))).collect())
+        }
+        other @ FieldValue::List(_) => panic!("unexpected sealed property {other:?}"),
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -346,7 +411,7 @@ fn run(v: &Vector) -> Value {
         "private_doc_seal" => {
             let i: DocSealIn = input(v);
             let keys = EpochKeys::derive(&h32(&i.repo_id), i.doc.epoch, &key(&i.key));
-            let nonce: [u8; 12] = hex::decode(&i.nonce).unwrap().try_into().unwrap();
+            let nonce = nonce12(&i.nonce);
             let anchor = i.anchor.unwrap_or(false);
             match doc::seal_with_nonce(&keys, &i.doc, &i.fields, anchor, nonce) {
                 Ok(enc) => {
@@ -359,6 +424,34 @@ fn run(v: &Vector) -> Value {
                     })
                 }
                 Err(e) => error_json(&e),
+            }
+        }
+        "private_collab_seal" => {
+            let i: CollabSealIn = input(v);
+            let keys = EpochKeys::derive(&h32(&i.repo_id), i.epoch, &key(&i.key));
+            let nonce = nonce12(&i.nonce);
+            let owner = h32(&i.owner_id);
+            let props = i
+                .props
+                .into_iter()
+                .map(|(k, val)| {
+                    let f = collab_field(&k, &val);
+                    (k, f)
+                })
+                .collect();
+            match crate::collab::private::seal_props_with_nonce(
+                &keys, i.doc_type, owner, props, nonce,
+            ) {
+                Ok(sealed) => json!({
+                    "props": sealed
+                        .iter()
+                        .map(|(k, val)| (k.clone(), collab_json(val)))
+                        .collect::<serde_json::Map<_, _>>(),
+                }),
+                Err(e) if crate::collab::private::is_too_large(&e) => {
+                    json!({ "error": "tooLarge" })
+                }
+                Err(e) => panic!("vector `{}`: {e}", v.name),
             }
         }
         "private_doc_open" => {
@@ -651,6 +744,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 181, "ran {ran} private vectors, expected 181+");
+    assert!(ran >= 205, "ran {ran} private vectors, expected 205+");
     println!("private conformance: {ran} vectors green");
 }

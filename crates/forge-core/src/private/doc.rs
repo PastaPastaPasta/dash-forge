@@ -69,6 +69,10 @@ pub struct DocHeader {
     /// `$createdAtBlockHeight` (the late-content rule).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_block_height: Option<u64>,
+    /// `$updatedAtBlockHeight` of a replaceable document (issue, patch, comment): an edit is
+    /// judged by the late-content rule too (§8.2 "edits are judged too").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_block_height: Option<u64>,
 }
 
 impl DocHeader {
@@ -90,6 +94,7 @@ impl DocHeader {
             source_ref_name_hash: None,
             id: None,
             created_at_block_height: None,
+            updated_at_block_height: None,
         }
     }
 
@@ -249,6 +254,11 @@ pub enum Unreadable {
     BadTag,
     /// Written under a superseded epoch after the grace period by a non-member (§8.2).
     Late,
+    /// Created in time, but **edited** after the grace period by an author who is no longer a
+    /// member (§8.2 "edits are judged too"). A replace keeps only the latest text, so the
+    /// original cannot be shown instead: the reader says so rather than let history vanish
+    /// silently.
+    LateEdit,
     /// Sealed under an earlier use of this epoch number (one that stopped existing when its
     /// anchor's maintainer was removed, §5.3) and older than the number's current anchor: a
     /// different key, never this repository's current content. Set by the reading layer, not by
@@ -400,14 +410,18 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
         Opened::Readable(fields) => {
             // step 7; `$createdAtBlockHeight` is required by the schema (§13), and without it
             // the late rule cannot be judged
-            let Some(height) = header.created_at_block_height else {
+            let Some(created) = header.created_at_block_height else {
                 return Opened::Malformed;
             };
-            if ctx.is_late(header.epoch, height, &header.owner_id) {
-                Opened::Unreadable(Unreadable::Late)
-            } else {
-                Opened::Readable(fields)
+            // an edit re-seals the text: it is as late as its last write (§8.2)
+            if ctx.is_late(header.epoch, created, &header.owner_id) {
+                return Opened::Unreadable(Unreadable::Late);
             }
+            let edited = header.updated_at_block_height.filter(|u| *u > created);
+            if edited.is_some_and(|u| ctx.is_late(header.epoch, u, &header.owner_id)) {
+                return Opened::Unreadable(Unreadable::LateEdit);
+            }
+            Opened::Readable(fields)
         }
         other => other,
     }

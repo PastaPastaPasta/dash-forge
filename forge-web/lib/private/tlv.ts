@@ -42,6 +42,10 @@ export interface DocFields {
    * burned run that is not burned, so the chain steps over the run (§5.3). Secret: wipe after import.
    */
   readonly skipEpochKey?: Uint8Array
+  /** Tag 13 (issue, patch, comment, review): an imported document's `imported.author` (§7). */
+  readonly importedAuthor?: string
+  /** Tag 14 (issue, patch, comment, review): an imported document's `imported.url` (§7). */
+  readonly importedUrl?: string
 }
 
 /** A §4.3 violation. */
@@ -65,9 +69,20 @@ export const TAG = {
   path: 10,
   burned: 11,
   skipEpochKey: 12,
+  importedAuthor: 13,
+  importedUrl: 14,
 } as const
 
-type TextField = 'title' | 'body' | 'refName' | 'baseRefName' | 'sourceRefName' | 'defaultBranch' | 'path'
+type TextField =
+  | 'title'
+  | 'body'
+  | 'refName'
+  | 'baseRefName'
+  | 'sourceRefName'
+  | 'defaultBranch'
+  | 'path'
+  | 'importedAuthor'
+  | 'importedUrl'
 
 interface TextSpec {
   readonly field: TextField | 'protectedPattern'
@@ -86,20 +101,22 @@ const TEXT: Readonly<Record<number, TextSpec>> = {
   6: { field: 'defaultBranch', minOne: true, maxBytes: 255 },
   7: { field: 'protectedPattern', minOne: true, maxChars: 100 },
   10: { field: 'path', minOne: false, maxChars: 500, maxBytes: 1000 },
+  13: { field: 'importedAuthor', minOne: true, maxChars: 120, maxBytes: 480 },
+  14: { field: 'importedUrl', minOne: true, maxChars: 300, maxBytes: 300 },
 }
 
 const TAGS_OF: Readonly<Record<PrivateDocType, readonly number[]>> = {
-  issue: [1, 2],
-  patch: [1, 2, 4, 5],
-  comment: [2, 10],
-  review: [2],
+  issue: [1, 2, 13, 14],
+  patch: [1, 2, 4, 5, 13, 14],
+  comment: [2, 10, 13, 14],
+  review: [2, 13, 14],
   refUpdate: [3],
   protectedRefUpdate: [3],
   config: [6, 7, 8, 9, 11, 12],
 }
 
 const MAX_PATTERNS = 8
-const FIRST_RESERVED = 13
+const FIRST_RESERVED = 15
 const FIRST_EXTENSION = 64
 
 /** What the parser needs to know about the document besides its bytes. */
@@ -247,6 +264,8 @@ export function encodeTlv(fields: DocFields): Bytes {
   text(TAG.path, fields.path)
   if (fields.burned === true) parts.push(record(TAG.burned, new Uint8Array([0x01])))
   if (fields.skipEpochKey !== undefined) parts.push(record(TAG.skipEpochKey, fields.skipEpochKey))
+  text(TAG.importedAuthor, fields.importedAuthor)
+  text(TAG.importedUrl, fields.importedUrl)
   return concat(...parts)
 }
 
