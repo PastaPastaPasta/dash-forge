@@ -1597,6 +1597,82 @@ impl<'a> Collab<'a> {
         )))
     }
 
+    // --- writes: edits (document replace) --------------------------------------------------
+
+    /// Edit an issue's or PR's title and/or body, as its author (consensus admits a replace only
+    /// from the owner; `number`, and a PR's refs and head, are immutable or untouched). An empty
+    /// `body` removes it. Returns whether an edit landed (`false`: it already read that way,
+    /// nothing was signed). Refused for a private repo: a plaintext edit would publish the
+    /// content next to its sealed `enc` (the sealed edit path comes with private-repo PR 2).
+    pub async fn update_target(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<bool> {
+        let mut changes = BTreeMap::new();
+        if let Some(t) = title {
+            check_title(t)?;
+            changes.insert("title".to_string(), Some(FieldValue::text(t)));
+        }
+        if let Some(b) = body {
+            let what = match target.kind {
+                TargetKind::Issue => "issue body",
+                TargetKind::Patch => "PR body",
+            };
+            check_text(what, b, 5120, 5120)?;
+            changes.insert(
+                "body".to_string(),
+                (!b.is_empty()).then(|| FieldValue::text(b)),
+            );
+        }
+        if changes.is_empty() {
+            return Err(Error::Config(
+                "nothing to change: pass a new title or body".into(),
+            ));
+        }
+        self.require_author(
+            &target.author,
+            &format!("edit {} #{}", target.kind.noun(), target.number),
+        )?;
+        let collab = self.collab_contract(repo).await?;
+        self.engine()?
+            .replace_document(&collab, target.kind.doc_type(), &target.id, &changes, None)
+            .await
+    }
+
+    /// Edit one of the signer's comments (the body only: the anchor, thread and review are
+    /// immutable). Refused for a private repo, like [`Self::update_target`].
+    pub async fn update_comment(
+        &self,
+        repo: &RepoRef,
+        comment_id: &str,
+        body: &str,
+    ) -> Result<bool> {
+        if body.trim().is_empty() {
+            return Err(Error::Config("a comment needs a body".into()));
+        }
+        check_text("comment body", body, 5120, 5120)?;
+        let collab = self.collab_contract(repo).await?;
+        let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
+        self.engine()?
+            .replace_document(&collab, DOC_COMMENT, comment_id, &changes, None)
+            .await
+    }
+
+    /// Refuse, before anything is signed, an edit of a document the signer does not own.
+    fn require_author(&self, author: &str, action: &str) -> Result<()> {
+        if self.signer_id()? == author {
+            return Ok(());
+        }
+        Err(Error::NotPermitted {
+            action: action.to_string(),
+            reason: "you are not its author; consensus admits an edit from the author only".into(),
+            needs: "owner".into(),
+        })
+    }
+
     // --- writes: comments, reviews ----------------------------------------------------------
 
     /// Comment on an issue or PR. Un-gated.

@@ -535,16 +535,30 @@ impl PlatformClient {
         document_type: &str,
         document_id: &str,
     ) -> Result<Option<FetchedDocument>> {
+        Ok(self
+            .fetch_raw_document(contract, document_type, document_id)
+            .await?
+            .as_ref()
+            .map(FetchedDocument::from_document))
+    }
+
+    /// The SDK document itself (revision and system fields included): what a replace
+    /// rebuilds. Crate-private: the SDK type does not cross this module's boundary.
+    async fn fetch_raw_document(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+    ) -> Result<Option<Document>> {
         let doc_id = parse_id(document_id, "document id")?;
         let query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
             .with_document_id(&doc_id);
-        let found = retry_transient_read("fetch document", || {
+        retry_transient_read("fetch document", || {
             Document::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
-        Ok(found.as_ref().map(FetchedDocument::from_document))
+        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
     }
 
     /// Query **one page** of `document_type` in `contract`, applying `filters` (AND-ed
@@ -970,6 +984,8 @@ pub enum WriteOp {
     Create,
     /// A document delete.
     Delete,
+    /// A document replace (an edit by the owner; the revision is bumped).
+    Replace,
 }
 
 /// A signed, ready-to-broadcast document write — built and signed exactly once.
@@ -1511,6 +1527,145 @@ impl<'a> WriteEngine<'a> {
             signed: intent.transition.clone(),
         })
         .await
+    }
+
+    /// Build and sign, exactly once, a document-replace transition: the stored document `current`
+    /// with `changes` merged over its properties (`None` removes a property) and its revision
+    /// bumped. Consensus admits a replace only from the document's owner, only on a mutable
+    /// type, and only when every `immutable` property is unchanged. The replace carries the
+    /// whole property map, so the untouched fields are re-sent as they were read. See
+    /// [`Self::prepare_create`] for the sign-once rationale.
+    async fn prepare_replace(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        current: &Document,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<PreparedWrite> {
+        use dash_sdk::dpp::document::DocumentV0Setters;
+
+        let doc_type_ref = contract
+            .0
+            .document_type_for_name(document_type)
+            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let mut document = current.clone();
+        for (k, v) in changes {
+            match v {
+                Some(v) => {
+                    document
+                        .properties_mut()
+                        .insert(k.clone(), v.clone().into_value());
+                }
+                None => {
+                    document.properties_mut().remove(k);
+                }
+            }
+        }
+        document.bump_revision();
+        let nonce = self
+            .client
+            .sdk()
+            .get_identity_contract_nonce(self.owner_id, contract.0.id(), true, None)
+            .await
+            .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
+        let state_transition = BatchTransition::new_document_replacement_transition_from_document(
+            document,
+            doc_type_ref,
+            &self.signing_key,
+            nonce,
+            0,
+            None,
+            &self.signer,
+            self.client.sdk().version(),
+            None,
+        )
+        .await
+        .map_err(|e| Error::Platform(format!("signing replace transition: {e}")))?;
+        Ok(PreparedWrite {
+            document_id: current.id().to_string(Encoding::Base58),
+            document_type: document_type.to_string(),
+            op: WriteOp::Replace,
+            signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
+        })
+    }
+
+    /// Replace one of the signer's documents: read it, merge `changes` over it (`None` removes a
+    /// property), bump the revision and broadcast. Idempotent: when the stored document already
+    /// holds every change nothing is signed and `Ok(false)` is returned; `Ok(true)` means an
+    /// edit landed. A replace is refused before signing when the document is missing
+    /// ([`Error::NotFound`]) or belongs to someone else ([`Error::NotPermitted`]). When
+    /// `expected_revision` is given and the stored revision differs, it is refused as a
+    /// concurrent edit (the caller re-reads and asks again).
+    pub async fn replace_document(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+        expected_revision: Option<u64>,
+    ) -> Result<bool> {
+        let holds = |doc: &Document| {
+            changes.iter().all(|(k, v)| {
+                let stored = doc.properties().get(k).and_then(FieldValue::from_value);
+                stored == *v
+            })
+        };
+        for _ in 0..2 {
+            let Some(current) = self
+                .client
+                .fetch_raw_document(contract, document_type, document_id)
+                .await?
+            else {
+                return Err(Error::NotFound);
+            };
+            if current.owner_id() != self.owner_id {
+                return Err(Error::NotPermitted {
+                    action: format!("edit {document_type} {document_id}"),
+                    reason: "only its author can edit it (consensus admits a replace from the owner only)".into(),
+                    needs: "owner".into(),
+                });
+            }
+            if holds(&current) {
+                return Ok(false);
+            }
+            let revision = current.revision().unwrap_or(INITIAL_REVISION);
+            if let Some(expected) = expected_revision {
+                if expected != revision {
+                    return Err(Error::Config(format!(
+                        "this {document_type} changed since it was read (revision {revision}, \
+                         expected {expected}); read it again and retry the edit"
+                    )));
+                }
+            }
+            let prepared = self
+                .prepare_replace(contract, document_type, &current, changes)
+                .await?;
+            let edited = || async {
+                Ok(self
+                    .client
+                    .fetch_raw_document(contract, document_type, document_id)
+                    .await?
+                    .is_some_and(|d| d.revision() > Some(revision) && holds(&d)))
+            };
+            match self.execute(&prepared).await {
+                // Ours landed, or another write by this identity took the nonce: re-read.
+                Ok(BroadcastOutcome::NonceConsumed) => {
+                    if poll_confirm(&edited).await? {
+                        return Ok(true);
+                    }
+                }
+                Ok(_) => return Ok(true),
+                // A refusal after an earlier attempt of these very bytes landed unanswered (a
+                // revision already bumped): the edit is done when the stored document says so.
+                Err(e) => {
+                    if edited().await.unwrap_or(false) {
+                        return Ok(true);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err(Error::Nonce)
     }
 
     /// Convenience: prepare + execute a document delete.
