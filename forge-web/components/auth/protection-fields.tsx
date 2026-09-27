@@ -119,3 +119,42 @@ export function ErrorBox({ error }: { error: string | null }): JSX.Element | nul
     </div>
   )
 }
+
+/**
+ * Before a key is bound to the forge contract group: runs the on-chain group check and, when the
+ * group holds Forge contracts this build does not know (a newer revision the deployer added),
+ * lists them so the user sees everything the key will be able to sign for. A refusal is shown
+ * too; registering repeats the check and fails with the same reason.
+ */
+export function GroupNotice({ check }: { check: () => Promise<{ notice: string | null }> }): JSX.Element | null {
+  const [text, setText] = useState<{ kind: 'notice' | 'refusal'; body: string } | null>(null)
+  const checkRef = useRef(check)
+  useEffect(() => {
+    let cancelled = false
+    checkRef
+      .current()
+      .then((r) => !cancelled && setText(r.notice ? { kind: 'notice', body: r.notice } : null))
+      .catch((e: unknown) => {
+        const body = errorMessage(e)
+        // Only a trust refusal belongs here; a network hiccup is reported when registering.
+        if (!cancelled && body.startsWith('refusing to bind')) setText({ kind: 'refusal', body })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  if (!text) return null
+  return (
+    <div
+      role={text.kind === 'refusal' ? 'alert' : 'note'}
+      data-testid="group-notice"
+      className={
+        text.kind === 'refusal'
+          ? 'rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] text-danger break-words'
+          : 'rounded-md border border-anvil-200 px-3 py-2 text-[12px] text-anvil-600 break-words dark:border-anvil-800 dark:text-anvil-300'
+      }
+    >
+      {text.body}
+    </div>
+  )
+}

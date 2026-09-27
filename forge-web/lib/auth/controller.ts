@@ -28,7 +28,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
-import type { ForgeIds } from '../deployments'
+import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
+import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
@@ -178,10 +179,19 @@ export class AuthController {
     return v2.group
   }
 
-  /** forge-core and forge-collab, which the group must hold. */
-  forgeContracts(): readonly string[] {
-    const v2 = NETWORKS[this.network].v2
-    return v2 ? [v2.core, v2.collab] : []
+  /** The group's trust root as the bundled deployment pins it (`groupTrust`). */
+  groupTrust(): GroupTrust {
+    const trust = groupTrust(DEPLOYMENTS[NETWORKS[this.network].key])
+    if (!trust) throw new Error(`forge-v2 is not deployed on ${NETWORKS[this.network].key}: limited keys need its contract group`)
+    return trust
+  }
+
+  /**
+   * Check the group on chain before offering to bind a key to it: throws a refusal, or returns
+   * the members this build does not know (shown on the key-creation screen).
+   */
+  async checkGroup(): Promise<GroupCheck> {
+    return assertGroupHolds(await this.getSdk(), this.group(), this.groupTrust())
   }
 
   /** Whether this network supports limited keys (protocol 14 + a forge-v2 group). */
@@ -391,7 +401,7 @@ export class AuthController {
         group: this.group(),
         ...(previous ? { replaceKeyId: previous.keyId } : {}),
         ...(held.length ? { disableHeld: held } : {}),
-        contracts: this.forgeContracts(),
+        trust: this.groupTrust(),
         ...(request ? { request } : {}),
       })
       masterWif = null
