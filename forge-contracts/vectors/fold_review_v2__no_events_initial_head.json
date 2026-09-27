@@ -1,0 +1,21 @@
+{
+  "name": "no_events_initial_head",
+  "description": "With no events the head is the patch's headOid and nothing else is set.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

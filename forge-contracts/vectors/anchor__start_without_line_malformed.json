@@ -1,0 +1,12 @@
+{
+  "name": "start_without_line_malformed",
+  "description": "A startLine without a line is malformed.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "startLine": 2,
+    "side": 1
+  },
+  "expected": null
+}

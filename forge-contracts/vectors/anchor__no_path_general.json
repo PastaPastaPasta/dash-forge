@@ -1,0 +1,12 @@
+{
+  "name": "no_path_general",
+  "description": "No path (or an empty one): a general comment, whatever else is set.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "",
+    "line": 5,
+    "side": 1
+  },
+  "expected": null
+}

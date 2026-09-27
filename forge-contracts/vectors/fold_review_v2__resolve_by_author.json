@@ -1,0 +1,37 @@
+{
+  "name": "resolve_by_author",
+  "description": "The PR author resolves a thread (authorEvent kind 11): resolved.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "threadResolve",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100,
+        "refId": "C1"
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": [
+      "C1",
+      "C2"
+    ]
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [
+      "C1"
+    ],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

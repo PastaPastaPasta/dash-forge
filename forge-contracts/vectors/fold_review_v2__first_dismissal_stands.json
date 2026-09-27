@@ -1,0 +1,49 @@
+{
+  "name": "first_dismissal_stands",
+  "description": "Two dismissals of one review: the first (by createdAt) is the recorded one.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "reviewDismiss",
+        "actor": "m2",
+        "value": "second",
+        "oid": null,
+        "createdAt": 200,
+        "refId": "R1"
+      },
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "reviewDismiss",
+        "actor": "m1",
+        "value": "first",
+        "oid": null,
+        "createdAt": 100,
+        "refId": "R1"
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [
+      {
+        "reviewId": "R1",
+        "actor": "m1",
+        "reason": "first",
+        "createdAt": 100
+      }
+    ],
+    "milestone": null
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "zero_and_overflow_ignored",
+  "description": "#0 and numbers past u32 are ignored.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "fixes #0 fixes #4294967296 fixes #4294967295"
+  },
+  "expected": [
+    4294967295
+  ]
+}

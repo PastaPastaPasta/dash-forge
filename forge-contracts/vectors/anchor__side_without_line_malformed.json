@@ -1,0 +1,11 @@
+{
+  "name": "side_without_line_malformed",
+  "description": "A side without a line is malformed.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "side": 1
+  },
+  "expected": null
+}

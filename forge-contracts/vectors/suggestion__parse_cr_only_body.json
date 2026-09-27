@@ -1,0 +1,14 @@
+{
+  "name": "parse_cr_only_body",
+  "description": "A body with lone CR line endings (old Mac) parses as if they were LF.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\rx\ry\r```\r"
+  },
+  "expected": [
+    {
+      "text": "x\ny"
+    }
+  ]
+}

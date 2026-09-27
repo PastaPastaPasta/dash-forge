@@ -278,8 +278,13 @@ pub struct TargetInfo {
     pub title: String,
     /// The base ref (PRs only).
     pub base_ref: String,
-    /// The head oid (PRs only, hex).
+    /// The PR's current head (PRs only, hex): the newest `headUpdate` seen
+    /// ([`TargetInfo::apply_head_update`]), else the head it was opened with.
     pub head_oid: String,
+    /// The `($createdAt, $id)` of the `headUpdate` that set [`Self::head_oid`], if any: a head
+    /// update applies only when newer, so the order the event and authorEvent streams are read
+    /// in cannot move the head back (forge-core `fold_pr_review_v2` orders both as one log).
+    pub head_set_by: Option<(u64, String)>,
     /// `baseRefNameHash` (PRs only, hex): the ref a merge must land on.
     pub base_ref_hash: String,
     /// Where this target's comment and review streams start.
@@ -298,6 +303,7 @@ impl TargetInfo {
             title: d.field_str("title").unwrap_or_default(),
             base_ref: String::new(),
             head_oid: String::new(),
+            head_set_by: None,
             base_ref_hash: String::new(),
             baseline,
             last_activity: d.created_at.unwrap_or(0),
@@ -313,10 +319,35 @@ impl TargetInfo {
             title: d.field_str("title").unwrap_or_default(),
             base_ref: d.field_str("baseRefName").unwrap_or_default(),
             head_oid: d.field_hex("headOid").unwrap_or_default(),
+            head_set_by: None,
             base_ref_hash: d.field_hex("baseRefNameHash").unwrap_or_default(),
             baseline,
             last_activity: d.created_at.unwrap_or(0),
         }
+    }
+
+    /// Apply a `headUpdate` (kind 16) document — from a member (`event`) or the PR's author
+    /// (`authorEvent`, the author path of forge's review fold) — whose `oid` is a 40/64-hex
+    /// commit id (forge-core `fold_pr_review_v2`) and which is newer by `($createdAt, $id)` than
+    /// the update that set the current head. Returns the new head when it moved. Any order of
+    /// application gives the fold's head.
+    pub fn apply_head_update(&mut self, d: &FetchedDocument, author_path: bool) -> Option<String> {
+        if !self.is_pr
+            || d.field_u64("kind") != Some(16)
+            || (author_path && d.owner_id != self.author)
+        {
+            return None;
+        }
+        let oid = d.field_hex("oid").filter(|o| matches!(o.len(), 40 | 64))?;
+        let key = (d.created_at.unwrap_or(0), d.id.clone());
+        if self.head_set_by.as_ref().is_some_and(|k| *k >= key) {
+            return None;
+        }
+        self.head_set_by = Some(key);
+        (oid != self.head_oid).then(|| {
+            self.head_oid.clone_from(&oid);
+            oid
+        })
     }
 
     fn issue_obj(&self, id: &str, open: bool) -> IssueObj {
@@ -517,6 +548,8 @@ fn event_action(
         8 if is_pr => ("edited", true, false),
         9 if is_pr => ("converted_to_draft", true, false),
         10 if is_pr => ("ready_for_review", true, false),
+        // The PR's head moved (forge `headUpdate`): GitHub's `synchronize`.
+        16 if is_pr => ("synchronize", true, false),
         _ => return None,
     })
 }
@@ -605,6 +638,7 @@ mod tests {
                 String::new()
             },
             head_oid: if is_pr { "cafe".into() } else { String::new() },
+            head_set_by: None,
             base_ref_hash: String::new(),
             baseline: Baseline::Beginning,
             last_activity: 0,
@@ -780,6 +814,58 @@ mod tests {
         let e = translate_check_run(&meta(), &d).unwrap();
         assert_eq!(e.payload["check_run"]["head_sha"], "dead");
         assert_eq!(e.payload["action"], "completed");
+    }
+
+    #[test]
+    fn head_updates_move_the_pr_head_and_synchronize() {
+        // Each update later than the last (the feed's order), with its own id.
+        let clock = std::cell::Cell::new(1000u64);
+        let head = |owner: &str, oid: &str| {
+            clock.set(clock.get() + 1);
+            let mut d = doc(
+                &format!("h{}", clock.get()),
+                owner,
+                vec![
+                    ("targetId", FieldValue::identifier([9; 32])),
+                    ("kind", FieldValue::integer(16)),
+                    ("oid", FieldValue::bytes(hex::decode(oid).unwrap())),
+                ],
+            );
+            d.created_at = Some(clock.get());
+            d
+        };
+        let new = "ab".repeat(20);
+        let mut t = target(true, 3);
+        // The author's authorEvent moves it; a stranger's authorEvent does not.
+        assert_eq!(t.apply_head_update(&head("MALLORY", &new), true), None);
+        assert_eq!(
+            t.apply_head_update(&head("AUTH", &new), true),
+            Some(new.clone())
+        );
+        assert_eq!(t.head_oid, new);
+        // A member's event moves it too; the same head again is no move.
+        let newer = "cd".repeat(20);
+        assert_eq!(
+            t.apply_head_update(&head("MEMBER", &newer), false),
+            Some(newer.clone())
+        );
+        assert_eq!(t.apply_head_update(&head("MEMBER", &newer), false), None);
+        // A short oid is inert (forge's fold), as is an issue target.
+        assert_eq!(t.apply_head_update(&head("MEMBER", "abcd"), false), None);
+        assert_eq!(
+            target(false, 1).apply_head_update(&head("AUTH", &new), true),
+            None
+        );
+        // An older update read later (another stream) does not move the head back.
+        let mut older = head("MEMBER", &"ef".repeat(20));
+        older.created_at = Some(1);
+        assert_eq!(t.apply_head_update(&older, false), None);
+        assert_eq!(t.head_oid, newer);
+        // The webhook: `synchronize` with the new head.
+        let prs = targets([9; 32], t);
+        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs, false).unwrap();
+        assert_eq!(e.payload["action"], "synchronize");
+        assert_eq!(e.payload["pull_request"]["head"]["sha"], newer);
     }
 
     #[test]

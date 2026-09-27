@@ -1,0 +1,32 @@
+{
+  "name": "stranger_ready_inert",
+  "description": "A ready authorEvent by someone who is not the PR's author is inert.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "ready",
+        "actor": "mallory",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "B",
+    "ancestry": [],
+    "initialDraft": true
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": true,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

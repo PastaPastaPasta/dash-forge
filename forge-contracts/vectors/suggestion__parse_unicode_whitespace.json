@@ -1,0 +1,14 @@
+{
+  "name": "parse_unicode_whitespace",
+  "description": "Only ASCII space, tab and CR count as whitespace around a fence: U+0085 (NEL) and U+FEFF (BOM) after 'suggestion' make the info word something else, and a closing fence followed by U+0085 or U+FEFF is not a closing fence (it is content).",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\nnel info\n```\n```suggestion﻿\nbom info\n```\n```suggestion \t\r\nascii ok\n```\n```﻿\n```"
+  },
+  "expected": [
+    {
+      "text": "ascii ok\n```\n```﻿"
+    }
+  ]
+}

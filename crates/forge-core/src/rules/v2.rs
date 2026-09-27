@@ -3,8 +3,9 @@
 //!
 //! Consensus does most of the authorization: an `event` exists only if its
 //! writer held a `maintainer`/`writer` document for the repo when it was written, and an
-//! `authorEvent` exists only if its writer authored the target and its kind is close or
-//! reopen. What is left client-side, and must be identical in every client, is here:
+//! `authorEvent` exists only if its writer authored the target and its kind is one the author
+//! may use (close, reopen, draft, ready, thread resolve/unresolve, review request/remove, head
+//! update). What is left client-side, and must be identical in every client, is here:
 //!
 //! * [`RoleOracle`] — membership as the set of *current* `maintainer`/`writer` documents
 //!   (a revoked member's document is deleted, so it is simply absent).
@@ -13,7 +14,10 @@
 //! * [`allocate_number`] — issue/PR numbering that tolerates squatters (§6).
 //! * [`order_pack_copies`] / [`select_pack_copy`] / [`pack_read_order`] — the pack reader
 //!   rule (§4), over copies whose hash the caller has already checked.
-//! * [`count_approvals`] — PR approvals from members only (§6).
+//! * [`count_approvals`] — PR approvals from members only, dismissed reviews skipped (§6).
+//! * The review-parity rules in [`super::review`]: the review fold (head, requested reviewers,
+//!   resolved threads, dismissals), branch policy, anchors, review comment groups, suggestions
+//!   and linked issues.
 //! * [`is_well_formed`] — plaintext xor `enc`, no plaintext in a private repo, and ref names
 //!   that hash to their indexed keys (§5).
 //! * [`ref_name_hashes_agree`] — the ref-name / hash binding, public (`sha256`) or private
@@ -29,11 +33,20 @@
 
 use std::collections::BTreeSet;
 
+use super::review::merged_log;
+
+pub use super::review::{
+    anchor_of, apply_suggestion, fold_pr_review_v2, group_review_comments, is_author_kind,
+    linked_issues, meets_policy, parse_suggestions, Anchor, AnchorFields, Dismissal, HeadUpdate,
+    Policy, PolicyStatus, PrReviewState, RequestedReviewer, ReviewComment, ReviewGroup, Suggestion,
+    SuggestionError,
+};
+
 use serde::{Deserialize, Serialize};
 
 use super::{
-    apply_issue_event, apply_pr_event, event_order, merge_reachable, Event, EventKind, IssueState,
-    Oid, PrState, Verdict,
+    apply_issue_event, apply_pr_event, merge_reachable, Event, EventKind, IssueState, Oid, PrState,
+    Verdict,
 };
 
 /// The versioned rules identifier for forge-v2 repositories.
@@ -112,41 +125,12 @@ impl RoleOracle {
 // Issue / PR fold
 // ===========================================================================
 
-/// Whether an `authorEvent` applies: it must be a close or reopen by the target's author.
-///
-/// Consensus already guarantees both (the schema limits the kind to 1..=2, and the gate is the
-/// author lookup), so this is defense in depth against a reader handing in the wrong
-/// documents. An `event` needs no check: its existence proves a maintainer or writer wrote it,
-/// and revoking them later does not undo that.
-fn author_event_applies(e: &Event, target_author: &str) -> bool {
-    matches!(e.kind, EventKind::Close | EventKind::Reopen) && e.actor == target_author
-}
-
-/// The applicable documents of both types, in `(createdAt, id)` order. `events` come
-/// first in the input, so two documents with the same key keep that order (the sort is
-/// stable; real `$id`s never collide across document types).
-fn merged_log<'a>(
-    events: &'a [Event],
-    author_events: &'a [Event],
-    target_author: &str,
-) -> Vec<&'a Event> {
-    let mut log: Vec<&Event> = events
-        .iter()
-        .chain(
-            author_events
-                .iter()
-                .filter(|e| author_event_applies(e, target_author)),
-        )
-        .collect();
-    log.sort_by(|a, b| event_order(a, b));
-    log
-}
-
 /// Fold an issue's `event` and `authorEvent` documents into its [`IssueState`].
 ///
 /// * Every `event` applies, whoever wrote it and whatever has happened to their membership
 ///   since (PR-only kinds do nothing to an issue).
-/// * An `authorEvent` applies only if it is a close or reopen by `target_author`.
+/// * An `authorEvent` applies only if it is an author kind by `target_author` (of those only
+///   close and reopen change an issue).
 /// * Both are applied as one log ordered by `(createdAt, id)`, with the base per-kind effects.
 #[must_use]
 pub fn fold_issue_state_v2(
@@ -164,7 +148,9 @@ pub fn fold_issue_state_v2(
 /// Fold a PR's `event` and `authorEvent` documents into its [`PrState`].
 ///
 /// As [`fold_issue_state_v2`], and a `merge` (which can only come from `event`) applies only
-/// if its `oid` is reachable from `base_tip`. A merged PR cannot be reopened.
+/// if its `oid` is reachable from `base_tip`. A merged PR cannot be reopened. `initial_draft`
+/// is the patch's `draft` (opened as a draft); `draft` / `ready` events, from members or the
+/// author, override it in order. Review kinds (11–18) do not change [`PrState`].
 #[must_use]
 pub fn fold_pr_state_v2(
     events: &[Event],
@@ -172,8 +158,12 @@ pub fn fold_pr_state_v2(
     target_author: &str,
     base_tip: Option<&str>,
     is_ancestor: impl Fn(&str, &str) -> bool,
+    initial_draft: bool,
 ) -> PrState {
-    let mut state = PrState::default();
+    let mut state = PrState {
+        draft: initial_draft,
+        ..PrState::default()
+    };
     for e in merged_log(events, author_events, target_author) {
         if e.kind == EventKind::Merge && !merge_reachable(e, base_tip, &is_ancestor) {
             continue;
@@ -559,22 +549,30 @@ pub struct Approvals {
 /// `reviews` must already be filtered by [`is_well_formed`] (kind [`ContentKind::Review`]): a
 /// malformed review is skipped by readers, so it does not count here either.
 ///
-/// A review counts only if it is on `head_oid` (a push after it resets it) and its reviewer
-/// was a maintainer or writer at the review's `created_at` ([`RoleOracle::member_at`]). A
-/// reviewer's standing verdict is their newest counting approve or request-changes review by
-/// `(created_at, id)`. Comment reviews (3) and unknown codes neither approve nor clear an
-/// earlier verdict.
+/// A review counts only if it is on `head_oid` (the PR's folded head, so a head update after
+/// it resets it) and its reviewer was a maintainer or writer at the review's `created_at`
+/// ([`RoleOracle::member_at`]). A reviewer's standing verdict is their newest counting approve
+/// or request-changes review by `(created_at, id)`. Comment reviews (3), unknown codes and
+/// reviews in `dismissed` (the review ids a `reviewDismiss` names,
+/// [`PrReviewState::dismissed_reviews`]) neither approve nor clear an earlier verdict; a
+/// dismissal naming a review that is not here changes nothing.
 ///
 /// Unlike an `event`, a `review` is un-gated, so nothing on chain proves its writer was a
 /// member; the oracle does. A revoked reviewer's document is gone, so their reviews stop
 /// counting, which is what a merge decision made now should see.
 #[must_use]
-pub fn count_approvals(reviews: &[Review], oracle: &RoleOracle, head_oid: &str) -> Approvals {
+pub fn count_approvals(
+    reviews: &[Review],
+    oracle: &RoleOracle,
+    head_oid: &str,
+    dismissed: &BTreeSet<String>,
+) -> Approvals {
     let mut counting: Vec<(&Review, Verdict)> = reviews
         .iter()
         .map(|r| (r, Verdict::from_code(r.verdict)))
         .filter(|(r, v)| {
             matches!(v, Verdict::Approve | Verdict::RequestChanges)
+                && !dismissed.contains(&r.id)
                 && r.commit_oid == head_oid
                 && oracle.member_at(&r.reviewer, r.created_at)
         })

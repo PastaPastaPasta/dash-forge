@@ -1,0 +1,15 @@
+{
+  "name": "apply_delete_lines",
+  "description": "An empty suggestion deletes the range.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "a\nb\nc\n",
+    "startLine": 2,
+    "endLine": 2,
+    "text": ""
+  },
+  "expected": {
+    "ok": "a\nc\n"
+  }
+}

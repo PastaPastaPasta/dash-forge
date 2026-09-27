@@ -1,0 +1,20 @@
+{
+  "name": "range_ok",
+  "description": "startLine 3, line 5, old side: a range.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "startLine": 3,
+    "line": 5,
+    "side": 0,
+    "commitOid": "ABABABABABABABABABABABABABABABABABABABAB"
+  },
+  "expected": {
+    "path": "src/a.rs",
+    "line": 5,
+    "startLine": 3,
+    "side": 0,
+    "commitOid": "abababababababababababababababababababab"
+  }
+}

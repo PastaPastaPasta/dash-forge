@@ -1,0 +1,34 @@
+{
+  "name": "resolve_by_stranger_inert",
+  "description": "A resolve authorEvent by someone who is neither the author nor (via event) a member is inert.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "threadResolve",
+        "actor": "mallory",
+        "value": null,
+        "oid": null,
+        "createdAt": 100,
+        "refId": "C1"
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": [
+      "C1"
+    ]
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "dismissal_of_unknown_review_is_noop",
+  "description": "A dismissal naming a review id that is not among the PR's reviews changes nothing.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "dismissed": [
+      "elsewhere"
+    ]
+  },
+  "expected": {
+    "approvers": [
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

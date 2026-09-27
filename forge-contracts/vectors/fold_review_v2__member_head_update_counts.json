@@ -1,0 +1,38 @@
+{
+  "name": "member_head_update_counts",
+  "description": "A base-repo member may move the head (event kind 16), like GitHub's 'allow edits from maintainers'.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "2222222222222222222222222222222222222222",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "2222222222222222222222222222222222222222",
+    "headUpdates": [
+      {
+        "oid": "2222222222222222222222222222222222222222",
+        "actor": "maint",
+        "createdAt": 100,
+        "id": "e1"
+      }
+    ],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

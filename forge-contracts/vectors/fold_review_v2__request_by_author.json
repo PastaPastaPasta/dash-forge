@@ -1,0 +1,51 @@
+{
+  "name": "request_by_author",
+  "description": "The PR author requests reviewers (authorEvent kind 13); identities are sorted.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reviewRequest",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100,
+        "refId": "zed"
+      },
+      {
+        "id": "a2",
+        "targetId": "T",
+        "kind": "reviewRequest",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 110,
+        "refId": "bob"
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [
+      {
+        "identity": "bob",
+        "requestedAt": 110
+      },
+      {
+        "identity": "zed",
+        "requestedAt": 100
+      }
+    ],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

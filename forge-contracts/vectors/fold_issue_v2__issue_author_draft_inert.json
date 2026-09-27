@@ -1,0 +1,35 @@
+{
+  "name": "issue_author_draft_inert",
+  "description": "An author's draft/ready on an issue changes nothing (PR-only kinds).",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "draft",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "a2",
+        "targetId": "T",
+        "kind": "ready",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 110
+      }
+    ],
+    "targetAuthor": "alice"
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

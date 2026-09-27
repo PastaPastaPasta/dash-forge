@@ -1,0 +1,13 @@
+{
+  "name": "leading_zeros",
+  "description": "Leading zeros are part of the number (#007 is issue 7, #000000000001 is 1), however many there are.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "fixes #007 and closes #000000000001; fix #00000000000000000000"
+  },
+  "expected": [
+    1,
+    7
+  ]
+}

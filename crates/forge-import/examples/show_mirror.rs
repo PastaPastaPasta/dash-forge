@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
             v.state.merged,
             v.state.draft,
             v.state.labels,
-            &v.patch.head_oid[..v.patch.head_oid.len().min(12)],
+            &v.head[..v.head.len().min(12)],
             v.patch.base_ref_name,
             v.patch.source_ref_name,
             comments,

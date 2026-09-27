@@ -1,0 +1,13 @@
+{
+  "name": "leading_zeros_u32_edge",
+  "description": "Leading zeros with the u32 maximum and a small number.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "fixes #0007 fixes #000004294967295"
+  },
+  "expected": [
+    7,
+    4294967295
+  ]
+}

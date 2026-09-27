@@ -1,0 +1,32 @@
+{
+  "name": "dismiss_by_author_inert",
+  "description": "An authorEvent dismissal (kind 15, refused by the schema) handed to the fold is inert: the author cannot dismiss.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "reviewDismiss",
+        "actor": "alice",
+        "value": "i disagree",
+        "oid": null,
+        "createdAt": 100,
+        "refId": "R1"
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

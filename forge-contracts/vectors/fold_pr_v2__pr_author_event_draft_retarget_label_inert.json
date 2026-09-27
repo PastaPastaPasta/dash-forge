@@ -1,6 +1,6 @@
 {
   "name": "pr_author_event_draft_retarget_label_inert",
-  "description": "authorEvent kinds other than close/reopen (draft, retarget, label) are inert.",
+  "description": "authorEvent draft applies (the author may mark draft, forge-collab kind enum); retarget and label (members only) are inert.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
@@ -41,7 +41,7 @@
   "expected": {
     "open": true,
     "merged": false,
-    "draft": false,
+    "draft": true,
     "baseRef": null,
     "labels": [],
     "assignees": []

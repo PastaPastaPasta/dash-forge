@@ -1,0 +1,14 @@
+{
+  "name": "parse_info_word_only",
+  "description": "The info string's first word must be exactly 'suggestion'.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestions\nno\n```\n``` suggestion extra\nyes\n```"
+  },
+  "expected": [
+    {
+      "text": "yes"
+    }
+  ]
+}

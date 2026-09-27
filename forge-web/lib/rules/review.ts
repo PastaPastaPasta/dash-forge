@@ -1,0 +1,398 @@
+/**
+ * Review parity rules — the TypeScript port of `crates/forge-core/src/rules/review.rs`
+ * (`docs/design/review-parity-spec.md` §5, part of FORGE_RULES_V2). The `"rules": "v2"` vectors
+ * `fold_review_v2__*`, `policy__*`, `anchor__*`, `review_group__*`, `suggestion__*` and
+ * `linked_issues__*` hold the two in parity.
+ *
+ * Every function is pure.
+ */
+
+import { compareKey, compareStrings } from './oid'
+import type { Approvals, Role, RoleOracle } from './v2'
+import type { Event, EventKind, Oid } from './types'
+
+// ---------------------------------------------------------------------------
+// The review fold
+// ---------------------------------------------------------------------------
+
+const AUTHOR_KINDS: ReadonlySet<EventKind> = new Set<EventKind>([
+  'close',
+  'reopen',
+  'draft',
+  'ready',
+  'threadResolve',
+  'threadUnresolve',
+  'reviewRequest',
+  'reviewRequestRemove',
+  'headUpdate',
+])
+
+/** The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum). */
+export function isAuthorKind(kind: EventKind): boolean {
+  return AUTHOR_KINDS.has(kind)
+}
+
+/** An `authorEvent` applies only if it is an author kind by the target's author. */
+export function authorEventApplies(e: Event, targetAuthor: string): boolean {
+  return isAuthorKind(e.kind) && e.actor === targetAuthor
+}
+
+/** Both document types, applicable ones only, in `(createdAt, id)` order (stable). */
+export function mergedLog(events: readonly Event[], authorEvents: readonly Event[], targetAuthor: string): Event[] {
+  return [...events, ...authorEvents.filter((e) => authorEventApplies(e, targetAuthor))].sort(compareKey)
+}
+
+/** One applied `headUpdate`. */
+export interface HeadUpdate {
+  readonly oid: Oid
+  readonly actor: string
+  readonly createdAt: number
+  readonly id: string
+}
+
+/** A standing review request. */
+export interface RequestedReviewer {
+  readonly identity: string
+  readonly requestedAt: number
+}
+
+/** A dismissed review. */
+export interface Dismissal {
+  readonly reviewId: string
+  readonly actor: string
+  readonly reason: string
+  readonly createdAt: number
+}
+
+/** A PR's review state ({@link foldPrReviewV2}). */
+export interface PrReviewState {
+  /** The newest applied `headUpdate`'s oid, else the patch's `headOid`. */
+  readonly head: Oid
+  /** Applied head updates, oldest first. */
+  readonly headUpdates: readonly HeadUpdate[]
+  /** Standing requests, by identity (code-point order). */
+  readonly requestedReviewers: readonly RequestedReviewer[]
+  /** Resolved thread roots (code-point order), only roots in `knownRoots`. */
+  readonly resolvedThreads: readonly string[]
+  /** Dismissed reviews by review id (code-point order); the first dismissal stands. */
+  readonly dismissedReviews: readonly Dismissal[]
+  readonly milestone: string | null
+}
+
+function present(v: string | null | undefined): string | null {
+  return v == null || v === '' ? null : v
+}
+
+/** Sort a map's entries by key in code-point order (Rust's `BTreeMap` order). */
+function byKey<T>(m: Map<string, T>): [string, T][] {
+  return [...m.entries()].sort(([a], [b]) => compareStrings(a, b))
+}
+
+/**
+ * Fold a PR's `event` and `authorEvent` documents into its {@link PrReviewState} (the Rust
+ * `fold_pr_review_v2`): `(createdAt, id)` order, `event`s first at equal keys; an
+ * `authorEvent` applies only for an author kind by `targetAuthor`. Kinds 11–18 without their
+ * payload are inert; a resolve naming a root outside `knownRoots` is inert.
+ */
+export function foldPrReviewV2(
+  events: readonly Event[],
+  authorEvents: readonly Event[],
+  targetAuthor: string,
+  initialHead: string,
+  knownRoots: ReadonlySet<string>,
+): PrReviewState {
+  const log = mergedLog(events, authorEvents, targetAuthor)
+  const headUpdates: HeadUpdate[] = []
+  const requested = new Map<string, number | null>()
+  const resolved = new Map<string, boolean>()
+  const dismissed = new Map<string, Dismissal>()
+  let milestone: string | null = null
+  for (const e of log) {
+    const ref = present(e.refId)
+    switch (e.kind) {
+      case 'headUpdate': {
+        const oid = present(e.oid)?.toLowerCase() ?? null
+        if (oid !== null && HEX_OID.test(oid)) headUpdates.push({ oid, actor: e.actor, createdAt: e.createdAt, id: e.id ?? '' })
+        break
+      }
+      case 'reviewRequest':
+      case 'reviewRequestRemove':
+        if (ref !== null) requested.set(ref, e.kind === 'reviewRequest' ? e.createdAt : null)
+        break
+      case 'threadResolve':
+      case 'threadUnresolve':
+        if (ref !== null && knownRoots.has(ref)) resolved.set(ref, e.kind === 'threadResolve')
+        break
+      case 'reviewDismiss':
+        if (ref !== null && !dismissed.has(ref)) {
+          dismissed.set(ref, { reviewId: ref, actor: e.actor, reason: e.value ?? '', createdAt: e.createdAt })
+        }
+        break
+      case 'milestoneSet': {
+        const v = present(e.value)
+        if (v !== null) milestone = v
+        break
+      }
+      case 'milestoneClear':
+        milestone = null
+        break
+      default:
+        break
+    }
+  }
+  return {
+    head: headUpdates.at(-1)?.oid ?? initialHead,
+    headUpdates,
+    requestedReviewers: byKey(requested).flatMap(([identity, at]) => (at === null ? [] : [{ identity, requestedAt: at }])),
+    resolvedThreads: byKey(resolved).flatMap(([root, r]) => (r ? [root] : [])),
+    dismissedReviews: byKey(dismissed).map(([, d]) => d),
+    milestone,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Branch policy
+// ---------------------------------------------------------------------------
+
+/** A `policy` document, flattened (the newest by `(createdAt, id)` is in force). */
+export interface Policy {
+  readonly requiredApprovals: number
+  /** 0 any member, 1 maintainers only. */
+  readonly approverRole?: number
+  readonly requireChecks?: boolean
+  /** 1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any. */
+  readonly mergeMethods?: number
+}
+
+export interface PolicyStatus {
+  readonly met: boolean
+  readonly have: number
+  readonly need: number
+}
+
+/**
+ * Whether `approvals` (from `countApprovals` on the current head, dismissed reviews excluded)
+ * meet `policy`: approvers whose current role satisfies `approverRole` (1: maintainers only).
+ */
+export function meetsPolicy(approvals: Approvals, oracle: RoleOracle, policy: Policy): PolicyStatus {
+  const counts = (role: Role | null): boolean => role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)
+  const have = approvals.approvers.filter((a) => counts(oracle.currentRole(a))).length
+  return { met: have >= policy.requiredApprovals, have, need: policy.requiredApprovals }
+}
+
+// ---------------------------------------------------------------------------
+// Anchors
+// ---------------------------------------------------------------------------
+
+/** A comment's anchor fields as stored (hex `commitOid`). */
+export interface AnchorFields {
+  readonly path?: string | null
+  readonly line?: number | null
+  readonly startLine?: number | null
+  readonly side?: number | null
+  readonly commitOid?: string | null
+}
+
+/** Where an inline comment points. `line`, `startLine`, `side` null: file-level. */
+export interface Anchor {
+  readonly path: string
+  readonly line: number | null
+  readonly startLine: number | null
+  readonly side: 0 | 1 | null
+  /** Lowercase hex, or `''`. */
+  readonly commitOid: string
+}
+
+const HEX_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+
+/**
+ * A comment's anchor, or null for a general comment (a malformed anchor is null too): `path`
+ * non-empty; `line` ⇒ `side` ∈ {0, 1}; `side` without `line` malformed; `startLine` ⇒ `line`
+ * and `startLine ≤ line`; `commitOid` empty or 40/64 hex.
+ */
+export function anchorOf(f: AnchorFields): Anchor | null {
+  const path = present(f.path)
+  if (path === null) return null
+  const commitOid = (f.commitOid ?? '').toLowerCase()
+  if (commitOid !== '' && !HEX_OID.test(commitOid)) return null
+  const line = f.line ?? null
+  const side = f.side ?? null
+  const start = f.startLine ?? null
+  if (line === null && side === null && start === null) {
+    return { path, line: null, startLine: null, side: null, commitOid }
+  }
+  if (line === null || (side !== 0 && side !== 1)) return null
+  const startLine = start ?? line
+  if (startLine > line) return null
+  return { path, line, startLine, side, commitOid }
+}
+
+// ---------------------------------------------------------------------------
+// A review's comments
+// ---------------------------------------------------------------------------
+
+export interface ReviewComment {
+  readonly id: string
+  readonly owner: string
+  readonly reviewId?: string | null
+  readonly createdAt: number
+}
+
+export interface ReviewGroup {
+  readonly comments: readonly string[]
+  readonly landed: number
+  readonly expected: number
+}
+
+/**
+ * The comments of review `reviewId` by `reviewer`: `reviewId` matches **and** the owner is the
+ * reviewer, `(createdAt, id)` order; `expected` is the review's `commentCount` (0 absent).
+ */
+export function groupReviewComments(
+  reviewId: string,
+  reviewer: string,
+  commentCount: number | null | undefined,
+  comments: readonly ReviewComment[],
+): ReviewGroup {
+  const mine = comments.filter((c) => c.reviewId === reviewId && c.owner === reviewer).sort(compareKey)
+  return { comments: mine.map((c) => c.id), landed: mine.length, expected: commentCount ?? 0 }
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions
+// ---------------------------------------------------------------------------
+
+export interface Suggestion {
+  readonly text: string
+}
+
+function leadingSpaces(line: string): number {
+  let n = 0
+  while (n < line.length && line[n] === ' ') n++
+  return n
+}
+
+function runOf(s: string, ch: string): number {
+  let n = 0
+  while (n < s.length && s[n] === ch) n++
+  return n
+}
+
+/** Fence whitespace: ASCII space, tab and CR only (the Rust `is_fence_space`). */
+const FENCE_SPACE = /[ \t\r]/
+const FENCE_TRIM = /^[ \t\r]+|[ \t\r]+$/g
+
+function fenceOpen(line: string): { indent: number; ch: string; run: number; word: string } | null {
+  const indent = leadingSpaces(line)
+  if (indent > 3) return null
+  const rest = line.slice(indent)
+  const ch = rest[0]
+  if (ch !== '`' && ch !== '~') return null
+  const run = runOf(rest, ch)
+  if (run < 3) return null
+  const info = rest.slice(run).replace(FENCE_TRIM, '')
+  if (ch === '`' && info.includes('`')) return null
+  return { indent, ch, run, word: info.split(FENCE_SPACE)[0] ?? '' }
+}
+
+function fenceClose(line: string, ch: string, run: number): boolean {
+  const indent = leadingSpaces(line)
+  if (indent > 3) return false
+  const rest = line.slice(indent)
+  const n = runOf(rest, ch)
+  return n >= run && /^[ \t\r]*$/.test(rest.slice(n))
+}
+
+/** The ```` ```suggestion ```` blocks of a body, in order (the Rust `parse_suggestions`). */
+export function parseSuggestions(body: string): Suggestion[] {
+  const out: Suggestion[] = []
+  let open: { indent: number; ch: string; run: number; isSuggestion: boolean; lines: string[] } | null = null
+  for (const line of body.replace(/\r\n?/g, '\n').split('\n')) {
+    if (open !== null) {
+      if (fenceClose(line, open.ch, open.run)) {
+        if (open.isSuggestion) out.push({ text: open.lines.join('\n') })
+        open = null
+      } else {
+        // Up to the opener's indentation is removed from content lines (CommonMark).
+        open.lines.push(line.slice(Math.min(leadingSpaces(line), open.indent)))
+      }
+      continue
+    }
+    const f = fenceOpen(line)
+    if (f !== null) open = { indent: f.indent, ch: f.ch, run: f.run, isSuggestion: f.word === 'suggestion', lines: [] }
+  }
+  if (open?.isSuggestion) out.push({ text: open.lines.join('\n') })
+  return out
+}
+
+export type SuggestionError = 'badRange' | 'outOfRange'
+
+/**
+ * Replace lines `startLine..=endLine` (1-based) of `file` with `text`, keeping the file's
+ * newline style and trailing-newline state (the Rust `apply_suggestion`).
+ */
+export function applySuggestion(
+  file: string,
+  startLine: number,
+  endLine: number,
+  text: string,
+): { ok: string } | { error: SuggestionError } {
+  if (startLine < 1 || startLine > endLine) return { error: 'badRange' }
+  const firstNl = file.indexOf('\n')
+  const nl = firstNl > 0 && file[firstNl - 1] === '\r' ? '\r\n' : '\n'
+  const trailing = file.endsWith('\n')
+  const normalized = file.replace(/\r\n/g, '\n')
+  const body = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized
+  const lines = normalized === '' ? [] : body.split('\n')
+  if (endLine > lines.length) return { error: 'outOfRange' }
+  const replacement = text.replace(/\r\n/g, '\n')
+  lines.splice(startLine - 1, endLine - startLine + 1, ...(replacement === '' ? [] : replacement.split('\n')))
+  let out = lines.join(nl)
+  if (trailing && lines.length > 0) out += nl
+  return { ok: out }
+}
+
+// ---------------------------------------------------------------------------
+// Linked issues
+// ---------------------------------------------------------------------------
+
+const LINK_VERBS: ReadonlySet<string> = new Set(['close', 'closes', 'closed', 'fix', 'fixes', 'fixed', 'resolve', 'resolves', 'resolved'])
+const MAX_U32 = 0xffff_ffff
+
+const isWord = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9_]/.test(c)
+const isAlpha = (c: string | undefined): boolean => c !== undefined && /[A-Za-z]/.test(c)
+const isDigit = (c: string | undefined): boolean => c !== undefined && c >= '0' && c <= '9'
+
+/**
+ * The issue numbers `text` closes: `close[sd]` / `fix(e[sd])` / `resolve[sd]` (any case, a
+ * whole word), optional `:`, whitespace, `#n` (positive, fits u32, not followed by a word
+ * character). Deduplicated, ascending (the Rust `linked_issues`).
+ */
+export function linkedIssues(text: string): number[] {
+  const out = new Set<number>()
+  let i = 0
+  while (i < text.length) {
+    if (!isAlpha(text[i]) || (i > 0 && isWord(text[i - 1]))) {
+      i++
+      continue
+    }
+    const start = i
+    while (i < text.length && isAlpha(text[i])) i++
+    const word = text.slice(start, i).toLowerCase()
+    if (isWord(text[i]) || !LINK_VERBS.has(word)) continue
+    let j = i
+    if (text[j] === ':') j++
+    const ws = j
+    while (text[j] === ' ' || text[j] === '\t') j++
+    if (j === ws || text[j] !== '#') continue
+    j++
+    const digits = j
+    while (isDigit(text[j])) j++
+    if (j === digits || isWord(text[j])) continue
+    // As the Rust `u32` parse: leading zeros are fine, a value past u32 is refused.
+    const n = Number(text.slice(digits, j))
+    if (n > 0 && n <= MAX_U32) out.add(n)
+    i = j
+  }
+  return [...out].sort((a, b) => a - b)
+}

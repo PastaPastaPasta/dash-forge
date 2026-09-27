@@ -1,0 +1,53 @@
+{
+  "name": "head_update_tie_breaks_by_id",
+  "description": "Two head updates at the same createdAt: the larger id applies last and wins.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "b",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "createdAt": 100
+      },
+      {
+        "id": "a",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 100
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "headUpdates": [
+      {
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "maint",
+        "createdAt": 100,
+        "id": "a"
+      },
+      {
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "actor": "maint",
+        "createdAt": 100,
+        "id": "b"
+      }
+    ],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "draft_from_document",
+  "description": "A PR opened with patch.draft = true folds as a draft with no events.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseTip": "B",
+    "ancestry": [],
+    "initialDraft": true
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": true,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

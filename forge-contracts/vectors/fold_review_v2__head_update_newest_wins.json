@@ -1,0 +1,53 @@
+{
+  "name": "head_update_newest_wins",
+  "description": "Two head updates by the author: the newest by createdAt is the head; both are listed oldest first.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a2",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "alice",
+        "value": null,
+        "oid": "3333333333333333333333333333333333333333",
+        "createdAt": 200
+      },
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "alice",
+        "value": null,
+        "oid": "2222222222222222222222222222222222222222",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "3333333333333333333333333333333333333333",
+    "headUpdates": [
+      {
+        "oid": "2222222222222222222222222222222222222222",
+        "actor": "alice",
+        "createdAt": 100,
+        "id": "a1"
+      },
+      {
+        "oid": "3333333333333333333333333333333333333333",
+        "actor": "alice",
+        "createdAt": 200,
+        "id": "a2"
+      }
+    ],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

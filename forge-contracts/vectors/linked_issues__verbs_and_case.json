@@ -1,0 +1,15 @@
+{
+  "name": "verbs_and_case",
+  "description": "Every verb form, any case, deduplicated and ascending.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "Fixes #12. closes #3, RESOLVED #12 and fix: #7; Resolve #1"
+  },
+  "expected": [
+    1,
+    3,
+    7,
+    12
+  ]
+}

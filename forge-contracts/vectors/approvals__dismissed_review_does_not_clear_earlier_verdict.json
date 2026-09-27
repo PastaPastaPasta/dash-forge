@@ -1,0 +1,46 @@
+{
+  "name": "dismissed_review_does_not_clear_earlier_verdict",
+  "description": "maint requests changes, then approves; the approval is dismissed: the request for changes still stands (a dismissed review is like a comment).",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "H",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "dismissed": [
+      "r2"
+    ]
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": [
+      "maint"
+    ]
+  }
+}

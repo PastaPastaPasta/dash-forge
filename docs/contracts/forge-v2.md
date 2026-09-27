@@ -99,7 +99,7 @@ Both types are immutable and non-deletable, and the gate is judged at creation. 
 | 16 | headUpdate | `oid` new head | yes | yes |
 | 17, 18 | milestoneSet, milestoneClear | `value` milestone | yes | never (schema) |
 
-**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2`, `forge-web/lib/rules/v2`).** The author column is what consensus admits; the folds that read kinds 9–18 land with the review-parity rules (spec §7 PR 2); until then an author's draft/ready is ignored as before. `fold_pr_state_v2` applies kinds 1–10 to the PR state; `fold_pr_review_v2` folds kinds 11–18 into the review state (head, requested reviewers, resolved threads, dismissed reviews, milestone). An `authorEvent` of a kind outside the author set cannot exist on chain; the folds treat one handed to them as inert anyway, and ignore one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
+**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2` and `rules::review`, `forge-web/lib/rules/v2` and `review`).** An `authorEvent` applies when its kind is an author kind (`is_author_kind`) and its writer is the target's author. `fold_pr_state_v2` applies kinds 1–10 to the PR state (seeded with the patch's `draft`); `fold_pr_review_v2` folds kinds 11–18 into the review state (head, requested reviewers, resolved threads, dismissed reviews, milestone). An `authorEvent` of a kind outside the author set cannot exist on chain; the folds treat one handed to them as inert anyway, and ignore one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
 
 **Known design choices.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
 
@@ -214,13 +214,13 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
 | Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
 | Pack list / `packRef` space (§4) | `v2_pack_list` | `v2_pack_list__*` |
-| Approvals (dismissed reviews skipped from PR 2) | `count_approvals` | `approvals__*` |
-| Review state (review-parity PR 2): folded head, requested reviewers, resolved threads, dismissals, milestone | `fold_pr_review_v2` | `fold_review_v2__*` |
-| Branch policy (PR 2) | `meets_policy` | `policy__*` |
-| Inline anchors: file-level, line, range (PR 2) | `anchor_of` | `anchor__*` |
-| A review's comments (PR 2) | `group_review_comments` | `review_group__*` |
-| Suggestion blocks (PR 2) | `parse_suggestions`, `apply_suggestion` | `suggestion__*` |
-| Linked issues, `fixes #n` (PR 2) | `linked_issues` | `linked_issues__*` |
+| Approvals (dismissed reviews skipped) | `count_approvals` | `approvals__*` |
+| Review state: folded head, requested reviewers, resolved threads, dismissals, milestone | `fold_pr_review_v2` | `fold_review_v2__*` |
+| Branch policy | `meets_policy` | `policy__*` |
+| Inline anchors: file-level, line, range | `anchor_of` | `anchor__*` |
+| A review's comments | `group_review_comments` | `review_group__*` |
+| Suggestion blocks | `parse_suggestions`, `apply_suggestion` | `suggestion__*` |
+| Linked issues, `fixes #n` | `linked_issues` | `linked_issues__*` |
 | Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
 | Private content: key derivation, ref-name hashes, `enc` seal/open with the ref-name hash check and the late-content rule (private-repos.md §2–§4, §8) | `EpochKeys::derive`, `ref_name_hash`, `open_content`, `is_late` | `private_kdf__*`, `private_ref_hash__*`, `private_doc_seal__*`, `private_doc_open__*`, `private_hedge__*` |

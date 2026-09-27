@@ -1,0 +1,14 @@
+{
+  "name": "parse_close_with_trailing_text",
+  "description": "A fence run followed by other text does not close the block; it is content.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\n``` not a close\nx\n```"
+  },
+  "expected": [
+    {
+      "text": "``` not a close\nx"
+    }
+  ]
+}
