@@ -218,6 +218,8 @@ Fix, in order:
 
 Fix: anyone whose clone still has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`, run inside that clone. If you know another IPFS gateway that has the pack, add it to `[read] ipfs_gateways` in `storage.toml` and try again.
 
+`dg release download` stops with E503 before downloading anything when none of the asset's recorded copies is one this computer reads from. A copy recorded on chain is followed only if it is a public https URL, an IPFS CID with a gateway to ask, or a bucket or host named in one of your own storage profiles. Plain http, loopback and private-network addresses are never followed just because a publisher recorded them. If the host is your own storage, add a profile whose `public_url` is it, and retry.
+
 ## E504
 
 **Integrity check failed.** Downloaded bytes did not hash to the SHA-256 that the on-chain manifest records. A storage host, or a cache in front of it, served different content. The bytes were discarded, and a tampered copy is never handed to git.

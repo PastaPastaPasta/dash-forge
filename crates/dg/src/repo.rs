@@ -27,6 +27,11 @@ pub use crate::publish::init;
 use crate::{RepoBackendCommand, RepoCommand};
 use forge_core::rules::v2::Visibility;
 
+/// How often, and how far apart, `dg repo star/unstar` re-reads the count after a write that
+/// landed, until a node that has the write answers.
+const STAR_VISIBLE_ATTEMPTS: usize = 8;
+const STAR_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Dispatch a `repo` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
     match cmd {
@@ -201,13 +206,31 @@ async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
         handle.display()
     ))?;
     let collab = s.collab();
+    let before = collab.star_count(handle).await.ok();
     let changed = if on {
         collab.star(handle).await?
     } else {
         collab.unstar(handle).await?
     };
-    let starred = collab.is_starred(handle).await.unwrap_or(on);
-    let count = collab.star_count(handle).await.ok();
+    // A read right after the write can hit a node a block behind, which still counts the old
+    // star set: re-read a few times until the count has moved the way this write moved it.
+    let mut count = collab.star_count(handle).await.ok();
+    if let (true, Some(b)) = (changed, before) {
+        let moved = |c: Option<u64>| c.is_some_and(|c| if on { c > b } else { c < b });
+        for _ in 0..STAR_VISIBLE_ATTEMPTS {
+            if moved(count) {
+                break;
+            }
+            tokio::time::sleep(STAR_VISIBLE_DELAY).await;
+            count = collab.star_count(handle).await.ok();
+        }
+    }
+    // A write that landed decides the answer; only a no-op needs the (possibly lagging) read.
+    let starred = if changed {
+        on
+    } else {
+        collab.is_starred(handle).await.unwrap_or(on)
+    };
     let (status, what) = match (on, changed) {
         (true, true) => ("starred", "starred"),
         (true, false) => ("already_starred", "already starred"),
