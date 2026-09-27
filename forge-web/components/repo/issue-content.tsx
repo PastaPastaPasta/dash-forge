@@ -208,7 +208,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
         {home.repo.visibility === 'private' ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-            Comments on a private repo are encrypted; this browser can&apos;t write them yet. Use <code className="font-mono">dg</code>.
+            Comments on private repos aren&apos;t supported yet.
           </p>
         ) : (
         <>

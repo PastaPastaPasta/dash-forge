@@ -24,7 +24,7 @@ import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type Wra
 import { authSdk, sleep } from '../sdk/facade'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
-import { storeEncryptionKey, storedEncryptionKeyId, withEncryptionKey } from './vault'
+import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockedSecret, withEncryptionKey } from './vault'
 
 /** Purpose ENCRYPTION, key type ECDSA_SECP256K1 (DPP enums). */
 const PURPOSE_ENCRYPTION = 1
@@ -231,6 +231,8 @@ export async function registerEncryptionKey(
   source: { readonly mnemonic: string; readonly identityIndex?: number },
 ): Promise<number> {
   if (!(await isValidMnemonic(source.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+  // The new key must land in the vault: never pay for a key this browser cannot keep.
+  if (unlockedSecret(network, identityId) === null) throw new VaultLockedError('unlock this browser first')
   const mnemonic = normalizeMnemonic(source.mnemonic)
   const identityIndex = source.identityIndex ?? 0
   const { IdentityPublicKeyInCreation, IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
@@ -278,7 +280,7 @@ export async function registerEncryptionKey(
       try {
         return await adoptEncryptionKey(sdk, network, identityId, new Uint8Array(secret))
       } catch (e) {
-        if (i >= 6) throw e
+        if (i >= 6 || e instanceof VaultLockedError) throw e
         await sleep(1500)
       }
     }

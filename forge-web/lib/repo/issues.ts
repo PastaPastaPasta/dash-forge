@@ -645,7 +645,7 @@ export async function readPull(
   const baseName = str(patchDoc, 'baseRefName')
   let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
   if (repo.visibility === 'private') baseKeyHex = baseName === '' ? '' : publicRefKey(baseName)
-  const baseRefNameHashRaw = baseKeyHex === '' ? '' : hexToBase64(baseKeyHex)
+  const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
   const baseHeadOidRaw = patchDoc['headOid']
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.

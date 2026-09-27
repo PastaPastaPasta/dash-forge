@@ -21,6 +21,7 @@ import {
   sealPack,
   type PrivateDoc,
   type PrivateDocType,
+  WrapError,
 } from '../private'
 import type { Membership } from '../rules/v2'
 import { bytesToBase64, type DocumentQuery } from '../sdk'
@@ -161,7 +162,7 @@ function unwrapper(w: World): SessionUnwrapper {
     keyId: 4,
     unwrap: async (p) => {
       const k = w.keys.get(p.epoch)
-      if (k === undefined) throw new Error('no key')
+      if (k === undefined) throw new WrapError('wrapUnreadable')
       return k
     },
   }
@@ -233,6 +234,34 @@ describe('the private session', () => {
     closePrivateSessions()
     expect(s.closed).toBe(true)
     expect((await s.gate.admit('issue', issue)).ok).toBe(false)
+  })
+
+  it('a locked vault is an error, not a member without keys', async () => {
+    const w = await world()
+    const locked: SessionUnwrapper = { keyId: 4, unwrap: async () => Promise.reject(new Error('unlock this browser to read private repos')) }
+    await expect(
+      loadPrivateSession({ repo: REPO_REF, network: 'devnet', reader: b58(BOB), source: source(w), unwrapper: locked }),
+    ).rejects.toThrow(/unlock/)
+  })
+
+  it('a load that straddles a lock never hands out its session', async () => {
+    const w = await world()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const slow: SessionUnwrapper = {
+      keyId: 4,
+      unwrap: async (p) => {
+        await gate
+        return w.keys.get(p.epoch) as EpochKeys
+      },
+    }
+    const loading = loadPrivateSession({ repo: REPO_REF, network: 'devnet', reader: b58(BOB), source: source(w), unwrapper: slow })
+    await new Promise((r) => setTimeout(r, 0))
+    closePrivateSessions()
+    release()
+    await expect(loading).rejects.toThrow(/locked/)
   })
 
   it('strips a leading refs/heads/ from the sealed defaultBranch', async () => {
@@ -375,7 +404,7 @@ describe('rotation and repair planning', () => {
   it('excludes the removed member even when a stale member list still shows them, self first', async () => {
     const w = await world()
     const s = await sessionFor(w, ALICE) // the list still has CAROL
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.from).toBe(0)
     expect(plan.epoch).toBe(1)
     expect(plan.recipients.map((r) => r.identity)).toEqual([b58(ALICE), b58(BOB)])
@@ -390,11 +419,22 @@ describe('rotation and repair planning', () => {
     // A rotation to epoch 1 stopped after the self-wrap and BOB's wrap.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, BOB, 1, 51))
     const s = await sessionFor(w, ALICE)
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.resume?.row.epoch).toBe(1)
     expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([])
     expect(plan.writes).toBe(1) // just the anchor
+  })
+
+  it('only resumes a self-wrap to the key this browser holds', async () => {
+    const w = await world()
+    w.members = w.members.filter((m) => m.identity !== b58(CAROL))
+    // The interrupted self-wrap went to key 3, an older key; this browser holds key 4.
+    w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50, 3))
+    const s = await sessionFor(w, ALICE)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
+    expect(plan.resume).toBeNull()
+    expect(plan.epoch).toBe(2)
   })
 
   it('never resumes an epoch whose key went to someone now excluded; picks the next free one', async () => {
@@ -402,7 +442,7 @@ describe('rotation and repair planning', () => {
     // Stopped mid-rotation after wrapping CAROL too, then CAROL is the one being removed.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, CAROL, 1, 51))
     const s = await sessionFor(w, ALICE)
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.resume).toBeNull()
     expect(plan.epoch).toBe(2)
   })
@@ -410,9 +450,9 @@ describe('rotation and repair planning', () => {
   it('needs the current epoch to be readable, and a maintainer', async () => {
     const w = await world()
     const bob = await sessionFor(w, BOB)
-    expect(() => planRotation(bob, b58(BOB), [b58(CAROL)], FORGE.core)).toThrow(/maintainer/)
+    expect(() => planRotation(bob, b58(BOB), [b58(CAROL)], FORGE.core, 4)).toThrow(/maintainer/)
     const locked = await sessionFor(w, ALICE, false)
-    expect(() => planRotation(locked, b58(ALICE), [b58(CAROL)], FORGE.core)).toThrow(/current key/)
+    expect(() => planRotation(locked, b58(ALICE), [b58(CAROL)], FORGE.core, 4)).toThrow(/current key/)
   })
 
   it('repair: a wrapped non-member forces a rotation; an unwrapped member gets a wrap', async () => {

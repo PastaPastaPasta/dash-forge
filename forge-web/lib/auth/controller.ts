@@ -70,6 +70,10 @@ import {
   type VaultSecret,
 } from './vault'
 
+/** The notice when a renewal could not carry the encryption key over. */
+const ENCRYPTION_KEY_DROPPED =
+  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Keys → Enable private repos.'
+
 /** The public (key-free) session snapshot. */
 export interface AuthSession {
   readonly identityId: string
@@ -342,12 +346,13 @@ export class AuthController {
    */
   private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
-    const { storageSettingsDropped } = await storeInVault(this.network, secret, protection)
+    const { storageSettingsDropped, encryptionKeyDropped } = await storeInVault(this.network, secret, protection)
     if (storageSettingsDropped) {
       this.setState({
         notice: 'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
       })
     }
+    if (encryptionKeyDropped) this.setState({ notice: ENCRYPTION_KEY_DROPPED })
     try {
       return await this.open(secret, 'vault', key.limits)
     } catch (e) {
@@ -438,7 +443,7 @@ export class AuthController {
       if (keyId === null) {
         this.setState({
           notice:
-            'This identity has no encryption key this file can open, so private repos are not enabled yet. Settings → Keys → Enable private repos registers one (one master-key signature).',
+            'This identity has no encryption key that your file or phrase can open, so private repos are not enabled yet. Settings → Keys → Enable private repos registers one (one master-key signature).',
         })
       }
     } catch (e) {
@@ -481,10 +486,11 @@ export class AuthController {
         .map((h) => ({ contractId: 'contractId' in h ? h.contractId : forge.core, keyId: h.keyId, wif: h.wif }))
       const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
       const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-      const { storageSettingsDropped } = await storeInVault(this.network, secret, protection)
+      const { storageSettingsDropped, encryptionKeyDropped } = await storeInVault(this.network, secret, protection)
       if (storageSettingsDropped) {
         this.setState({ notice: 'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.' })
       }
+      if (encryptionKeyDropped) this.setState({ notice: ENCRYPTION_KEY_DROPPED })
       try {
         return await this.open(secret, 'vault', main.limits ?? undefined)
       } catch (e) {

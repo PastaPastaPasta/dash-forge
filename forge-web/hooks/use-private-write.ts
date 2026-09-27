@@ -12,11 +12,11 @@ import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateWriteContext } from '@/lib/repo/private-members'
-import { closePrivateSessions } from '@/lib/repo/private-session'
+import { refreshPrivateHome } from '@/hooks/use-private-home'
 
 export function usePrivateWrite(repo: RepoRef): {
   readonly context: PrivateWriteContext | null
-  /** After a membership or key change: end every session so the page re-reads. */
+  /** After a membership or key change: re-read this repo (the page stays up meanwhile). */
   readonly done: () => void
 } {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
@@ -28,5 +28,5 @@ export function usePrivateWrite(repo: RepoRef): {
   )
   const context: PrivateWriteContext | null =
     sdk !== null && signer !== null && ops.data !== null ? { sdk, auth: signer, repo, network, ops: ops.data } : null
-  return { context, done: closePrivateSessions }
+  return { context, done: () => refreshPrivateHome(repo) }
 }

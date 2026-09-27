@@ -18,7 +18,7 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
-import { readRepoById, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
+import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
 import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type ObjectReader, type PullComparison, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
@@ -300,7 +300,7 @@ export function ComparisonDiff({
         merged: spec.merged,
         imported: spec.imported,
       }),
-    [baseRepo.repoId, sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
+    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
 

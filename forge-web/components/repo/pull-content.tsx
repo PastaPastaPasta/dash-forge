@@ -242,7 +242,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         <h3 className="mb-2 text-dense font-medium">Review</h3>
         {isPrivate ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-            Comments and reviews on a private repo are encrypted; this browser can&apos;t write them yet. Use <code className="font-mono">dg</code>.
+            Comments and reviews on private repos aren&apos;t supported yet.
           </p>
         ) : (
           <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />

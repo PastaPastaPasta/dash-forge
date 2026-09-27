@@ -32,6 +32,7 @@ import {
   type EpochResolution,
   type OpenContext,
   type WrapRow,
+  WrapError,
 } from '../private'
 import { compareKey, type ConfigDoc, type RefUpdate } from '../rules'
 import type { Membership } from '../rules/v2'
@@ -101,6 +102,10 @@ export interface PrivateSession {
   readonly suspectManifests: Set<string>
   /** Whether the session is closed (vault locked, key changed). */
   readonly closed: boolean
+  /** End this session now (its keys and caches are dropped; its gate admits nothing). */
+  close(): void
+  /** When it was loaded (ms). */
+  readonly loadedAt: number
   /** The repo's ref history, decrypted (see `refs.ts`), read once per session. */
   refUpdates(read: () => Promise<Map<string, RefUpdate[]>>): Promise<Map<string, RefUpdate[]>>
 }
@@ -190,6 +195,16 @@ function toPrivateRepoConfig(doc: PlainDocument): RepoConfig {
 }
 
 const liveSessions = new Set<{ close(): void }>()
+/**
+ * Bumped by every {@link closePrivateSessions}. A load that started before a close must not
+ * outlive it: it checks the generation it started under before handing anything out.
+ */
+let closeGeneration = 0
+
+/** The current close generation (callers holding decrypted state compare it before caching). */
+export function privateSessionGeneration(): number {
+  return closeGeneration
+}
 const closeListeners = new Set<() => void>()
 
 /** Be told when every session closed (vault locked, encryption key changed). */
@@ -202,6 +217,7 @@ export function onPrivateSessionsClosed(listener: () => void): () => void {
 
 /** Close every session (their gates admit nothing from now on) and drop the session cache. */
 export function closePrivateSessions(): void {
+  closeGeneration += 1
   for (const s of liveSessions) s.close()
   liveSessions.clear()
   sessionCache.clear()
@@ -230,6 +246,7 @@ export async function loadPrivateSession(input: {
   readonly unwrapper: SessionUnwrapper | null
 }): Promise<PrivateSession> {
   const { repo, network, reader, source, unwrapper } = input
+  const generation = closeGeneration
   const repoId = decodeIdentifier(repo.repoId)
   const readerId = decodeIdentifier(reader)
   const [members, configDocs, wrapDocs] = await Promise.all([source.memberships(), source.configs(), source.repoKeys()])
@@ -253,7 +270,12 @@ export async function loadPrivateSession(input: {
       if (unwrapper !== null && bytesEqual(w.row.memberId, readerId) && maintainers.has(w.row.owner) && w.row.recipientKeyId === unwrapper.keyId) {
         const sender = keyOf(base58Encode(w.row.owner), w.senderKeyId)
         if (sender !== undefined) {
-          keys = await unwrapper.unwrap({ document: w.raw, counterpartyKey: sender, repoId, epoch: w.row.epoch }).catch(() => undefined)
+          // Only a wrap that does not open is skipped (§5.4 check 4); a locked vault or an SDK
+          // failure is an error, never a member "with no key".
+          keys = await unwrapper.unwrap({ document: w.raw, counterpartyKey: sender, repoId, epoch: w.row.epoch }).catch((e: unknown) => {
+            if (e instanceof WrapError) return undefined
+            throw e
+          })
         }
       }
       return { ...w, row: { ...w.row, keyEnabled, ...(keys !== undefined ? { keys } : {}) } }
@@ -271,7 +293,9 @@ export async function loadPrivateSession(input: {
   const ctx = openContextOf(resolution)
   const gate = privateGate(repo, ctx)
 
-  // The config timeline: every config that opens (§4.2 commitment first), as plaintext.
+  // The config timeline: every config that opens (§4.2 commitment first), as plaintext. Configs
+  // under epochs this reader holds no key for are not in it, so protected-ref routing cannot see
+  // them; the ref updates of those epochs are unreadable to this reader anyway.
   const { docs: opened } = await admitAll(gate, 'config', configDocs)
   const configHistory: ConfigDoc[] = opened.map((d) => ({
     id: str(d, '$id'),
@@ -316,6 +340,8 @@ export async function loadPrivateSession(input: {
     unanchoredDocs,
     memberKeys,
     suspectManifests: new Set(),
+    loadedAt: Date.now(),
+    close: () => undefined,
     get closed() {
       return closed
     },
@@ -331,13 +357,21 @@ export async function loadPrivateSession(input: {
       return refs
     },
   }
-  liveSessions.add({
+  const handle = {
     close() {
       closed = true
       refs = null
       headerCache.clear()
+      liveSessions.delete(handle)
     },
-  })
+  }
+  // The vault locked (or the key changed) while this loaded: it must not survive the close.
+  if (generation !== closeGeneration) {
+    handle.close()
+    throw new Error('the vault locked while this private repo was opening; unlock to read it')
+  }
+  liveSessions.add(handle)
+  session.close = () => handle.close()
   return session
 }
 
@@ -389,10 +423,24 @@ export function loadPrivateSessionCached(
   if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS) return hit.promise
   const promise = loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper })
   sessionCache.set(key, { at: Date.now(), promise })
+  // The session it replaces may still back the page for a moment: end it a little later.
+  if (hit !== undefined) retire(hit.promise, promise)
   promise.catch(() => {
     if (sessionCache.get(key)?.promise === promise) sessionCache.delete(key)
   })
   return promise
+}
+
+/** How long a replaced session keeps working before it is closed (pages switch over meanwhile). */
+const RETIRE_MS = 60_000
+
+function retire(old: Promise<PrivateSession>, next: Promise<PrivateSession>): void {
+  const end = (): void => {
+    setTimeout(() => {
+      old.then((s) => s.close(), () => undefined)
+    }, RETIRE_MS)
+  }
+  next.then(end, end)
 }
 
 /** A fresh session (writes: §5.3 re-reads anchors before every write), replacing the cached one. */
@@ -403,11 +451,22 @@ export function loadPrivateSessionFresh(
   reader: string,
   unwrapper: SessionUnwrapper | null,
 ): Promise<PrivateSession> {
-  sessionCache.delete(cacheKey(network, repo, reader))
-  return loadPrivateSessionCached(sdk, repo, network, reader, unwrapper)
+  const key = cacheKey(network, repo, reader)
+  const hit = sessionCache.get(key)
+  sessionCache.delete(key)
+  const next = loadPrivateSessionCached(sdk, repo, network, reader, unwrapper)
+  if (hit !== undefined) retire(hit.promise, next)
+  return next
 }
 
 /** Drop the cached session of a repo (after a membership or key change). */
 export function invalidatePrivateSession(repo: RepoRef): void {
-  for (const key of sessionCache.keys()) if (key.includes(`:${repo.repoId}:`)) sessionCache.delete(key)
+  for (const [key, entry] of [...sessionCache]) {
+    if (!key.includes(`:${repo.repoId}:`)) continue
+    sessionCache.delete(key)
+    // Still backing a page for a moment; its keys go after that.
+    setTimeout(() => {
+      entry.promise.then((s) => s.close(), () => undefined)
+    }, RETIRE_MS)
+  }
 }

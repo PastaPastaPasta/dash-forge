@@ -105,8 +105,8 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   if (cannotReadCurrent) {
     parts.push(
       <Note key="current" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-no-current">
-        You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer&apos;s next visit
-        repairs it.
+        You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer can repair
+        it from this repo&apos;s page.
       </Note>,
     )
   }
@@ -133,7 +133,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
   const [open, setOpen] = useState(false)
   let cost = null
   try {
-    cost = repairCost(session, plan, self, home.repo.forge.core)
+    cost = write.context === null ? null : repairCost(session, plan, self, home.repo.forge.core, write.context.ops.keyId)
   } catch {
     cost = null
   }

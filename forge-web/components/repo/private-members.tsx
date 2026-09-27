@@ -38,6 +38,7 @@ import { useAsync } from '@/hooks/use-async'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { previewDelete } from '@/lib/sdk'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
@@ -98,13 +99,16 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   const noKey = keyCheck.data === false
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
-    if (removing === null || identity === null) return { plan: null, error: null }
+    if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
+    // Removing one role of someone who keeps the other rotates nothing (they stay a member).
+    const keepsRole = session.members.some((m) => m.identity === removing.member && m.role !== removing.role)
+    if (keepsRole) return { plan: null, error: null }
     try {
-      return { plan: planRotation(session, identity, [removing.member], repo.forge.core), error: null }
+      return { plan: planRotation(session, identity, [removing.member], repo.forge.core, write.context.ops.keyId), error: null }
     } catch (e) {
       return { plan: null, error: e instanceof Error ? e.message : String(e) }
     }
-  }, [removing, identity, session, repo.forge.core])
+  }, [removing, identity, session, repo.forge.core, write.context])
 
   const locked = write.context === null
   const cannotRead = session.resolution.writeEpoch === null
@@ -221,7 +225,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.role ?? 'member'}`}
         description={removing === null ? '' : removeWarning(shortId(removing.member))}
-        cost={removalPlan.plan === null ? null : rotationCost(removalPlan.plan)}
+        cost={removalPlan.plan !== null ? rotationCost(removalPlan.plan) : removing !== null ? previewDelete(removing.role) : null}
         confirmLabel="Sign & remove"
         onConfirm={async (intent) => {
           if (write.context === null || removing === null) throw new Error('unlock with your encryption key first')

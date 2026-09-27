@@ -337,6 +337,11 @@ export interface StoreOutcome {
    * again, and the UI says so.
    */
   readonly storageSettingsDropped: boolean
+  /**
+   * An encryption key was stored but could not be carried across (the vault was locked when the
+   * key was renewed). It is deleted; the user imports it again in Settings → Keys.
+   */
+  readonly encryptionKeyDropped: boolean
 }
 
 /**
@@ -355,9 +360,10 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
   // this session can open them; otherwise they cannot be opened any more and are dropped.
   const hadBlob = (await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))) !== undefined
   const carried = hadBlob ? await readStorageBlob(network, identityId).catch(() => null) : null
-  // The encryption key is carried the same way; one that cannot be opened is dropped (it can be
-  // imported again from the identity file).
-  const carriedEnc = await readEncryptionBlob(network, identityId).catch(() => null)
+  // The encryption key is carried the same way, but only from the stored vault blob: a tab-only
+  // session's key stays in that session. One that cannot be opened is dropped, and reported.
+  const hadEnc = (await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))) !== undefined
+  const carriedEnc = hadEnc && unlocked?.sessionEnc === undefined ? await readEncryptionBlob(network, identityId).catch(() => null) : null
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
@@ -413,7 +419,7 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
     dataKey.fill(0)
   }
   setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey })
-  return { storageSettingsDropped: hadBlob && carried === null }
+  return { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: hadEnc && carriedEnc === null }
 }
 
 /**
@@ -701,6 +707,8 @@ function sessionEncFor(network: Network, identityId: string): { key: CryptoKey; 
 export async function storedEncryptionKeyId(network: Network, identityId: string): Promise<number | null> {
   const session = sessionEncFor(network, identityId)
   if (session !== undefined) return session.blob?.keyId ?? null
+  // Unlocked for this identity by a tab-only key: a vault blob it cannot open does not count.
+  if (unlocked?.network === network && unlocked.secret.identityId === identityId && unlocked.blobKeys === null) return null
   const blob = await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))
   return blob?.keyId ?? null
 }
