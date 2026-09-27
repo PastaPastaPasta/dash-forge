@@ -55,7 +55,7 @@ import { grantMember, revokeMember } from './writes'
 export class PrivateMembersError extends Error {
   constructor(
     message: string,
-    /** The CLI's error code for the same condition (E305–E309). */
+    /** The CLI's error code for the same condition (E306–E310). */
     readonly code?: string,
   ) {
     super(message)
@@ -108,7 +108,7 @@ export function planRotation(
   const n = r.currentEpoch
   if (n === null) throw new PrivateMembersError('this repo has no key epoch yet')
   if (r.writeEpoch !== n) {
-    throw new PrivateMembersError(`you can't read the current key (epoch ${n}); ask another maintainer to rotate`, 'E309')
+    throw new PrivateMembersError(`you can't read the current key (epoch ${n}); ask another maintainer to rotate`, 'E310')
   }
   if (!isMaintainer(session, self)) {
     throw new PrivateMembersError('only a current maintainer can rotate the repo key')
@@ -144,7 +144,7 @@ export function planRotation(
   for (const id of ordered) {
     const key = usableEncryptionKey(session.memberKeys.get(id) ?? [], coreId)
     if (key === null) {
-      if (id === self) throw new PrivateMembersError('your identity has no usable encryption key', 'E305')
+      if (id === self) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
       unreachable.push(id)
       continue
     }
@@ -243,7 +243,7 @@ function senderKey(session: PrivateSession, c: PrivateWriteContext): IdentityPub
   const mine = session.memberKeys.get(c.auth.identityId) ?? []
   const k = mine.find((x) => x.keyId === c.ops.keyId) as (EncKeyLike & IdentityPublicKey) | undefined
   if (k === undefined || usableEncryptionKey([k], c.repo.forge.core) === null) {
-    throw new PrivateMembersError('the encryption key in this browser is no longer enabled on your identity; import your current one', 'E305')
+    throw new PrivateMembersError('the encryption key in this browser is no longer enabled on your identity; import your current one', 'E306')
   }
   return k
 }
@@ -253,7 +253,7 @@ function senderKey(session: PrivateSession, c: PrivateWriteContext): IdentityPub
  * from a current maintainer whose key matches the anchor). The caller wipes it.
  */
 async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {
-  if (!session.resolution.keys.has(epoch)) throw new PrivateMembersError(`you can't read epoch ${epoch}`, 'E306')
+  if (!session.resolution.keys.has(epoch)) throw new PrivateMembersError(`you can't read epoch ${epoch}`, 'E307')
   for (const w of acceptedOwnWraps(session, c.auth.identityId, epoch)) {
     return c.ops.unwrapRaw({
       document: w.raw,
@@ -262,7 +262,7 @@ async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoc
       epoch,
     })
   }
-  throw new PrivateMembersError(`no wrap of epoch ${epoch} to you was found`, 'E306')
+  throw new PrivateMembersError(`no wrap of epoch ${epoch} to you was found`, 'E307')
 }
 
 /** The reader's own wraps for `epoch` whose key is the epoch's key (accepted, §5.4). */
@@ -395,7 +395,7 @@ function unusableWrap(outcome: WrapOutcome, identity: string, epoch: number): Pr
     outcome.kind === 'unreadable'
       ? `your key wrap of epoch ${epoch} for ${identity.slice(0, 8)}… stands and cannot be read back from this browser`
       : `key epoch ${epoch} already holds another key of yours for ${identity.slice(0, 8)}…; run the rotation again`,
-    'E309',
+    'E310',
   )
 }
 
@@ -440,14 +440,14 @@ export async function rotateRepoKey(
       return epoch
     }
     if (verdict === 'lost') {
-      throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key. Nothing more to do.`, 'E309')
+      throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key. Nothing more to do.`, 'E310')
     }
     if (verdict === 'mismatch') {
-      throw new PrivateMembersError(`the anchor of epoch ${epoch} does not carry the key you wrapped; run the rotation again`, 'E309')
+      throw new PrivateMembersError(`the anchor of epoch ${epoch} does not carry the key you wrapped; run the rotation again`, 'E310')
     }
     await sleep(POLL_MS)
   }
-  throw new PrivateMembersError(`the anchor of epoch ${epoch} is not visible yet; reload and repair to finish`, 'E309')
+  throw new PrivateMembersError(`the anchor of epoch ${epoch} is not visible yet; reload and repair to finish`, 'E310')
 }
 
 /** §5.5 steps 1–3 over `session`: wraps (self first), then the anchor. Returns the plan. */
@@ -462,7 +462,7 @@ async function rotateWith(
   // The epoch chained from must not be one a removed maintainer anchored.
   const fromAnchor = session.resolution.anchors.get(plan.from)
   if (fromAnchor !== undefined && exclude.includes(base58Encode(fromAnchor.owner))) {
-    throw new PrivateMembersError('the member list is still catching up; try again in a moment', 'E309')
+    throw new PrivateMembersError('the member list is still catching up; try again in a moment', 'E310')
   }
   const kn = await rawEpochKey(session, c, plan.from)
   let next: { keys: EpochKeys; raw: Uint8Array }
@@ -483,7 +483,7 @@ async function rotateWith(
       // with another key (a retry whose read lagged it) wins: its key is the one to go on with,
       // or the rotator would anchor a key it cannot read (parity: forge-core `self_wrap`).
       const self = plan.recipients[0]
-      if (self === undefined || self.identity !== c.auth.identityId) throw new PrivateMembersError('your identity has no usable encryption key', 'E305')
+      if (self === undefined || self.identity !== c.auth.identityId) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
       const selfOutcome = self.done
         ? await standingOutcome(c, session, next.keys, self.identity, self.keyId)
         : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
@@ -539,7 +539,7 @@ async function rotateWith(
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
   const keys = await fetchIdentityKeys(c.sdk, memberId)
-  if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E305')
+  if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E306')
   await grantMember(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
   await waitForMembers(c, (rows) => holds(rows, memberId, role))
   await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
@@ -547,9 +547,9 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
 
 async function wrapForMember(c: PrivateWriteContext, session: PrivateSession, memberId: string, intent: string): Promise<void> {
   const n = session.resolution.writeEpoch
-  if (n === null) throw new PrivateMembersError("you can't read the current key, so you can't hand it out", 'E309')
+  if (n === null) throw new PrivateMembersError("you can't read the current key, so you can't hand it out", 'E310')
   const key = usableEncryptionKey(session.memberKeys.get(memberId) ?? [], c.repo.forge.core)
-  if (key === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E305')
+  if (key === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E306')
   const kn = await rawEpochKey(session, c, n)
   try {
     requireSame(await postWrap(c, session, kn.keys, kn.raw, memberId, key.keyId, intent), memberId, n)
@@ -656,7 +656,7 @@ async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, l
   const n = session.resolution.currentEpoch
   if (n === null || !needsKeepWrap(session, c.auth.identityId, leaving)) return
   if (acceptedOwnWraps(session, c.auth.identityId, n).length === 0) {
-    throw new PrivateMembersError(`you hold the current key (epoch ${n}) only through the key chain; ask another maintainer to remove this one`, 'E309')
+    throw new PrivateMembersError(`you hold the current key (epoch ${n}) only through the key chain; ask another maintainer to remove this one`, 'E310')
   }
   const kn = await rawEpochKey(session, c, n)
   try {
@@ -684,7 +684,7 @@ async function reanchorEpochsOf(
   if (unreadable.length > 0) {
     throw new PrivateMembersError(
       `this maintainer anchored key epoch ${unreadable.join(', ')}, which you can't read, so their role can't be removed from this browser without losing it`,
-      'E309',
+      'E310',
     )
   }
   const self = decodeIdentifier(c.auth.identityId)
@@ -698,7 +698,7 @@ async function reanchorEpochsOf(
       { type: 'config', ownerId: anchor.owner, epoch: e, id: anchor.id, createdAtBlockHeight: anchor.height, enc: anchor.config.enc },
       session.ctx,
     )
-    if (opened.status !== 'readable') throw new PrivateMembersError(`the anchor of epoch ${e} does not open; repair the repo first`, 'E309')
+    if (opened.status !== 'readable') throw new PrivateMembersError(`the anchor of epoch ${e} does not open; repair the repo first`, 'E310')
     const { prevEpoch, prevEpochKey } = opened.fields
     try {
       const fields = {
