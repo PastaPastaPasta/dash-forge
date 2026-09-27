@@ -697,8 +697,17 @@ async function rotateWith(
           if (burned !== null) {
             throw new PrivateMembersError(`key epoch ${epoch} needs burning too; it was left unanchored. Run Repair again.`, 'E310')
           }
-          // §5.3 burn: anchor `epoch` chain-only with that key; the next epoch chains from it, once
-          // this anchor is the epoch's (else another maintainer's stands: build nothing on ours).
+          // §5.3 burn: first hand that key to every remaining member (so any maintainer can finish
+          // the burn with Repair, chaining from it), then anchor `epoch` chain-only with it; the
+          // next epoch chains from it once this anchor is the epoch's (else another maintainer's
+          // stands: build nothing on ours). A wrap that stands and cannot be replaced is skipped.
+          const done = new Set(ownWraps(session, selfId, epoch).map((w) => base58Encode(w.row.memberId)))
+          for (const r of plan.recipients.slice(1)) {
+            if (done.has(r.identity)) continue
+            if ((await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)).kind === 'same') {
+              onStep?.({ kind: 'wrapped', identity: r.identity, epoch })
+            }
+          }
           await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, true)
           if ((await confirmAnchor(c, epoch, next.keys.commit, drop, onStep)) === 'lost') return { lost: epoch }
           onStep?.({ kind: 'burned', epoch })
@@ -780,7 +789,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
-        `making ${short(memberId)} a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so they can't be a maintainer of this repo again; add them as a writer`,
+        `making ${short(memberId)} a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so that identity can't be a maintainer of this repo again; add them as a writer, or make a new identity of theirs the maintainer`,
         'E310',
       )
     }
@@ -875,6 +884,15 @@ export async function removePrivateMember(
   // The rotation after the delete chains from the epoch that stays current: refuse now, before
   // anything is deleted, when this browser cannot read it (a maintainer who holds it must remove).
   await withFreshSession(c, async (s) => {
+    if (role === 'maintainer' && memberId === c.auth.identityId) {
+      const mine = epochsAnchoredBy(s, memberId)
+      if (mine.length > 0) {
+        throw new PrivateMembersError(
+          `you can't remove your own maintainer role while you anchor key epoch ${mine.join(', ')}: your anchors stop counting with the role, and nobody would re-anchor them first. Keep the role; nothing was removed.`,
+          'E310',
+        )
+      }
+    }
     if (removalEffect(s.members, memberId, role) === 'none') return
     const kept = chainFrom(s, memberId, role)
     if (kept !== null && !s.resolution.keys.has(kept)) {

@@ -650,6 +650,54 @@ describe('correctness review of the burn fixes', () => {
     expect(anchorVerdict(fake, 2, a2?.commit as Uint8Array, b58(ALICE))).toEqual({ preempted: 3, by: b58(BOB) })
   })
 
+  it('C1 a burn hands the burned key to every remaining member first, so any maintainer can finish it', async () => {
+    maintainer(BOB)
+    const leaked = new Uint8Array(32).fill(0x61)
+    wrap(ALICE, ALICE, 1, leaked)
+    wrap(ALICE, CAROL, 1, leaked)
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    // The burn's anchor for epoch 2 fails: epoch 1 is left burned and current.
+    let burnedSeen = false
+    await rotateRepoKey(ctx, [b58(CAROL)], 'rm-c1', (st) => {
+      if (st.kind === 'burned') {
+        burnedSeen = true
+        failNext['config'] = 5
+      }
+    }).catch(() => undefined)
+    failNext['config'] = 0
+    expect(burnedSeen).toBe(true)
+    // BOB holds epoch 1's key from ALICE: his own session can chain from it.
+    expect(e(1).find((d) => d['memberId'] === b58(BOB) && d['$ownerId'] === b58(ALICE))?.['wrapped']).toBe(bytesToBase64(leaked))
+    const bob = await loadPrivateSession({ repo: REPO_REF, network: 'devnet', reader: b58(BOB), source: sdkSessionSource(sdk, REPO_REF), unwrapper: sessionUnwrapper(ops) })
+    expect(bob.resolution.currentEpoch).toBe(1)
+    expect(bob.resolution.keys.has(1)).toBe(true)
+  })
+
+  it('C2 removing your own maintainer role while you anchor an epoch is refused, nothing written', async () => {
+    const configs = (chain['config'] ?? []).length
+    await expect(removePrivateMember(ctx, b58(ALICE), 'maintainer', 'rm-self')).rejects.toThrow(/your own maintainer role/)
+    expect((chain['config'] ?? []).length).toBe(configs)
+    expect(members.some((m) => m.identity === b58(ALICE) && m.role === 'maintainer')).toBe(true)
+  })
+
+  it('M1 a refused re-grant says to grant writer or use a new identity', async () => {
+    await anchor(CAROL, await EpochKeys.import(REPO, 1, new Uint8Array(32).fill(0x62)), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    await expect(rotateRepoKey(ctx, [], 'r-m1')).resolves.toBe(1)
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-m1')).rejects.toThrow(/as a writer.*new identity|new identity.*as a writer/)
+  })
+
+  it('M3 re-running a removal while the current epoch is burned rotates past it', async () => {
+    maintainer(BOB)
+    const raw = new Uint8Array(32).fill(0x63)
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    wrap(BOB, ALICE, 1, raw)
+    // CAROL was already removed by an earlier run.
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    await expect(removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-again')).resolves.toBe(2)
+    const s = await aliceSession()
+    expect(s.resolution.writeEpoch).toBe(2)
+  })
+
   it('L-a an adopted self-wrap to a key this browser lacks is refused before anything else is paid', async () => {
     // An earlier run's self-wrap to ALICE's old key 3 stands, hidden from every read.
     oldKey.add(b58(ALICE))
