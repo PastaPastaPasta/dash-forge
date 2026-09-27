@@ -427,6 +427,11 @@ impl Keyring {
         Ok(())
     }
 
+    /// The identity these keys were resolved for.
+    pub fn reader(&self) -> &[u8; 32] {
+        &self.reader
+    }
+
     /// The repository these keys belong to.
     pub fn repo_id(&self) -> &[u8; 32] {
         &self.repo_id
@@ -612,6 +617,28 @@ impl Keyring {
         if let Some(e) = self.alert_error(repo) {
             return e;
         }
+        if let (Some(n), Some(r)) = (self.resolution.current_epoch, &self.resolution.repair) {
+            if !r.non_members.is_empty() && self.resolution.keys.contains_key(&n) {
+                return UserError::new(
+                    codes::ROTATION_PENDING,
+                    format!(
+                        "private repo {}: a non-member holds the current key (epoch {n})",
+                        repo.display()
+                    ),
+                )
+                .cause(format!(
+                    "the key of epoch {n} is wrapped to {}; nothing is written until a maintainer rotates",
+                    r.non_members
+                        .iter()
+                        .map(|m| platform::encode_identifier(*m))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .fix(format!("`dg repo keys repair {}` (a maintainer)", repo.display()))
+                .note("nothing was written")
+                .into();
+            }
+        }
         if let Some((n, by)) = self.burned_by() {
             return UserError::new(
                 codes::ROTATION_PENDING,
@@ -663,11 +690,12 @@ impl Keyring {
         }
     }
 
-    /// Whether something written at `height` under `epoch` predates the epoch number's current
-    /// anchor: it was sealed under an earlier use of the number (§5.3), not tampered with.
+    /// Whether something written at `height` under `epoch` predates the moment the epoch's
+    /// current key was first stated on chain (stated(e), §5.3; a re-anchor does not move it):
+    /// it was sealed under an earlier use of the number, not tampered with.
     pub fn earlier_use(&self, epoch: u32, height: Option<u64>) -> bool {
         let anchor = self.resolution.anchors.get(&epoch);
-        matches!((anchor, height), (Some(a), Some(h)) if h < a.height)
+        matches!((anchor, height), (Some(a), Some(h)) if h < a.stated_height)
     }
 
     /// The decrypted config timeline: every config that opens (any epoch the reader holds),
@@ -1829,11 +1857,7 @@ async fn wrap_held_through(
             .filter(|m| m.role == Role::Maintainer && m.identity != leaving)
             .map(|m| m.identity)
             .collect();
-    let held_otherwise = |e: u32| {
-        w.kr.wraps.iter().any(|x| {
-            x.epoch == e && x.member == w.me && maintainers.contains(&x.owner) && x.key.is_some()
-        })
-    };
+    let held_otherwise = |e: u32| held_from_others(&w.kr.wraps, before, &maintainers, w.me, e);
     // every epoch this signer reads only through `leaving`'s wraps (the chain may not reach it
     // from `top` once those stop counting): wrap it to itself first
     let only_theirs: Vec<u32> =
@@ -1867,6 +1891,24 @@ async fn wrap_held_through(
     Ok(posted)
 }
 
+/// Whether `me` holds epoch `e`'s key through a wrap from a maintainer who stays, carrying the
+/// very key the resolution uses for `e` (a wrap of another key, a race loser's, proves nothing).
+fn held_from_others(
+    wraps: &[WrapDoc],
+    before: &EpochResolution,
+    staying: &BTreeSet<[u8; 32]>,
+    me: [u8; 32],
+    e: u32,
+) -> bool {
+    wraps.iter().any(|x| {
+        x.epoch == e
+            && x.member == me
+            && staying.contains(&x.owner)
+            && x.key.is_some()
+            && x.key.as_ref() == before.keys.get(&e)
+    })
+}
+
 /// Poll until the resolution without `leaving` keeps every epoch up to `top` as it was
 /// ([`removal_preserves`]): a later config of the same epoch by another current maintainer,
 /// earlier than the re-anchor, would become the anchor instead, so the outcome is checked, not
@@ -1888,11 +1930,7 @@ async fn confirm_removal(
             match removal_preserves(before, &after, top) {
                 Ok(()) => Some(()),
                 Err(e) => {
-                    let by = after
-                        .anchors
-                        .get(&e)
-                        .map(|a| a.owner)
-                        .filter(|o| *o != w.me);
+                    let by = displaced_by(before, &after, e, w.me);
                     changed = Some((e, by));
                     None
                 }
@@ -1922,6 +1960,19 @@ async fn confirm_removal(
         .fix("run the command again in a moment; if it keeps failing, run `dg repo keys status`")
         .note("nothing was removed")
         .into())
+}
+
+/// Who took over epoch `e`'s anchor in `after` (the resolution once the leaving maintainer is
+/// gone): named only when the commitment actually changed and it is not this signer.
+fn displaced_by(
+    before: &EpochResolution,
+    after: &EpochResolution,
+    e: u32,
+    me: [u8; 32],
+) -> Option<[u8; 32]> {
+    let a = after.anchors.get(&e)?;
+    let was = before.anchors.get(&e).and_then(|b| b.commit);
+    (a.commit != was && a.owner != me).then_some(a.owner)
 }
 
 /// The existing epochs `who` anchors: a maintainer cannot drop their own role while this is not
@@ -2549,6 +2600,81 @@ mod tests {
         assert!(!kr.earlier_use(2, Some(30)));
         assert!(!kr.earlier_use(2, None));
         assert!(!kr.earlier_use(9, Some(1)), "no such epoch");
+    }
+
+    #[test]
+    fn a_removal_refusal_names_only_who_changed_the_commitment() {
+        let before = three_epochs(&[(ALICE, Role::Maintainer), (DAVE, Role::Maintainer)])
+            .keyring(ALICE)
+            .resolution;
+        // the same commitment re-anchored by dave: nobody displaced anything
+        let mut after = before.clone();
+        after.anchors.get_mut(&1).unwrap().owner = DAVE;
+        assert_eq!(displaced_by(&before, &after, 1, ALICE), None);
+        // another commitment: dave took it over
+        after.anchors.get_mut(&1).unwrap().commit = Some([0x77; 32]);
+        assert_eq!(displaced_by(&before, &after, 1, ALICE), Some(DAVE));
+        // never the remover itself
+        after.anchors.get_mut(&1).unwrap().owner = ALICE;
+        assert_eq!(displaced_by(&before, &after, 1, ALICE), None);
+    }
+
+    #[test]
+    fn an_earlier_use_is_judged_from_the_keys_first_statement_not_the_reanchor() {
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer), (DAVE, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 10, false)
+            .config(DAVE, 1, 11, Some(10), 20, false)
+            .config(ALICE, 1, 11, Some(10), 50, false)
+            .wrap(ALICE, ALICE, 1, 11);
+        // dave is gone: alice's re-anchor at 50 is the anchor, but K_1 was stated at 20
+        f.members.retain(|m| m.identity != DAVE);
+        let kr = f.keyring(ALICE);
+        assert_eq!(kr.resolution.anchors[&1].height, 50);
+        assert_eq!(kr.resolution.anchors[&1].stated_height, 20);
+        assert!(
+            !kr.earlier_use(1, Some(30)),
+            "content at 30 is this key's, not an earlier use"
+        );
+        assert!(kr.earlier_use(1, Some(19)));
+    }
+
+    #[test]
+    fn nothing_is_written_while_a_non_member_holds_the_current_key() {
+        let mallory = [7; 32];
+        let mut f = three_epochs(&[(ALICE, Role::Maintainer)]);
+        f.wrap(ALICE, mallory, 2, 12);
+        let kr = f.keyring(ALICE);
+        let err = kr.writer(&test_repo()).map(|_| ()).unwrap_err().to_string();
+        assert!(err.contains("a non-member holds the current key"), "{err}");
+    }
+
+    #[test]
+    fn a_wrap_of_another_key_does_not_count_as_holding_the_epoch() {
+        let carol = [3; 32];
+        let f = three_epochs(&[(ALICE, Role::Maintainer), (carol, Role::Maintainer)]);
+        let before = f.keyring(ALICE).resolution;
+        let staying = BTreeSet::from([ALICE, carol]);
+        let wrap_of = |key: u8| WrapDoc {
+            id: [0xab; 32],
+            owner: carol,
+            member: ALICE,
+            epoch: 2,
+            recipient_key_id: 4,
+            sender_key_id: 4,
+            wrapped: vec![0; 64],
+            key: Some(k(key)),
+        };
+        assert!(held_from_others(
+            &[wrap_of(12)],
+            &before,
+            &staying,
+            ALICE,
+            2
+        ));
+        assert!(
+            !held_from_others(&[wrap_of(0x55)], &before, &staying, ALICE, 2),
+            "a race loser's wrap holds another key"
+        );
     }
 
     #[test]

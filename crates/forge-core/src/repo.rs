@@ -531,11 +531,13 @@ impl<'a> RepoService<'a> {
                 *self.cache() = Some(std::sync::Arc::clone(&fresh));
                 fresh.open_pack(repo, &sealed, size_bytes)
             }
-            // Every copy predates the epoch number's current anchor: sealed under an earlier
-            // use of the number (§5.3), a different key. Not corruption; skipped like late
-            // content.
+            // A tag failure on every copy predating the key's first statement: sealed under an
+            // earlier use of the epoch number (§5.3), a different key. Not corruption; skipped
+            // like late content. A malformed or truncated copy (E508) still fails as such.
+            // (the header parsed above and the length matches, so only a segment tag can fail)
             Err(_)
-                if copies
+                if sealed.len() as u64 == size_bytes
+                    && copies
                     .iter()
                     .all(|m| kr.earlier_use(header.epoch(), Some(m.created_at_block_height))) =>
             {

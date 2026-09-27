@@ -218,19 +218,22 @@ fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> 
 /// wrap per member missing one.
 fn repair_estimate(kr: &Keyring) -> (u64, String) {
     match kr.resolution().repair.as_ref() {
-        Some(p) if p.rotate => {
-            let members = distinct_members(kr.members());
-            if keyring::rotation_may_burn(kr) {
-                burn_estimate(members)
-            } else {
-                rotation_estimate(members)
-            }
-        }
+        Some(p) if p.rotate => rotation_cost(kr, distinct_members(kr.members())),
         Some(p) if !p.missing_wraps.is_empty() => (
             WRAP_ESTIMATE_CREDITS * p.missing_wraps.len() as u64,
             format!("{} wrap(s)", p.missing_wraps.len()),
         ),
         _ => (0, "nothing".into()),
+    }
+}
+
+/// The estimate of the reader's next rotation over `members` members: a burn first when an
+/// earlier run left a key for the next epoch (§5.5).
+pub fn rotation_cost(kr: &Keyring, members: usize) -> (u64, String) {
+    if keyring::rotation_may_burn(kr) {
+        burn_estimate(members)
+    } else {
+        rotation_estimate(members)
     }
 }
 
@@ -320,7 +323,7 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
     require_private(&s.repo)?;
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "rotate the key")?;
-    let (est, what) = rotation_estimate(distinct_members(kr.members()));
+    let (est, what) = rotation_cost(&kr, distinct_members(kr.members()));
     let price = dash_usd_price();
     if !ctx.confirm(&format!(
         "Rotate the key of {}: {what}, {}?",

@@ -161,6 +161,9 @@ pub struct Anchor {
     /// The commitment its `enc` carries (`None` for an `enc` that is not v0x02: it matches no
     /// key).
     pub commit: Option<[u8; 32]>,
+    /// The block height of stated(e): the first config (by anyone) carrying this commitment,
+    /// when the epoch's key was first stated on chain (§5.3). A re-anchor keeps it.
+    pub stated_height: u64,
 }
 
 /// Everything [`resolve_epochs`] decides.
@@ -297,7 +300,7 @@ impl EpochResolution {
 fn select_anchors<'c>(
     configs: &'c [ConfigRow],
     maintainers: &BTreeSet<[u8; 32]>,
-) -> (BTreeMap<u32, &'c ConfigRow>, Vec<&'c ConfigRow>) {
+) -> (BTreeMap<u32, (&'c ConfigRow, u64)>, Vec<&'c ConfigRow>) {
     let order = |c: &ConfigRow| (c.created_at_block_height, c.id);
     let mut by_epoch: BTreeMap<u32, Vec<&ConfigRow>> = BTreeMap::new();
     for c in configs {
@@ -306,7 +309,7 @@ fn select_anchors<'c>(
     for cs in by_epoch.values_mut() {
         cs.sort_by_key(|c| order(c));
     }
-    let mut anchors: BTreeMap<u32, &ConfigRow> = BTreeMap::new();
+    let mut anchors: BTreeMap<u32, (&ConfigRow, u64)> = BTreeMap::new();
     let mut stated: Option<(u64, [u8; 32])> = None;
     for e in 0..=u32::MAX {
         let Some(cs) = by_epoch.get(&e) else { break };
@@ -323,7 +326,7 @@ fn select_anchors<'c>(
             .iter()
             .find(|c| commit.is_some() && anchor_of(c).commit == commit)
             .map_or(anchor, |c| *c);
-        anchors.insert(e, anchor);
+        anchors.insert(e, (anchor, first.created_at_block_height));
         stated = Some(order(first));
     }
     let gaps = by_epoch
@@ -342,6 +345,7 @@ fn anchor_of(c: &ConfigRow) -> Anchor {
         owner: c.owner,
         height: c.created_at_block_height,
         commit,
+        stated_height: c.created_at_block_height,
     }
 }
 
@@ -485,8 +489,20 @@ pub fn resolve_epochs(
         .collect();
     let members: BTreeSet<[u8; 32]> = memberships.iter().map(|m| m.identity).collect();
 
-    let (first, gaps) = select_anchors(configs, &maintainers);
-    let anchors: BTreeMap<u32, Anchor> = first.iter().map(|(&e, c)| (e, anchor_of(c))).collect();
+    let (selected, gaps) = select_anchors(configs, &maintainers);
+    let first: BTreeMap<u32, &ConfigRow> = selected.iter().map(|(&e, (c, _))| (e, *c)).collect();
+    let anchors: BTreeMap<u32, Anchor> = selected
+        .iter()
+        .map(|(&e, (c, stated))| {
+            (
+                e,
+                Anchor {
+                    stated_height: *stated,
+                    ..anchor_of(c)
+                },
+            )
+        })
+        .collect();
     let current_epoch = anchors.keys().next_back().copied();
     let unanchored: Vec<u32> = configs
         .iter()

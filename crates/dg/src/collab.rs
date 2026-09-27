@@ -75,9 +75,11 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
             if let Some(epoch) = kr.maintainer_would_move_anchors(id) {
                 return Err(UserError::new(
                     codes::ROTATION_PENDING,
-                    format!("{member} can't be made a maintainer of {repo} again"),
+                    format!(
+                        "adding {member} as a maintainer of {repo} would change key epoch {epoch}"
+                    ),
                 )
-                .cause(format!("they posted a config for key epoch {epoch} in an earlier maintainer role; it would count again and take over that epoch's anchor"))
+                .cause("a config from their earlier maintainer role would count again")
                 .fix("add them as a writer, or make a new identity of theirs the maintainer")
                 .note("nothing was written")
                 .into());
@@ -145,7 +147,8 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     }
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
-        private_remove_prompt(&members, repo, member, role)
+        let kr = crate::keys::signer(&s).keyring(handle).await?;
+        private_remove_prompt(&kr, &members, repo, member, role)
     } else {
         format!(
             "Remove {member} as a {} of {repo}? Their next push is refused at once",
@@ -168,8 +171,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         .await
         .context("removing the member")?;
     // A private removal rotates. Also when the member was already gone but the repair check
-    // still names them (an earlier removal whose rotation did not finish): re-running
-    // `dg collab remove` finishes it.
+    // still names them, or the current epoch is burned (an earlier removal whose rotation did
+    // not finish, or anyone's interrupted burn: finishing it is the recovery path, and the prompt
+    // above named who burned it): re-running `dg collab remove` finishes it.
     // Dropping only the writer role of someone who stays a maintainer changes nobody's access
     // to the key: no rotation (dropping the maintainer role of someone who stays a writer does
     // rotate, since their wraps stop counting, §5.4; they are wrapped the new key).
@@ -236,6 +240,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
 /// The verbatim §9 warning and the cost of a private removal: after it, everyone else (the
 /// rotator included) gets a wrap, plus an anchor.
 fn private_remove_prompt(
+    kr: &forge_core::keyring::Keyring,
     members: &[forge_core::members::Member],
     repo: &str,
     member: &str,
@@ -246,11 +251,22 @@ fn private_remove_prompt(
         .any(|m| m.identity_id == member && m.role != role);
     let remaining = crate::keys::distinct_members(members)
         - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
-    let (est, what) = crate::keys::rotation_estimate(remaining);
+    let (est, what) = crate::keys::rotation_cost(kr, remaining);
+    // Finishing someone else's burn is the recovery path: say whose it is, don't block it.
+    let burned = kr
+        .burned_by()
+        .filter(|(_, by)| *by != *kr.reader())
+        .map(|(n, by)| {
+            format!(
+                "\nKey epoch {n} is burned by {}; this removal's rotation also finishes that burn.",
+                forge_core::platform::encode_identifier(by)
+            )
+        })
+        .unwrap_or_default();
     format!(
         "Removing {member} rotates the repo key. New pushes, issues and comments will be \
          unreadable to {member}. Everything {member} could already read stays readable to \
-         {member} — encryption can't take back what was shared.\n\
+         {member} — encryption can't take back what was shared.{burned}\n\
          Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
         role_name(role),
         cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, dash_usd_price())
