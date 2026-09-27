@@ -7,7 +7,7 @@
  * runs only when the user asks for it.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Fingerprint, KeyRound } from 'lucide-react'
 import { enrollPasskey, MIN_PASSPHRASE, passkeysAvailable, type Protection } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -74,9 +74,16 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
   else if (preferPasskey) passkeyVariant = 'primary'
 
   // Passphrases are uncontrolled inputs (never mirrored into a `value` attribute), inside a
-  // form so the browser does not log the fields as "not contained in a form".
+  // form so the browser does not log the fields as "not contained in a form". A caller may
+  // render `fields` in more than one place: a freshly mounted form has empty inputs, so the
+  // state starts empty with it (never a passphrase the screen does not show).
+  const onFormMount = useCallback((form: HTMLFormElement | null) => {
+    if (form === null) return
+    setPassphrase('')
+    setConfirm('')
+  }, [])
   const fields = (
-    <form className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800" onSubmit={(e) => e.preventDefault()}>
+    <form ref={onFormMount} className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800" onSubmit={(e) => e.preventDefault()}>
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
       {preferPasskey && !passkey ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">

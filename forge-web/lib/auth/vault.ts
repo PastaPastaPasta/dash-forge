@@ -264,13 +264,25 @@ function rpId(): string {
   return window.location.hostname
 }
 
-/** Whether this browser can do WebAuthn at all (PRF support is only known after a ceremony). */
 /**
  * How long a passkey ceremony may take (WebAuthn `timeout`, and a backstop for browsers that
  * ignore it): the user needs time for Touch ID or a security key, but not forever.
  */
 export const PASSKEY_TIMEOUT_MS = 120_000
 
+/**
+ * Run a WebAuthn ceremony with the backstop: past it the ceremony is aborted (its signal), so
+ * the prompt closes and the next attempt is not refused as "a request is already pending".
+ */
+function passkeyCeremony<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ceremony = new AbortController()
+  return withTimeout(start(ceremony.signal), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt').catch((e: unknown) => {
+    ceremony.abort()
+    throw e
+  })
+}
+
+/** Whether this browser can do WebAuthn at all (PRF support is only known after a ceremony). */
 export function passkeysAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined' && window.isSecureContext
 }
@@ -286,7 +298,8 @@ export function passkeysAvailable(): boolean {
  */
 export async function enrollPasskey(label: string): Promise<{ credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array } | null> {
   const prfSalt = random(32)
-  const cred = (await withTimeout(navigator.credentials.create({
+  const cred = (await passkeyCeremony((signal) => navigator.credentials.create({
+    signal,
     publicKey: {
       timeout: PASSKEY_TIMEOUT_MS,
       rp: { id: rpId(), name: 'Dash Forge' },
@@ -299,7 +312,7 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
       authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  }), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt')) as PublicKeyCredential | null
+  }))) as PublicKeyCredential | null
   if (!cred) return null
   const ext = cred.getClientExtensionResults() as PrfExtensionResults
   const credentialId = new Uint8Array(cred.rawId)
@@ -314,7 +327,8 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
 
 /** Evaluate the PRF of an enrolled passkey (a user-verified assertion). */
 async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
-  const assertion = (await withTimeout(navigator.credentials.get({
+  const assertion = (await passkeyCeremony((signal) => navigator.credentials.get({
+    signal,
     publicKey: {
       timeout: PASSKEY_TIMEOUT_MS,
       rpId: rpId(),
@@ -323,7 +337,7 @@ async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): P
       userVerification: 'required',
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  }), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt')) as PublicKeyCredential | null
+  }))) as PublicKeyCredential | null
   const ext = assertion?.getClientExtensionResults() as PrfExtensionResults | undefined
   return ext?.prf?.results?.first ?? null
 }

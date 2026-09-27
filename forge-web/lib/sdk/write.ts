@@ -537,11 +537,12 @@ async function definitelyAbsent(sdk: EvoSDK, contractId: string, documentType: s
 const writeLocks = new Map<string, Promise<unknown>>()
 
 /**
- * How long a write waits for its turn (this tab's queue, then the cross-tab lock). One write
- * holds it for at most a few minutes (the result wait plus settling an unanswered transition),
- * so a wait past this means another write is stuck: say so rather than wait forever.
+ * How long a write waits for its turn (this tab's queue, then the cross-tab lock). A healthy
+ * write holds it for up to ~4 min (the 45 s result wait, two settle rounds and a final check),
+ * about twice that when a round comes back lost; a wait past this means another write is
+ * stuck: say so rather than wait forever.
  */
-export const WRITER_WAIT_MS = 3 * 60_000
+export const WRITER_WAIT_MS = 10 * 60_000
 
 /** Another write for this identity (in this tab or another) held the writer lock too long. */
 export class WriterBusyError extends Error {

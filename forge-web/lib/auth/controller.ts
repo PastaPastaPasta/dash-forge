@@ -669,6 +669,11 @@ export class AuthController {
   /** Unlock a stored vault and open its session. */
   async unlock(identityId: string, method: { passphrase: string } | 'passkey'): Promise<AuthSession> {
     return this.run(async () => {
+      // Connect first: a connect that times out then fails before the passphrase (Argon2id)
+      // or passkey prompt, so "Try again" does not ask for them twice.
+      this.step('Connecting to Dash Platform')
+      await this.getSdk()
+      this.step(method === 'passkey' ? 'Unlocking with your passkey' : 'Unlocking')
       const secret =
         method === 'passkey'
           ? await unlockWithPasskey(this.network, identityId)

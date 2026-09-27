@@ -15,7 +15,7 @@
  * unmounts, and the buttons are disabled while a run is active.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -75,7 +75,19 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [running, setRunning] = useState(false)
   // Checking typed words before a run (the library may still be downloading).
   const [preparing, setPreparing] = useState(false)
-  const [resumeWords, setResumeWords] = useState('')
+  const [resumeWords, setResumeWordsState] = useState('')
+  // The typed words live in the textarea's value property only (a controlled textarea's value
+  // is also its DOM text). Clearing the state clears the field; a fresh field starts empty.
+  const resumeRef = useRef<HTMLTextAreaElement | null>(null)
+  const setResumeWords = (w: string): void => {
+    if (w === '' && resumeRef.current) resumeRef.current.value = ''
+    setResumeWordsState(w)
+  }
+  const bindResume = useCallback((el: HTMLTextAreaElement | null) => {
+    if (el === null && resumeRef.current) resumeRef.current.value = ''
+    else if (el !== null) setResumeWordsState('')
+    resumeRef.current = el
+  }, [])
   // Cleared as soon as a run starts (start() empties it).
   const [discardWarning, setDiscardWarning] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
@@ -245,7 +257,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           your 12 words to finish it.
         </p>
         <Field label="Your 12 words" htmlFor="resume-words">
-          <Textarea id="resume-words" value={resumeWords} onChange={(e) => setResumeWords(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
+          <Textarea id="resume-words" ref={bindResume} onChange={(e) => setResumeWordsState(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
         </Field>
         {fields}
         <Button

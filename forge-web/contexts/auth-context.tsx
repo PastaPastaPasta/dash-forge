@@ -29,6 +29,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
+import { errorMessage } from '../lib/utils'
 import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
 
@@ -80,6 +81,8 @@ interface AuthContextValue {
   readonly limitedKeys: boolean
   /** Keys stored (encrypted) on this device for this network. */
   readonly vaults: readonly VaultInfo[]
+  /** Why the stored-key list could not be read (null when it was). */
+  readonly vaultsError: string | null
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -143,8 +146,17 @@ export function AuthProvider({
   }, [notice, controller])
 
   const [vaults, setVaults] = useState<readonly VaultInfo[]>([])
+  // Why the stored-key list could not be read (storage blocked by another tab, say): the last
+  // list read stays, so a stored key never silently turns into "no key here".
+  const [vaultsError, setVaultsError] = useState<string | null>(null)
   const reloadVaults = useCallback(() => {
-    controller.storedVaults().then(setVaults, () => setVaults([]))
+    controller.storedVaults().then(
+      (v) => {
+        setVaults(v)
+        setVaultsError(null)
+      },
+      (e: unknown) => setVaultsError(errorMessage(e)),
+    )
   }, [controller])
   useEffect(reloadVaults, [reloadVaults])
 
@@ -240,11 +252,12 @@ export function AuthProvider({
       unboundedKey: session?.unbounded === true,
       limitedKeys: controller.supportsLimitedKeys(),
       vaults,
+      vaultsError,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults, vaultsError],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

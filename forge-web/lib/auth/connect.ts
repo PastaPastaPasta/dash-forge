@@ -15,7 +15,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
-import { ensureSdk } from '../sdk/service'
+import { ensureSdk, evoSdkService } from '../sdk/service'
 import { StepTimeoutError, withTimeout } from '../timeout'
 import { errorMessage } from '../utils'
 
@@ -63,6 +63,8 @@ export async function connectPlatform(network: Network, onPhase?: (p: ConnectPha
   try {
     return await withTimeout(ensureSdk(network), CONNECT_MS, PHASE_TEXT.connecting)
   } catch (e) {
+    // A connect the service has given up on starts again now rather than at its backoff.
+    evoSdkService.retryNow()
     const why = e instanceof StepTimeoutError ? `no answer within ${CONNECT_MS / 1000} s` : errorMessage(e)
     throw new Error(`Could not connect to Dash Platform (${why}). Its nodes may be busy or unreachable; try again in a moment.`)
   }

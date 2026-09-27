@@ -17,7 +17,7 @@
  * deployed".
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
@@ -27,6 +27,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { StepFailed } from '@/components/auth/step-status'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
@@ -44,7 +45,7 @@ export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
   const requested = useUiStore((s) => s.loginView)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, limitedKeys } = useAuth()
+  const { vaults, vaultsError, reloadVaults, limitedKeys } = useAuth()
   const [view, setView] = useState<View>('choose')
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   const hasVault = vaults.length > 0
@@ -59,6 +60,8 @@ export function LoginModal(): JSX.Element {
       return
     }
     if (opened.current === null) {
+      // Read the stored keys again: another tab may have added one, or storage was blocked.
+      reloadVaults()
       opened.current = { hasVault }
       setView(requested ?? (hasVault ? 'unlock' : 'choose'))
       setUnlockFor(null)
@@ -68,13 +71,18 @@ export function LoginModal(): JSX.Element {
       opened.current = { hasVault }
       setView((v) => (v === 'choose' ? 'unlock' : v))
     }
-  }, [open, requested, hasVault])
+  }, [open, requested, hasVault, reloadVaults])
 
   const back = view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
   const description = describeView(view, limitedKeys)
 
   return (
     <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
+      {vaultsError && (view === 'choose' || view === 'unlock') ? (
+        <div className="mb-3">
+          <StepFailed error={`Couldn't read the keys stored in this browser: ${vaultsError}`} onRetry={reloadVaults} />
+        </div>
+      ) : null}
       {back ? (
         <button type="button" onClick={back} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-anvil-800 dark:hover:text-anvil-100">
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> All options
@@ -269,7 +277,16 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         This browser holds a key for{' '}
         {vaults.length > 1 ? (
-          <select aria-label="Identity" value={pick} onChange={(e) => setPick(Number(e.target.value))} className="rounded border border-anvil-300 bg-transparent px-1 font-mono coarse:h-11 coarse:text-base dark:border-anvil-700">
+          <select
+            aria-label="Identity"
+            value={pick}
+            onChange={(e) => {
+              setPick(Number(e.target.value))
+              // The passphrase field may unmount (a passkey-only key) and come back empty.
+              setPassphrase('')
+            }}
+            className="rounded border border-anvil-300 bg-transparent px-1 font-mono coarse:h-11 coarse:text-base dark:border-anvil-700"
+          >
             {vaults.map((x, i) => (
               <option key={x.identityId} value={i}>
                 {x.identityId.slice(0, 10)}…
@@ -314,7 +331,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         <button
           type="button"
           onClick={() => {
-            if (window.confirm(FORGET_CONFIRM)) void forget(v.identityId).then(() => setPick(0))
+            if (window.confirm(FORGET_CONFIRM)) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
           }}
           className="text-danger-700 dark:text-danger-400 underline"
         >
@@ -344,6 +361,14 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const [fileName, setFileName] = useState('')
   const [fileIdentity, setFileIdentity] = useState('')
   const [mnemonic, setMnemonic] = useState('')
+  // The words live in the textarea's value property only (never a DOM attribute or text): the
+  // field mounts empty (a tab switch), so the state does too; it is wiped as it detaches.
+  const mnemonicRef = useRef<HTMLTextAreaElement | null>(null)
+  const bindMnemonic = useCallback((el: HTMLTextAreaElement | null) => {
+    if (el === null && mnemonicRef.current) mnemonicRef.current.value = ''
+    else if (el !== null) setMnemonic('')
+    mnemonicRef.current = el
+  }, [])
   const [identityId, setIdentityId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
@@ -356,8 +381,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
-    const text = await file.text()
+    let text: string
     try {
+      text = await file.text()
       setFileIdentity(masterMaterialFromFile(text).identityId)
     } catch (e) {
       fileRef.current = null
@@ -382,6 +408,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         enablePrivateRepos: enablePrivate,
       })
       fileRef.current = null
+      if (mnemonicRef.current) mnemonicRef.current.value = ''
       setMnemonic('')
       onDone()
     } catch (e) {
@@ -413,7 +440,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
             <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
           </Field>
           <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key; not stored.">
-            <Textarea id="import-mnemonic" value={mnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
+            {/* Uncontrolled: a controlled textarea's value is also its DOM text content. */}
+            <Textarea id="import-mnemonic" ref={bindMnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
           </Field>
         </>
       )}
@@ -461,14 +489,18 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
   // The pasted key lives only in the input's value property (an uncontrolled input): React
   // mirrors a controlled input's value into the `value` attribute, which put the key in the
   // DOM (and in Chrome's console warnings that print the element).
-  const keyRef = useRef<HTMLInputElement>(null)
+  const keyRef = useRef<HTMLInputElement | null>(null)
   const [hasKey, setHasKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const clearKey = (): void => {
     if (keyRef.current) keyRef.current.value = ''
     setHasKey(false)
   }
-  useEffect(() => clearKey, [])
+  // Wipe the field as React detaches it (a cleanup effect runs too late: the ref is null).
+  const bindKey = useCallback((el: HTMLInputElement | null) => {
+    if (el === null && keyRef.current) keyRef.current.value = ''
+    keyRef.current = el
+  }, [])
   const submit = async (): Promise<void> => {
     const key = keyRef.current?.value ?? ''
     if (isLoading || key.trim() === '') return
@@ -497,7 +529,7 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
         <Input id="adv-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
       </Field>
       <Field label="Private key (WIF or hex)" htmlFor="adv-key" hint="HIGH or CRITICAL authentication key. Held in this tab only.">
-        <Input id="adv-key" ref={keyRef} type="password" onChange={(e) => setHasKey(e.target.value.trim() !== '')} className="font-mono" spellCheck={false} autoComplete="off" />
+        <Input id="adv-key" ref={bindKey} type="password" onChange={(e) => setHasKey(e.target.value.trim() !== '')} className="font-mono" spellCheck={false} autoComplete="off" />
       </Field>
       <Button type="submit" variant="danger" className="w-full" loading={isLoading} disabled={identityId.trim() === '' || !hasKey || isLoading}>
         Sign in for this tab

@@ -18,6 +18,14 @@ const STORES: readonly StoreName[] = ['spend', 'journal', 'vault', 'inbox']
 /** How long a caller waits for the database to open before it gets an error. */
 export const IDB_OPEN_TIMEOUT_MS = 10_000
 
+/** A newer Dash Forge upgraded this browser's storage: this tab must reload to use it. */
+export class IdbSupersededError extends Error {
+  constructor() {
+    super('Dash Forge was updated in another tab. Reload this tab to keep signing in and writing.')
+    this.name = 'IdbSupersededError'
+  }
+}
+
 /** Another tab holds an older version of the database open, so this one cannot upgrade it. */
 export class IdbBlockedError extends Error {
   constructor() {
@@ -88,11 +96,22 @@ function startOpen(): Promise<IDBDatabase> {
         if (opening === p) opening = null
         markSuperseded()
       }
+      // Closed by the browser (storage cleared, the IndexedDB server lost after backgrounding):
+      // open afresh on next use instead of reusing a dead connection.
+      db.onclose = () => {
+        if (opening === p) opening = null
+      }
       resolve(db)
     }
     req.onerror = () => {
       blocked = false
       if (opening === p) opening = null
+      // A newer build already upgraded the database past this build's version.
+      if (req.error?.name === 'VersionError') {
+        markSuperseded()
+        reject(new IdbSupersededError())
+        return
+      }
       reject(req.error ?? new Error('IndexedDB open failed'))
     }
   })
@@ -103,13 +122,14 @@ function startOpen(): Promise<IDBDatabase> {
 
 /** The database, or an error within {@link IDB_OPEN_TIMEOUT_MS}: blocked, failed or stuck. */
 function open(): Promise<IDBDatabase> {
+  if (superseded) return Promise.reject(new IdbSupersededError())
   if (!opening) opening = startOpen()
   if (blocked) return Promise.reject(new IdbBlockedError())
   const request = opening
   return new Promise<IDBDatabase>((resolve, reject) => {
     const onBlocked = (): void => settle(() => reject(new IdbBlockedError()))
     const timer = setTimeout(
-      () => settle(() => reject(new Error(`This browser’s storage (IndexedDB) did not open within ${IDB_OPEN_TIMEOUT_MS / 1000} s. Reload the page and try again.`))),
+      () => settle(() => reject(new Error(`This browser’s storage (IndexedDB) did not open within ${IDB_OPEN_TIMEOUT_MS / 1000} s. If Dash Forge is open in other tabs, close or reload them; otherwise reload this page.`))),
       IDB_OPEN_TIMEOUT_MS,
     )
     const settle = (fn: () => void): void => {
@@ -217,6 +237,7 @@ export async function idbEntries<T>(store: StoreName, prefix = ''): Promise<[str
     }
     tx.oncomplete = () => resolve(out)
     tx.onerror = () => reject(tx.error ?? new Error('IndexedDB cursor failed'))
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'))
   })
 }
 
