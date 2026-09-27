@@ -82,7 +82,8 @@ function parseIdent(line: string): GitIdent {
  * refuses such commits outright where it matters (merges).
  */
 export function parseCommit(bytes: Uint8Array): CommitObject {
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  // `ignoreBOM`: a leading BOM stays in the text, so the first line is not "tree " (as for git).
+  const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes)
   const sep = text.indexOf('\n\n')
   const header = sep === -1 ? text : text.slice(0, sep)
   const message = sep === -1 ? '' : text.slice(sep + 2)
@@ -109,7 +110,8 @@ export class MalformedObjectError extends Error {
 }
 
 const OID_HEX = /^[0-9a-f]{40}$/
-const IDENT = /^[^<>\n]* <[^<>\n]*> \d+ [+-]\d{4}$/
+/** `name <email> <date> <tz>`, as fsck_ident: no `<`/`>` stray, no zero-padded date. */
+const IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d*) [+-]\d{4}$/
 
 /**
  * Refuse a commit `git fsck` would refuse, or one git and this client could read differently:
@@ -121,16 +123,20 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
   const bad = (why: string): never => {
     throw new MalformedObjectError(oid, why)
   }
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    // A non-UTF-8 message is legal git; its header must still be plain ASCII.
-    text = new TextDecoder('latin1').decode(bytes)
+  // Judge the raw bytes as git does: a decoder would drop a leading BOM or hide a NUL.
+  const TREE = [0x74, 0x72, 0x65, 0x65, 0x20]
+  if (!TREE.every((b, i) => bytes[i] === b)) bad('the object must start with "tree "')
+  let sep = -1
+  for (let i = 0; i + 1 < bytes.length; i++) {
+    if (bytes[i] === 0x00) bad('a NUL byte in the header')
+    if (bytes[i] === 0x0a && bytes[i + 1] === 0x0a) {
+      sep = i
+      break
+    }
   }
-  const sep = text.indexOf('\n\n')
   if (sep === -1) bad('no blank line after the header')
-  const lines = text.slice(0, sep).split('\n')
+  // latin1 maps every byte to one char, so nothing is dropped or merged.
+  const lines = new TextDecoder('latin1').decode(bytes.subarray(0, sep)).split('\n')
   let i = 0
   const take = (key: string): string | null => {
     const line = lines[i]
@@ -152,6 +158,28 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
     if (key === 'tree' || key === 'parent' || key === 'author' || key === 'committer') bad(`a second "${key}" header`)
     if (key === '') bad('an empty header line')
   }
+}
+
+/** Characters HFS+ ignores in names (as `is_hfs_dotgit`). */
+const HFS_IGNORABLE = /[‌-‏‪-‮⁪-⁯﻿]/g
+
+/** A name with what HFS+ ignores removed, and as NTFS resolves it (lowercase, no stream, no trailing dots or spaces). */
+function foldedName(name: string): { readonly hfs: string; readonly ntfs: string } {
+  const hfs = name.replace(HFS_IGNORABLE, '')
+  const ntfs = (hfs.split(':')[0] as string).toLowerCase().replace(/[. ]+$/, '')
+  return { hfs, ntfs }
+}
+
+/** `.`, `..`, or a name some filesystem reads as the repository directory (`.git.`, `GIT~1`, `.g‌it`). */
+function isDotGitLike(name: string): boolean {
+  const { hfs, ntfs } = foldedName(name)
+  return hfs === '.' || hfs === '..' || ntfs === '.git' || /^\.?git~[1-9]$/.test(ntfs)
+}
+
+/** The submodule file, or a name some filesystem reads as it (`GITMOD~1`). */
+function isDotGitModulesLike(name: string): boolean {
+  const { ntfs } = foldedName(name)
+  return ntfs === '.gitmodules' || /^gitmod~[1-9]$/.test(ntfs)
 }
 
 /** The tree-entry modes git writes (fsck refuses anything else). */
@@ -195,9 +223,16 @@ export function checkTree(oid: string, bytes: Uint8Array): void {
     while (nul < bytes.length && bytes[nul] !== 0x00) nul += 1
     if (nul + 21 > bytes.length) bad('truncated entry')
     const raw = bytes.subarray(sp + 1, nul)
-    const name = new TextDecoder('latin1').decode(raw)
-    if (name === '' || name.includes('/') || name === '.' || name === '..' || name.toLowerCase() === '.git') bad(`bad entry name "${name}"`)
-    if (names.has(name)) bad(`entry "${name}" twice`)
+    // Names must be UTF-8: the merge (isomorphic-git) decodes them, and would rewrite others.
+    let name = ''
+    try {
+      name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw)
+    } catch {
+      bad('an entry name that is not UTF-8')
+    }
+    if (name === '' || name.includes('/') || name.includes('\\') || isDotGitLike(name)) bad(`bad entry name ${JSON.stringify(name)}`)
+    if (mode === 0o120000 && isDotGitModulesLike(name)) bad('".gitmodules" as a symbolic link')
+    if (names.has(name)) bad(`entry ${JSON.stringify(name)} twice`)
     names.add(name)
     const key = treeKey(raw, mode)
     if (prev !== null && compareBytes(prev, key) >= 0) bad('entries out of order')

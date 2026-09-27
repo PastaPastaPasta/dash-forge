@@ -15,7 +15,9 @@
 
 import diff3Merge from 'diff3'
 
-import { checkCommit, checkTree, MalformedObjectError } from '../view/git-objects'
+import { MODE_TREE } from '../browse'
+
+import { checkCommit, checkTree, MalformedObjectError, parseCommit, parseTree } from '../view/git-objects'
 import { findMergeBase } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { createMergeFs } from './git-fs'
@@ -135,6 +137,7 @@ export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'b
 export async function threeWayMerge(
   reader: ObjectReader,
   input: MergeInput,
+  mergeBase: string,
 ): Promise<{ kind: 'merge'; oid: string; reader: ObjectReader } | { kind: 'conflict'; paths: readonly string[] }> {
   const git = await import('isomorphic-git')
   const fs = createMergeFs(reader)
@@ -175,6 +178,10 @@ export async function threeWayMerge(
     const underlying = fs.readError()
     if (underlying !== undefined) throw underlying
     if (r.oid === undefined) throw new Error('the merge produced no commit')
+    const merged = parseCommit((await fs.reader.readObject(r.oid)).bytes).tree
+    const trees = await Promise.all([input.baseTip, input.headOid, mergeBase].map(async (c) => parseCommit((await fs.reader.readObject(c)).bytes).tree))
+    const refused = await auditMergedTree(fs.reader, merged, trees[0] as string, trees[1] as string, trees[2] as string)
+    if (refused.length > 0) return { kind: 'conflict', paths: refused }
     return { kind: 'merge', oid: r.oid, reader: fs.reader }
   } catch (e) {
     // A read that failed underneath isomorphic-git surfaces as its own error, not "not found".
@@ -186,6 +193,68 @@ export async function threeWayMerge(
     if (err.code === 'MergeNotSupportedError') return { kind: 'conflict', paths: [] }
     throw e
   }
+}
+
+const MODE_LINK = 0o120000
+const MODE_SUBMODULE = 0o160000
+
+/** What an entry is, as git's merge compares them: a directory, a file (either file mode), a symlink, a submodule. */
+function entryKind(mode: number): 'tree' | 'file' | 'link' | 'gitlink' {
+  if (mode === MODE_TREE) return 'tree'
+  if (mode === MODE_LINK) return 'link'
+  if (mode === MODE_SUBMODULE) return 'gitlink'
+  return 'file'
+}
+
+/**
+ * Audit a tree isomorphic-git merged, against the merge base and both sides, before anything
+ * is built from it. Returns the paths git would call conflicts that isomorphic-git merged:
+ *
+ *  - a path whose kind changed on one side (a file became a symlink, say) while the other side
+ *    changed it too — git reports "CONFLICT (distinct types)", isomorphic-git merges the text;
+ *  - a symlink or submodule entry that is neither side's (their targets are never merged).
+ *
+ * Every tree the merge wrote is also checked as fsck would ({@link checkTree}): isomorphic-git
+ * orders entries by UTF-16, not git's bytes, so a merge the check offered never fails later.
+ */
+export async function auditMergedTree(reader: ObjectReader, merged: string, ours: string, theirs: string, base: string): Promise<string[]> {
+  const conflicts: string[] = []
+  const entries = async (oid: string | undefined): Promise<Map<string, { mode: number; oid: string }>> => {
+    if (oid === undefined) return new Map()
+    const obj = await reader.readObject(oid)
+    if (obj.type !== 'tree') return new Map()
+    return new Map(parseTree(obj.bytes).map((e) => [e.name, { mode: e.mode, oid: e.oid }]))
+  }
+  const walk = async (m: string, o: string | undefined, t: string | undefined, b: string | undefined, prefix: string): Promise<void> => {
+    if (m === o || m === t) return // one side's tree unchanged: nothing merged below
+    checkTree(m, (await reader.readObject(m)).bytes)
+    const [me, oe, te, be] = await Promise.all([entries(m), entries(o), entries(t), entries(b)])
+    const names = new Set([...me.keys(), ...oe.keys(), ...te.keys()])
+    for (const name of names) {
+      const path = `${prefix}${name}`
+      const [mm, oo, tt, bb] = [me.get(name), oe.get(name), te.get(name), be.get(name)]
+      const kinds = (x: { mode: number } | undefined): string => (x === undefined ? 'none' : entryKind(x.mode))
+      const oursChanged = oo?.oid !== bb?.oid || oo?.mode !== bb?.mode
+      const theirsChanged = tt?.oid !== bb?.oid || tt?.mode !== bb?.mode
+      if (oursChanged && theirsChanged && oo !== undefined && tt !== undefined && kinds(oo) !== kinds(tt)) {
+        conflicts.push(path)
+        continue
+      }
+      if (mm === undefined) continue
+      const special = mm.mode === MODE_LINK || mm.mode === MODE_SUBMODULE
+      const isSide = (x: { mode: number; oid: string } | undefined): boolean => x !== undefined && x.mode === mm.mode && x.oid === mm.oid
+      if (special && !isSide(oo) && !isSide(tt)) {
+        conflicts.push(path)
+        continue
+      }
+      if (mm.mode === MODE_TREE) {
+        const sub = (x: { mode: number; oid: string } | undefined): string | undefined => (x !== undefined && x.mode === MODE_TREE ? x.oid : undefined)
+        await walk(mm.oid, sub(oo), sub(tt), sub(bb), `${path}/`)
+      }
+    }
+  }
+  await walk(merged, ours, theirs, base, '')
+  return conflicts
 }
 
 /** Object reads one merge (or check) may make before it is refused as too large. */
@@ -227,7 +296,7 @@ export async function checkMerge(raw: ObjectReader, input: MergeInput, budget = 
   try {
     const plan = await planMerge(reader, input)
     if (plan.kind !== 'merge') return plan.kind
-    return (await threeWayMerge(reader, input)).kind
+    return (await threeWayMerge(reader, input, plan.mergeBase)).kind
   } catch (e) {
     if (e instanceof MalformedObjectError) return 'malformed'
     throw e
@@ -254,7 +323,7 @@ async function runStrict(reader: ObjectReader, input: MergeInput, onProgress?: M
     tip = plan.newTip
   } else {
     onProgress?.('merge')
-    const merged = await threeWayMerge(reader, input)
+    const merged = await threeWayMerge(reader, input, plan.mergeBase)
     if (merged.kind === 'conflict') return merged
     tip = merged.oid
     source = merged.reader

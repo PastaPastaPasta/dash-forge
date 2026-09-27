@@ -124,10 +124,11 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
       // Skip only what a parent has at this path with the SAME mode and oid, and never on a
       // parent's gitlink (its oid names nothing in this repository).
       if (same.some((x) => x.oid === e.oid && x.mode === e.mode && x.mode !== MODE_GITLINK)) continue
+      // A tree entry names a tree; every other (non-gitlink) mode — file, executable,
+      // symlink — names a blob. A commit or tag under a blob mode is refused, as by fsck.
       const kind = (await reader.readObject(e.oid)).type
-      if ((kind === 'tree') !== (e.mode === MODE_TREE)) {
-        throw new MalformedObjectError(oid, `entry "${e.name}" is a ${kind} under mode ${e.mode.toString(8)}`)
-      }
+      const want = e.mode === MODE_TREE ? 'tree' : 'blob'
+      if (kind !== want) throw new MalformedObjectError(oid, `entry "${e.name}" is a ${kind} under mode ${e.mode.toString(8)}`)
       if (kind === 'tree') await walkTree(e.oid, same.filter((x) => x.mode === MODE_TREE).map((x) => x.oid))
       else await take(e.oid)
     }
