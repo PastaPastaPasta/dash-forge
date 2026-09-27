@@ -82,6 +82,25 @@ export function readMembershipsCached(
   return promise
 }
 
+/**
+ * The membership documents of `repo` as a complete read would return them, from rows read
+ * elsewhere (a composite's `maintainer` / `writer` siblings). Only a short page is complete, so
+ * a caller passes `null` for a role whose page was full, and nothing is recorded then.
+ */
+export function membershipsFromDocs(maintainers: readonly PlainDocument[] | null, writers: readonly PlainDocument[] | null): Membership[] | null {
+  if (maintainers === null || writers === null) return null
+  const of = (docs: readonly PlainDocument[], role: Role) => docs.map((d) => toMembership(d, role)).filter((m): m is Membership => m !== null)
+  return [...of(maintainers, 'maintainer'), ...of(writers, 'writer')]
+}
+
+/** Record a repo's complete membership read elsewhere, unless a fresher read is cached. */
+export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[]): void {
+  const key = membersKey(network, repo)
+  const hit = membersCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < MEMBERS_TTL_MS) return
+  membersCache.set(key, { at: Date.now(), promise: Promise.resolve(memberships) })
+}
+
 /** Drop a repo's cached membership (tests; and after a member add/revoke). */
 export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))

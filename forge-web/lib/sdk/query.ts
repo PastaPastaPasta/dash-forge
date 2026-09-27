@@ -265,12 +265,22 @@ export function tieProbeAllowed(query: DocumentQuery): boolean {
 export async function queryAllDocuments(
   sdk: EvoSDK,
   query: DocumentQuery,
-  opts: { readonly pageLimit?: number; readonly maxPages?: number } = {},
+  opts: {
+    readonly pageLimit?: number
+    readonly maxPages?: number
+    /**
+     * The query's first page, already read elsewhere (a composite's sibling sub-query with
+     * the same query and a `pageLimit` limit): a short one is the whole answer, a full one is
+     * continued from its last row instead of being read again. Ascending queries only.
+     */
+    readonly firstPage?: readonly PlainDocument[]
+  } = {},
 ): Promise<PlainDocument[]> {
   const pageLimit = opts.pageLimit ?? 100
   const maxPages = opts.maxPages ?? 1000
   // Page a descending read ascending and reverse it — see `ascendingEquivalent`.
   const ascending = ascendingEquivalent(query)
+  if (opts.firstPage !== undefined && ascending !== null) throw new Error('firstPage continues an ascending query only')
   const paged = ascending === null ? query : { ...query, orderBy: ascending }
   const tieSafe = tieProbeAllowed(paged)
   const out: PlainDocument[] = []
@@ -288,11 +298,10 @@ export async function queryAllDocuments(
   const done = (): PlainDocument[] => (ascending === null ? out : out.reverse())
   let startAfter: string | undefined
   for (let page = 0; page < maxPages; page++) {
-    const { documents } = await queryDocumentsWithProof(sdk, {
-      ...paged,
-      limit: pageLimit,
-      startAfter,
-    })
+    const documents =
+      page === 0 && opts.firstPage !== undefined
+        ? [...opts.firstPage]
+        : (await queryDocumentsWithProof(sdk, { ...paged, limit: pageLimit, startAfter })).documents
     take(documents)
     if (documents.length < pageLimit) return done()
     const last = documents[documents.length - 1]

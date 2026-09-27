@@ -12,9 +12,16 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
+  issueViewOf,
+  membershipsFromDocs,
+  newestLabels,
   num,
-  readIssue,
+  readLabels,
+  readMembershipsCached,
   readPull,
+  seedMemberships,
+  toEvents,
+  updatedAtOf,
   readReviews,
   readRoleOracle,
   readTargetLog,
@@ -22,10 +29,15 @@ import {
   str,
   wellFormed,
   type IssueView,
+  type LabelDef,
   type PullView,
   type RepoRef,
   type ReviewView,
 } from '../repo'
+import { DEFAULT_NETWORK, type Network } from '../constants'
+import { queryComposite } from '../sdk/composite'
+import { prefetchDpnsNames } from './dpns'
+import type { Membership } from '../rules/v2'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { countApprovals, type Approvals, type Role } from '../rules/v2'
@@ -36,6 +48,19 @@ export interface CommentView {
   readonly author: string
   readonly body: string
   readonly createdAt: number
+  /** The last edit's time; equal to `createdAt` when never edited ("edited" marker). */
+  readonly updatedAt?: number
+}
+
+/** A comment document, flattened. */
+function toCommentView(d: PlainDocument): CommentView {
+  return {
+    id: str(d, '$id'),
+    author: str(d, '$ownerId'),
+    body: str(d, 'body'),
+    createdAt: num(d, '$createdAt'),
+    updatedAt: updatedAtOf(d),
+  }
 }
 
 
@@ -63,12 +88,7 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
   return documents
     .filter((d) => wellFormed(repo, 'comment', d))
     .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
-    .map((d) => ({
-      id: str(d, '$id'),
-      author: str(d, '$ownerId'),
-      body: str(d, 'body'),
-      createdAt: num(d, '$createdAt'),
-    }))
+    .map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */
@@ -101,24 +121,97 @@ async function docByNumber(
   return doc !== undefined && wellFormed(repo, type, doc) ? doc : null
 }
 
-/** A full issue detail: the folded issue + its merged timeline. */
+/** A full issue detail: the folded issue + its merged timeline, and what its pickers need. */
 export interface IssueThread {
   readonly issue: IssueView
   readonly timeline: TimelineItem[]
+  /** The repo's label definitions (newest per name). */
+  readonly labels: readonly LabelDef[]
+  /** The repo's current members (the assignee picker's choices). */
+  readonly members: readonly Membership[]
 }
 
-/** Load an issue (folded state) + its comment/event timeline by number. Null if not found. */
-export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number): Promise<IssueThread | null> {
-  const doc = await docByNumber(sdk, repo, 'issue', number)
-  if (!doc) return null
+/**
+ * Load an issue (folded state) + its comment/event timeline by number, in ONE composite read
+ * (`platform-parity-spec.md` §3.3): the issue by `(repoId, number)`, its comments, events and
+ * author events (bound `$id → targetId`), the repo's label definitions and members (siblings),
+ * and the DPNS names of the issue's and the comments' authors. A target with more than 100
+ * comments or events continues with complete paged reads of that type only. Null if not found.
+ */
+export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<IssueThread | null> {
+  const source = repoSource(repo)
+  const page = source.repoQuery(DOC.issue, { where: [['number', '==', number]] })
+  const bound = { sourceProperty: '$id', field: 'targetId' }
+  const sibling = (q: ReturnType<typeof source.repoQuery>) => ({
+    dataContractId: q.dataContractId,
+    documentType: q.documentTypeName,
+    where: q.where ?? [],
+    orderBy: q.orderBy ?? [],
+    limit: 100,
+  })
+  const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
+  const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
+  const res = await queryComposite(sdk, {
+    dataContractId: page.dataContractId,
+    documentType: page.documentTypeName,
+    where: page.where ?? [],
+    limit: 1,
+    subQueries: [
+      { documentType: DOC.comment, bind: bound, limit: 100 },
+      { documentType: DOC.event, bind: bound, limit: 100 },
+      { documentType: DOC.authorEvent, bind: bound, limit: 100 },
+      sibling(labelQuery),
+      sibling(memberQuery(DOC.maintainer)),
+      sibling(memberQuery(DOC.writer)),
+    ],
+  })
+  const doc = res.page[0]
+  if (doc === undefined || !wellFormed(repo, 'issue', doc)) return null
   const id = str(doc, '$id')
-  // One read of the target's log serves both the fold and the timeline.
-  const [log, comments] = await Promise.all([
-    readTargetLog(sdk, repo, id),
-    readComments(sdk, repo, id),
+  const docs = (i: number): PlainDocument[] => {
+    const s = res.subs[i]
+    return s?.kind === 'documents' ? s.documents : []
+  }
+  // A full sub-result page may have more rows: finish that type with a complete read.
+  const complete = async (i: number, type: string): Promise<PlainDocument[]> =>
+    docs(i).length < 100
+      ? docs(i)
+      : queryAllDocuments(sdk, source.targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
+  const [commentDocs, eventDocs, authorEventDocs] = await Promise.all([
+    complete(0, DOC.comment),
+    complete(1, DOC.event),
+    complete(2, DOC.authorEvent),
   ])
-  const issue = await readIssue(sdk, repo, doc, log)
-  return { issue, timeline: mergeTimeline(comments, log.events, log.authorEvents, []) }
+  const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
+  const log = { events: toEvents([...eventDocs].sort(byTime)), authorEvents: toEvents([...authorEventDocs].sort(byTime)) }
+
+  // Members: complete when both sibling pages were short; recorded for the permission checks.
+  const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
+  if (memberships !== null) seedMemberships(repo, network, memberships)
+  // Every name the page shows (the author, commenters, event actors, assignees, members) in one
+  // batched DPNS read. Two bound DPNS lookups in the composite would walk the same index path,
+  // which the node refuses when either carries a limit (verified on moutai).
+  const shownIds = [
+    str(doc, '$ownerId'),
+    ...commentDocs.map((c) => str(c, '$ownerId')),
+    ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
+    ...(memberships ?? []).map((m) => m.identity),
+  ]
+  await prefetchDpnsNames(sdk, shownIds.filter((id) => id !== ''), network)
+
+  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo, network) : null
+  const comments = commentDocs
+    .filter((d) => wellFormed(repo, 'comment', d))
+    .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
+    .sort(byTime)
+    .map(toCommentView)
+  const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
+  return {
+    issue: issueViewOf(doc, log),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, []),
+    labels,
+    members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
+  }
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */

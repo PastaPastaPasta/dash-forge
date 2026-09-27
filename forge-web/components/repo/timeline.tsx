@@ -14,7 +14,9 @@ import { timeAgo } from '@/lib/view'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
 import { Author } from '@/components/author'
-import { MarkdownView } from '@/components/markdown-view'
+import type { ReactNode } from 'react'
+import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 
 function verdictIcon(verdict: VerdictName): JSX.Element {
@@ -49,9 +51,9 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'labelRemove':
       return { text: `removed the ${value ?? ''} label`, icon: <Tag className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'assign':
-      return { text: 'assigned this', icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
+      return value ? { text: 'assigned', who: value, icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> } : { text: 'assigned this', icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'unassign':
-      return { text: 'unassigned this', icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
+      return value ? { text: 'unassigned', who: value, icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> } : { text: 'unassigned this', icon: <UserPlus className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'retarget':
       return { text: `retargeted to ${value ?? ''}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'draft':
@@ -79,20 +81,43 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
   }
 }
 
-export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Element {
+/** What a page adds to a comment card: header actions, or a body that replaces the rendered one (an editor). */
+export interface CommentSlots {
+  readonly header?: ReactNode
+  readonly body?: ReactNode
+}
+
+export function Timeline({
+  items,
+  links,
+  renderComment,
+}: {
+  items: readonly TimelineItem[]
+  /** Where `#n` / `@name` in comment bodies link (omit: plain text). */
+  links?: MarkdownLinks
+  /**
+   * A comment's additions: the author's Edit in the header, the inline editor as its body.
+   */
+  renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
+}): JSX.Element {
   return (
     <div className="space-y-3">
       {items.map((item, i) => {
         if (item.kind === 'comment') {
+          const slot = renderComment?.(item) ?? {}
           return (
-            <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+            <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
               <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
                 <Author identityId={item.comment.author} />
                 <span className="text-anvil-400">commented {timeAgo(item.comment.createdAt)}</span>
+                <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
+                {slot.header}
               </div>
-              <div className="px-4 py-3">
-                <MarkdownView source={item.comment.body} />
-              </div>
+              {slot.body ?? (
+                <div className="px-4 py-3">
+                  <MarkdownView source={item.comment.body} links={links} />
+                </div>
+              )}
             </div>
           )
         }
@@ -114,7 +139,7 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
               </div>
               {review.body ? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={review.body} />
+                  <MarkdownView source={review.body} links={links} />
                 </div>
               ) : null}
             </div>

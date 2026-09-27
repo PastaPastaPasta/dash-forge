@@ -27,7 +27,7 @@ export {
   type GitIdent,
   type TreeEntry,
 } from './git-objects'
-export { parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
+export { parseMarkdown, splitRefs, type Block, type Inline, type RefPiece, type TableAlignment } from './markdown'
 export {
   compactDiffLines,
   diffStat,
@@ -115,7 +115,7 @@ export {
   type BackendInfo,
   type RepoHome,
 } from './repo-view'
-export { resolveDpnsName, resolveDpnsNames } from './dpns'
+export { namesFromDomains, prefetchDpnsNames, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
 export {
   commitRootTree,
   findEntry,

@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import {
+  foldIssueOpenCount,
   foldOpenCounts,
   openCounts,
   readReleases,
@@ -83,7 +84,12 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
       const totals = await sessionCached(`counts:${network}:${repo.repoId}:${generation}`, MINUTE, () =>
         readTargetCounts(sdk!, repo.forge, repo.repoId),
       )
-      await foldOpenCounts(sdk!, repo, totals)
+      // Issues: the issue index (exact from the complete feed, shared with the Issues tab);
+      // pull requests: the folded list page, as before.
+      await Promise.all([
+        foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null),
+        foldOpenCounts(sdk!, repo, totals, { issues: false }),
+      ])
       return totals
     },
     [ready, repoKey(repo), network, generation],

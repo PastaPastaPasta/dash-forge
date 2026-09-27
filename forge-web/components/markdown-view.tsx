@@ -6,9 +6,52 @@
  * accents; code blocks render monospace in an inset surface.
  */
 
-import { Fragment, type ReactNode } from 'react'
-import { parseMarkdown, type Block, type Inline, type TableAlignment } from '@/lib/view'
+import { Fragment, createContext, useContext, type ReactNode } from 'react'
+import Link from 'next/link'
+import { parseMarkdown, splitRefs, type Block, type Inline, type TableAlignment } from '@/lib/view'
 import { cn } from '@/lib/utils'
+
+/**
+ * Where `#n` and `@name` in plain text link to (GitHub's autolinks, D-223). Omitted: they stay
+ * text (release notes, READMEs). `issueHref(n)` is the repo's issue route; the page shows the
+ * issue, or offers the PR of that number when there is no such issue.
+ */
+export interface MarkdownLinks {
+  readonly issueHref: (n: number) => string
+  readonly profileHref?: (name: string) => string
+}
+
+const LinksContext = createContext<MarkdownLinks | null>(null)
+
+const LINK_CLASS = 'text-forge-600 underline decoration-forge-600/30 underline-offset-2 hover:decoration-forge-600 dark:text-forge-400'
+
+/** Plain text with its `#n` / `@name` references linked. */
+function AutolinkedText({ text }: { text: string }): JSX.Element {
+  const links = useContext(LinksContext)
+  if (links === null) return <>{text}</>
+  const pieces = splitRefs(text)
+  if (pieces.length === 1 && pieces[0]?.t === 'text') return <>{text}</>
+  return (
+    <>
+      {pieces.map((p, i) => {
+        if (p.t === 'text') return <Fragment key={i}>{p.v}</Fragment>
+        if (p.t === 'ref') {
+          return (
+            <Link key={i} href={links.issueHref(p.n)} className={LINK_CLASS} data-autolink="ref">
+              #{p.n}
+            </Link>
+          )
+        }
+        const href = (links.profileHref ?? ((n: string) => `/u?name=${encodeURIComponent(n)}`))(p.name)
+        return (
+          <Link key={i} href={href} className={cn(LINK_CLASS, 'font-medium')} data-autolink="mention">
+            @{p.name}
+          </Link>
+        )
+      })}
+    </>
+  )
+}
 
 function tableAlignClass(align: TableAlignment): string {
   if (align === 'center') return 'text-center'
@@ -21,7 +64,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
     const key = `${keyPrefix}-${i}`
     switch (n.t) {
       case 'text':
-        return <Fragment key={key}>{n.v}</Fragment>
+        return <AutolinkedText key={key} text={n.v} />
       case 'strong':
         return <strong key={key} className="font-semibold">{renderInline(n.c, key)}</strong>
       case 'em':
@@ -147,11 +190,13 @@ function renderBlock(b: Block, key: string): ReactNode {
   }
 }
 
-export function MarkdownView({ source, className }: { source: string; className?: string }): JSX.Element {
+export function MarkdownView({ source, className, links }: { source: string; className?: string; links?: MarkdownLinks }): JSX.Element {
   const blocks = parseMarkdown(source)
   return (
-    <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
-      {blocks.map((b, i) => renderBlock(b, `b-${i}`))}
-    </div>
+    <LinksContext.Provider value={links ?? null}>
+      <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
+        {blocks.map((b, i) => renderBlock(b, `b-${i}`))}
+      </div>
+    </LinksContext.Provider>
   )
 }

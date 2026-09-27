@@ -38,9 +38,12 @@ import {
   postTargetEvent,
   reviewData,
   saveReviewDraft,
+  setAssignee,
+  setLabel,
   submitReviewDraft,
   targetEventData,
   updateComment,
+  updateTarget,
   type ChainComment,
   type ChainReview,
   type ReviewDraft,
@@ -119,6 +122,43 @@ describe('event payloads and routes', () => {
     expect(writes[0]?.data['kind']).toBe(10)
     await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/maintainer or writer/)
     expect(writes).toHaveLength(1)
+  })
+})
+
+describe('assignees and labels (F-1)', () => {
+  it('names the assignee in value and refId, so the addressee index finds it', async () => {
+    await setAssignee(sdk, auth(ALICE), REPO, { target, assignee: BOB, assign: true })
+    await setAssignee(sdk, auth(ALICE), REPO, { target, assignee: BOB, assign: false })
+    expect(writes.map((w) => [w.documentType, w.data['kind'], w.data['value']])).toEqual([
+      ['event', 6, BOB],
+      ['event', 7, BOB],
+    ])
+    for (const w of writes) {
+      expect(w.data['refId']).toBeInstanceOf(Uint8Array)
+      expect((w.data['refId'] as Uint8Array).length).toBe(32)
+    }
+  })
+
+  it('refuses an assign whose refId does not name the assignee', () => {
+    expect(() => targetEventData(target, 'assign', { value: BOB })).toThrow(/refId/)
+    expect(() => targetEventData(target, 'assign', { value: BOB, refId: ALICE })).toThrow(/refId/)
+    expect(() => targetEventData(target, 'unassign', { refId: BOB })).toThrow(/refId/)
+  })
+
+  it('writes label events with the trimmed name and refuses an empty one', async () => {
+    await setLabel(sdk, auth(ALICE), REPO, { target, label: ' bug ', add: true })
+    await setLabel(sdk, auth(ALICE), REPO, { target, label: 'bug', add: false })
+    expect(writes.map((w) => [w.data['kind'], w.data['value']])).toEqual([
+      [4, 'bug'],
+      [5, 'bug'],
+    ])
+    await expect(setLabel(sdk, auth(ALICE), REPO, { target, label: ' ', add: true })).rejects.toThrow(/label name/)
+  })
+
+  it('refuses a private repo edit of an issue before signing (sealed edits come with private-repos PR 4)', async () => {
+    const PRIVATE: RepoRef = { ...REPO, visibility: 'private' }
+    await expect(updateTarget(sdk, auth(ALICE), PRIVATE, { type: 'issue', id: PR, title: 'x' })).rejects.toThrow(/private repo/)
+    expect(writes).toHaveLength(0)
   })
 })
 

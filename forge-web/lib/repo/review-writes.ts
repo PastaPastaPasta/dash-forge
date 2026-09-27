@@ -48,6 +48,9 @@ export interface EventPayload {
 
 const REF_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['threadResolve', 'threadUnresolve', 'reviewRequest', 'reviewRequestRemove', 'reviewDismiss'])
 
+/** Kinds that carry an identity in `value` and, from F-1 on, the same identity in `refId`. */
+const ASSIGN_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['assign', 'unassign'])
+
 /**
  * The document data of an event of `kind` on `target`, refusing a payload the kind needs but
  * lacks (the folds would ignore such a document): 11–15 a `refId`, 16 a 20–32 byte oid, 17 a
@@ -59,6 +62,13 @@ export function targetEventData(target: WriteTarget, kind: EventKind, payload: E
   // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.
   if (kind === 'headUpdate' && oid?.length !== 20 && oid?.length !== 32) throw new Error('a head update needs a 20- or 32-byte commit oid')
   if (kind === 'milestoneSet' && !payload.value) throw new Error('a milestone needs a name')
+  if ((kind === 'labelAdd' || kind === 'labelRemove') && !payload.value?.trim()) throw new Error('a label event needs a label name')
+  // An assignee is `value` (what the fold reads, forge-v2.md §3) and `refId` (so the sparse
+  // `addressee (refId)` index answers "assigned to me", platform-parity-spec §1.2): both the
+  // same identity.
+  if (ASSIGN_KINDS.has(kind) && (!payload.value || payload.refId !== payload.value)) {
+    throw new Error(`an ${kind} event names the assignee in both value and refId`)
+  }
   if (kind === 'retarget' && !(payload.value !== undefined && isLegalRefName(payload.value))) {
     throw new Error(`illegal retarget base ref name ${JSON.stringify(payload.value ?? null)}`)
   }
@@ -460,6 +470,31 @@ export function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: P
   }, intent)
 }
 
+/**
+ * Assign or unassign `assignee` on an issue or PR (members only at consensus: an `authorEvent`
+ * cannot carry these kinds). The identity is both `value` and `refId`.
+ */
+export async function setAssignee(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; assignee: string; assign: boolean; intent?: string },
+): Promise<WriteResult> {
+  const data = targetEventData(input.target, input.assign ? 'assign' : 'unassign', { value: input.assignee, refId: input.assignee })
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/** Apply or remove a label on an issue or PR (members only at consensus). */
+export async function setLabel(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; label: string; add: boolean; intent?: string },
+): Promise<WriteResult> {
+  const data = targetEventData(input.target, input.add ? 'labelAdd' : 'labelRemove', { value: input.label.trim() })
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
 /** Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates. */
 async function replace(
   sdk: EvoSDK,
@@ -472,6 +507,8 @@ async function replace(
 ): Promise<ReplaceResult> {
   // A replace merges plaintext over the stored document: in a private repo that would publish
   // the edit next to the sealed `enc` and make the document malformed for members.
+  // TODO(private-repos web PR 4, feat/private-repos-web-writes): route a private repo's edit
+  // through its sealed-edit helper (`lib/repo/private-writes.ts`) instead of refusing it.
   refusePlaintextInPrivate(repo, documentType)
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
@@ -483,6 +520,7 @@ async function replace(
       expectedRevision,
     })
   } finally {
+    // An edited title or body changes list rows and the index's text search, not open counts.
     invalidateRepoFeed(repo, { counts: false })
   }
 }
