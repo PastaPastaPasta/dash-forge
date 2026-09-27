@@ -368,6 +368,22 @@ pub enum IssueCommand {
         #[arg(long, default_value = "")]
         body: String,
     },
+    /// Edit an issue's title and/or body (its author only).
+    Edit {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// The new title.
+        #[arg(long)]
+        title: Option<String>,
+        /// The new body (`""` clears it).
+        #[arg(long, conflicts_with = "body_file")]
+        body: Option<String>,
+        /// Read the new body from a file (`-` for stdin).
+        #[arg(long, value_name = "FILE")]
+        body_file: Option<PathBuf>,
+    },
     /// Comment on an issue.
     Comment {
         /// The repository (`owner/name`).

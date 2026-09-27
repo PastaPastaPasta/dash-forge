@@ -23,6 +23,20 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::List { repo, state, limit } => list(ctx, repo, *state, *limit).await,
         IssueCommand::View { repo, number } => view(ctx, repo, *number).await,
         IssueCommand::Create { repo, title, body } => create(ctx, repo, title, body).await,
+        IssueCommand::Edit {
+            repo,
+            number,
+            title,
+            body,
+            body_file,
+        } => {
+            let body = match (body, body_file) {
+                (Some(b), _) => Some(b.clone()),
+                (None, Some(path)) => Some(read_body_file(path)?),
+                (None, None) => None,
+            };
+            edit(ctx, repo, *number, title.as_deref(), body.as_deref()).await
+        }
         IssueCommand::Comment { repo, number, body } => comment(ctx, repo, *number, body).await,
         IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
@@ -202,6 +216,61 @@ async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
         .await?
         .ok_or_else(|| not_found(repo, number))?
         .target())
+}
+
+/// A body from a file, or stdin for `-`.
+fn read_body_file(path: &std::path::Path) -> Result<String> {
+    use std::io::Read as _;
+    if path.as_os_str() == "-" {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s)?;
+        return Ok(s);
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading the body from {}: {e}", path.display()))
+}
+
+async fn edit(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    title: Option<&str>,
+    body: Option<&str>,
+) -> Result<()> {
+    if title.is_none() && body.is_none() {
+        return Err(crate::errors::usage(
+            "pass --title, --body or --body-file (or several)",
+        ));
+    }
+    let s = Session::open(ctx, repo).await?;
+    let target = target(&s, repo, number).await?;
+    ctx.confirm_or_cancel(&format!(
+        "Edit issue #{number}? (replaces your issue document; you pay only for the changed bytes)"
+    ))?;
+    let before = s.balance().await;
+    let edited = s
+        .collab()
+        .update_target(&s.repo, &target, title, body)
+        .await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": if edited { "edited" } else { "unchanged" },
+            "issue": number,
+            "title": title,
+            "bodyChanged": body.is_some(),
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            if edited {
+                println!("✓ edited issue #{number} · {}", cost_line(spent, price));
+            } else {
+                println!("issue #{number} already reads that way; nothing was written");
+            }
+        },
+    );
+    Ok(())
 }
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
