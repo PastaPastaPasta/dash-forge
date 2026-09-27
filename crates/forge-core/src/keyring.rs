@@ -1383,6 +1383,15 @@ fn pending_key(kr: &Keyring, me: [u8; 32], epoch: u32) -> Option<EpochKey> {
         .and_then(|w| w.key.clone())
 }
 
+/// A crash injected for the e2e suite (`DASH_FORGE_TEST_FAULT=<point>`), honoured only in debug
+/// builds: the rotation stops at `point` as if the process died there.
+fn test_fault(point: &str) -> Result<()> {
+    if cfg!(debug_assertions) && std::env::var("DASH_FORGE_TEST_FAULT").is_ok_and(|p| p == point) {
+        return Err(Error::Config(format!("test fault injected at {point}")));
+    }
+    Ok(())
+}
+
 /// What a rotation does with the key it holds for `n + 1` (§5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -1470,6 +1479,7 @@ pub async fn rotate(
             pending.map_or_else(EpochKey::generate, Ok)?,
         )
         .await?;
+        test_fault("after-self-wrap")?;
         let strays = !stray_wraps(signer, &w, repo, epoch, &targets)
             .await?
             .is_empty();
@@ -1518,6 +1528,7 @@ pub async fn rotate(
                     ..Rotation::default()
                 });
             }
+            test_fault("after-burn-anchor")?;
             burned = Some(epoch);
             if !from_burned {
                 skip_below = Some(from.1.clone());
