@@ -13,8 +13,11 @@ export interface TopUpReason {
   readonly shortfall?: bigint
 }
 
-/** A sign-in sheet view to open on directly (e.g. `import` to renew this browser's key). */
-export type LoginView = 'import' | 'create' | 'wallet'
+/**
+ * A sign-in sheet view to open on directly (e.g. `import` to renew this browser's key; `grant`
+ * asks the signed-in identity's wallet for a key on forge-collab, when the session lacks one).
+ */
+export type LoginView = 'import' | 'create' | 'wallet' | 'grant'
 
 interface UiState {
   readonly loginOpen: boolean

@@ -22,6 +22,9 @@ import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
+import { controlsKey } from './wif'
+
+export { controlsKey }
 
 /** Browser key defaults (spec §2.1). */
 export const BROWSER_KEY_DEFAULTS = { budgetDash: 0.05, days: 90 } as const
@@ -66,6 +69,11 @@ export async function registerLimitedKey(
     readonly group: string
     readonly request?: LimitedKeyRequest
     readonly replaceKeyId?: number
+    /**
+     * Wallet-granted keys this browser holds (with their private keys), disabled in the same
+     * update: each is disabled only if the stored private key controls it.
+     */
+    readonly disableHeld?: readonly HeldKey[]
     /** The contracts the group must hold (forge-core, forge-collab), checked on chain first. */
     readonly contracts?: readonly string[]
   },
@@ -106,9 +114,10 @@ export async function registerLimitedKey(
       expiresAt: BigInt(request.expiresAt),
     })
     const old = identity.publicKeys.find((k) => k.keyId === params.replaceKeyId)
-    const disable = old && old.disabledAt === undefined && isForgeBrowserKey(old) ? [old.keyId] : []
+    const disable = new Set(heldToDisable(identity.publicKeys, params.disableHeld ?? [], params.network))
+    if (old && old.disabledAt === undefined && isForgeBrowserKey(old)) disable.add(old.keyId)
     try {
-      await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.length ? { disablePublicKeys: disable } : {}), signer })
+      await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.size ? { disablePublicKeys: [...disable] } : {}), signer })
     } catch (e) {
       // Two tabs registering at once both pick max+1; the second is refused.
       if (/revision|duplicate|already exists|key id/i.test(String((e as { message?: unknown })?.message ?? e))) {
@@ -124,6 +133,60 @@ export async function registerLimitedKey(
   fresh.free()
   const limits = await verifyLimitedKey(sdk, params.identityId, keyId, params.group, params.network, wif, request)
   return { keyId, wif, limits }
+}
+
+/** A key this browser holds: its id and the private key that proves it is this browser's. */
+export interface HeldKey {
+  readonly keyId: number
+  readonly wif: string
+}
+
+/**
+ * The ids of `held` keys that are live AUTHENTICATION / HIGH keys of the identity AND
+ * controlled by the private key this browser stored for them. The proof matters: a master-key
+ * update may disable any key, so a key id alone (from a tampered record, say) must never pick
+ * what gets disabled. (HIGH only: a browser never holds CRITICAL or MASTER keys.)
+ */
+export function heldToDisable(keys: readonly WasmKey[], held: readonly HeldKey[], network: Network): number[] {
+  const out: number[] = []
+  for (const h of held) {
+    const k = keys.find((x) => x.keyId === h.keyId)
+    if (!k || k.disabledAt !== undefined || k.purposeNumber !== 0 || k.securityLevelNumber !== 2) continue
+    if (controlsKey(k, h.wif, network)) out.push(k.keyId)
+  }
+  return out
+}
+
+/**
+ * Disable the keys this browser holds for the identity (wallet grants included), in one
+ * master-key update. Only keys the stored private keys control are disabled
+ * ({@link heldToDisable}); if none is still live, nothing is sent.
+ */
+export async function disableHeldKeys(
+  sdk: EvoSDK,
+  params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keys: readonly HeldKey[] },
+): Promise<void> {
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  if (!identity) throw new Error(`identity ${params.identityId} not found`)
+  const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
+  if (ids.length === 0) return
+  await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer }))
+}
+
+/** Run `fn` with an IdentitySigner holding only the master key; both are freed after. */
+async function withMasterSigner<T>(masterWif: string, fn: (signer: unknown) => Promise<T>): Promise<T> {
+  const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
+  let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
+  let signer: InstanceType<typeof IdentitySigner> | null = null
+  try {
+    master = PrivateKey.fromWIF(masterWif)
+    signer = new IdentitySigner()
+    signer.addKey(master)
+    return await fn(signer)
+  } finally {
+    signer?.free()
+    master?.free()
+  }
 }
 
 function safeValidate(k: WasmKey, bytes: Uint8Array, network: Network): boolean {
@@ -166,15 +229,7 @@ export async function verifyLimitedKey(
     if (k.totalBudget !== request.budgetCredits) throw new Error(`key ${keyId} has a different budget than requested`)
     if (Number(k.expiresAt) !== request.expiresAt) throw new Error(`key ${keyId} has a different expiry than requested`)
   }
-  if (wif !== undefined) {
-    const { PrivateKey } = await import('@dashevo/evo-sdk')
-    const pk = PrivateKey.fromWIF(wif)
-    const bytes = pk.toBytes()
-    const ok = safeValidate(k, bytes, network)
-    bytes.fill(0)
-    pk.free()
-    if (!ok) throw new Error(`the stored private key does not control key ${keyId}`)
-  }
+  if (wif !== undefined && !controlsKey(k, wif, network)) throw new Error(`the stored private key does not control key ${keyId}`)
   const remaining = await readRemainingBudget(sdk, identityId, keyId)
   if (remaining !== null && remaining <= 0n) throw new Error(`key ${keyId} has no budget left`)
   return { remaining, total: k.totalBudget, expiresAt: Number(k.expiresAt) }
@@ -375,7 +430,6 @@ export async function revokeLimitedKey(
   sdk: EvoSDK,
   params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keyId: number },
 ): Promise<void> {
-  const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
   if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
@@ -383,15 +437,5 @@ export async function revokeLimitedKey(
   if (!isForgeBrowserKey(k)) {
     throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
   }
-  let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
-  let signer: InstanceType<typeof IdentitySigner> | null = null
-  try {
-    master = PrivateKey.fromWIF(params.masterWif)
-    signer = new IdentitySigner()
-    signer.addKey(master)
-    await authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer })
-  } finally {
-    signer?.free()
-    master?.free()
-  }
+  await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer }))
 }

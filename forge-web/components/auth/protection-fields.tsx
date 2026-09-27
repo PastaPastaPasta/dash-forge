@@ -14,7 +14,12 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
-export function useProtection(): {
+/**
+ * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
+ * default choice (the primary button, with a caution against a passphrase alone). A passphrase
+ * is still accepted: not every authenticator supports PRF, and that is only known after trying.
+ */
+export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -36,6 +41,7 @@ export function useProtection(): {
   const [enrolling, setEnrolling] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const canPasskey = passkeysAvailable()
+  const preferPasskey = opts.preferPasskey === true && canPasskey
 
   const enroll = async (): Promise<void> => {
     setEnrolling(true)
@@ -63,12 +69,21 @@ export function useProtection(): {
   const protection: Protection | null =
     problem !== null ? null : { ...(passphraseSet ? { passphrase } : {}), ...(passkey ? { passkey } : {}) }
 
+  let passkeyVariant: 'subtle' | 'primary' | 'outline' = 'outline'
+  if (passkey) passkeyVariant = 'subtle'
+  else if (preferPasskey) passkeyVariant = 'primary'
+
   const fields = (
     <div className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
+      {preferPasskey && !passkey ? (
+        <p className="text-[12px] text-caution" data-testid="prefer-passkey">
+          This key has no spending limit: use a passkey. A passphrase alone can be guessed offline by anyone who copies this browser&apos;s storage.
+        </p>
+      ) : null}
       {canPasskey ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant={passkey ? 'subtle' : 'outline'} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
+          <Button type="button" variant={passkeyVariant} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
             <Fingerprint className="h-3.5 w-3.5" aria-hidden /> {passkey ? 'Passkey added' : 'Use a passkey'}
           </Button>
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Recommended: Touch ID, Windows Hello or a security key.</span>

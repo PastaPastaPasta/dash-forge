@@ -9,6 +9,13 @@
  *   - an **advanced raw key** pasted by a developer: held for this tab only (never stored),
  *     with a warning in the UI.
  *
+ * A key a shipped Dash wallet granted is bound to ONE Forge contract (or, from the Android
+ * wallet, to none) and has no budget or expiry (docs/design/wallet-login.md). So a session holds
+ * up to one key per contract: the vault's main key plus sealed extra grants, and
+ * `getSigningKeyWif(contractId)` picks the key whose bounds cover that contract, or throws
+ * {@link MissingGrantError} (the UI then asks the wallet for that contract) rather than sign a
+ * write consensus would refuse and charge for.
+ *
  * The controller's observable state never carries key material. `writeAuth.getSigningKeyWif()`
  * reads the unlocked key at signing time and throws once the vault is locked.
  *
@@ -21,24 +28,31 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
+import type { ForgeIds } from '../deployments'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
-import { authSdk } from '../sdk/facade'
+import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
+import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import {
+  disableHeldKeys,
+  isForgeBrowserKey,
   readKeyLimits,
   registerLimitedKey,
   revokeLimitedKey,
   topUpLimitedKey,
+  type HeldKey,
   type LimitedKey,
   type LimitedKeyRequest,
   type TopUpRequest,
 } from './limited-key'
 import {
   VaultLockedError,
+  addExtraKey,
   forgetVault,
+  hasExtraKeys,
   holdForSession,
   listVaults,
   lockVault,
@@ -48,6 +62,7 @@ import {
   unlockWithPasskey,
   unlockWithPassphrase,
   unlockedSecret,
+  type ExtraKey,
   type Protection,
   type VaultInfo,
   type VaultSecret,
@@ -65,6 +80,23 @@ export interface AuthSession {
   readonly keyId?: number
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
+  /** Which Forge contracts this session's keys can sign on. */
+  readonly grants?: { readonly core: boolean; readonly collab: boolean }
+  /**
+   * A key this session holds has no budget or no expiry (a shipped wallet's key): whoever copies
+   * it can spend until it is disabled. The UI warns.
+   */
+  readonly unlimited?: boolean
+  /** A key this session holds has no contract bounds: it could sign outside Forge too. */
+  readonly unbounded?: boolean
+}
+
+/** A write to a Forge contract no key of this session covers: ask the wallet for that grant. */
+export class MissingGrantError extends WriteAuthError {
+  constructor(readonly contractId: string) {
+    super('This sign-in only covers repositories and pushes. Approve issues, pull requests and stars in your wallet too.')
+    this.name = 'MissingGrantError'
+  }
 }
 
 /** Observable controller state. Never carries private-key material. */
@@ -166,16 +198,32 @@ export class AuthController {
     if (!session) return null
     const network = this.network
     const identityId = session.identityId
-    return {
-      identityId,
-      network,
-      getSigningKeyWif(): string {
-        const secret = unlockedSecret(network, identityId)
-        if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
-        return secret.wif
-      },
+    const pick = (contractId?: string): string => {
+      // The session as it is now, not as it was when this signer was made.
+      const current = this.state.session
+      if (!current || current.identityId !== identityId) throw new WriteAuthError('this browser is signed out — sign in to sign')
+      const secret = unlockedSecret(network, identityId)
+      if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
+      // A pasted key (tab-only, advanced) is the user's own choice of power: no scoping.
+      if (current.storage !== 'vault') return secret.wif
+      // A vault key only ever signs on Forge's two contracts, named by the write.
+      const forge = NETWORKS[network].v2
+      if (forge === null || (contractId !== forge.core && contractId !== forge.collab)) {
+        throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
+      }
+      if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) return secret.wif
+      const extra = secret.extra?.find((e) => {
+        const scope = this.scopes.extra.get(e.keyId)
+        return scope !== undefined && scopeCovers(scope, forge, contractId)
+      })
+      if (extra) return extra.wif
+      throw new MissingGrantError(contractId)
     }
+    return { identityId, network, getSigningKeyWif: pick }
   }
+
+  /** The verified scopes of the open session's keys (main, and extra grants by key id). */
+  private scopes: { main: KeyScope | null; extra: Map<number, KeyScope> } = { main: null, extra: new Map() }
 
   /** Vaults stored on this device for this network (for the unlock chooser). */
   storedVaults(): Promise<VaultInfo[]> {
@@ -198,22 +246,20 @@ export class AuthController {
    * Open a session for an unlocked secret: re-verify the key on chain, load balance + limits.
    * On failure the unlocked key is dropped again, so no key sits in memory without a session.
    */
-  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits): Promise<AuthSession> {
+  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits, lockOnFailure = true): Promise<AuthSession> {
     try {
       const sdk = await this.getSdk()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw new KeyNotUsableError()
-      // A vault key is a limited key: bound to a group that no longer holds the forge contracts
-      // (they were re-registered), it would open a session whose every write is refused.
-      if (storage === 'vault') {
-        const bounds = identity.publicKeys.find((k) => k.keyId === match.keyId)?.contractBounds?.toJSON()
-        if (bounds?.$type === 'contractGroup' && bounds.id !== this.group()) {
-          throw new KeyNotUsableError("this browser's key is bound to an old dash-forge contract group — renew it")
-        }
-      }
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
+      let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'> = {}
+      if (storage === 'vault') {
+        const forge = NETWORKS[this.network].v2
+        if (!forge) throw new KeyNotUsableError(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+        extra = await this.verifyScopes(identity, secret, match.keyId, forge)
+      }
       const session: AuthSession = {
         identityId: secret.identityId,
         balance: identity.balance.toString(),
@@ -221,13 +267,61 @@ export class AuthController {
         keyLimits,
         keyId: match.keyId,
         storage,
+        ...extra,
       }
       this.setState({ session })
       return session
     } catch (e) {
-      lockVault()
+      if (lockOnFailure) lockVault()
       throw e
     }
+  }
+
+  /**
+   * Work out what the vault's keys may sign: the main key must be inside Forge's contracts
+   * (a key on an old contract group, or another app's, opens no session), and each extra grant
+   * that is still live, HIGH, controlled by its stored key and inside one Forge contract is kept.
+   */
+  private async verifyScopes(
+    identity: WasmIdentity,
+    secret: VaultSecret,
+    keyId: number,
+    forge: ForgeIds,
+  ): Promise<Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'>> {
+    const mainKey = identity.publicKeys.find((k) => k.keyId === keyId)
+    if (!mainKey) throw new KeyNotUsableError()
+    const main = keyScope(mainKey, forge)
+    if (main === null) {
+      const bounds = mainKey.contractBounds?.toJSON()
+      throw new KeyNotUsableError(
+        bounds?.$type === 'contractGroup'
+          ? "this browser's key is bound to an old dash-forge contract group — renew it"
+          : "this browser's key is bound to contracts outside Dash Forge",
+      )
+    }
+    const extraScopes = new Map<number, KeyScope>()
+    let core = main.core
+    let collab = main.collab
+    let unbounded = main.unbounded
+    let unlimited = hasNoLimits(mainKey)
+    for (const e of secret.extra ?? []) {
+      const k = identity.publicKeys.find((x) => x.keyId === e.keyId)
+      if (!k) continue
+      let scope: KeyScope
+      try {
+        // A malformed or stale grant is skipped, never a reason to fail the unlock.
+        scope = checkWalletKey(k, e.wif, forge, this.network)
+      } catch {
+        continue
+      }
+      extraScopes.set(e.keyId, scope)
+      core ||= scope.core
+      collab ||= scope.collab
+      unbounded ||= scope.unbounded
+      unlimited ||= hasNoLimits(k)
+    }
+    this.scopes = { main, extra: extraScopes }
+    return { grants: { core, collab }, unlimited, unbounded }
   }
 
   /**
@@ -285,12 +379,18 @@ export class AuthController {
       if (!masterWif) throw new Error('no master key found')
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       const sdk = await this.getSdk()
+      // Renewing also disables the wallet keys this browser holds for the identity (a shipped
+      // wallet's keys have no limits: replacing them is how they get limits). That needs them
+      // unlocked: replacing a locked wallet-key vault would forget keys it cannot disable.
+      if (previous) await this.assertUnlockedIfWalletKeys(sdk, identityId, previous.keyId)
+      const held = this.heldKeys(identityId)
       const key = await registerLimitedKey(sdk, {
         network: this.network,
         identityId,
         masterWif,
         group: this.group(),
         ...(previous ? { replaceKeyId: previous.keyId } : {}),
+        ...(held.length ? { disableHeld: held } : {}),
         contracts: this.forgeContracts(),
         ...(request ? { request } : {}),
       })
@@ -307,9 +407,71 @@ export class AuthController {
     }
   }
 
-  /** Adopt a limited key obtained elsewhere (identity creation, App Connect). */
+  /** Adopt a limited key obtained elsewhere (identity creation). */
   async adoptLimitedKey(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     return this.run(() => this.adopt(identityId, key, protection))
+  }
+
+  /**
+   * Adopt the keys a wallet granted (verified on chain by the caller): the first is the vault's
+   * main key, each further one is kept as the grant for the contract it covers.
+   */
+  async adoptWalletKeys(identityId: string, keys: readonly WalletKey[], protection: Protection): Promise<AuthSession> {
+    return this.run(async () => {
+      const [main, ...rest] = keys
+      if (!main) throw new Error('the wallet granted no key')
+      const forge = NETWORKS[this.network].v2
+      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
+      // Nothing this browser holds for the identity is dropped: the keys it held before stay
+      // beside the new ones (a returning login keeps its forge-collab grant; a key the new
+      // grant supersedes is still held, so a later revoke can disable it). Stale ones fall
+      // out at the next unlock.
+      const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
+      const kept: ExtraKey[] = this.heldKeys(identityId)
+        .filter((h) => !fresh.has(h.keyId))
+        .map((h) => ({ contractId: 'contractId' in h ? h.contractId : forge.core, keyId: h.keyId, wif: h.wif }))
+      const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
+      const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
+      const { storageSettingsDropped } = await storeInVault(this.network, secret, protection)
+      if (storageSettingsDropped) {
+        this.setState({ notice: 'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.' })
+      }
+      try {
+        return await this.open(secret, 'vault', main.limits ?? undefined)
+      } catch (e) {
+        throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
+      }
+    })
+  }
+
+  /**
+   * Add a wallet grant for another Forge contract to the signed-in identity (a shipped wallet
+   * grants one contract per approval). The key must belong to the session's identity.
+   */
+  async addWalletGrant(identityId: string, key: WalletKey, requested: string): Promise<AuthSession> {
+    return this.run(async () => {
+      const session = this.state.session
+      const forge = NETWORKS[this.network].v2
+      if (!session || session.identityId !== identityId || session.storage !== 'vault' || !forge) {
+        throw new Error('sign in with this identity first')
+      }
+      if (!scopeCovers(key.scope, forge, requested)) throw new Error('the wallet granted a key that does not cover what was asked for; try again')
+      await addExtraKey(this.network, identityId, toExtraKey(key, forge, requested))
+      const secret = unlockedSecret(this.network, identityId)
+      if (!secret) throw new VaultLockedError('unlock to continue')
+      try {
+        const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
+        const want = requested === forge.collab ? 'collab' : 'core'
+        if (!opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
+        return opened
+      } catch (e) {
+        // The grant is stored; keep the session that was working and say what failed.
+        this.setState({ session })
+        throw new Error(`The approval was saved, but checking it on Platform failed (${errorMessage(e)}). It will be checked again when you next unlock.`)
+      }
+    })
   }
 
   /** Open the session of a key already in the vault and unlocked (identity creation). */
@@ -393,8 +555,16 @@ export class AuthController {
     return this.run(async () => {
       const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       if (!stored) throw new Error('no key for this identity is stored here')
+      const sdk = await this.getSdk()
+      await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
       let masterWif: string | null = await this.masterWifFor(identityId, input)
-      await revokeLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId: stored.keyId })
+      const held = this.heldKeys(identityId)
+      if (held.length > 1 || (held.length === 1 && this.state.session?.unlimited)) {
+        // Wallet keys (and any Forge key beside them): disable every key this browser holds.
+        await disableHeldKeys(sdk, { network: this.network, identityId, masterWif, keys: held })
+      } else {
+        await revokeLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId: stored.keyId })
+      }
       masterWif = null
       await this.forget(identityId)
     })
@@ -420,6 +590,48 @@ export class AuthController {
       if (current?.identityId === identityId && current.keyId === keyId) this.setState({ session: { ...current, keyLimits: limits } })
       return limits
     })
+  }
+
+  /**
+   * Every key this browser holds for `identityId` (the vault's main key and its wallet grants),
+   * with the private keys that prove it, while that vault is unlocked; [] otherwise. A renewal
+   * or revoke passes them all to the master-key update, which disables only live HIGH keys the
+   * stored private key controls ({@link heldToDisable}).
+   */
+  private heldKeys(identityId: string): (HeldKey | ExtraKey)[] {
+    const secret = this.unlockedVaultSecret(identityId)
+    if (!secret) return []
+    return [{ keyId: secret.keyId, wif: secret.wif }, ...(secret.extra ?? [])].filter((k) => k.keyId >= 0)
+  }
+
+  /**
+   * The unlocked secret of `identityId` when it is the VAULT's (a signed-in vault session), else
+   * null. A pasted raw key (tab-only, key id -1) is also held unlocked, but it is not the vault:
+   * it must never be stored, carried into a vault, or stand in for an unlocked vault.
+   */
+  private unlockedVaultSecret(identityId: string): VaultSecret | null {
+    const session = this.state.session
+    if (session?.identityId !== identityId || session.storage !== 'vault') return null
+    const secret = unlockedSecret(this.network, identityId)
+    return secret && secret.keyId >= 0 ? secret : null
+  }
+
+  /**
+   * Replacing or revoking a stored vault must not forget a live key it cannot disable. A vault
+   * whose main key is a Forge browser key and that holds no wallet grants is fine locked (the
+   * renewal disables that key by id). Any other (a wallet key, or wallet grants beside it)
+   * must be unlocked first, so every key it holds is disabled in the same update.
+   */
+  private async assertUnlockedIfWalletKeys(sdk: EvoSDK, identityId: string, storedKeyId: number): Promise<void> {
+    if (this.unlockedVaultSecret(identityId)) return
+    const identity = await authSdk(sdk).identities.fetch(identityId)
+    const k = identity?.publicKeys.find((x) => x.keyId === storedKeyId)
+    const liveOther = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)
+    if (liveOther || (await hasExtraKeys(this.network, identityId))) {
+      throw new VaultLockedError(
+        'This device holds wallet keys for this identity. Unlock first (Sign in → Unlock), so they can be disabled on chain in the same update; otherwise they would stay live after this device forgets them.',
+      )
+    }
   }
 
   /**
@@ -454,4 +666,14 @@ export class KeyNotUsableError extends WriteAuthError {
     super(message)
     this.name = 'KeyNotUsableError'
   }
+}
+
+/**
+ * A wallet grant as kept in the vault, under the contract it was asked for when its scope
+ * covers that one (a group-bound or unbounded key answering a forge-collab request is the
+ * forge-collab grant), else under the one Forge contract it covers.
+ */
+function toExtraKey(key: WalletKey, forge: ForgeIds, requested?: string): ExtraKey {
+  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : key.scope.core ? forge.core : forge.collab
+  return { contractId, keyId: key.keyId, wif: key.wif }
 }

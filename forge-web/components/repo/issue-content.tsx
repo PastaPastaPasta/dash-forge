@@ -88,7 +88,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits, 'collab')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)

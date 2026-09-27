@@ -9,5 +9,10 @@
     "https://68.67.122.7:1443",
     "https://68.67.122.8:1443",
     "https://206.245.167.63:1443"
-  ]
+  ],
+  "keyExchange": {
+    "contractId": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
+    "ownerId": "hbGEcFcXKJ2W9Di24ekiozTWfFszrjqkxbjfEep3D8A",
+    "note": "yappr's key-exchange contract, which the shipped Dash wallets pin on testnet (not deployed by Forge)"
+  }
 }

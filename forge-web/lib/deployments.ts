@@ -23,6 +23,11 @@ export interface ContractRecord {
 export interface DeploymentFile {
   readonly dapiAddresses?: readonly string[]
   readonly quorumBaseUrl?: string | null
+  /**
+   * The legacy wallet key-exchange contract (`loginKeyResponse`) the shipped Dash wallets publish
+   * to: yappr's on testnet, a copy on a devnet (`forge-contracts/scripts/deploy-key-exchange.mjs`).
+   */
+  readonly keyExchange?: { readonly contractId?: string | null }
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
   readonly v2?: {
     readonly forgeCore?: ContractRecord

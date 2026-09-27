@@ -68,8 +68,11 @@ import {
   type SpendEvent,
   type WriteAuth,
 } from './write'
+import { encodeWif } from '../auth/wif'
 
 const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+/** A well-formed WIF (the signing-key lookup decodes it); the fake key accepts any bytes. */
+const TEST_WIF = encodeWif(new Uint8Array(32).fill(7), 'devnet')
 
 interface Script {
   platformNonce: bigint
@@ -108,7 +111,7 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
 }
 
 function auth(spends: SpendEvent[]): WriteAuth {
-  return { identityId: OWNER, network: 'devnet', getSigningKeyWif: () => 'cWIF', onSpend: (e) => spends.push(e) }
+  return { identityId: OWNER, network: 'devnet', getSigningKeyWif: () => TEST_WIF, onSpend: (e) => spends.push(e) }
 }
 
 const write = { contractId: 'C', documentType: 'comment', data: { body: 'hi' }, confirmTimeoutMs: 0 }
