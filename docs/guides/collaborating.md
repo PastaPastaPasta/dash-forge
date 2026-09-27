@@ -7,8 +7,9 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 3. [Pull requests](#pull-requests)
 4. [Releases](#releases)
 5. [From the web app](#from-the-web-app)
+6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. DPNS usernames are not resolved yet.
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. `dg` does not resolve DPNS usernames yet; the web app does (`forge.dashhq.org/alice/project`).
 
 ---
 
@@ -215,15 +216,40 @@ dg repo unstar <owner>/<repo>
 
 On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys)):
 
-| You can | Not yet |
+| You can | Not yet (coming soon) |
 |---|---|
-| Browse code, commits, branches, tags and PR diffs | Open a PR |
-| File issues, comment, close and reopen | Merge code (see below) |
+| Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Open a PR |
+| File issues, comment, close and reopen; label them (members) | Merge code (see below) |
 | Review a PR: approve, request changes or comment | Inline review comments |
-| Create a repository, with a cost preview | Web editing, private repositories |
-| Add and remove collaborators (owner) | |
-| Star repositories | |
+| Create a repository, with a cost preview | Fork a repository |
+| Add and remove members (owner) | Web editing |
+| Publish a release with assets (maintainers) | Private repositories |
+| Star repositories and follow people | |
+| See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
 
-The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch.
+Every write shows its price before you sign, and a toast shows what it actually cost. **Settings → Spend** keeps a local ledger of what this browser spent, by repository and month.
 
-**Coming soon:** open a PR from a branch or fork, inline review comments, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+**Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value.
+
+**Merging.** The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch. Use `dg pr merge` to merge code.
+
+**Notifications** are computed in your browser from the chain: new issues and PRs in your repositories, state changes, comments and reviews on your threads, and optionally pushes and starred repositories. There is no email, no push notification and no sync across devices, because there is no server to send them.
+
+**Coming soon:** open a PR from a branch or fork, inline review comments, forks, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+
+---
+
+## Webhooks and CI
+
+A maintainer can have on-chain activity delivered as GitHub-shaped webhooks (`push`, `issues`, `pull_request`, `issue_comment`, `pull_request_review`, `release`, `check_run`), signed with `X-Hub-Signature-256`. Forge runs no webhook service: deliveries come from a **relay** that you, or someone you choose, runs.
+
+```sh
+dg webhook add <owner>/<repo> --url https://ci.example/hook \
+  --relay <relay identity id> --events push,pull_request --name ci
+dg webhook list   <owner>/<repo>
+dg webhook remove <owner>/<repo> ci      # by the name it was added with, or its hook id
+```
+
+The URL and event list are public on chain. The HMAC secret is encrypted to the relay identity's encryption key, so only that relay can read it; without `--secret-env <VAR>`, `dg` generates one and prints it once. The relay (`forge-relay run`, or its Docker image) needs only that encryption key, never signs and never spends. A delivery that fails is kept in a durable retry queue on the relay's disk and retried for up to 48 hours, across restarts (given a writable state dir; without one the relay warns and keeps the queue in memory); `forge-relay deliveries` lists the queue. Every delivery carries a stable `X-GitHub-Delivery` id, so receivers can drop duplicates.
+
+A relay is trusted for availability only: a receiver that must not be fooled checks what a webhook says against Platform. [`crates/forge-relay/README.md`](../../crates/forge-relay/README.md) covers running one, the delivery guarantees, and a CI consumer that verifies the pushed ref.

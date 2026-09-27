@@ -4,10 +4,10 @@ Forge is built so that you do not have to trust any server: not the web host, no
 
 1. [What is checked, and against what](#what-is-checked-and-against-what)
 2. [The one trusted input: quorum keys](#the-one-trusted-input-quorum-keys)
-3. [Verify a repository yourself](#verify-a-repository-yourself)
-4. [The third-party verification script](#the-third-party-verification-script)
-5. [Run your own copy of the web app](#run-your-own-copy-of-the-web-app)
-6. [What the Assay panel means](#what-the-assay-panel-means)
+3. [The Verification card](#the-verification-card)
+4. [Verify a repository yourself](#verify-a-repository-yourself)
+5. [The third-party verification script](#the-third-party-verification-script)
+6. [Run your own copy of the web app](#run-your-own-copy-of-the-web-app)
 
 ---
 
@@ -25,10 +25,11 @@ The chain runs: quorum key → proof → ref tip and pack SHA-256 → pack bytes
 
 Two things are **rules**, not proofs, and every client applies them identically:
 
-- **Which tip wins.** A branch's tip is folded from its ref-update log (the `FORGE_RULES` fold). If two pushes raced, the ref shows as *diverged*, and the web app says so.
-- **Who counts.** Whether an approval was made by someone with the right role, and whether a merge's commit is reachable from the base branch. Consensus already checks membership when a close, merge or other state change is written; the rules decide which approvals count and when a PR shows as merged.
+- **Which tip wins.** A branch's tip is folded from its ref-update log (the `FORGE_RULES_V2` fold). If two pushes raced, the ref shows as *diverged*, and the web app says so.
+- **Who counts.** Whether an approval was made by someone with the right role on the PR's current head, and whether a merge's commit was a tip of the base branch (a plain update to a protected branch does not count). Consensus already checks membership when a close, merge or other state change is written; the rules decide which approvals count and when a PR shows as merged.
+- **What is well-formed.** Documents that break the rules, such as a ref name that does not hash to its indexed key, are hidden from lists and counted as hidden.
 
-The Rust and TypeScript clients share 170+ conformance vectors (`forge-contracts/vectors/`), so the CLI and the web app reach the same answer from the same documents.
+The Rust and TypeScript clients share more than 200 conformance vectors (`forge-contracts/vectors/`), so the CLI and the web app reach the same answer from the same documents.
 
 ---
 
@@ -42,7 +43,22 @@ A proof is only as good as the quorum public key it is checked against. Today, *
 | mainnet | `https://quorums.mainnet.networks.dash.org` |
 | devnet moutai | `https://quorums.moutai.networks.dash.org` |
 
-Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. The web app's Assay panel says this in its footer and names the endpoint. On a devnet, `dg doctor` prints the endpoint on its `target` line. On testnet and mainnet the tools use the endpoint in the table above, which is built into the Platform SDK.
+Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. On a devnet, `dg doctor` prints the endpoint on its `target` line. On testnet and mainnet the tools use the endpoint in the table above, which is built into the Platform SDK.
+
+### The web app cross-checks the keys with a second source
+
+On every repository page the web app fetches the quorum list again from that endpoint, and also asks a random Platform node for its list (DAPI's `getCurrentQuorumsInfo`, trying up to three nodes until one answers). It compares the keys quorum by quorum:
+
+| Outcome | What the **Chain data** row shows |
+|---|---|
+| Both sources answered, and every quorum the endpoint lists is in the node's list with the identical key | **Verified**, naming both sources and how many quorums agreed |
+| A quorum has a different key in each source, or is listed twice | **Failed**: "Do not rely on this page", with the quorum hashes. Use the CLI against a node you run |
+| No node answered, or none is configured for this network | **Partly verified**: "Only one key source answered" |
+| The node's list lacks a quorum the endpoint lists, even after one retry (usually a rotation between the two reads), or the endpoint did not answer | **Partly verified**: "The keys could not be compared with a second source", with the reason |
+
+The card says plainly that the app compared a fresh fetch of the key list: it cannot inspect the copy the SDK itself holds. The DAPI node lists come from `forge-contracts/deployments/<network>.json`.
+
+The CLI does not cross-check yet: `dg` and `git-remote-dash` trust the endpoint. **Coming soon:** quorum verification over SPV in the CLI, so that it needs no key endpoint at all.
 
 ### Cross-check the quorum keys yourself
 
@@ -62,8 +78,6 @@ dash-cli -testnet quorum info <llmq type> <quorum_hash>    # compare "quorumPubl
 
 Use Platform's validator quorum type: `llmq_25_67` (type 6) on testnet, `llmq_100_67` (type 4) on mainnet. If every key the endpoint serves matches your node, proofs checked against that endpoint are as trustworthy as your own node.
 
-**Coming soon:** the web app cross-checks two independent key sources and shows *Partly verified* when only one answers. `dg` will verify quorums over SPV so that it needs no key endpoint at all.
-
 ### Point the tools at another key source
 
 On a devnet you can choose the endpoint:
@@ -75,6 +89,37 @@ On testnet and mainnet, the SDK's built-in endpoint is used.
 
 ---
 
+## The Verification card
+
+Every repository page has a **Verification** card at the top of the right-hand rail (under the content on a phone, still first). Its states come from checks that actually ran in your browser this session, never from a constant. Collapsed, it is one line, for example `Verified · refs by proof · 6 objects by hash · from Platform`. The headline reads **Checking…** until the chain check has finished, so it is never green early.
+
+Opened, it has four rows:
+
+| Row | What it says |
+|---|---|
+| **Chain data** | Whether this connection checks proofs, where the quorum keys came from, and whether a [second source](#the-web-app-cross-checks-the-keys-with-a-second-source) agreed with them. |
+| **Branch tip** | The branch, the commit it points at, who signed that update and when, folded by `FORGE_RULES_V2` from the proof-checked update log. A diverged ref is amber and lists every candidate. |
+| **File contents** | How many objects read this session were re-hashed and matched their git id, how many whole packs matched the SHA-256 in their manifest, and whether any pack could not be fetched. |
+| **Where the bytes came from** | Platform, a bucket or an IPFS gateway, and which configured places were not tried. A source gives availability, not authenticity. |
+
+Each row, and the card as a whole, shows one of five states, always as an icon and a word, never by colour alone. The card shows the most serious state among its rows.
+
+| State | Meaning |
+|---|---|
+| **Verified** | The check ran and passed for everything this page relied on. |
+| **Partly verified** | It passed, but not for the whole answer: only one quorum-key source answered, a diverged ref is shown provisionally, or a pack could not be fetched. |
+| **Not checked yet** | Nothing has been checked, for example no file has been read yet. |
+| **Couldn't verify** | The check could not run: a connection that does not check proofs, or objects shown without the hash check. |
+| **Failed** | The check ran and the data was wrong: a quorum key disagreed, an object did not match its git id, or a pack did not match its manifest. Those bytes are refused and never shown. The **Where the bytes came from** row also fails when no storage place answered at all. |
+
+The card's footer always says how far to trust the page itself: *"This app is served by GitHub Pages. If you don't trust that, pin the IPFS build or use the CLI, which needs no website."* See [Run your own copy of the web app](#run-your-own-copy-of-the-web-app).
+
+**When storage does not answer**, the repository page shows a card instead of a spinner. It lists each place it tried and why each failed (`timed out`, `not found on 3 gateways`, `missing`), with **Try again** and **Add a gateway**, and shows members the `dg reseed <owner>/<name> --from-local` command that restores a lost copy from any clone ([Bring your own storage](bring-your-own-storage.md#restoring-a-lost-copy)).
+
+**Release assets** are checked the same way: the web app streams a download through SHA-256 and saves it only if it matches the release's recorded hash. `dg release download` does the same.
+
+---
+
 ## Verify a repository yourself
 
 With only `git`, `dg` and `git-remote-dash`, you can check a repository end to end.
@@ -82,7 +127,7 @@ With only `git`, `dg` and `git-remote-dash`, you can check a repository end to e
 **1. Read the raw ref history from Platform:**
 
 ```sh
-DASH_FORGE_KEY=<your identity file> git-remote-dash --dump-refs <owner id> <repo>
+DASH_FORGE_KEY=<any key source> git-remote-dash --dump-refs <owner id> <repo>   # reads only; signs nothing
 ```
 
 ```
@@ -157,31 +202,9 @@ Open it through a **subdomain** gateway, which serves the site at the root of it
 
 The app talks only to Platform nodes, the quorum key endpoint, IPFS gateways, and wherever each repository's packs are stored. Your copy works exactly like the hosted one.
 
+Two more things make a copy of your own practical:
+
+- **Short links** such as `/<owner>/<name>/issues/12` are rewritten to the app's canonical routes by a small script in the build's `404.html`, so any static host that serves `404.html` for unknown paths (GitHub Pages and IPFS gateways do) supports them.
+- **Your own IPFS gateways**: **Settings → Your IPFS gateways** (or **Add a gateway** on a repository whose storage did not answer) adds gateways that are tried before the built-in list. They are saved in this browser only.
+
 **Coming soon:** an official IPFS build published with each release, reproducible, with its hash recorded on-chain, so you can check that the app you loaded is the released one. Until then, building it yourself from a commit you have read is the way to be sure.
-
----
-
-## What the Assay panel means
-
-Every repository page has an **Assay** card in the right-hand rail. Its states come from checks that actually ran in your browser this session, never from a constant.
-
-The card has four rows:
-
-| Row | What it says |
-|---|---|
-| **01 Platform proofs** | Whether this connection checks proofs, and where it got the quorum keys. |
-| **02 Refs** | Whether the branch tip was folded from the proof-checked ref log. It turns *partial* if the ref is diverged. |
-| **03 Content hashes** | How many objects read this session were re-hashed and matched their git id, and whether any pack could not be fetched. |
-| **04 Byte source** | Where the bytes came from (Platform, a bucket, an IPFS gateway). A source gives availability, not authenticity. |
-
-Each row, and the card as a whole, shows one of five states. The card shows the most serious state among its rows, in this order: failed, unverified, partial, verified. It shows *pending* only while every row is still pending.
-
-| State | Color | Meaning |
-|---|---|---|
-| **verified** | green | The check ran and passed. |
-| **partial** | amber | Some of it passed, and some could not be checked or is incomplete: a diverged ref, packs that could not be fetched, some objects shown without a check. |
-| **unverified** | amber | The check did not run. For example, the connection is not proof-checking. |
-| **pending** | grey | Nothing has been checked yet, for example no files read yet. |
-| **failed** | red | The check ran and the data was wrong: an object did not match its git id, or a pack did not match its manifest. Those bytes are refused and never shown. |
-
-**Coming soon:** plain-language row names (*Chain data*, *Branch tip*, *File contents*, *Where the bytes came from*) and the card title **Verification**.

@@ -34,7 +34,7 @@ Nothing is lost. Your repositories live on Platform and in your storage, not on 
 
 ## Do I have to trust the website, or Platform nodes?
 
-Mostly not. Every Platform read is checked against a proof, and every byte is checked against its hash. Two things are still trusted. First, the HTTPS endpoint that supplies the validator quorum keys proofs are checked against. Second, the code doing the checking: the web app's checks protect you only if the JavaScript you loaded is the real app, so if you don't trust forge.dashhq.org (GitHub Pages), build the app yourself from source you have read and serve it, or use the CLI, which needs no website. [Verify Forge](guides/verify-forge.md) explains it, and shows how to cross-check those keys against your own Dash node.
+Mostly not. Every Platform read is checked against a proof, and every byte is checked against its hash. Two things are still trusted. First, the HTTPS endpoint that supplies the validator quorum keys proofs are checked against; the web app compares those keys with a second source (Platform nodes themselves) on every repository page and says **Failed** if they disagree. Second, the code doing the checking: the web app's checks protect you only if the JavaScript you loaded is the real app, so if you don't trust forge.dashhq.org (GitHub Pages), build the app yourself from source you have read and serve it, or use the CLI, which needs no website. [Verify Forge](guides/verify-forge.md) explains the Verification card, and shows how to cross-check the keys against your own Dash node.
 
 ## Who pays for it?
 
@@ -42,17 +42,17 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Creating a repository costs about **0.001 DASH**. A push to your own bucket costs about **0.0003 DASH**. Storing packs on Platform costs about 0.28 DASH per MiB. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on devnet moutai: creating a repository costs about **0.0013 DASH**. A push to your own bucket costs about **0.0003–0.004 DASH**. An issue costs about 0.0006–0.0017 DASH, depending on its length. Storing packs on Platform costs about 0.28–0.30 DASH per MiB. A fork of a small repository costs about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## When is it on mainnet?
 
-After **Dash Platform protocol 14** activates on mainnet. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:
+After **Dash Platform protocol 14** activates on mainnet and the project owner registers the forge-v2 contracts there. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:
 
 | Network | Status |
 |---|---|
-| **Devnet moutai** | Live. forge-v2 is registered, and `dg`, `git-remote-dash` and forge.dashhq.org use it. |
-| **Testnet** | Not deployed. Testnet runs protocol 13; forge-v2 is registered there when protocol 14 reaches it, shortly before mainnet. |
-| **Mainnet** | Not deployed. The forge-v2 contracts will be registered once protocol 14 is active. |
+| **Devnet moutai** | Live, with the whole product: `dg`, `git-remote-dash`, `forge-import`, the Mirror Action, the relay and forge.dashhq.org all use it. |
+| **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |
+| **Mainnet** | Not deployed yet. After protocol 14 activates, the owner registers the forge-v2 contracts ([runbook](mainnet-runbook.md)). |
 
 An earlier version of Forge (forge-v1, one contract per repository) ran on testnet. It was removed on 2026-09-26 with no backwards compatibility, so its repositories cannot be read or migrated.
 
@@ -60,7 +60,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-**Coming soon, in the first mainnet release.** Contents will be encrypted in the client with a per-repository key that only members hold. File, branch, issue and comment names will be encrypted too. Anyone will still be able to see that the repository exists, its size, when it changes, and how many members it has. Removing a member rotates the key for future content, but cannot take back what they could already read. The design is in [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories), and it will ship only after a separate security review.
+**Coming soon, in the first mainnet release.** Contents will be encrypted in the client with a per-repository key that only members hold. File, branch, issue and comment names will be encrypted too. Anyone will still be able to see that the repository exists, its size, when it changes, and how many members it has. Removing a member rotates the key for future content, but cannot take back what they could already read. The design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories). The cryptographic core and the contract fields are merged; creating and reading private repositories is not, and it will ship only after a separate security review.
 
 Today every repository is public.
 
@@ -69,16 +69,17 @@ Today every repository is public.
 Forge is not a GitHub clone, and it does not need you to leave GitHub.
 
 - **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj works too.
-- **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. `forge-import` copies code, issues, PRs and releases.
-- **It is not at feature parity.** No CI runner, wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server). No shallow clones: use `git clone --filter=blob:none` instead. Some PR steps are still CLI-only: see [Collaborating](guides/collaborating.md).
+- **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
+- **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
+- **It is not at feature parity.** No CI runner, wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. Opening a PR, inline comments, forks and merging code are still CLI-only: see [Collaborating](guides/collaborating.md#from-the-web-app).
 
 ## Can I use a username instead of the long identity id?
 
-Not yet. You can register a DPNS username for your identity today in the Dash bridge, but Forge does not resolve usernames yet. **Coming soon:** `dash://alice/project`, `forge.dashhq.org/alice/project`, and granting access by name.
+In the web app, yes: register a DPNS username with `dg auth name register <label>` (or in the Dash bridge), and `forge.dashhq.org/alice/project` and `@alice` in the header's jump box resolve it. The CLI does not yet: `dash://` addresses and `dg` need the identity id. **Coming soon:** `dash://alice/project`, `dg … alice/project`, and granting access by name.
 
 ## I lost my laptop. Is my code gone?
 
-No. Your repositories are on Platform and in your storage. Your identity survives as long as you have its 12 words or a backup of the identity file. See [Backup and recovery](guides/identity-and-keys.md#backup-and-recovery).
+No. Your repositories are on Platform and in your storage. Your identity survives as long as you have its 12 words or a backup of the identity file. A browser key on the lost laptop can spend at most its remaining budget, only on Forge, until it expires; revoke it from another device to stop it sooner. See [Backup and recovery](guides/identity-and-keys.md#backup-and-recovery).
 
 ## I lost my 12 words and my identity file.
 
