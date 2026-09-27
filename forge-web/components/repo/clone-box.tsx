@@ -17,7 +17,7 @@ import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
-import { formatBytes, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
+import { formatBytes, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
 import {
   compressInWorker,
   listFiles,
@@ -79,7 +79,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
   // Keyed by ref: another ref may well fit.
   const [tooLargeRef, setTooLargeRef] = useState<string | null>(null)
   const cancel = useRef<AbortController | null>(null)
-  const tip = tipOidOf(selected.ref)
+  const tip = selectedTip(selected)
   if (tip === null) return null
 
   const busy = progress !== null

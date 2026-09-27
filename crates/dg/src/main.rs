@@ -1283,7 +1283,13 @@ fn run(cli: &Cli) -> Result<()> {
         // `--json` is for scripts: no hidden prompt may wait on a terminal.
         forge_core::sealed::forbid_prompts();
     }
-    let config = Config::load().unwrap_or_default();
+    let config = match Config::load() {
+        Ok(config) => config,
+        // `dg doctor` reports a config.toml that does not parse as a failing row, with the
+        // fix, and runs its other checks on the defaults; every other command stops (E204).
+        Err(_) if matches!(cli.command, Command::Doctor { .. }) => Config::default(),
+        Err(e) => return Err(e),
+    };
     let ctx = Ctx::resolve(cli, &config)?;
     let rt = Runtime::new()?;
     rt.block_on(dispatch(&ctx, cli))

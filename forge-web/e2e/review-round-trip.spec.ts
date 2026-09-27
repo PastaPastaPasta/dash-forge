@@ -4,8 +4,8 @@ import { shot, waitForRepoResolved } from './helpers'
 
 /**
  * CLI ↔ web fold cross-check for the `dg` review round trip (review-parity spec §7 PR 7:
- * "Web and CLI must agree on every fold"). CLI scenario 20 (`e2e/cli/scenarios/
- * 20-review-round-trip.sh`) leaves the fold `dg pr view --json` read in a state file; this
+ * "Web and CLI must agree on every fold"). CLI scenario 21 (`e2e/cli/scenarios/
+ * 21-review-round-trip.sh`) leaves the fold `dg pr view --json` read in a state file; this
  * spec opens the same PR in the web app (signed out: reads only) and checks the page shows
  * the same thing:
  *
@@ -16,13 +16,13 @@ import { shot, waitForRepoResolved } from './helpers'
  *   - the three inline threads, every one outdated on the final head ("on an older version"),
  *     each resolved ("resolved a conversation" ×3).
  *
- *   E2E_S20_STATE=/path/s20-state.json E2E_DEVNET=moutai pnpm exec playwright test review-round-trip
+ *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=moutai pnpm exec playwright test review-round-trip
  *
  * Skipped without a state file.
  */
 
-const STATE = process.env['E2E_S20_STATE'] ?? ''
-test.skip(STATE === '' || !existsSync(STATE), 'set E2E_S20_STATE to the JSON CLI scenario 20 wrote')
+const STATE = process.env['E2E_S21_STATE'] ?? ''
+test.skip(STATE === '' || !existsSync(STATE), 'set E2E_S21_STATE to the JSON CLI scenario 21 wrote')
 
 interface Fold {
   owner: string

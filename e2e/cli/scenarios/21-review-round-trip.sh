@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scenario 20: a full review round trip with `dg` (docs/design/review-parity-spec.md §2.5, §7
+# Scenario 21: a full review round trip with `dg` (docs/design/review-parity-spec.md §2.5, §7
 # PR 7). The maintainer (OWNER) reviews a contributor's (CONTRIB) PR from a fork:
 #
 #   1. OWNER pushes a base branch with a source file; CONTRIB forks, changes it on a branch in
@@ -25,18 +25,18 @@
 #
 # The web cross-check (the same fold in forge-web, via Playwright against a local build) is
 # `forge-web/e2e/review-round-trip.spec.ts`, fed by the JSON this scenario leaves in
-# ${WORKROOT}/s20-state.json.
+# ${WORKROOT}/s21-state.json.
 #
-# Identities: E2E_S20_OWNER / E2E_S20_COLLAB / E2E_S20_CONTRIB override OWNER / COLLAB /
+# Identities: E2E_S21_OWNER / E2E_S21_COLLAB / E2E_S21_CONTRIB override OWNER / COLLAB /
 # CONTRIB (the review writes are many; a run may use its own funded identities). A fresh
 # repo pair per run (`e2e-review-<run>`, CONTRIB's fork `e2e-review-fork-<run>`).
-SCENARIO_NAME="20 review round trip: pending review, suggestions, head sync, squash merge"
+SCENARIO_NAME="21 review round trip: pending review, suggestions, head sync, squash merge"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-S_OWNER="${E2E_S20_OWNER:-$ID_OWNER}"
-S_COLLAB="${E2E_S20_COLLAB:-$ID_COLLAB}"
-S_CONTRIB="${E2E_S20_CONTRIB:-$ID_CONTRIB}"
+S_OWNER="${E2E_S21_OWNER:-$ID_OWNER}"
+S_COLLAB="${E2E_S21_COLLAB:-$ID_COLLAB}"
+S_CONTRIB="${E2E_S21_CONTRIB:-$ID_CONTRIB}"
 idid() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["identityId"])' "$1"; }
 OWNER_ID="$(idid "$S_OWNER")"; COLLAB_ID="$(idid "$S_COLLAB")"; CONTRIB_ID="$(idid "$S_CONTRIB")"
 
@@ -46,8 +46,8 @@ REPO="${OWNER_ID}/${NAME}"
 FORK="${CONTRIB_ID}/${FORKNAME}"
 BASE="main"
 FEATURE="feature/greet"
-LOG="${WORKROOT}/s20"
-STATE="${WORKROOT}/s20-state.json"
+LOG="${WORKROOT}/s21"
+STATE="${WORKROOT}/s21-state.json"
 # Measured 22 on moutai (2026-09-27; 7 of them getDataContract). TODO(P-5): the contract memo
 # and delta caches bring this down; tighten the budget when they land.
 : "${E2E_PR_VIEW_BUDGET:=30}"
@@ -70,7 +70,7 @@ view_until() { # view_until <identity> <out> <label> <python predicate on d>
 step "OWNER creates ${REPO} and pushes ${BASE} with src/greet.rs"
 _retry "$LOG-create.err" _dg_read "$S_OWNER" "$LOG-create.json" "$LOG-create.err" --yes --json repo create "$NAME" --storage platform \
   || fail_with "$LOG-create" "repo create"
-SRC="${WORKROOT}/s20-src"
+SRC="${WORKROOT}/s21-src"
 rm -rf "$SRC"; git init -q -b "$BASE" "$SRC"
 git -C "$SRC" config user.email owner@e2e.test; git -C "$SRC" config user.name "E2E Owner"; git -C "$SRC" config commit.gpgsign false
 mkdir -p "$SRC/src"
@@ -83,7 +83,7 @@ ok "base at ${BASE1:0:12}"
 
 step "CONTRIB forks, commits on ${FEATURE}, opens a draft PR, marks it ready"
 must "$S_CONTRIB" "$LOG-fork" "fork" repo fork "$REPO" --name "$FORKNAME"
-WORK="${WORKROOT}/s20-work"
+WORK="${WORKROOT}/s21-work"
 git_dash_retry "$S_CONTRIB" "$LOG-clone" clone -q "dash://${FORK}" "$WORK" || fail_with "$LOG-clone" "fork clone"
 git -C "$WORK" config user.email contrib@e2e.test; git -C "$WORK" config user.name "E2E Contrib"; git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" checkout -q -b "$FEATURE" "origin/${BASE}"
@@ -200,7 +200,7 @@ must "$S_OWNER" "$LOG-merge" "squash merge" pr merge "$REPO" "$N" --squash
 check "merged" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["merged"]')"
 check "squash" assert_eq "squash" "$(jq_py "$LOG-merge.json" 'd["method"]')"
 SQUASH="$(jq_py "$LOG-merge.json" 'd["mergeOid"]')"
-VER="${WORKROOT}/s20-verify"
+VER="${WORKROOT}/s21-verify"
 git_dash_retry "$S_OWNER" "$LOG-vclone" clone -q -b "$BASE" "dash://${REPO}" "$VER" || fail_with "$LOG-vclone" "verify clone"
 check "the base tip is the squash commit" assert_eq "$SQUASH" "$(git -C "$VER" rev-parse HEAD)"
 check "one parent: the old base" assert_eq "$BASE1" "$(git -C "$VER" rev-list --parents -n1 HEAD | cut -d' ' -f2-)"
@@ -228,6 +228,6 @@ json.dump({
 }, open(sys.argv[2], "w"), indent=2)
 PY
 info "fold for the web cross-check: ${STATE}"
-cp "$STATE" "${E2E_S20_STATE_OUT:-/dev/null}" 2>/dev/null || true
+cp "$STATE" "${E2E_S21_STATE_OUT:-/dev/null}" 2>/dev/null || true
 
 finish_scenario

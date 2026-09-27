@@ -6,6 +6,8 @@
  *  - `trailingSlash: true` routing → a request for `/repo/` resolves to `out/repo/index.html`.
  *  - Sends the COOP/COEP `credentialless` headers the evo-sdk WASM runtime requires
  *    (the app relies on these; static hosts replicate them).
+ *  - Gzips text and `.wasm` (as `application/wasm`) for clients that accept it, like GitHub
+ *    Pages, so a throttled run (e2e/network-resilience.spec.ts) moves the bytes a user would.
  *
  * No third-party dependency (keeps the suite hermetic — the zero-backend request test must
  * not see a stray CDN/download). Usage: `node e2e/static-server.mjs [--port 4321] [--root out]`.
@@ -13,6 +15,7 @@
 
 import http from 'node:http'
 import { createReadStream } from 'node:fs'
+import { createGzip } from 'node:zlib'
 import { stat } from 'node:fs/promises'
 import { join, normalize, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +46,8 @@ const MIME = {
   '.woff2': 'font/woff2',
   '.map': 'application/json; charset=utf-8',
 }
+
+const COMPRESSIBLE = new Set(['.html', '.js', '.mjs', '.css', '.json', '.txt', '.svg', '.map', '.wasm'])
 
 async function resolve(pathname) {
   // Strip query, decode, and prevent path traversal.
@@ -87,6 +92,11 @@ const server = http.createServer(async (req, res) => {
     }
   }
   const type = MIME[extname(file)] ?? 'application/octet-stream'
+  if (/\bgzip\b/.test(req.headers['accept-encoding'] ?? '') && COMPRESSIBLE.has(extname(file))) {
+    res.writeHead(status, { 'content-type': type, 'content-encoding': 'gzip', vary: 'Accept-Encoding', ...commonHeaders })
+    createReadStream(file).pipe(createGzip({ level: 6 })).pipe(res)
+    return
+  }
   res.writeHead(status, { 'content-type': type, ...commonHeaders })
   createReadStream(file).pipe(res)
 })

@@ -269,6 +269,27 @@ impl PackReader {
             })
     }
 
+    /// Candidate `c`'s whole body if it hashes to `expected_sha256`; else `(its label, why)`.
+    async fn fetch_one_verified(
+        &self,
+        c: &Candidate,
+        expected_sha256: &str,
+        size: Option<u64>,
+    ) -> std::result::Result<Vec<u8>, (String, String)> {
+        let bytes = self
+            .fetch(c, None, size)
+            .await
+            .map_err(|e| (c.label(), e.to_string()))?;
+        if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
+            Ok(bytes)
+        } else {
+            Err((
+                c.label(),
+                "served bytes that do not match the manifest hash".to_string(),
+            ))
+        }
+    }
+
     /// Whether any candidate exists for `uris` (so the caller knows whether to bother).
     pub fn has_candidates(&self, uris: &[String]) -> bool {
         !self.candidates(uris).is_empty()
@@ -286,46 +307,38 @@ impl PackReader {
         size: Option<u64>,
         budget: Option<Duration>,
     ) -> Result<Vec<u8>> {
+        use futures::stream::{FuturesUnordered, StreamExt as _};
         let candidates = self.candidates(uris);
         if candidates.is_empty() {
             return Err(Error::NotFound);
         }
         let started = Instant::now();
         let mut reasons = Vec::new();
-        for window in candidates.chunks(RACE_WIDTH) {
-            use futures::stream::{FuturesUnordered, StreamExt as _};
-            if let Some(budget) = budget {
-                if started.elapsed() >= budget {
-                    reasons.push(format!("gave up after the {}s budget", budget.as_secs()));
+        // At most RACE_WIDTH in flight, and a slot is refilled as soon as its candidate
+        // fails: a dead host (connection refused, no DNS) costs milliseconds instead of
+        // holding its slot until the slow gateway racing next to it gives up, while a slow
+        // but healthy gateway keeps its own full deadline. The first verified copy wins (the
+        // others are dropped = cancelled); every failure is kept so a tampering host is
+        // named, not masked by a later 404.
+        let mut pending = candidates.iter();
+        let mut race = FuturesUnordered::new();
+        loop {
+            while race.len() < RACE_WIDTH {
+                let Some(c) = pending.next() else { break };
+                // Said once, and only when a candidate is actually left untried.
+                if let Some(b) = budget.filter(|b| started.elapsed() >= *b) {
+                    reasons.push(format!("gave up after the {}s budget", b.as_secs()));
+                    pending = [].iter();
                     break;
                 }
+                race.push(self.fetch_one_verified(c, expected_sha256, size));
             }
-            let mut race: FuturesUnordered<_> = window
-                .iter()
-                .map(|c| async move {
-                    let bytes = self
-                        .fetch(c, None, size)
-                        .await
-                        .map_err(|e| (c.label(), e.to_string()))?;
-                    if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
-                        Ok(bytes)
-                    } else {
-                        Err((
-                            c.label(),
-                            "served bytes that do not match the manifest hash".to_string(),
-                        ))
-                    }
-                })
-                .collect();
-            // First verified copy wins (the loser is dropped = cancelled); collect every
-            // failure so a tampering host is named, not masked by a later 404.
-            while let Some(res) = race.next().await {
-                match res {
-                    Ok(bytes) => return Ok(bytes),
-                    Err((label, why)) => {
-                        tracing::debug!(candidate = %label, reason = %why, "external copy unusable");
-                        reasons.push(format!("{label}: {why}"));
-                    }
+            let Some(res) = race.next().await else { break };
+            match res {
+                Ok(bytes) => return Ok(bytes),
+                Err((label, why)) => {
+                    tracing::debug!(candidate = %label, reason = %why, "external copy unusable");
+                    reasons.push(format!("{label}: {why}"));
                 }
             }
         }
@@ -876,6 +889,104 @@ mod tests {
             .to_string();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_dead_host_frees_its_race_slot_at_once() {
+        // D-403: candidates raced in fixed pairs, so a refused connection waited for the slow
+        // gateway paired with it (55-60 s on a real gateway) before the next pair started.
+        let good = b"pack bytes".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let base = serve(vec![("/good", good.clone())]);
+        // Accepts and never answers: a healthy but slow gateway.
+        let slow = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let slow_addr = slow.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = slow.incoming().take(4).collect();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        // Nothing listening: connection refused.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+        let r = PackReader::new(
+            vec![
+                format!("http://{slow_addr}"),
+                format!("http://{dead_addr}"),
+                base.clone(),
+            ],
+            &StorageProfiles::default(),
+        )
+        .with_candidate_timeout(std::time::Duration::from_secs(20));
+        let started = std::time::Instant::now();
+        let got = r
+            .fetch_verified(
+                &[
+                    format!("http://{slow_addr}/x"),
+                    format!("http://{dead_addr}/x"),
+                    format!("{base}/good"),
+                ],
+                &hash,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the third candidate waited for the slow one: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_reported_once_and_only_when_it_skipped_a_candidate() {
+        // Hosts that accept and never answer: each candidate runs to its own deadline.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = silent.incoming().take(8).collect();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let r = PackReader::new(vec![format!("http://{addr}")], &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_millis(2000));
+        let fetch = |n: usize| {
+            let uris: Vec<String> = (0..n).map(|i| format!("http://{addr}/{i}")).collect();
+            let r = &r;
+            async move {
+                r.fetch_verified(
+                    &uris,
+                    &"0".repeat(64),
+                    None,
+                    Some(std::time::Duration::from_millis(1000)),
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+            }
+        };
+        // Three candidates: two start, the budget runs out, the third is skipped once.
+        let err = fetch(3).await;
+        assert_eq!(err.matches("gave up after").count(), 1, "{err}");
+        // Two candidates: both started before the budget ran out, so nothing was skipped.
+        let err = fetch(2).await;
+        assert_eq!(err.matches("gave up after").count(), 0, "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_named_as_such() {
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = dead.local_addr().unwrap();
+        drop(dead);
+        let r = PackReader::new(vec![format!("http://{addr}")], &StorageProfiles::default());
+        let err = r
+            .fetch_verified(&[format!("http://{addr}/x")], &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("could not connect"), "{err}");
+        assert!(err.to_ascii_lowercase().contains("refused"), "{err}");
     }
 
     #[test]

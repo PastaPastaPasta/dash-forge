@@ -12,13 +12,20 @@ import { useMemo } from 'react'
 import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { DiffSides, RepoHome } from '@/lib/view'
-import { commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
+import { CommitIdError, commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { DiffView } from '@/components/repo/diff-view'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+
+const COMMIT_ID_TITLES: Record<CommitIdError['kind'], string> = {
+  invalid: 'Not a commit id',
+  'not-found': 'Commit not found',
+  'not-a-commit': 'Not a commit',
+  ambiguous: 'Ambiguous commit id',
+}
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
@@ -30,13 +37,36 @@ export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoA
 }
 
 function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: RepoAddress }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => loadCommitChanges(reader, oid), [oid])
+  const { data, loading, error, cause, reload } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
+  if (cause instanceof CommitIdError) {
+    return (
+      <EmptyState
+        icon={GitCommit}
+        title={COMMIT_ID_TITLES[cause.kind]}
+        body={cause.message}
+        action={
+          cause.candidates.length > 0 ? (
+            <ul className="space-y-1 text-left font-mono text-dense">
+              {cause.candidates.map((c) => (
+                <li key={c}>
+                  <Link href={repoHref('/repo/commit', addr, { oid: c })} className="hover:text-forge-800 dark:hover:text-forge-400">
+                    {c}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : undefined
+        }
+      />
+    )
+  }
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <LoadingBlock />
 
   const { commit, changes, truncated } = data
+  const full = data.oid
   const body = commit.message.split('\n').slice(1).join('\n').trim()
 
   return (
@@ -47,7 +77,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
           <span className="font-medium text-anvil-700 dark:text-anvil-200">{commit.author.name || 'unknown'}</span>
           <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>
-          <span className="flex items-center gap-1">commit <Oid value={oid} chars={9} /></span>
+          <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
           {commit.parents.map((p) => (
             <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
               parent <Oid value={p} chars={7} copyable={false} />
@@ -65,7 +95,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
       ) : (
         <DiffView
-          key={oid}
+          key={full}
           sides={sides}
           changes={changes}
           truncated={truncated}

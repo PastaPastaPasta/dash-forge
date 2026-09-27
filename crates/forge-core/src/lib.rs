@@ -34,6 +34,7 @@
 
 pub mod backends;
 pub mod collab;
+pub mod config_file;
 pub mod cost;
 pub mod create;
 pub mod envelope;

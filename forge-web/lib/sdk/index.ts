@@ -6,7 +6,8 @@
  * complete, tie-safe paging that active-repo correctness depends on.
  */
 
-export { ensureSdk, evoSdkService, type EvoSdkConfig } from './service'
+export { ensureSdk, evoSdkService, isStaleConnectionError, type EvoSdkConfig, type SdkStatus } from './service'
+export { type DownloadProgress } from './wasm-fetch'
 export {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,

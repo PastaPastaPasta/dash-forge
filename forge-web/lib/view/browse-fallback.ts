@@ -24,7 +24,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { BrowseReader, ObjectLocator } from '../browse'
+import { BrowseReader, MissingObjectError, ObjectLocator } from '../browse'
 import { repoKey, type PackManifest, type RepoRef } from '../repo'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import {
@@ -211,7 +211,7 @@ function contextFromStored(repo: RepoRef, stored: StoredFallback): Promise<Brows
 export function missingObjectError(
   oidHex: string,
   unavailable: readonly UnavailablePack[],
-): Error {
+): MissingObjectError {
   const where = unavailable
     .map((p) => `${p.packHash.slice(0, 12)}… (${p.hosts.length > 0 ? p.hosts.join(', ') : 'no fetchable mirror'})`)
     .join('; ')
@@ -226,7 +226,7 @@ export function missingObjectError(
         ? "the parent repo's chunks on Platform or external storage"
         : 'external storage'
   const n = unavailable.length
-  return new Error(
+  return new MissingObjectError(
     `object ${oidHex.slice(0, 12)}… is not in any pack this browser could load. ` +
       `${n === 1 ? 'One pack' : `${n} packs`} could not be fetched from ${source} and may hold it: ${where}. ` +
       `Cloning with dash:// reads the same ${n === 1 ? 'pack' : 'packs'}; if ${onPlatform && !external ? 'those chunks are missing' : 'the storage is down'} it will fail the same way.`,
