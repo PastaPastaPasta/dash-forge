@@ -95,6 +95,20 @@ struct Conn {
     identity: LoadedIdentity,
     bridge: BridgeIdentity,
     repo: RepoRef,
+    /// A private repository's keys, read once when the helper connects.
+    keyring: Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+}
+
+impl Conn {
+    /// The data-plane service, with this invocation's keyring (a private repo's).
+    fn service(&self) -> RepoService<'_> {
+        RepoService::with_keyring(
+            &self.client,
+            &self.identity,
+            &self.bridge,
+            self.keyring.clone(),
+        )
+    }
 }
 
 /// The remote helper, holding parsed config and a lazily-established connection.
@@ -161,9 +175,11 @@ impl Helper {
                     .await
                     .with_context(|| format!("resolving repo {id}"))?,
             };
-            if repo.visibility == forge_core::rules::v2::Visibility::Private {
-                require_private_key(&client, &identity, &bridge, &repo).await?;
-            }
+            let keyring = if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                Some(require_private_key(&client, &identity, &bridge, &repo).await?)
+            } else {
+                None
+            };
             tracing::info!(
                 repo = %repo.id(),
                 owner = %repo.owner_id(),
@@ -174,6 +190,7 @@ impl Helper {
                 identity,
                 bridge,
                 repo,
+                keyring,
             });
         }
         Ok(self.conn.as_ref().expect("conn populated"))
@@ -183,7 +200,7 @@ impl Helper {
     /// an `@refs/heads/<default> HEAD` symref.
     pub async fn list(&mut self) -> Result<Vec<String>> {
         let conn = self.ensure_conn().await?;
-        let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
+        let svc = conn.service();
         let refs = svc.read_refs(&conn.repo).await?;
         let default_branch = svc
             .read_default_branch(&conn.repo)
@@ -239,7 +256,7 @@ impl Helper {
         }
 
         let conn = self.ensure_conn().await?;
-        let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
+        let svc = conn.service();
 
         let manifests = svc.read_pack_manifests(&conn.repo).await?;
         let git_packs: Vec<_> = manifests
@@ -370,7 +387,7 @@ impl Helper {
         let conn = self.ensure_conn().await?;
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
         let repo_label = conn.repo.display();
-        let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
+        let svc = conn.service();
 
         let remote_refs = svc.read_refs(&conn.repo).await?;
 
@@ -511,7 +528,7 @@ impl Helper {
     ) -> Result<Vec<(String, RefState)>> {
         const MAX_ATTEMPTS: usize = 6;
         let conn = self.conn.as_ref().expect("connected before finalize");
-        let svc = RepoService::new(&conn.client, &conn.identity, &conn.bridge);
+        let svc = conn.service();
         // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
         // that has not applied the delete yet would otherwise make a landed delete read as
         // "did not take effect" (the nightly's 03 scenario hit exactly that).
@@ -1338,7 +1355,7 @@ async fn require_private_key(
     identity: &LoadedIdentity,
     bridge: &BridgeIdentity,
     repo: &RepoRef,
-) -> Result<()> {
+) -> Result<std::sync::Arc<forge_core::keyring::Keyring>> {
     let signer = forge_core::keyring::PrivateSigner {
         client,
         identity,
@@ -1353,7 +1370,7 @@ async fn require_private_key(
         .into());
     }
     let kr = signer.keyring(repo).await?;
-    kr.reader(repo)?;
+    kr.require_key(repo)?;
     // The repair check (§5.6) on every visit by a maintainer: git cannot prompt to spend, so
     // the helper says what is wrong and the command that fixes it.
     let maintainer = kr.reader_role() == Some(forge_core::rules::v2::Role::Maintainer);
@@ -1371,7 +1388,7 @@ async fn require_private_key(
             );
         }
     }
-    Ok(())
+    Ok(std::sync::Arc::new(kr))
 }
 
 /// E301 — no identity file to sign with.

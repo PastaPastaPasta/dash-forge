@@ -284,8 +284,47 @@ pub async fn read_private_refs(
     scope: &DocScope,
     keyring: &crate::keyring::Keyring,
 ) -> Result<Vec<(String, crate::rules::RefState)>> {
+    let configs = &keyring.config().history;
+    Ok(read_private_updates(client, contract, scope, keyring)
+        .await?
+        .into_iter()
+        .map(|(name, updates)| {
+            let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
+            let state = crate::rules::resolve_ref(&updates, configs, &hash_hex, |a, b| a == b);
+            (name, state)
+        })
+        .collect())
+}
+
+/// [`read_merge_base`] for a PRIVATE repository: the base ref's decrypted history, across
+/// every epoch the reader holds, over the decrypted config timeline.
+pub async fn read_private_merge_base(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    keyring: &crate::keyring::Keyring,
+    ref_name: &str,
+) -> Result<MergeBaseTips> {
+    let updates = read_private_updates(client, contract, scope, keyring)
+        .await?
+        .remove(ref_name)
+        .unwrap_or_default();
+    Ok(crate::rules::merge_base_tips(
+        &updates,
+        &keyring.config().history,
+        &hex::encode(crate::backends::sha256(ref_name.as_bytes())),
+    ))
+}
+
+/// Every readable ref update of a private repository, grouped by its decrypted name and
+/// restated with the public key (`refNameHash = sha256(refName)`), so the public folds apply.
+async fn read_private_updates(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    keyring: &crate::keyring::Keyring,
+) -> Result<BTreeMap<String, Vec<RefUpdate>>> {
     use crate::private::{DocKind, Opened};
-    let configs = keyring.config().history;
     let mut by_name: BTreeMap<String, Vec<RefUpdate>> = BTreeMap::new();
     for (doc_type, protected) in REF_UPDATE_TYPES {
         let kind = if protected {
@@ -317,14 +356,7 @@ pub async fn read_private_refs(
             by_name.entry(name).or_default().push(u);
         }
     }
-    Ok(by_name
-        .into_iter()
-        .map(|(name, updates)| {
-            let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
-            let state = crate::rules::resolve_ref(&updates, &configs, &hash_hex, |a, b| a == b);
-            (name, state)
-        })
-        .collect())
+    Ok(by_name)
 }
 
 /// Read one ref's complete history (both types) of the repository `scope` names.

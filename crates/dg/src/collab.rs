@@ -20,7 +20,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::fmt::{cost_line, dash_usd_price};
 
-use crate::common::{resolve, RepoRef};
+use crate::common::{resolve, RepoRef, Session};
 use crate::context::Ctx;
 use crate::{CollabCommand, RoleArg};
 
@@ -33,16 +33,23 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
     }
 }
 
+/// A membership document or a member delete (`dg collab`), estimated.
+const MEMBER_DOC_ESTIMATE_CREDITS: u64 = 20_000_000;
+/// How long `dg collab remove` waits for the deleted role to leave a proved read before it
+/// rotates: attempts, and the pause between them.
+const DELETE_VISIBLE_ATTEMPTS: usize = 12;
+const DELETE_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
     let role = role.to_core();
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let s = Session::open(ctx, repo).await?;
+    let (client, handle) = (&s.client, &s.repo);
+    let signer = crate::keys::signer(&s);
     let private = handle.visibility == Visibility::Private;
     if private {
         // Checked before anything is written: a member with no encryption key could be
         // granted a role but never read the repository (§5.5, ux-dx-spec §9).
-        if !crate::keys::member_can_receive(&client, &handle, member).await? {
+        if !crate::keys::member_can_receive(client, handle, member).await? {
             return Err(UserError::new(
                 codes::NO_ENCRYPTION_KEY,
                 format!("{member} has no encryption key yet"),
@@ -58,17 +65,18 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
             .into());
         }
         // The key must be wrappable by us now (our own key, and an epoch we can write).
-        let signer = PrivateSigner {
-            client: &client,
-            identity: &identity,
-            bridge: &bridge,
-        };
-        signer.keyring(&handle).await?.writer(&handle)?;
+        signer.keyring(handle).await?.writer(handle)?;
     }
     let what = if private {
-        "a membership document + a key wrap, ~0.0006 DASH"
+        format!(
+            "a membership document + a key wrap, {}",
+            cost_line(
+                MEMBER_DOC_ESTIMATE_CREDITS + crate::keys::WRAP_ESTIMATE_CREDITS,
+                dash_usd_price()
+            )
+        )
     } else {
-        "one small document"
+        "one small document".to_string()
     };
     if !ctx.confirm(&format!(
         "Add {member} as a {} of {repo}? ({what})",
@@ -76,17 +84,12 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
     ))? {
         return Err(crate::errors::cancelled());
     }
-    let granted = MemberService::new(&client, &identity, &bridge)
-        .grant(&handle, member, role)
+    let granted = MemberService::new(client, &s.identity, &s.bridge)
+        .grant(handle, member, role)
         .await
         .context("adding the member")?;
     if private {
-        let signer = PrivateSigner {
-            client: &client,
-            identity: &identity,
-            bridge: &bridge,
-        };
-        forge_core::keyring::add_member_wrap(&signer, &handle, member)
+        forge_core::keyring::add_member_wrap(&signer, handle, member)
             .await
             .context("wrapping the repository key to the new member (re-run `dg collab add` to finish: the membership stands)")?;
     }
@@ -111,13 +114,12 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
 }
 
 async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
     let role = role.to_core();
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let s = Session::open(ctx, repo).await?;
+    let (client, handle) = (&s.client, &s.repo);
     let private = handle.visibility == Visibility::Private;
     let prompt = if private {
-        let members = MemberReader::new(&client).list(&handle).await?;
+        let members = MemberReader::new(client).list(handle).await?;
         // After the removal: everyone else (the rotator included) gets a wrap, plus an anchor.
         let remaining = members
             .iter()
@@ -132,7 +134,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
              {member} — encryption can't take back what was shared.\n\
              Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
             role_name(role),
-            cost_line(est + 20_000_000, dash_usd_price())
+            cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, dash_usd_price())
         )
     } else {
         format!(
@@ -143,14 +145,14 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
-    let removed = MemberService::new(&client, &identity, &bridge)
-        .revoke(&handle, member, role)
+    let removed = MemberService::new(client, &s.identity, &s.bridge)
+        .revoke(handle, member, role)
         .await
         .context("removing the member")?;
     // Nothing was deleted (not a member): nothing to rotate. A leftover wrap to a non-member
     // is what `dg repo keys repair` finds and rotates away.
     let rotation = if private && removed {
-        Some(rotate_after_removal(&client, &identity, &bridge, &handle, member, role).await?)
+        Some(rotate_after_removal(&crate::keys::signer(&s), handle, member, role).await?)
     } else {
         None
     };
@@ -164,7 +166,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         }),
         || {
             if let Some(r) = &rotation {
-                crate::keys::print_rotation(&handle, r);
+                crate::keys::print_rotation(handle, r);
             }
             if removed {
                 println!(
@@ -189,9 +191,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
 /// (they are excluded explicitly too, whatever a lagging read says). A member still holding
 /// another role keeps it, so they stay a member and are wrapped like the rest.
 async fn rotate_after_removal(
-    client: &forge_core::platform::PlatformClient,
-    identity: &forge_core::platform::LoadedIdentity,
-    bridge: &forge_core::keystore::BridgeIdentity,
+    signer: &PrivateSigner<'_>,
     repo: &forge_core::scope::RepoRef,
     member: &str,
     removed_role: forge_core::rules::v2::Role,
@@ -199,13 +199,13 @@ async fn rotate_after_removal(
     // Wait until the deleted role document is gone from a proved read (a lagging node would
     // otherwise list them, and the rotation must not wrap to them). `rotate` excludes them
     // explicitly as well, unless they still hold the other role.
-    let reader = MemberReader::new(client);
+    let reader = MemberReader::new(signer.client);
     let mut roles = reader.roles_of(repo, member).await?;
-    for _ in 0..12 {
+    for _ in 0..DELETE_VISIBLE_ATTEMPTS {
         if !roles.iter().any(|m| m.role == removed_role) {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        tokio::time::sleep(DELETE_VISIBLE_DELAY).await;
         roles = reader.roles_of(repo, member).await?;
     }
     let exclude: Vec<String> = if roles.iter().all(|m| m.role == removed_role) {
@@ -213,12 +213,7 @@ async fn rotate_after_removal(
     } else {
         Vec::new()
     };
-    let signer = PrivateSigner {
-        client,
-        identity,
-        bridge,
-    };
-    forge_core::keyring::rotate(&signer, repo, &exclude)
+    forge_core::keyring::rotate(signer, repo, &exclude)
         .await
         .context(
         "rotating the repository key after the removal (run `dg repo keys repair` to finish it)",

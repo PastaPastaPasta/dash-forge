@@ -42,7 +42,7 @@ pub fn require_private(repo: &RepoRef) -> Result<()> {
     )))
 }
 
-fn signer(s: &Session) -> PrivateSigner<'_> {
+pub(crate) fn signer(s: &Session) -> PrivateSigner<'_> {
     PrivateSigner {
         client: &s.client,
         identity: &s.identity,

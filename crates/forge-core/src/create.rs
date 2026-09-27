@@ -388,31 +388,25 @@ pub async fn create_repo(
     // 3. the initial config: for a private repo, epoch 0 (self-wrap, then the sealed anchor)
     if opts.visibility == Visibility::Private {
         steps.push(private_epoch_zero(client, identity, bridge, &repo, &opts).await?);
-        journal.finish();
-        let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
-        return Ok(CreateRepoResult {
-            repo,
-            steps,
-            cost_credits: balance_before.saturating_sub(balance_after),
-        });
+    } else {
+        let (_, outcome) = run_step(
+            &engine,
+            &core,
+            &mut journal,
+            Step::Config,
+            || async {
+                Ok(client
+                    .query_documents(&core, DOC_CONFIG, &scope.filters([]), &[], 1, None)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|d| d.id))
+            },
+            || scope.scoped(config_props(&opts)),
+        )
+        .await?;
+        steps.push((Step::Config.doc_type(), outcome));
     }
-    let (_, outcome) = run_step(
-        &engine,
-        &core,
-        &mut journal,
-        Step::Config,
-        || async {
-            Ok(client
-                .query_documents(&core, DOC_CONFIG, &scope.filters([]), &[], 1, None)
-                .await?
-                .into_iter()
-                .next()
-                .map(|d| d.id))
-        },
-        || scope.scoped(config_props(&opts)),
-    )
-    .await?;
-    steps.push((Step::Config.doc_type(), outcome));
 
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
@@ -431,8 +425,11 @@ fn require_encryption_key(
     bridge: &BridgeIdentity,
     core: &str,
 ) -> Result<()> {
+    if opts.visibility == Visibility::Public {
+        return Ok(());
+    }
     let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core);
-    if opts.visibility == Visibility::Private && held.sender().is_none() {
+    if held.sender().is_none() {
         return Err(crate::keyring::no_encryption_key(
             "your identity",
             "cannot create a private repository",

@@ -479,6 +479,9 @@ impl<'a> WebhookService<'a> {
     /// Build the document for `input` on `repo`: pick the relay's encryption key and the
     /// signer's, and encrypt the secret between them. Nothing is sent.
     pub async fn prepare(&self, repo: &RepoRef, input: &NewWebhook) -> Result<PreparedWebhook> {
+        // A relay is not a member of a private repository and cannot read what it would
+        // deliver; forge-relay refuses private repositories.
+        repo.require_public("webhooks")?;
         let forge = repo.forge();
         check_url_and_events(&input.url, &input.events, input.allow_credentials_in_url)?;
         check_secret(input.secret.expose())?;

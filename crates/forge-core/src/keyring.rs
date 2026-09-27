@@ -138,6 +138,8 @@ struct WrapDoc {
     sender_key_id: u32,
     wrapped: Vec<u8>,
     height: u64,
+    /// The epoch key, when this is one of the reader's own wraps and it opened (§5.4 (4)).
+    key: Option<EpochKey>,
 }
 
 impl WrapDoc {
@@ -151,6 +153,7 @@ impl WrapDoc {
             sender_key_id: u32::try_from(d.field_u64("senderKeyId")?).ok()?,
             wrapped: d.field_bytes("wrapped")?,
             height: d.created_at_block_height.unwrap_or(0),
+            key: None,
         })
     }
 }
@@ -191,6 +194,8 @@ pub struct Keyring {
     wraps: Vec<WrapDoc>,
     resolution: EpochResolution,
     ctx: OpenContext,
+    /// The decrypted config timeline, built once at load.
+    config: PrivateConfig,
     /// Wraps this reader could not open, by epoch (for `dg repo keys status`).
     unreadable_wraps: Vec<u32>,
 }
@@ -276,6 +281,7 @@ impl Keyring {
             wraps,
             resolution: EpochResolution::default(),
             ctx: OpenContext::default(),
+            config: PrivateConfig::default(),
             unreadable_wraps: Vec::new(),
         };
         keyring.resolve(io, enc).await?;
@@ -313,28 +319,30 @@ impl Keyring {
                 .is_some_and(|k| !k.disabled && k.purpose == "ENCRYPTION")
         };
 
-        let mut rows = Vec::with_capacity(self.wraps.len());
         let mut unreadable = Vec::new();
-        for w in &self.wraps {
-            let key = if w.member == self.reader {
-                let got = self.unwrap_own(io.core, w, enc, &keys_of);
-                if got.is_none() {
-                    unreadable.push(w.epoch);
-                }
-                got
-            } else {
-                None
-            };
-            rows.push(WrapRow {
+        for i in 0..self.wraps.len() {
+            if self.wraps[i].member != self.reader {
+                continue;
+            }
+            let key = unwrap_own(io.core, &self.repo_id, &self.wraps[i], enc, &keys_of);
+            if key.is_none() {
+                unreadable.push(self.wraps[i].epoch);
+            }
+            self.wraps[i].key = key;
+        }
+        let rows: Vec<WrapRow> = self
+            .wraps
+            .iter()
+            .map(|w| WrapRow {
                 id: w.id,
                 owner: w.owner,
                 member_id: w.member,
                 epoch: w.epoch,
                 recipient_key_id: w.recipient_key_id,
                 key_enabled: enabled(&w.member, w.recipient_key_id),
-                key,
-            });
-        }
+                key: w.key.clone(),
+            })
+            .collect();
         let memberships: Vec<MemberRow> = self
             .members
             .iter()
@@ -350,39 +358,11 @@ impl Keyring {
         self.resolution =
             resolve_epochs(&self.repo_id, &self.reader, &memberships, &configs, &rows);
         self.ctx = self.resolution.open_context(&self.repo_id);
+        self.config = self.decrypt_config();
         unreadable.sort_unstable();
         unreadable.dedup();
         self.unreadable_wraps = unreadable;
         Ok(())
-    }
-
-    /// The key in one of the reader's own wraps: the reader's private key named by
-    /// `recipientKeyId`, and the sender's public key named by `senderKeyId`. `None` when either
-    /// is missing or the wrap does not open (version / KCV, §5.4 (4)).
-    fn unwrap_own(
-        &self,
-        core: &LoadedContract,
-        w: &WrapDoc,
-        enc: &EncryptionKeys,
-        keys_of: &BTreeMap<[u8; 32], Vec<IdentityKeyInfo>>,
-    ) -> Option<EpochKey> {
-        let mine = enc.get(w.recipient_key_id)?;
-        let sender_pub = keys_of
-            .get(&w.owner)?
-            .iter()
-            .find(|k| k.id == w.sender_key_id && k.purpose == "ENCRYPTION")?
-            .public_key
-            .clone();
-        let secret = secret_of(mine).ok()?;
-        open_wrap(
-            core,
-            &self.repo_id,
-            w.epoch,
-            &w.wrapped,
-            &secret,
-            &sender_pub,
-        )
-        .ok()
     }
 
     /// The resolution: epochs, anchors, alerts, the repair check.
@@ -421,20 +401,21 @@ impl Keyring {
         Private::from_resolution(&self.repo_id, &self.resolution).ok_or_else(|| self.no_write(repo))
     }
 
-    /// The seams to read with: every readable epoch (and the write epoch when there is one).
+    /// Refuse a reader that holds no key at all (E306, or the alert that explains why).
     /// Reading needs no write epoch, so a member of a repo mid-rotation can still read history.
-    pub fn reader(&self, repo: &RepoRef) -> Result<ReadKeys> {
+    pub fn require_key(&self, repo: &RepoRef) -> Result<()> {
         if self.resolution.keys.is_empty() {
             return Err(self.no_read(repo));
         }
-        Ok(ReadKeys {
-            keys: self
-                .resolution
-                .keys
-                .iter()
-                .map(|(&e, k)| (e, EpochKeys::derive(&self.repo_id, e, k)))
-                .collect(),
-        })
+        Ok(())
+    }
+
+    /// Open a whole sealed artifact whose manifest says `size_bytes` (§3.5), under any epoch
+    /// the reader holds.
+    pub fn open_pack(&self, repo: &RepoRef, sealed: &[u8], size_bytes: u64) -> Result<Vec<u8>> {
+        self.require_key(repo)?;
+        crate::private::pack::open(sealed, size_bytes, |e| self.ctx.keys.get(&e))
+            .map_err(|e| sealed_error(&e))
     }
 
     fn alert_error(&self, repo: &RepoRef) -> Option<Error> {
@@ -448,7 +429,7 @@ impl Keyring {
                     "the repoKey from {} does not commit to epoch {epoch}'s anchor",
                     platform::encode_identifier(*author)
                 ))
-                .fix(format!("ask a maintainer to run `dg repo keys repair {}`", repo.display()))
+                .fix(fix_repair(repo))
                 .into(),
             ),
             Alert::ChainBroken { epoch, author } => Some(
@@ -475,7 +456,7 @@ impl Keyring {
         let (why, fix) = if member {
             (
                 "you are a member, but no current maintainer has wrapped the repo key to your encryption key yet".to_string(),
-                format!("ask a maintainer to run `dg repo keys repair {}`", repo.display()),
+                fix_repair(repo),
             )
         } else {
             (
@@ -515,7 +496,7 @@ impl Keyring {
             self.resolution.current_epoch,
             self.readable_epochs()
         ))
-        .fix(format!("ask a maintainer to run `dg repo keys repair {}`", repo.display()))
+        .fix(fix_repair(repo))
         .note("nothing was written")
         .into()
     }
@@ -534,34 +515,32 @@ impl Keyring {
 
     /// The decrypted config timeline: every config that opens (any epoch the reader holds),
     /// as the ref rules take it, and the newest one's fields.
-    pub fn config(&self) -> PrivateConfig {
+    pub fn config(&self) -> &PrivateConfig {
+        &self.config
+    }
+
+    fn decrypt_config(&self) -> PrivateConfig {
         let mut out = PrivateConfig::default();
-        let mut newest: Option<(u64, String, Fields)> = None;
+        let mut newest: Option<(&FetchedDocument, Fields)> = None;
         for d in &self.configs {
             let Opened::Readable(fields) = self.open(DocKind::Config, d) else {
                 continue;
             };
-            let at = d.created_at.unwrap_or(0);
             out.history.push(crate::rules::ConfigDoc {
                 id: d.id.clone(),
-                created_at: at,
+                created_at: d.created_at.unwrap_or(0),
                 protected_patterns: fields.protected_patterns.clone(),
             });
-            let key = (at, d.id.clone());
-            if newest
-                .as_ref()
-                .is_none_or(|(t, id, _)| key > (*t, id.clone()))
-            {
-                newest = Some((at, d.id.clone(), *fields));
+            let key = |doc: &FetchedDocument| (doc.created_at.unwrap_or(0), doc.id.clone());
+            if newest.as_ref().is_none_or(|(n, _)| key(d) > key(n)) {
+                newest = Some((d, *fields));
             }
         }
-        if let Some((_, id, f)) = newest {
+        if let Some((d, f)) = newest {
             out.default_branch = f.default_branch.map(|b| short_branch(&b).to_string());
             out.protected_patterns = f.protected_patterns;
-            if let Some(d) = self.configs.iter().find(|d| d.id == id) {
-                out.backend = d.fields.get("backend").cloned();
-                out.archived = d.field_bool("archived");
-            }
+            out.backend = d.fields.get("backend").cloned();
+            out.archived = d.field_bool("archived");
         }
         out
     }
@@ -569,37 +548,6 @@ impl Keyring {
     /// The raw keys the resolution holds (for tests and for the rotation's `prevEpochKey`).
     fn epoch_key(&self, epoch: u32) -> Option<&EpochKey> {
         self.resolution.keys.get(&epoch)
-    }
-}
-
-/// The subkeys of every epoch a reader holds.
-pub struct ReadKeys {
-    keys: BTreeMap<u32, EpochKeys>,
-}
-
-impl std::fmt::Debug for ReadKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReadKeys")
-            .field("epochs", &self.keys.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl ReadKeys {
-    /// The subkeys of `epoch`, if held.
-    pub fn get(&self, epoch: u32) -> Option<&EpochKeys> {
-        self.keys.get(&epoch)
-    }
-
-    /// Every held epoch's subkeys.
-    pub fn all(&self) -> impl Iterator<Item = &EpochKeys> {
-        self.keys.values()
-    }
-
-    /// Open a whole sealed artifact whose manifest says `size_bytes` (§3.5).
-    pub fn open_pack(&self, sealed: &[u8], size_bytes: u64) -> Result<Vec<u8>> {
-        crate::private::pack::open(sealed, size_bytes, |e| self.keys.get(&e))
-            .map_err(|e| sealed_error(&e))
     }
 }
 
@@ -622,6 +570,14 @@ pub fn sealed_error(e: &PrivateError) -> Error {
         .fix("ask the member who pushed it to push again")
         .into(),
     }
+}
+
+/// The fix every "a maintainer must repair the key" error carries.
+fn fix_repair(repo: &RepoRef) -> String {
+    format!(
+        "ask a maintainer to run `dg repo keys repair {}`",
+        repo.display()
+    )
 }
 
 /// `refs/heads/main` → `main`; a short name is returned as-is.
@@ -668,6 +624,26 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
     }
 }
 
+/// The key in one of the reader's own wraps: the reader's private key named by
+/// `recipientKeyId`, and the sender's public key named by `senderKeyId`. `None` when either is
+/// missing or the wrap does not open (version / KCV, §5.4 (4)).
+fn unwrap_own(
+    core: &LoadedContract,
+    repo_id: &[u8; 32],
+    w: &WrapDoc,
+    enc: &EncryptionKeys,
+    keys_of: &BTreeMap<[u8; 32], Vec<IdentityKeyInfo>>,
+) -> Option<EpochKey> {
+    let mine = enc.get(w.recipient_key_id)?;
+    let sender_pub = &keys_of
+        .get(&w.owner)?
+        .iter()
+        .find(|k| k.id == w.sender_key_id && k.purpose == "ENCRYPTION")?
+        .public_key;
+    let secret = secret_of(mine).ok()?;
+    open_wrap(core, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
+}
+
 fn secret_of(k: &PrivateKey) -> Result<WrapSecret> {
     WrapSecret::from_bytes(&k.secret_bytes())
 }
@@ -712,20 +688,19 @@ impl<'a> PrivateSigner<'a> {
     /// `member`'s highest enabled `ENCRYPTION` key. Returns the document id.
     async fn post_wrap(
         &self,
-        core: &LoadedContract,
-        scope: &DocScope,
+        w: &WriteCtx,
         epoch: u32,
         key: &EpochKey,
         member: [u8; 32],
     ) -> Result<String> {
-        let repo_core = scope.contract_id.clone();
-        let enc = EncryptionKeys::held(self.bridge, &self.identity.public_keys(), &repo_core);
-        let (sender_id, sender) = enc
+        let (core, scope) = (&w.core, &w.scope);
+        let (sender_id, sender) = w
+            .enc
             .sender()
             .ok_or_else(|| no_encryption_key("your identity", "cannot wrap the repo key"))?;
         let member_b58 = platform::encode_identifier(member);
         let recipient_keys = self.client.fetch_identity(&member_b58).await?.public_keys();
-        let recipient = recipient_key(&recipient_keys, &repo_core)
+        let recipient = recipient_key(&recipient_keys, &scope.contract_id)
             .ok_or_else(|| no_encryption_key(&member_b58, "cannot wrap the repo key"))?;
         let secret = secret_of(sender)?;
         let props = seal_wrap(
@@ -768,13 +743,8 @@ impl<'a> PrivateSigner<'a> {
 
     /// Post the anchor `config` of `epoch` sealed under `key`: the current config's fields,
     /// plus `prevEpoch`/`prevEpochKey` for `epoch ≥ 1`.
-    async fn post_anchor(
-        &self,
-        core: &LoadedContract,
-        scope: &DocScope,
-        anchor: &AnchorInput<'_>,
-    ) -> Result<String> {
-        let owner = platform::decode_identifier(&self.identity.id())?;
+    async fn post_anchor(&self, w: &WriteCtx, anchor: &AnchorInput<'_>) -> Result<String> {
+        let (core, scope, owner) = (&w.core, &w.scope, w.me);
         let keys = EpochKeys::derive(&scope.repo_id, anchor.epoch, anchor.key);
         let fields = Fields {
             default_branch: Some(anchor.default_branch.to_string()),
@@ -797,6 +767,43 @@ impl<'a> PrivateSigner<'a> {
         self.engine()?
             .create_document(core, DOC_CONFIG, props)
             .await
+    }
+}
+
+/// Everything a keyring write needs: the contract, the scope, the signer's keys and the
+/// keyring read now (§5.3: before every write).
+struct WriteCtx {
+    core: LoadedContract,
+    scope: DocScope,
+    me: [u8; 32],
+    enc: EncryptionKeys,
+    kr: Keyring,
+}
+
+impl PrivateSigner<'_> {
+    async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
+        let scope = repo.scope()?;
+        let core = self.client.fetch_contract(&scope.contract_id).await?;
+        let enc = self.encryption_keys(repo);
+        let kr = Keyring::load_with(
+            &KeyringIo {
+                client: self.client,
+                core: &core,
+                scope: &scope,
+            },
+            repo,
+            &self.identity.id(),
+            &enc,
+        )
+        .await?;
+        let me = kr.reader;
+        Ok(WriteCtx {
+            core,
+            scope,
+            me,
+            enc,
+            kr,
+        })
     }
 }
 
@@ -829,45 +836,26 @@ pub async fn create_private_state(
     default_branch: &str,
     backend: FieldValue,
 ) -> Result<bool> {
-    let scope = repo.scope()?;
-    let core = signer.client.fetch_contract(&scope.contract_id).await?;
-    let io = KeyringIo {
-        client: signer.client,
-        core: &core,
-        scope: &scope,
-    };
-    let me = platform::decode_identifier(&signer.identity.id())?;
-    let enc = signer.encryption_keys(repo);
-    if enc.sender().is_none() {
-        return Err(no_encryption_key(
-            "your identity",
-            "cannot create a private repository",
-        ));
-    }
-    let kr = Keyring::load_with(&io, repo, &signer.identity.id(), &enc).await?;
-    if kr.resolution.anchors.contains_key(&0) {
+    let w = signer.open(repo).await?;
+    if w.kr.resolution.anchors.contains_key(&0) {
         return Ok(false);
     }
     // Resume: our own epoch-0 self-wrap, if it landed, is the key.
-    let resumed = kr
-        .wraps
-        .iter()
-        .filter(|w| w.epoch == 0 && w.member == me && w.owner == me)
-        .find_map(|w| {
-            let keys_of = BTreeMap::from([(me, signer.identity.public_keys())]);
-            kr.unwrap_own(&core, w, &enc, &keys_of)
-        });
+    let resumed =
+        w.kr.wraps
+            .iter()
+            .filter(|x| x.epoch == 0 && x.member == w.me && x.owner == w.me)
+            .find_map(|x| x.key.clone());
     let key = if let Some(k) = resumed {
         k
     } else {
         let k = EpochKey::generate()?;
-        signer.post_wrap(&core, &scope, 0, &k, me).await?;
+        signer.post_wrap(&w, 0, &k, w.me).await?;
         k
     };
     signer
         .post_anchor(
-            &core,
-            &scope,
+            &w,
             &AnchorInput {
                 epoch: 0,
                 key: &key,
@@ -889,20 +877,14 @@ pub async fn add_member_wrap(
     repo: &RepoRef,
     member: &str,
 ) -> Result<()> {
-    let scope = repo.scope()?;
-    let core = signer.client.fetch_contract(&scope.contract_id).await?;
-    let kr = signer.keyring(repo).await?;
-    let w = kr.writer(repo)?;
-    let epoch = w.write_epoch();
-    let key = kr.epoch_key(epoch).expect("the write epoch's key is held");
+    let w = signer.open(repo).await?;
+    let epoch = w.kr.writer(repo)?.write_epoch();
+    let key =
+        w.kr.epoch_key(epoch)
+            .expect("the write epoch's key is held")
+            .clone();
     signer
-        .post_wrap(
-            &core,
-            &scope,
-            epoch,
-            key,
-            platform::decode_identifier(member)?,
-        )
+        .post_wrap(&w, epoch, &key, platform::decode_identifier(member)?)
         .await?;
     Ok(())
 }
@@ -942,17 +924,9 @@ pub async fn rotate(
     repo: &RepoRef,
     exclude: &[String],
 ) -> Result<Rotation> {
-    let scope = repo.scope()?;
-    let core = signer.client.fetch_contract(&scope.contract_id).await?;
-    let io = KeyringIo {
-        client: signer.client,
-        core: &core,
-        scope: &scope,
-    };
+    let w = signer.open(repo).await?;
+    let (kr, me) = (&w.kr, w.me);
     let me_b58 = signer.identity.id();
-    let me = platform::decode_identifier(&me_b58)?;
-    let enc = signer.encryption_keys(repo);
-    let kr = Keyring::load_with(&io, repo, &me_b58, &enc).await?;
     if kr.reader_role() != Some(Role::Maintainer) {
         return Err(Error::NotPermitted {
             action: format!("rotate the key of {}", repo.display()),
@@ -965,10 +939,10 @@ pub async fn rotate(
         .epoch_key(n)
         .expect("the write epoch's key is held")
         .clone();
-    let (epoch, key) = next_epoch(&kr, &core, &enc, signer, me, n)?;
+    let (epoch, key) = next_epoch(kr, me, n)?;
 
     // Step 2: wraps, self first, to every remaining member.
-    let targets = rotation_targets(&kr, &me_b58, exclude);
+    let targets = rotation_targets(kr, &me_b58, exclude);
     let already: BTreeSet<[u8; 32]> = kr
         .wraps
         .iter()
@@ -978,7 +952,7 @@ pub async fn rotate(
     for t in &targets {
         let tb = platform::decode_identifier(t)?;
         if !already.contains(&tb) {
-            signer.post_wrap(&core, &scope, epoch, &key, tb).await?;
+            signer.post_wrap(&w, epoch, &key, tb).await?;
         }
     }
 
@@ -987,8 +961,7 @@ pub async fn rotate(
     let default_branch = cfg.default_branch.clone().unwrap_or_else(|| "main".into());
     let anchor_id = signer
         .post_anchor(
-            &core,
-            &scope,
+            &w,
             &AnchorInput {
                 epoch,
                 key: &key,
@@ -1004,8 +977,13 @@ pub async fn rotate(
 
     // Step 4: a proved read that lists the epoch's configs; confirm ours is first among current
     // maintainers' (select_anchors orders by ($createdAtBlockHeight, raw $id)).
+    let io = KeyringIo {
+        client: signer.client,
+        core: &w.core,
+        scope: &w.scope,
+    };
     for attempt in 0..ANCHOR_POLLS {
-        let now = Keyring::load_with(&io, repo, &me_b58, &enc).await?;
+        let now = Keyring::load_with(&io, repo, &me_b58, &w.enc).await?;
         if let Some(a) = now.resolution.anchors.get(&epoch) {
             return Ok(Rotation {
                 epoch,
@@ -1024,15 +1002,7 @@ pub async fn rotate(
 /// this signer's own self-wrap for an unanchored epoch above `n` (a rotation that died before
 /// its anchor), else a fresh key for the next epoch number with no wrap by this signer and no
 /// anchor.
-fn next_epoch(
-    kr: &Keyring,
-    core: &LoadedContract,
-    enc: &EncryptionKeys,
-    signer: &PrivateSigner<'_>,
-    me: [u8; 32],
-    n: u32,
-) -> Result<(u32, EpochKey)> {
-    let keys_of = BTreeMap::from([(me, signer.identity.public_keys())]);
+fn next_epoch(kr: &Keyring, me: [u8; 32], n: u32) -> Result<(u32, EpochKey)> {
     let pending = kr
         .wraps
         .iter()
@@ -1043,7 +1013,7 @@ fn next_epoch(
                 && !kr.resolution.anchors.contains_key(&w.epoch)
         })
         .max_by_key(|w| (w.epoch, w.height))
-        .and_then(|w| kr.unwrap_own(core, w, enc, &keys_of).map(|k| (w.epoch, k)));
+        .and_then(|w| w.key.clone().map(|k| (w.epoch, k)));
     if let Some(p) = pending {
         return Ok(p);
     }
@@ -1054,18 +1024,28 @@ fn next_epoch(
         .map(|w| w.epoch)
         .chain(kr.resolution.anchors.keys().copied())
         .collect();
+    Ok((fresh_epoch(n, &used)?, EpochKey::generate()?))
+}
+
+/// The smallest epoch number above `n` that is not in `used` (this signer's wraps and every
+/// anchored epoch): epoch numbers need not be contiguous (§5.5 "crash between steps 2 and 3").
+fn fresh_epoch(n: u32, used: &BTreeSet<u32>) -> Result<u32> {
     let overflow = || Error::Config("key epoch overflow".into());
     let mut e = n.checked_add(1).ok_or_else(overflow)?;
     while used.contains(&e) {
         e = e.checked_add(1).ok_or_else(overflow)?;
     }
-    Ok((e, EpochKey::generate()?))
+    Ok(e)
 }
 
 /// Who a rotation wraps to: this signer first, then every current member not in `exclude`.
 fn rotation_targets(kr: &Keyring, me: &str, exclude: &[String]) -> Vec<String> {
+    targets_of(kr.members(), me, exclude)
+}
+
+fn targets_of(members: &[Member], me: &str, exclude: &[String]) -> Vec<String> {
     let mut targets: Vec<String> = vec![me.to_string()];
-    for m in kr.members() {
+    for m in members {
         if !exclude.contains(&m.identity_id) && !targets.contains(&m.identity_id) {
             targets.push(m.identity_id.clone());
         }
@@ -1151,6 +1131,43 @@ mod tests {
             header_of(DocKind::Issue, &d).is_none(),
             "an issue needs its number"
         );
+    }
+
+    #[test]
+    fn rotation_wraps_self_first_and_never_an_excluded_member() {
+        let m = |id: &str, role| Member {
+            identity_id: id.into(),
+            role,
+            document_id: format!("d-{id}"),
+            created_at: 1,
+        };
+        let members = [
+            m("bob", Role::Writer),
+            m("alice", Role::Maintainer),
+            m("carol", Role::Maintainer),
+            // carol also holds the writer role: one wrap each, not two
+            m("carol", Role::Writer),
+        ];
+        // a stale read still lists bob after his removal: excluded anyway
+        assert_eq!(
+            targets_of(&members, "alice", &["bob".into()]),
+            ["alice", "carol"]
+        );
+        assert_eq!(
+            targets_of(&members, "alice", &[]),
+            ["alice", "bob", "carol"]
+        );
+        // the rotator is wrapped first even when not listed yet (a lagging read)
+        assert_eq!(targets_of(&[], "alice", &[]), ["alice"]);
+    }
+
+    #[test]
+    fn a_fresh_epoch_skips_used_numbers() {
+        assert_eq!(fresh_epoch(0, &BTreeSet::new()).unwrap(), 1);
+        // a race loser's wraps for 1 and 2, and an anchored 3: the next free is 4
+        assert_eq!(fresh_epoch(0, &BTreeSet::from([1, 2, 3])).unwrap(), 4);
+        assert_eq!(fresh_epoch(5, &BTreeSet::from([1, 2])).unwrap(), 6);
+        assert!(fresh_epoch(u32::MAX, &BTreeSet::new()).is_err());
     }
 
     #[test]

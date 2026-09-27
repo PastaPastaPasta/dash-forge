@@ -389,6 +389,21 @@ impl<'a> RepoService<'a> {
         }
     }
 
+    /// [`Self::new`] with the keys of the (private) repository it will serve already loaded:
+    /// a helper invocation reads them once. Writes still re-read them ([`Self::private_writer`]).
+    pub fn with_keyring(
+        client: &'a PlatformClient,
+        identity: &'a LoadedIdentity,
+        bridge: &'a BridgeIdentity,
+        keyring: Option<std::sync::Arc<Keyring>>,
+    ) -> Self {
+        let svc = Self::new(client, identity, bridge);
+        if let Some(k) = keyring {
+            let _ = svc.keyring.set(k);
+        }
+        svc
+    }
+
     /// The signer's view for private-repository key operations.
     pub fn signer(&self) -> PrivateSigner<'a> {
         PrivateSigner {
@@ -465,7 +480,7 @@ impl<'a> RepoService<'a> {
             ))
             .into());
         }
-        kr.reader(repo)?.open_pack(&sealed, manifest.size_bytes)
+        kr.open_pack(repo, &sealed, manifest.size_bytes)
     }
 
     /// A document write engine bound to the signer, signing with the HIGH doc-op key.
@@ -619,7 +634,7 @@ impl<'a> RepoService<'a> {
         let (scope, contract) = self.readable(repo).await?;
         if repo.visibility == Visibility::Private {
             let kr = self.keyring(repo).await?;
-            kr.reader(repo)?; // no key at all: say so, rather than list nothing
+            kr.require_key(repo)?; // no key at all: say so, rather than list nothing
             return crate::refs::read_private_refs(self.client, &contract, &scope, &kr).await;
         }
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
@@ -643,7 +658,12 @@ impl<'a> RepoService<'a> {
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
         if repo.visibility == Visibility::Private {
-            return Ok(self.keyring(repo).await?.config().protected_patterns);
+            return Ok(self
+                .keyring(repo)
+                .await?
+                .config()
+                .protected_patterns
+                .clone());
         }
         let (scope, contract) = self.readable(repo).await?;
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
@@ -675,7 +695,7 @@ impl<'a> RepoService<'a> {
     /// branch `git-remote-dash` reports as the `HEAD` symref. `None` when there is none.
     pub async fn read_default_branch(&self, repo: &RepoRef) -> Result<Option<String>> {
         if repo.visibility == Visibility::Private {
-            return Ok(self.keyring(repo).await?.config().default_branch);
+            return Ok(self.keyring(repo).await?.config().default_branch.clone());
         }
         let (scope, contract) = self.readable(repo).await?;
         Ok(self
@@ -777,8 +797,8 @@ impl<'a> RepoService<'a> {
         let enc = w.seal_doc(
             &DocHeader::new(DocKind::Config, owner, epoch),
             &Fields {
-                default_branch: Some(cfg.default_branch.unwrap_or_else(|| "main".into())),
-                protected_patterns: cfg.protected_patterns,
+                default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
+                protected_patterns: cfg.protected_patterns.clone(),
                 ..Fields::default()
             },
         )?;
