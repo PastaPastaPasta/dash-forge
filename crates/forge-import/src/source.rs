@@ -21,6 +21,9 @@ pub struct Classes {
     pub releases: bool,
     /// Label definitions.
     pub labels: bool,
+    /// Mirror the label definitions into a private destination too (they are plaintext there;
+    /// `--include-label-definitions`). A public destination always gets them with `labels`.
+    pub include_label_definitions: bool,
 }
 
 impl Classes {
@@ -36,6 +39,7 @@ impl Classes {
                         prs: true,
                         releases: true,
                         labels: true,
+                        include_label_definitions: c.include_label_definitions,
                     }
                 }
                 "code" => c.code = true,

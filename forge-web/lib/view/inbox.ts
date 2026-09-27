@@ -293,7 +293,9 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
       const threads = new Map(f.threads.map((t) => [t.id, t]))
       return parseDocs(eventDoc, docs).flatMap((d) => {
         const t = threads.get(d.targetId)
-        const what = stateWhat(d.kind, d.value, me)
+        // A private repo's value is sealed, or (plaintext) unchecked: the feed holds no keys,
+        // so it names the change without it (private-repos.md §8.1).
+        const what = stateWhat(d.kind, f.repo.private ? undefined : d.value, me)
         if (!t || what === null || !notMine(d) || d.$createdAt <= t.since) return []
         return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title } })]
       })

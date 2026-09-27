@@ -10,10 +10,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::network::ForgeIds;
 use crate::platform::{self, FetchedDocument, FieldValue, QueryFilter};
 use crate::rules::v2::Visibility;
+use crate::user_error::{codes, UserError};
 
 /// A resolved repository: a `repo` document in the network's forge-core contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,14 +70,21 @@ impl RepoRef {
         })
     }
 
-    /// Refuse `what` on a private repository: the operations that do not handle one (a fork,
-    /// whose copied refs and manifests would need the parent's keys).
+    /// Refuse `what` on a private repository (E207): the operations that do not handle one (a
+    /// fork, whose copied refs and manifests would need the parent's keys; a release, whose
+    /// notes and assets would be published unencrypted).
     pub fn require_public(&self, what: &str) -> Result<()> {
         match self.visibility {
-            Visibility::Private => Err(Error::Config(format!(
-                "{} is a private repository; {what} is not supported for private repositories",
-                self.display()
-            ))),
+            Visibility::Private => Err(UserError::new(
+                codes::PRIVATE_UNSUPPORTED,
+                format!(
+                    "{} is a private repository; {what} is not supported for private repositories",
+                    self.display()
+                ),
+            )
+            .cause(format!("private repositories don't support {what} yet"))
+            .fix("see docs/security/private-repos.md §7 for what a private repository supports")
+            .into()),
             Visibility::Public => Ok(()),
         }
     }
@@ -245,7 +253,11 @@ mod tests {
     fn public_only_operations_refuse_private_repos() {
         let mut r = repo();
         r.visibility = Visibility::Private;
-        assert!(r.require_public("forking").is_err());
+        let err = r.require_public("forking").unwrap_err();
+        assert!(
+            matches!(&err, crate::error::Error::User(u) if u.code == codes::PRIVATE_UNSUPPORTED),
+            "{err:?}"
+        );
         assert!(repo().require_public("forking").is_ok());
     }
 

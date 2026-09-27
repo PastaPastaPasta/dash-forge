@@ -131,6 +131,10 @@ fn seal_props_inner(
             header.patch_id = id32(&props, "patchId");
             fields.body = take_text(&mut props, "body");
         }
+        DocKind::Event => {
+            header.target_id = id32(&props, "targetId");
+            fields.event_value = take_text(&mut props, "value");
+        }
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config => {
             return Err(Error::Config(format!(
                 "{} is not a collaboration document",
@@ -178,13 +182,59 @@ fn sealing_error(kind: DocKind, e: PrivateError) -> Error {
     }
 }
 
+/// What a private repo's member event carries as its `value` once read (§8.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventValue {
+    /// No value (close, reopen, merge, …).
+    None,
+    /// Sealed in `enc` and opened.
+    Sealed,
+    /// Written in plaintext by an older client: member-gated, so authentic, but not encrypted.
+    Plaintext,
+    /// Sealed and not readable here: the event is kept, its value is not.
+    Hidden,
+}
+
+/// A private repo's member event as the folds read it. The event is always kept (its kind and
+/// `refId` stand: a dismissed review stays dismissed); only its `value` depends on the read. A
+/// sealed value is opened in place with `open`, and one that does not open is dropped, as is a
+/// plaintext value next to `enc`. A plaintext value on its own came from an older client and
+/// is kept, reported as [`EventValue::Plaintext`]. An empty value is no value.
+#[must_use]
+pub fn readable_event(
+    open: impl FnOnce(&FetchedDocument) -> Opened,
+    mut d: FetchedDocument,
+) -> (FetchedDocument, EventValue) {
+    if d.field_str("value").is_some_and(|v| v.is_empty()) {
+        d.fields.remove("value");
+    }
+    if d.field_bytes("enc").is_none_or(|e| e.is_empty()) {
+        let v = if d.fields.contains_key("value") {
+            EventValue::Plaintext
+        } else {
+            EventValue::None
+        };
+        return (d, v);
+    }
+    d.fields.remove("value");
+    match open(&d) {
+        Opened::Readable(f) => (restore(*f, d), EventValue::Sealed),
+        _ => (d, EventValue::Hidden),
+    }
+}
+
 /// The fetched private document `d` as the public codecs read it, given what opening it gave:
 /// its decrypted fields put back in place, or `None` when it did not open.
 #[must_use]
-pub fn open_doc(opened: Opened, mut d: FetchedDocument) -> Option<FetchedDocument> {
-    let Opened::Readable(f) = opened else {
-        return None;
-    };
+pub fn open_doc(opened: Opened, d: FetchedDocument) -> Option<FetchedDocument> {
+    match opened {
+        Opened::Readable(f) => Some(restore(*f, d)),
+        _ => None,
+    }
+}
+
+/// `d` with the decrypted `f` put back where the public codecs read it.
+fn restore(f: Fields, mut d: FetchedDocument) -> FetchedDocument {
     let Fields {
         title,
         body,
@@ -193,8 +243,9 @@ pub fn open_doc(opened: Opened, mut d: FetchedDocument) -> Option<FetchedDocumen
         path,
         imported_author,
         imported_url,
+        event_value,
         ..
-    } = *f;
+    } = f;
     if let Some(FieldValue::Object(m)) = d.fields.get_mut("imported") {
         for (name, v) in [("author", imported_author), ("url", imported_url)] {
             if let Some(v) = v {
@@ -208,12 +259,13 @@ pub fn open_doc(opened: Opened, mut d: FetchedDocument) -> Option<FetchedDocumen
         ("baseRefName", base_ref_name),
         ("sourceRefName", source_ref_name),
         ("path", path),
+        ("value", event_value),
     ] {
         if let Some(v) = v {
             d.fields.insert(name.into(), FieldValue::text(v));
         }
     }
-    Some(d)
+    d
 }
 
 #[cfg(test)]
@@ -330,6 +382,124 @@ mod tests {
         let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
         let back = open_doc(opened, d).unwrap();
         assert_eq!(back.fields.get("imported"), Some(&imported));
+    }
+
+    #[test]
+    fn an_event_value_is_sealed_bound_to_its_target_and_restored() {
+        let public: BTreeMap<String, FieldValue> = [
+            ("targetId".to_string(), FieldValue::identifier([0x33; 32])),
+            ("targetNumber".to_string(), FieldValue::integer(7)),
+            ("kind".to_string(), FieldValue::integer(4)),
+            ("value".to_string(), FieldValue::text("security")),
+        ]
+        .into();
+        let sealed = seal_props(&keys(), DocKind::Event, OWNER, public.clone()).unwrap();
+        assert!(
+            !sealed.contains_key("value"),
+            "the label name left plaintext"
+        );
+        assert_eq!(sealed.get("kind"), public.get("kind"), "the kind stays");
+        let d = fetched(sealed.clone());
+        let header = header_of(DocKind::Event, &d).unwrap();
+        let back = open_doc(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            d,
+        )
+        .unwrap();
+        assert_eq!(back.field_str("value").as_deref(), Some("security"));
+        // moved onto another issue, the AD (targetId) no longer matches
+        let mut moved = sealed;
+        moved.insert("targetId".into(), FieldValue::identifier([0x34; 32]));
+        let d = fetched(moved);
+        let header = header_of(DocKind::Event, &d).unwrap();
+        let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
+        assert!(open_doc(opened, d).is_none());
+    }
+
+    fn label_event(value: Option<&str>, enc: Option<Vec<u8>>) -> FetchedDocument {
+        let mut p: BTreeMap<String, FieldValue> = [
+            ("targetId".to_string(), FieldValue::identifier([0x33; 32])),
+            ("kind".to_string(), FieldValue::integer(4)),
+        ]
+        .into();
+        if let Some(v) = value {
+            p.insert("value".into(), FieldValue::text(v));
+        }
+        if let Some(e) = enc {
+            p.insert("epoch".into(), FieldValue::integer(0));
+            p.insert("enc".into(), FieldValue::bytes(e));
+        }
+        fetched(p)
+    }
+
+    fn open_with_ctx(d: &FetchedDocument) -> Opened {
+        let header = header_of(DocKind::Event, d).unwrap();
+        open_content(&ctx(), &header, &d.field_bytes("enc").unwrap())
+    }
+
+    #[test]
+    fn a_private_event_is_kept_whatever_its_value() {
+        let sealed = seal_props(
+            &keys(),
+            DocKind::Event,
+            OWNER,
+            label_event(Some("security"), None).fields,
+        )
+        .unwrap();
+        let enc = sealed.get("enc").and_then(FieldValue::as_bytes).unwrap();
+        // sealed and readable: the value is restored
+        let (d, v) = readable_event(open_with_ctx, label_event(None, Some(enc.clone())));
+        assert_eq!(
+            (d.field_str("value").as_deref(), v),
+            (Some("security"), EventValue::Sealed)
+        );
+        // sealed but not readable (another target's enc): the event stays, its value does not
+        let mut moved = label_event(None, Some(enc.clone()));
+        moved
+            .fields
+            .insert("targetId".into(), FieldValue::identifier([0x34; 32]));
+        let (d, v) = readable_event(open_with_ctx, moved);
+        assert_eq!((d.field_str("value"), v), (None, EventValue::Hidden));
+        assert_eq!(d.field_u64("kind"), Some(4), "the event itself is kept");
+        // a plaintext value next to enc is never trusted: the sealed one wins
+        let (d, v) = readable_event(open_with_ctx, label_event(Some("planted"), Some(enc)));
+        assert_eq!(
+            (d.field_str("value").as_deref(), v),
+            (Some("security"), EventValue::Sealed)
+        );
+        // an older client's plaintext value (member-gated, so authentic) is kept, marked
+        let (d, v) = readable_event(open_with_ctx, label_event(Some("legacy"), None));
+        assert_eq!(
+            (d.field_str("value").as_deref(), v),
+            (Some("legacy"), EventValue::Plaintext)
+        );
+        // no value at all (close, merge…): nothing to open
+        let (_, v) = readable_event(open_with_ctx, label_event(None, None));
+        assert_eq!(v, EventValue::None);
+        // an empty plaintext value is no value (L5)
+        let (d, v) = readable_event(open_with_ctx, label_event(Some(""), None));
+        assert_eq!((d.field_str("value"), v), (None, EventValue::None));
+    }
+
+    /// What `open_content` exempting events from the late rule relies on (§8.1 step 7, §15).
+    #[test]
+    fn event_schema_is_member_gated_and_append_only() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/contracts/forge-collab.json"
+        ));
+        let c: serde_json::Value = serde_json::from_str(text).unwrap();
+        let e = c.get("documentSchemas").unwrap_or(&c)["event"].clone();
+        assert_eq!(e["documentsMutable"], false);
+        assert_eq!(e["canBeDeleted"], false);
+        let mut gates: Vec<&str> = e["ownerRefersTo"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|g| g["documentType"].as_str())
+            .collect();
+        gates.sort_unstable();
+        assert_eq!(gates, ["maintainer", "writer"]);
     }
 
     #[test]

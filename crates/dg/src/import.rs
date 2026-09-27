@@ -39,6 +39,11 @@ pub struct ImportArgs {
     /// Price only; write nothing.
     #[arg(long)]
     pub dry_run: bool,
+    /// A private destination: mirror the label definitions too. Their names, colours and
+    /// descriptions are not encrypted, so by default they are left out (the labels set on
+    /// issues and PRs are encrypted either way).
+    #[arg(long)]
+    pub include_label_definitions: bool,
     /// Import at most this many issues and PRs (0 = all).
     #[arg(long, default_value_t = 0)]
     pub limit: usize,
@@ -110,8 +115,11 @@ pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
                 .cause(e.to_string())
         })?,
         dest: a.repo.clone(),
-        classes: Classes::parse(&a.sync)
-            .map_err(|e| UserError::new(codes::USAGE, "invalid --sync").cause(e.to_string()))?,
+        classes: Classes {
+            include_label_definitions: a.include_label_definitions,
+            ..Classes::parse(&a.sync)
+                .map_err(|e| UserError::new(codes::USAGE, "invalid --sync").cause(e.to_string()))?
+        },
         state_path: a.state.clone(),
         work_dir: None,
         max_spend: max_spend(a.max_spend)?,

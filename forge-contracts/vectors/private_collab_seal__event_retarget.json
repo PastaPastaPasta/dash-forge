@@ -1,0 +1,29 @@
+{
+  "name": "event_retarget",
+  "description": "a retarget: the new base branch name is sealed.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "event",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "4444444444444444444444444444444444444444444444444444444444444444",
+      "targetNumber": 3,
+      "kind": 8,
+      "value": "refs/heads/release"
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "4444444444444444444444444444444444444444444444444444444444444444",
+      "targetNumber": 3,
+      "kind": 8,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b11703d80a6549f56371975d7b3048f6bd5781eb500d29117f7b81510ae52655d810a57aea7"
+    }
+  }
+}

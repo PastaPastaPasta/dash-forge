@@ -113,6 +113,7 @@ export {
   settleIssueCount,
   titleOf,
   toEvents,
+  toLog,
   updatedAtOf,
   repoListVersion,
   repoWriteGeneration,

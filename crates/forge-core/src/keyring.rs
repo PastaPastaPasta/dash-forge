@@ -856,7 +856,7 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
             h.base_ref_name_hash = d.field_bytes32("baseRefNameHash");
             h.source_ref_name_hash = d.field_bytes32("sourceRefNameHash");
         }
-        DocKind::Comment => h.target_id = d.field_bytes32("targetId"),
+        DocKind::Comment | DocKind::Event => h.target_id = d.field_bytes32("targetId"),
         DocKind::Review => h.patch_id = d.field_bytes32("patchId"),
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
             h.ref_name_hash = d.field_bytes32("refNameHash");

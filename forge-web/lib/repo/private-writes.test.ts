@@ -139,7 +139,8 @@ beforeEach(async () => {
   wrap(ALICE, ALICE, 0, K0)
 })
 
-const { createComment, createIssue, createPatch, createReview, createRepo } = await import('./writes')
+const { addEvent, createComment, createIssue, createPatch, createReview, createRepo } = await import('./writes')
+const { readableEvents } = await import('./private-content')
 const { writeRefUpdate } = await import('./push')
 const { loadPrivateSession, sdkSessionSource, sessionUnwrapper } = await import('./private-session')
 const { createEpochZero } = await import('./private-members')
@@ -227,6 +228,55 @@ describe('sealed writes to a private repo', () => {
     members = members.filter((m) => m.identity !== b58(CAROL))
     await expect(createIssue(sdk, auth, REPO_REF, { title: 'x', body: '' })).rejects.toThrow(/Repair/)
     expect(chain['issue']).toBeUndefined()
+  })
+
+  it('a label event seals its name bound to the issue; a close carries nothing to seal', async () => {
+    await createIssue(sdk, auth, REPO_REF, { title: 't', body: '' })
+    const issue = chain['issue']?.[0] as Doc
+    const target = { id: String(issue['$id']), number: 1 }
+    await addEvent(sdk, auth, REPO_REF, { target, kind: 'labelAdd', value: 'security' })
+    await addEvent(sdk, auth, REPO_REF, { target, kind: 'close' })
+    const [label, close] = chain['event'] as Doc[]
+    expect(label?.['value']).toBeUndefined()
+    expect(label?.['epoch']).toBe(0)
+    expect(label?.['kind']).toBe(4)
+    expect(close?.['enc']).toBeUndefined()
+    const repo = { ...REPO_REF, session: await session() }
+    const read = await readableEvents(repo, [label as Doc, close as Doc])
+    expect(read.docs.map((d) => [d['kind'], d['value']])).toEqual([[4, 'security'], [1, undefined]])
+    expect([read.hiddenValues, read.plaintextValues]).toEqual([0, 0])
+  })
+
+  it('a private event is always kept; only its value depends on the read (M1)', async () => {
+    await createIssue(sdk, auth, REPO_REF, { title: 't', body: '' })
+    const target = { id: String(chain['issue']?.[0]?.['$id']), number: 1 }
+    await addEvent(sdk, auth, REPO_REF, { target, kind: 'labelAdd', value: 'security' })
+    const label = chain['event']?.[0] as Doc
+    const repo = { ...REPO_REF, session: await session() }
+    // sealed but not readable here (moved onto another target): the event stays, its value not
+    const moved = { ...label, targetId: b58(id(0x77)) }
+    // a plaintext value next to enc is never trusted: the sealed one wins
+    const planted = { ...label, value: 'planted' }
+    // an older client's plaintext value (member-gated, so authentic): kept, and counted
+    const legacy = { ...label, enc: undefined, epoch: undefined, value: 'legacy' }
+    // an empty value is no value
+    const empty = { ...label, enc: undefined, epoch: undefined, value: '' }
+    const r = await readableEvents(repo, [moved, planted, legacy, empty])
+    expect(r.docs.map((d) => [d['kind'], d['value']])).toEqual([[4, undefined], [4, 'security'], [4, 'legacy'], [4, undefined]])
+    expect([r.hiddenValues, r.plaintextValues]).toEqual([1, 1])
+  })
+
+  it('a dismissal whose reason does not open still dismisses (M1)', async () => {
+    await createIssue(sdk, auth, REPO_REF, { title: 't', body: '' })
+    const target = { id: String(chain['issue']?.[0]?.['$id']), number: 1 }
+    await addEvent(sdk, auth, REPO_REF, { target, kind: 'labelAdd', value: 'x' })
+    const sealed = chain['event']?.[0] as Doc
+    // a reviewDismiss with a refId whose reason is unreadable here
+    const dismiss = { ...sealed, kind: 15, refId: b58(id(0x55)), targetId: b58(id(0x78)) }
+    const r = await readableEvents({ ...REPO_REF, session: await session() }, [dismiss])
+    expect(r.docs).toHaveLength(1)
+    expect(r.docs[0]?.['refId']).toBe(b58(id(0x55)))
+    expect(r.docs[0]?.['value']).toBeUndefined()
   })
 
   it('refuses text over the sealed limit with the limit in the message', async () => {

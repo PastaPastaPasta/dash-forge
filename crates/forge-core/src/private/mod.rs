@@ -68,6 +68,9 @@ pub enum DocKind {
     ProtectedRefUpdate,
     /// `config`, always `enc` v0x02.
     Config,
+    /// `event` (forge-collab): its `value` (a label or milestone name, a dismiss reason, an
+    /// assignee, a retarget base) is sealed in a private repo.
+    Event,
 }
 
 impl DocKind {
@@ -82,6 +85,7 @@ impl DocKind {
             Self::RefUpdate => "refUpdate",
             Self::ProtectedRefUpdate => "protectedRefUpdate",
             Self::Config => "config",
+            Self::Event => "event",
         }
     }
 
@@ -89,7 +93,7 @@ impl DocKind {
     #[must_use]
     pub fn max_enc(self) -> usize {
         match self {
-            Self::Issue | Self::Patch | Self::Comment | Self::Review => 5120,
+            Self::Issue | Self::Patch | Self::Comment | Self::Review | Self::Event => 5120,
             Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config => 1536,
         }
     }

@@ -159,9 +159,20 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
     Ok(())
 }
 
-/// Dump the raw issue / patch / comment / review documents of a repo, as stored (diagnostic:
-/// in a private repo every free-text property is absent and `enc` carries it). Comments and
-/// reviews are found through their issue or patch (they are indexed by target, not by repo).
+/// The free-text properties a private repo's collaboration documents must never carry.
+const TEXT_FIELDS: [&str; 6] = [
+    "title",
+    "body",
+    "path",
+    "baseRefName",
+    "sourceRefName",
+    "value",
+];
+
+/// Dump the raw issue / patch / comment / review documents of a repo, and its member events
+/// that carry a value (a label or milestone name, …), as stored (diagnostic: in a private repo
+/// every free-text property is absent and `enc` carries it). Comments, reviews and events are
+/// found through their issue or patch (they are indexed by target, not by repo).
 async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let (client, _bridge) = connect().await?;
     let repo = resolve_named(&client, owner, repo).await?;
@@ -169,7 +180,7 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let scope = repo.scope()?;
     let print = |doc_type: &str, docs: &[FetchedDocument]| {
         for d in docs {
-            let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
+            let text: Vec<String> = TEXT_FIELDS
                 .iter()
                 .filter_map(|f| d.field_str(f).map(|v| format!("{f}={v:?}")))
                 .collect();
@@ -199,6 +210,14 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
                 "comment",
                 &by_target(&client, &collab, "comment", "targetId", &d.id).await?,
             );
+            // an event without a value (close, merge, …) has nothing to seal
+            let valued: Vec<FetchedDocument> =
+                by_target(&client, &collab, "event", "targetId", &d.id)
+                    .await?
+                    .into_iter()
+                    .filter(|e| e.fields.contains_key("value") || e.fields.contains_key("enc"))
+                    .collect();
+            print("event", &valued);
             if doc_type == "patch" {
                 print(
                     "review",

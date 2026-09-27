@@ -23,7 +23,7 @@ import {
   readPolicy,
   readPull,
   seedMemberships,
-  toEvents,
+  toLog,
   updatedAtOf,
   readReviews,
   readRoleOracle,
@@ -36,6 +36,7 @@ import {
   type LabelDef,
   type RepoRef,
   type ReviewView,
+  type TargetLog,
 } from '../repo'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
@@ -177,6 +178,18 @@ export interface IssueThread {
   readonly labels: readonly LabelDef[]
   /** The repo's current members (the assignee picker's choices). */
   readonly members: readonly Membership[]
+  /** Private repos: the target's event values not readable here, and those not encrypted. */
+  readonly eventValues: EventValueCounts
+}
+
+/** How a private repo's event values were read ({@link TargetLog}). */
+export interface EventValueCounts {
+  readonly hidden: number
+  readonly plaintext: number
+}
+
+function eventValues(log: TargetLog): EventValueCounts {
+  return { hidden: log.hiddenValues ?? 0, plaintext: log.plaintextValues ?? 0 }
 }
 
 /**
@@ -225,7 +238,8 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     complete(2, DOC.authorEvent),
   ])
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
-  const log = { events: toEvents([...eventDocs].sort(byTime)), authorEvents: toEvents([...authorEventDocs].sort(byTime)) }
+  // A private repo's member events are read through `readableEvents` (values opened, counted).
+  const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
 
   // Members: complete when both sibling pages were short; recorded for the permission checks.
   const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
@@ -249,6 +263,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     issue: issueViewOf(doc, log),
     timeline: mergeTimeline(comments, log.events, log.authorEvents, []),
     hidden: tally.value,
+    eventValues: eventValues(log),
     labels,
     members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
   }
@@ -281,6 +296,8 @@ export interface PullThread {
   readonly approvals: PullApprovals | null
   /** Comments and reviews left out as unreadable, by reason (private repos). */
   readonly hidden: HiddenCounts
+  /** Private repos: the PR's event values not readable here, and those not encrypted. */
+  readonly eventValues: EventValueCounts
 }
 
 /**
@@ -303,7 +320,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
   const pull = await readPull(sdk, repo, doc, log)
   const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
   const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed, pull.author)
-  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals, hidden: tally.value }
+  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals, hidden: tally.value, eventValues: eventValues(log) }
 }
 
 /** A PR's counted approvals, or null when the membership could not be read. */

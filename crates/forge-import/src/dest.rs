@@ -339,51 +339,84 @@ pub async fn dry_collab<'a>(
     Ok(dry.ledger)
 }
 
+/// What of `src` is written to a destination the mirror identity holds `role` in, and the
+/// warnings that says so. A writer cannot publish releases, and a private destination cannot
+/// hold them (their notes and assets are not encrypted), so they are left out rather than
+/// failing the run. A private destination also leaves out the label definitions (their names,
+/// colours and descriptions are plaintext) unless `include_label_definitions`; the labels put
+/// on issues and PRs are event values, sealed like the rest.
+#[must_use]
+pub fn collab_plan(
+    src: &SrcCollab,
+    role: Role,
+    private: bool,
+    include_label_definitions: bool,
+) -> (SrcCollab, Vec<String>) {
+    let mut plan = src.clone();
+    let mut warnings = Vec::new();
+    if src.releases.as_ref().is_some_and(|r| !r.is_empty()) {
+        if private {
+            plan.releases = None;
+            warnings.push(
+                "releases were not mirrored: the destination is private, and release notes and \
+                 assets are not encrypted in this release"
+                    .into(),
+            );
+        } else if role == Role::Writer {
+            plan.releases = None;
+            warnings.push(
+                "releases were not mirrored: the mirror identity is a writer, and only \
+                 maintainers publish releases (`dg collab add … --role maintainer`)"
+                    .into(),
+            );
+        }
+    }
+    if private {
+        let definitions = if src.labels.as_ref().is_some_and(|l| !l.is_empty()) {
+            if include_label_definitions {
+                "label definitions were mirrored as asked (--include-label-definitions)"
+            } else {
+                plan.labels = None;
+                "label definitions were not mirrored: pass --include-label-definitions to \
+                 publish them"
+            }
+        } else {
+            "no label definitions to mirror"
+        };
+        warnings.push(format!(
+            "the destination is private: issue, PR, comment and review text, their source URLs \
+             and authors, and the labels and milestones set on them are encrypted; assignees, \
+             label definitions (names, colours, descriptions) and numbers stay readable \
+             (docs/security/private-repos.md §7). {definitions}"
+        ));
+    }
+    (plan, warnings)
+}
+
 /// Write the collaboration documents missing from `repo` with the run's ledger (taken from
-/// `outcome` and put back, so the summary sees it however this ends). A writer cannot
-/// publish releases, so for one they are left out with a warning rather than failing the run.
+/// `outcome` and put back, so the summary sees it however this ends); what is written is
+/// [`collab_plan`]'s.
 pub async fn write_collab<'a>(
     client: &'a PlatformClient,
     signer: &'a Signer,
     role: Role,
     repo: RepoRef,
     src: &SrcCollab,
+    include_label_definitions: bool,
     outcome: &mut Outcome<'a>,
 ) -> Result<()> {
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
-    let has_releases = src.releases.as_ref().is_some_and(|r| !r.is_empty());
-    let private = repo.visibility == forge_core::rules::v2::Visibility::Private;
-    let skip_releases = has_releases && (role == Role::Writer || private);
-    if has_releases && private {
-        ledger.warn(
-            "releases were not mirrored: the destination is private, and release notes and \
-             assets are not encrypted in this release",
-        );
-    } else if skip_releases {
-        ledger.warn(
-            "releases were not mirrored: the mirror identity is a writer, and only maintainers \
-             publish releases (`dg collab add … --role maintainer`)",
-        );
-    }
-    if private {
-        ledger.warn(
-            "the destination is private: issue, PR, comment and review text and their source \
-             URLs and authors are encrypted; labels, event values and numbers stay readable \
-             (docs/security/private-repos.md §7)",
-        );
+    let private = repo.visibility == Visibility::Private;
+    let (plan, warnings) = collab_plan(src, role, private, include_label_definitions);
+    for w in warnings {
+        ledger.warn(w);
     }
     let mut sink = Sink::new(
         Collab::new(client, &signer.identity, &signer.bridge),
         Some(repo),
         ledger,
     );
-    let result = if skip_releases {
-        let mut without = src.clone();
-        without.releases = None;
-        sink.sync(&without).await
-    } else {
-        sink.sync(src).await
-    };
+    let result = sink.sync(&plan).await;
     outcome.ledger = Some(sink.ledger);
     result
 }
@@ -391,6 +424,63 @@ pub async fn write_collab<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn src_with(labels: bool, releases: bool) -> SrcCollab {
+        SrcCollab {
+            labels: labels.then(|| {
+                vec![crate::model::SrcLabel {
+                    name: "security".into(),
+                    color: "#ff0000".into(),
+                    description: "d".into(),
+                }]
+            }),
+            releases: releases.then(|| {
+                vec![crate::model::SrcRelease {
+                    tag_name: "v1".into(),
+                    name: "v1".into(),
+                    notes: String::new(),
+                    assets: Vec::new(),
+                }]
+            }),
+            ..SrcCollab::default()
+        }
+    }
+
+    #[test]
+    fn a_private_destination_skips_label_definitions_unless_asked() {
+        let (plan, warnings) = collab_plan(&src_with(true, false), Role::Maintainer, true, false);
+        assert!(
+            plan.labels.is_none(),
+            "definitions are plaintext: not mirrored by default"
+        );
+        let all = warnings.join("\n");
+        assert!(all.contains("--include-label-definitions"), "{all}");
+        assert!(
+            all.contains(
+                "label definitions (names, colours, descriptions) and numbers stay readable"
+            ),
+            "{all}"
+        );
+        let (plan, _) = collab_plan(&src_with(true, false), Role::Maintainer, true, true);
+        assert!(plan.labels.is_some(), "mirrored when asked");
+        let (plan, warnings) = collab_plan(&src_with(true, false), Role::Maintainer, false, false);
+        assert!(
+            plan.labels.is_some() && warnings.is_empty(),
+            "a public destination is unchanged"
+        );
+    }
+
+    #[test]
+    fn releases_are_left_out_for_a_private_destination_or_a_writer() {
+        let (plan, w) = collab_plan(&src_with(false, true), Role::Maintainer, true, false);
+        assert!(
+            plan.releases.is_none() && w.iter().any(|w| w.contains("releases were not mirrored"))
+        );
+        let (plan, _) = collab_plan(&src_with(false, true), Role::Writer, false, false);
+        assert!(plan.releases.is_none());
+        let (plan, _) = collab_plan(&src_with(false, true), Role::Maintainer, false, false);
+        assert!(plan.releases.is_some());
+    }
 
     #[test]
     fn dest_urls_and_info() {

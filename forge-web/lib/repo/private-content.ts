@@ -16,7 +16,7 @@
  */
 
 import { decodeIdentifier } from '../auth/base58'
-import { openContent, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc } from '../private'
+import { openContent, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc } from '../private'
 import type { ContentKind } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
@@ -66,7 +66,8 @@ export interface ContentGate {
   admit(type: PrivateDocType, doc: PlainDocument): Promise<Admission>
 }
 
-const KIND_OF: Readonly<Record<PrivateDocType, ContentKind>> = {
+/** The rules' content kind of each sealed type; an `event` has none ({@link readableEvents}). */
+const KIND_OF: Readonly<Record<Exclude<PrivateDocType, 'event'>, ContentKind>> = {
   issue: 'issue',
   patch: 'patch',
   comment: 'comment',
@@ -76,12 +77,17 @@ const KIND_OF: Readonly<Record<PrivateDocType, ContentKind>> = {
   config: 'config',
 }
 
+/** Whether `doc` is well formed for `repo` as a `type` (an event's shape is checked by its reader). */
+function wellFormedAs(repo: RepoRef, type: PrivateDocType, doc: PlainDocument): boolean {
+  return type === 'event' || wellFormed(repo, KIND_OF[type], doc)
+}
+
 /** A public repo's gate: well-formed documents, as they are. */
 function publicGate(repo: RepoRef): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
-      return wellFormed(repo, KIND_OF[type], doc) ? { ok: true, doc } : { ok: false, reason: 'notEncrypted' }
+      return wellFormedAs(repo, type, doc) ? { ok: true, doc } : { ok: false, reason: 'notEncrypted' }
     },
   }
 }
@@ -91,7 +97,7 @@ export function sealedGate(repo: RepoRef): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
-      return { ok: false, reason: wellFormed(repo, KIND_OF[type], doc) ? 'wrongKey' : 'notEncrypted' }
+      return { ok: false, reason: wellFormedAs(repo, type, doc) ? 'wrongKey' : 'notEncrypted' }
     },
   }
 }
@@ -165,7 +171,8 @@ function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPriva
           ? { baseRefNameHash: bytesField(doc, 'baseRefNameHash'), sourceRefNameHash: bytesField(doc, 'sourceRefNameHash') }
           : {}),
       }
-    case 'comment': {
+    case 'comment':
+    case 'event': {
       const targetId = idField(doc, 'targetId')
       return targetId === undefined ? null : { ...base, targetId }
     }
@@ -197,7 +204,7 @@ function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
     if (v === undefined || k === 'prevEpochKey' || k === 'skipEpochKey' || k === 'prevEpoch') continue
     // An importer's sealed provenance (TLV 13, 14) goes back into its `imported` object.
     if (k === 'importedAuthor' || k === 'importedUrl') continue
-    out[k] = v
+    out[propOf(k as keyof DocFields)] = v
   }
   if (fields.importedAuthor !== undefined || fields.importedUrl !== undefined) {
     const kept = typeof out['imported'] === 'object' && out['imported'] !== null ? (out['imported'] as PlainDocument) : {}
@@ -218,7 +225,7 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
-      if (!wellFormed(repo, KIND_OF[type], doc)) return { ok: false, reason: 'notEncrypted' }
+      if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
       const stored = storedPrivateDoc(type, doc)
       if (stored === null) return { ok: false, reason: 'notEncrypted' }
       const opened = await openContent(stored, ctx)
@@ -259,6 +266,46 @@ export async function admitAll(
     else tally.add(a.reason)
   }
   return { docs: out, hidden: tally }
+}
+
+/** A private repo's member events as read ({@link readableEvents}), and what their values were. */
+export interface ReadableEvents {
+  readonly docs: readonly PlainDocument[]
+  /** Events whose sealed value is not readable here: kept, without their value. */
+  readonly hiddenValues: number
+  /** Events whose value an older client wrote in plaintext: kept (member-gated, so authentic). */
+  readonly plaintextValues: number
+}
+
+type EventRead = { readonly doc: PlainDocument; readonly value: 'none' | 'sealed' | 'plaintext' | 'hidden' }
+
+/** One member event as the folds read it (the CLI's `readable_event`). */
+async function readableEvent(gate: ContentGate, d: PlainDocument): Promise<EventRead> {
+  const doc: PlainDocument = { ...d }
+  if (doc['value'] === '' || doc['value'] === null) delete doc['value']
+  if ((bytesField(doc, 'enc')?.length ?? 0) === 0) return { doc, value: doc['value'] === undefined ? 'none' : 'plaintext' }
+  // a plaintext value next to `enc` is never trusted: only the sealed one counts
+  delete doc['value']
+  const a = await gate.admit('event', doc)
+  return a.ok ? { doc: a.doc, value: 'sealed' } : { doc, value: 'hidden' }
+}
+
+/**
+ * A private repo's member events as the folds read them (the CLI's `readable_events`): every
+ * event is kept, so its kind and `refId` stand (a dismissed review stays dismissed); a sealed
+ * `value` is opened in place, or dropped when it does not open, as is a plaintext value next
+ * to `enc`. A plaintext value on its own came from an older client and is kept, and counted.
+ * An empty value is no value. A public repo's events are returned unchanged.
+ */
+export async function readableEvents(repo: RepoRef, docs: readonly PlainDocument[]): Promise<ReadableEvents> {
+  if (repo.visibility !== 'private') return { docs, hiddenValues: 0, plaintextValues: 0 }
+  const gate = gateFor(repo)
+  const read = await Promise.all(docs.map((d) => readableEvent(gate, d)))
+  return {
+    docs: read.map((r) => r.doc),
+    hiddenValues: read.filter((r) => r.value === 'hidden').length,
+    plaintextValues: read.filter((r) => r.value === 'plaintext').length,
+  }
 }
 
 /** The gate a read of `repo` goes through: its session's for a member, else {@link defaultGate}. */

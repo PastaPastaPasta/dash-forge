@@ -324,8 +324,14 @@ const UNASSIGN = 7
  * Fold assign / unassign events (oldest first) into the targets `me` is assigned to now.
  * Pure; the events must be the complete window being judged.
  */
-export function assignedTargets(events: readonly { $id: string; targetId: string; kind: number; value?: string; $createdAt: number }[], me: string): Set<string> {
+export function assignedTargets(
+  events: readonly { $id: string; targetId: string; kind: number; value?: string; $createdAt: number }[],
+  me: string,
+  /** A private repo: its assignees are sealed (or, in plaintext, unchecked), so none count here. */
+  isPrivate = false,
+): Set<string> {
   const assigned = new Set<string>()
+  if (isPrivate) return assigned
   // The fold order is ($createdAt, $id), by code point (forge-v2.md §3), as the issue fold.
   const ordered = [...events].sort((a, b) => a.$createdAt - b.$createdAt || compareStrings(a.$id, b.$id))
   for (const e of ordered) {
@@ -373,7 +379,7 @@ export async function scanAssignedAndMentions(
         .filter((d) => d.$ownerId !== me && mentions(d.body, me, name))
         .map((d) => ({ id: d.$id, kind, repoId: repo.id, number: d.number, title: titleOf(d), author: d.$ownerId, createdAt: d.$createdAt, repo }))
     return {
-      assignedIds: [...assignedTargets(parseDocs(eventDoc, events), me)],
+      assignedIds: [...assignedTargets(parseDocs(eventDoc, events), me, repo.private)],
       mentioned: [...mentioned(issues, 'issue'), ...mentioned(patches, 'pull')],
       repo,
     }

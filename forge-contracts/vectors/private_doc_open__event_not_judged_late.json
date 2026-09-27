@@ -1,0 +1,40 @@
+{
+  "name": "event_not_judged_late",
+  "description": "an event is member-gated at consensus (a removed member cannot write one), so the late rule does not apply: under epoch 0 past the epoch-1 anchor plus grace, by a non-member, it still opens (§8.1 step 7).",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "event",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "01000102030405060708090a0b11702c90b655344280f4e4dfe2b5d0052b38ada8757c",
+      "createdAtBlockHeight": 1241
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "eventValue": "bug"
+    }
+  }
+}

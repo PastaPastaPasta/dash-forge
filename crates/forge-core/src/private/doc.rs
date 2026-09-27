@@ -102,7 +102,7 @@ impl DocHeader {
     fn bind(&self, keys: &EpochKeys) -> Option<Vec<u8>> {
         Some(match self.kind {
             DocKind::Issue | DocKind::Patch => self.number?.to_be_bytes().to_vec(),
-            DocKind::Comment => self.target_id?.to_vec(),
+            DocKind::Comment | DocKind::Event => self.target_id?.to_vec(),
             DocKind::Review => self.patch_id?.to_vec(),
             DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
                 let oidf = |o: &[u8]| -> Option<Vec<u8>> {
@@ -407,6 +407,10 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
     };
     let is_anchor = header.id == Some(anchor.id);
     match decrypt(keys, header, enc, is_anchor) {
+        // a member `event` is gated at consensus (a removed member cannot write one), so the
+        // late rule, which is about un-gated writes under a superseded key, does not apply;
+        // its schema does not carry `$createdAtBlockHeight` either (§8.1 step 7)
+        Opened::Readable(fields) if header.kind == DocKind::Event => Opened::Readable(fields),
         Opened::Readable(fields) => {
             // step 7; `$createdAtBlockHeight` is required by the schema (§13), and without it
             // the late rule cannot be judged

@@ -115,6 +115,12 @@ Fix: use a partial clone for a lightweight checkout: `git clone --filter=blob:no
 
 Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name>` to add the Forge remote under another name and leave the existing one alone.
 
+## E207
+
+**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers releases (`dg release create`: the tag, title, notes and assets are not encrypted), forks of a private repository, webhooks, and verifying ref tips without the repository's keys.
+
+Fix: none within the private repository in this release. Publish releases from a public repository (a public mirror, for example), and keep sensitive text out of what is published there. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
+
 ## E301
 
 **No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Cloning and fetching a public repository never need one: `git clone dash://<owner>/<repo>` works anonymously.

@@ -9,7 +9,7 @@
 
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
-import { SEALED_FIELDS_OF, SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
+import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
 import { previewCreate, previewCredits, type CostPreview } from '@/lib/sdk'
 import { estimateBytesCredits } from '@/lib/sdk/cost'
 
@@ -37,13 +37,13 @@ export function PrivateComposeNote({ reason }: { reason: string }): JSX.Element 
 
 /**
  * What a new document costs: on a private repo its text is stored sealed (`enc`: the text, 3
- * bytes of framing per field, and a 29-byte frame), priced as such; public ones as they are.
+ * bytes of framing per field, and a 29-byte frame), priced as such; public ones as they are. An
+ * `event` is sealed only when it carries a value (a label, assignee or milestone).
  */
-export function composeCost(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>): CostPreview {
-  if (repo.visibility !== 'private') return previewCreate(kind, data)
-  const { used, fields } = sealedTextUse(kind, data)
-  const sealed = new Set<string>(SEALED_FIELDS_OF[kind])
-  const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !sealed.has(k)))
+export function composeCost(repo: RepoRef, kind: SealedKind | 'event', data: Readonly<Record<string, unknown>>): CostPreview {
+  const { used, fields, props } = sealedTextUse(kind, data)
+  if (repo.visibility !== 'private' || fields === 0 && kind === 'event') return previewCreate(kind, data)
+  const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
   return previewCredits(estimateBytesCredits(kind, used + 3 * fields + 29, bind))
 }
 

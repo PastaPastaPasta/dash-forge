@@ -32,6 +32,7 @@ const MAX_ENC: Readonly<Record<PrivateDocType, number>> = {
   refUpdate: 1536,
   protectedRefUpdate: 1536,
   config: 1536,
+  event: 5120,
 }
 
 /** The largest TLV plaintext a document of `type` can carry. */
@@ -104,6 +105,7 @@ function bind(doc: PrivateDoc, keys: EpochKeys): Bytes {
     case 'patch':
       return u32Field(doc.number, 'number')
     case 'comment':
+    case 'event':
       return bytes(fixed(doc.targetId, 32, 'targetId'))
     case 'review':
       return bytes(fixed(doc.patchId, 32, 'patchId'))
@@ -360,6 +362,10 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   const isAnchor = doc.type === 'config' && doc.id !== undefined && bytesEqual(doc.id, anchor.id)
   const result = await openWithKey(doc, keys, isAnchor)
   if (result.status !== 'readable') return result
+  // A member `event` is gated at consensus (a removed member cannot write one), so the late rule,
+  // about un-gated writes under a superseded key, does not apply; its schema carries no
+  // `$createdAtBlockHeight` either (§8.1 step 7).
+  if (doc.type === 'event') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
   if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
   // An edit re-seals the text: a late one (by a non-member, past the grace period) replaced the

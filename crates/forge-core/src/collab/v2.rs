@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::private::{self, EventValue};
 use super::{
     check_len, check_text, doc_engine, event_kind_to_u64, insert_imported, label_from_doc,
     release_from_doc, u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput,
@@ -142,7 +143,7 @@ fn open_with(
         None => Some(d),
         Some(kr) => {
             let opened = kr.open(doc_kind(kind), &d);
-            super::private::open_doc(opened, d)
+            private::open_doc(opened, d)
         }
     }
 }
@@ -332,6 +333,12 @@ pub struct TargetLog {
     pub events: Vec<Event>,
     /// The author's own close / reopen (`authorEvent`).
     pub author_events: Vec<Event>,
+    /// Private repos: member events whose sealed value is not readable here (kept, without
+    /// their value).
+    pub hidden_values: usize,
+    /// Private repos: member events whose value an older client wrote in plaintext (kept:
+    /// member-gated, so authentic, but not encrypted).
+    pub plaintext_values: usize,
 }
 
 /// One page of a list, newest first.
@@ -362,6 +369,10 @@ pub struct IssueView {
     pub issue: Issue,
     /// Open/closed, labels, assignees.
     pub state: IssueState,
+    /// Events whose sealed value is not readable here ([`TargetLog::hidden_values`]).
+    pub hidden_values: usize,
+    /// Events whose value is in plaintext ([`TargetLog::plaintext_values`]).
+    pub plaintext_values: usize,
 }
 
 /// A pull request with its folded state and approvals.
@@ -653,6 +664,11 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
     }
 }
 
+/// An issue's state from its log (§3 fold).
+fn fold_issue(log: &TargetLog, issue: &Issue) -> IssueState {
+    fold_issue_state_v2(&log.events, &log.author_events, &issue.author)
+}
+
 /// An `event` / `authorEvent` document as a fold [`Event`]; `None` for an unknown kind.
 pub fn event_from_doc(d: &FetchedDocument) -> Option<Event> {
     let kind = d.field_u64("kind").and_then(u64_to_event_kind)?;
@@ -824,6 +840,8 @@ pub fn event_payload_props(
     payload: &EventPayload<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let EventPayload { value, oid, ref_id } = *payload;
+    // an empty value is no value: never written, and a kind that needs one is refused
+    let value = value.filter(|v| !v.is_empty());
     if let Some(v) = value {
         check_text("event value", v, 120, 480)?;
     }
@@ -851,7 +869,7 @@ pub fn event_payload_props(
         EventKind::HeadUpdate if !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) => {
             return missing("a 20- or 32-byte commit oid (SHA-1 or SHA-256)");
         }
-        EventKind::MilestoneSet if value.is_none_or(str::is_empty) => {
+        EventKind::MilestoneSet if value.is_none() => {
             return missing("a milestone name");
         }
         // The assignee in `value` (the fold) and in `refId` (the `addressee` index), the same
@@ -1202,13 +1220,22 @@ impl<'a> Collab<'a> {
         kind: ContentKind,
         props: BTreeMap<String, FieldValue>,
     ) -> Result<BTreeMap<String, FieldValue>> {
+        self.seal_kind_if_private(repo, doc_kind(kind), props).await
+    }
+
+    async fn seal_kind_if_private(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        props: BTreeMap<String, FieldValue>,
+    ) -> Result<BTreeMap<String, FieldValue>> {
         if repo.visibility != Visibility::Private {
             return Ok(props);
         }
         let kr = self.fresh_keyring(repo).await?;
         let w = kr.writer(repo)?;
         let owner = platform::decode_identifier(&self.signer_id()?)?;
-        super::private::seal_props(w.write_keys(), doc_kind(kind), owner, props)
+        private::seal_props(w.write_keys(), kind, owner, props)
     }
 
     /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
@@ -1242,7 +1269,7 @@ impl<'a> Collab<'a> {
         };
         let opened = kr.open(doc_kind(kind.content_kind()), &d);
         let bucket = crate::keyring::hidden_bucket(&opened);
-        match super::private::open_doc(opened, d) {
+        match private::open_doc(opened, d) {
             Some(d) => Ok(Some(d)),
             None => Err(crate::user_error::UserError::new(
                 crate::user_error::codes::NOT_A_KEY_HOLDER,
@@ -1330,9 +1357,45 @@ impl<'a> Collab<'a> {
         doc_type: &str,
         props: BTreeMap<String, FieldValue>,
     ) -> Result<String> {
+        // A private repo's member `event` carries its `value` (label or milestone name, dismiss
+        // reason, assignee, retarget base) sealed (§7): every event write passes here.
+        let props = if doc_type == DOC_EVENT && props.contains_key("value") {
+            self.seal_kind_if_private(repo, DocKind::Event, props)
+                .await?
+        } else {
+            props
+        };
         self.engine()?
             .create_document(contract, doc_type, Self::with_repo(repo, props)?)
             .await
+    }
+
+    /// A private repo's member events as the folds read them ([`private::readable_event`]):
+    /// every event kept, a sealed `value` opened in place or dropped when it does not open.
+    /// Also how many values were hidden, and how many were plaintext (an older client's).
+    async fn readable_events(
+        &self,
+        repo: &RepoRef,
+        docs: Vec<FetchedDocument>,
+    ) -> Result<(Vec<FetchedDocument>, usize, usize)> {
+        if repo.visibility != Visibility::Private {
+            return Ok((docs, 0, 0));
+        }
+        let kr = self.keyring(repo).await?;
+        let (mut hidden, mut plaintext) = (0, 0);
+        let docs = docs
+            .into_iter()
+            .map(|d| {
+                let (d, v) = private::readable_event(|d| kr.open(DocKind::Event, d), d);
+                match v {
+                    EventValue::Hidden => hidden += 1,
+                    EventValue::Plaintext => plaintext += 1,
+                    EventValue::None | EventValue::Sealed => {}
+                }
+                d
+            })
+            .collect();
+        Ok((docs, hidden, plaintext))
     }
 
     // --- membership ------------------------------------------------------------
@@ -1552,6 +1615,8 @@ impl<'a> Collab<'a> {
             }
         };
         let (events, author_events) = (feed(DOC_EVENT).await?, feed(DOC_AUTHOR_EVENT).await?);
+        // A private repo's member events: their sealed values opened (§8.1).
+        let (events, _, _) = self.readable_events(repo, events).await?;
         let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
         for e in events.iter().filter_map(event_from_doc) {
             logs.entry(e.target_id.clone()).or_default().events.push(e);
@@ -1569,8 +1634,12 @@ impl<'a> Collab<'a> {
             .map(|d| {
                 let issue = issue_from_doc(d);
                 let log = logs.get(&issue.document_id).cloned().unwrap_or_default();
-                let state = fold_issue_state_v2(&log.events, &log.author_events, &issue.author);
-                IssueView { issue, state }
+                IssueView {
+                    state: fold_issue(&log, &issue),
+                    issue,
+                    hidden_values: log.hidden_values,
+                    plaintext_values: log.plaintext_values,
+                }
             })
             .collect();
         Ok((shown, hidden))
@@ -1644,12 +1713,15 @@ impl<'a> Collab<'a> {
         let events = self
             .by_target(&collab, DOC_EVENT, "targetId", target_id)
             .await?;
+        let (events, hidden_values, plaintext_values) = self.readable_events(repo, events).await?;
         let author_events = self
             .by_target(&collab, DOC_AUTHOR_EVENT, "targetId", target_id)
             .await?;
         Ok(TargetLog {
             events: events.iter().filter_map(event_from_doc).collect(),
             author_events: author_events.iter().filter_map(event_from_doc).collect(),
+            hidden_values,
+            plaintext_values,
         })
     }
 
@@ -1697,11 +1769,7 @@ impl<'a> Collab<'a> {
     /// An issue's state (§3 fold).
     pub async fn issue_state(&self, repo: &RepoRef, issue: &Issue) -> Result<IssueState> {
         let log = self.target_log(repo, &issue.document_id).await?;
-        Ok(fold_issue_state_v2(
-            &log.events,
-            &log.author_events,
-            &issue.author,
-        ))
+        Ok(fold_issue(&log, issue))
     }
 
     /// The issue and its state, or `None`.
@@ -1709,8 +1777,13 @@ impl<'a> Collab<'a> {
         let Some(issue) = self.issue(repo, number).await? else {
             return Ok(None);
         };
-        let state = self.issue_state(repo, &issue).await?;
-        Ok(Some(IssueView { issue, state }))
+        let log = self.target_log(repo, &issue.document_id).await?;
+        Ok(Some(IssueView {
+            state: fold_issue(&log, &issue),
+            issue,
+            hidden_values: log.hidden_values,
+            plaintext_values: log.plaintext_values,
+        }))
     }
 
     /// The base ref as merge verification sees it for a PR opened at `opened_at`
@@ -3028,6 +3101,38 @@ mod tests {
         assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" "), None).is_err());
         assert!(event_props(&target("a"), EventKind::LabelRemove, None, None).is_err());
         assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" bug"), None).is_err());
+    }
+
+    #[test]
+    fn a_value_kind_needs_a_non_empty_value() {
+        for kind in [
+            EventKind::LabelAdd,
+            EventKind::LabelRemove,
+            EventKind::Assign,
+            EventKind::Unassign,
+            EventKind::MilestoneSet,
+        ] {
+            assert!(
+                event_props(&target("a"), kind, Some(""), None).is_err(),
+                "{kind:?} empty"
+            );
+            assert!(
+                event_props(&target("a"), kind, None, None).is_err(),
+                "{kind:?} none"
+            );
+        }
+        // a dismissal's reason is optional, and an empty one is written as none
+        let p = event_payload_props(
+            &target("a"),
+            EventKind::ReviewDismiss,
+            &EventPayload {
+                value: Some(""),
+                oid: None,
+                ref_id: Some("GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL"),
+            },
+        )
+        .unwrap();
+        assert!(!p.contains_key("value"));
     }
 
     #[test]

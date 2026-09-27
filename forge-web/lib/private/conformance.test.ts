@@ -78,7 +78,7 @@ const DOC_KEYS = [
 ]
 const FIELDS = leaves(
   'title', 'body', 'refName', 'baseRefName', 'sourceRefName', 'defaultBranch', 'protectedPatterns',
-  'prevEpoch', 'prevEpochKey', 'path', 'burned', 'skipEpochKey', 'importedAuthor', 'importedUrl',
+  'prevEpoch', 'prevEpochKey', 'path', 'burned', 'skipEpochKey', 'importedAuthor', 'importedUrl', 'eventValue',
 )
 const KEY_INPUT = ['repoId', 'key', 'epoch']
 const SEAL_PACK = leaves(...KEY_INPUT, 'fileId', 'plaintextMod251', 'plaintextHex')
@@ -95,7 +95,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   private_collab_seal: object({
     ...leafFields('repoId', 'key', 'epoch', 'ownerId', 'docType', 'nonce'),
     props: object({
-      ...leafFields('number', 'title', 'body', 'baseRefName', 'baseRefNameHash', 'sourceRefName', 'sourceRefNameHash', 'sourceRepoId', 'headOid', 'patchManifestHash', 'draft', 'targetId', 'path', 'replyTo', 'reviewId', 'commitOid', 'line', 'startLine', 'side', 'patchId', 'verdict', 'commentCount'),
+      ...leafFields('number', 'title', 'body', 'baseRefName', 'baseRefNameHash', 'sourceRefName', 'sourceRefNameHash', 'sourceRepoId', 'headOid', 'patchManifestHash', 'draft', 'targetId', 'path', 'replyTo', 'reviewId', 'commitOid', 'line', 'startLine', 'side', 'patchId', 'verdict', 'commentCount', 'targetNumber', 'kind', 'value', 'refId'),
       imported: leaves('author', 'createdAt', 'url'),
     }),
   }),
@@ -208,7 +208,11 @@ const COLLAB_SEALED: Readonly<Record<string, readonly string[]>> = {
   patch: ['title', 'body', 'baseRefName', 'sourceRefName'],
   comment: ['body', 'path'],
   review: ['body'],
+  event: ['value'],
 }
+
+/** The TLV field a sealed property becomes, where the names differ (an event's `value`, tag 15). */
+const FIELD_OF: Readonly<Record<string, string>> = { value: 'eventValue' }
 
 /**
  * The reference transform of `private_collab_seal` (the CLI's `collab::private::seal_props`, the
@@ -224,7 +228,7 @@ async function collabSeal(inp: Obj): Promise<Json> {
   const out: { [k: string]: Json } = {}
   for (const [k, v] of Object.entries(props)) if (!sealed.includes(k)) out[k] = v
   const fields: { [k: string]: string } = {}
-  for (const k of sealed) if (k in props) fields[k] = str(props, k)
+  for (const k of sealed) if (k in props) fields[FIELD_OF[k] ?? k] = str(props, k)
   // an importer's provenance: author and url are sealed (TLV 13, 14), createdAt stays
   const imported = props['imported']
   if (isObj(imported)) {
@@ -263,7 +267,7 @@ async function collabSeal(inp: Obj): Promise<Json> {
 
 function toFields(f: Obj): DocFields {
   const out: { -readonly [K in keyof DocFields]: DocFields[K] } = {}
-  for (const k of ['title', 'body', 'refName', 'baseRefName', 'sourceRefName', 'defaultBranch', 'path', 'importedAuthor', 'importedUrl'] as const) {
+  for (const k of ['title', 'body', 'refName', 'baseRefName', 'sourceRefName', 'defaultBranch', 'path', 'importedAuthor', 'importedUrl', 'eventValue'] as const) {
     if (k in f) out[k] = str(f, k)
   }
   const patterns = f['protectedPatterns']
@@ -661,7 +665,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(205)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(221)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })
