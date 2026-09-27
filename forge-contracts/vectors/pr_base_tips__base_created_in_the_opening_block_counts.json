@@ -1,0 +1,31 @@
+{
+  "name": "base_created_in_the_opening_block_counts",
+  "description": "An update in the same block as the PR ($createdAt equal to openedAt) counts as before it.",
+  "case": "pr_base_tips",
+  "rules": "v2",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 100
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "openedAt": 100
+  },
+  "expected": {
+    "historical": [
+      "A"
+    ],
+    "tip": "A",
+    "current": "A"
+  }
+}

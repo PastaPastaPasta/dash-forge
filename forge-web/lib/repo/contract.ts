@@ -8,6 +8,7 @@
  */
 
 import type { ForgeIds } from '../deployments'
+import type { PrivateSession } from './private-session'
 import type { Event, EventKind, RefUpdate } from '../rules'
 import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
 import { base58Decode, base58Encode } from '../auth/base58'
@@ -19,6 +20,7 @@ export const DOC = {
   maintainer: 'maintainer',
   writer: 'writer',
   config: 'config',
+  repoKey: 'repoKey',
   refUpdate: 'refUpdate',
   protectedRefUpdate: 'protectedRefUpdate',
   packManifest: 'packManifest',
@@ -72,6 +74,12 @@ export interface RepoRef {
   readonly ownerId: string
   readonly name: string
   readonly visibility: Visibility
+  /**
+   * A private repo read by a member: the reader's decryption session. Every read of this
+   * `RepoRef` then decrypts through it (`private-session.ts`); without it a private repo's
+   * content is hidden. Never set on a public repo.
+   */
+  readonly session?: PrivateSession
 }
 
 /** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
@@ -80,11 +88,12 @@ export function repoContractIds(repo: RepoRef | null): string[] {
 }
 
 /**
- * The stable identity of a repo within a network — its `repoId`. Session caches (browse
- * context, content checks, fallback clones) key by it.
+ * The stable identity of a repo within a network — its `repoId`, plus the decryption session
+ * of a private repo read by a member. Session caches (browse context, content checks,
+ * fallback clones) key by it, so decrypted state never outlives its session.
  */
 export function repoKey(repo: RepoRef): string {
-  return repo.repoId
+  return repo.session === undefined ? repo.repoId : `${repo.repoId}#${repo.session.id}`
 }
 
 /** A string field, or `''` when absent or not a string. */

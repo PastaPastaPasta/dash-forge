@@ -34,7 +34,8 @@
  * Divergence resolution that turns on real commit ancestry (a merge superseding both racing
  * heads) needs a commit-graph predicate from the browse plane; callers may pass one via
  * `isAncestor`. Without it, linear/fast-forward/force/delete cases still resolve correctly
- * (the prevOid causal DAG carries those); only unmerged three-way races stay `Diverged`.
+ * (the consensus clock, with the prevOid chain inside one block, carries those); only
+ * unmerged races stay `Diverged`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -55,7 +56,11 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { DOC, toRefUpdate, wellFormed, type RepoRef } from './contract'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
+import { DOC, str, toRefUpdate, wellFormed, type RepoRef } from './contract'
+import { admitAll } from './private-content'
 import { readConfigHistory } from './config'
 import { repoSource } from './source'
 
@@ -219,15 +224,51 @@ function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefU
   return byHash
 }
 
+/** `sha256(refName)` hex: the key a private ref is grouped under once its name is decrypted. */
+export function publicRefKey(refName: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(refName)))
+}
+
+/**
+ * A private repo's refs (`docs/security/private-repos.md` §4.5): the complete `reflog` of both
+ * types, each update opened through the session's gate (its `refNameHash` is an HMAC under the
+ * write epoch, so one ref's history spans several hashes). An opened update names its ref in
+ * `refName`; rewriting `refNameHash` to `sha256(refName)` groups a ref's history across epochs
+ * by that name and lets the public resolver fold it unchanged (protected routing uses the
+ * decrypted config timeline). Nothing is readable without a session.
+ */
+async function readPrivateRefUpdates(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, RefUpdate[]>> {
+  const session = repo.session
+  if (session === undefined) return new Map()
+  return session.refUpdates(async () => {
+    const byKey = new Map<string, RefUpdate[]>()
+    for (const [type, isProtected] of REF_UPDATE_TYPES) {
+      const rows = dedupeById(await queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { orderBy: [['$createdAt', 'asc']] })))
+      const { docs } = await admitAll(session.gate, type as 'refUpdate' | 'protectedRefUpdate', rows)
+      for (const doc of docs) {
+        const refName = str(doc, 'refName')
+        const key = publicRefKey(refName)
+        const update = { ...toRefUpdate(doc, isProtected), refNameHash: key }
+        const group = byKey.get(key)
+        if (group === undefined) byKey.set(key, [update])
+        else group.push(update)
+      }
+    }
+    return byKey
+  })
+}
+
 /**
  * Every ref's complete update history, keyed by `refNameHash` hex. Keyset scan per type, then
  * the `prevOid` completeness check; when the scan misbehaves or fails the check, the answer
- * is the `reflog` read of both types alone (see the module doc).
+ * is the `reflog` read of both types alone (see the module doc). A private repo: see
+ * {@link readPrivateRefUpdates} (keyed by `sha256` of the decrypted name).
  */
 export async function readAllRefUpdates(
   sdk: EvoSDK,
   repo: RepoRef,
 ): Promise<Map<string, RefUpdate[]>> {
+  if (repo.visibility === 'private') return readPrivateRefUpdates(sdk, repo)
   const scanned = await Promise.all(
     REF_UPDATE_TYPES.map(async ([type, isProtected]) => ({
       type,
@@ -270,6 +311,8 @@ export async function readRefUpdates(
   repo: RepoRef,
   refNameHashB64: string,
 ): Promise<RefUpdate[]> {
+  // Private: the argument is the public key `sha256(name)` of a decrypted name.
+  if (repo.visibility === 'private') return (await readPrivateRefUpdates(sdk, repo)).get(base64ToHex(refNameHashB64)) ?? []
   const [plain, prot] = await Promise.all([
     readOneRef(sdk, repo, DOC.refUpdate, refNameHashB64),
     readOneRef(sdk, repo, DOC.protectedRefUpdate, refNameHashB64),

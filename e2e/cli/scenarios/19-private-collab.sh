@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scenario 17: sealed issues, pull requests, comments and reviews in a private repository
+# Scenario 19: sealed issues, pull requests, comments and reviews in a private repository
 # (docs/security/private-repos.md §4, §8).
 #
 # Runs under two identities minted for this run (P_OWNER, P_MEMBER; no shared-identity nonce
@@ -16,7 +16,7 @@
 #
 # Needs the moutai funding key (MOUTAI_FUNDING, default the QA harness's) and
 # tools/mint-identity's node modules; skips without them.
-SCENARIO_NAME="17 private repository: sealed issues, PRs, comments and reviews"
+SCENARIO_NAME="19 private repository: sealed issues, PRs, comments and reviews"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
@@ -25,13 +25,15 @@ harness_init
 [[ -n "${E2E_P_OWNER:-}" || -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
 [[ -n "${E2E_P_OWNER:-}" || -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
 
-LOG="${WORKROOT}/s17"
-IDS="${WORKROOT}/s17-ids"
+LOG="${WORKROOT}/s19"
+IDS="${WORKROOT}/s19-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
 json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$1" "$2" 2>/dev/null; }
 
 mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for this run only
-  node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
+  # One mint at a time across every agent sharing the funding key (its UTXOs), as `qa mint` does.
+  local lock=(); command -v lockf >/dev/null && lock=(lockf -t 1200 "${E2E_MINT_LOCK:-/tmp/qa-mint.lock}")
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
     --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
 }
 
@@ -55,7 +57,7 @@ NAME="e2e-sealed-${RUN_ID}"
 NAME="${NAME:0:63}"
 REPO="${ID_P_OWNER}/${NAME}"
 REMOTE="dash://${REPO}"
-SRC="${WORKROOT}/s17-src"
+SRC="${WORKROOT}/s19-src"
 
 step "P_OWNER creates a private repo, pushes main and feature, adds P_MEMBER"
 if ! _retry "$LOG-create.err" _dg_read "$P_OWNER" "$LOG-create.json" "$LOG-create.err" \

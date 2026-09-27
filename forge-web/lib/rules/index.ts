@@ -19,7 +19,7 @@
 export * from './types'
 export { compareKey, compareStrings, isCheckRefFormat, isLegalRefName, isNullOid, isOidHex, isPlainBranchRef } from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
-export { displayRefName, mergeBaseTips, resolveRef } from './resolveRef'
+export { displayRefName, mergeBaseTips, prBaseTips, resolveRef } from './resolveRef'
 export { overlayTree } from './overlay'
 // FORGE_RULES_V2: the forge-v2 membership, event-fold, pack and numbering rules
 export * as v2 from './v2'

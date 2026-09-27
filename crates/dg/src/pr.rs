@@ -23,7 +23,7 @@ use forge_core::collab::v2::{Collab, Patch, PatchInput, PatchView};
 use forge_core::collab::Verdict;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::Role;
-use forge_core::rules::EventKind;
+use forge_core::rules::{EventKind, RefState};
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
@@ -135,8 +135,14 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         c
     };
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-    let (source, head_ref, head_oid) = resolve_head(args, &cwd, &svc, candidates).await?;
-    // The base branch: --base, else the target's default branch.
+    let PrHead {
+        source,
+        source_refs,
+        ref_name: head_ref,
+        oid: head_oid,
+    } = resolve_head(args, &cwd, &svc, candidates).await?;
+    // The base branch: --base, else the target's default branch. It must be a branch of the
+    // target now (D-501): a merge counts only into a base that existed when the PR was opened.
     let base = if let Some(b) = &args.base {
         git::full_ref(b)
     } else {
@@ -146,6 +152,12 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             .unwrap_or_else(|| "main".into());
         git::full_ref(&d)
     };
+    let target_refs = if source.id() == handle.id() {
+        source_refs
+    } else {
+        svc.read_refs(handle).await?
+    };
+    require_base_branch(handle, &base, &target_refs)?;
     let title = match &args.title {
         Some(t) => t.clone(),
         None => git::git(&cwd, &["log", "-1", "--format=%s", &head_oid], &[])
@@ -220,7 +232,7 @@ async fn resolve_head(
     cwd: &Path,
     svc: &forge_core::repo::RepoService<'_>,
     candidates: Vec<Repo>,
-) -> Result<(Repo, String, String)> {
+) -> Result<PrHead> {
     let head_ref =
         match (&args.head, git::current_branch(cwd)) {
             (Some(h), _) => git::full_ref(h),
@@ -237,11 +249,11 @@ async fn resolve_head(
             .find(|(n, _)| *n == head_ref)
             .and_then(|(_, st)| forge_core::rules::tip_of(st))
         {
-            found = Some((repo.clone(), tip));
+            found = Some((repo.clone(), refs, tip));
             break;
         }
     }
-    let Some((source, remote_tip)) = found else {
+    let Some((source, source_refs, remote_tip)) = found else {
         let first = &candidates[0];
         return Err(UserError::new(
             codes::NOT_FOUND,
@@ -277,7 +289,63 @@ async fn resolve_head(
             short(&remote_tip)
         );
     }
-    Ok((source, head_ref, head_oid))
+    Ok(PrHead {
+        source,
+        source_refs,
+        ref_name: head_ref,
+        oid: head_oid,
+    })
+}
+
+/// Where a new PR's head lives ([`resolve_head`]).
+struct PrHead {
+    /// The repository holding the branch.
+    source: Repo,
+    /// Every ref of `source`, as read to find the branch (reused to check the base when the
+    /// source is the target).
+    source_refs: Vec<(String, RefState)>,
+    /// The branch, `refs/heads/<name>`.
+    ref_name: String,
+    /// The commit the PR names (hex).
+    oid: String,
+}
+
+/// Refuse a PR base that is not a branch of `target` (never pushed, a typo, or deleted): a
+/// merge event into it would never count (`pr_base_tips`), and `dg pr merge` would create the
+/// branch (D-501). `refs` are the target's refs as `read_refs` returns them.
+fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -> Result<()> {
+    git::require_branch_ref(base)?;
+    let mut live = refs
+        .iter()
+        .filter(|(_, st)| !matches!(st, RefState::Unborn))
+        .map(|(n, _)| n.as_str());
+    if live.clone().any(|n| n == base) {
+        return Ok(());
+    }
+    let mut branches: Vec<&str> = live
+        .by_ref()
+        .filter_map(|n| n.strip_prefix("refs/heads/"))
+        .collect();
+    branches.sort_unstable();
+    let known = if branches.is_empty() {
+        "it has no branches yet".to_string()
+    } else {
+        format!("its branches: {}", safe(&branches.join(", ")))
+    };
+    Err(UserError::new(
+        codes::NOT_FOUND,
+        format!(
+            "pull request not created: {} is not a branch of {}",
+            safe(base),
+            target.display()
+        ),
+    )
+    .cause(format!(
+        "a PR merges into an existing branch, and a merge into a branch created later never counts ({known})"
+    ))
+    .fix("pass --base <branch> naming one of them, or push the base branch first")
+    .note("nothing was written")
+    .into())
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +663,7 @@ async fn merge(
         return Ok(());
     }
     refuse_retargeted(&view, number)?;
+    refuse_missing_base(&view, number, event_only)?;
     let merge_oid = if event_only {
         Some(event_only_oid(&view, merge_oid, number)?)
     } else {
@@ -758,6 +827,34 @@ fn refuse_retargeted(view: &PatchView, number: u64) -> Result<()> {
     ))
     .fix("merge it by hand into the new base, then `dg pr merge --event-only --merge-oid <commit>`")
     .into())
+}
+
+/// `dg pr merge` merges into an existing base branch only (D-501). A base that was no branch
+/// when the PR was opened has no tips (`pr_base_tips`), so no merge into it would count; and
+/// pushing a merge to a base that does not exist now would create it. `--event-only` may still
+/// record a merge into a base deleted since: its tips keep counting.
+fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Result<()> {
+    let base = safe(&view.patch.base_ref_name);
+    let (headline, cause) = if view.base_tips.is_empty() {
+        (
+            format!("{base} was not a branch when PR #{number} was opened"),
+            "a merge counts only into a branch that existed when the PR was opened, so this PR can never show as merged",
+        )
+    } else if view.base_tip.is_none() && !event_only {
+        (
+            format!("the base branch {base} has been deleted"),
+            "merging would push to it and re-create it",
+        )
+    } else {
+        return Ok(());
+    };
+    Err(UserError::new(codes::NOT_FOUND, format!("merge not attempted: {headline}"))
+        .cause(cause)
+        .fix(format!(
+            "close PR #{number} and open a new one against an existing branch (`dg pr create --base <branch>`)"
+        ))
+        .note("nothing was written")
+        .into())
 }
 
 /// The commit a `--event-only` merge event names: `--merge-oid`, else the PR head. Either

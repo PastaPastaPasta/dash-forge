@@ -1,6 +1,7 @@
 /**
  * Ref helpers (view glue) — surface the tip oid a browse view should read for a branch,
- * honoring the diverged-ref rule (the newest-by-createdAt head is the provisional tip).
+ * honoring the diverged-ref rule (`heads[0]`, the newest head in `resolveRef`'s order, is the
+ * provisional tip).
  */
 
 import type { ResolvedRef } from '../repo'
@@ -10,10 +11,7 @@ export function tipOidOf(ref: ResolvedRef | undefined): string | null {
   if (!ref) return null
   const s = ref.state
   if (s.state === 'resolved') return s.oid
-  if (s.state === 'diverged') {
-    const newest = [...s.heads].sort((a, b) => b.createdAt - a.createdAt)[0]
-    return newest?.oid ?? null
-  }
+  if (s.state === 'diverged') return s.heads[0]?.oid ?? null
   return null
 }
 

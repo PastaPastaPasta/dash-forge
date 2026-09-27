@@ -38,7 +38,7 @@ function coin(network: Network): number {
   return network === 'mainnet' ? 5 : 1
 }
 
-function wasmNetwork(network: Network): string {
+export function wasmNetwork(network: Network): 'mainnet' | 'testnet' {
   return network === 'mainnet' ? 'mainnet' : 'testnet'
 }
 

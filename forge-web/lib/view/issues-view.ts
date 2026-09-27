@@ -28,6 +28,7 @@ import {
   type RepoRef,
   type ReviewView,
 } from '../repo'
+import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { anchorOf, countApprovals, groupReviewComments, type Anchor, type Approvals, type Role } from '../rules/v2'
@@ -82,7 +83,12 @@ export function toCommentView(d: PlainDocument): CommentView {
  * itself read to completion, and a thread that silently stopped at comment 100 would show a
  * materially different conversation than any paging client — with no marker saying so.
  */
-export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<CommentView[]> {
+export async function readComments(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  targetId: string,
+  tally: HiddenTally = new HiddenTally(),
+): Promise<CommentView[]> {
   const documents = await queryAllDocuments(
     sdk,
     repoSource(repo).targetQuery(DOC.comment, {
@@ -93,13 +99,13 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
       ],
     }),
   )
-  // Private repo: a stranger's ciphertext is shown to no one (`forge-v2.md` §5), as in the
-  // lists.
-  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
-  return documents
-    .filter((d) => wellFormed(repo, 'comment', d))
-    .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
-    .map(toCommentView)
+  // Private repo: only comments that open with the reader's keys, decrypted (§8), which also
+  // covers well-formedness and a stranger's ciphertext; the rest are counted, never shown.
+  if (repo.visibility === 'private') {
+    const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
+    return docs.map(toCommentView)
+  }
+  return documents.filter((d) => wellFormed(repo, 'comment', d)).map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */
@@ -140,13 +146,17 @@ async function docByNumber(
     }),
   )
   const doc = documents[0]
-  return doc !== undefined && wellFormed(repo, type, doc) ? doc : null
+  if (doc === undefined) return null
+  const a = await gateFor(repo).admit(type, doc)
+  return a.ok ? a.doc : null
 }
 
 /** A full issue detail: the folded issue + its merged timeline. */
 export interface IssueThread {
   readonly issue: IssueView
   readonly timeline: TimelineItem[]
+  /** Comments (and reviews) left out as unreadable, by reason (private repos). */
+  readonly hidden: HiddenCounts
 }
 
 /** Load an issue (folded state) + its comment/event timeline by number. Null if not found. */
@@ -155,12 +165,13 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   if (!doc) return null
   const id = str(doc, '$id')
   // One read of the target's log serves both the fold and the timeline.
+  const tally = new HiddenTally()
   const [log, comments] = await Promise.all([
     readTargetLog(sdk, repo, id),
-    readComments(sdk, repo, id),
+    readComments(sdk, repo, id, tally),
   ])
   const issue = await readIssue(sdk, repo, doc, log)
-  return { issue, timeline: mergeTimeline(comments, log.events, log.authorEvents, []) }
+  return { issue, timeline: mergeTimeline(comments, log.events, log.authorEvents, []), hidden: tally.value }
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */
@@ -182,6 +193,8 @@ export interface PullThread {
    * could not be read.
    */
   readonly approvals: PullApprovals | null
+  /** Comments and reviews left out as unreadable, by reason (private repos). */
+  readonly hidden: HiddenCounts
 }
 
 /**
@@ -195,15 +208,16 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
   const doc = await docByNumber(sdk, repo, 'patch', number)
   if (!doc) return null
   const id = str(doc, '$id')
+  const tally = new HiddenTally()
   const [log, comments, reviews] = await Promise.all([
     readTargetLog(sdk, repo, id),
-    readComments(sdk, repo, id),
-    readReviews(sdk, repo, id),
+    readComments(sdk, repo, id, tally),
+    readReviews(sdk, repo, id, tally),
   ])
   const pull = await readPull(sdk, repo, doc, log)
   const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
   const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed, pull.author)
-  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals }
+  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals, hidden: tally.value }
 }
 
 /** A PR's counted approvals, or null when the membership could not be read. */

@@ -23,6 +23,7 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useParam } from '@/hooks/use-query-param'
+import { forgetPrivateHome } from '@/hooks/use-private-home'
 import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -115,7 +116,10 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const { data, reload: rerun } = state
   const reload = useCallback(() => {
     homeCache.delete(key)
-    if (data !== null) invalidateBrowseContext(repoKey(data.repo))
+    if (data !== null) {
+      invalidateBrowseContext(repoKey(data.repo))
+      if (data.repo.visibility === 'private') forgetPrivateHome(data.repo)
+    }
     rerun()
   }, [key, data, rerun])
   return { ...state, reload, ready, sdkError, network }

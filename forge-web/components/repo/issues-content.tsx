@@ -41,6 +41,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [composing, setComposing] = useState(false)
   const router = useRouter()
   const generation = useRepoWriteGeneration(home.repo)
+  // A private repo's issues are sealed; this browser does not write sealed issues yet, and
+  // never writes them in plaintext.
+  const canCompose = home.repo.visibility !== 'private'
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
     // Through the session cache the header's open count reads, and re-read after each
@@ -76,9 +79,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             All
           </FilterTab>
         </div>
-        <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
-          <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
-        </Button>
+        {canCompose ? (
+          <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
+            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
+          </Button>
+        ) : null}
       </div>
 
       {loading ? (
@@ -90,7 +95,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           icon={CircleDot}
           title={filter === 'closed' ? 'No closed issues' : 'No open issues'}
           body={filter === 'closed' ? 'Nothing has been closed yet.' : 'Everything is quiet. Open the first issue to start the conversation.'}
-          action={<Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
+          action={canCompose ? <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button> : undefined}
         />
       ) : (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -132,7 +137,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         </div>
       )}
 
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} />
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
         open={composing}

@@ -34,6 +34,7 @@ import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { HiddenNote } from '@/components/repo/hidden-note'
 
 type Pending =
   | { kind: 'state' }
@@ -179,6 +180,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
       {/* Timeline */}
       {timeline.length > 0 ? <Timeline items={timeline} /> : null}
+      <HiddenNote hidden={0} what="comments" home={home} by={data.hidden} />
 
       {/* Labels (members) */}
       {isMember ? (
@@ -187,6 +189,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <div className="min-w-[12rem] flex-1">
             <label htmlFor="label-name" className="sr-only">Label</label>
             <Input id="label-name" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Add a label (e.g. bug)" maxLength={120} />
+            {home.repo.visibility === 'private' ? (
+              <p className="mt-1 text-[11px] text-caution">Labels are not encrypted in this release: anyone can read them.</p>
+            ) : null}
           </div>
           <Button
             variant="outline"
@@ -201,6 +206,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       {/* Composer */}
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+        {home.repo.visibility === 'private' ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
+            Comments on private repos aren&apos;t supported yet.
+          </p>
+        ) : (
+        <>
         <label htmlFor="comment-body" className="sr-only">Comment</label>
         <Textarea id="comment-body" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a comment (markdown supported)…" />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -227,6 +238,15 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             </Button>
           </div>
         </div>
+        </>
+        )}
+        {home.repo.visibility === 'private' && canToggle ? (
+          <div className="mt-3 flex justify-end">
+            <Button variant="outline" onClick={() => setPending({ kind: 'state' })} disabled={!signer || guard.disabledReason !== null}>
+              {open ? 'Close issue' : 'Reopen issue'}
+            </Button>
+          </div>
+        ) : null}
         {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
         {commentError ? (
           <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>

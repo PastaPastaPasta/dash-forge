@@ -1,0 +1,43 @@
+{
+  "name": "base_present_at_open_keeps_history",
+  "description": "The base existed when the PR was opened: its whole valid history counts, later tips included.",
+  "case": "pr_base_tips",
+  "rules": "v2",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "openedAt": 200
+  },
+  "expected": {
+    "historical": [
+      "A",
+      "B"
+    ],
+    "tip": "B",
+    "current": "B"
+  }
+}
