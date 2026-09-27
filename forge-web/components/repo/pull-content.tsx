@@ -76,7 +76,7 @@ import { SupersededWriteError, previewCreate, previewCredits, previewDelete, pre
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey } from '@/lib/view/inline-threads'
-import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { draftIsEmpty, draftWhereabouts } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
@@ -105,6 +105,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
+import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge } from '@/components/repo/pull-merge'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
@@ -336,6 +337,19 @@ function PullPage({
   const rememberLines = useCallback((lines: ReadonlyMap<string, ReadonlySet<string>>) => {
     knownLines.current = lines
   }, [])
+  // Suggestions and "Update branch": commits to the PR's source branch (the fork).
+  const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
+  const suggest = useSuggestions({
+    repo,
+    source: sourceRef,
+    pull,
+    comments: thread.comments,
+    headReader,
+    applied,
+    isMember,
+    signedIn: identity !== null && guard.disabledReason === null && !archived,
+    onCommitted: (c) => refresh((t) => t.pull.headOid === c),
+  })
   const canResolve = identity !== null && (isAuthor || isMember) && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handlers
   // read the latest cost and guard through a ref.
@@ -752,6 +766,36 @@ function PullPage({
                 <>
                   {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
+                  {open && baseTipOid !== '' && cmp !== null && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
+                    <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
+                      <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        This branch is behind <span className="font-mono">{base.replace(/^refs\/heads\//, '')}</span>. Merge the latest changes into it.
+                      </span>
+                      {suggest.write.can && suggest.who !== null && repo.visibility === 'public' ? (
+                        <>
+                          <BranchCommitCost isMember={isMember} storage="" />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            loading={suggest.runner.busy}
+                            disabled={headReader === null || guard.disabledReason !== null}
+                            onClick={() => {
+                              const who = suggest.who
+                              if (headReader !== null && who !== null) void suggest.runner.run('Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
+                            }}
+                          >
+                            Update branch
+                          </Button>
+                        </>
+                      ) : suggest.write.can && suggest.who === null ? (
+                        <IdentityNote />
+                      ) : (
+                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{repo.visibility === 'private' ? 'Use `dg pr update-branch` for a private repo.' : 'Only writers of the source repo can update it.'}</span>
+                      )}
+                    </section>
+                  ) : null}
+                  {tab === 'conversation' ? suggest.runner.view : null}
                   <PullMerge
                     repo={repo}
                     home={home}
@@ -871,6 +915,8 @@ function PullPage({
           ) : tab === 'checks' ? (
             <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
           ) : (
+            <>
+            {suggest.runner.view}
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
@@ -901,12 +947,15 @@ function PullPage({
                   onPosted={onInlinePosted}
                   actions={threadActions}
                   onLinesKnown={rememberLines}
+                  suggestions={suggest.actions}
                   {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}
                 >
                   {diff}
                 </InlineCommentsProvider>
               )}
             />
+            {suggest.bar}
+            </>
           )}
         </div>
 
@@ -1005,6 +1054,7 @@ function PullPage({
         ) : null}
       </div>
 
+      {suggest.runner.uploadDialog}
       <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
   )
