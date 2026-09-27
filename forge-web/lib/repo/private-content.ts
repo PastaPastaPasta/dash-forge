@@ -183,7 +183,8 @@ function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
   delete out['enc']
   delete out['epoch']
   for (const [k, v] of Object.entries(fields) as [string, unknown][]) {
-    if (v === undefined || k === 'prevEpochKey' || k === 'prevEpoch') continue
+    // A config's chain link carries raw keys of other epochs: never part of the plaintext view.
+    if (v === undefined || k === 'prevEpochKey' || k === 'skipEpochKey' || k === 'prevEpoch') continue
     out[k] = v
   }
   return out
@@ -202,9 +203,12 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
       if (stored === null) return { ok: false, reason: 'notEncrypted' }
       const opened = await openContent(stored, ctx)
       if (opened.status === 'readable') {
-        // An anchor's prevEpochKey is an older epoch's raw key: never kept past the open.
+        // An anchor's prevEpochKey and skipEpochKey are older epochs' raw keys: never kept past
+        // the open.
+        const out = asPlaintext(doc, opened.fields)
         opened.fields.prevEpochKey?.fill(0)
-        return { ok: true, doc: asPlaintext(doc, opened.fields) }
+        opened.fields.skipEpochKey?.fill(0)
+        return { ok: true, doc: out }
       }
       if (opened.status === 'malformed') return { ok: false, reason: 'notEncrypted' }
       switch (opened.reason) {

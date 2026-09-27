@@ -581,4 +581,26 @@ describe('no plaintext reaches a private repo', () => {
     expect(await privateGate(REPO_REF, s.ctx).admit('issue', lifted)).toEqual({ ok: false, reason: 'notEncrypted' })
     expect(privateId(b58(BOB))).toEqual(BOB)
   })
+
+  it('an opened config never carries a raw key of another epoch into the plaintext view', async () => {
+    const w = await world()
+    await rotate(w)
+    const s = await sessionFor(w, ALICE)
+    const k1 = w.keys.get(1) as EpochKeys
+    const cfg = await sealed(
+      'config',
+      k1,
+      ALICE,
+      {},
+      { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), skipEpochKey: new Uint8Array(K0) },
+      { backend: { mode: 0 } },
+      120,
+    )
+    const a = await privateGate(REPO_REF, s.ctx).admit('config', cfg)
+    expect(a.ok).toBe(true)
+    if (a.ok) {
+      expect(a.doc['prevEpochKey']).toBeUndefined()
+      expect(a.doc['skipEpochKey']).toBeUndefined()
+    }
+  })
 })
