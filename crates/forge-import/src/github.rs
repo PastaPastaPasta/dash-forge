@@ -557,17 +557,7 @@ impl GithubClient {
         });
         let mut cmd = Command::new("git");
         if let Some(h) = &header {
-            // Appended after any GIT_CONFIG_* entries the caller already set.
-            let n: usize = std::env::var("GIT_CONFIG_COUNT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
-                .env(
-                    format!("GIT_CONFIG_KEY_{n}"),
-                    "http.https://github.com/.extraheader",
-                )
-                .env(format!("GIT_CONFIG_VALUE_{n}"), h);
+            append_git_config(&mut cmd, "http.https://github.com/.extraheader", h);
         }
         if dir.join("HEAD").exists() {
             cmd.arg("-C")
@@ -590,6 +580,18 @@ impl GithubClient {
         }
         Ok(())
     }
+}
+
+/// Give `cmd` one more git config entry through `GIT_CONFIG_*`, appended after any the
+/// caller already set (the Mirror Action and the CI templates scope their settings that way).
+pub(crate) fn append_git_config(cmd: &mut Command, key: &str, value: &str) {
+    let n: usize = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{n}"), key)
+        .env(format!("GIT_CONFIG_VALUE_{n}"), value);
 }
 
 fn with_since(path: &str, since: Option<&str>) -> String {

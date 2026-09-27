@@ -570,11 +570,10 @@ pub struct GitlabClient {
 impl GitlabClient {
     /// Bind to a project, reading over HTTPS with `GITLAB_TOKEN` when set.
     pub fn new(repo: GitlabRepoRef) -> Self {
+        let api = Box::new(Curl::from_env(&repo.base));
         Self {
-            api: Box::new(Curl::from_env(&repo.base)),
-            repo,
-            recent: RefCell::default(),
             pace: true,
+            ..Self::with_api(repo, api)
         }
     }
 
@@ -659,22 +658,14 @@ impl GitlabClient {
         bail!("GET {url}: GitLab kept refusing (rate limited or unavailable); re-run later")
     }
 
-    fn one<T: for<'de> Deserialize<'de>>(&self, rest: &str, what: &str) -> Result<T> {
-        match self.get(&self.url(rest))? {
-            Ok(r) => serde_json::from_slice(&r.body).with_context(|| format!("parsing {what}")),
-            Err(Denied::Unauthorized) => bail!(
-                "GitLab refused to show {what} ({}): set GITLAB_TOKEN to a token with the \
-                 read_api scope",
-                self.repo.display()
-            ),
-        }
-    }
-
-    /// Every element of a paginated listing (following `Link: rel="next"`), or `Denied`.
-    fn list<T: for<'de> Deserialize<'de>>(
+    /// A paginated listing (following `Link: rel="next"`), or `Denied`. With `want`, pages
+    /// are read only until `want` elements are found, at most `want` are kept, and the flag
+    /// says whether the listing had more.
+    fn pages<T: for<'de> Deserialize<'de>>(
         &self,
         rest: &str,
-    ) -> Result<std::result::Result<Vec<T>, Denied>> {
+        want: Option<usize>,
+    ) -> Result<std::result::Result<(Vec<T>, bool), Denied>> {
         let mut url = self.url(rest);
         let mut out = Vec::new();
         loop {
@@ -685,42 +676,89 @@ impl GitlabClient {
             let page: Vec<T> = serde_json::from_slice(&r.body)
                 .with_context(|| format!("parsing the listing {rest}"))?;
             out.extend(page);
+            if let Some(want) = want.filter(|&w| out.len() > w) {
+                out.truncate(want);
+                return Ok(Ok((out, true)));
+            }
             match r.next {
                 // Only follow links on the same instance (never send the token elsewhere).
-                Some(next) if next.starts_with(&format!("{}/", self.repo.base)) => url = next,
-                _ => return Ok(Ok(out)),
+                Some(next) if next.starts_with(&format!("{}/", self.repo.base)) => {
+                    if want == Some(out.len()) {
+                        return Ok(Ok((out, true)));
+                    }
+                    url = next;
+                }
+                _ => return Ok(Ok((out, false))),
             }
         }
     }
 
+    /// Every element of a listing, or `Denied`.
+    fn list<T: for<'de> Deserialize<'de>>(
+        &self,
+        rest: &str,
+    ) -> Result<std::result::Result<Vec<T>, Denied>> {
+        Ok(self.pages(rest, None)?.map(|(all, _)| all))
+    }
+
+    /// A listing the token must be able to read: every element, or with `limit` (> 0) at
+    /// most `limit` and whether the listing had more.
+    fn required<T: for<'de> Deserialize<'de>>(
+        &self,
+        rest: &str,
+        limit: usize,
+    ) -> Result<(Vec<T>, bool)> {
+        self.pages(rest, (limit > 0).then_some(limit))?
+            .map_err(|_| {
+                anyhow!(
+                    "GitLab refused to list {} of {}: set GITLAB_TOKEN to a token with the \
+                     read_api scope",
+                    rest.split('?').next().unwrap_or(rest),
+                    self.repo.display()
+                )
+            })
+    }
+
     /// Project metadata (also proves the project exists and can be read).
     pub fn project(&self) -> Result<GlProject> {
-        self.one("", "the project")
+        match self.get(&self.url(""))? {
+            Ok(r) => serde_json::from_slice(&r.body).context("parsing the project"),
+            Err(Denied::Unauthorized) => bail!(
+                "GitLab refused to show the project ({}): set GITLAB_TOKEN to a token with the \
+                 read_api scope",
+                self.repo.display()
+            ),
+        }
     }
 
-    /// Issues (all states), updated after `since`, oldest created first.
-    pub fn issues(&self, since: Option<&str>) -> Result<Vec<GlItem>> {
-        self.required(&with_since(
-            "issues?state=all&order_by=created_at&sort=asc&per_page=100",
-            since,
-        ))
+    /// Issues (all states), updated after `since`, oldest created first. With `limit` (> 0),
+    /// only the pages holding the first `limit` are read, and the flag says whether the
+    /// listing had more.
+    pub fn issues(&self, since: Option<&str>, limit: usize) -> Result<(Vec<GlItem>, bool)> {
+        self.required(
+            &with_since(
+                "issues?state=all&order_by=created_at&sort=asc&per_page=100",
+                since,
+            ),
+            limit,
+        )
     }
 
-    /// Merge requests (all states), updated after `since`, oldest created first.
-    pub fn merge_requests(&self, since: Option<&str>) -> Result<Vec<GlItem>> {
-        self.required(&with_since(
-            "merge_requests?state=all&order_by=created_at&sort=asc&per_page=100",
-            since,
-        ))
+    /// [`Self::issues`] for merge requests.
+    pub fn merge_requests(&self, since: Option<&str>, limit: usize) -> Result<(Vec<GlItem>, bool)> {
+        self.required(
+            &with_since(
+                "merge_requests?state=all&order_by=created_at&sort=asc&per_page=100",
+                since,
+            ),
+            limit,
+        )
     }
 
     /// The iids of every open merge request.
     pub fn open_merge_requests(&self) -> Result<Vec<u64>> {
-        Ok(self
-            .required::<GlItem>("merge_requests?state=opened&per_page=100")?
-            .into_iter()
-            .map(|m| m.iid)
-            .collect())
+        let (open, _) = self.required::<GlItem>("merge_requests?state=opened&per_page=100", 0)?;
+        Ok(open.into_iter().map(|m| m.iid).collect())
     }
 
     /// An issue's notes, oldest first. `Err(Denied)` without the right token.
@@ -745,73 +783,7 @@ impl GitlabClient {
 
     /// Releases.
     pub fn releases(&self) -> Result<Vec<GlRelease>> {
-        self.required("releases?per_page=100")
-    }
-
-    fn required<T: for<'de> Deserialize<'de>>(&self, rest: &str) -> Result<Vec<T>> {
-        self.list(rest)?.map_err(|_| self.denied_listing(rest))
-    }
-
-    fn denied_listing(&self, rest: &str) -> anyhow::Error {
-        anyhow!(
-            "GitLab refused to list {} of {}: set GITLAB_TOKEN to a token with the read_api \
-             scope",
-            rest.split('?').next().unwrap_or(rest),
-            self.repo.display()
-        )
-    }
-
-    /// The first `want` issues (oldest created first) updated after `since`, reading pages
-    /// only until they are found, and whether the listing had more.
-    pub fn first_issues(&self, since: Option<&str>, want: usize) -> Result<(Vec<GlItem>, bool)> {
-        self.first(
-            &with_since(
-                "issues?state=all&order_by=created_at&sort=asc&per_page=100",
-                since,
-            ),
-            want,
-        )
-    }
-
-    /// [`Self::first_issues`] for merge requests.
-    pub fn first_merge_requests(
-        &self,
-        since: Option<&str>,
-        want: usize,
-    ) -> Result<(Vec<GlItem>, bool)> {
-        self.first(
-            &with_since(
-                "merge_requests?state=all&order_by=created_at&sort=asc&per_page=100",
-                since,
-            ),
-            want,
-        )
-    }
-
-    fn first(&self, rest: &str, want: usize) -> Result<(Vec<GlItem>, bool)> {
-        let mut url = self.url(rest);
-        let mut out: Vec<GlItem> = Vec::new();
-        loop {
-            let Ok(r) = self.get(&url)? else {
-                return Err(self.denied_listing(rest));
-            };
-            let page: Vec<GlItem> = serde_json::from_slice(&r.body)
-                .with_context(|| format!("parsing the listing {rest}"))?;
-            out.extend(page);
-            if out.len() > want {
-                out.truncate(want);
-                return Ok((out, true));
-            }
-            match r.next {
-                Some(next) if next.starts_with(&format!("{}/", self.repo.base)) => {
-                    if out.len() == want {
-                        return Ok((out, true));
-                    }
-                    url = next;
-                }
-                _ => return Ok((out, false)),
-            }
-        }
+        Ok(self.required("releases?per_page=100", 0)?.0)
     }
 
     /// The iids of the merge requests whose head GitLab still has
@@ -896,13 +868,7 @@ fn git_cmd(args: &[&str], config: Option<(String, String)>) -> Command {
     let mut cmd = Command::new("git");
     cmd.args(args).env("GIT_TERMINAL_PROMPT", "0");
     if let Some((k, v)) = config {
-        let n: usize = std::env::var("GIT_CONFIG_COUNT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
-            .env(format!("GIT_CONFIG_KEY_{n}"), k)
-            .env(format!("GIT_CONFIG_VALUE_{n}"), v);
+        crate::github::append_git_config(&mut cmd, &k, &v);
     }
     cmd
 }

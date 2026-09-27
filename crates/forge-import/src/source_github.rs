@@ -17,6 +17,7 @@
 //! on the window being exact.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -27,9 +28,7 @@ use crate::github::{iso8601_to_unix, GhComment, GhIssue, GithubClient, GithubRep
 use crate::model::{
     self, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcReview, SrcTarget,
 };
-
-pub use crate::source::Classes;
-use crate::source::{Source, SourceMeta};
+use crate::source::{Classes, Source, SourceMeta};
 
 /// A GitHub repository as a [`Source`].
 pub struct GithubSource {
@@ -68,7 +67,7 @@ impl Source for GithubSource {
         collect(&self.gh, &self.repo, classes, since, limit)
     }
 
-    fn sync_mirror(&self, dir: &std::path::Path) -> Result<()> {
+    fn sync_mirror(&self, dir: &Path) -> Result<()> {
         self.gh.sync_mirror(dir)
     }
 
@@ -81,13 +80,8 @@ impl Source for GithubSource {
 fn labels(gh: &GithubClient) -> Result<Vec<SrcLabel>> {
     Ok(gh
         .labels()?
-        .into_iter()
-        .filter(|l| !l.name.trim().is_empty())
-        .map(|l| SrcLabel {
-            name: model::label_name(&l.name),
-            color: model::color(&l.color),
-            description: model::clip(l.description.as_deref().unwrap_or(""), 200, 400),
-        })
+        .iter()
+        .filter_map(|l| model::label(&l.name, &l.color, l.description.as_deref()))
         .collect())
 }
 
@@ -351,21 +345,8 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
             uris: vec![model::clip(&a.browser_download_url, 300, 300)],
             uri: None,
         })
-        .collect::<Vec<_>>();
-    SrcRelease {
-        tag_name: r.tag_name.clone(),
-        name: model::clip(r.name.as_deref().unwrap_or(&r.tag_name), 120, 480),
-        notes: model::clip(r.body.as_deref().unwrap_or(""), 5120, 5120),
-        assets: fit_assets(assets),
-    }
-}
-
-/// Keep as many assets as fit the release's 4096-byte `assets` field.
-pub(crate) fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
-    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
-        assets.pop();
-    }
-    assets
+        .collect();
+    model::release(&r.tag_name, r.name.as_deref(), r.body.as_deref(), assets)
 }
 
 #[cfg(test)]

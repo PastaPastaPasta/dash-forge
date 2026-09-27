@@ -35,7 +35,7 @@ use forge_core::collab::{CommentAnchor, ReleaseAsset};
 
 use crate::github::iso8601_to_unix;
 use crate::gitlab::{Denied, GitlabClient, GitlabRepoRef, GlItem, GlNote, GlRelease};
-use crate::model::{self, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcTarget};
+use crate::model::{self, SrcCollab, SrcComment, SrcPatch, SrcRelease, SrcTarget};
 use crate::source::{Classes, Source, SourceMeta};
 
 /// A GitLab project as a [`Source`].
@@ -49,11 +49,6 @@ impl GitlabSource {
         Self {
             gl: GitlabClient::new(repo),
         }
-    }
-
-    /// Read through a prepared client (tests).
-    pub fn with_client(gl: GitlabClient) -> Self {
-        Self { gl }
     }
 }
 
@@ -108,13 +103,8 @@ fn labels(gl: &GitlabClient, out: &mut SrcCollab) -> Result<()> {
         Ok(labels) => {
             out.labels = Some(
                 labels
-                    .into_iter()
-                    .filter(|l| !l.name.trim().is_empty())
-                    .map(|l| SrcLabel {
-                        name: model::label_name(&l.name),
-                        color: model::color(&l.color),
-                        description: model::clip(l.description.as_deref().unwrap_or(""), 200, 400),
-                    })
+                    .iter()
+                    .filter_map(|l| model::label(&l.name, &l.color, l.description.as_deref()))
                     .collect(),
             );
         }
@@ -134,7 +124,7 @@ pub fn collect(
     since: Option<&str>,
     limit: usize,
 ) -> Result<SrcCollab> {
-    let repo = gl.repo().clone();
+    let repo = gl.repo();
     let project = gl.project()?;
     // Keys use the canonical project path (GitLab's own case), so they never depend on how
     // the source was typed.
@@ -224,7 +214,7 @@ pub fn collect(
     if threads_denied {
         out.incomplete = true;
         out.warnings
-            .push(denied("the comments on issues and merge requests", &repo));
+            .push(denied("the comments on issues and merge requests", repo));
     }
     if skipped_confidential > 0 {
         out.warnings.push(format!(
@@ -253,11 +243,9 @@ fn items(
         if !on {
             continue;
         }
-        let (list, has_more) = match (kind, limit) {
-            (TargetKind::Issue, 0) => (gl.issues(since)?, false),
-            (TargetKind::Patch, 0) => (gl.merge_requests(since)?, false),
-            (TargetKind::Issue, n) => gl.first_issues(since, n)?,
-            (TargetKind::Patch, n) => gl.first_merge_requests(since, n)?,
+        let (list, has_more) = match kind {
+            TargetKind::Issue => gl.issues(since, limit)?,
+            TargetKind::Patch => gl.merge_requests(since, limit)?,
         };
         more |= has_more;
         all.extend(list.into_iter().map(|gl| Item { kind, gl }));
@@ -423,12 +411,12 @@ fn release(r: &GlRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
-    SrcRelease {
-        tag_name: r.tag_name.clone(),
-        name: model::clip(r.name.as_deref().unwrap_or(&r.tag_name), 120, 480),
-        notes: model::clip(r.description.as_deref().unwrap_or(""), 5120, 5120),
-        assets: crate::source_github::fit_assets(assets),
-    }
+    model::release(
+        &r.tag_name,
+        r.name.as_deref(),
+        r.description.as_deref(),
+        assets,
+    )
 }
 
 #[cfg(test)]

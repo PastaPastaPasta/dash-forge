@@ -245,6 +245,34 @@ pub fn label_name(s: &str) -> String {
     clip(s.trim(), 30, 60)
 }
 
+/// A label definition within the contract (`None` for a blank name).
+pub fn label(name: &str, color_hex: &str, description: Option<&str>) -> Option<SrcLabel> {
+    (!name.trim().is_empty()).then(|| SrcLabel {
+        name: label_name(name),
+        color: color(color_hex),
+        description: clip(description.unwrap_or(""), 200, 400),
+    })
+}
+
+/// A release within the contract: the title defaults to the tag, and only as many assets
+/// are kept as fit the release's 4096-byte `assets` field.
+pub fn release(
+    tag_name: &str,
+    name: Option<&str>,
+    notes: Option<&str>,
+    mut assets: Vec<ReleaseAsset>,
+) -> SrcRelease {
+    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
+        assets.pop();
+    }
+    SrcRelease {
+        tag_name: tag_name.to_string(),
+        name: clip(name.unwrap_or(tag_name), 120, 480),
+        notes: clip(notes.unwrap_or(""), 5120, 5120),
+        assets,
+    }
+}
+
 /// `YYYY-MM-DD` of unix seconds, for headers.
 pub fn date(secs: u64) -> String {
     crate::github::unix_to_iso8601(secs)[..10].to_string()
