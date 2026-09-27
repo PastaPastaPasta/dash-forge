@@ -65,7 +65,10 @@ const READ_AHEAD_BLOCKS = 64
 export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, maxBlocks = READ_AHEAD_BLOCKS): PackSource {
   const blocks = new Map<string, Promise<Uint8Array>>()
   const blockOf = (packRef: number, index: number, size: number, copy: number | undefined): Promise<Uint8Array> => {
-    const key = `${packRef}:${copy ?? ''}:${index}`
+    // A single-copy pack reads the same bytes whether or not a copy is named: one key, so the
+    // reader pinning copy 0 after its first verified object does not refetch the block.
+    const single = (inner.copyCount?.(packRef) ?? 1) === 1
+    const key = `${packRef}:${single ? 0 : copy ?? ''}:${index}`
     const hit = blocks.get(key)
     if (hit !== undefined) {
       blocks.delete(key)
@@ -105,8 +108,44 @@ export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, max
   }
 }
 
+/**
+ * An object this reader's packs do not hold, because some of the repo's packs could not be
+ * loaded (a partial in-browser clone). Distinct from "not in this repo": the object may well
+ * exist, in a pack that was unreachable.
+ */
+export class MissingObjectError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MissingObjectError'
+  }
+}
+
 /** What happened to one reconstructed object's hash check. */
 export type ObjectVerdict = 'verified' | 'unchecked' | 'failed'
+
+/** Verdicts passed on every {@link BATCH_VERDICTS} objects (and on flush), not one by one. */
+const BATCH_VERDICTS = 500
+
+class BatchedVerdicts {
+  private counts: Record<ObjectVerdict, number> = { verified: 0, unchecked: 0, failed: 0 }
+  private pending = 0
+
+  constructor(private readonly sink: (verdict: ObjectVerdict, count?: number) => void) {}
+
+  note(v: ObjectVerdict): void {
+    this.counts[v] += 1
+    // A failure is reported at once: the trust panel must never lag behind a bad object.
+    if (v === 'failed' || ++this.pending >= BATCH_VERDICTS) this.flush()
+  }
+
+  flush(): void {
+    for (const v of ['verified', 'unchecked', 'failed'] as const) {
+      if (this.counts[v] > 0) this.sink(v, this.counts[v])
+    }
+    this.counts = { verified: 0, unchecked: 0, failed: 0 }
+    this.pending = 0
+  }
+}
 
 export interface BrowseReaderOptions {
   /** Verify the reconstructed object hashes to the requested OID (default true). */
@@ -115,7 +154,7 @@ export interface BrowseReaderOptions {
    * Told the outcome of every fresh reconstruction (memo hits were reported when first
    * read). This is how the UI learns what was actually checked rather than assuming it.
    */
-  readonly onObject?: (verdict: ObjectVerdict) => void
+  readonly onObject?: (verdict: ObjectVerdict, count?: number) => void
   /**
    * The error for an OID the locator does not index. Defaults to `object not in locator`; a
    * reader built over an incomplete pack set supplies one that names what is missing.
@@ -178,21 +217,46 @@ export class BrowseReader {
     private readonly opts: BrowseReaderOptions = {},
   ) {}
 
-  private historyReader: BrowseReader | null = null
-
   /**
-   * A reader over the same locator that reads the packs through {@link readAheadSource}: for
-   * walks over many commits (merge-base search), which would otherwise pay one ranged read
-   * per commit. Kept for the reader's lifetime so repeated walks share its blocks.
+   * A new reader over the same locator that reads the packs through {@link readAheadSource}:
+   * for walks over many commits (merge-base search), which would otherwise pay one ranged read
+   * per commit. Each call has its own block cache (up to 16 MiB), freed with the walker, so
+   * callers take one per walk rather than keeping it with the session. Its verdicts reach
+   * `onObject` in batches ({@link BatchedVerdicts}): one per object would re-render every
+   * listener tens of thousands of times in a long walk.
    */
-  forHistoryWalk(): BrowseReader {
-    this.historyReader ??= new BrowseReader(this.locator, readAheadSource(this.packs), this.opts)
-    return this.historyReader
+  forHistoryWalk(): BrowseReader & { flush(): void } {
+    const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
+    const walker = new BrowseReader(this.locator, readAheadSource(this.packs), {
+      ...this.opts,
+      ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}),
+    })
+    return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
 
   /** OIDs starting with a hex `prefix` ({@link ObjectLocator.findByPrefix}). */
   findByPrefix(prefix: string, limit?: number): string[] {
     return this.locator.findByPrefix(prefix, limit)
+  }
+
+  /** Whether some of the repo's packs are missing from this reader (a partial clone). */
+  get incomplete(): boolean {
+    return this.opts.missingObject !== undefined
+  }
+
+  /**
+   * An object's type from its pack entry header alone (a few bytes), without reconstructing
+   * it; null for a delta entry, whose type is its base's. git does not delta-encode commits in
+   * practice, so a delta is "not a commit" for short-id resolution.
+   */
+  async objectType(oidHex: string): Promise<GitObject['type'] | null> {
+    const cached = this.objectsByOid.get(oidHex.toLowerCase())
+    if (cached !== undefined) return cached.type
+    const entry = this.locate(oidHex)
+    if (entry === null) return null
+    const head = await this.packs.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
+    const { type } = parseObjHeader(head, 0)
+    return type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA ? null : objTypeFromCode(type)
   }
 
   /** Look up a raw locator entry by OID hex (or null if absent). */

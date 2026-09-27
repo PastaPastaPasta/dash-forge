@@ -20,6 +20,13 @@ import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
+const COMMIT_ID_TITLES: Record<CommitIdError['kind'], string> = {
+  invalid: 'Not a commit id',
+  'not-found': 'Commit not found',
+  'not-a-commit': 'Not a commit',
+  ambiguous: 'Ambiguous commit id',
+}
+
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
@@ -37,7 +44,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
     return (
       <EmptyState
         icon={GitCommit}
-        title={cause.kind === 'ambiguous' ? 'Ambiguous commit id' : cause.kind === 'invalid' ? 'Not a commit id' : 'Commit not found'}
+        title={COMMIT_ID_TITLES[cause.kind]}
         body={cause.message}
         action={
           cause.candidates.length > 0 ? (

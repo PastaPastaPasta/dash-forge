@@ -99,14 +99,20 @@ export function DiffView({
   const [batcher] = useState(() =>
     createBatcher<string, FilePatch>(PATCH_FLUSH_MS, (batch) => setPatches((prev) => new Map([...prev, ...batch]))),
   )
-  useEffect(() => () => batcher.cancel(), [batcher])
+  // Flush rather than drop on cleanup: a Fast Refresh remount keeps `requested`, so a dropped
+  // patch would never be asked for again.
+  useEffect(() => () => batcher.flush(), [batcher])
 
   useEffect(() => {
     const key = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
     const todo = changes.slice(0, shown).filter((c) => !requested.current.has(key(c.path)))
     for (const c of todo) requested.current.add(key(c.path))
     void mapPooled(todo, PATCH_CONCURRENCY, async (change) => {
-      const patch = await loadFilePatch(sides, change, { ignoreWhitespace })
+      // loadFilePatch turns read failures into placeholders; anything else must still settle
+      // the file, or it would sit on "Reading file…" with its key already requested.
+      const patch = await loadFilePatch(sides, change, { ignoreWhitespace }).catch(
+        (e: unknown): FilePatch => ({ kind: 'placeholder', change, reason: 'unreadable', note: e instanceof Error ? e.message : String(e) }),
+      )
       batcher.add(key(change.path), patch)
     })
   }, [changes, shown, sides, ignoreWhitespace, batcher])

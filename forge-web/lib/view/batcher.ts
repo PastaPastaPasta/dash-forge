@@ -12,10 +12,8 @@
 export interface Batcher<K, V> {
   /** Queue `value` under `key`; it is committed within `delayMs`. */
   add(key: K, value: V): void
-  /** Commit whatever is queued now. */
+  /** Commit whatever is queued now (also on unmount). */
   flush(): void
-  /** Drop the pending timer (unmount). A later `add` schedules a new one. */
-  cancel(): void
 }
 
 export function createBatcher<K, V>(delayMs: number, commit: (batch: ReadonlyMap<K, V>) => void): Batcher<K, V> {
@@ -35,9 +33,5 @@ export function createBatcher<K, V>(delayMs: number, commit: (batch: ReadonlyMap
       timer ??= setTimeout(flush, delayMs)
     },
     flush,
-    cancel() {
-      if (timer !== null) clearTimeout(timer)
-      timer = null
-    },
   }
 }

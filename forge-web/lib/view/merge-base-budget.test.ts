@@ -8,11 +8,12 @@
 import { zlibSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 
-import { BrowseReader, ObjectLocator, gitOidHex, type PackSource } from '../browse'
+import { BrowseReader, ObjectLocator, gitOidHex, type ObjectVerdict, type PackSource } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { objHeader, packFrame } from '../browse/pack-fixtures'
 import { PACK_TYPE } from '../browse/pack'
 import { findMergeBase, loadPullComparison, MergeBaseCancelledError } from './pull-diff'
+import { loadCommitChanges } from './commit-log'
 
 const enc = new TextEncoder()
 const TREE = gitOidHex('tree', new Uint8Array(0))
@@ -29,7 +30,12 @@ interface Built {
  * `baseCommits` on the base branch after the fork point, `headCommits` on the PR branch, and
  * a shared history of `shared` commits before it. Commits carry a realistic ~200-byte message.
  */
-async function build(shared: number, baseCommits: number, headCommits: number): Promise<Built> {
+async function build(
+  shared: number,
+  baseCommits: number,
+  headCommits: number,
+  onObject?: (verdict: ObjectVerdict, count?: number) => void,
+): Promise<Built> {
   const objects: { oid: string; bytes: Uint8Array }[] = []
   let when = 1_600_000_000
   const commit = (parents: readonly string[], msg: string): string => {
@@ -62,7 +68,7 @@ async function build(shared: number, baseCommits: number, headCommits: number): 
     },
     sizeOf: inner.sizeOf,
   }
-  return { reader: new BrowseReader(locator, counted), fetches: () => count, fork, baseTip: base, head }
+  return { reader: new BrowseReader(locator, counted, onObject ? { onObject } : {}), fetches: () => count, fork, baseTip: base, head }
 }
 
 describe('merge-base walk over a long history (D-040)', () => {
@@ -118,5 +124,26 @@ describe('merge-base walk over a long history (D-040)', () => {
     )
     expect(result.searchStopped).toBe(true)
     expect(result.comparisonNote).toMatch(/was stopped after .* commits.*first parent/s)
+  })
+
+  it('reports the walk\'s hash checks in a few batches, not one per commit', async () => {
+    const calls: [ObjectVerdict, number | undefined][] = []
+    const b = await build(50, 2500, 3, (v, n) => calls.push([v, n]))
+    const result = await loadPullComparison(
+      { base: b.reader, head: b.reader },
+      { baseTipOid: b.baseTip, baseOidAtOpen: b.baseTip, headOid: b.head, merged: false, imported: false },
+    )
+    expect(result.comparedBaseOid).toBe(b.fork)
+    const verified = calls.filter(([v]) => v === 'verified').reduce((n, [, c]) => n + (c ?? 1), 0)
+    expect(verified).toBeGreaterThan(2500)
+    expect(calls.length).toBeLessThan(20)
+  })
+
+  it('opens a commit by its 7-character id through a real BrowseReader (D-057)', async () => {
+    const b = await build(5, 5, 2)
+    const changes = await loadCommitChanges(b.reader, b.head.slice(0, 7))
+    expect(changes.oid).toBe(b.head)
+    // Resolution reads entry headers only: a handful of small ranges, not whole objects.
+    expect(b.fetches()).toBeLessThan(10)
   })
 })

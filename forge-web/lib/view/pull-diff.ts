@@ -53,9 +53,21 @@ export interface PullComparison extends TreeDiff {
   readonly searchStopped?: true
 }
 
-/** `reader`'s read-ahead view for walks over many commits, when it has one. */
-export function historyReader(reader: ObjectReader): ObjectReader {
-  return reader.forHistoryWalk?.() ?? reader
+/**
+ * A reader for one walk over many commits: each side's read-ahead view where it has one,
+ * preferring `primary` as {@link preferring} does. `done` frees nothing by itself (the walker
+ * is dropped with the caller's reference) but passes on the walk's batched verdicts.
+ */
+export function historyWalker(primary: ObjectReader, fallback: ObjectReader): { reader: ObjectReader; done: () => void } {
+  const a = primary.forHistoryWalk?.()
+  const b = primary === fallback ? a : fallback.forHistoryWalk?.()
+  return {
+    reader: preferring(a ?? primary, b ?? fallback),
+    done: () => {
+      a?.flush()
+      if (b !== a) b?.flush()
+    },
+  }
 }
 
 /** Read from `primary`, falling back to `fallback` when it does not hold the object. */
@@ -103,8 +115,6 @@ export async function loadPullComparison(
   search: MergeBaseOptions = {},
 ): Promise<PullComparison> {
   const sides: DiffSides = { base: preferring(raw.base, raw.head), head: preferring(raw.head, raw.base) }
-  // The merge-base walk reads commits only, often thousands of them, through read-ahead.
-  const walker = preferring(historyReader(raw.head), historyReader(raw.base))
   const { headOid } = input
 
   let headCommit
@@ -128,31 +138,41 @@ export async function loadPullComparison(
   )
   const failed: string[] = []
   let cancelled: MergeBaseCancelledError | null = null
-  for (const { oid, which } of candidates) {
-    let mergeBase: string | null
-    try {
-      mergeBase = await findMergeBase(walker, oid, headOid, search)
-    } catch (e) {
-      if (e instanceof MergeBaseCancelledError) {
-        cancelled = e
-        failed.push(`${which}: ${e.message}`)
+  // The merge-base walk reads commits only, often thousands of them, through read-ahead. The
+  // walker (and its block cache) lives for this comparison only.
+  const walk = historyWalker(raw.head, raw.base)
+  let found: { oid: string; which: Baseline; mergeBase: string } | null = null
+  try {
+    for (const { oid, which } of candidates) {
+      let mergeBase: string | null
+      try {
+        mergeBase = await findMergeBase(walk.reader, oid, headOid, search)
+      } catch (e) {
+        if (e instanceof MergeBaseCancelledError) {
+          cancelled = e
+          failed.push(`${which}: ${e.message}`)
+          break
+        }
+        failed.push(
+          e instanceof MergeBaseSearchLimitError
+            ? `${which}: ${e.message}`
+            : `${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`,
+        )
+        continue
+      }
+      if (mergeBase === null) failed.push(`${which}: no common ancestor`)
+      else if (mergeBase === headOid) failed.push(`${which}: it already contains this head`)
+      else {
+        found = { oid, which, mergeBase }
         break
       }
-      failed.push(
-        e instanceof MergeBaseSearchLimitError
-          ? `${which}: ${e.message}`
-          : `${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`,
-      )
-      continue
     }
-    if (mergeBase === null) {
-      failed.push(`${which}: no common ancestor`)
-      continue
-    }
-    if (mergeBase === headOid) {
-      failed.push(`${which}: it already contains this head`)
-      continue
-    }
+  } finally {
+    walk.done()
+  }
+
+  if (found !== null) {
+    const { oid, which, mergeBase } = found
     const why = failed.length > 0 ? ` (${failed.join('; ')})` : ''
     const note =
       which === 'tip when opened'
@@ -163,6 +183,7 @@ export async function loadPullComparison(
     return compare(mergeBase, note)
   }
 
+  // A stopped search is the user's choice, not missing history: say so.
   if (input.imported) throw cancelled ?? new Error(IMPORTED_BASE_ERROR)
   const why =
     failed.length > 0

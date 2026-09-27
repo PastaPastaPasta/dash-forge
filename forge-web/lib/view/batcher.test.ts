@@ -27,16 +27,15 @@ describe('createBatcher', () => {
     expect([...committed.keys()]).toEqual(['first', 'late'])
   })
 
-  it('reschedules after cancel', () => {
+  it('commits what is queued at once on flush, and nothing twice', () => {
     const commits: string[][] = []
     const b = createBatcher<string, number>(50, (batch) => commits.push([...batch.keys()]))
     b.add('a', 1)
-    b.cancel()
+    b.flush()
+    expect(commits).toEqual([['a']])
     vi.advanceTimersByTime(100)
-    expect(commits).toEqual([])
-    b.add('b', 2)
-    vi.advanceTimersByTime(50)
-    expect(commits).toEqual([['a', 'b']])
+    b.flush()
+    expect(commits).toEqual([['a']])
   })
 
   it('loses no load when pooled loads finish across several flush windows', async () => {

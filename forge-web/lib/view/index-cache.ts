@@ -24,26 +24,43 @@ export interface ArtifactStore {
 
 const DB_NAME = 'dash-forge-index'
 const DB_VERSION = 1
-const STORE = 'artifacts'
-/** Stored artifacts beyond this total are evicted, least recently stored first. */
+/** Artifact bytes, keyed by `scope:packHash`. */
+const BYTES = 'artifacts'
+/** `{ key, size, at }` per artifact: what eviction reads, so it never loads the bytes. */
+const META = 'meta'
+/** Stored artifacts beyond this total are evicted, least recently used first. */
 export const INDEX_CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 
-interface Record_ {
+interface Meta {
   readonly key: string
-  readonly bytes: ArrayBuffer
   readonly size: number
+  /** Last stored or read (ms). */
   readonly at: number
 }
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    let settled = false
+    const req = indexedDB.open(name, DB_VERSION)
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE, { keyPath: 'key' })
+      for (const name of [BYTES, META]) {
+        if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name, { keyPath: 'key' })
+      }
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error ?? new Error('could not open the index cache'))
-    req.onblocked = () => reject(new Error('index cache upgrade blocked'))
+    req.onsuccess = () => {
+      // Opened after the caller gave up on a blocked upgrade: nobody will close it otherwise.
+      if (settled) req.result.close()
+      else resolve(req.result)
+      settled = true
+    }
+    req.onerror = () => {
+      settled = true
+      reject(req.error ?? new Error('could not open the index cache'))
+    }
+    req.onblocked = () => {
+      settled = true
+      reject(new Error('index cache upgrade blocked'))
+    }
   })
 }
 
@@ -55,13 +72,13 @@ function done(tx: IDBTransaction): Promise<void> {
   })
 }
 
-/** The browser's IndexedDB-backed store, or null outside a browser. */
-function idbStore(): ArtifactStore | null {
+/** The IndexedDB-backed store, or null where there is no IndexedDB. */
+export function idbArtifactStore(budget = INDEX_CACHE_BUDGET_BYTES, name = DB_NAME): ArtifactStore | null {
   if (typeof indexedDB === 'undefined') return null
   const withDb = async <T>(op: (db: IDBDatabase) => Promise<T>): Promise<T | undefined> => {
     let db: IDBDatabase | null = null
     try {
-      db = await openDb()
+      db = await openDb(name)
       return await op(db)
     } catch {
       return undefined // storage unavailable or full: the cache is best-effort
@@ -72,25 +89,35 @@ function idbStore(): ArtifactStore | null {
   return {
     get: (key) =>
       withDb(async (db) => {
-        const tx = db.transaction(STORE, 'readonly')
-        const req = tx.objectStore(STORE).get(key)
+        const tx = db.transaction([BYTES, META], 'readwrite')
+        const req = tx.objectStore(BYTES).get(key)
+        req.onsuccess = () => {
+          const rec = req.result as { bytes?: unknown } | undefined
+          // Touch: eviction is least recently USED, so a repo visited daily stays.
+          if (rec?.bytes instanceof ArrayBuffer) tx.objectStore(META).put({ key, size: rec.bytes.byteLength, at: Date.now() } satisfies Meta)
+        }
         await done(tx)
-        const rec = req.result as Record_ | undefined
+        const rec = req.result as { bytes?: unknown } | undefined
         return rec?.bytes instanceof ArrayBuffer ? new Uint8Array(rec.bytes) : undefined
       }),
     put: async (key, bytes) => {
       await withDb(async (db) => {
-        const tx = db.transaction(STORE, 'readwrite')
-        const store = tx.objectStore(STORE)
-        store.put({ key, bytes: bytes.slice().buffer, size: bytes.length, at: Date.now() } satisfies Record_)
-        // Evict the oldest entries past the budget (a handful of rows; sizes are stored).
-        const all = store.getAll()
+        const tx = db.transaction([BYTES, META], 'readwrite')
+        const store = tx.objectStore(BYTES)
+        const meta = tx.objectStore(META)
+        store.put({ key, bytes: bytes.slice().buffer })
+        meta.put({ key, size: bytes.length, at: Date.now() } satisfies Meta)
+        // Evict the least recently used past the budget, reading only the small meta rows.
+        const all = meta.getAll()
         all.onsuccess = () => {
-          const rows = (all.result as Record_[]).sort((a, b) => b.at - a.at)
+          const rows = (all.result as Meta[]).sort((a, b) => b.at - a.at)
           let total = 0
           for (const r of rows) {
             total += r.size
-            if (total > INDEX_CACHE_BUDGET_BYTES && r.key !== key) store.delete(r.key)
+            if (total > budget && r.key !== key) {
+              store.delete(r.key)
+              meta.delete(r.key)
+            }
           }
         }
         await done(tx)
@@ -98,12 +125,26 @@ function idbStore(): ArtifactStore | null {
     },
     delete: async (key) => {
       await withDb(async (db) => {
-        const tx = db.transaction(STORE, 'readwrite')
-        tx.objectStore(STORE).delete(key)
+        const tx = db.transaction([BYTES, META], 'readwrite')
+        tx.objectStore(BYTES).delete(key)
+        tx.objectStore(META).delete(key)
         await done(tx)
       })
     },
   }
+}
+
+/** SHA-256 hex: WebCrypto where the page has it (several times faster on a 14 MB index). */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (subtle !== undefined) {
+    try {
+      return bytesToHex(new Uint8Array(await subtle.digest('SHA-256', bytes as BufferSource)))
+    } catch {
+      /* fall through to the JS implementation */
+    }
+  }
+  return bytesToHex(sha256(bytes))
 }
 
 let defaultStore: ArtifactStore | null | undefined
@@ -126,7 +167,7 @@ export function memoryArtifactStore(): ArtifactStore & { readonly entries: Map<s
 
 /** The artifact store for this page (IndexedDB in a browser; none elsewhere). */
 export function indexArtifactStore(): ArtifactStore | null {
-  if (defaultStore === undefined) defaultStore = idbStore()
+  if (defaultStore === undefined) defaultStore = idbArtifactStore()
   return defaultStore
 }
 
@@ -147,10 +188,10 @@ export async function loadIndexArtifact(
   const key = `${scope}:${want}`
   const hit = await store.get(key).catch(() => undefined)
   if (hit !== undefined) {
-    if (bytesToHex(sha256(hit)) === want) return hit
+    if ((await sha256Hex(hit)) === want) return hit
     await store.delete(key).catch(() => undefined)
   }
   const bytes = await load()
-  if (bytesToHex(sha256(bytes)) === want) void store.put(key, bytes).catch(() => undefined)
+  if ((await sha256Hex(bytes)) === want) void store.put(key, bytes).catch(() => undefined)
   return bytes
 }

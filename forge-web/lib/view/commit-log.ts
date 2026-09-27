@@ -5,7 +5,7 @@
  * can't runaway-fetch. Line-level patches over the resulting change set live in `file-diff.ts`.
  */
 
-import { MODE_GITLINK, MODE_TREE, type BrowseReader } from '../browse'
+import { MissingObjectError, MODE_GITLINK, MODE_TREE, type BrowseReader, type GitObject } from '../browse'
 import { commitSubject, parseCommit, type CommitObject, type TreeEntry } from './git-objects'
 import { mapPooled } from './pool'
 import { readCommit, readTree, type ObjectReader } from './tree-nav'
@@ -169,7 +169,7 @@ export interface CommitChanges extends TreeDiff {
 /** Why a commit id in a URL names no single commit. */
 export class CommitIdError extends Error {
   constructor(
-    readonly kind: 'invalid' | 'not-found' | 'ambiguous',
+    readonly kind: 'invalid' | 'not-found' | 'not-a-commit' | 'ambiguous',
     readonly input: string,
     /** For `ambiguous`: some of the commits the prefix matches. */
     readonly candidates: readonly string[] = [],
@@ -179,7 +179,9 @@ export class CommitIdError extends Error {
         ? `"${input}" is not a commit id: use 4 to 40 hexadecimal characters`
         : kind === 'not-found'
           ? `No commit ${input} in this repo`
-          : `${input} is ambiguous: ${candidates.length >= AMBIGUOUS_SHOWN ? 'several' : candidates.length} objects start with it`,
+          : kind === 'not-a-commit'
+            ? `${input} names a file or directory in this repo, not a commit`
+            : `${input} is ambiguous: ${candidates.length > 1 && candidates.length < AMBIGUOUS_SHOWN ? candidates.length : 'several'} objects start with it; use more characters`,
     )
     this.name = 'CommitIdError'
   }
@@ -190,7 +192,14 @@ const AMBIGUOUS_SHOWN = 5
 /** The slice of a reader short-id resolution needs (a {@link BrowseReader}). */
 export interface PrefixReader extends ObjectReader {
   findByPrefix?(prefix: string, limit?: number): string[]
+  /** An object's type from its entry header, or null for a delta entry. */
+  objectType?(oidHex: string): Promise<GitObject['type'] | null>
+  /** Some of the repo's packs are missing (a partial clone): absent ids may still exist. */
+  readonly incomplete?: boolean
 }
+
+/** Short-id candidates examined; a prefix matching more is reported ambiguous. */
+const PREFIX_SCAN = 16
 
 /**
  * Resolve a commit id as git does: a full 40-hex oid as is, or an unambiguous prefix of at
@@ -202,16 +211,35 @@ export async function resolveCommitOid(reader: PrefixReader, input: string): Pro
   const id = input.trim().toLowerCase()
   if (!/^[0-9a-f]{4,40}$/.test(id)) throw new CommitIdError('invalid', input)
   if (id.length === 40) return id
-  const matches = reader.findByPrefix?.(id, 16) ?? []
-  if (matches.length === 0) throw new CommitIdError('not-found', input)
-  if (matches.length === 1) return matches[0] as string
+  const matches = reader.findByPrefix?.(id, PREFIX_SCAN) ?? []
+  if (matches.length === 0) throw notFound(reader, input)
+  // Only the entry header is read per candidate: a short id matching a 40 MB blob must not
+  // download it just to learn it is not a commit.
+  const typeOf = (oid: string): Promise<GitObject['type'] | null> =>
+    reader.objectType ? reader.objectType(oid) : reader.readObject(oid).then((o) => o.type)
   const commits: string[] = []
+  let unreadable: unknown = null
   for (const oid of matches) {
-    const obj = await reader.readObject(oid).catch(() => null)
-    if (obj?.type === 'commit') commits.push(oid)
+    try {
+      if ((await typeOf(oid)) === 'commit') commits.push(oid)
+    } catch (e) {
+      unreadable = e
+    }
   }
-  if (commits.length === 1) return commits[0] as string
-  throw new CommitIdError(commits.length === 0 ? 'not-found' : 'ambiguous', input, (commits.length > 0 ? commits : matches).slice(0, AMBIGUOUS_SHOWN))
+  if (commits.length === 1 && matches.length < PREFIX_SCAN) return commits[0] as string
+  if (commits.length > 1 || matches.length >= PREFIX_SCAN) {
+    throw new CommitIdError('ambiguous', input, commits.slice(0, AMBIGUOUS_SHOWN))
+  }
+  // No match is a commit. If some could not even be read, that is the real answer.
+  if (unreadable !== null) throw unreadable
+  throw new CommitIdError('not-a-commit', input)
+}
+
+/** "No such commit", unless packs are missing, in which case it may be in one of those. */
+function notFound(reader: PrefixReader, input: string): Error {
+  return reader.incomplete
+    ? new MissingObjectError(`No commit ${input} in the packs this browser could load; some of this repo's packs could not be fetched, and it may be in one of them.`)
+    : new CommitIdError('not-found', input)
 }
 
 export async function loadCommitChanges(reader: PrefixReader, id: string): Promise<CommitChanges> {
@@ -220,8 +248,11 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
   try {
     commit = await readCommit(reader, oid)
   } catch (e) {
-    // A well-formed full id the repo does not hold: say so, not "object not in locator".
-    if (reader.locate?.(oid) === null) throw new CommitIdError('not-found', id)
+    // A well-formed full id the repo does not hold: say so, not "object not in locator". A
+    // partial clone's own error already names the packs it could not load; keep it.
+    if (e instanceof MissingObjectError) throw e
+    if (reader.locate?.(oid) === null) throw notFound(reader, id)
+    if (e instanceof Error && / is not a commit$/.test(e.message)) throw new CommitIdError('not-a-commit', id)
     throw e
   }
   const parent = commit.parents[0]

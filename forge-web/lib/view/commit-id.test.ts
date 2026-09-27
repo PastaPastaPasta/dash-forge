@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { ObjectLocator, type GitObject } from '../browse'
+import { MissingObjectError, ObjectLocator, type GitObject } from '../browse'
 import { serializeLocator } from '../browse/indexer'
 import { CommitIdError, resolveCommitOid, type PrefixReader } from './commit-log'
 
@@ -81,5 +81,52 @@ describe('resolveCommitOid', () => {
       expect((e as CommitIdError).kind).toBe(kind)
       expect((e as Error).message).not.toMatch(/even length/)
     }
+  })
+})
+
+describe('resolveCommitOid edge cases', () => {
+  const base = reader()
+
+  it('does not call a commit missing from a partial clone "not found"', async () => {
+    const partial: PrefixReader = { ...base, incomplete: true }
+    const e = await resolveCommitOid(partial, 'ffff00').catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(MissingObjectError)
+    expect((e as Error).message).toMatch(/could not be fetched/)
+  })
+
+  it('says a single non-commit match is not a commit, and offers no links to it', async () => {
+    const e = await resolveCommitOid(base, 'ab12345f').catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(CommitIdError)
+    expect((e as CommitIdError).kind).toBe('not-a-commit')
+    expect((e as CommitIdError).candidates).toEqual([])
+  })
+
+  it('reads only entry headers to learn candidate types', async () => {
+    const read: string[] = []
+    const r: PrefixReader = {
+      ...base,
+      readObject: async (oid) => {
+        read.push(oid)
+        return base.readObject(oid)
+      },
+      objectType: async (oid) => (oid === BLOB_B ? 'blob' : 'commit'),
+    }
+    await expect(resolveCommitOid(r, 'ab12345')).resolves.toBe(COMMIT_B)
+    expect(read).toEqual([])
+  })
+
+  it('reports a prefix matching 16 or more objects as ambiguous, not a guess', async () => {
+    const many: PrefixReader = {
+      ...base,
+      findByPrefix: (_p, limit = 2) => Array.from({ length: limit }, (_, i) => `abcd${i.toString(16).padStart(36, '0')}`),
+      objectType: async (oid) => (oid.endsWith('f') ? 'commit' : 'blob'),
+    }
+    const e = await resolveCommitOid(many, 'abcd').catch((x: unknown) => x)
+    expect((e as CommitIdError).kind).toBe('ambiguous')
+  })
+
+  it('surfaces a read failure rather than calling the id not found', async () => {
+    const broken: PrefixReader = { ...base, objectType: async () => Promise.reject(new Error('storage down')) }
+    await expect(resolveCommitOid(broken, 'ab12345')).rejects.toThrow('storage down')
   })
 })
