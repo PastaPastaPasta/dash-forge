@@ -106,15 +106,49 @@ export function parseOfsBase(buf: Uint8Array, pos: number): [number, number] {
   return [ofs, p]
 }
 
-/** Inflate one zlib stream at `buf[from..]`, asserting it yields exactly `expected` bytes. */
-export function inflateZlib(buf: Uint8Array, from: number, expected: number): Uint8Array {
-  const out = unzlibSync(buf.subarray(from))
+/** An object (or a delta-chain step) is larger than the caller's `maxBytes`: it was not inflated. */
+export class ObjectTooLargeError extends Error {
+  constructor(
+    readonly size: number,
+    readonly maxBytes: number,
+  ) {
+    super(`object is ${size} bytes, over the ${maxBytes}-byte limit`)
+    this.name = 'ObjectTooLargeError'
+  }
+}
+
+/**
+ * Streams whose declared size is at most this inflate into a buffer of exactly that size
+ * (plus one byte to notice an overrun), so a stream that inflates to far more than its header
+ * says cannot grow memory past it. Larger ones inflate as before (their header is checked after).
+ */
+const FIXED_INFLATE_MAX = 64 * 1024 * 1024
+
+/**
+ * Inflate one zlib stream at `buf[from..]`, asserting it yields exactly `expected` bytes (the
+ * size its pack header declares). A declared size over `maxBytes` is refused before inflating.
+ */
+export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
+  if (expected > maxBytes) throw new ObjectTooLargeError(expected, maxBytes)
+  const out = unzlibSync(buf.subarray(from), expected <= FIXED_INFLATE_MAX ? { out: new Uint8Array(expected + 1) } : undefined)
   if (out.length !== expected) throw new Error('inflate size mismatch')
   return out
 }
 
-/** Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`. */
-export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
+/**
+ * The most bytes a delta producing at most `maxBytes` can hold: all-insert deltas spend one
+ * opcode per 127 bytes, plus the two size varints.
+ */
+export function deltaMaxBytes(maxBytes: number): number {
+  return maxBytes === Infinity ? Infinity : maxBytes + Math.ceil(maxBytes / 127) + 32
+}
+
+/**
+ * Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`. A `dst_size` over
+ * `maxBytes` is refused before anything is allocated: a few KiB of copy opcodes can ask for
+ * gigabytes.
+ */
+export function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes = Infinity): Uint8Array {
   let pos = 0
   const readSize = (): number => {
     let r = 0
@@ -131,6 +165,7 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
   }
   readSize() // src size (unused)
   const dst = readSize()
+  if (dst > maxBytes) throw new ObjectTooLargeError(dst, maxBytes)
   const out = new Uint8Array(dst)
   let outPos = 0
   while (pos < delta.length) {
@@ -187,11 +222,12 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
 export function reconstructFromSpan(
   loc: { offset: number; length: number; deltaChainSpan: number },
   spanSlice: Uint8Array,
+  maxBytes = Infinity,
 ): GitObject {
   const end = loc.offset + loc.length
   const baseAddr = end - loc.deltaChainSpan
   if (spanSlice.length !== loc.deltaChainSpan) throw new Error('span slice length mismatch')
-  return decodeAt(spanSlice, baseAddr, loc.offset, null)
+  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes)
 }
 
 /** A resolver for REF_DELTA bases / per-base fetches, keyed by OID (hex). */
@@ -207,6 +243,7 @@ function decodeAt(
   baseAddr: number,
   absOff: number,
   refResolver: ((oidHex: string) => GitObject) | null,
+  maxBytes: number,
 ): GitObject {
   const pos = absOff - baseAddr
   const h = parseObjHeader(buf, pos)
@@ -215,15 +252,15 @@ function decodeAt(
     case T_TREE:
     case T_BLOB:
     case T_TAG: {
-      const data = inflateZlib(buf, h.after, h.size)
+      const data = inflateZlib(buf, h.after, h.size, maxBytes)
       return { type: typeFromCode(h.type), bytes: data }
     }
     case T_OFS_DELTA: {
       const [rel, dpos] = parseOfsBase(buf, h.after)
       const baseAbs = absOff - rel
-      const base = decodeAt(buf, baseAddr, baseAbs, refResolver)
-      const delta = inflateZlib(buf, dpos, h.size)
-      return { type: base.type, bytes: applyDelta(base.bytes, delta) }
+      const base = decodeAt(buf, baseAddr, baseAbs, refResolver, maxBytes)
+      const delta = inflateZlib(buf, dpos, h.size, deltaMaxBytes(maxBytes))
+      return { type: base.type, bytes: applyDelta(base.bytes, delta, maxBytes) }
     }
     case T_REF_DELTA: {
       if (refResolver === null) {
@@ -231,8 +268,8 @@ function decodeAt(
       }
       const oid = bytesToHex(buf.subarray(h.after, h.after + 20))
       const base = refResolver(oid)
-      const delta = inflateZlib(buf, h.after + 20, h.size)
-      return { type: base.type, bytes: applyDelta(base.bytes, delta) }
+      const delta = inflateZlib(buf, h.after + 20, h.size, deltaMaxBytes(maxBytes))
+      return { type: base.type, bytes: applyDelta(base.bytes, delta, maxBytes) }
     }
     default:
       throw new Error(`unknown pack object type ${h.type}`)

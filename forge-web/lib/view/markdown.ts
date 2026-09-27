@@ -22,6 +22,7 @@
  */
 
 import {
+  COMMENT_START,
   decodeEntities,
   DROP_WITH_CONTENTS,
   htmlBlockStart,
@@ -50,6 +51,8 @@ export type Inline =
   | { readonly t: 'br' }
   /** An allowlisted inline HTML element kept as itself. */
   | { readonly t: 'tag'; readonly tag: 'kbd' | 'sub' | 'sup'; readonly c: readonly Inline[] }
+  /** `<a name="x">` / `<a id="x">`: an in-page anchor target (the renderer prefixes `user-content-`). */
+  | { readonly t: 'anchor'; readonly id: string; readonly c: readonly Inline[] }
 
 export type Block =
   | { readonly t: 'heading'; readonly level: number; readonly c: readonly Inline[] }
@@ -81,6 +84,8 @@ export type Block =
       readonly href?: string
       /** `details` only: starts expanded. */
       readonly open?: boolean
+      /** The element's `id` (or an `<a>`'s `name`): an in-page anchor target. */
+      readonly id?: string
       readonly c: readonly Block[]
     }
 
@@ -127,15 +132,23 @@ export function splitRefs(text: string): RefPiece[] {
  * Restrict link/image hrefs to safe schemes, same-site paths and relative paths. Protocol-
  * relative forms (`//host/x`, and `/\host/x` or `\\host`, which browsers read the same way)
  * are refused: they point off-site, so an image written that way is a tracking pixel that
- * logs every viewer's IP. ASCII tab/CR/LF are dropped first, as the URL parser drops them
- * (`/<TAB>/host` is `//host`). Any other scheme (`javascript:`, `data:`) is refused.
+ * logs every viewer's IP. The URL parser's own clean-up runs first: ASCII tab/CR/LF are
+ * dropped anywhere (`/<TAB>/host` is `//host`) and C0 controls and spaces are trimmed from
+ * both ends (`\u0001javascript:` is `javascript:`); any other control character left makes the
+ * href unsafe. Any other scheme (`javascript:`, `data:`) is refused.
  *
  * A relative path (`docs/a.md`, `./logo.png`) is kept: the renderer resolves it against the
  * repo the Markdown came from ({@link isRelativeHref}), or drops it where there is none.
  */
 export function safeHref(href: string): string {
-  const h = href.replace(/[\t\n\r]/g, '').trim()
-  if (h === '' || /^[/\\][/\\]/.test(h)) return '#'
+  const stripped = href.replace(/[\t\n\r]/g, '')
+  // Index loops, not `/^[\0- ]+|[\0- ]+$/`: that trim is quadratic on a long inner space run.
+  let a = 0
+  let b = stripped.length
+  while (a < b && stripped.charCodeAt(a) <= 0x20) a += 1
+  while (b > a && stripped.charCodeAt(b - 1) <= 0x20) b -= 1
+  const h = stripped.slice(a, b)
+  if (h === '' || /[\u0000-\u001f\u007f]/.test(h) || /^[/\\][/\\]/.test(h)) return '#'
   if (/^(https?:|mailto:|dash:|ipfs:|#|\/)/i.test(h)) return h
   if (/^[a-z][a-z0-9+.-]*:/i.test(h) || h.includes('\\')) return '#'
   return h
@@ -165,7 +178,8 @@ let nodesLeft = MARKDOWN_MAX_NODES
 /**
  * `src.indexOf(ch, from)` for a scan whose `from` never decreases: the last answer is reused
  * until the scan passes it, so a whole scan costs O(n) in total rather than O(n) per query.
- * This is what keeps unclosed delimiters (`[[[[…`, `![![…`, `[a](b[a](b…`) linear.
+ * Only for one left-to-right pass (bracket matching, HTML block items); span lookups, whose
+ * `from` can go backwards, use {@link InlineDoc.find}.
  */
 function forwardFinder(src: string, ch: string): (from: number) => number {
   let at = -2 // -2: not searched yet; -1: no `ch` at or after the last `from`
@@ -177,11 +191,22 @@ function forwardFinder(src: string, ch: string): (from: number) => number {
 
 const isSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch)
 
+/**
+ * `s` with ASCII letters lowercased and nothing else: `toLowerCase` lengthens some strings
+ * (`İ` becomes two units), which would shift every offset after it.
+ */
+export function asciiLower(s: string): string {
+  return s.replace(/[A-Z]+/g, (m) => m.toLowerCase())
+}
+
 /** ASCII punctuation a backslash escapes (CommonMark §2.4). */
 const ESCAPABLE = new Set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
 
 /** Reference definitions (`[label]: url`) of the document being parsed, keyed by normalized label. */
 let references: ReadonlyMap<string, string> = new Map()
+
+/** Longest link label, as CommonMark bounds it (and {@link REFERENCE_DEF} matches). */
+const MAX_LABEL = 999
 
 /** A reference label as CommonMark matches it: case-folded, inner whitespace collapsed. */
 export function normalizeLabel(label: string): string {
@@ -192,15 +217,15 @@ export function normalizeLabel(label: string): string {
 const AUTOLINK_TRAILING_CHARS = new Set(['?', '!', '.', ',', ':', '*', '_', '~', "'", '"'])
 
 /**
- * Where a bare `http(s)://` autolink starting at `start` ends, GitHub's way: at whitespace or
- * `<`, then trailing punctuation and quotes are dropped, and a `)` is kept only while the
- * link's parentheses balance (`https://en.wikipedia.org/wiki/Foo_(bar)`).
+ * Where a bare `http(s)://` autolink whose body starts at `bodyStart` ends, GitHub's way: at
+ * whitespace, `<` or `limit`, then trailing punctuation and quotes are dropped, and a `)` is
+ * kept only while the link's parentheses balance (`https://en.wikipedia.org/wiki/Foo_(bar)`).
  */
-function autolinkEnd(src: string, start: number, bodyStart: number): number {
+function autolinkEnd(src: string, bodyStart: number, limit: number): number {
   let end = bodyStart
   let open = 0
   let close = 0
-  while (end < src.length && !isSpace(src[end]) && src[end] !== '<') {
+  while (end < limit && !isSpace(src[end]) && src[end] !== '<') {
     if (src[end] === '(') open += 1
     else if (src[end] === ')') close += 1
     end += 1
@@ -225,22 +250,110 @@ function autolinkEnd(src: string, start: number, bodyStart: number): number {
 }
 
 /**
- * Inline spans, scanned left to right without backtracking regexes. Every step consumes at
- * least one character, and each delimiter lookup goes through a {@link forwardFinder}, so a
- * pass is linear in `src` (nested spans re-scan only the text they consumed).
+ * One inline source and the lookups every span inside it shares. Nested spans are parsed as
+ * ranges of the same string (no slices), so the bracket matches, the lowercase copy and each
+ * delimiter's position list are built at most once per top-level call, lazily, and each
+ * lookup is exact whatever order the spans ask in.
+ */
+interface InlineDoc {
+  readonly src: string
+  /** The first `needle` starting at or after `from` and ending by `end`, or -1 (binary search). */
+  find(needle: string, from: number, end: number): number
+  /** The `]` matching a `[` at `open` (escapes and code spans skipped), or -1. */
+  closeOf(open: number): number
+}
+
+function inlineDoc(src: string): InlineDoc {
+  const lists = new Map<string, Int32Array>()
+  let lower: string | null = null
+  let brackets: Int32Array | null = null
+  return {
+    src,
+    find(needle, from, end) {
+      let list = lists.get(needle)
+      if (list === undefined) {
+        // Closing tags match without regard to ASCII case (`</KBD>`).
+        const hay = needle.startsWith('</') ? (lower ??= asciiLower(src)) : src
+        list = indexesOf(hay, needle)
+        lists.set(needle, list)
+      }
+      let lo = 0
+      let hi = list.length
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1
+        if ((list[mid] as number) < from) lo = mid + 1
+        else hi = mid
+      }
+      const at = lo < list.length ? (list[lo] as number) : -1
+      return at !== -1 && at + needle.length <= end ? at : -1
+    },
+    closeOf(open) {
+      brackets ??= matchBrackets(src)
+      return brackets[open] ?? -1
+    },
+  }
+}
+
+/** Every index of `needle` in `hay`, ascending. */
+function indexesOf(hay: string, needle: string): Int32Array {
+  const out: number[] = []
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) out.push(at)
+  return Int32Array.from(out)
+}
+
+/**
+ * The matching `]` of every `[` in `src` (-1 for none), skipping escaped brackets and code
+ * spans: one linear stack pass.
+ */
+function matchBrackets(src: string): Int32Array {
+  if (!src.includes('[')) return new Int32Array(0)
+  const out = new Int32Array(src.length).fill(-1)
+  const stack: number[] = []
+  const tick = forwardFinder(src, '`')
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\\') {
+      i += 1
+      continue
+    }
+    if (c === '`') {
+      // A code span runs to the next backtick, as the span rule reads it. With none left,
+      // no later backtick opens a span either.
+      const end = tick(i + 1)
+      if (end !== -1) i = end
+      continue
+    }
+    if (c === '[') stack.push(i)
+    else if (c === ']' && stack.length > 0) out[stack.pop() as number] = i
+  }
+  return out
+}
+
+/** Parse `src` as inline Markdown (or, with `htmlOnly`, the inline content of a raw HTML block). */
+function parseInline(src: string, htmlOnly = false): Inline[] {
+  return parseSpan(inlineDoc(src), 0, src.length, 0, htmlOnly)
+}
+
+/**
+ * Inline spans of `doc.src[start..end)`, scanned left to right without backtracking regexes.
+ * Every step consumes at least one character and every delimiter lookup is a binary search,
+ * so a pass is linear in the range (nested spans re-scan only the text they consumed, at most
+ * {@link MAX_INLINE_DEPTH} deep).
  *
  * The span grammar is the original regex one: `![alt](src …)`, `[text](href …)`,
  * `` `code` ``, `**x**` / `__x__`, `~~x~~`, `*x*` / `_x_`. On top of it:
  * - `\*` and friends are literal characters, and `&amp;`-style references decode;
  * - a link's text is scanned for its closing `]` with nesting, so a badge
  *   `[![alt](img)](href)` is an image inside a link;
- * - `[text][ref]`, `[text][]` and `[ref]` use the document's reference definitions;
+ * - `[text][ref]`, `[text][]` and `[ref]` (and `![alt][ref]`…) use the reference definitions;
  * - bare `http(s)://` autolinks follow GFM (no trailing punctuation or quotes), and `<url>`;
  * - allowlisted inline HTML (`<img>`, `<br>`, `<kbd>`, `<sub>`, `<sup>`, `<b>`, `<a>`…) is
- *   kept, other tags are dropped with their text kept (`markdown-html.ts`);
+ *   kept, other tags are dropped with their text kept (`markdown-html.ts`), and comments
+ *   (`<!-- … -->`) are dropped;
  * - a line ending in two spaces or `\` is a hard break (lines are joined with `\n`).
  */
-function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
+function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, htmlOnly: boolean): Inline[] {
+  const { src } = doc
   const out: Inline[] = []
   // Text is collected as pieces and joined once per run: reading a `+=`-built string (as a
   // line-end check must) flattens it, which made a 1 MiB paragraph quadratic.
@@ -270,58 +383,72 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
     out.push(node)
     nodesLeft -= 1
   }
-  // One finder per (delimiter, offset) so each one's `from` only moves forward.
-  const imageBracket = forwardFinder(src, ']')
-  const imageParen = forwardFinder(src, ')')
-  // Link destinations and `][ref]` labels are looked up from each `]`, and nested link text
-  // makes those positions go backwards, so they use exact next-occurrence tables (one pass).
-  const linkParen = nextIndexOf(src, ')')
-  const refClose = nextIndexOf(src, ']')
-  const tick = forwardFinder(src, '`')
-  const tagClose = forwardFinder(src, '>')
-  const semicolon = forwardFinder(src, ';')
-  const closingTag = closingTags(src)
-  const pairClose = { '*': forwardFinder(src, '*'), _: forwardFinder(src, '_'), '~': forwardFinder(src, '~') }
-  const singleClose = { '*': forwardFinder(src, '*'), _: forwardFinder(src, '_') }
-  // Matching `]` for each `[`, found by one stack pass (escapes and code spans skipped): link
-  // text may hold brackets, as a badge's `![alt](src)` does. Linear, and computed once.
-  const closeOf = htmlOnly ? new Map<number, number>() : matchBrackets(src)
-
-  /** `(href …)` right after `]` at `close`: the href and the index past `)`. */
-  const destination = (close: number, paren: (from: number) => number): { href: string; end: number } | null => {
-    if (src[close + 1] !== '(') return null
-    const hrefStart = close + 2
-    const end = paren(hrefStart)
-    if (end === -1 || end === hrefStart || isSpace(src[hrefStart])) return null
-    let hrefEnd = hrefStart
-    while (hrefEnd < end && !isSpace(src[hrefEnd])) hrefEnd += 1
-    let href = src.slice(hrefStart, hrefEnd)
-    if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1)
-    return { href: decodeEntities(unescape(href)), end: end + 1 }
+  /** The character at `k`, or undefined outside this span (as if the span were its own string). */
+  const at = (k: number): string | undefined => (k >= start && k < end ? src[k] : undefined)
+  const find = (needle: string, from: number): number => doc.find(needle, from, end)
+  /**
+   * Whether a `_` at `k` may open a span: its run of `_` does not start inside a word (so
+   * neither `_` of `my__var` opens one, but `___x___` still can). Each run is measured once.
+   */
+  let run = { start: -1, end: -1, opens: false }
+  const underscoreOpens = (k: number): boolean => {
+    if (k < run.start || k >= run.end) {
+      let a = k
+      let b = k
+      while (at(a - 1) === '_') a -= 1
+      while (at(b) === '_') b += 1
+      run = { start: a, end: b, opens: !isWordChar(at(a - 1)) }
+    }
+    return run.opens
+  }
+  /** The `]` matching a `[` at `open`, when it is inside this span; else -1. */
+  const closeOf = (open: number): number => {
+    const close = doc.closeOf(open)
+    return close < end ? close : -1
   }
 
-  /** A reference link `[text][ref]` / `[text][]` / `[ref]` whose text ends at `close`. */
+  /** `(href …)` right after `]` at `close`: the href and the index past `)`. */
+  const destination = (close: number): { href: string; end: number } | null => {
+    if (at(close + 1) !== '(') return null
+    const hrefStart = close + 2
+    const paren = find(')', hrefStart)
+    if (paren === -1 || paren === hrefStart || isSpace(src[hrefStart])) return null
+    let hrefEnd = hrefStart
+    while (hrefEnd < paren && !isSpace(src[hrefEnd])) hrefEnd += 1
+    let href = src.slice(hrefStart, hrefEnd)
+    if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1)
+    return { href: decodeEntities(unescape(href)), end: paren + 1 }
+  }
+
+  /**
+   * A reference `[text][ref]` / `[text][]` / `[ref]` whose text is `[open..close]`. A label is
+   * at most {@link MAX_LABEL} characters (as CommonMark says), so a failed `[` costs O(1)
+   * however long its text: normalizing every one made nested brackets quadratic.
+   */
   const reference = (open: number, close: number): { href: string; end: number } | null => {
     if (references.size === 0) return null
-    if (src[close + 1] === '[') {
-      const refEnd = refClose(close + 2)
+    const textIsLabel = (): boolean => close - open - 1 <= MAX_LABEL
+    if (at(close + 1) === '[') {
+      const refEnd = closeOf(close + 1)
       if (refEnd === -1) return null
-      const label = refEnd === close + 2 ? src.slice(open + 1, close) : src.slice(close + 2, refEnd)
-      const href = references.get(normalizeLabel(label))
+      const collapsed = refEnd === close + 2
+      if (collapsed ? !textIsLabel() : refEnd - close - 2 > MAX_LABEL) return null
+      const href = references.get(normalizeLabel(collapsed ? src.slice(open + 1, close) : src.slice(close + 2, refEnd)))
       return href === undefined ? null : { href, end: refEnd + 1 }
     }
+    if (!textIsLabel()) return null
     const href = references.get(normalizeLabel(src.slice(open + 1, close)))
     return href === undefined ? null : { href, end: close + 1 }
   }
 
-  let i = 0
-  while (i < src.length) {
+  let i = start
+  while (i < end) {
     if (nodesLeft <= 0) {
-      add(src.slice(i)) // node budget spent: the rest is plain text
+      add(src.slice(i, end)) // node budget spent: the rest is plain text
       break
     }
     const ch = src[i] as string
-    const next = src[i + 1]
+    const next = at(i + 1)
 
     // backslash escape: `\*` is a literal `*`; `\` at a line end is a hard break
     if (ch === '\\' && !htmlOnly) {
@@ -352,7 +479,7 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
     }
     // entity / character reference
     if (ch === '&') {
-      const semi = semicolon(i + 1)
+      const semi = find(';', i + 1)
       if (semi !== -1 && semi - i <= 32) {
         const decoded = decodeEntities(src.slice(i, semi + 1))
         if (decoded !== src.slice(i, semi + 1)) {
@@ -368,23 +495,30 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
       i += 1
       continue
     }
-    // image ![alt](src)
+    // image ![alt](src), ![alt][ref], ![alt]
     if (ch === '!' && next === '[') {
-      const close = imageBracket(i + 2)
-      const m = close === -1 ? null : destination(close, imageParen)
+      const close = find(']', i + 2)
+      const m = close === -1 ? null : destination(close)
       if (m) {
         push({ t: 'image', src: safeHref(m.href), alt: plain(src.slice(i + 2, close)) })
         i = m.end
         continue
       }
+      const refClose = closeOf(i + 1)
+      const r = refClose > i + 2 ? reference(i + 1, refClose) : null
+      if (r) {
+        push({ t: 'image', src: safeHref(r.href), alt: plain(src.slice(i + 2, refClose)) })
+        i = r.end
+        continue
+      }
     }
     // link [text](href), [text][ref], [ref]
     if (ch === '[' && depth < MAX_INLINE_DEPTH) {
-      const close = closeOf.get(i)
-      if (close !== undefined && close > i + 1) {
-        const m = destination(close, linkParen) ?? reference(i, close)
+      const close = closeOf(i)
+      if (close > i + 1) {
+        const m = destination(close) ?? reference(i, close)
         if (m) {
-          push({ t: 'link', href: safeHref(m.href), c: parseInline(src.slice(i + 1, close), depth + 1) })
+          push({ t: 'link', href: safeHref(m.href), c: parseSpan(doc, i + 1, close, depth + 1, false) })
           i = m.end
           continue
         }
@@ -392,16 +526,24 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
     }
     // inline code `code`
     if (ch === '`') {
-      const close = tick(i + 1)
+      const close = find('`', i + 1)
       if (close > i + 1) {
         push({ t: 'code', v: src.slice(i + 1, close).replace(/\n/g, ' ') })
         i = close + 1
         continue
       }
     }
-    // inline HTML and `<url>` autolinks
+    // comments, inline HTML and `<url>` autolinks
     if (ch === '<') {
-      const close = tagClose(i + 1)
+      if (src.startsWith('<!--', i) && i + 4 <= end) {
+        // `<!-->` and `<!--->` are complete (empty) comments too.
+        const close = find('-->', i + 2)
+        if (close !== -1) {
+          i = close + 3 // dropped, as GitHub's sanitizer drops it
+          continue
+        }
+      }
+      const close = find('>', i + 1)
       if (close !== -1 && close - i <= MAX_TAG_CHARS) {
         const inner = src.slice(i + 1, close)
         if (!htmlOnly && /^(https?|mailto):[^\s<>]*$/i.test(inner)) {
@@ -411,7 +553,7 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
         }
         const tag = parseTag(src, i, close)
         if (tag !== null) {
-          const consumed = inlineTag(tag, close + 1, depth, htmlOnly, closingTag, src)
+          const consumed = inlineTag(doc, tag, close + 1, end, depth, htmlOnly)
           if (consumed !== null) {
             if (consumed.node !== null) push(consumed.node)
             i = consumed.end
@@ -420,33 +562,33 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
         }
       }
     }
-    // strong **x** / __x__, strikethrough ~~x~~
-    if ((ch === '*' || ch === '_' || ch === '~') && next === ch && depth < MAX_INLINE_DEPTH) {
-      const close = pairClose[ch](i + 2)
-      if (close > i + 2 && src[close + 1] === ch) {
-        const c = parseInline(src.slice(i + 2, close), depth + 1)
+    // strong **x** / __x__, strikethrough ~~x~~ (an intraword `__` is literal: my__var__name)
+    if ((ch === '*' || ch === '_' || ch === '~') && next === ch && depth < MAX_INLINE_DEPTH && (ch !== '_' || underscoreOpens(i))) {
+      const close = find(ch, i + 2)
+      if (close > i + 2 && at(close + 1) === ch && (ch !== '_' || !isWordChar(at(close + 2)))) {
+        const c = parseSpan(doc, i + 2, close, depth + 1, false)
         push(ch === '~' ? { t: 'del', c } : { t: 'strong', c })
         i = close + 2
         continue
       }
     }
     // em *x* / _x_ (an intraword `_` is literal: snake_case_names)
-    if ((ch === '*' || (ch === '_' && !isWordChar(src[i - 1]))) && depth < MAX_INLINE_DEPTH) {
-      const close = singleClose[ch](i + 1)
-      if (close > i + 1 && (ch === '*' || !isWordChar(src[close + 1]))) {
-        push({ t: 'em', c: parseInline(src.slice(i + 1, close), depth + 1) })
+    if ((ch === '*' || (ch === '_' && underscoreOpens(i))) && depth < MAX_INLINE_DEPTH) {
+      const close = find(ch, i + 1)
+      if (close > i + 1 && (ch === '*' || !isWordChar(at(close + 1)))) {
+        push({ t: 'em', c: parseSpan(doc, i + 1, close, depth + 1, false) })
         i = close + 1
         continue
       }
     }
     // bare autolink (GFM: trailing punctuation and quotes are not part of it)
-    if (ch === 'h' && !isWordChar(src[i - 1]) && (src.startsWith('http://', i) || src.startsWith('https://', i))) {
+    if (ch === 'h' && !isWordChar(at(i - 1)) && (src.startsWith('http://', i) || src.startsWith('https://', i))) {
       const bodyStart = i + (src[i + 4] === 's' ? 8 : 7)
-      const end = autolinkEnd(src, i, bodyStart)
-      if (end > bodyStart) {
-        const url = src.slice(i, end)
+      const linkEnd = bodyStart <= end ? autolinkEnd(src, bodyStart, end) : bodyStart
+      if (linkEnd > bodyStart) {
+        const url = src.slice(i, linkEnd)
         push({ t: 'link', href: safeHref(url), c: [{ t: 'text', v: url }] })
-        i = end
+        i = linkEnd
         continue
       }
     }
@@ -456,45 +598,6 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
   if (depth === 0) pendingSpaces = 0 // a paragraph's trailing spaces go; a span's (`<b>Note: </b>x`) stay
   flush()
   return out
-}
-
-/**
- * `f(from)`: the index of the first `ch` at or after `from`, or -1, for any `from` in any order.
- * One right-to-left pass builds the table, so every lookup is O(1).
- */
-function nextIndexOf(src: string, ch: string): (from: number) => number {
-  let table: Int32Array | null = null
-  return (from) => {
-    if (table === null) {
-      table = new Int32Array(src.length + 1)
-      let next = -1
-      table[src.length] = -1
-      for (let k = src.length - 1; k >= 0; k--) {
-        if (src[k] === ch) next = k
-        table[k] = next
-      }
-    }
-    return from >= src.length ? -1 : (table[Math.max(0, from)] as number)
-  }
-}
-
-/**
- * Closing-tag lookups: `f(name, from)` finds `</name>` at or after `from` (ignoring ASCII
- * case), with one forward finder per name so a run of unclosed `<kbd>` costs one scan. Only
- * ASCII letters are lowercased: `toLowerCase` changes some strings' length (`İ` becomes two
- * units), which would shift every offset after it.
- */
-function closingTags(src: string): (name: string, from: number) => number {
-  const lower = src.includes('<') ? src.replace(/[A-Z]+/g, (m) => m.toLowerCase()) : src
-  const finders = new Map<string, (from: number) => number>()
-  return (name, from) => {
-    let f = finders.get(name)
-    if (f === undefined) {
-      f = forwardFinder(lower, `</${name}>`)
-      finders.set(name, f)
-    }
-    return f(from)
-  }
 }
 
 /** Nesting cap for spans inside spans (a hostile `[[[[…](x)](x)…` stays shallow). */
@@ -513,47 +616,29 @@ function plain(label: string): string {
 }
 
 /**
- * The matching `]` of every `[` in `src`, skipping escaped brackets and code spans: one linear
- * stack pass. Unmatched brackets have no entry.
+ * The anchor an `<a name=…>` / `<a id=…>` sets, lowercased as in-page links are, or undefined.
+ * The renderer prefixes `user-content-` (as GitHub does), so `[Install](#install)` reaches it.
  */
-function matchBrackets(src: string): Map<number, number> {
-  const out = new Map<number, number>()
-  if (!src.includes('[')) return out
-  const stack: number[] = []
-  const tick = forwardFinder(src, '`')
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i]
-    if (c === '\\') {
-      i += 1
-      continue
-    }
-    if (c === '`') {
-      // A code span runs to the next backtick, as the span rule reads it. With none left,
-      // no later backtick opens a span either.
-      const end = tick(i + 1)
-      if (end !== -1) i = end
-      continue
-    }
-    if (c === '[') stack.push(i)
-    else if (c === ']' && stack.length > 0) out.set(stack.pop() as number, i)
-  }
-  return out
+function anchorId(attrs: Readonly<Record<string, string>>): string | undefined {
+  const id = (attrs['name'] ?? attrs['id'] ?? '').trim()
+  return id !== '' && id.length <= 256 ? id.toLowerCase() : undefined
 }
 
 /**
- * An inline HTML tag at `src[..end)`: the node it becomes (null: nothing, e.g. a dropped tag)
- * and where scanning resumes. Paired tags consume through their closing tag.
+ * An inline HTML tag ending just before `after` (inside a span ending at `end`): the node it
+ * becomes (null: nothing, e.g. a dropped tag) and where scanning resumes. Paired tags consume
+ * through their closing tag.
  */
 function inlineTag(
+  doc: InlineDoc,
   tag: TagToken,
+  after: number,
   end: number,
   depth: number,
   htmlOnly: boolean,
-  closingTag: (name: string, from: number) => number,
-  src: string,
 ): { node: Inline | null; end: number } | null {
-  if (tag.close) return { node: null, end } // a stray closing tag: dropped
-  if (tag.name === 'br') return { node: { t: 'br' }, end }
+  if (tag.close) return { node: null, end: after } // a stray closing tag: dropped
+  if (tag.name === 'br') return { node: { t: 'br' }, end: after }
   if (tag.name === 'img') {
     const width = sizeAttr(tag.attrs['width'])
     const height = sizeAttr(tag.attrs['height'])
@@ -565,25 +650,26 @@ function inlineTag(
         ...(width !== undefined ? { width } : {}),
         ...(height !== undefined ? { height } : {}),
       },
-      end,
+      end: after,
     }
-  }
-  const closing = closingTag(tag.name, end)
-  if (DROP_WITH_CONTENTS.has(tag.name)) {
-    return { node: null, end: closing === -1 ? src.length : closing + tag.name.length + 3 }
   }
   const alias = Object.hasOwn(SPAN_ALIASES, tag.name) ? SPAN_ALIASES[tag.name] : undefined
   const kept = INLINE_TAGS.has(tag.name) ? (tag.name as 'kbd' | 'sub' | 'sup') : undefined
-  if ((alias !== undefined || kept !== undefined || tag.name === 'a') && closing !== -1 && depth < MAX_INLINE_DEPTH) {
-    const c = parseInline(src.slice(end, closing), depth + 1, htmlOnly)
-    const after = closing + tag.name.length + 3
-    if (kept !== undefined) return { node: { t: 'tag', tag: kept, c }, end: after }
-    if (alias !== undefined) return { node: { t: alias, c }, end: after }
-    const href = tag.attrs['href']
-    return { node: href === undefined ? null : { t: 'link', href: safeHref(href), c }, end: href === undefined ? end : after }
-  }
-  // Any other tag (`<span>`, `<font>`, `<abbr>`…): the tag goes, its text stays.
-  return { node: null, end }
+  const dropAll = DROP_WITH_CONTENTS.has(tag.name)
+  // Only these names are looked for: any other tag (`<span>`, `<font>`, `<abbr>`…) goes and
+  // its text stays, so an unbounded set of names never costs a scan each.
+  if (!dropAll && alias === undefined && kept === undefined && tag.name !== 'a') return { node: null, end: after }
+  const closing = doc.find(`</${tag.name}>`, after, end)
+  const past = closing + tag.name.length + 3
+  if (dropAll) return { node: null, end: closing === -1 ? end : past }
+  if (closing === -1 || depth >= MAX_INLINE_DEPTH) return { node: null, end: after }
+  const c = parseSpan(doc, after, closing, depth + 1, htmlOnly)
+  if (kept !== undefined) return { node: { t: 'tag', tag: kept, c }, end: past }
+  if (alias !== undefined) return { node: { t: alias, c }, end: past }
+  const href = tag.attrs['href']
+  if (href !== undefined) return { node: { t: 'link', href: safeHref(href), c }, end: past }
+  const id = anchorId(tag.attrs)
+  return id === undefined ? { node: null, end: after } : { node: { t: 'anchor', id, c }, end: past }
 }
 
 /** Split a GFM table row without treating escaped or inline-code pipes as delimiters. */
@@ -744,24 +830,26 @@ const REFERENCE_DEF = /^ {0,3}\[([^\]\n]{1,999})\]:[ \t]*<?([^\s<>]+)>?(?:[ \t]+
 
 /**
  * Collect reference definitions (first one wins, as in CommonMark) and blank their lines so
- * they render as nothing. A definition cannot interrupt a paragraph, and fenced code holds
- * none.
+ * they render as nothing. Only a paragraph's line keeps the next line from being one (a
+ * definition cannot interrupt a paragraph): after a blank line, a heading, a fence, a rule or
+ * another definition it may start. Fenced code holds none.
  */
 function collectReferences(lines: string[]): Map<string, string> {
   const refs = new Map<string, string>()
   let fenced = false
-  let prevBlank = true
+  let mayStart = true
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string
-    if (line.startsWith('```')) fenced = !fenced
-    const m = !fenced && prevBlank && line.length < 2048 ? REFERENCE_DEF.exec(line) : null
+    const fence = line.startsWith('```')
+    if (fence) fenced = !fenced
+    const m = !fenced && !fence && mayStart && line.length < 2048 ? REFERENCE_DEF.exec(line) : null
     if (m !== null && refs.size < MAX_REFERENCES) {
       const label = normalizeLabel(m[1] as string)
       if (label !== '' && !refs.has(label)) refs.set(label, decodeEntities(unescape(m[2] as string)))
       lines[i] = ''
       continue // the next line may be another definition
     }
-    prevBlank = line.trim() === ''
+    mayStart = fence || line.trim() === '' || HEADING.test(line) || HR.test(line)
   }
   return refs
 }
@@ -803,16 +891,25 @@ function htmlItems(src: string): Item[] {
   const items: Item[] = []
   const gt = forwardFinder(src, '>')
   const lt = forwardFinder(src, '<')
-  const closing = closingTags(src)
+  const commentEnd = forwardFinder(src, '-->')
+  const doc = inlineDoc(src)
   let textStart = 0
   const flushText = (end: number): void => {
-    const text = src.slice(textStart, end)
-    if (text.trim() !== '') items.push({ t: 'inline', c: parseInline(text.trim(), 0, true) })
+    const text = src.slice(textStart, end).trim()
+    const c = text === '' ? [] : parseInline(text, true)
+    if (c.length > 0) items.push({ t: 'inline', c })
   }
   let i = 0
   while (nodesLeft > 0) {
     const open = lt(i)
     if (open === -1) break
+    if (src.startsWith('<!--', open)) {
+      // A comment goes with everything in it; an unclosed one runs to the end of the block.
+      flushText(open)
+      const end = commentEnd(open + 2)
+      i = textStart = end === -1 ? src.length : end + 3
+      continue
+    }
     const close = gt(open + 1)
     if (close === -1) break
     const tag = close - open <= MAX_TAG_CHARS ? parseTag(src, open, close) : null
@@ -828,7 +925,7 @@ function htmlItems(src: string): Item[] {
       i = textStart = close + 1
     } else if (DROP_WITH_CONTENTS.has(tag.name) && !tag.close) {
       flushText(open)
-      const end = closing(tag.name, close + 1)
+      const end = doc.find(`</${tag.name}>`, close + 1, src.length)
       i = textStart = end === -1 ? src.length : end + tag.name.length + 3
     } else {
       i = close + 1 // an inline element: it stays in the text for the inline parser
@@ -854,12 +951,14 @@ function buildTree(items: readonly Item[]): Block[] {
   const pop = (): void => {
     const f = stack.pop() as Frame
     const align = (f.attrs['align'] ?? '').toLowerCase()
+    const id = anchorId(f.attrs)
     top().push({
       t: 'element',
       tag: f.tag,
       align: ALIGN.has(align) ? (align as 'left' | 'center' | 'right') : f.name === 'center' ? 'center' : null,
       ...(f.tag === 'a' && f.attrs['href'] !== undefined ? { href: safeHref(f.attrs['href']) } : {}),
       ...(f.tag === 'details' && 'open' in f.attrs ? { open: true } : {}),
+      ...(id !== undefined ? { id } : {}),
       c: f.c,
     })
   }
@@ -906,6 +1005,18 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       }
       i += 1 // closing fence
       blocks.push({ t: 'code', lang, v: buf.join('\n') })
+      return
+    }
+    // HTML comment block (CommonMark §4.6 type 2): runs to the line holding `-->`, and only
+    // what follows the comment on that line (if anything) shows
+    if (COMMENT_START.test(line)) {
+      const buf = [line]
+      i += 1
+      if (!line.includes('-->', line.indexOf('<!--') + 2)) {
+        while (i < lines.length && !(lines[i] ?? '').includes('-->')) buf.push(lines[i++] ?? '')
+        if (i < lines.length) buf.push(lines[i++] ?? '')
+      }
+      blocks.push(...htmlItems(buf.join('\n')))
       return
     }
     // raw HTML block (CommonMark §4.6)
@@ -994,7 +1105,14 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       buf.push(lines[i] ?? '')
       i += 1
     }
-    blocks.push({ t: 'paragraph', c: parseInline(buf.map((l) => l.replace(/^[ \t]+/, '')).join('\n').trim()) })
+    const c = parseInline(buf.map((l) => l.replace(/^[ \t]+/, '')).join('\n').trim())
+    // A paragraph of only comments shows nothing, and one of only `<a name>` targets is no
+    // paragraph (GitHub's `<a name="install"></a>` lines): the anchors stay, the gap goes.
+    if (c.every((n) => n.t === 'anchor' && n.c.length === 0)) {
+      if (c.length > 0) blocks.push({ t: 'inline', c })
+    } else {
+      blocks.push({ t: 'paragraph', c })
+    }
   }
 
   while (i < lines.length) {

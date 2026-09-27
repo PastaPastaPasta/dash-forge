@@ -40,6 +40,15 @@ export function urlHostOf(src: string): string | null {
   }
 }
 
+/**
+ * `http://host/x` as `https://host/x`: the site is served over https, where a plain-http image
+ * is mixed content (blocked, or auto-upgraded with a console warning). Hosts that still only
+ * serve http fail either way, and the renderer then links to the image instead.
+ */
+export function upgradeHttp(src: string): string {
+  return /^http:\/\//i.test(src) ? `https://${src.slice(7)}` : src
+}
+
 /** Hosts the viewer chose to always load images from, kept in this browser only. */
 export const IMAGE_HOSTS_KEY = 'forge.imageHosts.v1'
 

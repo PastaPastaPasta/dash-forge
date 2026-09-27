@@ -248,3 +248,149 @@ describe('review regressions', () => {
     expect(performance.now() - t).toBeLessThan(1000)
   })
 })
+
+describe('post-merge review of #82', () => {
+  /** Every link href in the document, in order. */
+  const links = (s: string): string[] => {
+    const out: string[] = []
+    const walk = (ns: readonly (Inline | Block)[]): void => {
+      for (const n of ns) {
+        if (n.t === 'link') out.push(n.href)
+        if (n.t === 'list') n.items.forEach(walk)
+        else if ('c' in n) walk(n.c)
+      }
+    }
+    walk(parseMarkdown(s))
+    return out
+  }
+
+  it('links the inner span when an outer bracket is no link, whatever follows it', () => {
+    expect(para('[x [a](b) y]( z)')).toEqual([
+      { t: 'text', v: '[x ' },
+      { t: 'link', href: 'b', c: [{ t: 'text', v: 'a' }] },
+      { t: 'text', v: ' y]( z)' },
+    ])
+    expect(links('[a]: https://a.io\n\n[x [y][a] z][b]')).toEqual(['https://a.io'])
+  })
+
+  it('does not match a reference label longer than 999 characters', () => {
+    const long = 'a'.repeat(1000)
+    expect(links(`[a]: https://x.io\n\n[${long}] [${long}][] [t][${'b'.repeat(1000)}] [t][a]`)).toEqual(['https://x.io'])
+  })
+
+  it('keeps offsets after characters whose lowercase is longer (İ), inline and in HTML blocks', () => {
+    expect(para('İİİİ<kbd>ab</kbd>cdef')).toEqual([
+      { t: 'text', v: 'İİİİ' },
+      { t: 'tag', tag: 'kbd', c: [{ t: 'text', v: 'ab' }] },
+      { t: 'text', v: 'cdef' },
+    ])
+    expect(parseMarkdown('<div>\nİİİİİİİ<script>x</script>visible <b>bold</b>\n</div>')).toEqual([
+      {
+        t: 'element',
+        tag: 'div',
+        align: null,
+        c: [
+          { t: 'inline', c: [{ t: 'text', v: 'İİİİİİİ' }] },
+          { t: 'inline', c: [{ t: 'text', v: 'visible ' }, { t: 'strong', c: [{ t: 'text', v: 'bold' }] }] },
+        ],
+      },
+    ])
+    expect(para('İİ<KBD>x</KBD>')).toEqual([{ t: 'text', v: 'İİ' }, { t: 'tag', tag: 'kbd', c: [{ t: 'text', v: 'x' }] }])
+  })
+
+  it('refuses hrefs hidden behind control characters, as the URL parser strips them', () => {
+    for (const h of [
+      '\u0001javascript:alert(1)',
+      ' \u0000javascript:alert(1)',
+      'javascript:alert(1)\u0001',
+      '\u0001//evil.com',
+      'java\u0001script:alert(1)',
+      'https://x.io/\u007f',
+    ]) {
+      expect(safeHref(h), JSON.stringify(h)).toBe('#')
+    }
+    expect(links('[a](&#1;javascript:alert(1)) [b](&#x1f;//evil.com)')).toEqual(['#', '#'])
+    expect(safeHref(' https://x.io/a ')).toBe('https://x.io/a')
+  })
+
+  it('drops HTML comments inline and as blocks, in READMEs and comment bodies alike', () => {
+    expect(para('a <!-- hidden --> b <!--> c <!---> d')).toEqual([{ t: 'text', v: 'a  b  c  d' }])
+    expect(parseMarkdown('<!-- backportsys v1 -->\n<!-- bps:hands_off -->\n\nText')).toEqual([{ t: 'paragraph', c: [{ t: 'text', v: 'Text' }] }])
+    // A comment block interrupts a paragraph and runs to the line holding `-->`.
+    expect(parseMarkdown('Intro\n<!--\n# not a heading\n- not a list\n--> tail\nafter')).toEqual([
+      { t: 'paragraph', c: [{ t: 'text', v: 'Intro' }] },
+      { t: 'inline', c: [{ t: 'text', v: 'tail' }] },
+      { t: 'paragraph', c: [{ t: 'text', v: 'after' }] },
+    ])
+    // Unclosed: the rest of the document is the comment, as in CommonMark.
+    expect(parseMarkdown('ok\n\n<!-- never closed\n\n# gone')).toEqual([{ t: 'paragraph', c: [{ t: 'text', v: 'ok' }] }])
+    expect(parseMarkdown('<div>\na <!-- <b>x</b> --> b\n</div>')).toEqual([
+      { t: 'element', tag: 'div', align: null, c: [{ t: 'inline', c: [{ t: 'text', v: 'a' }] }, { t: 'inline', c: [{ t: 'text', v: 'b' }] }] },
+    ])
+    // Inside code, a comment is text.
+    expect(para('`<!-- x -->`')).toEqual([{ t: 'code', v: '<!-- x -->' }])
+  })
+
+  it('renders reference-style images and badges', () => {
+    const src = [
+      '![logo][logo] [![npm][npm-badge]][npm-url] ![CI] ![alt][]',
+      '',
+      '[logo]: docs/logo.png',
+      '[npm-badge]: https://img.shields.io/npm/v/x.svg',
+      '[npm-url]: https://npmjs.com/x',
+      '[ci]: https://ci/badge.svg',
+      '[alt]: https://a/b.png',
+    ].join('\n')
+    expect(para(src)).toEqual([
+      { t: 'image', src: 'docs/logo.png', alt: 'logo' },
+      { t: 'text', v: ' ' },
+      { t: 'link', href: 'https://npmjs.com/x', c: [{ t: 'image', src: 'https://img.shields.io/npm/v/x.svg', alt: 'npm' }] },
+      { t: 'text', v: ' ' },
+      { t: 'image', src: 'https://ci/badge.svg', alt: 'CI' },
+      { t: 'text', v: ' ' },
+      { t: 'image', src: 'https://a/b.png', alt: 'alt' },
+    ])
+    expect(para('![nope][missing]')).toEqual([{ t: 'text', v: '![nope][missing]' }])
+  })
+
+  it('decodes the entities README nav rows use', () => {
+    expect(para('[A](#a) &middot; [B](#b) &bull; &copy; 2026 &mdash; x &ndash; y &hellip; &rarr; &larr; &times; &laquo;&raquo; &reg; &trade;')
+      .filter((n) => n.t === 'text')
+      .map((n) => (n.t === 'text' ? n.v : ''))
+      .join('|')).toBe(' · | • © 2026 — x – y … → ← × «» ® ™')
+    expect(para('&constructor; &toString;')).toEqual([{ t: 'text', v: '&constructor; &toString;' }])
+  })
+
+  it('reads a definition right after a heading, fence, rule or another definition, but not inside a paragraph', () => {
+    // `docs/a.md` is not autolinked, so only a resolved reference links it.
+    expect(links('# Title\n[a]: docs/a.md\n\n[a]')).toEqual(['docs/a.md'])
+    expect(links('```\ncode\n```\n[a]: docs/a.md\n\n[a]')).toEqual(['docs/a.md'])
+    expect(links('---\n[a]: docs/a.md\n\n[a]')).toEqual(['docs/a.md'])
+    expect(links('[b]: docs/b.md\n[a]: docs/a.md\n\n[a] [b]')).toEqual(['docs/a.md', 'docs/b.md'])
+    expect(parseMarkdown('# Title\n[a]: docs/a.md')).toEqual([{ t: 'heading', level: 1, c: [{ t: 'text', v: 'Title' }] }])
+    // A paragraph line: `[a]: …` is paragraph text, and `[a]` is no link.
+    expect(parseMarkdown('text\n[a]: docs/a.md\n\n[a]')[1]).toEqual({ t: 'paragraph', c: [{ t: 'text', v: '[a]' }] })
+  })
+
+  it('keeps <a name> targets without an empty paragraph, prefixed as GitHub does', () => {
+    expect(parseMarkdown('<a name="install"></a>\n\n## Install')).toEqual([
+      { t: 'inline', c: [{ t: 'anchor', id: 'install', c: [] }] },
+      { t: 'heading', level: 2, c: [{ t: 'text', v: 'Install' }] },
+    ])
+    expect(para('see <a id="Usage">usage</a> here')).toEqual([
+      { t: 'text', v: 'see ' },
+      { t: 'anchor', id: 'usage', c: [{ t: 'text', v: 'usage' }] },
+      { t: 'text', v: ' here' },
+    ])
+    expect(parseMarkdown('<div id="top" align="center">\nx\n</div>')[0]).toMatchObject({ t: 'element', tag: 'div', id: 'top' })
+  })
+
+  it('does not embolden intraword double underscores', () => {
+    expect(para('my__var__name and __init__.py')).toEqual([
+      { t: 'text', v: 'my__var__name and ' },
+      { t: 'strong', c: [{ t: 'text', v: 'init' }] },
+      { t: 'text', v: '.py' },
+    ])
+    expect(para('a __b__ c')).toEqual([{ t: 'text', v: 'a ' }, { t: 'strong', c: [{ t: 'text', v: 'b' }] }, { t: 'text', v: ' c' }])
+  })
+})

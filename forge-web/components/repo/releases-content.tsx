@@ -23,6 +23,7 @@ import {
   checkDownloadedFile,
   directDownloadUrls,
   downloadVerifiedAsset,
+  type DownloadedFileCheck,
   saveBytes,
   type DownloadProgress,
 } from '@/lib/view/release-download'
@@ -357,7 +358,7 @@ function OriginLinks({ asset, primary = false }: { asset: ReleaseAssetView; prim
  */
 function DirectDownload({ asset, linksShown = false }: { asset: ReleaseAssetView; linksShown?: boolean }): JSX.Element | null {
   const urls = directDownloadUrls(asset)
-  const [check, setCheck] = useState<{ ok: boolean; sha256: string; sizeMatches: boolean } | 'checking' | 'unreadable' | null>(null)
+  const [check, setCheck] = useState<DownloadedFileCheck | 'checking' | 'unreadable' | null>(null)
   const latest = useRef(0)
   if (urls.length === 0) return null
   const pick = async (file: File | undefined): Promise<void> => {
@@ -395,14 +396,17 @@ function DirectDownload({ asset, linksShown = false }: { asset: ReleaseAssetView
         <p>Checking…</p>
       ) : check === 'unreadable' ? (
         <p className="text-caution-700 dark:text-caution-400">That file could not be read.</p>
-      ) : check?.ok ? (
+      ) : check?.kind === 'match' ? (
         <p className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the file matches the published SHA-256.
         </p>
       ) : check ? (
         <p className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
           <XCircle className="h-3.5 w-3.5" aria-hidden />
-          {check.sizeMatches ? 'Does not match' : 'Wrong size, does not match'}: its SHA-256 is {check.sha256.slice(0, 12)}…, not {asset.sha256.slice(0, 12)}…. Do not use it.
+          {check.kind === 'wrong-size'
+            ? `Does not match: it is ${formatBytes(check.size)}, not the published ${formatBytes(check.want)}.`
+            : `Does not match: its SHA-256 is ${check.sha256.slice(0, 12)}…, not ${asset.sha256.slice(0, 12)}….`}{' '}
+          Do not use it.
         </p>
       ) : null}
     </div>

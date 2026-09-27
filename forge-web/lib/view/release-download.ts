@@ -143,14 +143,20 @@ export function directDownloadUrls(asset: ReleaseAssetView, gateways?: readonly 
   return externalFetchUrls(asset.uris, gateways).filter((u) => u.startsWith('https://'))
 }
 
+/** What {@link checkDownloadedFile} found. */
+export type DownloadedFileCheck =
+  | { readonly kind: 'match' }
+  /** The published size is known and the file is another size: it was not hashed. */
+  | { readonly kind: 'wrong-size'; readonly size: number; readonly want: number }
+  | { readonly kind: 'wrong-hash'; readonly sha256: string }
+
 /**
- * Check a file the person downloaded themselves against the published SHA-256 (and size),
- * without uploading it anywhere: it is read and hashed in this tab.
+ * Check a file the person downloaded themselves against the published size and SHA-256,
+ * without uploading it anywhere: it is read and hashed in this tab. A file of the wrong size
+ * cannot match, so it is not read at all (it may be gigabytes).
  */
-export async function checkDownloadedFile(
-  file: Blob,
-  asset: Pick<ReleaseAssetView, 'sha256' | 'size'>,
-): Promise<{ readonly ok: boolean; readonly sha256: string; readonly sizeMatches: boolean }> {
+export async function checkDownloadedFile(file: Blob, asset: Pick<ReleaseAssetView, 'sha256' | 'size'>): Promise<DownloadedFileCheck> {
+  if (asset.size !== null && asset.size !== file.size) return { kind: 'wrong-size', size: file.size, want: asset.size }
   const hash = sha256.create()
   const reader = file.stream().getReader()
   for (;;) {
@@ -159,6 +165,5 @@ export async function checkDownloadedFile(
     hash.update(value)
   }
   const got = bytesToHex(hash.digest())
-  const sizeMatches = asset.size === null || asset.size === file.size
-  return { ok: got === asset.sha256 && sizeMatches, sha256: got, sizeMatches }
+  return got === asset.sha256 ? { kind: 'match' } : { kind: 'wrong-hash', sha256: got }
 }

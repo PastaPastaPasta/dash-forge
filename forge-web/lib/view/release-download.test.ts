@@ -55,9 +55,23 @@ describe('release asset fallback (D-056)', () => {
   })
 
   it('checks a file downloaded by hand against the published hash and size', async () => {
-    await expect(checkDownloadedFile(new Blob([bytes]), asset)).resolves.toMatchObject({ ok: true })
-    const other = await checkDownloadedFile(new Blob([new Uint8Array([1, 2, 3])]), asset)
-    expect(other.ok).toBe(false)
-    expect(other.sizeMatches).toBe(false)
+    await expect(checkDownloadedFile(new Blob([bytes]), asset)).resolves.toEqual({ kind: 'match' })
+    const same = new Uint8Array(bytes.length).fill(7)
+    await expect(checkDownloadedFile(new Blob([same]), asset)).resolves.toEqual({ kind: 'wrong-hash', sha256: bytesToHex(sha256(same)) })
+  })
+
+  it('reports a wrong size without reading the file', async () => {
+    let read = false
+    const file = new Blob([new Uint8Array([1, 2, 3])])
+    const spy = Object.assign(file, {
+      stream: () => {
+        read = true
+        return Blob.prototype.stream.call(file)
+      },
+    })
+    await expect(checkDownloadedFile(spy, asset)).resolves.toEqual({ kind: 'wrong-size', size: 3, want: bytes.length })
+    expect(read).toBe(false)
+    // With no published size, the hash decides.
+    await expect(checkDownloadedFile(new Blob([bytes]), { ...asset, size: null })).resolves.toEqual({ kind: 'match' })
   })
 })
