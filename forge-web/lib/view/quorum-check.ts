@@ -296,6 +296,12 @@ export function lastQuorumCheck(config: NetworkConfig): QuorumCrossCheck | undef
   return sessionChecks.get(config.key)?.settled?.result
 }
 
+/** How long until `config`'s settled cross-check is due again (0 when due now or none settled). */
+export function quorumCheckDueInMs(config: NetworkConfig, now = Date.now()): number {
+  const settled = sessionChecks.get(config.key)?.settled
+  return settled === undefined ? 0 : Math.max(0, settled.at + QUORUM_CHECK_MAX_AGE_MS - now)
+}
+
 /**
  * {@link crossCheckQuorumKeys} once per network, and again once the result is
  * {@link QUORUM_CHECK_MAX_AGE_MS} old; a routine reconnect does not re-run it. An outcome that
@@ -310,7 +316,11 @@ export function crossCheckQuorumKeysCached(
   sessionChecks.set(config.key, entry)
   const fresh = entry.settled !== undefined && now() - entry.settled.at < QUORUM_CHECK_MAX_AGE_MS && !isTransient(entry.settled.result)
   if (entry.running || fresh) return entry.run
-  const run = check(config)
+  // Never rejects: a check that throws is a transient `unavailable`, re-run by the next view.
+  const run = check(config).catch((e: unknown): QuorumCrossCheck => ({
+    state: 'unavailable',
+    reason: e instanceof Error ? e.message : String(e),
+  }))
   entry.run = run
   entry.running = true
   void run.then((result) => {

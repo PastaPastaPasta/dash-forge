@@ -2,35 +2,38 @@
 
 /**
  * useQuorumCheck — the quorum-key cross-check for the active network, run once the SDK is
- * connected (so it never competes with the first paint), and again once its result is an hour
- * old (`QUORUM_CHECK_MAX_AGE_MS`), not on every routine reconnect. While a re-run goes, the
- * previous result stays on screen. `undefined` only before the first result.
+ * connected (so it never competes with the first paint), and again when its result reaches
+ * `QUORUM_CHECK_MAX_AGE_MS` (an hour), not on every routine reconnect. While a re-run goes,
+ * the previous result for the same network stays on screen. `undefined` only before the
+ * network's first result.
  */
 
 import { useEffect, useState } from 'react'
 
 import { NETWORKS, type Network } from '@/lib/constants'
-import { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, type QuorumCrossCheck } from '@/lib/view'
+import { crossCheckQuorumKeysCached, lastQuorumCheck, quorumCheckDueInMs, type QuorumCrossCheck } from '@/lib/view'
 
 export function useQuorumCheck(network: Network, enabled: boolean): QuorumCrossCheck | undefined {
   const config = NETWORKS[network]
-  const [result, setResult] = useState<QuorumCrossCheck | undefined>(() => lastQuorumCheck(config))
-  // Bumped each hour while mounted, so a page left open re-checks.
+  // Keyed by network, so a network switch never shows another network's result.
+  const [held, setHeld] = useState<{ key: string; result: QuorumCrossCheck } | null>(null)
+  // Bumped when the held result is due again, so a page left open re-checks on time.
   const [tick, setTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), QUORUM_CHECK_MAX_AGE_MS)
-    return () => clearInterval(id)
-  }, [])
   useEffect(() => {
     if (!enabled) return
     let live = true
-    setResult((r) => r ?? lastQuorumCheck(config))
-    void crossCheckQuorumKeysCached(config).then((r) => {
-      if (live) setResult(r)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    void crossCheckQuorumKeysCached(config).then((result) => {
+      if (!live) return
+      setHeld({ key: config.key, result })
+      // Due from when the cached result settled, not from this mount; at least a minute
+      // apart, so a transient outcome is retried without a tight loop.
+      timer = setTimeout(() => setTick((t) => t + 1), Math.max(60_000, quorumCheckDueInMs(config)))
     })
     return () => {
       live = false
+      clearTimeout(timer)
     }
   }, [config, enabled, tick])
-  return result
+  return held?.key === config.key ? held.result : lastQuorumCheck(config)
 }

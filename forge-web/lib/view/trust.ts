@@ -146,7 +146,8 @@ function deriveChain(
       detail: 'This connection does not check proofs, so Platform data is shown as the node returned it.',
     }
   }
-  if (connection === 'offline') {
+  // A known key mismatch stays a failure whatever the connection's state.
+  if (connection === 'offline' && quorum?.state !== 'mismatch') {
     return {
       state: 'partial',
       detail: `Can't reach Dash ${label} right now. What this page shows was proven earlier in this tab and is not being re-checked.`,
@@ -384,7 +385,10 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     content,
     source,
     overall,
-    summary: input.connection === 'offline' ? 'Not re-checked · Platform unreachable' : summaryOf(overall, chain, input.checks),
+    summary:
+      input.connection === 'offline'
+        ? `${overall === 'failed' ? `${TRUST_LABEL.failed} · ` : ''}Not re-checked · Platform unreachable`
+        : summaryOf(overall, chain, input.checks),
   }
 }
 

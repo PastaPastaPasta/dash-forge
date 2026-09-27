@@ -255,3 +255,13 @@ describe('Platform unreachable after a connect (M4)', () => {
     expect(deriveConnectionTrust('devnet', 'offline', AGREED).state).toBe('partial')
   })
 })
+
+describe('offline never hides a known failure', () => {
+  it('a quorum-key mismatch stays Failed while Platform is unreachable', () => {
+    const mismatch: QuorumCrossCheck = { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['00ab'] }
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: mismatch }))
+    expect(r.chain.state).toBe('failed')
+    expect(r.overall).toBe('failed')
+    expect(r.summary).toMatch(/^Failed · Not re-checked/)
+  })
+})

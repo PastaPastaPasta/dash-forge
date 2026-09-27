@@ -704,3 +704,23 @@ describe('EvoSdkService: freeing a replaced connection', () => {
     expect(a.free).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('EvoSdkService: preloads count as calls on their connection', () => {
+  it('a swap during a mount-time preload frees the old connection only after the preload ends', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => 'a')
+    const slow = deferred<unknown>()
+    ;(a.sdk.contracts.fetch as ReturnType<typeof vi.fn>).mockReturnValue(slow.promise)
+    const b = fakeSdk('b', async () => 'b')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockResolvedValueOnce(connection(b.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    const mounting = svc.initialize({ network: 'devnet', contractIds: ['new-repo'] })
+    await svc.refresh()
+    expect(a.free).not.toHaveBeenCalled()
+    slow.resolve({})
+    await mounting
+    await flush()
+    expect(a.free).toHaveBeenCalledTimes(1)
+  })
+})

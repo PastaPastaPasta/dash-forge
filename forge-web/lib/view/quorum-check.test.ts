@@ -14,6 +14,7 @@ import {
   crossCheckQuorumKeys,
   crossCheckQuorumKeysCached,
   lastQuorumCheck,
+  quorumCheckDueInMs,
   resetQuorumChecks,
   type QuorumCrossCheck,
   decodeCurrentQuorumsInfo,
@@ -202,5 +203,33 @@ describe('crossCheckQuorumKeysCached (L3)', () => {
     await Promise.resolve()
     await crossCheckQuorumKeysCached(cfg, { check })
     expect(check).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('crossCheckQuorumKeysCached: a check that throws', () => {
+  it('reports unavailable and lets the next view run it again', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-throws' } as NetworkConfig
+    const check = vi
+      .fn<(c: NetworkConfig) => Promise<QuorumCrossCheck>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ state: 'single', primary: 'q', reason: 'no-second-source' })
+    await expect(crossCheckQuorumKeysCached(cfg, { check })).resolves.toMatchObject({ state: 'unavailable' })
+    await Promise.resolve()
+    await expect(crossCheckQuorumKeysCached(cfg, { check })).resolves.toMatchObject({ state: 'single' })
+    expect(check).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('quorumCheckDueInMs', () => {
+  it('counts from when the result settled, not from when a view mounted', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-due' } as NetworkConfig
+    let t = 1_000
+    await crossCheckQuorumKeysCached(cfg, { now: () => t, check: async () => ({ state: 'single', primary: 'q', reason: 'no-second-source' }) })
+    await Promise.resolve()
+    t += 59 * 60_000 // a view mounting 59 minutes later
+    expect(quorumCheckDueInMs(cfg, t)).toBe(60_000)
+    expect(quorumCheckDueInMs({ key: 'devnet-none' } as NetworkConfig, t)).toBe(0)
   })
 })

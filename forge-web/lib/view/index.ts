@@ -100,7 +100,7 @@ export {
   type TrustReport,
   type TrustState,
 } from './trust'
-export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, type QuorumCrossCheck } from './quorum-check'
+export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, quorumCheckDueInMs, type QuorumCrossCheck } from './quorum-check'
 export {
   describeUnavailable,
   onlyGatewaysFailed,

@@ -229,14 +229,13 @@ test.describe('network resilience: refresh under navigation and writes', () => {
     await page.reload({ waitUntil: 'domcontentloaded' })
     await unlock(page)
 
-    let refreshed = false
-    page.on('requestfinished', (r) => {
-      if (QUORUMS.test(r.url())) refreshed = true
-    })
+    // The write starts only once the refreshed connection is live (the service marks each
+    // connection it installs on <html data-sdk-generation>).
+    const generation = (): Promise<number> => page.evaluate(() => Number(document.documentElement.dataset['sdkGeneration'] ?? 0))
+    await expect.poll(generation, { timeout: 60_000 }).toBeGreaterThan(0)
+    const before = await generation()
     await page.clock.fastForward(REFRESH_MS)
-    await expect.poll(() => refreshed, { timeout: 60_000 }).toBe(true)
-    // The new connection warms (contract preload) before it goes live.
-    await page.waitForTimeout(8_000)
+    await expect.poll(generation, { timeout: 90_000 }).toBeGreaterThan(before)
 
     const name = `nr6-${Date.now().toString(36)}`
     await page.getByLabel('Repository name').fill(name)

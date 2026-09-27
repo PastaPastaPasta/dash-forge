@@ -340,7 +340,7 @@ export class EvoSdkService {
     const missing = config.contractIds.filter((id) => !this.contractIds.includes(id))
     this.contractIds.push(...missing)
     if (this.current !== null) {
-      if (missing.length > 0) await preload(this.current.sdk, missing)
+      if (missing.length > 0) await this.track(this.current, (sdk) => preload(sdk, missing))
       return
     }
     // Every page mount lands here. During an outage it waits for the scheduled retry
@@ -455,6 +455,10 @@ export class EvoSdkService {
     if (previous !== null) this.learn(previous.sdk)
     this.current = connection
     this.generationNo++
+    // Observable without React (the e2e suite waits for a swap to go live on it).
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.dataset['sdkGeneration'] = String(this.generationNo)
+    }
     if (this.failures > 0) {
       // Back from an outage (a scheduled retry, "Try again", or a refresh that got through).
       this.failures = 0
@@ -467,10 +471,14 @@ export class EvoSdkService {
     const replaced = (id: string): void => {
       this.outdated.add(id)
     }
-    setStaleContractHandler((id) => refreshSeeded(connection, id, replaced))
+    // Counted like any call, so a swap does not free the connection under them.
+    setStaleContractHandler((id) => this.track(connection, () => refreshSeeded(connection, id, replaced)))
     // Off the critical path, on every connection (at most once an hour while the versions
     // match): are the seeded contracts still the network's current versions?
-    if (this.network !== null) void revalidateSeeded(connection, NETWORKS[this.network].key, replaced)
+    if (this.network !== null) {
+      const key = NETWORKS[this.network].key
+      void this.track(connection, () => revalidateSeeded(connection, key, replaced))
+    }
     this.setStatus({ phase: 'ready' })
     if (previous !== null) this.retire(previous)
   }
