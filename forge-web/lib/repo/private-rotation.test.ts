@@ -495,6 +495,36 @@ describe('burn and contiguity review', () => {
     expect(members.some((m) => m.identity === b58(BOB))).toBe(true)
   })
 
+  it('re-review #1 epochs another maintainer holds never vanish with the leaving one', async () => {
+    // BOB anchored epoch 1 and wrapped it to himself and CAROL (a maintainer), not to ALICE.
+    maintainer(BOB)
+    maintainer(CAROL)
+    const raw = new Uint8Array(32).fill(0xd1)
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, BOB, 1, raw)
+    wrap(BOB, CAROL, 1, raw)
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/holds/)
+    expect(isMaintainerNow(BOB)).toBe(true)
+  })
+
+  it('re-review #2 re-adding a maintainer with a config above the current epoch is refused', async () => {
+    // CAROL (a maintainer back then) pre-posted a config for epoch 2; she is a writer now.
+    const evil = new Uint8Array(32).fill(0x67)
+    await anchor(CAROL, await EpochKeys.import(REPO, 2, evil), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toThrow(/epoch 2/)
+    expect(isMaintainerNow(CAROL)).toBe(false)
+  })
+
+  it('re-review #2 step 4 reports anchored only while the new epoch is the current one', async () => {
+    // BOB, a maintainer, pre-posted a config for epoch 2: once ALICE anchors 1, his 2 follows it.
+    maintainer(BOB)
+    const raw = new Uint8Array(32).fill(0xe1)
+    await anchor(BOB, await EpochKeys.import(REPO, 2, raw), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
+    const steps: string[] = []
+    await expect(rotateRepoKey(ctx, [], 'r-jump', (s) => steps.push(s.kind))).rejects.toThrow(/epoch 2/)
+    expect(steps).not.toContain('anchored')
+  })
+
   it('#5 re-adding a maintainer whose old config would take over an epoch is refused', async () => {
     // CAROL (a maintainer back then) posted a config for epoch 1; she is a writer now.
     const evil = new Uint8Array(32).fill(0x66)

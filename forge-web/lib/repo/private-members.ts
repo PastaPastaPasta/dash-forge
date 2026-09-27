@@ -478,21 +478,25 @@ async function straysAt(c: PrivateWriteContext, epoch: number, allowed: readonly
 }
 
 /** Step 4's reading of the anchor of `epoch` for the key with commitment `commit`. */
-export type AnchorVerdict = 'ours' | 'lost' | 'mismatch' | 'pending'
+export type AnchorVerdict = 'ours' | 'lost' | 'mismatch' | 'pending' | { readonly preempted: number }
 
 /**
  * `ours` only when the anchor is by `self`, commits to our key, and this reader holds the epoch;
  * `lost` when another current maintainer's anchor is first; `mismatch` for our anchor with
- * another key (a replayed or stale write); `pending` while none is visible.
+ * another key (a replayed or stale write); `pending` while none is visible; `preempted` when a
+ * later epoch's anchor was posted before ours (a config waiting above the current epoch, which
+ * our anchor made contiguous): its key, not ours, is the repo's now.
  */
 export function anchorVerdict(session: PrivateSession, epoch: number, commit: Uint8Array, self: string): AnchorVerdict {
-  const anchor = session.resolution.anchors.get(epoch)
+  const r = session.resolution
+  const anchor = r.anchors.get(epoch)
   if (anchor === undefined) return 'pending'
   if (base58Encode(anchor.owner) !== self) return 'lost'
   if (anchor.commit === null || !bytesEqual(anchor.commit, commit)) return 'mismatch'
-  // Our anchor, with our key: the epoch is ours even if someone already rotated past it. We must
-  // be able to read it (our self-wrap holds this key); a later epoch does not change that.
-  return session.resolution.keys.has(epoch) ? 'ours' : 'mismatch'
+  // A rotation past ours after it is fine; a later anchor from before ours is not.
+  for (const [e, a] of r.anchors) if (e > epoch && a.height < anchor.height) return { preempted: e }
+  // Our anchor, with our key: we must be able to read it (our self-wrap holds this key).
+  return r.keys.has(epoch) ? 'ours' : 'mismatch'
 }
 
 const POLL_ATTEMPTS = 10
@@ -545,6 +549,13 @@ async function confirmAnchor(
     onStep?.({ kind: 'waiting', what: `the anchor of epoch ${epoch}` })
     const verdict = await withFreshSession(c, async (s) => anchorVerdict(s, epoch, commit, c.auth.identityId), drop)
     if (verdict === 'ours' || verdict === 'lost') return verdict
+    if (typeof verdict === 'object') {
+      const by = (await withFreshSession(c, async (s) => s.anchors.get(verdict.preempted)?.owner, drop)) ?? 'another maintainer'
+      throw new PrivateMembersError(
+        `key epoch ${epoch} is anchored, but a config for epoch ${verdict.preempted} by ${by.slice(0, 8)}… was posted before it and now follows it, so its key is the repo's current key; the owner can remove that maintainer to drop it.`,
+        'E310',
+      )
+    }
     if (verdict === 'mismatch') {
       throw new PrivateMembersError(`the anchor of epoch ${epoch} does not carry the key you wrapped; run the rotation again`, 'E310')
     }
@@ -701,7 +712,12 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   await withFreshSession(c, async (s) => {
     requireWriteEpoch(s)
     if (role !== 'maintainer' || isMaintainer(s, memberId)) return
-    const changed = await anchorChanges(s, new IdSet([...maintainersOf(s), decodeIdentifier(memberId)]))
+    // Their configs count again: one for an epoch that exists must change nothing, and one above
+    // the current epoch would become the anchor once the epochs below it exist.
+    const id = decodeIdentifier(memberId)
+    const current = s.resolution.currentEpoch ?? -1
+    const above = s.configRows.filter((cfg) => bytesEqual(cfg.owner, id) && cfg.epoch > current).map((cfg) => cfg.epoch)
+    const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
         `making ${memberId.slice(0, 8)}… a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so they can't be a maintainer of this repo again; add them as a writer`,
@@ -802,8 +818,11 @@ export async function removePrivateMember(
     if (removalEffect(s.members, memberId, role) === 'none') return
     const kept = role === 'maintainer' ? keptEpoch(s, memberId) : s.resolution.currentEpoch
     if (kept !== null && !s.resolution.keys.has(kept)) {
+      const holders = role === 'maintainer' ? vanishing(s, memberId).holders : []
       throw new PrivateMembersError(
-        `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
+        holders.length > 0
+          ? `you can't read key epoch ${kept}, which ${holders.map((h) => `${h.slice(0, 8)}…`).join(', ')} also holds${holders.length === 1 ? 's' : ''}; ask a maintainer who holds it to run Repair (it hands you the key), then remove again. Nothing was removed.`
+          : `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
         'E310',
       )
     }
@@ -814,10 +833,12 @@ export async function removePrivateMember(
       await reanchorEpochsOf(c, s, memberId, intent, onStep)
       return keptEpoch(s, memberId) ?? undefined
     })
-    // The re-anchors must now be what each epoch falls back to once the role goes (a few reads:
-    // the re-anchors may not be visible on the first node).
+    // The re-anchors must now be what each epoch falls back to once the role goes, and nothing
+    // that vanishes may be held by anyone who stays (a few fresh reads: the re-anchors may not
+    // be visible on the first node). The rotation never chains from below any kept epoch seen.
     for (let i = 0; ; i++) {
-      const changed = await withFreshSession(c, (s) => anchorsWithout(s, memberId))
+      const [changed, kept] = await withFreshSession(c, async (s) => [await anchorsWithout(s, memberId), keptEpoch(s, memberId)] as const)
+      if (kept !== null) before = Math.max(before ?? kept, kept)
       if (changed.length === 0) break
       if (i + 1 >= SURVIVE_POLLS) throw anchorsWouldChange(changed)
       await sleep(POLL_MS)
@@ -922,16 +943,40 @@ async function sameAnchor(session: PrivateSession, epoch: number, config: Anchor
 
 /**
  * The epochs that stop existing when `leaving`'s maintainer role goes (§5.3 contiguity): every
- * epoch above the highest one this reader can read, when `leaving` anchored the first of them.
- * Nobody else can read those (a maintainer who wrapped a new epoch to themselves alone); the next
- * rotation takes their numbers again. Empty otherwise, or when this reader can read nothing.
+ * epoch above the highest one this reader can read, when `leaving` anchored all of them and no
+ * maintainer who stays holds any (no wrap there by another current maintainer: wrap rows are
+ * public). The next rotation takes their numbers again. `holders`: the maintainers who stay and
+ * hold one (then nothing vanishes; they can hand this reader the key). `losing`: members who stay
+ * and were wrapped one only by `leaving` (they lose what was written under it).
  */
-export function vanishingEpochs(session: PrivateSession, leaving: string): number[] {
+export function vanishing(session: PrivateSession, leaving: string): { epochs: number[]; holders: string[]; losing: string[] } {
+  const none = { epochs: [], holders: [], losing: [] }
   const r = session.resolution
-  if (r.currentEpoch === null) return []
+  if (r.currentEpoch === null) return none
   const top = Math.max(-1, ...r.keys.keys())
-  if (top < 0 || session.anchors.get(top + 1)?.owner !== leaving) return []
-  return Array.from({ length: r.currentEpoch - top }, (_, i) => top + 1 + i)
+  if (top < 0 || top >= r.currentEpoch) return none
+  const epochs = Array.from({ length: r.currentEpoch - top }, (_, i) => top + 1 + i)
+  if (epochs.some((e) => session.anchors.get(e)?.owner !== leaving)) return none
+  const staying = new Set(session.members.filter((m) => m.identity !== leaving).map((m) => m.identity))
+  const maintainers = new Set(session.members.filter((m) => m.role === 'maintainer' && m.identity !== leaving).map((m) => m.identity))
+  const holders = new Set<string>()
+  const losing = new Set<string>()
+  for (const w of session.wraps) {
+    if (!epochs.includes(w.row.epoch)) continue
+    const owner = base58Encode(w.row.owner)
+    const member = base58Encode(w.row.memberId)
+    // A maintainer who stays and wrote or received a wrap there holds it (or can be handed it).
+    if (maintainers.has(owner)) holders.add(owner)
+    if (maintainers.has(member)) holders.add(member)
+    else if (staying.has(member)) losing.add(member)
+  }
+  if (holders.size > 0) return { ...none, holders: [...holders].sort() }
+  return { epochs, holders: [], losing: [...losing].sort() }
+}
+
+/** The epochs {@link vanishing} drops with `leaving`'s maintainer role. */
+export function vanishingEpochs(session: PrivateSession, leaving: string): number[] {
+  return vanishing(session, leaving).epochs
 }
 
 /** The current epoch once `leaving`'s maintainer role goes: below the ones that vanish. */

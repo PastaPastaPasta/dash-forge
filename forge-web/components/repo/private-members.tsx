@@ -34,6 +34,7 @@ import {
   type RotationPlan,
   type RotationStep,
   keptEpoch,
+  vanishing,
   vanishingEpochs,
 } from '@/lib/repo/private-members'
 import type { PrivateSession } from '@/lib/repo/private-session'
@@ -269,10 +270,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         }}
       />
       {removing !== null && removing.role === 'maintainer' && vanishingEpochs(session, removing.member).length > 0 ? (
-        <p className="text-[12px] text-caution" data-testid="removal-vanishing">
-          Key epoch {vanishingEpochs(session, removing.member).join(', ')} was set by {shortId(removing.member)} and nobody else can read it: it goes
-          with their role, and anything written under it becomes unreadable.
-        </p>
+        <VanishingNote session={session} leaving={removing.member} />
       ) : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && write.context !== null && removalPlan.plan.recipients[0]?.keyId !== write.context.ops.keyId ? (
@@ -295,5 +293,28 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         </ol>
       ) : null}
     </div>
+  )
+}
+
+/** The key epochs a maintainer's removal drops (§5.3), and the members who stay and lose them. */
+function VanishingNote({ session, leaving }: { session: PrivateSession; leaving: string }): JSX.Element {
+  const { epochs, losing } = vanishing(session, leaving)
+  return (
+    <p className="text-[12px] text-caution" data-testid="removal-vanishing">
+      Key epoch {epochs.join(', ')} was set by {shortId(leaving)} and no other maintainer holds it: it goes with their role, and anything
+      written under it becomes unreadable
+      {losing.length > 0 ? (
+        <>
+          , also to{' '}
+          {losing.map((id, i) => (
+            <span key={id}>
+              {i > 0 ? ', ' : ''}
+              <Author identityId={id} link={false} />
+            </span>
+          ))}
+        </>
+      ) : null}
+      .
+    </p>
   )
 }
