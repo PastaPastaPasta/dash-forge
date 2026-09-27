@@ -51,6 +51,8 @@ export interface PullComparison extends TreeDiff {
   readonly sides: DiffSides
   /** The user stopped the merge-base search; the view offers to search again. */
   readonly searchStopped?: true
+  /** No merge base was found: `comparedBaseOid` is the head's first parent, not the merge base. */
+  readonly fellBack?: true
 }
 
 /**
@@ -191,7 +193,7 @@ export async function loadPullComparison(
       : 'The base branch has no recorded tip.'
   const parent = headCommit.parents[0] ?? ''
   const fallback = parent === '' ? 'Showing the root head commit in full.' : 'Showing the head commit against its first parent.'
-  const result = await compare(parent, `${why} ${fallback}`)
+  const result = { ...(await compare(parent, `${why} ${fallback}`)), fellBack: true as const }
   return cancelled === null ? result : { ...result, searchStopped: true }
 }
 

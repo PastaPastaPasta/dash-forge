@@ -190,7 +190,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           id: issue.id,
           ...changes,
           expectedRevision: BigInt(issue.revision),
-          seal: { current: { title: issue.title, body: issue.body }, bind: { number: issue.number } },
+          seal: { current: { title: issue.title, body: issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
         })
         setEditing(null)
         break

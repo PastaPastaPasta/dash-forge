@@ -185,6 +185,8 @@ export interface ComparisonSides {
   /** Changes when a side's reader does (the published index, or an in-browser clone). */
   readonly sidesKey: string
   readonly crossRepo: boolean
+  /** The PR's source repo when it is not the base (read once here; the page reuses it). */
+  readonly source: SourceRepo
 }
 
 export function useComparisonSides(baseRepo: RepoRef, sourceId: string): ComparisonSides {
@@ -233,7 +235,7 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
       : headState.kind === 'loading'
         ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
         : null
-  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo }
+  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo, source }
 }
 
 /** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */
@@ -260,6 +262,8 @@ export interface ComparisonState {
   readonly reload: () => void
   readonly commitsRead: number
   readonly stop: () => void
+  /** The source repo `useComparisonSides` resolved. */
+  readonly source: SourceRepo
 }
 
 /**
@@ -268,7 +272,7 @@ export interface ComparisonState {
  * tab read it, so the merge-base walk runs once.
  */
 export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: ComparisonSpec): ComparisonState {
-  const { sides, problems, waiting, sidesKey, crossRepo } = useComparisonSides(baseRepo, sourceId)
+  const { sides, problems, waiting, sidesKey, crossRepo, source } = useComparisonSides(baseRepo, sourceId)
   const { baseTipOid, baseOidAtOpen } = spec
   // The merge-base search can read tens of thousands of commits on a long-lived branch: it
   // reports how far it got, and "Stop" ends it (D-040).
@@ -296,7 +300,7 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
     if (!enabled) search.current?.abort()
   }, [enabled])
   const stop = useCallback(() => search.current?.abort(), [])
-  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead, stop }
+  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead, stop, source }
 }
 
 /** The base, head and flags of a PR's comparison. */

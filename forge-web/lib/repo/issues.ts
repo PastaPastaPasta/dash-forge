@@ -78,6 +78,8 @@ export interface IssueView {
   readonly updatedAt: number
   /** The document revision (1 = never edited): an edit names it to refuse a concurrent one. */
   readonly revision: number
+  /** The `imported` provenance object as read, for re-sealing an edit. */
+  readonly importedRaw?: Readonly<Record<string, unknown>> | null
   readonly state: IssueState
   /**
    * False when the event log could not be read to completion, so `state` is a fold over a
@@ -112,6 +114,7 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog): IssueView 
     createdAt: num(issueDoc, '$createdAt'),
     updatedAt: updatedAtOf(issueDoc),
     revision: revisionOf(issueDoc),
+    importedRaw: typeof issueDoc['imported'] === 'object' && issueDoc['imported'] !== null ? (issueDoc['imported'] as Readonly<Record<string, unknown>>) : null,
     state: foldIssueStateV2(log.events, log.authorEvents, author),
     stateComplete: true,
   }
@@ -173,6 +176,8 @@ export interface PullView {
   readonly imported: boolean
   /** The original PR's URL when the import recorded one, else `''`. */
   readonly importedUrl: string
+  /** The `imported` provenance object as read (a private repo's decrypted), for re-sealing an edit. */
+  readonly importedRaw?: Readonly<Record<string, unknown>> | null
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
@@ -667,11 +672,11 @@ export function historicalTipsPredicate(baseRefNewOidsHex: readonly string[]): I
 }
 
 /** A patch's `imported` provenance (present on PRs archived from another forge). */
-function readImported(doc: PlainDocument): { imported: boolean; importedUrl: string } {
+function readImported(doc: PlainDocument): { imported: boolean; importedUrl: string; importedRaw: Readonly<Record<string, unknown>> | null } {
   const value = doc['imported']
-  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '' }
+  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null }
   const url = (value as PlainDocument)['url']
-  return { imported: true, importedUrl: typeof url === 'string' ? url : '' }
+  return { imported: true, importedUrl: typeof url === 'string' ? url : '', importedRaw: value as Readonly<Record<string, unknown>> }
 }
 
 /** A patch's source pointer (`sourceRepoId`). */

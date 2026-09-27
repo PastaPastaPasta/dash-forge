@@ -106,8 +106,14 @@ export interface ReviewerCardRow {
   readonly requestedAt: number | null
   /** Requested again after they had reviewed. */
   readonly reRequested: boolean
-  /** Their newest review. */
+  /** Their newest review (any verdict), for display. */
   readonly reviewId: string | null
+  /**
+   * The review "Dismiss review" dismisses: the one that counts on the head for them (the newest
+   * approve / request-changes on the head, not dismissed, made while a member — exactly what
+   * `countApprovals` stands on), or null when none counts.
+   */
+  readonly dismissId: string | null
   /** The head their newest review was on. */
   readonly reviewedOid: string | null
   /** Why their newest review was dismissed. */
@@ -141,6 +147,11 @@ export function reviewerRows(
   const newest = newestPerReviewer(reviews)
   const req = new Map(requested.map((r) => [r.identity, r.requestedAt]))
   const reasons = new Map(dismissed.map((d) => [d.reviewId, d.reason]))
+  // The review each counted reviewer's standing rests on (countApprovals' own filter, newest wins).
+  const counting = newestPerReviewer(
+    reviews.filter((r) => (r.verdict === 1 || r.verdict === 2) && !reasons.has(r.id) && r.commitOid === head && oracle.memberAt(r.reviewer, r.createdAt)),
+  )
+  const counted = new Set([...approvals.approvers, ...approvals.changesRequested])
   const who = [...new Set([...newest.keys(), ...req.keys()])]
   const rows = who.map((id): ReviewerCardRow => {
     const review = newest.get(id)
@@ -164,6 +175,7 @@ export function reviewerRows(
       requestedAt,
       reRequested: awaiting && review !== undefined,
       reviewId: review?.id ?? null,
+      dismissId: counted.has(id) ? counting.get(id)?.id ?? null : null,
       reviewedOid: review?.commitOid ?? null,
       dismissReason: dismissal ?? null,
     }

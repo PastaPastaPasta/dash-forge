@@ -66,19 +66,19 @@ import {
   updateTarget,
   type VerdictInput,
 } from '@/lib/repo'
-import { newestCheckRuns, readCheckRunDocs, summarizeChecks } from '@/lib/repo/checks'
-import { headSync, readBranchTip } from '@/lib/repo/source-branch'
-import type { EventKind, Holdings } from '@/lib/rules'
+import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { headSync, readBranchState } from '@/lib/repo/source-branch'
+import type { EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { SupersededWriteError, previewCreate, previewCredits, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds } from '@/lib/view/inline-threads'
-import { prCommits } from '@/lib/view/pr-commits'
+import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
-import { retryWhileMissing } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -88,7 +88,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
-import { ComparisonView, pullBase, pullSpec, usePullComparison, useSourceRepo } from '@/components/repo/pull-diff'
+import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -106,7 +106,7 @@ import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals } from '@/components/repo/approvals'
-import { ChecksTab, CommitsTab, checksPhrase } from '@/components/repo/pull-tabs'
+import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn } from '@/lib/utils'
 
 /** The PR page's tabs (`?tab=`; absent: conversation). */
@@ -143,18 +143,21 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   // Just opened here: a node one block behind answers "not found"; keep asking briefly.
   const justCreated = useParam('created') === '1'
-  // After a write the page re-reads until the write shows (`refresh(expect)`).
-  const expectRef = useRef<((t: PullThread) => boolean) | null>(null)
+  // After a write the page re-reads until the write shows (`refresh(expect)`). Expectations
+  // accumulate until one read satisfies them all, so two quick writes are both waited for; a newer
+  // read aborts the older one's polling (useAsync discards its result anyway).
+  const expectations = useRef<((t: PullThread) => boolean)[]>([])
+  const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
-      const want = expectRef.current
-      expectRef.current = null
+      current.current.aborted = true
+      const signal = { aborted: false }
+      current.current = signal
+      const want = [...expectations.current]
       const load = () => loadPullThread(sdk!, home.repo, number, network)
-      let t = await retryWhileMissing(load, justCreated ? 8 : 0)
-      for (let i = 0; want !== null && t !== null && !want(t) && i < 8; i++) {
-        await new Promise((r) => setTimeout(r, 1500))
-        t = await load()
-      }
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
+      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { signal })
+      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
       return t
     },
     [ready, repoKey(home.repo), number, network],
@@ -162,7 +165,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   )
   const refresh = useCallback(
     (want?: (t: PullThread) => boolean) => {
-      expectRef.current = want ?? null
+      if (want) expectations.current.push(want)
       reload()
     },
     [reload],
@@ -225,7 +228,7 @@ function PullPage({
   const headReader = cmp?.sides.head ?? null
   const { baseTipOid } = pullBase(pull, home)
   const commits = useAsync(
-    () => prCommits(headReader!, [pull.state.merged ? '' : baseTipOid, cmp!.comparedBaseOid], pull.headOid),
+    () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), pull.headOid),
     [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
   )
@@ -236,24 +239,35 @@ function PullPage({
   )
 
   // ---- checks on the head ---------------------------------------------------------------------
-  const memberIds = useMemo(() => new Set(thread.members.map((m) => m.identity)), [thread.members])
+  // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
+  const membersKnown = thread.approvals !== null
+  const memberKey = thread.members.map((m) => m.identity).sort().join(',')
   const checks = useAsync(
-    async () => newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => memberIds.has(who)),
-    [ready, repoKey(repo), pull.headOid, memberIds.size],
+    async () => {
+      const members = new Set(memberKey === '' ? [] : memberKey.split(','))
+      return newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => members.has(who))
+    },
+    [ready, repoKey(repo), pull.headOid, memberKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
-  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data)
+  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data, membersKnown)
 
   // ---- the source branch (head sync) ----------------------------------------------------------
   const crossRepo = pull.sourceId !== '' && pull.sourceId !== repo.repoId
-  const source = useSourceRepo(repo, crossRepo ? pull.sourceId : null)
+  const source = comparison.source
   const sourceRef = source.kind === 'found' ? source.repo : null
-  const sourceTip = useAsync<string | null>(
-    () => (crossRepo ? readBranchTip(sdk!, sourceRef!, pull.sourceRefName!) : Promise.resolve(tipOidOf(home.branches.find((b) => b.refName === pull.sourceRefName)))),
-    [ready, crossRepo ? sourceRef?.repoId ?? '' : repoKey(repo), pull.sourceRefName ?? '', pull.headOid],
+  // A same-repo source reads from the page's resolved branches (a branch never pushed there has
+  // no entry: unknown, not deleted); a fork's branch is resolved in the fork.
+  const sameRepoBranches = crossRepo ? '' : home.branches.map((b) => `${b.refName}:${tipOidOf(b) ?? ''}`).join(',')
+  const sourceState = useAsync<RefState | null>(
+    () =>
+      crossRepo
+        ? readBranchState(sdk!, sourceRef!, pull.sourceRefName!)
+        : Promise.resolve(repo.visibility === 'private' ? null : home.branches.find((b) => b.refName === pull.sourceRefName)?.state ?? null),
+    [ready, crossRepo ? sourceRef?.repoId ?? '' : repoKey(repo), pull.sourceRefName ?? '', pull.headOid, sameRepoBranches],
     { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
-  const sync = sourceTip.settled && !sourceTip.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceTip.data) : null
+  const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
   const canMoveHead = identity !== null && (isAuthor || isMember) && open && !writeBlocked
   const since = pullSinceYourReview(thread, identity)
 
@@ -356,8 +370,9 @@ function PullPage({
         refresh((t) => t.review.requestedReviewers.some((r) => r.identity === p.who) !== p.remove)
         return
       case 'dismiss':
-        await post('reviewDismiss', intent, { refId: p.row.reviewId ?? '', ...(p.reason ? { value: p.reason } : {}) })
-        refresh((t) => t.review.dismissedReviews.some((d) => d.reviewId === p.row.reviewId))
+        if (p.row.dismissId === null) throw new Error('no review of theirs counts on this head')
+        await post('reviewDismiss', intent, { refId: p.row.dismissId, ...(p.reason ? { value: p.reason } : {}) })
+        refresh((t) => t.review.dismissedReviews.some((d) => d.reviewId === p.row.dismissId))
         return
       case 'label':
         await setLabel(sdk, signer, repo, { target, label: p.label, add: !p.remove, intent })
@@ -385,6 +400,7 @@ function PullPage({
             current: { title: pull.title, body: pull.body, baseRefName: pull.baseRefName, sourceRefName: pull.sourceRefName ?? undefined },
             bind: { number: pull.number },
             ...(pull.epoch !== null ? { patchEpoch: pull.epoch } : {}),
+            imported: pull.importedRaw ?? null,
           },
         })
         setEditing(null)
@@ -464,7 +480,8 @@ function PullPage({
   const counts = {
     conversation: thread.comments.length + thread.reviews.length,
     commits: commits.data?.total ?? null,
-    checks: checks.data?.length ?? null,
+    // The runs that count (the summary's total), as the checks row says.
+    checks: checkSummary?.total ?? null,
     files: cmp?.changes.length ?? null,
   }
   const status = merged
@@ -918,7 +935,7 @@ function TabButton({
 }
 
 /** The checks row of the merge box (review-parity §4.8 row 2). */
-function ChecksRow({ summary, headOid, onOpen }: { summary: ReturnType<typeof summarizeChecks> | null; headOid: string; onOpen: () => void }): JSX.Element | null {
+function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null; headOid: string; onOpen: () => void }): JSX.Element | null {
   if (summary === null) return null
   const icon =
     summary.total === 0 ? (
@@ -935,14 +952,14 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ReturnType<typeof su
       {icon}
       <span className="flex-1">
         {checksPhrase(summary)}
-        {summary.total === 0 ? (
+        {summary.total === 0 && summary.membersKnown ? (
           <>
             {' '}
             for <Oid value={headOid} chars={7} copyable={false} />
           </>
         ) : null}
       </span>
-      {summary.total > 0 ? (
+      {summary.total + summary.untrusted > 0 ? (
         <button type="button" onClick={onOpen} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
           Details
         </button>

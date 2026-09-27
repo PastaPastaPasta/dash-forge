@@ -36,8 +36,22 @@ export interface PrCommits {
 export async function prCommits(reader: ObjectReader, have: readonly string[], headOid: string): Promise<PrCommits> {
   let oids: string[]
   let truncated = false
+  // A "have" commit this reader cannot read (a base tip only the base repo holds, not loaded) is
+  // left out rather than failing the whole list.
+  const readable = (
+    await Promise.all(
+      [...new Set(have.filter((h) => h !== ''))].map(async (h) => {
+        try {
+          await reader.readObject(h)
+          return h
+        } catch {
+          return null
+        }
+      }),
+    )
+  ).filter((h): h is string => h !== null)
   try {
-    oids = await newCommits(reader, headOid, have.filter((h) => h !== ''))
+    oids = await newCommits(reader, headOid, readable)
   } catch (e) {
     if (!(e instanceof WalkLimitError)) throw e
     oids = [headOid]
@@ -51,6 +65,16 @@ export async function prCommits(reader: ObjectReader, have: readonly string[], h
     }),
   )
   return { commits, total: oids.length, truncated: truncated || oids.length > PR_COMMITS_CAP }
+}
+
+/**
+ * What the commit walk stops at, from the comparison: the base branch's tip and the merge base.
+ * When the comparison fell back (no merge base: it compared with the head's first parent) or the PR is merged (the tip now contains the head), only the base
+ * the diff was made against: walking from the tip would run to the history cap.
+ */
+export function prHaveSet(c: { readonly baseTipOid: string; readonly comparedBaseOid: string; readonly fellBack: boolean; readonly merged: boolean }): string[] {
+  const out = c.fellBack || c.merged ? [c.comparedBaseOid] : [c.baseTipOid, c.comparedBaseOid]
+  return [...new Set(out.filter((o) => o !== ''))]
 }
 
 /** The trailer naming an applied suggestion's comment. */

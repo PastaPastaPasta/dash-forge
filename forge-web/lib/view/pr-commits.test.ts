@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { Store } from './diff-fixtures'
-import { appliedSuggestions, prCommits } from './pr-commits'
+import { appliedSuggestions, prCommits, prHaveSet } from './pr-commits'
 
 describe('prCommits', () => {
   it('lists base..head newest first, including merged-in side commits', async () => {
@@ -23,6 +23,23 @@ describe('prCommits', () => {
     const a = s.commit(s.files({ x: '1' }), [], 'root')
     const b = s.commit(s.files({ x: '2' }), [a], 'next')
     expect((await prCommits(s.reader(), [''], b)).commits.map((c) => c.oid)).toEqual([b, a])
+  })
+})
+
+describe('prHaveSet: what the commit walk stops at', () => {
+  it('the base tip and the merge base; only the compared base when the comparison fell back or the PR is merged', () => {
+    expect(prHaveSet({ baseTipOid: 'T', comparedBaseOid: 'M', fellBack: false, merged: false })).toEqual(['T', 'M'])
+    expect(prHaveSet({ baseTipOid: 'T', comparedBaseOid: 'P', fellBack: true, merged: false })).toEqual(['P'])
+    expect(prHaveSet({ baseTipOid: 'T', comparedBaseOid: 'M', fellBack: false, merged: true })).toEqual(['M'])
+    expect(prHaveSet({ baseTipOid: '', comparedBaseOid: '', fellBack: false, merged: false })).toEqual([])
+  })
+
+  it('an unreadable base tip does not break the list: the walk skips it', async () => {
+    const s = new Store()
+    const base = s.commit(s.files({ a: '1' }), [], 'base')
+    const head = s.commit(s.files({ a: '2' }), [base], 'change')
+    const r = await prCommits(s.reader(new Set([base, head, ...[...s.objects.keys()]].filter((o) => o !== 'f'.repeat(40)))), ['f'.repeat(40), base], head)
+    expect(r.commits.map((c) => c.subject)).toEqual(['change'])
   })
 })
 

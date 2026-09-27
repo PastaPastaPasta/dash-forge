@@ -561,6 +561,8 @@ export interface SealContext {
   readonly current: Readonly<Record<string, unknown>>
   readonly bind: Readonly<Record<string, unknown>>
   readonly patchEpoch?: number
+  /** An imported document's provenance as read (decrypted): kept in the re-sealed content. */
+  readonly imported?: Readonly<Record<string, unknown>> | null
 }
 
 /**
@@ -581,7 +583,7 @@ async function replace(
   let replaced = changes
   if (repo.visibility === 'private') {
     if (seal === undefined) refusePlaintextInPrivate(repo, documentType)
-    else replaced = await sealEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.patchEpoch)
+    else replaced = await sealEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.patchEpoch, seal.imported)
   }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {

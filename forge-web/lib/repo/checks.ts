@@ -71,13 +71,27 @@ export interface ChecksSummary {
   readonly passed: number
   readonly failing: number
   readonly pending: number
+  /** Trusted runs (the ones that count). */
   readonly total: number
+  /** Runs listed but not counted (their reporter is no longer a member). */
+  readonly untrusted: number
+  /** The membership was read: without it no run can be trusted, and nothing is known. */
+  readonly membersKnown: boolean
 }
 
-export function summarizeChecks(runs: readonly CheckRun[]): ChecksSummary {
+export function summarizeChecks(runs: readonly CheckRun[], membersKnown: boolean): ChecksSummary {
   const trusted = runs.filter((r) => r.trusted)
   const n = (o: CheckOutcome) => trusted.filter((r) => checkOutcome(r) === o).length
-  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: trusted.length }
+  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: trusted.length, untrusted: runs.length - trusted.length, membersKnown }
+}
+
+/** "3 passed, 1 failing", "No checks reported", or why nothing is known. */
+export function checksPhrase(s: ChecksSummary): string {
+  if (!s.membersKnown) return "Couldn't read the members, so which checks count is unknown"
+  const extra = s.untrusted > 0 ? ` (${s.untrusted} not counted: reporter no longer a member)` : ''
+  if (s.total === 0) return `No checks reported${extra}`
+  const parts = [s.passed > 0 ? `${s.passed} passed` : '', s.failing > 0 ? `${s.failing} failing` : '', s.pending > 0 ? `${s.pending} pending` : ''].filter((p) => p !== '')
+  return `${parts.join(', ')}${extra}`
 }
 
 /** Every `checkRun` document on `headOid` in `repo` (the `head (repoId, headOid, $createdAt)` index). */

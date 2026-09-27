@@ -52,6 +52,30 @@ describe('reviewerRows', () => {
   })
 })
 
+describe('reviewerRows: what "Dismiss review" dismisses', () => {
+  const oracle = new RoleOracle([{ identity: 'm', role: 'maintainer', createdAt: 0 }])
+  const rows = (reviews: Review[], dismissed: { reviewId: string; reason: string }[] = []) =>
+    reviewerRows(reviews, [], dismissed, countApprovals(reviews, oracle, H2, new Set(dismissed.map((d) => d.reviewId))), oracle, H2)
+
+  it('an approval then a comment-only review: the approval, not the comment', () => {
+    const r = rows([review('appr', 'm', 1, H2, 10), review('chat', 'm', 3, H2, 11)])[0]
+    expect(r?.state).toBe('approved')
+    expect(r?.reviewId).toBe('chat')
+    expect(r?.dismissId).toBe('appr')
+  })
+
+  it('the newest verdict dismissed while an older one still counts: the older one', () => {
+    const r = rows([review('old', 'm', 1, H2, 10), review('new', 'm', 1, H2, 11)], [{ reviewId: 'new', reason: 'x' }])[0]
+    expect(r?.state).toBe('approved')
+    expect(r?.dismissId).toBe('old')
+  })
+
+  it('nothing counting: nothing to dismiss', () => {
+    expect(rows([review('c', 'm', 3, H2, 10)])[0]?.dismissId).toBeNull()
+    expect(rows([review('s', 'm', 1, H1, 10)])[0]?.dismissId).toBeNull()
+  })
+})
+
 describe('sinceYourReview', () => {
   it('counts the head moves after the viewer reviewed an older head', () => {
     const reviews = [review('r', 'me', 2, H1, 10)]

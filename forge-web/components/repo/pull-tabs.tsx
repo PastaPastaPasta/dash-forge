@@ -12,7 +12,7 @@
 import Link from 'next/link'
 import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
 
-import { checkOutcome, safeDetailsUrl, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
+import { checkOutcome, checksPhrase, safeDetailsUrl, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { timeAgo } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -74,13 +74,6 @@ function CheckIcon({ run }: { run: CheckRun }): JSX.Element {
   if (o === 'passed') return <CheckCircle2 className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
   if (o === 'failing') return <XCircle className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
   return <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
-}
-
-/** "3 passed, 1 failing", "No checks reported". */
-export function checksPhrase(s: ChecksSummary): string {
-  if (s.total === 0) return 'No checks reported'
-  const parts = [s.passed > 0 ? `${s.passed} passed` : '', s.failing > 0 ? `${s.failing} failing` : '', s.pending > 0 ? `${s.pending} pending` : ''].filter((p) => p !== '')
-  return parts.join(', ')
 }
 
 export function ChecksTab({

@@ -184,7 +184,7 @@ describe('assignees and labels (F-1)', () => {
       title: 'new',
       seal: { current: { title: 'old', body: 'b' }, bind: { number: 3 } },
     })
-    expect(sealed[0]).toEqual(['issue', { number: 3 }, { title: 'old', body: 'b' }, { title: 'new' }, undefined])
+    expect(sealed[0]).toEqual(['issue', { number: 3 }, { title: 'old', body: 'b' }, { title: 'new' }, undefined, undefined])
     expect(replaces[0]).toEqual({ documentType: 'issue', changes: { enc: new Uint8Array([1, 2, 3]), epoch: 4 } })
     await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'edited', seal: { current: { body: 'was' }, bind: { targetId: PR } } })
     expect(replaces[1]?.changes).not.toHaveProperty('body')

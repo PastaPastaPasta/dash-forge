@@ -114,7 +114,7 @@ export function ReviewersCard({
               ) : null}
               {r.state === 'dismissed' && r.dismissReason ? `: ${r.dismissReason}` : ''}
             </p>
-            {canDismiss && r.reviewId !== null && (r.state === 'approved' || r.state === 'changesRequested') ? (
+            {canDismiss && r.dismissId !== null && (r.state === 'approved' || r.state === 'changesRequested') ? (
               dismissing?.id === r.identity ? (
                 <div className="ml-5 mt-1 space-y-1">
                   <Input
