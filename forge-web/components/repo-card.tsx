@@ -1,12 +1,12 @@
 'use client'
 
 /**
- * RepoCard — a discovery/profile row: a repo with its provable star and issue counts when
- * read.
+ * RepoCard — a discovery/profile row: a repo with its provable star count and issue total
+ * (open and closed) when read.
  */
 
 import Link from 'next/link'
-import { CircleDot, GitBranch, Lock, Star } from 'lucide-react'
+import { GitBranch, Lock, MessageSquare, Star } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
@@ -47,10 +47,13 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
             <span className="sr-only">stars</span>
           </span>
         ) : null}
+        {/* A total (the countable index), open and closed alike: so the Issues tab's neutral
+            icon and the word "issues", never the open-state dot beside a number that is not
+            the open count. */}
         {typeof repo.issues === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Issues ever opened, open or closed (provable count)">
-            <CircleDot className="h-3 w-3" aria-hidden /> {repo.issues}
-            <span className="sr-only">issues in total</span>
+            <MessageSquare className="h-3 w-3" aria-hidden /> {repo.issues} {repo.issues === 1 ? 'issue' : 'issues'}
+            <span className="sr-only">in total</span>
           </span>
         ) : null}
       </div>

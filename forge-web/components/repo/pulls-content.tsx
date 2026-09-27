@@ -17,7 +17,7 @@ import { GitPullRequest, GitMerge, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Listed, PullView } from '@/lib/repo'
 import { HiddenNote } from '@/components/repo/hidden-note'
-import { listPulls, repoContractIds, repoKey } from '@/lib/repo'
+import { listPullsCached, repoContractIds, repoKey } from '@/lib/repo'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -42,7 +42,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const { data, loading, error, reload } = useAsync<Listed<PullView>>(
-    () => listPulls(sdk!, home.repo, 100),
+    // Through the session cache the header's open count reads, so the two agree.
+    () => listPullsCached(sdk!, home.repo),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )

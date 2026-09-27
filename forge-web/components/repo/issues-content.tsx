@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation'
 import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
-import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
+import { createIssue, listIssuesCached, repoContractIds, repoKey } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
@@ -41,7 +41,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const router = useRouter()
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
-    () => listIssues(sdk!, home.repo, 100),
+    // Through the session cache the header's open count reads, so the two agree.
+    () => listIssuesCached(sdk!, home.repo),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )

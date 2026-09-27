@@ -98,9 +98,16 @@ function scoped(repo: RepoRef, data: Record<string, unknown>): Record<string, un
   return { repoId: decodeIdentifier(repo.repoId), ...data }
 }
 
-/** Drop the caches a write to `repo` invalidates, so the next read shows it. */
-function afterWrite(repo: RepoRef, network: Network): void {
-  invalidateRepoFeed(repo)
+/** The document types whose writes can change an open issue or PR count. */
+const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.event, DOC.authorEvent])
+
+/**
+ * Drop the caches a write of `documentType` to `repo` invalidates, so the next read shows it.
+ * Only a write that can change an open count makes the repo header refold its counts; a
+ * comment, review or release does not.
+ */
+function afterWrite(repo: RepoRef, network: Network, documentType: string): void {
+  invalidateRepoFeed(repo, { counts: COUNTED_TYPES.has(documentType) })
   invalidateMembers(repo, network)
 }
 
@@ -124,7 +131,7 @@ async function writeRepoDoc(
       ...(intent ? { intent } : {}),
     })
   } finally {
-    afterWrite(repo, auth.network)
+    afterWrite(repo, auth.network, documentType)
   }
 }
 
@@ -547,6 +554,8 @@ export async function grantMember(
     () => findMembership(sdk, repo, role, memberId),
   )
   invalidateMembers(repo, auth.network)
+  // Membership decides which rows a private repo shows (a stranger's ciphertext is hidden).
+  invalidateRepoFeed(repo)
   return result
 }
 
@@ -568,6 +577,8 @@ export async function revokeMember(
     repo: repo.repoId,
   })
   invalidateMembers(repo, auth.network)
+  // Membership decides which rows a private repo shows (a stranger's ciphertext is hidden).
+  invalidateRepoFeed(repo)
   return result
 }
 

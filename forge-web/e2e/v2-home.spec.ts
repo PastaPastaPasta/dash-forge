@@ -101,8 +101,11 @@ test.describe('repo home launch UX (moutai fixture)', () => {
   test('b-3. five-tab header: Code · Issues (n) · Pull requests (n) · Releases (Settings for maintainers)', async ({ page }) => {
     await openHome(page)
     const nav = page.getByRole('navigation', { name: 'Repository' })
+    // The tab counts are OPEN counts folded from the lists, so a number appears only once the
+    // fixture's fold is complete (every row read, every state verified): b-3 and b-3b both
+    // depend on that, hence the longer wait.
     await expect(nav.getByRole('link')).toHaveText([/^Code$/, /^Issues\s*\d+$/, /^Pull requests\s*\d+$/, /^Releases$/], {
-      timeout: 45_000,
+      timeout: 60_000,
     })
     // Signed out: no Settings, and the old Commits tab is gone (commits live under Code).
     await expect(nav.getByRole('link', { name: /Settings|Commits/ })).toHaveCount(0)
@@ -110,6 +113,33 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await page.getByTestId('commit-count').click()
     await expect(page).toHaveURL(/\/repo\/commits\//)
     await expect(nav.getByRole('link', { name: 'Code' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  test('b-3b. the Issues and Pull requests tab counts are the lists’ OPEN counts, not totals', async ({ page }) => {
+    // The fixture has closed issues (#2, #3) and a merged PR (#2): a total would overcount.
+    // Like b-3, this needs the fixture's fold to be complete, or the tabs show no number.
+    const nav = page.getByRole('navigation', { name: 'Repository' })
+    const tabCount = async (label: RegExp): Promise<number> => {
+      const tab = nav.getByRole('link', { name: label })
+      await expect(tab).toHaveText(/\d+$/, { timeout: 60_000 })
+      return Number((await tab.innerText()).match(/(\d+)\s*$/)?.[1])
+    }
+
+    await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    const openFilter = page.getByRole('button', { name: /^\d+ Open$/ })
+    await expectLanded(page, page.getByText('README should explain the event split'))
+    const listOpen = Number((await openFilter.innerText()).match(/(\d+)/)?.[1])
+    const listClosed = Number((await page.getByRole('button', { name: /^\d+ Closed$/ }).innerText()).match(/(\d+)/)?.[1])
+    expect(listClosed, 'the fixture has closed issues').toBeGreaterThan(0)
+    expect(await tabCount(/^Issues/)).toBe(listOpen)
+
+    // Pull requests: the list opens on its Open filter; count its rows.
+    await nav.getByRole('link', { name: /^Pull requests/ }).click()
+    await expect(page).toHaveURL(/\/repo\/pulls/)
+    const rows = page.locator('main a[href*="/repo/pull?"], main a[href*="/repo/pull/?"]')
+    await expect(rows.first().or(page.getByText('No pull requests'))).toBeVisible({ timeout: 60_000 })
+    expect(await tabCount(/^Pull requests/)).toBe(await rows.count())
   })
 
   test('b-4. clone box: dash:// + commands, install sheet, and a hash-checked zip', async ({ page }) => {

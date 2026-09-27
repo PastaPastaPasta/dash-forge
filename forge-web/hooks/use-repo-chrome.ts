@@ -6,22 +6,30 @@
  *
  *  - {@link useViewerRole}: what the signed-in viewer is on this repo (maintainer / writer /
  *    none), which decides the Settings tab and the member-only hints.
- *  - {@link useTargetCounts}: the Issues / Pull requests tab counts, from the countable
- *    `number` indexes.
+ *  - {@link useTargetCounts}: the Issues / Pull requests tab counts — the open ones, folded
+ *    from the same cached list pages those tabs show.
  *  - {@link useReleases}: the repo's releases, newest per tag.
  */
+
+import { useRef, useSyncExternalStore } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import {
+  foldOpenCounts,
+  openCounts,
   readReleases,
   readTargetCounts,
   readViewerPermissions,
   repoContractIds,
   repoKey,
+  repoListVersion,
+  repoWriteGeneration,
+  subscribeRepoLists,
   type ReleaseList,
   type RepoRef,
+  type TargetTotals,
 } from '@/lib/repo'
 import { sessionCached } from '@/lib/view/session-cache'
 
@@ -55,14 +63,36 @@ export function useViewerRole(repo: RepoRef): {
   return { role: state.data ?? null, known: state.settled && state.error === null, failed: state.error !== null, retry: state.reload }
 }
 
-export function useTargetCounts(repo: RepoRef): { readonly issues: number | null; readonly pulls: number | null } {
+/**
+ * The OPEN issue and PR counts for the tabs (null: not proven, so no number is shown). The
+ * countable indexes only give totals — open or closed — so they pick the strategy
+ * (`foldsForCount`) and the numbers come from the same folded list pages the Issues and Pull
+ * requests pages show, through their shared session cache. A write drops those lists and
+ * bumps the repo's write generation, which re-reads the totals and refolds here.
+ */
+export function useTargetCounts(repo: RepoRef): TargetTotals {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  // Re-render whenever a list page settles or a write drops them, on this page or another.
+  useSyncExternalStore(subscribeRepoLists, () => repoListVersion(repo), () => 0)
+  const generation = repoWriteGeneration(repo)
+  // The last totals this repo resolved: shown while a write's generation re-reads them, so the
+  // badge keeps its number instead of blanking (a mismatched total refolds, never misleads).
+  const lastTotals = useRef<{ key: string; totals: TargetTotals } | null>(null)
   const { data } = useAsync(
-    () => sessionCached(`counts:${network}:${repo.repoId}`, MINUTE, () => readTargetCounts(sdk!, repo.forge, repo.repoId)),
-    [ready, repoKey(repo), network],
+    async () => {
+      const totals = await sessionCached(`counts:${network}:${repo.repoId}:${generation}`, MINUTE, () =>
+        readTargetCounts(sdk!, repo.forge, repo.repoId),
+      )
+      await foldOpenCounts(sdk!, repo, totals)
+      return totals
+    },
+    [ready, repoKey(repo), network, generation],
     { enabled: ready && sdk !== null },
   )
-  return data ?? { issues: null, pulls: null }
+  const key = `${network}:${repoKey(repo)}`
+  if (data !== null) lastTotals.current = { key, totals: data }
+  const totals = data ?? (lastTotals.current?.key === key ? lastTotals.current.totals : null)
+  return openCounts(repo, totals)
 }
 
 export function useReleases(repo: RepoRef): AsyncState<ReleaseList> {
