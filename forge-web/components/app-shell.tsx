@@ -9,6 +9,7 @@ import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
 import { LoginModal } from '@/components/login-modal'
+import { PlatformBusy } from '@/components/platform-busy'
 import { TopUpSheet } from '@/components/top-up-sheet'
 import { Toaster } from '@/components/ui/toaster'
 
@@ -41,6 +42,7 @@ export function AppShell({
       <LoginModal />
       <TopUpSheet />
       <Toaster />
+      <PlatformBusy />
     </div>
   )
 }
