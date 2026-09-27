@@ -228,7 +228,7 @@ dg storage add minio --kind s3 --endpoint https://minio.example.org \
 dg storage test minio
 ```
 
-The repo's `infra/docker-compose.yml` runs a local MinIO whose `forge-byo` bucket has this exact shape: signed writes (`minioadmin` / `minioadmin`) and anonymous reads. `make storage-it` and `make storage-e2e` test against it.
+The repo's `infra/docker-compose.yml` runs a local S3 store (RustFS, since the `minio/minio` image no longer pulls) whose `forge-byo` bucket has this exact shape: signed writes (`minioadmin` / `minioadmin`) and anonymous reads. `make storage-it` and `make storage-e2e` test against it.
 
 ## IPFS: your own kubo node
 

@@ -19,8 +19,13 @@ export const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
  * repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer COLLAB); main =
  * README.md, src/main.rs, lib/util.ts, docs/rules.md; branch feature/greeting; tag v0.1.0; a
  * published objectLocator; issue #1 open + labelled `question`, #2 closed by its author, #3
- * closed + labelled `docs`; PR #1 open with MAINTAINER's approval, PR #2 merged; one star.
- * Only its seeder writes it (v2-writes w6 adds OWNER's approval to PR #1, nothing else).
+ * closed + labelled `docs`, #4 open; PR #1 open with MAINTAINER's approval, PR #2 merged; PR #3
+ * by CONTRIB (not a member), the review-parity fixture: opened as a draft, head moved to c3 by
+ * the author (`headUpdate`), MAINTAINER requested, MAINTAINER's request-changes review with one
+ * multi-line inline comment (`reviewId`), CONTRIB's reply, the thread resolved by the author, the
+ * review dismissed by OWNER; a branch `policy`; one star.
+ * Only its seeder writes it (v2-writes w6 adds OWNER's approval to PR #1, nothing else; the
+ * live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
  * Override with E2E_V2_OWNER / E2E_V2_NAME.
  */
 export const DEMO = {

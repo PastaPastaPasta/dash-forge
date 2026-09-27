@@ -19,6 +19,9 @@ on:
       # Compiled into the binaries, not just test data: forge-core embeds every
       # deployments/*.json (build.rs), and the conformance test loads vectors/.
       - 'forge-contracts/**'
+      # The storage fixture the `storage-it` steps run against.
+      - 'infra/**'
+      - 'Makefile'
       - '.github/workflows/rust.yml'
   push:
     branches: [master]
@@ -30,6 +33,9 @@ on:
       # Compiled into every binary by the crates' build.rs (`--version` stamping).
       - 'build-support/**'
       - 'forge-contracts/**'
+      # The storage fixture the `storage-it` steps run against.
+      - 'infra/**'
+      - 'Makefile'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
   schedule:
@@ -49,6 +55,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # The storage fixture (RustFS + kubo + nginx, infra/docker-compose.yml), started
+      # first: a fresh runner has no cached images, so this is what proves the pinned images
+      # still pull (the MinIO ones stopped pulling and nothing noticed), and the containers
+      # come up while the workspace builds.
+      - name: Start the storage fixture
+        run: docker compose -f infra/docker-compose.yml up -d
 
       # `tenderdash-proto` (a transitive dep of the Platform SDK) compiles .proto files in
       # its build script and needs protoc on PATH; without it the whole workspace fails to
@@ -92,3 +105,13 @@ jobs:
 
       - name: test
         run: cargo test --locked --workspace
+
+      # The bring-your-own-storage integration tests against the fixture started above:
+      # localhost only, no secrets, no Platform spend. FORGE_IT_* (set by the target) make
+      # an unreachable fixture a failure, never a skip.
+      - name: storage-it
+        run: make storage-it
+
+      - name: Storage fixture logs
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color --tail 200
