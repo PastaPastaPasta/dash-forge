@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, SCREENSHOT_DIR, idFile, runAxe, shot, signedIn, unlock } from './helpers'
+import { E2E_DEVNET, SCREENSHOT_DIR, idFile, idOrEmpty, runAxe, shot, signedIn, unlock } from './helpers'
 
 /**
  * Signed in as CI-RUNNER, live on a devnet (real spend, ~0.0003 DASH plus a key if the stored
@@ -22,12 +22,13 @@ import { E2E_DEVNET, SCREENSHOT_DIR, idFile, runAxe, shot, signedIn, unlock } fr
  */
 
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
-test.skip(!existsSync(idFile('CI-RUNNER')), 'devnet test identities not found')
+test.skip(!existsSync(idFile('CI-RUNNER')) || !existsSync(idFile('OWNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 10 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const RUNNER = String(JSON.parse(readFileSync(idFile('CI-RUNNER'), 'utf8')).identityId)
+// OWNER is who v2-writes.spec.ts creates its `e2e-*` repos as.
+const OWNER = idOrEmpty('OWNER')
+const RUNNER = idOrEmpty('CI-RUNNER')
 
 interface NodeSdk {
   identities: {

@@ -2,10 +2,10 @@ import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { collectPageErrors, E2E_DEVNET, runAxe, shot } from './helpers'
+import { collectPageErrors, DEMO, E2E_DEVNET, runAxe, shot } from './helpers'
 
 /** The read fixture's owner (`forge-contracts/scripts/seed-v2-fixture.mjs`). */
-const DEMO_OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const DEMO_OWNER = DEMO.owner
 
 /**
  * Explore, the header and the notifications page, signed out, on a devnet (reads only):
@@ -55,7 +55,7 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
   await expect(page.getByRole('status').filter({ hasText: /inside a repo/ })).toBeVisible()
   await jump.fill(`${DEMO_OWNER}/forge-v2-demo`)
   await jump.press('Enter')
-  await expect(page).toHaveURL(/\/repo\/?\?owner=9r27/)
+  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO_OWNER}`))
 })
 
 /**

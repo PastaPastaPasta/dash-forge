@@ -14,24 +14,25 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { expect, test, type Browser, type Page } from '@playwright/test'
-import { E2E_DEVNET, PASSPHRASE, deployment, idFile, nodeSdk, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, PASSPHRASE, deployment, idFile, idOrEmpty, nodeSdk, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 const RUN = Date.now().toString(36)
 const NAME = `forge-v2-private-${RUN}`
 const SHOTS = process.env['E2E_SHOTS'] ?? join(__dirname, 'screenshots', 'v2-private')
-const OWNER = JSON.parse(readFileSync(idFile('OWNER'), 'utf8')).identityId as string
-const CONTRIB = JSON.parse(readFileSync(idFile('CONTRIB'), 'utf8')).identityId as string
+const OWNER = idOrEmpty('OWNER')
+const CONTRIB = idOrEmpty('CONTRIB')
 const ROOT = resolve(__dirname, '../..')
 const BIN = process.env['E2E_BIN_DIR'] ?? join(ROOT, 'target', 'release')
 const SECRET = { branch: 'refs/heads/main', file: 'hidden-plan.md', text: `the plan ${RUN}`, title: `secret issue ${RUN}`, body: `secret body ${RUN}`, comment: `secret comment ${RUN}` }
 
 test.describe.configure({ mode: 'serial', timeout: 600_000 })
 test.skip(process.env['E2E_WRITE'] !== '1', 'writes real documents: set E2E_WRITE=1')
+test.skip(OWNER === '' || CONTRIB === '', 'OWNER / CONTRIB identity files not found')
 test.skip(!existsSync(join(BIN, 'dg')) || !existsSync(join(BIN, 'git-remote-dash')), `needs dg and git-remote-dash in ${BIN} (E2E_BIN_DIR)`)
 
 const shot = (page: Page, name: string): Promise<Buffer> => page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true })

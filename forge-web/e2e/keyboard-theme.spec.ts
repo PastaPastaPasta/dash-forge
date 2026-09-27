@@ -20,9 +20,11 @@ async function focusInfo(page: Page): Promise<{ desc: string; inDialog: boolean 
 }
 
 test.describe('keyboard', () => {
-  test('the first Tab stop is a skip link that moves focus to the page content', async ({ page }) => {
+  test('the first Tab stop is a skip link that moves focus to the page content', async ({ page, browserName }) => {
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
-    await page.keyboard.press('Tab')
+    // Safari's Tab reaches only form fields unless the user turns on "Press Tab to highlight
+    // each item"; Option+Tab reaches links (and so the skip link) either way.
+    await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab')
     const skip = page.getByRole('link', { name: 'Skip to content' })
     await expect(skip).toBeFocused()
     await expect(skip).toBeVisible()

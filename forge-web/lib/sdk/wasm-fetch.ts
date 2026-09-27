@@ -30,6 +30,19 @@ export interface FetchWasmOptions {
   readonly compile?: (response: Response) => Promise<WebAssembly.Module>
 }
 
+/**
+ * `fetch`, except that a `file:` URL is read from disk. Outside webpack (vitest in Node, which
+ * runs the live tests) `new URL(…, import.meta.url)` stays a `file:` URL, and Node's `fetch`
+ * does not implement that scheme. The browser only ever sees the http(s) asset URL.
+ */
+const defaultFetch: typeof fetch = async (input, init) => {
+  // Only an explicit file: URL goes to disk; a relative or http(s) URL is always fetched.
+  const href = input instanceof Request ? input.url : String(input)
+  if (!href.startsWith('file:')) return fetch(input, init)
+  const { readFile } = await import(/* webpackIgnore: true */ 'node:fs/promises')
+  return new Response(await readFile(new URL(href)))
+}
+
 async function compileResponse(response: Response): Promise<WebAssembly.Module> {
   if (typeof WebAssembly.compileStreaming === 'function') return WebAssembly.compileStreaming(response)
   return WebAssembly.compile(await response.arrayBuffer())
@@ -43,7 +56,7 @@ export async function fetchAndCompile(
   url: string | URL,
   total: number,
   onProgress?: (p: DownloadProgress) => void,
-  { fetchImpl = fetch, stallMs = STALL_MS, compile = compileResponse }: FetchWasmOptions = {},
+  { fetchImpl = defaultFetch, stallMs = STALL_MS, compile = compileResponse }: FetchWasmOptions = {},
 ): Promise<WebAssembly.Module> {
   const controller = new AbortController()
   let stalled = false

@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 
 import { fetchAndCompile, fetchAndCompileWithRetry, type DownloadProgress } from './wasm-fetch'
@@ -61,6 +65,26 @@ describe('fetchAndCompile (D-025)', () => {
     await expect(
       fetchAndCompile('/x.wasm', 100, undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, compile: drain, stallMs: 40 }),
     ).rejects.toThrow(/stalled/)
+  })
+
+  it('reads a file: URL from disk (Node, where the live tests run outside webpack)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wasm-fetch-'))
+    // The smallest valid module: the magic number and version 1.
+    await writeFile(join(dir, 'm.wasm'), new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))
+    const seen: number[] = []
+    const mod = await fetchAndCompile(pathToFileURL(join(dir, 'm.wasm')), 8, (p) => seen.push(p.loaded))
+    expect(mod).toBeInstanceOf(WebAssembly.Module)
+    expect(seen.at(-1)).toBe(8)
+  })
+
+  it('never reads a relative URL from disk', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 404 }))
+    try {
+      await expect(fetchAndCompile('/x.wasm', 0)).rejects.toThrow('HTTP 404')
+      expect(fetchSpy).toHaveBeenCalledWith('/x.wasm', expect.anything())
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })
 
