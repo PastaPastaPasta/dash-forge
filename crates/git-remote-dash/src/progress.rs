@@ -67,6 +67,32 @@ impl Progress {
     }
 }
 
+/// Environment variable naming a file the helper appends its `done` and `error` events to
+/// (one JSON object per line, whatever the progress mode), so a caller that leaves the
+/// helper's stderr on the terminal (`dg init`) still learns the push's charge and error code.
+pub const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
+
+/// Whether a [`REPORT_FILE_ENV`] file is set.
+pub fn reporting() -> bool {
+    std::env::var_os(REPORT_FILE_ENV).is_some_and(|p| !p.is_empty())
+}
+
+/// Append `event` to the [`REPORT_FILE_ENV`] file, when set. Best effort: a report that
+/// cannot be written is dropped.
+pub fn report(event: &Value) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os(REPORT_FILE_ENV).filter(|p| !p.is_empty()) else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{event}");
+    }
+}
+
 /// What is being pushed, for the plan line.
 pub struct PlanFacts<'a> {
     /// `owner/name` as the user addressed it.

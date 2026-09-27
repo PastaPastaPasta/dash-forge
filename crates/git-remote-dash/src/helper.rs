@@ -473,8 +473,8 @@ impl Helper {
             self.read_refs_until_converged(&planned).await?
         };
         let outcomes = finalize_outcomes(planned, &final_refs, dry_run);
-        if progress.enabled && !dry_run && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_)))
-        {
+        let reporting = progress.enabled || progress::reporting();
+        if reporting && !dry_run && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_))) {
             self.report_done(progress, balance_before, est_credits)
                 .await;
         }
@@ -485,7 +485,8 @@ impl Helper {
     /// The summary line with actuals: the balance change is what this push cost (≈: other
     /// spends by the same identity in the same seconds would be counted too). A balance
     /// that has not moved yet (read-after-write lag) is reported as the estimate, not as a
-    /// free push. Only called when progress is shown, so a quiet push skips the read.
+    /// free push. Only called when progress is shown or a report file is set, so a quiet
+    /// push skips the read.
     async fn report_done(&self, progress: Progress, balance_before: u64, est_credits: u64) {
         let conn = self.conn.as_ref().expect("connected");
         let after = conn.client.get_balance(&conn.identity.id()).await.ok();
@@ -496,6 +497,7 @@ impl Helper {
         let (text, event) =
             progress::done_line(charge, after, conn.repo.owner_id(), conn.repo.name());
         progress.emit(&text, &event);
+        progress::report(&event);
     }
 
     /// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its

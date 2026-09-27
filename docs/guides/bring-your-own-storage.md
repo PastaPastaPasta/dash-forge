@@ -95,6 +95,8 @@ Use it in a repo: dg storage use r2-main
 
 Keychain entries you created by hand (`security add-generic-password -s dash-forge -a <name> -w`, or `secret-tool store … service dash-forge account <name>`) keep resolving: a `keychain:` reference is looked up through the OS credential store first and the command-line tool second.
 
+**macOS asks once per program.** macOS lets the program that created a keychain item read it silently. The first time `git-remote-dash` reads a secret that `dg` stored, macOS asks whether to allow it. Choose **Always Allow**. A rebuilt or reinstalled binary can ask again. Over SSH nobody can answer, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
+
 ---
 
 ## Cloudflare R2

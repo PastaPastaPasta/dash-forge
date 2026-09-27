@@ -362,12 +362,7 @@ fn secret_ref(
                 "Variable name",
                 "set it in the environment dg and git run in",
                 Some(env_default),
-                |v| {
-                    format!("env:{v}")
-                        .parse::<SecretRef>()
-                        .map(drop)
-                        .map_err(|e| e.to_string())
-                },
+                env_name_check,
             )?;
             format!("env:{var}")
         }
@@ -386,8 +381,28 @@ fn secret_ref(
     })
 }
 
+/// An environment variable NAME (`R2_SECRET_ACCESS_KEY`), not a pasted secret: upper-case
+/// letters, digits and `_`, starting with a letter or `_`, at most 64 characters. A value
+/// typed here is written to storage.toml and printed, so anything that looks like a key is
+/// refused.
+fn env_name_check(v: &str) -> std::result::Result<(), String> {
+    let ok = !v.is_empty()
+        && v.len() <= 64
+        && v.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && !v.as_bytes()[0].is_ascii_digit();
+    if ok {
+        Ok(())
+    } else {
+        Err(
+            "a variable NAME such as R2_SECRET_ACCESS_KEY (A-Z, 0-9, _), not the secret itself"
+                .into(),
+        )
+    }
+}
+
 /// A word for a shell command line: as is when it needs no quoting, else single-quoted.
-fn shell_word(s: &str) -> String {
+pub fn shell_word(s: &str) -> String {
     let plain = !s.is_empty()
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_./:=@,+%".contains(&b));
@@ -438,9 +453,16 @@ pub fn equivalent_command(a: &StorageAddArgs) -> String {
     words.join(" ")
 }
 
-/// Run the prompts, store a pasted secret, save the profile and test it. Returns the
-/// profile name.
-pub async fn run(p: &mut dyn Prompter) -> Result<String> {
+/// What [`run`] set up.
+pub struct Added {
+    /// The profile name.
+    pub name: String,
+    /// Whether a check other than browser CORS failed (the storage cannot take a push yet).
+    pub broken: bool,
+}
+
+/// Run the prompts, store a pasted secret, save the profile and test it.
+pub async fn run(p: &mut dyn Prompter) -> Result<Added> {
     let path = StorageProfiles::default_path()?;
     let existing: Vec<String> = StorageProfiles::load_from(&path)?
         .profiles
@@ -448,6 +470,8 @@ pub async fn run(p: &mut dyn Prompter) -> Result<String> {
         .collect();
     let Answers { args, pasted } = collect(p, &existing, keychain::available())?;
     let name = args.name.clone().unwrap_or_default();
+    // Validate before anything is written, so a refused profile leaves no keychain entry.
+    crate::storage::profile_from_args(&args)?;
     if let Some(secret) = &pasted {
         keychain::set(keychain::SERVICE, &name, secret.expose()).map_err(|e| {
             UserError::new(codes::STORAGE_SECRET, "storage profile not added: the secret could not be stored")
@@ -465,10 +489,11 @@ pub async fn run(p: &mut dyn Prompter) -> Result<String> {
         println!("    then run `dg storage test {name}`");
     }
     let failed = report.failed();
+    let broken = failed.iter().any(|f| *f != "browser CORS");
     if failed.contains(&"browser CORS") {
         println!("  note: git push and clone work without CORS; the web app cannot read this storage until it passes");
     }
-    if failed.iter().any(|f| *f != "browser CORS") {
+    if broken {
         println!("  note: saved anyway; fix the failing rows, then run `dg storage test {name}` before pushing");
     }
     let stored = pasted
@@ -479,17 +504,20 @@ pub async fn run(p: &mut dyn Prompter) -> Result<String> {
     println!("Equivalent: {}", equivalent_command(&args));
     println!("Use it in a repo: dg storage use {name}");
 
-    if !profile.is_platform() && !global_storage_set() {
-        let yes = p.confirm(
-            &format!("Make {name} the default storage for new repos (and any repo without its own dash.storage)?"),
-            true,
-        )?;
+    if !profile.is_platform() && !broken && !global_storage_set() {
+        // The profile is saved already: Ctrl-D here means "no", not a failed command.
+        let yes = p
+            .confirm(
+                &format!("Make {name} the default storage for new repos (and any repo without its own dash.storage)?"),
+                true,
+            )
+            .unwrap_or(false);
         if yes {
             crate::storage::git_config(true, &["dash.storage", &name])?;
             println!("Default storage: {name} (equivalent: dg storage use {name} --global)");
         }
     }
-    Ok(name)
+    Ok(Added { name, broken })
 }
 
 /// Whether the user's global git config sets `dash.storage` (the default for new repos).
@@ -704,6 +732,44 @@ mod tests {
         );
         assert_eq!(a.pasted.as_ref().map(Secret::expose), Some("tok"));
         assert!(crate::storage::profile_from_args(&a.args).is_ok());
+    }
+
+    #[test]
+    fn a_pasted_secret_is_not_taken_as_a_variable_name() {
+        assert!(env_name_check("R2_SECRET_ACCESS_KEY").is_ok());
+        assert!(env_name_check("_X1").is_ok());
+        for bad in [
+            "",
+            "1ABC",
+            "lower",
+            "A-B",
+            &"A".repeat(65),
+            "wJalrXUtnFEMIK7MDENG",
+        ] {
+            // (the last is mixed case, like an AWS secret)
+            assert!(env_name_check(bad).is_err(), "{bad:?}");
+        }
+        // The prompt asks again until it gets a name.
+        let a = run_script(
+            &[
+                "b",
+                "1",
+                "4",
+                "http://h",
+                "",
+                "bk",
+                "",
+                "AK",
+                "2",
+                "s3cr3tValue",
+                "",
+            ],
+            true,
+        );
+        assert_eq!(
+            a.args.secret_access_key.as_deref(),
+            Some("env:S3_SECRET_ACCESS_KEY")
+        );
     }
 
     #[test]

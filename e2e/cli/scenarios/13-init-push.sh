@@ -50,9 +50,13 @@ step "2. dg init --storage ${PROFILE} (new repo ${NAME})"
 seed_tiny_repo "$SRC" main >/dev/null
 TIP="$(git -C "$SRC" rev-parse HEAD)"
 _init() { # _init <log> [--json] — dg init in $SRC as OWNER, isolated storage + global config
-  local out="$1"; shift
+  local out="$1" rc; shift
   ( cd "$SRC" && DASH_FORGE_STORAGE_CONFIG="$CFG" GIT_CONFIG_GLOBAL="$GLOBAL" \
       dg_as "$ID_OWNER" --yes "$@" init --storage "$PROFILE" ) >"$out.out" 2>"$out.err"
+  rc=$?
+  # With --json the error is on stdout: copy it where is_flake / _retry look.
+  [[ $rc -ne 0 ]] && cat "$out.out" >>"$out.err"
+  return $rc
 }
 if _retry "$LOG-init.err" _init "$LOG-init"; then
   ok "dg init succeeded"
@@ -62,8 +66,9 @@ else
   bad "dg init failed"; finish_scenario
 fi
 REMOTE="dash://${E2E_OWNER_ID}/${NAME}"
+# A retry after a flaky push finds the repo made by the first attempt ("✓ exists").
 check "prints the created line with the web URL" \
-  assert_file_contains "$LOG-init.out" "✓ created  https://forge.dashhq.org/repo?owner=${E2E_OWNER_ID}&name=${NAME}"
+  grep -qE "✓ (created|exists) +https://forge\.dashhq\.org/repo\?owner=${E2E_OWNER_ID}&name=${NAME}" "$LOG-init.out"
 check "prints the remote line" assert_file_contains "$LOG-init.out" "✓ remote 'origin' → ${REMOTE}"
 check "helper progress reached the terminal" assert_file_contains "$LOG-init.err" "(1 verified)"
 check "remote origin = ${REMOTE}" assert_eq "$REMOTE" "$(git -C "$SRC" remote get-url origin)"

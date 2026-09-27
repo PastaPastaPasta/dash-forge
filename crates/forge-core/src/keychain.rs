@@ -10,6 +10,15 @@
 //! elsewhere), so entries a user created by hand before `dg` wrote them itself keep resolving.
 //! A machine without a credential store (headless Linux, a container) reports
 //! [`available`]` == false`; callers then use a passphrase-encrypted file instead.
+//!
+//! [`DISABLE_ENV`] stops Dash Forge from *choosing* the keychain ([`available`] is false and
+//! [`set`] refuses); an explicit `keychain:` reference the user wrote is still read.
+//!
+//! macOS grants a keychain item to the program that created it. Another program reading it
+//! (`git-remote-dash` reading what `dg` stored, or `security` in the fallback) makes macOS
+//! ask once whether to allow it ("Always Allow" remembers the answer; a rebuilt or
+//! reinstalled binary may ask again). Over SSH there is no one to ask, so the read fails:
+//! use an `env:` reference there.
 
 use crate::error::{Error, Result};
 use crate::keystore::Secret;
@@ -27,7 +36,11 @@ fn disabled() -> bool {
 
 /// Whether an OS credential store can be used on this machine.
 pub fn available() -> bool {
-    !disabled() && keyring::Entry::store_status().is_ok()
+    available_unless(disabled())
+}
+
+fn available_unless(disabled: bool) -> bool {
+    !disabled && keyring::Entry::store_status().is_ok()
 }
 
 /// Where secrets go on this machine, for messages ("macOS Keychain").
@@ -42,11 +55,6 @@ pub fn store_name() -> &'static str {
 }
 
 fn entry(service: &str, account: &str) -> Result<keyring::Entry> {
-    if disabled() {
-        return Err(Error::Config(format!(
-            "the OS keychain is disabled ({DISABLE_ENV} is set)"
-        )));
-    }
     keyring::Entry::new(service, account).map_err(|e| {
         Error::Config(format!(
             "the OS keychain is not available ({}): {e}",
@@ -57,6 +65,15 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry> {
 
 /// Store `secret` under `(service, account)`, replacing any previous value.
 pub fn set(service: &str, account: &str, secret: &str) -> Result<()> {
+    set_unless(disabled(), service, account, secret)
+}
+
+fn set_unless(disabled: bool, service: &str, account: &str, secret: &str) -> Result<()> {
+    if disabled {
+        return Err(Error::Config(format!(
+            "the OS keychain is disabled ({DISABLE_ENV} is set)"
+        )));
+    }
     entry(service, account)?.set_password(secret).map_err(|e| {
         Error::Config(format!(
             "could not write keychain entry {service}/{account}: {e}"
@@ -64,22 +81,21 @@ pub fn set(service: &str, account: &str, secret: &str) -> Result<()> {
     })
 }
 
-/// The secret under `(service, account)`, or `None` when there is no such entry.
+/// The secret under `(service, account)`, or `None` when there is no such entry. Reads
+/// happen even with [`DISABLE_ENV`] set: the caller named this entry explicitly.
 pub fn get(service: &str, account: &str) -> Result<Option<Secret>> {
-    if !disabled() {
-        if let Ok(e) = keyring::Entry::new(service, account) {
-            match e.get_password() {
-                Ok(v) if !v.is_empty() => return Ok(Some(Secret::new(v))),
-                Ok(_) | Err(keyring::Error::NoEntry) => {}
-                Err(err) => {
-                    // A locked or refused store: try the CLI tool before giving up.
-                    if let Some(v) = cli_lookup(service, account) {
-                        return Ok(Some(Secret::new(v)));
-                    }
-                    return Err(Error::Config(format!(
-                        "could not read keychain entry {service}/{account}: {err}"
-                    )));
+    if let Ok(e) = keyring::Entry::new(service, account) {
+        match e.get_password() {
+            Ok(v) if !v.is_empty() => return Ok(Some(Secret::new(v))),
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Err(err) => {
+                // A locked or refused store: try the CLI tool before giving up.
+                if let Some(v) = cli_lookup(service, account) {
+                    return Ok(Some(Secret::new(v)));
                 }
+                return Err(Error::Config(format!(
+                    "could not read keychain entry {service}/{account}: {err}"
+                )));
             }
         }
     }
@@ -101,7 +117,7 @@ pub fn delete(service: &str, account: &str) -> Result<bool> {
 /// `security add-generic-password` or `secret-tool store`). `None` when absent or unreadable.
 fn cli_lookup(service: &str, account: &str) -> Option<String> {
     use std::process::{Command, Stdio};
-    if disabled() || cfg!(windows) {
+    if cfg!(windows) {
         return None;
     }
     let output = if cfg!(target_os = "macos") {
@@ -130,14 +146,12 @@ fn cli_lookup(service: &str, account: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // The switch is passed in rather than set in the process environment, which other
+    // tests running in parallel would see.
     #[test]
     fn a_disabled_keychain_is_unavailable_and_refuses_writes() {
-        // Process-wide env: set and read in one test so no other test races it.
-        std::env::set_var(super::DISABLE_ENV, "1");
-        assert!(!super::available());
-        let err = super::set(super::SERVICE, "test/none", "x").unwrap_err();
+        assert!(!super::available_unless(true));
+        let err = super::set_unless(true, super::SERVICE, "test/none", "x").unwrap_err();
         assert!(err.to_string().contains(super::DISABLE_ENV));
-        assert!(super::get(super::SERVICE, "test/none").unwrap().is_none());
-        std::env::remove_var(super::DISABLE_ENV);
     }
 }

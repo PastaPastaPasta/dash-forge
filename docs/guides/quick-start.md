@@ -170,11 +170,12 @@ What it does, in order:
 - **Creates the repository**, named after the directory unless you pass `--name` (`dg repo create <name>`). Its first config records where the packs live, so readers and the web app know where to look.
 - **Adds the remote** `origin` (`--remote <name>` for another). If `origin` already points somewhere else it stops ([E206](../errors.md#e206)) rather than changing it.
 - **Writes this repository's git config**: `dash.storage` (and `dash.replicas` with `--replicas`), plus `dash.network` / `dash.devnetName` when `git push` would otherwise pick a different network than `dg`. From now on a plain `git push` goes to the same place.
-- **Pushes the current branch** with `-u`. A repository with no commits yet is created and configured, and the push is skipped.
+- **Checks the storage secrets resolve**, before anything is created, so a push that could not sign never follows a paid create.
+- **Pushes the current branch** with `-u`, unless the branch already tracks another remote: an existing GitHub `origin` stays the upstream when the Forge remote is `--remote forge`. A repository with no commits yet is created and configured, and the push is skipped.
 
 It is safe to run again: an existing repository is reused (nothing written), a matching remote is left alone, and an up-to-date branch pushes nothing. `--yes` skips the question (and the push's cost guard); `--json` prints one object with `repoId`, `remoteUrl`, `webUrl`, `storage`, the pushed branch and commit, and the costs.
 
-`dg repo create <name>` without `--push` only creates the repository and prints the `dg init` line that would finish the job.
+`dg repo create <name>` without `--push` only creates the repository and prints the `dg init` line that would finish the job (`--remote` needs `--push`). A re-run of `dg init` without `--name` takes the name from an existing `dash://` remote of yours, so it finds the same repository.
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 

@@ -209,9 +209,16 @@ pub struct CreateOptions {
     /// Default branch (default: the current branch when pushing, else `main`).
     #[arg(long)]
     pub default_branch: Option<String>,
-    /// The git remote to add for the repo.
-    #[arg(long, default_value = "origin")]
-    pub remote: String,
+    /// The git remote to add for the repo (default: origin). Pushing flows only.
+    #[arg(long, value_name = "NAME")]
+    pub remote: Option<String>,
+}
+
+impl CreateOptions {
+    /// The remote name (`origin` unless `--remote`).
+    pub fn remote(&self) -> &str {
+        self.remote.as_deref().unwrap_or("origin")
+    }
 }
 
 /// `dg repo create` arguments.
@@ -1070,7 +1077,7 @@ mod tests {
                 assert_eq!(a.opts.storage.as_deref(), Some("r2-main,platform"));
                 assert_eq!(a.opts.replicas, Some(1));
                 assert_eq!(a.opts.description, "hello");
-                assert_eq!(a.opts.remote, "origin");
+                assert_eq!(a.opts.remote(), "origin");
                 assert_eq!(a.opts.default_branch, None);
             }
             _ => panic!("expected repo create"),
@@ -1097,7 +1104,7 @@ mod tests {
             Command::Init(a) => {
                 assert_eq!(a.name.as_deref(), Some("proj"));
                 assert_eq!(a.opts.storage.as_deref(), Some("minio"));
-                assert_eq!(a.opts.remote, "forge");
+                assert_eq!(a.opts.remote(), "forge");
             }
             _ => panic!("expected init"),
         }

@@ -61,6 +61,9 @@ fn main() {
         };
         let u = user_error::classify(err.chain(), &ctx);
         u.eprint("dash: ");
+        let mut event = u.to_json();
+        event["event"] = serde_json::json!("error");
+        progress::report(&event);
         std::process::exit(u.exit_code());
     }
 }
