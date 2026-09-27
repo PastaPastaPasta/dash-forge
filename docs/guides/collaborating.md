@@ -213,7 +213,7 @@ dg repo unstar <owner>/<repo>
 
 ## From the web app
 
-On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app)):
+On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys)):
 
 | You can | Not yet |
 |---|---|
