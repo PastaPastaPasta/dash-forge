@@ -253,6 +253,24 @@ pub enum AuthCommand {
     Status,
     /// Show the identity's credit balance (credits + ~DASH).
     Balance,
+    /// The identity's on-chain keys.
+    #[command(subcommand)]
+    Keys(AuthKeysCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuthKeysCommand {
+    /// List the identity's on-chain keys, and which of them the identity file holds.
+    List,
+    /// Add a key to the identity (one identity update, signed by the MASTER key).
+    Add {
+        /// Add an ENCRYPTION key, for private repositories (the only kind supported).
+        #[arg(long, required = true)]
+        encryption: bool,
+        /// Add one even when the identity already has a usable encryption key.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -983,6 +1001,26 @@ mod tests {
         let cli = Cli::parse_from(["dg", "--json", "auth", "balance"]);
         assert!(cli.json);
         assert!(matches!(cli.command, Command::Auth(AuthCommand::Balance)));
+    }
+
+    #[test]
+    fn parses_auth_keys_commands() {
+        let cli = Cli::parse_from(["dg", "auth", "keys", "add", "--encryption", "--yes"]);
+        assert!(cli.yes);
+        assert!(matches!(
+            cli.command,
+            Command::Auth(AuthCommand::Keys(AuthKeysCommand::Add {
+                encryption: true,
+                force: false
+            }))
+        ));
+        let cli = Cli::parse_from(["dg", "--json", "auth", "keys", "list"]);
+        assert!(matches!(
+            cli.command,
+            Command::Auth(AuthCommand::Keys(AuthKeysCommand::List))
+        ));
+        // Only an encryption key can be added today.
+        assert!(Cli::try_parse_from(["dg", "auth", "keys", "add"]).is_err());
     }
 
     #[test]
