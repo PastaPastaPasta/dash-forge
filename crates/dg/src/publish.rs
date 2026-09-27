@@ -748,14 +748,17 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         return Ok(());
     };
     // After the create, a failure keeps what was made: the error carries the repository.
-    let (mut body, push_cost, balance) = match wire_and_push(
+    // `body` gains the remote / git config fields as they are done, so a failure after
+    // them still reports what changed locally.
+    let mut body = body;
+    let (push_cost, balance) = match wire_and_push(
         ctx,
         &client,
         &plan,
         local,
         &repo.remote_url(),
         opts,
-        body.clone(),
+        &mut body,
     )
     .await
     {
@@ -820,7 +823,7 @@ fn after_create(
 }
 
 /// Add the remote, write the local git config, and push the current branch (when it has
-/// commits). Returns `body` with the push fields, the push's cost (`None`: nothing was
+/// commits), recording each step in `body`. Returns the push's cost (`None`: nothing was
 /// pushed) and the balance after it.
 async fn wire_and_push(
     ctx: &Ctx,
@@ -829,8 +832,8 @@ async fn wire_and_push(
     local: &Local,
     dash_url: &str,
     opts: &CreateOptions,
-    mut body: Value,
-) -> Result<(Value, Option<u64>, Option<u64>)> {
+    body: &mut Value,
+) -> Result<(Option<u64>, Option<u64>)> {
     let remote = opts.remote();
     let added = !local.remote_exists(remote);
     if added {
@@ -856,7 +859,7 @@ async fn wire_and_push(
                 local.branch.as_deref().unwrap_or("<branch>")
             );
         }
-        return Ok((body, None, None));
+        return Ok((None, None));
     };
     // Track the Forge remote unless the branch already follows another one (an existing
     // GitHub `origin` stays the upstream when the Forge remote is `--remote forge`).
@@ -891,7 +894,7 @@ async fn wire_and_push(
             );
         }
     }
-    Ok((body, Some(push_cost), after))
+    Ok((Some(push_cost), after))
 }
 
 /// Write the repo-local git config a later plain `git push` needs; returns what was set.
