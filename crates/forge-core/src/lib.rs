@@ -33,6 +33,8 @@
 //! is touched in exactly one module); every other module is synchronous and SDK-free.
 
 pub mod backends;
+pub mod budget;
+pub mod cache;
 pub mod collab;
 pub mod config_file;
 pub mod cost;
@@ -41,6 +43,7 @@ pub mod envelope;
 pub mod error;
 pub mod fork;
 pub mod funding;
+pub mod history;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;

@@ -54,6 +54,7 @@ SCENARIOS=(
   "20-config-storage-ux"
   "21-review-round-trip"
   "22-issue-parity"
+  "23-request-budgets"
 )
 
 # Optional subset filter (match by leading number or substring).

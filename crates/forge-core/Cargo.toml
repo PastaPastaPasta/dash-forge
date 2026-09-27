@@ -97,7 +97,7 @@ vendored-openssl = ["dep:openssl", "openssl/vendored"]
 vectors = []
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tempfile = "3"
 hex = "0.4"
 serde_json = { workspace = true }

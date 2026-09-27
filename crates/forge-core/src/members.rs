@@ -45,7 +45,8 @@ pub struct Member {
 }
 
 impl Member {
-    fn from_doc(doc: &FetchedDocument, role: Role) -> Option<Self> {
+    /// A fetched `maintainer` (`role` maintainer) or `writer` document as a membership.
+    pub fn from_doc(doc: &FetchedDocument, role: Role) -> Option<Self> {
         let member = doc.field_bytes32("memberId")?;
         Some(Self {
             identity_id: platform::encode_identifier(member),

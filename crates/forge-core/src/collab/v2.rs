@@ -1193,6 +1193,150 @@ where
     }
 }
 
+/// A PR's view folded from its log and its base ref's tips (pure; [`Collab::patch_view`] and
+/// [`Collab::list_patch_views`] read the inputs).
+fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchView {
+    let state = fold_pr_state_v2(
+        &log.events,
+        &log.author_events,
+        &patch.author,
+        base.tip.as_deref(),
+        |oid, _| base.contains(oid),
+        patch.draft,
+    );
+    let review = fold_pr_review_v2(
+        &log.events,
+        &log.author_events,
+        &patch.author,
+        &patch.head_oid,
+        &BTreeSet::new(),
+    );
+    let head = review.head.clone();
+    let head_on_base = base.contains(&head);
+    PatchView {
+        patch,
+        state,
+        head,
+        review,
+        base_tip: base.current,
+        head_on_base,
+        base_tips: base.historical.into_iter().collect(),
+        log,
+    }
+}
+
+/// The row cap of `dg pr list`'s review lookup and member siblings (Drive's page maximum).
+const LOOKUP_CAP: u32 = 100;
+/// [`LOOKUP_CAP`] as a length.
+const LOOKUP_CAP_LEN: usize = LOOKUP_CAP as usize;
+
+/// A list's page size: `limit`, capped at [`DEFAULT_PAGE`], which 0 also means.
+fn page_limit(limit: u32) -> u32 {
+    if limit == 0 {
+        DEFAULT_PAGE
+    } else {
+        limit.min(DEFAULT_PAGE)
+    }
+}
+
+/// The order of a plain `patchId in [..]` review read (an `in` is a range to Drive and needs
+/// one). The composite lookup is left unordered: Drive walks it in the page's direction and
+/// refuses an explicit ordering of it ("a documents sub-query's outer ordering must match the
+/// page's direction", measured on moutai). [`reviews_to_reread`] does not depend on either.
+fn review_lookup_order() -> Vec<QueryOrder> {
+    vec![QueryOrder::asc("patchId"), QueryOrder::asc("$createdAt")]
+}
+
+/// `dg pr list`'s one composite read: the PR page, the page's reviews (bound to its `$id`s),
+/// and the repo's maintainers and writers.
+fn pr_list_reads<'c>(
+    collab: &'c LoadedContract,
+    core: &'c LoadedContract,
+    scope: &crate::scope::DocScope,
+    limit: u32,
+) -> [crate::platform::BatchRead<'c>; 4] {
+    use crate::platform::{BatchBind, BatchRead};
+    let member = |role: Role| BatchRead {
+        contract: core,
+        document_type: members::doc_type(role),
+        filters: scope.filters([]),
+        order: vec![QueryOrder::desc("memberId")],
+        limit: LOOKUP_CAP,
+        bind: None,
+    };
+    [
+        BatchRead {
+            contract: collab,
+            document_type: DOC_PATCH,
+            filters: scope.filters([]),
+            order: vec![QueryOrder::desc("$createdAt")],
+            limit,
+            bind: None,
+        },
+        BatchRead {
+            contract: collab,
+            document_type: DOC_REVIEW,
+            filters: Vec::new(),
+            order: Vec::new(),
+            limit: LOOKUP_CAP,
+            bind: Some(BatchBind {
+                source: 0,
+                source_property: "$id".into(),
+                field: "patchId".into(),
+            }),
+        },
+        member(Role::Maintainer),
+        member(Role::Writer),
+    ]
+}
+
+/// After a review read of `wanted` PRs that returned `rows` capped at [`LOOKUP_CAP`]: the PRs
+/// whose reviews are known complete, and those that must be read again. Independent of the
+/// walk's direction: a short read is complete for every PR; a full one is complete only for
+/// the PRs it returned rows of, except the one its last row belongs to (the read may have
+/// stopped inside it). Every other wanted PR, returned or not, is read again.
+fn reviews_to_reread(rows: &[FetchedDocument], wanted: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    if rows.len() < LOOKUP_CAP_LEN {
+        return Vec::new();
+    }
+    let cut = rows.last().and_then(|d| d.field_bytes32("patchId"));
+    let complete: BTreeSet<[u8; 32]> = rows
+        .iter()
+        .filter_map(|d| d.field_bytes32("patchId"))
+        .filter(|p| Some(*p) != cut)
+        .collect();
+    wanted
+        .iter()
+        .filter(|id| !complete.contains(*id))
+        .copied()
+        .collect()
+}
+
+/// Rows grouped by the identifier in their `field` (base58), each group in read order.
+fn per_target(rows: Vec<FetchedDocument>, field: &str) -> BTreeMap<String, Vec<FetchedDocument>> {
+    let mut by: BTreeMap<String, Vec<FetchedDocument>> = BTreeMap::new();
+    for d in rows {
+        if let Some(t) = d.field_bytes32(field) {
+            by.entry(platform::encode_identifier(t))
+                .or_default()
+                .push(d);
+        }
+    }
+    by
+}
+
+/// The membership oracle over complete `maintainer` and `writer` document lists.
+fn oracle_of(maintainers: &[FetchedDocument], writers: &[FetchedDocument]) -> RoleOracle {
+    let of = |docs: &[FetchedDocument], role| {
+        docs.iter()
+            .filter_map(move |d| members::Member::from_doc(d, role))
+            .collect::<Vec<_>>()
+    };
+    let mut all = of(maintainers, Role::Maintainer);
+    all.extend(of(writers, Role::Writer));
+    members::oracle(&all)
+}
+
 // ===========================================================================
 // The service
 // ===========================================================================
@@ -1641,12 +1785,49 @@ impl<'a> Collab<'a> {
             .map(|d| issue_from_doc(&d)))
     }
 
+    /// The repository's event feed (`event`, `authorEvent`) as history specs, in
+    /// [`Self::feed_logs`] order. Both types are immutable and non-deletable, so the feed is
+    /// read through the delta cache ([`crate::history`]): after the first read each call costs
+    /// one request for what landed since.
+    fn feed_specs<'c>(
+        collab: &'c LoadedContract,
+        scope: &crate::scope::DocScope,
+    ) -> [crate::history::HistorySpec<'c>; 2] {
+        [
+            crate::history::HistorySpec::new(collab, DOC_EVENT, scope),
+            crate::history::HistorySpec::new(collab, DOC_AUTHOR_EVENT, scope),
+        ]
+    }
+
+    /// The repo feed's rows (as Platform holds them; a private repo's member event values are
+    /// opened here, never stored opened) folded into one log per target.
+    async fn feed_logs(
+        &self,
+        repo: &RepoRef,
+        events: Vec<FetchedDocument>,
+        author_events: Vec<FetchedDocument>,
+    ) -> Result<BTreeMap<String, TargetLog>> {
+        // A private repo's member events: their sealed values opened (§8.1).
+        let (events, _, _) = self.readable_events(repo, events).await?;
+        let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
+        for e in events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone()).or_default().events.push(e);
+        }
+        for e in author_events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone())
+                .or_default()
+                .author_events
+                .push(e);
+        }
+        Ok(logs)
+    }
+
     /// Every well-formed issue of `repo` (newest first) with its folded state, and how many
     /// were skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
-    /// oldest row read, 100 per page, deduped by id) and ONE complete read of the repo feed
-    /// (`event` / `authorEvent` by `(repoId, $createdAt)`), folded per issue. Requests: about
-    /// `⌈issues/100⌉ + ⌈events/100⌉ + ⌈authorEvents/100⌉`, where the old list paid 2 per row.
-    /// P-5 may cache the feed beneath this (it is append-only).
+    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed (`event` /
+    /// `authorEvent` by `(repoId, $createdAt)`) through the delta cache, folded per issue.
+    /// Requests: about `⌈issues/100⌉` plus the feed's new rows, where the old list paid 2 per
+    /// row.
     pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
         let collab = self.collab_contract(repo).await?;
         let mut docs: Vec<FetchedDocument> = Vec::new();
@@ -1683,32 +1864,15 @@ impl<'a> Collab<'a> {
             }
             before = oldest;
         }
-        let feed = |doc_type: &'static str| {
-            let collab = &collab;
-            async move {
-                self.client
-                    .query_all_documents(
-                        collab,
-                        doc_type,
-                        &[Self::repo_filter(repo)?],
-                        &[QueryOrder::asc("$createdAt")],
-                    )
-                    .await
-            }
-        };
-        let (events, author_events) = (feed(DOC_EVENT).await?, feed(DOC_AUTHOR_EVENT).await?);
-        // A private repo's member events: their sealed values opened (§8.1).
-        let (events, _, _) = self.readable_events(repo, events).await?;
-        let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
-        for e in events.iter().filter_map(event_from_doc) {
-            logs.entry(e.target_id.clone()).or_default().events.push(e);
-        }
-        for e in author_events.iter().filter_map(event_from_doc) {
-            logs.entry(e.target_id.clone())
-                .or_default()
-                .author_events
-                .push(e);
-        }
+        let [events, author_events] = crate::history::take(
+            crate::history::sync(
+                self.client,
+                &Self::feed_specs(&collab, &repo.scope()?),
+                crate::history::Freshness::Now,
+            )
+            .await?,
+        );
+        let logs = self.feed_logs(repo, events, author_events).await?;
         // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
         let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
         let shown: Vec<IssueView> = readable
@@ -1910,7 +2074,15 @@ impl<'a> Collab<'a> {
                 opened_at,
             ));
         }
-        crate::refs::read_merge_base(self.client, &core, &scope, base_ref_name, opened_at).await
+        crate::refs::read_merge_base(
+            self.client,
+            &core,
+            &scope,
+            base_ref_name,
+            opened_at,
+            crate::history::Freshness::Now,
+        )
+        .await
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a tip of a base
@@ -1921,33 +2093,158 @@ impl<'a> Collab<'a> {
         let base = self
             .base_ref_tips(repo, &patch.base_ref_name, patch.created_at)
             .await?;
-        let state = fold_pr_state_v2(
-            &log.events,
-            &log.author_events,
-            &patch.author,
-            base.tip.as_deref(),
-            |oid, _| base.contains(oid),
-            patch.draft,
+        Ok(view_of(patch, log, base))
+    }
+
+    /// The newest `limit` pull requests (≤ 100) with their state, head and approvals, in a
+    /// fixed number of requests whatever the count (`dg pr list`; D-500: it was about 9 per
+    /// PR).
+    ///
+    /// Two requests in the usual case (`platform-parity-spec.md` §3.3):
+    /// - ONE composite read: the PR page, every PR's `review`s as a lookup bound to the page's
+    ///   `$id`s (reviews can be deleted, so they are read live), and the repo's `maintainer`
+    ///   and `writer` documents as siblings;
+    /// - ONE delta read ([`crate::history`]) of everything append-only the folds need: the
+    ///   repo's event feed (`event`, `authorEvent`) and its ref history (`refUpdate`,
+    ///   `protectedRefUpdate`, `config`), so every PR's state and base tips fold from it.
+    ///
+    /// A review lookup or a member sibling that fills its 100-row cap may be cut short, so
+    /// what it covers is re-read completely rather than folded from a partial list. A private
+    /// repo's rows are opened here (patches, reviews, event values, ref names), never stored
+    /// opened.
+    pub async fn list_patch_views(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+    ) -> Result<Listed<(PatchView, Approvals)>> {
+        let forge = repo.forge();
+        self.client
+            .prefetch_contracts(&[&forge.collab, &forge.core])
+            .await?;
+        let collab = self.collab_contract(repo).await?;
+        let core = self.core_contract(repo).await?;
+        let scope = repo.scope()?;
+        let limit = page_limit(limit);
+        let reads = pr_list_reads(&collab, &core, &scope, limit);
+        let [feed_a, feed_b] = Self::feed_specs(&collab, &scope);
+        let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
+        let history = [feed_a, feed_b, refs_a, refs_b, refs_c];
+        let (batch, synced) = futures::join!(
+            self.client.query_batch(&reads),
+            crate::history::sync(self.client, &history, crate::history::Freshness::Now)
         );
-        let review = fold_pr_review_v2(
-            &log.events,
-            &log.author_events,
-            &patch.author,
-            &patch.head_oid,
-            &BTreeSet::new(),
-        );
-        let head = review.head.clone();
-        let head_on_base = base.contains(&head);
-        Ok(PatchView {
-            patch,
-            state,
-            head,
-            review,
-            base_tip: base.current,
-            head_on_base,
-            base_tips: base.historical.into_iter().collect(),
-            log,
-        })
+        let [page, reviews, maintainers, writers] = crate::history::take(batch?);
+        let [events, author_events, ref_updates, protected_ref_updates, configs] =
+            crate::history::take(synced?);
+        let state = crate::refs::GitState::from_rows([ref_updates, protected_ref_updates, configs]);
+
+        let more = page.len() >= limit as usize;
+        let page_ids: Vec<[u8; 32]> = page
+            .iter()
+            .filter_map(|d| platform::decode_identifier(&d.id).ok())
+            .collect();
+        let (patches, hidden) = self.readable_all(repo, ContentKind::Patch, page).await?;
+        // Membership siblings are capped at 100 per role: a full one is read completely.
+        let oracle = if maintainers.len() >= LOOKUP_CAP_LEN || writers.len() >= LOOKUP_CAP_LEN {
+            self.member_oracle(repo).await?
+        } else {
+            oracle_of(&maintainers, &writers)
+        };
+        let mut logs = self.feed_logs(repo, events, author_events).await?;
+        let reviews = self.complete_reviews(&collab, reviews, &page_ids).await?;
+        let (reviews, _) = self
+            .readable_all(repo, ContentKind::Review, reviews)
+            .await?;
+        let mut reviews = per_target(reviews, "patchId");
+        // The base branch of every row folds against one read of the ref history.
+        let base_of: Box<dyn Fn(&Patch) -> rules::MergeBaseTips + Send + Sync> =
+            if repo.visibility == Visibility::Private {
+                let kr = self.keyring(repo).await?;
+                let updates = crate::refs::private_updates_of(&state, &kr);
+                Box::new(move |p: &Patch| {
+                    crate::refs::private_merge_base(&updates, &kr, &p.base_ref_name, p.created_at)
+                })
+            } else {
+                let configs = state.config_history();
+                Box::new(move |p: &Patch| {
+                    crate::refs::merge_base_of(&state, &configs, &p.base_ref_name, p.created_at)
+                })
+            };
+
+        let mut rows = Vec::with_capacity(patches.len());
+        for patch in patches.iter().map(patch_from_doc) {
+            let id = &patch.document_id;
+            let log = logs.remove(id).unwrap_or_default();
+            let mut docs = reviews.remove(id).unwrap_or_default();
+            docs.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+            let patch_reviews: Vec<Review> = docs.iter().map(review_from_doc).collect();
+            let base = base_of(&patch);
+            let view = view_of(patch, log, base);
+            let approvals = approvals_over(&patch_reviews, &view, &oracle);
+            rows.push((view, approvals));
+        }
+        Ok(Listed { rows, hidden, more })
+    }
+
+    /// Complete the review lookup of [`Self::list_patch_views`] ([`reviews_to_reread`]): the
+    /// PRs a full lookup may have cut short are read again with `patchId in [..]`, a page at
+    /// a time, until a short page proves the rest complete. One request per 100 reviews,
+    /// never one per PR. A PR that fills a whole page by itself is read on its own.
+    async fn complete_reviews(
+        &self,
+        collab: &LoadedContract,
+        first: Vec<FetchedDocument>,
+        page_ids: &[[u8; 32]],
+    ) -> Result<Vec<FetchedDocument>> {
+        let mut out = Vec::new();
+        let mut rows = first;
+        let mut wanted = page_ids.to_vec();
+        loop {
+            let reread = reviews_to_reread(&rows, &wanted);
+            // A full page of one PR's reviews settles nothing: that PR is read on its own.
+            let first = rows.first().and_then(|d| d.field_bytes32("patchId"));
+            let last = rows.last().and_then(|d| d.field_bytes32("patchId"));
+            let alone = (!reread.is_empty() && first == last)
+                .then_some(last)
+                .flatten();
+            out.extend(rows.into_iter().filter(|d| {
+                d.field_bytes32("patchId")
+                    .is_some_and(|p| !reread.contains(&p))
+            }));
+            wanted = reread;
+            if let Some(whole) = alone {
+                wanted.retain(|id| *id != whole);
+                out.extend(
+                    self.by_target(
+                        collab,
+                        DOC_REVIEW,
+                        "patchId",
+                        &platform::encode_identifier(whole),
+                    )
+                    .await?,
+                );
+            }
+            if wanted.is_empty() {
+                return Ok(out);
+            }
+            rows = self
+                .client
+                .query_documents(
+                    collab,
+                    DOC_REVIEW,
+                    &[QueryFilter::in_list(
+                        "patchId",
+                        wanted
+                            .iter()
+                            .map(|id| FieldValue::identifier(*id))
+                            .collect(),
+                    )],
+                    &review_lookup_order(),
+                    LOOKUP_CAP,
+                    None,
+                )
+                .await?;
+        }
     }
 
     /// The PR's approvals on its current head (§6): member reviews only, dismissed reviews
@@ -3372,6 +3669,53 @@ mod tests {
             matches!(&unheld, Error::User(u) if u.code == codes::NOT_A_KEY_HOLDER),
             "{unheld:?}"
         );
+    }
+
+    /// A `review` row of PR `patch` (its id byte repeated).
+    fn review_row(patch: u8, n: u32) -> FetchedDocument {
+        let mut fields = BTreeMap::new();
+        fields.insert("patchId".into(), FieldValue::Identifier([patch; 32]));
+        FetchedDocument {
+            id: format!("r{patch:03}-{n:04}"),
+            owner_id: "o".into(),
+            created_at: Some(u64::from(n)),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields,
+        }
+    }
+
+    /// Reviews for `patches` (in walk order), `per` each, cut at the lookup cap.
+    fn walk(patches: &[u8], per: u32) -> Vec<FetchedDocument> {
+        patches
+            .iter()
+            .flat_map(|p| (0..per).map(move |n| review_row(*p, n)))
+            .take(LOOKUP_CAP_LEN)
+            .collect()
+    }
+
+    /// Review finding: Drive walks the lookup in the PAGE's direction (descending here), so
+    /// a full page holds the HIGHEST patch ids and every lower one is unread. The re-read
+    /// set must not depend on the direction.
+    #[test]
+    fn a_full_review_lookup_rereads_every_pr_it_did_not_finish_either_direction() {
+        let wanted: Vec<[u8; 32]> = (1..=6).map(|p| [p; 32]).collect();
+        // Descending: 6, 5, 4 fill the page (40 each → 4 is cut at 20).
+        let desc = walk(&[6, 5, 4, 3, 2, 1], 40);
+        let reread = reviews_to_reread(&desc, &wanted);
+        let expect: Vec<[u8; 32]> = [1, 2, 3, 4].iter().map(|p| [*p; 32]).collect();
+        let mut got = reread.clone();
+        got.sort_unstable();
+        assert_eq!(got, expect, "the cut PR and every unread one");
+        // Ascending: 1, 2 whole, 3 cut.
+        let asc = walk(&[1, 2, 3, 4, 5, 6], 40);
+        let mut got = reviews_to_reread(&asc, &wanted);
+        got.sort_unstable();
+        let expect: Vec<[u8; 32]> = [3, 4, 5, 6].iter().map(|p| [*p; 32]).collect();
+        assert_eq!(got, expect);
+        // A short page settles everything.
+        assert!(reviews_to_reread(&walk(&[1, 2], 10), &wanted).is_empty());
     }
 
     fn target(author: &str) -> Target {

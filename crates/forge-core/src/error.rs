@@ -134,6 +134,16 @@ pub enum Error {
     #[error("platform error: {0}")]
     Platform(String),
 
+    /// A node refused a composite query itself (not a transient failure): `unsupported` when
+    /// the network has no composite surface at all.
+    #[error("composite query refused: {reason}")]
+    CompositeRefused {
+        /// The network does not support composite queries.
+        unsupported: bool,
+        /// The refusal.
+        reason: String,
+    },
+
     /// A failure already phrased for a person (code, cause, fix): the private-repository key
     /// checks raise these where the reason is understood. Rendered as-is at the boundary.
     #[error("{0}")]

@@ -484,18 +484,14 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
-    let page = collab.list_patches(handle, limit).await?;
+    // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
+    let page = collab.list_patch_views(handle, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
-    let oracle = collab.member_oracle(handle).await?;
-    let mut rows = Vec::new();
-    for p in page.rows {
-        let v = collab.patch_view(handle, p).await?;
-        if !state.matches(v.state.open) {
-            continue;
-        }
-        let (approvals, _) = collab.approvals_with(handle, &v, &oracle).await?;
-        rows.push((v, approvals));
-    }
+    let rows: Vec<_> = page
+        .rows
+        .into_iter()
+        .filter(|(v, _)| state.matches(v.state.open))
+        .collect();
     let json_rows: Vec<_> = rows
         .iter()
         .map(|(v, a)| {
