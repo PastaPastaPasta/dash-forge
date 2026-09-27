@@ -1,0 +1,17 @@
+{
+  "name": "private_patch_source_mismatch",
+  "description": "Private patch: a source name that does not verify under the epoch key makes the patch malformed.",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefName": "refs/heads/fix",
+      "sourceRefNameHash": "e000b5308db94bf07f812d7942bb2e7b3f7d47b749b1dcef20e875e08da1a03f"
+    },
+    "refKey": "6141d2b714c98c85bd535dee436535c7c9c27e91bed3a9cb5d6e7517dffa629e"
+  },
+  "expected": false
+}

@@ -88,7 +88,7 @@ export function base58CheckEncode(payload: Uint8Array): string {
 
 /**
  * Decode a base58 identity/document id into its raw 32-byte form — the encoding a typed
- * `Document`'s identifier-typed property (e.g. `targetId`, `listingId`, `repoContractId`)
+ * `Document`'s identifier-typed property (e.g. `targetId`, `repoId`, `memberId`)
  * must carry. Throws if the decoded value is not 32 bytes.
  */
 export function decodeIdentifier(id: string): Uint8Array {

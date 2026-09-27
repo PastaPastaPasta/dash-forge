@@ -26,9 +26,9 @@ The chain runs: quorum key → proof → ref tip and pack SHA-256 → pack bytes
 Two things are **rules**, not proofs, and every client applies them identically:
 
 - **Which tip wins.** A branch's tip is folded from its ref-update log (the `FORGE_RULES` fold). If two pushes raced, the ref shows as *diverged*, and the web app says so.
-- **Who counts.** Whether a close, merge or approval was made by someone with the right role. On v1 this is reconstructed from token history. On forge-v2, consensus checks membership when the document is written.
+- **Who counts.** Whether an approval was made by someone with the right role, and whether a merge's commit is reachable from the base branch. Consensus already checks membership when a close, merge or other state change is written; the rules decide which approvals count and when a PR shows as merged.
 
-The Rust and TypeScript clients share 70+ conformance vectors (`forge-contracts/vectors/`), so the CLI and the web app reach the same answer from the same documents.
+The Rust and TypeScript clients share 170+ conformance vectors (`forge-contracts/vectors/`), so the CLI and the web app reach the same answer from the same documents.
 
 ---
 
@@ -128,7 +128,7 @@ The CLI end-to-end suite has a scenario that automates steps 1–3 above (the co
 3. clones, then runs `git fsck --strict` and `git verify-pack`;
 4. checks that the clone's tip equals the raw on-chain tip, re-hashes the tip commit and its tree by hand, and checks that no reachable object is missing.
 
-It runs in the nightly against testnet. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
+It runs in the nightly against devnet moutai. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
 
 ---
 
@@ -145,7 +145,7 @@ pnpm build                         # writes the static site to forge-web/out/
 npx serve out                      # or any static file server
 ```
 
-Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=moutai` for a devnet. Contract ids come from `forge-contracts/deployments/`.
+Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=moutai` for a devnet. The hosted app is built with `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai`, the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
 
 **Host it anywhere static:** another static host, your own server, or IPFS:
 

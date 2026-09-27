@@ -17,7 +17,7 @@ Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same f
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Testnet Dash is free, from the faucet.
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet moutai Dash is free, from the [moutai faucet](https://faucet.moutai.networks.dash.org).
 
 ```sh
 dg auth balance
@@ -51,8 +51,8 @@ dg cost estimate --bytes 1048576
 ```
 Estimate for 1048576 bytes (platform tier):
   total:      ~0.28743583 DASH ≈ $8.62
-  refundable: ~0.28311552 DASH ≈ $8.49 (storage deposit, reclaimable on delete)
-  burned:     ~0.00432031 DASH ≈ $0.13 (non-refundable processing)
+  storage:    ~0.28311552 DASH ≈ $8.49 (deposit; Platform packs are permanent, not refunded)
+  processing: ~0.00432031 DASH ≈ $0.13
 ```
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
@@ -61,18 +61,18 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-| Action | v1 (testnet today) | forge-v2 (planned: devnet moutai once client support lands; mainnet after protocol 14) |
-|---|---|---|
-| Create a repository | **~1.18 DASH**, not refundable | **~0.001 DASH** (three small documents; estimated, still being measured) |
-| Fork a repository | not supported on v1 | ~0.001 DASH plus one small manifest per pack and one ref update per branch (measured on moutai: 0.03 DASH for a 36-pack repo); the parent's packs are referenced, never re-uploaded |
-| Push to **your own bucket** | ~0.0002–0.0004 DASH: manifest + ref update | same |
-| Push with packs **on Platform** | ~0.28 DASH per MiB of packed data, plus the above | same, and the storage is permanent |
-| Issue or comment (~500 bytes) | ~0.00014 DASH | same |
-| Ref update (~200 bytes) | ~0.000055 DASH | same |
-| Add or remove a collaborator | a token mint or freeze, small | one small document |
-| Clone, fetch, browse, read issues | **free** | **free** |
+| Action | Cost |
+|---|---|
+| Create a repository | **~0.001 DASH**: three small documents (`repo`, your `maintainer` membership, the first `config`) |
+| Fork a repository | ~0.001 DASH plus one small manifest per pack and one ref update per branch (measured on moutai: 0.03 DASH for a 36-pack repo); the parent's packs are referenced, never re-uploaded |
+| Push to **your own bucket** | ~0.0002–0.0004 DASH: manifest + ref update |
+| Push with packs **on Platform** | ~0.28 DASH per MiB of packed data, plus the above; the storage is permanent |
+| Issue or comment (~500 bytes) | ~0.00014 DASH |
+| Ref update (~200 bytes) | ~0.000055 DASH |
+| Add or remove a collaborator | one small document (created, or deleted) |
+| Clone, fetch, browse, read issues | **free** |
 
-Where the numbers come from: `dg cost audit` (the per-operation reference below), [economics.md](../economics.md), and the measured forge-v2 contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
+Where the numbers come from: `dg cost audit` (the per-operation reference below), [economics.md](../economics.md), and the measured contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 
 ```sh
 dg cost audit
@@ -80,13 +80,15 @@ dg cost audit
 
 ```
 Per-operation cost reference (no live spend tracking yet):
-  repo create                ~1.18 DASH ≈ $35.40
+  repo create                ~0.002 DASH ≈ $0.06
   ref update (~200 B doc)    ~0.000055 DASH ≈ $0.00
   pack chunk (~4900 B)       ~0.00134337 DASH ≈ $0.04
   issue / comment (~500 B)   ~0.00013724 DASH ≈ $0.00
 ```
 
-**Why v1 repositories are expensive.** A v1 repository is its own Platform data contract, and Platform charges contract registration by the number of document types, indexes and tokens. That is about 0.88 DASH in fees for a v1 repository, before storage. forge-v2 puts every repository into one shared pair of contracts, which were registered once (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents.
+The `repo create` line is the upper bound `dg` quotes before it signs; the measured cost is about half that.
+
+**Why a repository is cheap.** Every repository lives in one shared pair of contracts, forge-core and forge-collab, registered once per network (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
 
 Packs are git packfiles: delta-compressed and deflated, typically 20–35% of the size of a checkout. Forge never stores raw files.
 
@@ -101,7 +103,7 @@ Pack bytes are almost all of a repository's size, so where you keep them decides
 | **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifest + refs per push. Provider: storage and egress, at their prices. | ~0.003 DASH a month on Platform, plus cents to your provider (R2 has no egress fees) |
 | **Dash Platform** | ~0.28 DASH per MiB pushed | ~14 DASH for the first upload, then ~0.28 DASH per MiB pushed |
 
-Platform storage buys you something: it is stored by the network, and on forge-v2 it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
+Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
 
 If you set nothing, **packs go to Platform**. That is fine for small repositories, and expensive for large ones.
 
@@ -113,15 +115,16 @@ When a document is deleted, Platform refunds the part of its storage deposit tha
 
 **What can be deleted, and so refunded:**
 
-| | v1 (testnet today) | forge-v2 |
-|---|---|---|
-| Pack chunks and manifests | Yes: `dg repack` consolidates and deletes superseded ones; `dg repo delete` deletes all of them | **No.** Platform-tier storage is permanent, so that nobody can break a repository by deleting what others depend on. |
-| Issues, PRs | Yes, by the author | **No**, so that threads cannot be rewritten |
-| Ref updates, config, events | No, never (they are the audit trail) | No, never |
-| Comments, reviews, releases, labels, stars, follows | Yes, by the author | Yes, by the author |
-| The repository contract (v1) or `repo` document (v2) | No | No |
+| | Deletable? |
+|---|---|
+| Pack chunks and manifests | **No.** Platform-tier storage is permanent, so that nobody can break a repository by deleting what others depend on. `dg repack` consolidates into a new pack and deletes nothing on Platform. |
+| Issues, PRs | **No**, so that threads cannot be rewritten |
+| Ref updates, config, events | No, never (they are the audit trail) |
+| The `repo` document | No |
+| Membership documents (`writer`, `maintainer`) | Yes, by the owner (that is how a collaborator is removed) |
+| Comments, reviews, releases, labels, webhooks, stars, follows | Yes, by the author |
 
-On v1, `dg repo delete` deletes the repository's chunks and manifests, removes its listing, and prints the estimated refund. The contract itself stays, because contracts cannot be deleted.
+There is no `dg repo delete`: a repository cannot be deleted.
 
 The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in ref updates. That is the price of a history nobody can rewind.
 
@@ -129,7 +132,7 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
 
 ## Seeing costs before you pay
 
-- **`dg` asks first.** Every command that writes asks `[y/N]` unless you pass `--yes`. `dg repo create` and `dg repack` show their price in the question, and `dg repo delete` its refund. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
+- **`dg` asks first.** Every command that writes asks `[y/N]` unless you pass `--yes`. `dg repo create` and `dg repack` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH

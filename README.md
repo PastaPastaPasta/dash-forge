@@ -7,18 +7,19 @@
 - **No takedowns.** The contracts have no moderation. Nobody can delete your history or ban your identity.
 - **Plain git.** `git clone dash://…` and `git push` work unchanged, and so does jj. `dg` feels like `gh`.
 
-## Try it (testnet)
+## Try it (devnet moutai)
 
-Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=testnet), fund it from the bridge's testnet faucet twice (a repository costs ~1.18 tDASH; each request gives 1), and download its key backup. Then, from any git repository, replacing `<id>` with your identity id:
+Forge runs on devnet **moutai** today (Platform protocol 14). Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=devnet-moutai), fund it from the [moutai faucet](https://faucet.moutai.networks.dash.org) (a repository costs about 0.001 DASH), and download its key backup. Then, from any git repository, replacing `<id>` with your identity id:
 
 ```sh
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
-dg auth login --identity ~/Downloads/dash-identity-<id>.json
-export DASH_FORGE_KEY=~/.config/dash-forge/identities/testnet/<id>.identity.json
-dg init --name hello --storage platform # create the repo, add remote origin, push the current branch
+dg auth login --network devnet --devnet-name moutai --identity ~/Downloads/dash-identity-<id>.json
+export DASH_FORGE_KEY=~/.config/dash-forge/identities/devnet-moutai/<id>.identity.json
+export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai   # dg and git-remote-dash read these
+dg init --name hello --storage platform # ~0.001 DASH to create; adds remote origin and pushes this branch
 ```
 
-`dg` creates forge-v2 repositories (~0.002 DASH), which run on devnet moutai today: add `--network devnet --devnet-name moutai` until they reach testnet. Run `dg storage add` first to keep the packs in your own bucket instead of on Platform (~0.28 DASH/MiB); `dg init` then uses it without `--storage`.
+`--storage platform` keeps the packs on Platform (~0.28 DASH/MiB). Run `dg storage add` first to keep them in your own bucket instead; `dg init` then uses it without `--storage`.
 
 Open `https://forge.dashhq.org/repo?owner=<id>&name=hello` to see it. The [quick start](docs/guides/quick-start.md) walks through each step.
 
@@ -39,13 +40,15 @@ Prebuilt binaries and a one-line `install.sh` will come with the first tagged re
 
 ## Status
 
-| Network | Forge version | State |
+| Network | Platform protocol | Forge |
 |---|---|---|
-| **Testnet** | **v1** (legacy): one contract per repository, token access control | Live. Everything in the guides that is not marked coming soon works here. A repository costs ~1.18 tDASH. |
-| **Devnet moutai** | **forge-v2**: two shared contracts, membership access control, Platform protocol 14 | Contracts registered. The CLI and web app cannot use them yet; support is landing now. A repository will cost ~0.001 DASH. |
-| **Mainnet** | — | Not deployed. forge-v2 will be registered once Platform protocol 14 activates on mainnet. |
+| **Devnet moutai** | 14 | **forge-v2** registered: two shared contracts (forge-core, forge-collab) in one contract group, membership access control. `dg`, `git-remote-dash` and the web app at forge.dashhq.org use it. A repository costs about 0.001 DASH. |
+| **Testnet** | 13 | Not deployed. forge-v2 is registered once Platform protocol 14 reaches testnet. |
+| **Mainnet** | 13 | Not deployed. forge-v2 is registered once Platform protocol 14 activates on mainnet. |
 
-Specified but not built yet, and marked **coming soon** in the guides: prebuilt releases, identity creation in `dg` and in the browser, limited-budget keys, DPNS usernames, forks, opening and merging PRs from the browser, the GitHub Mirror Action, and private repositories.
+On a network with no forge-v2 deployment, `dg`, `git-remote-dash` and the web app stop with a "not deployed" error. The first version of Forge (forge-v1: one contract per repository, token access control) ran on testnet until 2026-09-26. It was removed with no backwards compatibility, so v1 repositories can no longer be read.
+
+Specified but not built yet, and marked **coming soon** in the guides: prebuilt releases, identity creation and limited-budget keys in `dg` (the web app has both), DPNS usernames, opening PRs and merging code from the browser, and private repositories.
 
 ---
 
@@ -57,7 +60,7 @@ Original design brief: `../INIT.md`; reconciliation notes: [docs/init-reconcilia
 
 | Component | What it is |
 |---|---|
-| **forge protocol** | Data contracts. v1 (testnet): one global registry + a per-repo contract template with WRITE/MAINTAIN token ACLs enforced at consensus. forge-v2 (protocol 14): two shared contracts with membership gates ([forge-v2.md](docs/contracts/forge-v2.md)). |
+| **forge protocol** | Data contracts. forge-v2 (Platform protocol 14): two shared contracts, forge-core and forge-collab, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
 | **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj-compatible. |
 | **dg** | `gh`-replacement CLI (Rust, same workspace): repos, issues, PRs, releases, collaborator management, storage profiles, cost audit, repack, doctor. |
 | **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Browsing, commit and PR diffs, issues, and PR timelines (including review verdicts) are built; opening a PR and recording a verdict are not — see [PRD 03](docs/prd/03-web-app.md). |
@@ -75,21 +78,22 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 [docs/INSTALL.md](docs/INSTALL.md) covers the release pipeline, `install.sh`, checksums and
 attestations, `cargo binstall` and shell completions (`dg completions <shell>`).
 
-**Networks.** Testnet is the default. Pick another network with `--network mainnet`, or
-`--network devnet --devnet-name moutai` for a named devnet (`--dapi-addresses` sets its
-nodes). The helper reads the same settings from git config (`dash.network`,
-`dash.devnetName`, `dash.dapiAddresses`), and the web build reads them from
+**Networks.** Testnet is the default network, but only devnet moutai has a forge-v2
+deployment today, so pass `--network devnet --devnet-name moutai` (`dg auth login` records
+it as your default; `--dapi-addresses` sets the devnet's nodes). The helper reads the same
+settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` or git config
+(`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), and the web build reads them from
 `NEXT_PUBLIC_NETWORK` and `NEXT_PUBLIC_DEVNET_NAME`. Contract ids come only from
-`forge-contracts/deployments/<network>.json`. A network with no deployment (mainnet, until
-the runbook is executed) fails with a clear "not deployed" error and never falls back to
-testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
+`forge-contracts/deployments/<network>.json`. A network with no deployment (testnet and
+mainnet today) fails with a clear "not deployed" error and never falls back to another
+network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Document index
 
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.
 2. [INIT.md reconciliation](docs/init-reconciliation.md) — what was adopted from the original brief; constraint-forced deviations, flagged for review.
-3. [System architecture](docs/architecture.md) — components, contract topology, token ACL, storage backends, data flows, economics.
-4. [Data contracts design](docs/contracts/data-contracts.md) — registry + repo-template schemas, token costs, indices. [forge-v2 contracts](docs/contracts/forge-v2.md) — the protocol-14 shared contracts.
+3. [System architecture](docs/architecture.md) — components, contract topology, membership access control, storage backends, data flows, economics.
+4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the protocol-14 shared contracts: types, gates, client rules, costs, deployment. [Data contracts design](docs/contracts/data-contracts.md) is the historical forge-v1 design (registry + per-repo contracts), no longer implemented.
 5. PRDs:
    - [01 Product overview & personas](docs/prd/01-product-overview.md)
    - [02 git-remote-dash & dg](docs/prd/02-git-remote-helper-cli.md)
@@ -100,10 +104,10 @@ testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 6. [Economics & fee minimization](docs/economics.md) — compression pipeline, deposit-vs-burn cost model, repack/refund GC.
 7. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
 8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
-9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — testnet identities/funds via bridge.thepasta.org + faucet.thepasta.org; mainnet smoke.
-10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict).
+9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — devnet moutai identities and funds, the nightly suites, mainnet smoke.
+10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict), run for forge-v1.
 11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
-12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what implementation established: deviations, discoveries, final decisions.
+12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what the forge-v1 implementation established (historical).
 13. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
 14. [Error codes](docs/errors.md) — every `dg` / `git-remote-dash` error code, its exit code and fix.
 15. [Product roadmap](docs/roadmap.md) — verified state, owner decisions, phased plan and execution tracker.
@@ -111,9 +115,9 @@ testnet ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app is live at **https://forge.dashhq.org** (GitHub Pages). The CLI end-to-end suite (`e2e/cli/`, 7 scenarios) and the Playwright specs (`forge-web/e2e/`) run nightly against live testnet; see [e2e/README.md](e2e/README.md).
+The web app is live at **https://forge.dashhq.org** (GitHub Pages), built for devnet moutai; its header badge says "devnet". The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against moutai ("Devnet Nightly"); see [e2e/README.md](e2e/README.md).
 
-Proven end-to-end on testnet: `git clone dash://…` / `git push` byte-identical round-trip; frozen-collaborator push rejected at consensus; third-party "no trust in any server" verification; browser app rendering live proof-verified data with the trust panel; CLI↔web parity via the shared conformance vectors. See [design-freeze-2.md](docs/design-freeze-2.md) for as-built decisions and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (rehearsed, not-yet-executed) mainnet deployment.
+Proven end-to-end on moutai: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the trust panel; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
 

@@ -25,7 +25,7 @@ const button = cva(
         ghost:
           'bg-transparent text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800',
         danger:
-          'border border-danger/40 bg-transparent text-danger hover:bg-danger/10',
+          'border border-danger/40 bg-transparent text-danger-700 hover:bg-danger/10 dark:text-danger-400',
         subtle:
           'bg-anvil-100 text-anvil-800 hover:bg-anvil-200 dark:bg-anvil-800 dark:text-anvil-100 dark:hover:bg-anvil-750',
       },

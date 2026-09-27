@@ -18,10 +18,6 @@
  *    intent token; retrying that action re-broadcasts the *same* signed ST (no new nonce, no
  *    double post). Only "already in mempool/chain" or the doc appearing on a poll counts as
  *    landed; a write not seen landing throws `UnconfirmedWriteError`, never resolves.
- *  - **Token gating**: WRITE/MAINTAIN-gated doc types carry a `TokenPaymentInfo` pinned to the
- *    contract-declared `tokenCost.create` (position + amount) so a later owner-side price change
- *    cannot overcharge — parity with forge-core's `token_payment_for`. Ungated types (issue /
- *    comment / event / patch / review, and the registry's star / follow / repoListing) carry none.
  *
  * Keys never enter React state or logs: the WIF is read from the network-scoped keystore only
  * here, wrapped in a `PrivateKey`, used to sign, and dropped.
@@ -29,7 +25,7 @@
 
 // Type-only: every evo-sdk class is loaded via dynamic `import()` at call time so the ~9.4 MB
 // WASM chunk never enters the initial bundle (it is pulled on the first write / login).
-import type { EvoSDK, StateTransition, TokenPaymentInfo } from '@dashevo/evo-sdk'
+import type { EvoSDK, StateTransition } from '@dashevo/evo-sdk'
 
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -80,7 +76,18 @@ interface DocumentsFacadeLike {
 }
 interface StateTransitionsFacadeLike {
   broadcastStateTransition(st: StateTransition): Promise<void>
-  waitForResponse(st: StateTransition): Promise<unknown>
+  waitForResponse(st: StateTransition, settings?: WaitSettings): Promise<unknown>
+}
+
+/**
+ * The subset of evo-sdk's `PutSettings` the result wait takes. Never `waitTimeoutMs`: rs-sdk
+ * runs it through `tokio::time::timeout`, which panics in the browser ("time not implemented
+ * on this platform", `docs/research/spike-results.md`); the overall deadline is a JS race.
+ */
+interface WaitSettings {
+  readonly retries?: number
+  readonly timeoutMs?: number
+  readonly banFailedAddress?: boolean
 }
 interface SdkFacades {
   identities: IdentitiesFacadeLike
@@ -119,7 +126,7 @@ export async function findSigningKey(
       matches = false
     }
     if (!matches) continue
-    // MASTER (0) is not usable for document/token ops; require CRITICAL/HIGH range that is at
+    // MASTER (0) is not usable for document ops; require CRITICAL/HIGH range that is at
     // least as privileged as the requirement.
     if (key.securityLevelNumber === SECURITY_LEVEL.MASTER) continue
     if (key.securityLevelNumber > requiredLevel) continue
@@ -128,60 +135,6 @@ export async function findSigningKey(
     return { publicKey, keyId: key.keyId, securityLevel: key.securityLevelNumber }
   }
   return null
-}
-
-// ---------------------------------------------------------------------------
-// Token gate table (parity with forge-contracts/templates/repo-v1.json)
-// ---------------------------------------------------------------------------
-
-/** A doc type's `tokenCost.create`: token position (0 = WRITE, 1 = MAINTAIN) + amount. */
-export interface TokenGate {
-  readonly position: number
-  readonly amount: number
-}
-
-/**
- * The repo-v1 `tokenCost.create` gates. Ungated types (issue / patch / comment / event /
- * review) are absent → no `TokenPaymentInfo`. Mirrors the template exactly (verified against
- * `repo-v1.json`); the registry types (star / follow / repoListing) are all ungated.
- */
-export const REPO_CREATE_GATES: Readonly<Record<string, TokenGate>> = {
-  config: { position: 1, amount: 1 },
-  refUpdate: { position: 0, amount: 1 },
-  protectedRefUpdate: { position: 1, amount: 1 },
-  packManifest: { position: 0, amount: 1 },
-  manifestPart: { position: 0, amount: 1 },
-  chunk: { position: 0, amount: 1 },
-  label: { position: 1, amount: 1 },
-  release: { position: 1, amount: 1 },
-  checkRun: { position: 0, amount: 1 },
-  webhook: { position: 1, amount: 1 },
-}
-
-/** The token gate for a repo doc-type create, or undefined if the type is ungated. */
-export function createGateFor(documentType: string): TokenGate | undefined {
-  return REPO_CREATE_GATES[documentType]
-}
-
-// ---------------------------------------------------------------------------
-// Cost preview — the calibrated model lives in `./cost`
-// ---------------------------------------------------------------------------
-
-/**
- * The preview for a v1 repo-contract document create: the calibrated estimate plus the
- * WRITE/MAINTAIN token its type spends, if gated. forge-v2 types spend no tokens; their
- * previews come from {@link previewCreate} directly.
- */
-export function previewDocumentCreate(
-  documentType: string,
-  data: Readonly<Record<string, unknown>> = {},
-): CostPreview {
-  const gate = createGateFor(documentType)
-  return {
-    ...previewCreate(documentType, data),
-    tokenAmount: gate?.amount ?? 0,
-    ...(gate ? { tokenPosition: gate.position } : {}),
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +149,8 @@ interface CachedST {
   data: string
   /** The document id that transition creates. */
   documentId: string
+  /** The identity-contract nonce it was signed with (decimal); absent in older entries. */
+  nonce?: string
   cachedAt: number
 }
 
@@ -215,16 +170,16 @@ export function pendingWriteKey(ownerId: string, contractId: string, documentTyp
   return ST_CACHE_PREFIX + bytesToHex(sha256(new TextEncoder().encode(text)))
 }
 
-function savePendingST(key: string, documentId: string, bytes: Uint8Array): void {
+function savePendingST(key: string, documentId: string, bytes: Uint8Array, nonce: bigint): void {
   if (typeof window === 'undefined') return
   try {
-    const entry: CachedST = { data: bytesToBase64(bytes), documentId, cachedAt: Date.now() }
+    const entry: CachedST = { data: bytesToBase64(bytes), documentId, nonce: nonce.toString(), cachedAt: Date.now() }
     window.localStorage.setItem(key, JSON.stringify(entry))
   } catch {
     // Non-fatal — retry safety is best-effort; the write still broadcasts.
   }
 }
-function loadPendingST(key: string): { bytes: Uint8Array; documentId: string } | null {
+function loadPendingST(key: string): { bytes: Uint8Array; documentId: string; nonce: bigint | null } | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(key)
@@ -234,7 +189,8 @@ function loadPendingST(key: string): { bytes: Uint8Array; documentId: string } |
       window.localStorage.removeItem(key)
       return null
     }
-    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId }
+    const nonce = typeof parsed.nonce === 'string' && /^[0-9]+$/.test(parsed.nonce) ? BigInt(parsed.nonce) : null
+    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId, nonce }
   } catch {
     return null
   }
@@ -374,20 +330,111 @@ function isAffectedStateSnapshot(e: unknown): boolean {
 }
 
 /**
+ * One result wait: a single node, 20 s, no banning, and a 45 s hard deadline (proof checking
+ * included; a JS race, see {@link WaitSettings}). A transition a node accepted can still never produce a result: when two writers
+ * sign with one identity's contract nonce at once (this tab and the CLI, or another browser),
+ * both pass CheckTx, the block takes one, and Tenderdash quietly drops the other from its
+ * mempool. The SDK's default wait read that silence as a dead node and rotated through every
+ * node at 30 s each (minutes); {@link settleUnanswered} finds out what happened instead.
+ * Same bounds as forge-core's `WriteEngine::execute`.
+ */
+const WAIT_REQUEST_MS = 20_000
+const WAIT_DEADLINE_MS = 45_000
+export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST_MS, banFailedAddress: false }
+
+/**
  * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
  * {@link ConsensusRefusal} when consensus rejected it, `'unknown'` when the wait itself failed
- * (timeout, transport) — the caller then polls for the document instead.
+ * (timeout, transport) — the caller then settles it ({@link settleUnanswered}).
  */
 async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean): Promise<'landed' | 'unknown'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await facades(sdk).stateTransitions.waitForResponse(st)
+    await Promise.race([
+      facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
+      // The overall deadline (proof verification can add a quorum fetch to the 20 s request).
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('result wait deadline exceeded')), WAIT_DEADLINE_MS)
+      }),
+    ])
     return 'landed'
   } catch (e) {
     if (indexOnly && isAffectedStateSnapshot(e)) return 'landed'
     const refusal = asConsensusRefusal(e)
     if (refusal !== null) throw refusal
     return 'unknown'
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+const SEQUENCE_MASK = (1n << 40n) - 1n
+const MAX_MISSING_REVISIONS = 24n
+
+/**
+ * Whether `nonce` can no longer be used, given the identity-contract nonce Platform holds
+ * (`current`, raw: the low 40 bits are the sequence, the high 24 a bitmap of skipped ones).
+ * Mirrors Drive's `validate_identity_nonce_update`: the tip itself, anything more than 24
+ * behind it, and a skipped one that was since filled are spent.
+ */
+export function isNonceSpent(current: bigint, nonce: bigint): boolean {
+  const tip = current & SEQUENCE_MASK
+  if (nonce > tip) return false
+  if (nonce === tip) return true
+  const behind = tip - nonce
+  if (behind > MAX_MISSING_REVISIONS) return true
+  // Bit 40 + (behind - 1) marks a skipped nonce that is still free.
+  return (current & (1n << (behind + 39n))) === 0n
+}
+
+/** Whether Platform's nonce says `nonce` is spent; `false` when the read fails. */
+async function nonceSpent(sdk: EvoSDK, identityId: string, contractId: string, nonce: bigint): Promise<boolean> {
+  try {
+    return isNonceSpent((await facades(sdk).identities.contractNonce(identityId, contractId)) ?? 0n, nonce)
+  } catch {
+    return false
+  }
+}
+
+/** How long a spent-nonce write is given to show up before it is called lost (a block). */
+const LANDED_CHECK_MS = 15_000
+/** Bounded waits after the first, each preceded by a re-broadcast of the same bytes. */
+const SETTLE_ROUNDS = 2
+
+/**
+ * A broadcast transition whose result wait ended without an answer: find out what happened.
+ *
+ * - Its nonce is spent: it landed (the document shows up within {@link LANDED_CHECK_MS}) or
+ *   another write by this identity took the nonce and it never will: `'lost'`, but only when
+ *   the document is definitely absent. A failed read is `'unknown'`, never `'lost'`, so a
+ *   caller never signs a second copy of a write that may be there.
+ * - Its nonce is free: it is still pending (or was dropped for another reason). Re-broadcast
+ *   the same bytes ("already exists in cache" means the node still has them) and wait again.
+ */
+async function settleUnanswered(
+  sdk: EvoSDK,
+  st: StateTransition,
+  owner: { identityId: string; contractId: string; nonce: bigint },
+  indexOnly: boolean,
+  landed: (timeoutMs: number) => Promise<boolean>,
+  absent: () => Promise<boolean>,
+  confirmTimeoutMs: number,
+): Promise<'landed' | 'lost' | 'unknown'> {
+  for (let round = 0; round < SETTLE_ROUNDS; round++) {
+    if (await nonceSpent(sdk, owner.identityId, owner.contractId, owner.nonce)) {
+      if (await landed(Math.min(LANDED_CHECK_MS, confirmTimeoutMs))) return 'landed'
+      return (await absent()) ? 'lost' : 'unknown'
+    }
+    try {
+      await facades(sdk).stateTransitions.broadcastStateTransition(st)
+    } catch (e) {
+      const refusal = asConsensusRefusal(e)
+      if (refusal !== null) throw refusal
+      // A used nonce shows as spent on the next round; "already exists" means pending.
+    }
+    if ((await awaitOutcome(sdk, st, indexOnly)) === 'landed') return 'landed'
+  }
+  return (await landed(confirmTimeoutMs)) ? 'landed' : 'unknown'
 }
 
 /** Read a balance until it moves off `before` (a write's fee settles a block later). */
@@ -421,7 +468,7 @@ export interface SpendEvent {
   readonly network: Network
   /** `create:issue`, `delete:star`, `refused:issue` (a refused write still pays its fee), … */
   readonly kind: string
-  /** The repo the write belongs to (base58 `repoId` / v1 contract id), when it has one. */
+  /** The repo the write belongs to (base58 `repoId`), when it has one. */
   readonly repo: string | null
   readonly documentId: string
   readonly estimateCredits: number
@@ -472,7 +519,11 @@ async function documentExists(sdk: EvoSDK, contractId: string, documentType: str
   }
 }
 
-const SEQUENCE_MASK = (1n << 40n) - 1n
+/** A read answered "not there" (a failed read is not an answer). */
+async function definitelyAbsent(sdk: EvoSDK, contractId: string, documentType: string, documentId: string): Promise<boolean> {
+  return (await documentExists(sdk, contractId, documentType, documentId)) === false
+}
+
 
 // ---------------------------------------------------------------------------
 // One writer per identity (tab-wide queue + cross-tab Web Lock)
@@ -494,7 +545,7 @@ function crossTab<T>(identityId: string, run: () => Promise<T>): Promise<T> {
   return locks ? locks.request(`dash-forge-writer:${identityId}`, run) : run()
 }
 
-/** Run `run` as this identity's only writer. Exported for the v1 token-admin path. */
+/** Run `run` as this identity's only writer. */
 export function serialized<T>(identityId: string, run: () => Promise<T>): Promise<T> {
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
   const next = prev.then(
@@ -538,7 +589,7 @@ function pollForDocument(sdk: EvoSDK, contractId: string, documentType: string, 
  *
  * evo-sdk 4.2's `new Document({ properties })` (and the `properties` setter) converts the
  * properties through JSON, which turns every `Uint8Array` into an array of integers — Drive
- * then rejects the write with "not an array of bytes" for any byteArray field (`listingId`,
+ * then rejects the write with "not an array of bytes" for any byteArray field (`repoId`,
  * `refNameHash`, `newOid`, ...). `Document.fromObject` converts a `Uint8Array` to bytes, which
  * is what 4.0's constructor did: the signed transition is byte-identical to 4.0's for every
  * top-level field. So the system fields come from a property-less constructor call and the
@@ -612,8 +663,6 @@ export interface CreateParams {
   readonly data: Record<string, unknown>
   /** The action this write belongs to ({@link newIntent}); a fresh token when omitted. */
   readonly intent?: string
-  /** A v1 repo contract's token payment for this type (`createGateFor`); none by default. */
-  readonly gate?: TokenGate | null
   readonly requiredLevel?: number
   readonly confirmTimeoutMs?: number
   /** Whether the write landed, for types `documents.get` cannot fetch (indexOnly). */
@@ -630,15 +679,15 @@ async function createDocumentUnlocked(
   const { contractId, documentType, data } = params
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
-  const gate = params.gate ?? undefined
   const indexOnly = params.probe !== undefined
-  const cost: CostPreview = {
-    ...previewCreate(documentType, data),
-    tokenAmount: gate?.amount ?? 0,
-    ...(gate ? { tokenPosition: gate.position } : {}),
-  }
+  const cost: CostPreview = previewCreate(documentType, data)
   const landed = (documentId: string, timeoutMs: number): Promise<boolean> =>
     params.probe ? pollUntil(params.probe, timeoutMs) : pollForDocument(sdk, contractId, documentType, documentId, timeoutMs)
+  /** Definitely not there: a read that answered "no" (a failed read is not an answer). */
+  const absent = async (documentId: string): Promise<boolean> =>
+    params.probe
+      ? (await params.probe().catch(() => null)) === false
+      : await definitelyAbsent(sdk, contractId, documentType, documentId)
 
   const wif = auth.getSigningKeyWif()
   const ownerId = auth.identityId
@@ -666,11 +715,14 @@ async function createDocumentUnlocked(
     throw refusal
   }
 
-  // A previous attempt at this same action timed out: finish it, never sign a second one.
+  // A previous attempt at this same action timed out: finish it, never sign a second one —
+  // unless its nonce is spent and its document definitely absent, when it can never land
+  // (another write by this identity took the nonce) and the action is signed afresh below.
   const cached = loadPendingST(cacheKey)
   if (cached) {
     const { documentId } = cached
-    if (!(await landed(documentId, 0))) {
+    let seen = await landed(documentId, 0)
+    if (!seen) {
       const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
       try {
         await facades(sdk).stateTransitions.broadcastStateTransition(StateTransitionClass.fromBytes(cached.bytes))
@@ -685,8 +737,14 @@ async function createDocumentUnlocked(
         }
         if (isNonceUsedError(e)) clearPendingST(cacheKey)
       }
+      seen = await landed(documentId, confirmTimeoutMs)
     }
-    return done(documentId, await landed(documentId, confirmTimeoutMs))
+    const { nonce } = cached
+    const lost =
+      !seen && nonce !== null && (await nonceSpent(sdk, ownerId, contractId, nonce)) && (await absent(documentId))
+    if (!lost || nonce === null) return done(documentId, seen)
+    clearPendingST(cacheKey)
+    markNonceUsed(ownerId, contractId, nonce)
   }
 
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
@@ -694,56 +752,76 @@ async function createDocumentUnlocked(
     throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
   }
 
-  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, gate, wif, publicKey: signing.publicKey })
+  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, wif, publicKey: signing.publicKey })
 
   let signed = await build()
-  for (let attempt = 0; ; attempt++) {
-    savePendingST(cacheKey, signed.documentId, signed.bytes)
-    try {
-      await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
-      markNonceUsed(ownerId, contractId, signed.nonce)
-      break
-    } catch (e) {
-      if (isAlreadyExistsError(e)) {
+  // A fresh transition whose nonce another write took after it was accepted is signed once
+  // more (the first can never land); see settleUnanswered.
+  for (let round = 0; ; round++) {
+    for (let attempt = 0; ; attempt++) {
+      savePendingST(cacheKey, signed.documentId, signed.bytes, signed.nonce)
+      try {
+        await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
+        markNonceUsed(ownerId, contractId, signed.nonce)
+        break
+      } catch (e) {
+        if (isAlreadyExistsError(e)) {
+          markNonceUsed(ownerId, contractId, signed.nonce)
+          return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
+        }
+        if (attempt === 0 && isNonceUsedError(e)) {
+          // The nonce source lagged: that nonce belongs to an earlier write. Skip past it.
+          markNonceUsed(ownerId, contractId, signed.nonce)
+          signed = await build()
+          continue
+        }
+        if (attempt === 0 && isStaleDocumentIdError(e)) {
+          // Refused at basic validation (nothing landed): learn the network's version from a
+          // proved read and prepare the write once more.
+          await facades(sdk).epoch.current()
+          signed = await build()
+          continue
+        }
+        const refusal = asConsensusRefusal(e)
+        if (refusal) refused(refusal, signed.documentId)
+        if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
+          clearPendingST(cacheKey)
+          throw e
+        }
+        // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
+        // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
+        // same bytes instead of signing a second document.
         markNonceUsed(ownerId, contractId, signed.nonce)
         return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
       }
-      if (attempt === 0 && isNonceUsedError(e)) {
-        // The nonce source lagged: that nonce belongs to an earlier write. Skip past it.
-        markNonceUsed(ownerId, contractId, signed.nonce)
-        signed = await build()
-        continue
-      }
-      if (attempt === 0 && isStaleDocumentIdError(e)) {
-        // Refused at basic validation (nothing landed): learn the network's version from a
-        // proved read and prepare the write once more.
-        await facades(sdk).epoch.current()
-        signed = await build()
-        continue
-      }
-      const refusal = asConsensusRefusal(e)
-      if (refusal) refused(refusal, signed.documentId)
-      if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
-        clearPendingST(cacheKey)
-        throw e
-      }
-      // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
-      // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
-      // same bytes instead of signing a second document.
-      markNonceUsed(ownerId, contractId, signed.nonce)
-      return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
     }
-  }
 
-  const { documentId } = signed
-  let outcome: 'landed' | 'unknown'
-  try {
-    outcome = await awaitOutcome(sdk, signed.st, indexOnly)
-  } catch (e) {
-    // Consensus checked the transition and refused it: nothing will land under this id.
-    return refused(e as ConsensusRefusal, documentId)
+    const { documentId } = signed
+    let outcome: 'landed' | 'lost' | 'unknown'
+    try {
+      outcome = await awaitOutcome(sdk, signed.st, indexOnly)
+      if (outcome === 'unknown') {
+        outcome = await settleUnanswered(
+          sdk,
+          signed.st,
+          { identityId: ownerId, contractId, nonce: signed.nonce },
+          indexOnly,
+          (ms) => landed(documentId, ms),
+          () => absent(documentId),
+          confirmTimeoutMs,
+        )
+      }
+    } catch (e) {
+      // Consensus checked the transition and refused it: nothing will land under this id.
+      return refused(e as ConsensusRefusal, documentId)
+    }
+    if (outcome === 'lost' && round === 0) {
+      markNonceUsed(ownerId, contractId, signed.nonce)
+      signed = await build()
+      continue
+    }
+    return done(documentId, outcome === 'landed')
   }
-  return done(documentId, outcome === 'landed' || (await landed(documentId, confirmTimeoutMs)))
 }
 
 /** Poll `check` until it holds or the budget elapses (one immediate check). */
@@ -774,13 +852,12 @@ async function signCreate(
     readonly contractId: string
     readonly documentType: string
     readonly data: Record<string, unknown>
-    readonly gate: TokenGate | undefined
     readonly wif: string
     readonly publicKey: unknown
   },
 ): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string; nonce: bigint }> {
-  const { ownerId, contractId, documentType, data, gate } = p
-  const { Document, DocumentCreateTransition, BatchedTransition, BatchTransition, PrivateKey, TokenPaymentInfo } = await import('@dashevo/evo-sdk')
+  const { ownerId, contractId, documentType, data } = p
+  const { Document, DocumentCreateTransition, BatchedTransition, BatchTransition, PrivateKey } = await import('@dashevo/evo-sdk')
 
   // The nonce is fetched once and used for both the id and the transition. From protocol 14
   // the document id commits to it (protocol 13: entropy only), and the create transition
@@ -796,11 +873,6 @@ async function signCreate(
 
   const document = documentForCreate(Document, { data, documentType, contractId, ownerId, documentId, entropy, platformVersion })
 
-  let tokenPaymentInfo: TokenPaymentInfo | undefined
-  if (gate) {
-    tokenPaymentInfo = new TokenPaymentInfo({ tokenContractPosition: gate.position, maximumTokenCost: BigInt(gate.amount) })
-  }
-
   // `platformVersion` is load-bearing: without it the transition re-derives the id at the
   // SDK's latest compiled version (14), which on a protocol-13 network is an id Drive does not
   // recompute, and the create is rejected.
@@ -808,7 +880,6 @@ async function signCreate(
     document,
     identityContractNonce: nonce,
     platformVersion,
-    ...(tokenPaymentInfo ? { tokenPaymentInfo } : {}),
   })
   if (document.id.toBase58() !== documentId) {
     throw new Error(
@@ -880,9 +951,9 @@ async function deleteDocumentUnlocked(
   const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
   const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
   const indexOnly = params.document !== undefined
-  const gone = params.probeGone ?? (async () => (await documentExists(sdk, contractId, documentType, documentId)) === false)
+  const gone = params.probeGone ?? (() => definitelyAbsent(sdk, contractId, documentType, documentId))
 
-  if (!indexOnly && (await documentExists(sdk, contractId, documentType, documentId)) === false) {
+  if (!indexOnly && (await definitelyAbsent(sdk, contractId, documentType, documentId))) {
     return { result: { deleted: true, actualCredits: 0 }, spend: null }
   }
 
@@ -912,7 +983,10 @@ async function deleteDocumentUnlocked(
       document,
       identityKey: signing.publicKey,
       signer,
-      settings: { identityNonceStaleTimeS: 0 },
+      // Bounded waits (at most 3 × 20 s) rather than the SDK's rotation through every node at
+      // 30 s each, which a transition dropped from the mempool (a same-nonce race) would sit
+      // through; the gone-poll below then decides. No `waitTimeoutMs`: see WaitSettings.
+      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
     })
     proven = true
   } catch (e) {
@@ -923,7 +997,14 @@ async function deleteDocumentUnlocked(
         if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
         throw refusal
       }
-      if (!isAlreadyExistsError(e)) throw e
+      // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
+      // decides. Still there: an unclassified error stands, and "already exists" (which a
+      // transition dropped after a same-nonce race also answers) is unconfirmed.
+      if (!(await pollUntil(gone, confirmTimeoutMs))) {
+        if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
+        throw e
+      }
+      proven = true
     }
   } finally {
     signer.free()

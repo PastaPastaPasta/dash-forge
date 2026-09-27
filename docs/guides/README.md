@@ -20,6 +20,10 @@ Also:
 
 ## What "coming soon" means
 
-These guides describe what is on `master` today. Features that are specified but not built yet are marked **Coming soon**, and nothing marked that way works yet. forge-v2 behavior is described as planned. Its contracts are registered on devnet moutai, but `dg`, `git-remote-dash`, `forge-import` and the web app still create and use v1 repositories only. Client support is being built now, and forge-v2 comes to mainnet after Platform protocol 14 activates. When it lands on moutai, the forge-v2 notes in these guides become instructions.
+These guides describe what is on `master` today. Features that are specified but not built yet are marked **Coming soon**, and nothing marked that way works yet.
 
-The product specification the planned features come from (`docs/design/ux-dx-spec.md` and `docs/roadmap.md`) is not on `master` yet.
+## Which network
+
+Forge runs on **devnet moutai** (Platform protocol 14), the only network with a forge-v2 deployment today. The guides use it throughout. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there. On a network without a deployment, the tools stop with a "not deployed" error. See [the network status table](../../README.md#status).
+
+The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

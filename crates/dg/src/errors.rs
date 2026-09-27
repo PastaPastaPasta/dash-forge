@@ -149,8 +149,6 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("label not changed", Some(repo))
         }
         Command::Collab(C::Add { repo, .. }) => ("collaborator not added", Some(repo)),
-        Command::Collab(C::Suspend { repo, .. }) => ("collaborator not suspended", Some(repo)),
-        Command::Collab(C::Unsuspend { repo, .. }) => ("collaborator not unsuspended", Some(repo)),
         Command::Collab(C::Remove { repo, .. }) => ("collaborator not removed", Some(repo)),
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
@@ -223,7 +221,11 @@ mod tests {
     fn every_error_path_exits_non_zero() {
         let e = anyhow::anyhow!("something odd");
         assert_eq!(report(true, &e, &ErrorContext::default()), 1);
-        let core: anyhow::Error = forge_core::Error::TokenFrozen.into();
+        let core: anyhow::Error = forge_core::Error::NotAMember {
+            document_type: "refUpdate".into(),
+            detail: "40120".into(),
+        }
+        .into();
         assert_eq!(report(true, &core, &ErrorContext::default()), 6);
     }
 }

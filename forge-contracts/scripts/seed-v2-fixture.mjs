@@ -26,8 +26,10 @@
 // (fanout || 36-byte rows, deltaChainSpan = the sentinel so readers walk each base).
 //
 // Idempotent: the result of every step is recorded in
-// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. Delete that
-// file (and pick new repo names) to seed from scratch.
+// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. Without that
+// file (a fresh CI runner), a fixture that already exists on chain is left alone: the run
+// checks `forge-v2-demo` resolves and exits. Delete the file (and pick new repo names) to
+// seed from scratch.
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -216,6 +218,38 @@ async function main() {
 
   const statePath = join(homedir(), '.cache/dash-forge', `seed-v2-${key}.json`);
   mkdirSync(dirname(statePath), { recursive: true });
+  if (!existsSync(statePath)) {
+    // No local record: if the fixture is already on chain (seeded from another machine),
+    // there is nothing to do. Re-seeding would fail on the unique `($ownerId, name)` index.
+    const found = await sdk.documents.query({
+      dataContractId: core,
+      documentTypeName: 'repo',
+      where: [
+        ['$ownerId', '==', OWNER.id],
+        ['name', '==', DEMO],
+      ],
+      limit: 1,
+    });
+    const doc = found instanceof Map ? [...found.values()].find((v) => v != null) : null;
+    if (doc) {
+      // The last step the seeder writes is the star; a fixture without it was interrupted
+      // on the machine that holds its state file, and must be finished there.
+      const stars = await sdk.documents.count({
+        dataContractId: collab,
+        documentTypeName: 'star',
+        where: [['repoId', '==', String(doc.toJSON?.().$id ?? doc.id)]],
+      });
+      let n = 0n;
+      for (const v of stars.values()) n += v;
+      if (n === 0n) {
+        throw new Error(`${DEMO} exists on ${key} but its seed never finished (no star); finish it where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
+      }
+      const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
+      log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
+      console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId }, seeded: false }, null, 2));
+      return;
+    }
+  }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 
@@ -341,6 +375,9 @@ async function main() {
   await comment('issue:3:comment:1', MAINTAINER, i3, 'Done in docs/rules.md; closing.');
 
   // --- pull requests ------------------------------------------------------------------
+  // Numbered independently of issues (forge-v2.md §6): PR #1 and issue #1 both exist on
+  // purpose, and the jump-box spec relies on one such pair. Other suites open more PRs here,
+  // so readers must not assume these are the only numbers.
   const patch = (n, who, title, body, headOid, sourceRef) =>
     create(`patch:${n}`, who, collab, 'patch', {
       repoId: R,

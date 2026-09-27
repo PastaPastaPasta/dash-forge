@@ -54,17 +54,18 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2; scenario 08 reads a
-## testnet v1 repo) against the OWNER-owned e2e-cli repo (created on first run).
+## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2) against the
+## OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
 ## (RUN_ID, E2E_TIMEOUT, E2E_NO_CLEANUP, subset args). Exits non-zero on any FAIL.
 e2e: build-rust
 	@bash e2e/cli/run.sh
 
-## e2e-fixture: seed the browser specs' read fixture (idempotent; see e2e/README.md).
-e2e-fixture: build-rust
-	@bash e2e/cli/seed-read-fixture.sh
+## e2e-fixture: seed the browser specs' forge-v2 read fixture on DEVNET (idempotent; needs
+## `npm ci` in forge-contracts/sdk-v2 and the devnet OWNER/MAINTAINER/COLLAB/CONTRIB fixtures).
+e2e-fixture:
+	@node forge-contracts/scripts/seed-v2-fixture.mjs --network devnet --devnet-name $(DEVNET)
 
 ## devnet-identities: mint (or resume) the 9-role identity pool on a devnet,
 ## funded from the devnet's faucet wallet key, then verify every identity on

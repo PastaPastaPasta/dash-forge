@@ -1,0 +1,15 @@
+{
+  "name": "patch_base_ref_name_without_hash",
+  "description": "A public patch carrying a baseRefName but no baseRefNameHash is malformed (the schema requires the hash; a reader handed one without it must not trust the name).",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

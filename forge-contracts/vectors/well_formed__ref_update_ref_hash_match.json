@@ -1,0 +1,15 @@
+{
+  "name": "ref_update_ref_hash_match",
+  "description": "A public ref update whose refName hashes to refNameHash is well-formed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main",
+      "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

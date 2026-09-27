@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { E2E_DEVNET, idFile, shot, signedIn, unlock } from './helpers'
+import { idFile, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
@@ -20,7 +20,7 @@ const COLLAB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
 const REPO = `e2e-${Date.now().toString(36)}`
 const ISSUE_TITLE = `Browser-written issue ${REPO}`
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!existsSync(idFile('OWNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 
@@ -101,7 +101,7 @@ test('w5. contributor stars and unstars the repo (index-only delete)', async ({ 
 })
 
 test('w6. owner approves the fixture PR, then removes the writer', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', `/repo/pull/?owner=${OWNER}&name=forge-v2-demo&number=1`)
+  const page = await signedIn(browser, 'OWNER', repoUrl('pull', '&number=1'))
   await page.getByRole('button', { name: /^approve$/i }).click()
   await confirmWrite(page, /submit review/i)
   await expect(page.getByRole('region', { name: 'Approvals' })).toBeVisible()

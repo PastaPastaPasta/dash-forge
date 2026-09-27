@@ -1,0 +1,135 @@
+/**
+ * Download .zip of a ref (`ux-dx-spec.md` §5.4). The browse reader lives on the main thread,
+ * so the tree walk and blob reads happen here (every object hash-checked by the reader, as on
+ * any page), and the bytes go to a Web Worker that compresses them with fflate so the UI
+ * stays responsive. Refs above {@link ZIP_MAX_BYTES} are refused before any blob is read:
+ * sizes come from the locator (stored sizes) when it has them, else from what was read.
+ */
+
+import { MODE_GITLINK, MODE_TREE } from '../browse'
+import type { ObjectReader } from './tree-nav'
+import { readCommit, readTree } from './tree-nav'
+import { mapPooled } from './pool'
+
+/** The largest ref the browser zips (uncompressed bytes). Above it: clone instead. */
+export const ZIP_MAX_BYTES = 100 * 1024 * 1024
+
+/** A file to put in the zip. */
+export interface ZipFile {
+  readonly path: string
+  readonly oid: string
+  readonly mode: number
+}
+
+export interface ZipProgress {
+  readonly phase: 'listing' | 'reading' | 'compressing'
+  readonly files: number
+  readonly filesTotal: number
+  readonly bytes: number
+}
+
+/** The zip would exceed {@link ZIP_MAX_BYTES}. */
+export class ZipTooLargeError extends Error {
+  constructor(readonly bytes: number) {
+    super('too large for a browser zip; clone instead')
+    this.name = 'ZipTooLargeError'
+  }
+}
+
+/** A tree entry name that is safe as one path segment. */
+export function isSafeName(name: string): boolean {
+  return name !== '' && name !== '.' && name !== '..' && !/[/\\\0]/.test(name)
+}
+
+/**
+ * Every blob (and symlink) under a tree, gitlinks skipped, sorted by path. Stops after `max`
+ * files (`truncated`), so Go to file can list a large repo without walking all of it.
+ */
+export async function walkFiles(
+  reader: ObjectReader,
+  treeOid: string,
+  max = Infinity,
+): Promise<{ files: ZipFile[]; truncated: boolean }> {
+  const files: ZipFile[] = []
+  const queue: [string, string][] = [[treeOid, '']]
+  while (queue.length > 0 && files.length < max) {
+    const [oid, prefix] = queue.shift() as [string, string]
+    for (const e of await readTree(reader, oid)) {
+      // A tree is hash-checked, not sane: a hostile pusher can name an entry `..` (zip-slip).
+      if (!isSafeName(e.name)) continue
+      const path = prefix ? `${prefix}/${e.name}` : e.name
+      if (e.mode === MODE_TREE) queue.push([e.oid, path])
+      else if (e.mode !== MODE_GITLINK) files.push({ path, oid: e.oid, mode: e.mode })
+    }
+  }
+  files.sort((a, b) => (a.path < b.path ? -1 : 1))
+  return { files, truncated: queue.length > 0 }
+}
+
+/** Every file of a commit (for the zip). */
+export async function listFiles(reader: ObjectReader, commitOid: string): Promise<ZipFile[]> {
+  return (await walkFiles(reader, (await readCommit(reader, commitOid)).tree)).files
+}
+
+/** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */
+export function storedSize(reader: ObjectReader, files: readonly ZipFile[]): number {
+  let total = 0
+  for (const f of files) total += reader.locate?.(f.oid)?.length ?? 0
+  return total
+}
+
+/** Read every file's bytes (hash-checked by the reader), refusing past the size cap. */
+export async function readZipFiles(
+  reader: ObjectReader,
+  files: readonly ZipFile[],
+  onProgress: (p: ZipProgress) => void,
+  signal?: AbortSignal,
+): Promise<Record<string, Uint8Array>> {
+  const entries: Record<string, Uint8Array> = {}
+  let bytes = 0
+  let done = 0
+  await mapPooled(files, 6, async (f) => {
+    if (signal?.aborted) throw new Error('cancelled')
+    const obj = await reader.readObject(f.oid)
+    bytes += obj.bytes.length
+    if (bytes > ZIP_MAX_BYTES) throw new ZipTooLargeError(bytes)
+    // A copy: the reader caches `obj.bytes`, and the worker transfer detaches what it sends.
+    entries[f.path] = obj.bytes.slice()
+    done += 1
+    onProgress({ phase: 'reading', files: done, filesTotal: files.length, bytes })
+  })
+  return entries
+}
+
+/** Compress in a worker (fflate); resolves with the zip bytes. */
+export function compressInWorker(
+  entries: Record<string, Uint8Array>,
+  onProgress?: (p: ZipProgress) => void,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const count = Object.keys(entries).length
+  const bytes = Object.values(entries).reduce((n, b) => n + b.length, 0)
+  onProgress?.({ phase: 'compressing', files: count, filesTotal: count, bytes })
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./zip.worker.ts', import.meta.url))
+    worker.onmessage = (ev: MessageEvent<{ ok: true; zip: Uint8Array } | { ok: false; error: string }>) => {
+      worker.terminate()
+      if (ev.data.ok) resolve(ev.data.zip)
+      else reject(new Error(ev.data.error))
+    }
+    worker.onerror = (ev) => {
+      worker.terminate()
+      reject(new Error(ev.message || 'the zip worker failed'))
+    }
+    signal?.addEventListener('abort', () => {
+      worker.terminate()
+      reject(new Error('cancelled'))
+    })
+    worker.postMessage(entries, Object.values(entries).map((b) => b.buffer as ArrayBuffer))
+  })
+}
+
+/** `<name>-<ref>.zip`, with anything a filename should not hold replaced. */
+export function zipFileName(repoName: string, ref: string): string {
+  return `${repoName}-${ref}`.replace(/[^A-Za-z0-9._-]+/g, '-') + '.zip'
+}

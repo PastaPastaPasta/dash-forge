@@ -21,7 +21,7 @@ pub struct Ctx {
     pub json: bool,
     /// Skip confirmation prompts (automation / CI).
     pub yes: bool,
-    /// The resolved network and the registry to use on it.
+    /// The resolved network and the forge-v2 contracts deployed on it.
     pub target: NetworkTarget,
     /// The resolved identity file path (from `--identity` / `DASH_FORGE_KEY` / config), if any.
     pub identity_path: Option<PathBuf>,
@@ -31,7 +31,7 @@ pub struct Ctx {
 ///
 /// Precedence, field by field: flags (`--network` / `--devnet-name` / `--dapi-addresses`) >
 /// config file > environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
-/// `DASH_FORGE_DAPI_ADDRESSES`, `FORGE_REGISTRY_CONTRACT_ID`) > the embedded
+/// `DASH_FORGE_DAPI_ADDRESSES`) > the embedded
 /// `forge-contracts/deployments/<network>.json` > testnet. A lower layer that names a
 /// different network contributes nothing network-specific (see `NetworkSettings::overlay`).
 fn resolve_target(
@@ -216,7 +216,6 @@ impl Ctx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_core::network::{ContractSource, Registry};
 
     fn config(network: &str) -> Config {
         Config {
@@ -249,45 +248,5 @@ mod tests {
         let flags = NetworkSettings::from_flags(None, Some("moutai".into()), None);
         let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
         assert_eq!(t.network.key(), "devnet-moutai");
-    }
-
-    #[test]
-    fn env_registry_override_beats_the_deployment_but_not_config() {
-        let env = NetworkSettings {
-            registry: Some(Registry::override_from(
-                "ENVREG",
-                "env FORGE_REGISTRY_CONTRACT_ID",
-            )),
-            ..Default::default()
-        };
-        let t =
-            resolve_target(NetworkSettings::default(), &Config::default(), env.clone()).unwrap();
-        assert_eq!(t.require_registry().unwrap().contract_id, "ENVREG");
-
-        let cfg = Config {
-            registry_contract_id: Some("CFGREG".into()),
-            ..Default::default()
-        };
-        let t = resolve_target(NetworkSettings::default(), &cfg, env).unwrap();
-        assert_eq!(t.require_registry().unwrap().contract_id, "CFGREG");
-    }
-
-    #[test]
-    fn a_configured_testnet_registry_does_not_follow_network_mainnet() {
-        let cfg = Config {
-            network: Some("testnet".into()),
-            registry_contract_id: Some("TESTREG".into()),
-            ..Default::default()
-        };
-        let flags = NetworkSettings::from_flags(Some("mainnet".into()), None, None);
-        let t = resolve_target(flags, &cfg, NetworkSettings::default()).unwrap();
-        assert_eq!(t.network, Network::Mainnet);
-        assert!(
-            t.registry.is_none()
-                || matches!(
-                    t.registry.as_ref().unwrap().source,
-                    ContractSource::Deployment(_)
-                )
-        );
     }
 }

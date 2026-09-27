@@ -4,8 +4,7 @@
 //! New repositories are forge-v2: a `repo` document plus the owner's `maintainer`
 //! membership and an initial `config` in the network's shared forge-core contract, written
 //! by one resumable session (`forge_core::create`). A fork is the same plus `forkOf`, the
-//! parent's packs recorded by reference and its refs copied (`forge_core::fork`). v1
-//! repositories (one contract each) remain viewable and cloneable but are read only.
+//! parent's packs recorded by reference and its refs copied (`forge_core::fork`).
 //! Repositories cannot be deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +16,6 @@ use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
-use forge_core::tokens::TokenService;
 
 use crate::common::{resolve, RepoRef, Session};
 use crate::context::Ctx;
@@ -68,7 +66,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         bridge,
         identity,
         repo: parent,
-    } = Session::open_v2(ctx, repo).await?;
+    } = Session::open(ctx, repo).await?;
     let slug = repo_slug(name.unwrap_or(parent.name()))?;
     if parent.owner_id() == identity.id() && slug == parent.name() {
         return Err(crate::errors::usage(format!(
@@ -188,7 +186,7 @@ fn report_fork(
 /// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
 /// delete).
 async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
-    let s = Session::open_v2(ctx, repo).await?;
+    let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
     let verb = if on { "Star" } else { "Unstar" };
     ctx.confirm_or_cancel(&format!(
@@ -234,16 +232,10 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     let default_branch = svc.read_default_branch(&handle).await.unwrap_or(None);
     let refs = svc.read_refs(&handle).await.unwrap_or_default();
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let members = match handle.v1_contract_id() {
-        Ok(contract) => TokenService::new(&client)
-            .list_collaborators(contract)
-            .await
-            .map_or(0, |c| c.len()),
-        Err(_) => MemberReader::new(&client)
-            .list(&handle)
-            .await
-            .map_or(0, |m| m.len()),
-    };
+    let members = MemberReader::new(&client)
+        .list(&handle)
+        .await
+        .map_or(0, |m| m.len());
 
     let refs_json: Vec<_> = refs
         .iter()
@@ -255,11 +247,9 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
 
     ctx.emit(
         json!({
-            "generation": handle.generation(),
             "repoId": handle.id(),
             "ownerId": handle.owner_id(),
             "name": handle.name(),
-            "readOnly": handle.is_v1(),
             "defaultBranch": default_branch,
             "refs": refs_json,
             "packCount": manifests.len(),
@@ -269,11 +259,6 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         }),
         || {
             println!("{}", handle.display());
-            println!(
-                "  generation:     {}{}",
-                handle.generation(),
-                if handle.is_v1() { " (read only)" } else { "" }
-            );
             println!("  id:             {}", handle.id());
             println!(
                 "  default branch: {}",
@@ -304,7 +289,7 @@ fn ref_state_short(state: &forge_core::rules::RefState) -> String {
     }
 }
 
-/// List an owner's repositories: forge-v2 repos, then v1 registry listings.
+/// List an owner's repositories.
 async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     let (client, _bridge, identity) = ctx.connect_with_identity().await?;
     let owner_id = owner.map_or_else(|| identity.id(), str::to_string);
@@ -316,7 +301,6 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
         .map(|r| {
             json!({
                 "name": r.repo.name(),
-                "generation": r.repo.generation(),
                 "repoId": r.repo.id(),
                 "description": r.description,
             })
@@ -327,12 +311,7 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
         || {
             println!("{} repo(s) for {owner_id}:", repos.len());
             for r in &repos {
-                println!(
-                    "  {}  [{}]  {}",
-                    r.repo.name(),
-                    r.repo.generation(),
-                    r.description
-                );
+                println!("  {}  {}", r.repo.name(), r.description);
             }
         },
     );
@@ -344,7 +323,6 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
     let repo_ref = RepoRef::parse(repo)?;
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
-    handle.require_v2()?;
 
     if !ctx.confirm(&format!(
         "Set backend of {} to {label}? (a small config write)",

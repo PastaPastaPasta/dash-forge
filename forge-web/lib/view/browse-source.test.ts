@@ -2,8 +2,8 @@
  * Browse-source correctness: the two glue assumptions the UI build documented, now pinned
  * by tests (a wrong assumption means wrong bytes when browsing).
  *
- *  (a) packRef → pack ordering is oldest-first by `($createdAt, $id)`, bounded to packs that
- *      existed when the owning locator was published.
+ *  (a) packRef → pack ordering is oldest-first by first upload `($createdAt, $id)`, bounded
+ *      to packs that existed when the owning locator was published (`forge-v2.md` §4).
  *  (b) offset → seq maps as `⌊offset / CHUNK_PAYLOAD_MAX⌋` because the chunker fills every
  *      interior chunk to exactly `CHUNK_PAYLOAD_MAX` (forge-core `pack.rs::split`).
  */
@@ -14,8 +14,8 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
-import type { PackManifest, V1RepoRef, V2RepoRef } from '../repo'
-import { base64ToHex, bytesToBase64 } from '../sdk'
+import type { PackManifest, RepoRef } from '../repo'
+import { base64ToHex, bytesToBase64, hexToBase64 } from '../sdk'
 import { DOC } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
 import {
@@ -33,7 +33,13 @@ import {
 // must be dropped between tests to keep the fixtures independent.
 beforeEach(() => clearChunkCache())
 
-const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
+const REPO: RepoRef = {
+  forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+  repoId: 'REPO',
+  ownerId: 'owner',
+  name: 'proj',
+  visibility: 'public',
+}
 
 function gitPack(packHashHex: string, createdAt: number, documentId: string): PackManifest {
   return {
@@ -206,25 +212,23 @@ describe('packRef ordering (assumption a)', () => {
     expect((await src.fetchRange(2, 0, 1))[0]).toBe(0xc3) // id "z"
   })
 
-  it('excludes superseded packs, so a surviving repacked-over manifest cannot shift indices', async () => {
-    // `repack` consolidates packs and marks the originals `supersedes`, but deletes only the
-    // CALLER's own manifests — in a multi-author repo the others survive. Counting them
-    // would shift every packRef by however many happened to remain, which is incidental to
-    // who ran the repack. `cc` here is the consolidated pack; `aa` and `bb` are superseded
-    // but still present.
+  it('keeps superseded packs in place, so a repack never shifts indices', async () => {
+    // A Platform-tier repack only consolidates: it writes a superseding pack and deletes
+    // nothing (`forge-v2.md` §4). The superseded packs keep their positions, so every older
+    // locator's packRefs still mean what they meant; the consolidated pack is appended.
     const consolidated: PackManifest = { ...gitPack('cc', 300, 'z'), supersedes: ['aa', 'bb'] }
     const packs = [gitPack('aa', 100, 'x'), gitPack('bb', 200, 'y'), consolidated]
 
     const src = buildPackSource(sdk, REPO, packs)
 
-    expect((await src.fetchRange(0, 0, 1))[0]).toBe(0xc3) // the consolidated pack IS packRef 0
-    await expect(src.fetchRange(1, 0, 1)).rejects.toThrow(/out of range/)
+    expect((await src.fetchRange(0, 0, 1))[0]).toBe(0xa1)
+    expect((await src.fetchRange(1, 0, 1))[0]).toBe(0xb2)
+    expect((await src.fetchRange(2, 0, 1))[0]).toBe(0xc3)
   })
 
-  it('computes liveness within the asOf bound, so a later repack cannot rewrite an older locator', async () => {
+  it('bounds the space as of the locator, so a later repack cannot rewrite an older locator', async () => {
     // A repack published AFTER the locator supersedes packs the locator legitimately
-    // indexed. Bounding first and computing liveness second keeps the old locator meaning
-    // what it meant when it was written.
+    // indexed; the bound keeps the old locator meaning what it meant when it was written.
     const laterRepack: PackManifest = { ...gitPack('cc', 500, 'z'), supersedes: ['aa', 'bb'] }
     const packs = [gitPack('aa', 100, 'x'), gitPack('bb', 200, 'y'), laterRepack]
 
@@ -248,17 +252,27 @@ describe('packRef ordering (assumption a)', () => {
 // loadBrowseContext — index fragments, coverage, and the honest degraded state
 // ---------------------------------------------------------------------------
 
-/** A 32-byte hash as the pair of encodings a manifest is read through. */
-const hashB64 = (n: number): string => bytesToBase64(new Uint8Array(32).fill(n))
+/**
+ * A 32-byte hash as the base64 a manifest is read through: `n` filled (a git pack, whose
+ * bytes these tests never fetch), or a hex digest (an index fragment, which the reader
+ * sha256-checks against it).
+ */
+const hashB64 = (h: number | string): string =>
+  typeof h === 'string' ? hexToBase64(h) : bytesToBase64(new Uint8Array(32).fill(h))
+
+/** The packHash of an artifact: sha256 of its bytes, hex. */
+const digest = (bytes: Uint8Array): string => bytesToHex(sha256(bytes))
 
 interface ManifestSpec {
   readonly id: string
   readonly createdAt: number
   readonly kind: 0 | 1
-  readonly hash: number
+  readonly hash: number | string
   readonly sizeBytes?: number
   readonly objectCount?: number
   readonly supersedes?: readonly number[]
+  /** The uploader (`$ownerId`); absent = a non-member's copy. */
+  readonly owner?: string
 }
 
 function manifestDoc(m: ManifestSpec): Record<string, unknown> {
@@ -268,6 +282,7 @@ function manifestDoc(m: ManifestSpec): Record<string, unknown> {
   return {
     $id: m.id,
     $createdAt: m.createdAt,
+    ...(m.owner !== undefined ? { $ownerId: m.owner } : {}),
     packHash: hashB64(m.hash),
     kind: m.kind,
     sizeBytes: m.sizeBytes ?? 0,
@@ -275,7 +290,7 @@ function manifestDoc(m: ManifestSpec): Record<string, unknown> {
     // Kind-0 packs hold objects unless a test says otherwise; coverage exempts empty ones.
     objectCount: m.objectCount ?? (m.kind === 0 ? 2 : 0),
     storage: 0,
-    uris: '[]',
+    uris: [],
     tips: '',
     supersedes: supersedes.length > 0 ? bytesToBase64(packed) : '',
   }
@@ -301,11 +316,13 @@ const oidBytes = (n: number): Uint8Array =>
 /**
  * A mock serving both halves of a browse resolve: the `packManifest` listing (with the
  * `$createdAt desc` order, page cap and cursor a real query applies) and the `chunk`
- * documents holding each index fragment's bytes.
+ * documents holding each index fragment's bytes — plus the repo's `maintainer` documents,
+ * which rank each manifest copy by its uploader's role.
  */
 function browseSdk(
   manifests: readonly Record<string, unknown>[],
   artifacts: ReadonlyMap<string, Uint8Array>,
+  maintainers: readonly Record<string, unknown>[] = [],
 ): EvoSDK {
   return {
     documents: {
@@ -315,6 +332,9 @@ function browseSdk(
         limit?: number
         startAfter?: string
       }): Promise<Map<string, unknown>> => {
+        if (q.documentTypeName === 'maintainer') {
+          return Promise.resolve(new Map(maintainers.map((d, i) => [`mt${i}`, d])))
+        }
         if (q.documentTypeName === DOC.packManifest) {
           let rows = [...manifests].sort((a, b) => {
             const d = (b['$createdAt'] as number) - (a['$createdAt'] as number)
@@ -342,8 +362,8 @@ describe('loadBrowseContext', () => {
   const F0 = fragmentBytes(0, [0x11, 0x13])
   const F1 = fragmentBytes(1, [0x22, 0x24])
   const artifacts = new Map([
-    ['b0'.repeat(32).slice(0, 64), F0],
-    ['b1'.repeat(32).slice(0, 64), F1],
+    [digest(F0), F0],
+    [digest(F1), F1],
   ])
   const pack0: ManifestSpec = { id: 'p0', createdAt: 100, kind: 0, hash: 0xa0 }
   const pack1: ManifestSpec = { id: 'p1', createdAt: 200, kind: 0, hash: 0xa1 }
@@ -351,14 +371,14 @@ describe('loadBrowseContext', () => {
     id: 'f0',
     createdAt: 110,
     kind: 1,
-    hash: 0xb0,
+    hash: digest(F0),
     sizeBytes: F0.length,
   }
   const frag1: ManifestSpec = {
     id: 'f1',
     createdAt: 210,
     kind: 1,
-    hash: 0xb1,
+    hash: digest(F1),
     sizeBytes: F1.length,
   }
 
@@ -392,10 +412,9 @@ describe('loadBrowseContext', () => {
     })
   })
 
-  it('reports index-behind when a fragment predates a repack that renumbered the packs', async () => {
-    // A fragment published concurrently with a repack survives (the repack could not list
-    // it in `supersedes`), but it indexes a pack space the repack replaced — its packRefs
-    // now name the wrong packs. Caught from the manifest list, before any bytes are read.
+  it('reports index-behind when a pack pushed after the fragments is not covered', async () => {
+    // A repack appends its consolidated pack at the end of the space (superseded packs stay
+    // in place), so fragments that predate it cover only a prefix: the new pack is unindexed.
     const consolidated: ManifestSpec = {
       id: 'p2',
       createdAt: 300,
@@ -403,28 +422,7 @@ describe('loadBrowseContext', () => {
       hash: 0xa2,
       supersedes: [0xa0, 0xa1],
     }
-    const sdk = browseSdk([pack0, pack1, consolidated, frag1].map(manifestDoc), artifacts)
-    expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
-      kind: 'unindexed',
-      reason: 'index-behind',
-    })
-  })
-
-  it('reports index-behind when a surviving fragment covers the right INDEX of the wrong pack', async () => {
-    // The dangerous shape a coverage count alone cannot see. After a repack the live space
-    // is one pack, and a fragment that predates it also indexes exactly one pack — index 0
-    // in both — so coverage looks complete. But its packRef 0 means the pre-repack pack,
-    // and reading through it would return a valid offset in the WRONG pack. Only comparing
-    // the fragment's as-of space against the live one catches it.
-    const consolidated: ManifestSpec = {
-      id: 'p2',
-      createdAt: 300,
-      kind: 0,
-      hash: 0xa2,
-      supersedes: [0xa0, 0xa1],
-    }
-    // frag0 (createdAt 110) indexed packRef 0 when that meant pack0.
-    const sdk = browseSdk([pack0, pack1, consolidated, frag0].map(manifestDoc), artifacts)
+    const sdk = browseSdk([pack0, pack1, consolidated, frag0, frag1].map(manifestDoc), artifacts)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
       reason: 'index-behind',
@@ -449,11 +447,11 @@ describe('loadBrowseContext', () => {
       id: 'f9',
       createdAt: 220,
       kind: 1,
-      hash: 0xb9,
+      hash: digest(wild),
       sizeBytes: wild.length,
     }
     const withWild = new Map(artifacts)
-    withWild.set('b9'.repeat(32).slice(0, 64), wild)
+    withWild.set(digest(wild), wild)
     const sdk = browseSdk([pack0, pack1, frag0, frag1, wildManifest].map(manifestDoc), withWild)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
@@ -465,7 +463,7 @@ describe('loadBrowseContext', () => {
     // One transient chunk-query failure out of up to 16 fragment fetches must not deny the
     // user a repo whose raw packs are perfectly readable.
     const partial = new Map(artifacts)
-    partial.delete('b1'.repeat(32).slice(0, 64))
+    partial.delete(digest(F1))
     const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), partial)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
@@ -474,9 +472,12 @@ describe('loadBrowseContext', () => {
   })
 
   it('falls back rather than erroring when a fragment is malformed', async () => {
+    // Bytes that hash to the manifest's packHash but do not parse as a locator.
+    const junk = new Uint8Array(17)
     const corrupt = new Map(artifacts)
-    corrupt.set('b1'.repeat(32).slice(0, 64), new Uint8Array(17))
-    const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), corrupt)
+    corrupt.set(digest(junk), junk)
+    const badFrag1: ManifestSpec = { ...frag1, hash: digest(junk), sizeBytes: junk.length }
+    const sdk = browseSdk([pack0, pack1, frag0, badFrag1].map(manifestDoc), corrupt)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
       reason: 'index-behind',
@@ -486,6 +487,32 @@ describe('loadBrowseContext', () => {
   it('reports no-packs when nothing is stored', async () => {
     expect(await loadBrowseContext(browseSdk([], artifacts), REPO)).toEqual({ kind: 'no-packs' })
   })
+
+  it("reports index-behind when a maintainer's copy re-kinds a pack a fragment indexed", async () => {
+    // A since-revoked member uploaded pack0 as a git pack (kind 0), and the fragments were
+    // built over it. A maintainer later posts a kind-1 copy of the same hash: that copy now
+    // ranks first, so the pack's kind is 1 and it leaves the live git-pack space. As of each
+    // fragment the old space still starts with pack0, so the prefix check must refuse the
+    // index rather than let packRef 0 read the wrong pack. (Each run uses its own repo id:
+    // membership is cached per repo.)
+    const MAINT = 'maint'
+    const revoked = { ...pack0, owner: 'revoked' }
+    const pack1m = { ...pack1, owner: MAINT }
+    const frags = [frag0, frag1].map((f) => ({ ...f, owner: MAINT }))
+    const members = [{ $id: 'm1', $createdAt: 1, memberId: MAINT }]
+
+    // Control: without the maintainer's copy the index covers both packs.
+    const before = [revoked, pack1m, ...frags].map(manifestDoc)
+    const ok = await loadBrowseContext(browseSdk(before, artifacts, members), { ...REPO, repoId: 'REKIND-OK' })
+    expect(ok.kind).toBe('ready')
+
+    const rekind: ManifestSpec = { id: 'k0', createdAt: 300, kind: 1, hash: 0xa0, owner: MAINT }
+    const after = [...before, manifestDoc(rekind)]
+    expect(await loadBrowseContext(browseSdk(after, artifacts, members), { ...REPO, repoId: 'REKIND' })).toMatchObject({
+      kind: 'unindexed',
+      reason: 'index-behind',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -493,8 +520,7 @@ describe('loadBrowseContext', () => {
 // ---------------------------------------------------------------------------
 
 describe('fork pack via a platform:// locator', () => {
-  const FORK: V2RepoRef = {
-    kind: 'v2',
+  const FORK: RepoRef = {
     forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
     repoId: 'FORK',
     ownerId: 'forker',
@@ -557,13 +583,27 @@ describe('fork pack via a platform:// locator', () => {
 
   it.each([
     ["another network's forge-core", `platform://OTHER/PARENT/uploader/${hash}`],
-    ['the v1 form', `platform://CORE/${hash}`],
+    ['a short form', `platform://CORE/${hash}`],
     ['another pack', `platform://CORE/PARENT/uploader/${'0'.repeat(64)}`],
   ])('skips a locator into %s', async (_what, uri) => {
     const { sdk, scopes } = parentSdk(bytes)
     const read = loadArtifactBytesProgress(sdk, FORK, forkManifest(uri))
     await expect(read).rejects.toBeInstanceOf(PackUnavailableError)
     expect(scopes).toEqual([])
+  })
+
+  it("shares cached chunks with the parent's own storage-0 copy", async () => {
+    const { sdk, scopes } = parentSdk(bytes)
+    const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]
+    const viaFork = await artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/uploader/${hash}`))(start, end)
+    const queries = scopes.length
+    expect(queries).toBeGreaterThan(0)
+    // The parent reads the same pack from its own chunks: same network, repo id, uploader, hash.
+    const PARENT: RepoRef = { ...FORK, repoId: 'PARENT', ownerId: 'uploader' }
+    const own: PackManifest = { ...gitPack(hash, 0, 'pm'), sizeBytes: total, uploader: 'uploader' }
+    const viaParent = await artifactRangeFetch(sdk, PARENT, own)(start, end)
+    expect(Array.from(viaParent)).toEqual(Array.from(viaFork))
+    expect(scopes).toHaveLength(queries) // no second chunk query
   })
 
   it('falls back to an https mirror when the chunks do not verify', async () => {

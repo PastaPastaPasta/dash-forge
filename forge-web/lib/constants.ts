@@ -3,12 +3,13 @@
  *
  * PARITY SOURCE OF TRUTH: `forge-contracts/vectors/` and `forge-contracts/deployments/*.json`.
  * Ref-resolution / event-fold / chunking rules exist twice (Rust forge-core + this TS) by
- * necessity — both implement `FORGE_RULES_V1` against the shared JSON conformance vectors.
+ * necessity — both implement FORGE_RULES / FORGE_RULES_V2 against the shared JSON conformance
+ * vectors.
  * Any value here that mirrors forge-core MUST stay byte-for-byte in sync with those vectors;
  * CI runs both suites on every vector change. Per-network contract ids are never written here:
  * they come from `forge-contracts/deployments/*.json` (see `./deployments`), selected by the
  * build-time `NEXT_PUBLIC_NETWORK` / `NEXT_PUBLIC_DEVNET_NAME` / `NEXT_PUBLIC_DAPI_ADDRESSES` /
- * `NEXT_PUBLIC_QUORUM_URL` / `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`.
+ * `NEXT_PUBLIC_QUORUM_URL`.
  */
 
 import {
@@ -28,18 +29,10 @@ import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
 export type Network = 'testnet' | 'mainnet' | 'devnet'
 
 /**
- * Platform **system** contracts. Their ids are fixed by rs-dpp (`dpns_contract::ID_BYTES`,
- * `token_history_contract::ID_BYTES`) and identical on every network — protocol constants,
- * not deployment values.
+ * The Platform **DPNS** system contract. Its id is fixed by rs-dpp (`dpns_contract::ID_BYTES`)
+ * and identical on every network — a protocol constant, not a deployment value.
  */
 export const DPNS_CONTRACT_ID = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
-/**
- * The system **TokenHistory** contract holding the `mint` / `freeze` / `unfreeze` /
- * `destroyFrozenFunds` audit documents with consensus `$createdAt` (parity with forge-core
- * `tokens.rs::TOKEN_HISTORY_CONTRACT_ID`, S0.7). Its records reconstruct as-of-time WRITE /
- * MAINTAIN holdings for the issue/PR event fold.
- */
-export const TOKEN_HISTORY_CONTRACT_ID = '43gujrzZgXqcKBiScLa4T8XTDnRhenR9BLx8GWVHjPxF'
 
 /** The DAPI port assumed when a configured address omits one (Platform HTTPS gateway). */
 export const DEFAULT_DAPI_PORT = 1443
@@ -55,17 +48,12 @@ export interface NetworkConfig {
   readonly dapiAddresses: readonly string[]
   /** Devnet quorum service URL; null = `https://quorums.<name>.networks.dash.org`. */
   readonly quorumBaseUrl: string | null
-  /**
-   * Global registry contract id (discovery + social graph), from
-   * `forge-contracts/deployments/<key>.json` or `NEXT_PUBLIC_REGISTRY_CONTRACT_ID`. Null =
-   * no Dash Forge registry on this network — see {@link NotDeployedError}.
-   */
-  readonly registryContractId: string | null
-  /** Where {@link registryContractId} came from (shown in the UI and the error). */
-  readonly registrySource: string | null
   /** DPNS system contract id — supplies human-readable identity names. */
   readonly dpnsContractId: string
-  /** The forge-v2 contracts registered here (`deployments/<key>.json` `v2`), else null. */
+  /**
+   * The forge-v2 contracts registered here (`deployments/<key>.json` `v2`). Null = Dash Forge
+   * is not deployed on this network — see {@link NotDeployedError}.
+   */
   readonly v2: ForgeIds | null
 }
 
@@ -76,15 +64,14 @@ export interface NetworkEnv {
   readonly dapiAddresses?: string
   /** Devnet quorum service URL (`NEXT_PUBLIC_QUORUM_URL`; parity with `DASH_FORGE_QUORUM_URL`). */
   readonly quorumBaseUrl?: string
-  readonly registryContractId?: string
 }
 
-/** Thrown by registry-backed reads/writes on a network with no Dash Forge registry. */
+/** Thrown by reads/writes on a network where forge-v2 is not deployed ({@link NetworkConfig.v2} null). */
 export class NotDeployedError extends Error {
   constructor(readonly networkKey: string) {
     super(
-      `no Dash Forge registry is deployed on ${networkKey} yet; see docs/mainnet-runbook.md ` +
-        `(or build with NEXT_PUBLIC_REGISTRY_CONTRACT_ID set to a registry deployed there)`,
+      `forge-v2 is not deployed on ${networkKey}; see docs/contracts/forge-v2.md §8 ` +
+        `(a network is deployed once forge-contracts/deployments/${networkKey}.json records it)`,
     )
     this.name = 'NotDeployedError'
   }
@@ -129,9 +116,8 @@ function validateDevnetName(name: string): void {
 /**
  * Resolve the active network and every network's config from the build env and the
  * embedded deployment files. Precedence per field: env > `deployments/<key>.json` >
- * testnet default. The registry override applies to the active network only. A network
- * without a deployment resolves with `registryContractId: null` — never another network's.
- * Throws on a malformed env (unknown network, devnet without a name) so the BUILD fails.
+ * testnet default. A network without a deployment resolves with `v2: null` — never another
+ * network's. Throws on a malformed env (unknown network, devnet without a name) so the BUILD fails.
  */
 export function resolveNetworks(
   env: NetworkEnv,
@@ -154,8 +140,6 @@ export function resolveNetworks(
     const key = network === 'devnet' ? `devnet-${name ?? ''}` : network
     const file = name !== null || network !== 'devnet' ? deployments[key] : undefined
     const isActive = network === active
-    const override = isActive ? nonEmpty(env.registryContractId) : null
-    const deployed = nonEmpty(file?.registry?.contractId)
     const envAddresses = isActive ? nonEmpty(env.dapiAddresses) : null
     const envQuorum = isActive ? nonEmpty(env.quorumBaseUrl) : null
     return {
@@ -167,13 +151,6 @@ export function resolveNetworks(
           ? parseDapiAddresses(envAddresses)
           : parseDapiAddresses(recordedDapiAddresses(file).join(',')),
       quorumBaseUrl: envQuorum ?? nonEmpty(file?.quorumBaseUrl),
-      registryContractId: override ?? deployed,
-      registrySource:
-        override !== null
-          ? 'NEXT_PUBLIC_REGISTRY_CONTRACT_ID'
-          : deployed !== null
-            ? `forge-contracts/deployments/${key}.json`
-            : null,
       dpnsContractId: DPNS_CONTRACT_ID,
       v2: forgeV2Ids(file),
     }
@@ -196,7 +173,6 @@ const RESOLVED = resolveNetworks(
     devnetName: process.env.NEXT_PUBLIC_DEVNET_NAME,
     dapiAddresses: process.env.NEXT_PUBLIC_DAPI_ADDRESSES,
     quorumBaseUrl: process.env.NEXT_PUBLIC_QUORUM_URL,
-    registryContractId: process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID,
   },
   DEPLOYMENTS,
 )
@@ -246,17 +222,17 @@ export const IPFS_GATEWAYS: readonly string[] = storageDefaults.ipfsGateways
 /** The config of the network this build targets. */
 export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]
 
-/** The registry id for `network`, or a {@link NotDeployedError}. */
-export function requireRegistryContractId(network: Network): string {
+/** The forge-v2 contracts of `network`, or a {@link NotDeployedError}. */
+export function requireForge(network: Network): ForgeIds {
   const config = NETWORKS[network]
-  if (config.registryContractId === null) throw new NotDeployedError(config.key)
-  return config.registryContractId
+  if (config.v2 === null) throw new NotDeployedError(config.key)
+  return config.v2
 }
 
 // ---------------------------------------------------------------------------
 // Chunk / browse constants — MIRROR forge-core (parity via forge-contracts/vectors).
-// See docs/contracts/data-contracts.md for the normative `chunk` / `manifestPart` /
-// `packManifest` field definitions.
+// See docs/contracts/forge-v2.md and forge-contracts/contracts/forge-core.json for the
+// normative `chunk` / `manifestPart` / `packManifest` field definitions.
 // ---------------------------------------------------------------------------
 
 /** Max bytes per byteArray field on `chunk` (d0..d2) and per `manifestPart` entry column. */
@@ -290,7 +266,7 @@ export const MANIFEST_MAX_TIPS = 16
 export const MANIFEST_MAX_SUPERSEDES = 32
 
 /**
- * flatIndex publication policy (config-tunable in FORGE_RULES_V1; S0.5 tunes constants):
+ * flatIndex publication policy (S0.5 tunes constants):
  * republish after N default-branch pushes or the staleness window, whichever comes first.
  * Readers overlay the ≤ FLATINDEX_OVERLAY_MAX commits since the indexed tip.
  */

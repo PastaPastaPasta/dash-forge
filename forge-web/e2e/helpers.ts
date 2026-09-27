@@ -1,45 +1,66 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, type Browser, type Page, type ConsoleMessage } from '@playwright/test'
+import { expect, type Browser, type Locator, type Page, type ConsoleMessage } from '@playwright/test'
 import { homedir } from 'node:os'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /**
- * Real testnet fixture: the nightly READ fixture, written only by
- * `e2e/cli/seed-read-fixture.sh` (reserved in e2e/README.md). `main` holds one deterministic
- * commit (README.md, src/, lib/) stored on Platform with no browse index, so the fallback
- * clone is what the browse specs exercise. Never point these specs at a repo another suite
- * writes: the storage e2e once left packs on a laptop's MinIO in the shared CLI repo, and
- * every browse spec failed on them. Override with E2E_FIXTURE_OWNER / E2E_FIXTURE_NAME.
+ * The devnet the build under test reads (`E2E_DEVNET`, default moutai). Must match the
+ * default in playwright.config.ts, which builds the app for it.
  */
-export const M1 = {
-  owner: process.env['E2E_FIXTURE_OWNER'] ?? '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB',
-  // The seeder's override (NIGHTLY_FIXTURE_REPO) applies here too, so a renamed fixture is
-  // seeded and read as the same repo.
-  name: process.env['E2E_FIXTURE_NAME'] ?? process.env['NIGHTLY_FIXTURE_REPO'] ?? 'm1-5124',
-} as const
+export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'moutai'
 
-/** The devnet this run's build targets (`E2E_DEVNET`), or '' for the default testnet build. */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] ?? ''
-
-/** Skip a testnet-fixture spec on a devnet build (and vice versa). */
-export const ON_TESTNET = E2E_DEVNET === ''
+/** The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}. */
+export const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
 
 /**
- * The repo the opt-in WRITE spec (auth-write, E2E_WRITE=1) creates issues on — never the read
- * fixture above, which only its seeder may write (its issues page is asserted on). This is
- * the CLI suite's DEPLOYER-owned repo, which test runs already write to. Override with
- * E2E_WRITE_FIXTURE_NAME. See e2e/README.md.
+ * The forge-v2 READ fixture, written only by `forge-contracts/scripts/seed-v2-fixture.mjs`:
+ * repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer COLLAB); main =
+ * README.md, src/main.rs, lib/util.ts, docs/rules.md; branch feature/greeting; tag v0.1.0; a
+ * published objectLocator; issue #1 open + labelled `question`, #2 closed by its author, #3
+ * closed + labelled `docs`; PR #1 open with MAINTAINER's approval, PR #2 merged; one star.
+ * Only its seeder writes it (v2-writes w6 adds OWNER's approval to PR #1, nothing else).
+ * Override with E2E_V2_OWNER / E2E_V2_NAME.
  */
-export const WRITE_FIXTURE = {
-  owner: M1.owner,
-  name: process.env['E2E_WRITE_FIXTURE_NAME'] ?? 'm1-75299',
+export const DEMO = {
+  owner: process.env['E2E_V2_OWNER'] ?? '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD',
+  name: process.env['E2E_V2_NAME'] ?? 'forge-v2-demo',
 } as const
 
-export function repoUrl(path = '', repo: { owner: string; name: string } = M1): string {
-  const q = `owner=${repo.owner}&name=${repo.name}`
-  if (path === '') return `/repo/?${q}`
-  return `/repo/${path}/?${q}`
+/** The fixture's `forge-v2-empty`: a repo with nothing pushed (the empty-repo state). */
+export const EMPTY = { owner: MAINTAINER, name: 'forge-v2-empty' } as const
+
+/** A repo route: `repoUrl('issue', '&number=2')` → `/repo/issue/?owner=…&name=…&number=2`. */
+export function repoUrl(
+  path = '',
+  extra = '',
+  repo: { readonly owner: string; readonly name: string } = DEMO,
+): string {
+  const q = `owner=${repo.owner}&name=${repo.name}${extra}`
+  return path === '' ? `/repo/?${q}` : `/repo/${path}/?${q}`
+}
+
+const ROOT = resolve(__dirname, '../..')
+
+/** The deployment record the build under test is made from (DAPI addresses, contract ids). */
+export function deployment(): {
+  dapiAddresses: string[]
+  v2: { forgeCore: { contractId: string; contractGroupId: string }; forgeCollab: { contractId: string } }
+} {
+  return JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
+}
+
+/**
+ * A connected evo-sdk in Node, for reading Platform independently of the app (`any`: the
+ * module is imported by path at runtime, outside the app's typed import graph).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function nodeSdk(): Promise<any> {
+  const evo = await import(pathToFileURL(join(ROOT, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
+  const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: deployment().dapiAddresses })
+  await sdk.connect()
+  return sdk
 }
 
 export const SCREENSHOT_DIR = join(__dirname, 'screenshots')
@@ -51,7 +72,7 @@ export function shot(page: Page, name: string) {
 
 /**
  * Collect console errors. Some noise is expected and benign in a WASM SPA hitting a live
- * testnet (transient DAPI request failures, favicon 404s, dev warnings). We only fail on
+ * devnet (transient DAPI request failures, favicon 404s, dev warnings). We only fail on
  * errors that indicate the *page itself* broke.
  */
 export function collectPageErrors(page: Page): { errors: string[]; consoleErrors: string[] } {
@@ -74,10 +95,19 @@ export function readErrorBanner(page: Page) {
     .first()
 }
 
+/** Wait for `success`, failing fast with the app's read-error text instead of a bare timeout. */
+export async function expectLanded(page: Page, success: Locator, timeout = 45_000): Promise<void> {
+  await expect(success.or(readErrorBanner(page))).toBeVisible({ timeout })
+  if (await readErrorBanner(page).isVisible()) {
+    throw new Error(`read error: ${await readErrorBanner(page).innerText()}`)
+  }
+}
+
 /**
  * Wait until the repo scaffold has finished the "Connecting to Platform" / "Resolving …"
- * loading shell — i.e. the WASM SDK connected and the registry listing resolved. Resolves
- * when either real content or an explicit terminal state (error / not-found) is on screen.
+ * loading shell — i.e. the WASM SDK connected and the forge-v2 `repo` document resolved.
+ * Resolves when either real content or an explicit terminal state (error / not-found) is on
+ * screen.
  */
 export async function waitForRepoResolved(page: Page, timeout = 60_000): Promise<void> {
   await page
@@ -152,7 +182,7 @@ export const PASSPHRASE = 'e2e passphrase for the vault'
  * per identity instead of registering a new one on every test (identities would otherwise
  * accumulate keys without bound). Gitignored (e2e/.playwright/).
  */
-function stateFile(name: string): string {
+export function stateFile(name: string): string {
   return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${name}.json`)
 }
 

@@ -462,7 +462,6 @@ impl<'a> WebhookService<'a> {
     /// Fail early (with a message rather than consensus code 40120) when the signer is not a
     /// maintainer of `repo`. Advisory: consensus is the authority.
     pub async fn require_maintainer(&self, repo: &RepoRef) -> Result<()> {
-        repo.require_v2()?;
         let me = self.identity.id();
         if MemberReader::new(self.client)
             .role_doc(repo, &me, Role::Maintainer)
@@ -480,7 +479,7 @@ impl<'a> WebhookService<'a> {
     /// Build the document for `input` on `repo`: pick the relay's encryption key and the
     /// signer's, and encrypt the secret between them. Nothing is sent.
     pub async fn prepare(&self, repo: &RepoRef, input: &NewWebhook) -> Result<PreparedWebhook> {
-        let forge = repo.require_v2()?;
+        let forge = repo.forge();
         check_url_and_events(&input.url, &input.events, input.allow_credentials_in_url)?;
         check_secret(input.secret.expose())?;
 
@@ -559,7 +558,7 @@ impl<'a> WebhookService<'a> {
 
     /// Write a prepared webhook document; returns its id.
     pub async fn send(&self, repo: &RepoRef, prepared: &PreparedWebhook) -> Result<String> {
-        let forge = repo.require_v2()?;
+        let forge = repo.forge();
         let contract = self.client.fetch_contract(&forge.collab).await?;
         WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?
             .create_document(&contract, DOC_WEBHOOK, prepared.properties.clone())
@@ -575,7 +574,7 @@ impl<'a> WebhookService<'a> {
     /// means there is no moment in which the other maintainer's document is current again.
     /// Then delete every other document of the hook the signer wrote.
     pub async fn remove(&self, repo: &RepoRef, hook_id: [u8; 32]) -> Result<RemoveReport> {
-        let forge = repo.require_v2()?;
+        let forge = repo.forge();
         let contract = self.client.fetch_contract(&forge.collab).await?;
         let me = self.identity.id();
         let history = WebhookReader::new(self.client)

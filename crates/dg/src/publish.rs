@@ -278,14 +278,14 @@ impl Storage {
 
     /// The advertised read bases that fit `config.backend.uris`.
     fn uris(&self) -> Vec<String> {
-        let max_len = BACKEND_URIS_V2.max_item_len.unwrap_or(usize::MAX);
+        let max_len = BACKEND_URIS_V2.max_item_len;
         let mut uris: Vec<String> = self
             .policy
             .advertised_uris()
             .into_iter()
             .filter(|u| u.len() <= max_len)
             .collect();
-        uris.truncate(BACKEND_URIS_V2.max_items.unwrap_or(usize::MAX));
+        uris.truncate(BACKEND_URIS_V2.max_items);
         uris
     }
 

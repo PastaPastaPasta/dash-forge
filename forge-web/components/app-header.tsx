@@ -44,7 +44,8 @@ export function AppHeader(): JSX.Element {
           <span className="hidden text-prose font-semibold tracking-tight text-anvil-900 dark:text-anvil-50 md:inline">Dash Forge</span>
         </Link>
 
-        <NetworkBadge className="hidden sm:inline" />
+        {/* A devnet (resettable, test funds only) is flagged at every width. */}
+        <NetworkBadge className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
 
         <div className="ml-1 hidden max-w-xs flex-1 sm:block">
           <Suspense fallback={null}>
@@ -238,7 +239,7 @@ const MENU_ITEM = 'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left 
 function NewMenu(): JSX.Element | null {
   const { open, setOpen, ref, trigger } = usePopover()
   // No "New" on a network without Forge (spec §6.3: no New repo button in that state).
-  if (ACTIVE_NETWORK.v2 === null && ACTIVE_NETWORK.registryContractId === null) return null
+  if (ACTIVE_NETWORK.v2 === null) return null
   return (
     <div ref={ref} className="relative">
       <button

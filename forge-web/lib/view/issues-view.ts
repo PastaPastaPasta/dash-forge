@@ -3,9 +3,9 @@
  * event log into a single chronological timeline for the detail view.
  *
  * State itself (open/closed, labels) is the deterministic fold done by the core `readIssue` /
- * `readPull` (v1 `foldIssueState`, forge-v2 `foldIssueStateV2` over `event` + `authorEvent`);
- * this module only adds the human thread (comments + rendered events + reviews) and, on
- * forge-v2, the PR's counted approvals (`countApprovals`, `forge-v2.md` §6).
+ * `readPull` (`foldIssueStateV2` / `foldPrStateV2` over `event` + `authorEvent`); this module
+ * only adds the human thread (comments + rendered events + reviews) and the PR's counted
+ * approvals (`countApprovals`, `forge-v2.md` §6).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -25,7 +25,6 @@ import {
   type PullView,
   type RepoRef,
   type ReviewView,
-  type V2RepoRef,
 } from '../repo'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
@@ -58,9 +57,9 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
       ],
     }),
   )
-  // Private forge-v2 repo: a stranger's ciphertext is shown to no one (`forge-v2.md` §5),
-  // as in the lists.
-  const oracle = repo.kind === 'v2' && repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
+  // Private repo: a stranger's ciphertext is shown to no one (`forge-v2.md` §5), as in the
+  // lists.
+  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
   return documents
     .filter((d) => wellFormed(repo, 'comment', d))
     .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
@@ -79,7 +78,7 @@ export type TimelineItem =
       readonly kind: 'event'
       readonly at: number
       readonly event: Event
-      /** forge-v2 `authorEvent`: the author's own close/reopen (`forge-v2.md` §3). */
+      /** An `authorEvent`: the author's own close/reopen (`forge-v2.md` §3). */
       readonly byAuthor?: boolean
     }
   | { readonly kind: 'review'; readonly at: number; readonly review: ReviewView }
@@ -95,8 +94,6 @@ async function docByNumber(
     sdk,
     repoSource(repo).repoQuery(DOC[type], {
       where: [['number', '==', number]],
-      // v1 keeps the query shape it always sent; forge-v2's unique (repoId, number) needs none.
-      ...(repo.kind === 'v1' ? { orderBy: [['number', 'desc']] as const } : {}),
       limit: 1,
     }),
   )
@@ -120,11 +117,11 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     readTargetLog(sdk, repo, id),
     readComments(sdk, repo, id),
   ])
-  const issue = await readIssue(sdk, repo, doc, undefined, log)
+  const issue = await readIssue(sdk, repo, doc, log)
   return { issue, timeline: mergeTimeline(comments, log.events, log.authorEvents, []) }
 }
 
-/** The counted approvals of a forge-v2 PR, and what each reviewer's role is now. */
+/** The counted approvals of a PR, and what each reviewer's role is now. */
 export interface PullApprovals extends Approvals {
   /** Each counted reviewer's current role (null once revoked — then they do not count). */
   readonly roles: ReadonlyMap<string, Role | null>
@@ -135,8 +132,8 @@ export interface PullThread {
   readonly pull: PullView
   readonly timeline: TimelineItem[]
   /**
-   * forge-v2 only: the reviews that count on the current head (`countApprovals`). Null on
-   * v1, which has no approval rule, or when the membership could not be read.
+   * The reviews that count on the current head (`countApprovals`). Null when the membership
+   * could not be read.
    */
   readonly approvals: PullApprovals | null
 }
@@ -157,15 +154,15 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
     readComments(sdk, repo, id),
     readReviews(sdk, repo, id),
   ])
-  const pull = await readPull(sdk, repo, doc, undefined, log)
-  const approvals = repo.kind === 'v2' ? await readApprovals(sdk, repo, reviews, pull.headOid) : null
+  const pull = await readPull(sdk, repo, doc, log)
+  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid)
   return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), approvals }
 }
 
-/** A forge-v2 PR's counted approvals, or null when the membership could not be read. */
+/** A PR's counted approvals, or null when the membership could not be read. */
 async function readApprovals(
   sdk: EvoSDK,
-  repo: V2RepoRef,
+  repo: RepoRef,
   reviews: readonly ReviewView[],
   headOid: string,
 ): Promise<PullApprovals | null> {

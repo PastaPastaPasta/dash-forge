@@ -1,0 +1,18 @@
+{
+  "name": "patch_source_ref_hash_mismatch",
+  "description": "A public patch whose sourceRefName does not hash to sourceRefNameHash is malformed.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefName": "refs/heads/fix",
+      "sourceRefNameHash": "9ac131b6ce602f7b3a204467d09caae8cde8c2f98c3f3f88d86aad689f8fbaa3"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

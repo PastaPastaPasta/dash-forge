@@ -64,12 +64,8 @@ pub fn fork_manifest(
     if !MANIFEST_URIS_V2.fits(&uris) {
         uris.retain(|u| !u.starts_with("s3://"));
     }
-    uris.retain(|u| {
-        MANIFEST_URIS_V2
-            .max_item_len
-            .is_none_or(|max| u.len() <= max)
-    });
-    uris.truncate(MANIFEST_URIS_V2.max_items.unwrap_or(usize::MAX));
+    uris.retain(|u| u.len() <= MANIFEST_URIS_V2.max_item_len);
+    uris.truncate(MANIFEST_URIS_V2.max_items);
     if uris.is_empty() {
         return Ok(None);
     }
@@ -171,9 +167,8 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
 ) -> Result<ForkResult> {
-    parent.require_v2()?;
     parent.require_readable()?;
-    let forge = parent.require_v2()?;
+    let forge = parent.forge();
     let mut opts = opts.clone();
     opts.name = crate::resolve::repo_slug(&opts.name)?;
     opts.fork_of = Some(platform::decode_identifier(parent.id())?);
@@ -182,7 +177,7 @@ pub async fn fork_repo(
     // A repo of the signer's with this name already exists: continue only if it is a fork
     // of this parent (an interrupted fork). Anything else would have the parent's manifests
     // and refs written into an unrelated repository, permanently.
-    if let Some(existing) = crate::resolve::find_v2(
+    if let Some(existing) = crate::resolve::find_named(
         client,
         forge,
         platform::decode_identifier(&owner)?,
@@ -272,7 +267,7 @@ mod tests {
     const UPLOADER: &str = "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD";
 
     fn parent() -> RepoRef {
-        RepoRef::V2 {
+        RepoRef {
             forge: ForgeIds {
                 core: "CORE".into(),
                 collab: "COLLAB".into(),

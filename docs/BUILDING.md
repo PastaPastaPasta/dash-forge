@@ -166,41 +166,44 @@ complete readers (`query_all_documents` / `queryAllDocuments`):
 - **Same-block ties.** A `start_after` cursor excludes the cursor's whole `$createdAt`, so
   documents created in the same block as a page's last row, and sorting after it, are
   skipped. When the index ends in `$createdAt`, the readers also query the boundary
-  timestamp with `==`. This needs the boundary row's `$createdAt`. The history-keeping
-  repo-v1 types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return it from a
-  proved query, so their reads keep the gap until they move to forge-v2 on protocol 14,
-  which bounds the cursor by document id.
+  timestamp with `==`. This needs the boundary row's `$createdAt`, which history-keeping
+  types (`packManifest`, `event`, `refUpdate`, `issue`, ...) do not return from a proved
+  query on protocol 13. forge-v2 runs only on protocol 14, where the readers bound the
+  cursor by document id.
 
 ## Networks
 
-Every binary and the web app target one of **testnet** (the default), **mainnet**, or a
-**named devnet** such as `moutai`. Contract ids are never written into code: they come from
+Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**
+such as `moutai`. The CLI tools default to testnet, but forge-v2 is deployed only on devnet
+moutai today (Platform protocol 14). Testnet and mainnet run protocol 13; forge-v2 is
+registered on testnet once protocol 14 reaches it, and on mainnet after protocol 14
+activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
+`--network devnet --devnet-name moutai` (or just `--devnet-name moutai`), or record it once
+with `dg auth login --network devnet --devnet-name moutai`, which saves the network in
+`~/.config/dash-forge/config.toml`.
+
+Contract ids are never written into code: they come from the `v2` section of
 `forge-contracts/deployments/<key>.json`, where the key is `testnet`, `mainnet` or
 `devnet-<name>`. The Rust crates embed every file in that directory at build time
 (`crates/forge-core/build.rs`); forge-web bundles them through `forge-web/lib/deployments.ts`,
 and a unit test fails if that map is missing a file.
 
-A network with no registry id in its deployment file is **not deployed**. Commands that need
-the registry fail with
-
-```
-no Dash Forge registry is deployed on mainnet yet; see docs/mainnet-runbook.md
-```
-
-and never fall back to another network's ids. Identity and balance reads still work there.
-`dg doctor` prints the network, the registry id, and where the id came from.
+A network whose deployment file has no registered forge-v2 pair (or has no file at all) is
+**not deployed**. Commands that need the contracts fail with a "not deployed" error and never
+fall back to another network's ids. Identity and balance reads still work there. `dg doctor`
+prints the network, the forge-core and forge-collab ids, and where they came from.
 
 ### Selecting a network
 
-| Tool | Network | Devnet name | Devnet DAPI addresses | Registry override |
-|---|---|---|---|---|
-| `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name moutai` | `--dapi-addresses a,b` | — |
-| `dg` (`~/.config/dash-forge/config.toml`) | `network` | `devnet_name` | `dapi_addresses` | `registry_contract_id` |
-| `git-remote-dash` (git config) | `dash.network` | `dash.devnetName` | `dash.dapiAddresses` | `dash.registryContractId` |
-| `forge-relay` (flags / TOML) | `--network` / `network` | `--devnet-name` / `devnet-name` | `--dapi-addresses` / `dapi-addresses` | `registry-contract-id` |
-| `forge-import` (flags) | `--network` | `--devnet-name` | `--dapi-addresses` | — |
-| any of the above (env) | `DASH_FORGE_NETWORK` | `DASH_FORGE_DEVNET_NAME` | `DASH_FORGE_DAPI_ADDRESSES` | `FORGE_REGISTRY_CONTRACT_ID` |
-| forge-web (build env) | `NEXT_PUBLIC_NETWORK` | `NEXT_PUBLIC_DEVNET_NAME` | `NEXT_PUBLIC_DAPI_ADDRESSES` | `NEXT_PUBLIC_REGISTRY_CONTRACT_ID` |
+| Tool | Network | Devnet name | Devnet DAPI addresses |
+|---|---|---|---|
+| `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name moutai` | `--dapi-addresses a,b` |
+| `dg` (`~/.config/dash-forge/config.toml`) | `network` | `devnet_name` | `dapi_addresses` |
+| `git-remote-dash` (git config) | `dash.network` | `dash.devnetName` | `dash.dapiAddresses` |
+| `forge-relay` (flags / TOML) | `--network` / `network` | `--devnet-name` / `devnet-name` | `--dapi-addresses` / `dapi-addresses` |
+| `forge-import` (flags) | `--network` | `--devnet-name` | `--dapi-addresses` |
+| any of the above (env) | `DASH_FORGE_NETWORK` | `DASH_FORGE_DEVNET_NAME` | `DASH_FORGE_DAPI_ADDRESSES` |
+| forge-web (build env) | `NEXT_PUBLIC_NETWORK` | `NEXT_PUBLIC_DEVNET_NAME` | `NEXT_PUBLIC_DAPI_ADDRESSES` |
 
 Precedence is per field. For `dg`, `forge-relay` and `forge-import` it is: flags, then the
 config file, then the environment, then the deployment file. For `git-remote-dash` it is the
@@ -210,7 +213,7 @@ more rules apply to every tool:
 
 - `--devnet-name` on its own implies `--network devnet`.
 - A layer that names a different network contributes nothing network-specific. For example,
-  a `registry_contract_id` saved for testnet in `config.toml` is ignored under
+  `dapi_addresses` saved for a devnet in `config.toml` are ignored under
   `--network mainnet`.
 
 A devnet's quorum keys come from `https://quorums.<name>.networks.dash.org`. Override the
@@ -233,19 +236,20 @@ git clone -c dash.network=devnet -c dash.devnetName=moutai dash://<owner>/<repo>
 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai pnpm build  # forge-web
 ```
 
-The web header shows a network badge on every network except mainnet. On a network with no
-registry, the badge is amber and the pages that need the registry show a "not deployed"
-state instead of querying.
+The web header shows a network badge on every network except mainnet (the production build
+at forge.dashhq.org is built for devnet moutai and shows "devnet"). On a network with no
+forge-v2 deployment, the badge is amber and the pages that need the contracts show a "not
+deployed" state instead of querying.
 
 ### Adding a network
 
-To add a network, commit its deployment file: `deploy.mjs` writes `mainnet.json`, and a new
-devnet gets `devnet-<name>.json`. Then add a matching import to
-`forge-web/lib/deployments.ts`. `devnet-moutai.json` records moutai's DAPI addresses and,
-under `v2`, the forge-v2 contracts `deploy-v2.mjs` registered there. It has no v1 `registry`.
-Deployment resolution exposes the `v2` ids (forge-core `NetworkTarget::v2`, forge-web
-`NETWORKS[n].v2`) once both contracts are `registered`, but no client operation reads them
-yet, so moutai reports "not deployed" until the clients move to forge-v2.
+To add a network, register forge-v2 there with `forge-contracts/scripts/deploy-v2.mjs`
+([contracts/forge-v2.md §8](contracts/forge-v2.md#8-deploying)). It writes the `v2` section of
+`forge-contracts/deployments/<network>.json` (`devnet-<name>.json` for a devnet). Commit the
+file, then add a matching import to `forge-web/lib/deployments.ts`. The script's SDK is
+pinned in `forge-contracts/sdk-v2` (`(cd forge-contracts/sdk-v2 && npm ci)` once). Deployment
+resolution exposes the ids (forge-core `NetworkTarget::v2`, forge-web `NETWORKS[n].v2`) once
+both contracts are `registered`. `devnet-moutai.json` also records moutai's DAPI addresses.
 
 ## Checks
 
@@ -266,20 +270,20 @@ one.
 * `make storage-it`: brings up `infra/docker-compose.yml`, then runs the bring-your-own
   storage tests against it. Covered: SigV4-signed S3 operations on a bucket that refuses
   anonymous writes, kubo CIDs matching the local CIDv1 derivation, and N-of-M
-  replication with gateway read-back. Localhost only; no testnet. `FORGE_IT_S3=1` /
+  replication with gateway read-back. Localhost only; no Platform network. `FORGE_IT_S3=1` /
   `FORGE_IT_IPFS=1` make an unreachable fixture fail instead of skip.
 * `make storage-e2e`: a real `git push` / `git clone` over `dash://` with packs on the
-  local MinIO + kubo. Only the manifest and ref go to testnet, and it spends a few hundred
-  thousand credits of the e2e DEPLOYER identity. See `e2e/cli/storage-byo.sh`.
+  local MinIO + kubo. Only the manifest and ref go to devnet moutai, paid by the e2e OWNER
+  identity. See `e2e/cli/storage-byo.sh`.
 
 ## End-to-end suites
 
-Both e2e suites run against **live Dash Platform testnet** and are not part of the
-per-push gate:
+Both e2e suites run against **live devnet moutai** (forge-v2, protocol 14) and are not part
+of the per-push gate:
 
-* `make e2e` — the CLI suite (`e2e/cli/run.sh`, 7 scenarios). Needs the funded fixture
+* `make e2e` — the CLI suite (`e2e/cli/run.sh`, 11 scenarios). Needs the funded fixture
   identities described in `e2e/cli/config.sh` under
-  `~/.config/dash-forge/test-identities/`.
+  `~/.config/dash-forge/test-identities/devnet-moutai/` (OWNER, COLLAB, CONTRIB).
 * `cd forge-web && pnpm test:e2e` — the Playwright suite. `pnpm install` does not
   download browsers, so a fresh clone needs one extra step first:
 
@@ -290,11 +294,13 @@ per-push gate:
   pnpm test:e2e
   ```
 
-  The read-path, fallback-browse, zero-backend and a11y specs need only network access to
-  testnet; `auth-write.spec.ts` needs a funded identity.
+  The specs run against a moutai build and read the forge-v2 read fixture that
+  `forge-contracts/scripts/seed-v2-fixture.mjs` seeds (idempotent); the write specs need a
+  funded identity.
 
-The `Testnet Nightly` workflow runs the read-only half unconditionally and the funded half
-only when the fixture secrets are configured, reporting a clear SKIP when they are not.
+The `Devnet Nightly` workflow seeds the v2 fixture, runs Playwright against a moutai build,
+and runs the CLI suite on moutai. The funded jobs run only when the fixture secrets are
+configured, reporting a clear SKIP when they are not.
 
 ## Notes for sandboxed / offline environments
 

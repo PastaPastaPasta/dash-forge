@@ -31,7 +31,7 @@
 //   2. forge-collab: substitute forge-core's id for FORGE_CORE_CONTRACT_ID in its schema, then a
 //      DataContractCreate v1 enrolling forge-collab in the group.
 // Both are signed with the deployer's CRITICAL authentication key (contract create needs
-// CRITICAL or HIGH; CRITICAL is what deploy.mjs has always used). The deployer owns the
+// CRITICAL or HIGH; CRITICAL is used). The deployer owns the
 // contracts and the group; no moderation, not readonly (flip readonly in a later update once
 // the schema is final).
 //
@@ -50,8 +50,7 @@ import { createHash } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
-// The pinned protocol-14 SDK lives in sdk-v2/ so it cannot collide with the evo-sdk 4.0 that
-// deploy.mjs (v1) resolves from ../node_modules. The package is ESM-only.
+// The pinned protocol-14 SDK lives in sdk-v2/ (`npm ci` there). The package is ESM-only.
 const EVO_SDK_ENTRY = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk', 'dist', 'evo-sdk.module.js');
 export async function loadEvoSdk() {
   if (!existsSync(EVO_SDK_ENTRY)) throw new Error('run `npm ci` in forge-contracts/sdk-v2 first');

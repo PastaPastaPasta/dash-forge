@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 
 use dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::dapi_client::{Address, AddressList, CanRetry};
-use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::consensus::basic::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
@@ -43,7 +42,6 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -56,23 +54,13 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::v0::DocumentsBat
 use dash_sdk::dpp::state_transition::batch_transition::BatchTransition;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::state_transition::StateTransition;
-use dash_sdk::dpp::tokens::calculate_token_id;
-use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
-use dash_sdk::dpp::tokens::info::IdentityTokenInfo;
-use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
-use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
-use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::contract_groups::ContractGroupMembershipsForContract;
 use dash_sdk::platform::documents::document_query::DocumentQuery;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::tokens::identity_token_balances::IdentitiesTokenBalancesQuery;
-use dash_sdk::platform::tokens::token_info::IdentitiesTokenInfosQuery;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
-use drive_proof_verifier::types::identity_token_balance::IdentitiesTokenBalances;
-use drive_proof_verifier::types::token_info::IdentitiesTokenInfos;
 use drive_proof_verifier::DocumentCount;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
@@ -89,6 +77,24 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the *identical* signed bytes (same nonce + entropy), so extra attempts can only make
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
+
+/// How long one `waitForStateTransitionResult` may take, on one node, before the write loop
+/// re-broadcasts instead.
+///
+/// A transition that a node accepted can still never produce a result. The common case is
+/// two writers (two processes, or the CLI and the web app) signing with the same identity's
+/// contract nonce at once: both pass CheckTx, the block takes one, and Tenderdash quietly
+/// drops the other from its mempool on recheck, so no result event ever comes. The SDK's
+/// own wait read that silence as a dead node and tried 7 nodes × 30 s (and banned each one):
+/// a write that hung for about 3.5 minutes, then recovered. A re-broadcast of the same bytes
+/// answers at once instead — "already in mempool/chain" (wait again) or a consumed nonce
+/// (the caller checks what landed and re-signs) — so one bounded wait per broadcast is enough.
+/// Blocks land in seconds; 20 s leaves plenty of room for a slow one.
+const WAIT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Hard deadline around one wait, proof verification included (a quorum fetch for the
+/// proof's signature is a separate HTTP call with its own 30 s client timeout).
+const WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Maximum attempts for one proof-verified read. The SDK already rotates across DAPI nodes
 /// within an attempt; this outer loop covers the case where that rotation runs out (every
@@ -108,7 +114,7 @@ const DAPI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// quickly, and a connect timeout is now cheap enough to allow more.
 const DAPI_RETRIES: usize = 6;
 
-pub use crate::network::{Network, NetworkTarget, Registry};
+pub use crate::network::{Network, NetworkTarget};
 
 pub mod wrap;
 
@@ -135,9 +141,7 @@ impl LoadedContract {
         self.0.id().to_string(Encoding::Base58)
     }
 
-    /// The contract owner's base58 identity id. The owner is auto-credited both tokens'
-    /// `baseSupply` at creation, so it is always a WRITE+MAINTAIN holder even though no
-    /// `mint` history document records that crediting (data-contracts §2.1).
+    /// The contract owner's base58 identity id.
     pub fn owner_id(&self) -> String {
         self.0.owner_id().to_string(Encoding::Base58)
     }
@@ -286,7 +290,7 @@ impl std::fmt::Debug for LoadedIdentity {
 }
 
 /// An rs-sdk-backed Platform client: a connected `Sdk` plus the network it targets and the
-/// registry resolved for that network.
+/// forge-v2 contracts deployed there.
 ///
 /// Construct with [`PlatformClient::connect`]. Proof verification is always on (the
 /// trusted context provider supplies quorum public keys over HTTPS); there is no
@@ -318,9 +322,8 @@ impl PlatformClient {
     /// DAPI addresses; when it has none they are discovered from the devnet's quorum
     /// service (`/masternodes`), the same trusted source the quorum keys come from.
     ///
-    /// The target's registry is not fetched here: a network with no deployment still
-    /// connects (identity/balance reads work), and registry operations fail with
-    /// [`Error::NotDeployed`] when they need it.
+    /// A network with no forge-v2 deployment still connects (identity/balance reads work);
+    /// repository operations fail with [`Error::V2NotDeployed`] when they need it.
     pub async fn connect(target: NetworkTarget) -> Result<Self> {
         let network = &target.network;
         let dashcore_network = to_dashcore(network);
@@ -383,9 +386,8 @@ impl PlatformClient {
         })
     }
 
-    /// Connect to `network` with the registry from its embedded deployment (or the
-    /// `FORGE_REGISTRY_CONTRACT_ID` override). For callers without a config layer of their
-    /// own — tests and examples.
+    /// Connect to `network` with the contracts its embedded deployment records. For callers
+    /// without a config layer of their own — tests and examples.
     pub async fn connect_network(network: Network) -> Result<Self> {
         Self::connect(NetworkTarget::for_network(network)?).await
     }
@@ -395,21 +397,9 @@ impl PlatformClient {
         &self.target.network
     }
 
-    /// The resolved network + registry this client was connected with.
+    /// The resolved network + forge-v2 contracts this client was connected with.
     pub fn target(&self) -> &NetworkTarget {
         &self.target
-    }
-
-    /// The registry contract id for this network, or [`Error::NotDeployed`] when no registry
-    /// is deployed on it (never another network's id).
-    pub fn registry_contract_id(&self) -> Result<&str> {
-        Ok(self.target.require_registry()?.contract_id.as_str())
-    }
-
-    /// Fetch the registry contract for this network (see [`Self::registry_contract_id`]).
-    pub async fn fetch_registry(&self) -> Result<LoadedContract> {
-        let id = self.registry_contract_id()?.to_string();
-        self.fetch_contract(&id).await
     }
 
     /// The Platform protocol version the SDK currently encodes and verifies with.
@@ -658,7 +648,7 @@ impl PlatformClient {
     /// Query **every** matching document, paginating past Platform's ≤100-row page cap.
     ///
     /// [`PlatformClient::query_documents`] returns a single page (≤100 rows); an
-    /// authorization-bearing fold (events, token history) MUST see all rows or a stranger
+    /// authorization-bearing fold (events, memberships) MUST see all rows or a stranger
     /// can bury real state-changing docs past row 100 with un-gated spam and freeze the
     /// displayed state. This loops on the `$id` cursor (`start_after` = the last row's id)
     /// until a short page is returned. `order` must be a stable traversal so the cursor
@@ -709,88 +699,6 @@ impl PlatformClient {
             documents.reverse();
         }
         Ok(documents)
-    }
-
-    // === Token reads (the v1 collaborator ACL, read-only) ==================
-    //
-    // forge-v1 repositories granted access with two tokens per repo contract (WRITE at
-    // position 0, MAINTAIN at position 1). v1 is read-only now: these reads remain so a v1
-    // repo's collaborators and token history still render, but nothing mints, freezes or
-    // destroys any more. forge-v2 membership is documents (`crate::members`).
-
-    /// The base58 token id for `position` (0 = WRITE, 1 = MAINTAIN) of `contract`,
-    /// derived as `hash("dash_token" || contractId || position)` (rs-dpp `calculate_token_id`).
-    pub fn token_id(&self, contract: &LoadedContract, position: u16) -> String {
-        let raw = calculate_token_id(&contract.0.id().to_buffer(), position);
-        Identifier::from(raw).to_string(Encoding::Base58)
-    }
-
-    /// The token balances (`identity → amount`, absent = 0) of `token_id_b58` across
-    /// `identities` (base58). This is the authoritative on-chain collaborator holding
-    /// check — a positive balance means the token is held.
-    pub async fn token_balances(
-        &self,
-        token_id_b58: &str,
-        identities: &[String],
-    ) -> Result<BTreeMap<String, u64>> {
-        if identities.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let token_id = parse_id(token_id_b58, "token id")?;
-        let identity_ids = identities
-            .iter()
-            .map(|s| parse_id(s, "identity id"))
-            .collect::<Result<Vec<_>>>()?;
-        let query = IdentitiesTokenBalancesQuery {
-            identity_ids,
-            token_id,
-        };
-        let balances: IdentitiesTokenBalances =
-            retry_transient_read("query token balances", || {
-                TokenAmount::fetch_many(&self.sdk, query.clone())
-            })
-            .await
-            .map_err(|e| Error::Platform(format!("querying token balances: {e}")))?;
-        Ok(balances
-            .iter()
-            .map(|(id, amt)| (id.to_string(Encoding::Base58), amt.unwrap_or(0)))
-            .collect())
-    }
-
-    /// The frozen status (`identity → frozen`, absent = false) of `token_id_b58` across
-    /// `identities` (base58) — the suspend state included in a collaborator listing.
-    pub async fn token_frozen(
-        &self,
-        token_id_b58: &str,
-        identities: &[String],
-    ) -> Result<BTreeMap<String, bool>> {
-        if identities.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let token_id = parse_id(token_id_b58, "token id")?;
-        let identity_ids = identities
-            .iter()
-            .map(|s| parse_id(s, "identity id"))
-            .collect::<Result<Vec<_>>>()?;
-        let query = IdentitiesTokenInfosQuery {
-            identity_ids,
-            token_id,
-        };
-        let infos: IdentitiesTokenInfos = retry_transient_read("query token infos", || {
-            IdentityTokenInfo::fetch_many(&self.sdk, query.clone())
-        })
-        .await
-        .map_err(|e| Error::Platform(format!("querying token infos: {e}")))?;
-        Ok(infos
-            .iter()
-            .map(|(id, info)| {
-                (
-                    id.to_string(Encoding::Base58),
-                    info.as_ref()
-                        .is_some_and(IdentityTokenInfoV0Accessors::frozen),
-                )
-            })
-            .collect())
     }
 
     /// An O(1) provable count of `document_type` documents in `contract` matching
@@ -1219,11 +1127,6 @@ impl<'a> WriteEngine<'a> {
             contract_version: None,
         });
 
-        // For a token-gated create the transition must carry payment info matching the
-        // doc type's declared `tokenCost.create` (else consensus rejects with "Required
-        // token payment info not set"). Ungated types → `None` (platform fee only).
-        let token_payment = token_payment_for(doc_type_ref.document_creation_token_cost());
-
         let state_transition = BatchTransition::new_document_creation_transition_from_document(
             document,
             doc_type_ref,
@@ -1231,7 +1134,8 @@ impl<'a> WriteEngine<'a> {
             &self.signing_key,
             nonce,
             0,
-            token_payment,
+            // No forge-v2 type is token-gated: no token payment.
+            None,
             &self.signer,
             platform_version,
             None,
@@ -1314,17 +1218,13 @@ impl<'a> WriteEngine<'a> {
             .await
             .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
 
-        // A token-gated delete (chunk/packManifest refund) carries payment info matching
-        // the doc type's `tokenCost.delete`; non-deletable/ungated types → `None`.
-        let token_payment = token_payment_for(doc_type_ref.document_deletion_token_cost());
-
         let state_transition = BatchTransition::new_document_deletion_transition_from_document(
             document,
             doc_type_ref,
             &self.signing_key,
             nonce,
             0,
-            token_payment,
+            None,
             &self.signer,
             self.client.sdk().version(),
             None,
@@ -1362,10 +1262,14 @@ impl<'a> WriteEngine<'a> {
             StateTransition::deserialize_from_bytes_untrusted(&prepared.signed.bytes)
                 .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
         let sdk = self.client.sdk();
-
-        let mut attempt: u32 = 0;
-        loop {
-            attempt += 1;
+        let document_type = prepared.document_type.as_str();
+        drive_write(
+            || async {
+                state_transition
+                    .broadcast(sdk, None)
+                    .await
+                    .map_err(|e| classify_write_error(&e, document_type))
+            },
             // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
             // outcome whose proof only authenticates the resulting state, and that is every
             // document of an `indexOnly` type (protocol 14; forge-v2's `star` / `follow`): the
@@ -1373,29 +1277,58 @@ impl<'a> WriteEngine<'a> {
             // execution-proved outcomes too, so nothing weakens for the other types, and for a
             // sign-once write "the proven state holds it" is exactly the success condition — a
             // duplicate of the same signed bytes is rejected on its nonce, not proved again.
-            match state_transition
-                .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(sdk, None)
-                .await
-            {
-                Ok(_proof) => return Ok(BroadcastOutcome::Applied),
-                Err(e) => match classify_write_error(&e, &prepared.document_type) {
-                    WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
-                    WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
-                    WriteFailure::Retryable if attempt < MAX_BROADCAST_ATTEMPTS => {
-                        // Loop around to re-broadcast the identical signed bytes, after a
-                        // backoff so a node whose ban just lapsed is not re-picked at once.
-                        let delay = backoff_delay(RETRY_BACKOFF_BASE, attempt);
-                        tracing::warn!(
-                            attempt,
-                            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                            error = %e,
-                            "retryable broadcast failure; re-broadcasting identical signed bytes (same nonce/entropy)"
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                    WriteFailure::Retryable => return Err(Error::Timeout { retryable: true }),
-                    WriteFailure::Fatal(err) => return Err(err),
-                },
+            || async {
+                state_transition
+                    .wait_for_affected_state::<StateTransitionProofResult>(
+                        sdk,
+                        Some(wait_settings()),
+                    )
+                    .await
+                    .map(|_proof| ())
+                    .map_err(|e| classify_write_error(&e, document_type))
+            },
+            || self.nonce_spent(&state_transition, prepared.signed.nonce),
+            RETRY_BACKOFF_BASE,
+            document_type,
+        )
+        .await
+    }
+
+    /// Whether Platform's proved identity-contract nonce says `nonce` can no longer be used
+    /// by `transition` (Drive's own `validate_identity_nonce_update`): something — ours or
+    /// another write — took it. `false` when it is still free, when the transition is not a
+    /// document batch, or when the read fails (the loop then re-broadcasts as before).
+    async fn nonce_spent(&self, transition: &StateTransition, nonce: u64) -> bool {
+        use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
+        use drive_proof_verifier::types::IdentityContractNonceFetcher;
+
+        let StateTransition::Batch(batch) = transition else {
+            return false;
+        };
+        let (Some(owner), Some(first)) = (transition.owner_id(), batch.first_transition()) else {
+            return false;
+        };
+        let contract = first.data_contract_id();
+        let sdk = self.client.sdk();
+        match retry_transient_read("fetch identity-contract nonce", || {
+            IdentityContractNonceFetcher::fetch(sdk, (owner, contract))
+        })
+        .await
+        {
+            Ok(current) => {
+                let current = current.map_or(0, |f| f.0);
+                let spent = nonce_is_spent(current, nonce, owner);
+                tracing::debug!(
+                    nonce,
+                    current = current & NONCE_MASK,
+                    spent,
+                    "checked whether the write's nonce is still free"
+                );
+                spent
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the identity-contract nonce");
+                false
             }
         }
     }
@@ -1445,8 +1378,43 @@ impl<'a> WriteEngine<'a> {
         contract: &LoadedContract,
         document_type: &str,
         properties: BTreeMap<String, FieldValue>,
-        mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
+        persist: impl FnMut(&PreparedWrite) -> Result<()>,
     ) -> Result<PreparedWrite> {
+        self.create_probed(contract, document_type, properties, persist, NO_PROBE)
+            .await
+    }
+
+    /// A create of an `indexOnly` type (forge-v2 `star` / `follow`), whose entry has no stored
+    /// row to read back by id: when the write's nonce is found spent, `probe` (an owner-scoped
+    /// query, polled like [`Self::landed`]) says whether ours is the entry that landed, instead
+    /// of a by-id read that could never find it and would sign a second copy.
+    pub async fn create_index_only<F, Fut>(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        probe: F,
+    ) -> Result<PreparedWrite>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<bool>>,
+    {
+        self.create_probed(contract, document_type, properties, |_| Ok(()), Some(probe))
+            .await
+    }
+
+    async fn create_probed<F, Fut>(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
+        probe: Option<F>,
+    ) -> Result<PreparedWrite>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<bool>>,
+    {
         // Two retries: a stale protocol version (nothing landed) and a nonce another write by
         // this identity took first (ours can then never land). Each re-prepares with a fresh
         // nonce and entropy, persisting the replacement before it is broadcast.
@@ -1457,10 +1425,14 @@ impl<'a> WriteEngine<'a> {
             persist(&prepared)?;
             match self.execute(&prepared).await {
                 Ok(BroadcastOutcome::NonceConsumed) => {
-                    if self
-                        .landed(contract, document_type, prepared.document_id(), true)
-                        .await?
-                    {
+                    let ours = match &probe {
+                        Some(probe) => poll_confirm(probe).await?,
+                        None => {
+                            self.landed(contract, document_type, prepared.document_id(), true)
+                                .await?
+                        }
+                    };
+                    if ours {
                         return Ok(prepared);
                     }
                     tracing::warn!(
@@ -1568,6 +1540,38 @@ impl<'a> WriteEngine<'a> {
             .await?;
         self.execute(&prepared).await
     }
+}
+
+/// Whether `nonce` can no longer be used by a transition, given the raw identity-contract
+/// nonce Platform holds: Drive's own `validate_identity_nonce_update`, for nonces at or below
+/// the tip (the tip, one more than 24 behind it, or a skipped one since filled). A nonce above
+/// the tip is free. Parity: forge-web `isNonceSpent` (same cases in both test suites).
+fn nonce_is_spent(current: u64, nonce: u64, owner: Identifier) -> bool {
+    use dash_sdk::dpp::identity::identity_nonce::validate_identity_nonce_update;
+    nonce <= current & NONCE_MASK
+        && !validate_identity_nonce_update(current, nonce, owner).is_valid()
+}
+
+/// The "no probe" of [`WriteEngine::create_journaled`]: confirm a spent nonce by reading the
+/// document back by id.
+type NoProbe = fn() -> std::future::Ready<Result<bool>>;
+const NO_PROBE: Option<NoProbe> = None;
+
+/// Poll `probe` like [`WriteEngine::landed`]: `true` as soon as it holds.
+async fn poll_confirm<F, Fut>(probe: &F) -> Result<bool>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    for attempt in 0..CONFIRM_ATTEMPTS {
+        if probe().await? {
+            return Ok(true);
+        }
+        if attempt + 1 < CONFIRM_ATTEMPTS {
+            tokio::time::sleep(CONFIRM_DELAY).await;
+        }
+    }
+    Ok(false)
 }
 
 /// How many proved reads [`WriteEngine::landed`] makes, and the pause between them (about
@@ -1853,10 +1857,9 @@ const MAX_PAGES: usize = 1000;
 /// block time, so these ties are real. Protocol 14 bounds the cursor by document id and
 /// does not drop them.
 ///
-/// Limitation: the fix needs the boundary row's `$createdAt`. A proved query returns it
-/// for registry types, but not for the history-keeping repo-v1 types (`packManifest`,
-/// `event`, `refUpdate`, `issue`, ...), under either SDK version. Their reads keep the
-/// protocol-13 gap until they move to forge-v2 contracts on protocol 14.
+/// Every forge-v2 type read with an order ending in `$createdAt` requires it, so a proved
+/// query returns the boundary row's
+/// timestamp.
 fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
     let Some((last, rest)) = order.split_last() else {
         return false;
@@ -1984,25 +1987,6 @@ fn minimal_uint(n: u64) -> Value {
     }
 }
 
-/// Build the [`TokenPaymentInfo`] a gated document create/delete must carry from the
-/// doc type's declared [`DocumentActionTokenCost`], or `None` for an ungated action.
-///
-/// `maximum_token_cost` is pinned to the contract-declared amount so a later
-/// owner-side price change cannot silently overcharge the actor (the SDK's stated
-/// rationale for the field); `payment_token_contract_id` / `token_contract_position` /
-/// `gas_fees_paid_by` mirror the declaration exactly, which is what consensus checks.
-fn token_payment_for(cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
-    cost.map(|c| {
-        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-            payment_token_contract_id: c.contract_id,
-            token_contract_position: c.token_contract_position,
-            minimum_token_cost: None,
-            maximum_token_cost: Some(c.token_amount),
-            gas_fees_paid_by: c.gas_fees_paid_by,
-        })
-    })
-}
-
 /// Select the identity's on-chain AUTHENTICATION key that (a) the signer can sign with
 /// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
 /// levels document create/delete accept (spike S0.7).
@@ -2028,15 +2012,19 @@ fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<
 }
 
 /// The classification of a broadcast error, driving the retry loop.
+#[derive(Debug)]
 enum WriteFailure {
-    /// The write already landed on-chain (a duplicate re-broadcast: already-present
-    /// document, or gRPC AlreadyExists). Idempotent success.
+    /// The node already holds these exact signed bytes (gRPC `AlreadyExists`: "already in
+    /// mempool" or "already in chain"). Not an answer yet: wait for the result.
+    TxKnown,
+    /// The document is already there (an already-present document, or a content-addressed
+    /// unique-index duplicate). Idempotent success.
     AlreadyLanded,
     /// The nonce was already used: this write landed earlier, or another write took it.
     NonceConsumed,
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
-    Retryable,
+    Retryable(String),
     /// A terminal failure surfaced as a crate error.
     Fatal(Error),
 }
@@ -2056,19 +2044,22 @@ fn consensus_error_of(e: &dash_sdk::Error) -> Option<&ConsensusError> {
 /// Document types whose UNIQUE index makes a same-content re-upload an idempotent no-op:
 /// `chunk` (unique `(packHash, seq)`) and `packManifest` (unique `packHash`). A resumed
 /// push re-broadcasts these and a `DuplicateUniqueIndexError` means "already stored" =
-/// success — NOT for e.g. `repoListing` (unique `(ownerId, normalizedName)`), where a
+/// success — NOT for e.g. `repo` (unique `($ownerId, name)`), where a
 /// duplicate is a genuine name collision and must stay fatal.
 const CONTENT_ADDRESSED_UNIQUE_DOC_TYPES: [&str; 2] = ["chunk", "packManifest"];
 
 /// Classify a `dash_sdk::Error` from a document broadcast by matching structured enum
-/// variants (not lowercased Display substrings). Frozen-token (consensus 40702) and
-/// unauthorized (40701) map to distinct, non-retryable crate errors; retryability comes
+/// variants (not lowercased Display substrings). A missing membership (consensus 40120 on
+/// `$ownerId`) maps to a distinct, non-retryable crate error; retryability comes
 /// from the SDK's authoritative [`CanRetry::can_retry`]. `document_type` scopes the
 /// unique-index idempotency (see [`CONTENT_ADDRESSED_UNIQUE_DOC_TYPES`]).
 fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailure {
-    // gRPC-level "already exists" — the object is already on-chain.
+    // gRPC-level "already exists": the node already has these exact bytes, in its mempool or
+    // in a block. Neither is an answer: a pending transition can still be dropped (a nonce
+    // another write took first), and one in a block can have failed there. The result wait
+    // answers both, at once for one already in a block.
     if matches!(e, dash_sdk::Error::AlreadyExists(_)) {
-        return WriteFailure::AlreadyLanded;
+        return WriteFailure::TxKnown;
     }
 
     // The id was derived at a protocol version the network is not on (a 13 -> 14 upgrade
@@ -2097,20 +2088,12 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                 return WriteFailure::AlreadyLanded
             }
             // A unique-index collision on any OTHER type is a genuine clash (an `issue`
-            // /`patch` `number` already taken, a `repoListing` name collision). Surface it
+            // /`patch` `number` already taken, a `repo` name collision). Surface it
             // as a distinct, non-retryable error so the optimistic-numbering allocator can
             // catch it and retry with the next number (a name collision stays fatal at the
             // caller). NOT idempotent success — the content differs from what landed.
             StateError::DuplicateUniqueIndexError(err) => {
                 return WriteFailure::Fatal(Error::DuplicateUniqueIndex(format!("{err:?}")))
-            }
-            // 40702: the identity's token account is frozen → write access revoked.
-            StateError::IdentityTokenAccountFrozenError(_) => {
-                return WriteFailure::Fatal(Error::TokenFrozen)
-            }
-            // 40701: not authorized for this token action.
-            StateError::UnauthorizedTokenActionError(_) => {
-                return WriteFailure::Fatal(Error::Unauthorized)
             }
             // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
             // membership document for the writer (forge-v2: never granted, or revoked; or a
@@ -2128,7 +2111,7 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     // The SDK's retry signal (StaleNode / TimeoutReached / Proof) plus node-level transport
     // failures. Re-broadcasting the identical signed bytes is safe for all of them.
     if is_transient_node_error(e) {
-        return WriteFailure::Retryable;
+        return WriteFailure::Retryable(e.to_string());
     }
 
     WriteFailure::Fatal(Error::Platform(e.to_string()))
@@ -2159,6 +2142,132 @@ const RETRY_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(2
 /// The pause after failed attempt number `attempt` (1-based): `base`, then doubling.
 fn backoff_delay(base: std::time::Duration, attempt: u32) -> std::time::Duration {
     base * 2u32.saturating_pow(attempt.saturating_sub(1))
+}
+
+/// The settings for one result wait: a single node, [`WAIT_REQUEST_TIMEOUT`], and an overall
+/// [`WAIT_DEADLINE`]. No SDK-level retry: on silence the write loop re-broadcasts, which is
+/// what finds out whether the transition is still pending, landed, or was dropped.
+fn wait_settings() -> dash_sdk::platform::transition::put_settings::PutSettings {
+    dash_sdk::platform::transition::put_settings::PutSettings {
+        request_settings: RequestSettings {
+            timeout: Some(WAIT_REQUEST_TIMEOUT),
+            retries: Some(0),
+            // A node that stays silent about a transition it accepted is not broken (the
+            // transition was dropped); banning it would only shrink the pool for the retry.
+            ban_failed_address: Some(false),
+            ..RequestSettings::default()
+        },
+        wait_timeout: Some(WAIT_DEADLINE),
+        ..Default::default()
+    }
+}
+
+/// The broadcast / wait loop behind [`WriteEngine::execute`], over its three steps so the
+/// control flow is testable without a network. Every broadcast sends the same signed bytes.
+///
+/// * A broadcast that fails transiently is retried (backed off), up to
+///   [`MAX_BROADCAST_ATTEMPTS`] in all.
+/// * A broadcast the node accepts (or already holds: `TxKnown`) is followed by one bounded
+///   wait ([`WAIT_REQUEST_TIMEOUT`]).
+/// * A wait that ends without an answer asks `nonce_spent`. A spent nonce means our
+///   transition either landed or lost its nonce to another write by the same identity, and
+///   will never produce a result on its own — the caller's proved read decides which
+///   ([`BroadcastOutcome::NonceConsumed`]). This is the moutai hang: Tenderdash drops the
+///   loser of a same-nonce race from its mempool on recheck, yet keeps its hash in the
+///   mempool cache, so a re-broadcast only ever hears "tx already exists in cache" and the
+///   wait never answers. A free nonce means the transition is still pending (or was dropped
+///   for another reason): re-broadcast and wait again.
+/// * Anything else is final.
+async fn drive_write<B, BFut, W, WFut, N, NFut>(
+    mut broadcast: B,
+    mut wait: W,
+    mut nonce_spent: N,
+    backoff: std::time::Duration,
+    document_type: &str,
+) -> Result<BroadcastOutcome>
+where
+    B: FnMut() -> BFut,
+    BFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
+    W: FnMut() -> WFut,
+    WFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
+    N: FnMut() -> NFut,
+    NFut: std::future::Future<Output = bool>,
+{
+    let mut attempt: u32 = 0;
+    // Whether a broadcast in THIS call was accepted. A transition the node already knew on
+    // our first send was broadcast by an earlier call (a replayed journal): its landing is
+    // reported as `AlreadyExists`, not as a fresh `Applied`.
+    let mut sent = false;
+    loop {
+        attempt += 1;
+        let started = std::time::Instant::now();
+        let sent_now = broadcast().await;
+        let failure = match sent_now {
+            Ok(()) | Err(WriteFailure::TxKnown) => {
+                // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
+                // attempt's bytes reached the node even though its answer did not reach us.
+                sent |= sent_now.is_ok() || attempt > 1;
+                match wait().await {
+                    Ok(()) => {
+                        tracing::debug!(
+                            document_type,
+                            attempt,
+                            elapsed_ms = duration_ms(started.elapsed()),
+                            "write landed"
+                        );
+                        return Ok(if sent {
+                            BroadcastOutcome::Applied
+                        } else {
+                            BroadcastOutcome::AlreadyExists
+                        });
+                    }
+                    // No answer: can the transition still land at all?
+                    Err(WriteFailure::Retryable(reason)) => {
+                        if nonce_spent().await {
+                            tracing::warn!(
+                                document_type,
+                                attempt,
+                                elapsed_elapsed_ms = duration_ms(started.elapsed()),
+                                error = %reason,
+                                "no result, and the write's nonce is spent: it landed or another \
+                                 write by this identity took the nonce"
+                            );
+                            return Ok(BroadcastOutcome::NonceConsumed);
+                        }
+                        WriteFailure::Retryable(reason)
+                    }
+                    Err(f) => f,
+                }
+            }
+            Err(f) => f,
+        };
+        match failure {
+            WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
+            WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
+            WriteFailure::Retryable(reason) if attempt < MAX_BROADCAST_ATTEMPTS => {
+                let delay = backoff_delay(backoff, attempt);
+                tracing::warn!(
+                    document_type,
+                    attempt,
+                    elapsed_elapsed_ms = duration_ms(started.elapsed()),
+                    delay_ms = duration_ms(delay),
+                    error = %reason,
+                    "write not confirmed; re-broadcasting identical signed bytes (same nonce/entropy)"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot.
+            WriteFailure::Retryable(_) | WriteFailure::TxKnown => {
+                tracing::warn!(document_type, attempt, "write not confirmed; giving up");
+                return Err(Error::Timeout { retryable: true });
+            }
+            WriteFailure::Fatal(err) => return Err(err),
+        }
+    }
+}
+
+fn duration_ms(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Run a proof-verified read, retrying transient node failures with exponential backoff.
@@ -2203,7 +2312,7 @@ where
                 tracing::warn!(
                     op = label,
                     attempt,
-                    delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    delay_ms = duration_ms(delay),
                     error = %e,
                     "transient Platform read failure; backing off and retrying on a fresh node rotation"
                 );
@@ -2735,5 +2844,180 @@ mod tests {
         assert!(!is_transient_node_error(&dash_sdk::Error::Config(
             "bad".into()
         )));
+    }
+
+    /// Drive [`super::drive_write`] with scripted broadcast and wait answers (consumed in
+    /// order) and no backoff. Returns the outcome and how many of each step ran.
+    /// Scripted `nonce_spent` answers are consumed in order too; missing ones are `false`.
+    async fn scripted_write(
+        broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
+        waits: Vec<std::result::Result<(), super::WriteFailure>>,
+        spent: Vec<bool>,
+    ) -> (Result<super::BroadcastOutcome>, usize, usize) {
+        let b = RefCell::new(broadcasts.into_iter());
+        let w = RefCell::new(waits.into_iter());
+        let n = RefCell::new(spent.into_iter());
+        let (nb, nw) = (RefCell::new(0), RefCell::new(0));
+        let out = super::drive_write(
+            || {
+                *nb.borrow_mut() += 1;
+                std::future::ready(b.borrow_mut().next().expect("no more broadcasts scripted"))
+            },
+            || {
+                *nw.borrow_mut() += 1;
+                std::future::ready(w.borrow_mut().next().expect("no more waits scripted"))
+            },
+            || std::future::ready(n.borrow_mut().next().unwrap_or(false)),
+            std::time::Duration::ZERO,
+            "comment",
+        )
+        .await;
+        (out, nb.into_inner(), nw.into_inner())
+    }
+
+    fn timeout() -> super::WriteFailure {
+        super::WriteFailure::Retryable("wait timed out".into())
+    }
+
+    #[tokio::test]
+    async fn a_write_that_lands_is_applied_after_one_broadcast_and_one_wait() {
+        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (1, 1));
+    }
+
+    /// The moutai hang: the node accepted our transition, then another write by the same
+    /// identity took its nonce and Tenderdash dropped ours, so no result ever comes and every
+    /// re-broadcast only hears "tx already exists in cache". After one bounded wait the loop
+    /// sees the nonce is spent and hands the question to the caller, instead of seven 30 s
+    /// waits on seven nodes (before) or four re-broadcasts into the cache (without the check).
+    #[tokio::test]
+    async fn a_silent_wait_with_a_spent_nonce_hands_over_at_once() {
+        let (out, nb, nw) = scripted_write(vec![Ok(())], vec![Err(timeout())], vec![true]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!((nb, nw), (1, 1));
+        // The same when the re-broadcast is the one that learns the nonce is gone.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Err(super::WriteFailure::NonceConsumed)],
+            vec![Err(timeout())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!((nb, nw), (2, 1));
+    }
+
+    /// Still pending (slow block): the re-broadcast is told the node has it, so the loop
+    /// waits again rather than failing, and the write is ours.
+    #[tokio::test]
+    async fn a_slow_block_waits_again_and_reports_applied() {
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Err(super::WriteFailure::TxKnown)],
+            vec![Err(timeout()), Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (2, 2));
+    }
+
+    /// A replayed journal: the node knew the bytes on the first send (an earlier process
+    /// broadcast them), so the landing is not a fresh write.
+    #[tokio::test]
+    async fn bytes_the_node_already_had_report_already_exists() {
+        let (out, _, _) = scripted_write(
+            vec![Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        // But a later attempt's TxKnown is our own earlier send landing.
+        let (out, _, _) = scripted_write(
+            vec![Err(timeout()), Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+    }
+
+    #[tokio::test]
+    async fn the_loop_is_bounded_and_fatal_answers_stop_it() {
+        let (out, nb, nw) = scripted_write(
+            (0..super::MAX_BROADCAST_ATTEMPTS).map(|_| Ok(())).collect(),
+            (0..super::MAX_BROADCAST_ATTEMPTS)
+                .map(|_| Err(timeout()))
+                .collect(),
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::Timeout { retryable: true })));
+        let max = super::MAX_BROADCAST_ATTEMPTS as usize;
+        assert_eq!((nb, nw), (max, max));
+
+        let (out, nb, nw) = scripted_write(
+            vec![Err(super::WriteFailure::Fatal(Error::NotAMember {
+                document_type: "refUpdate".into(),
+                detail: "40120".into(),
+            }))],
+            vec![],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::NotAMember { .. })));
+        assert_eq!((nb, nw), (1, 0));
+    }
+
+    /// An indexOnly create whose nonce was found spent is settled by its probe: present means
+    /// ours landed and nothing is re-signed. (The all-absent case is `landed`'s own loop: ten
+    /// polls 1.5 s apart, too slow for a unit test without tokio's paused clock.)
+    #[tokio::test]
+    async fn poll_confirm_settles_on_the_probe() {
+        let calls = std::cell::Cell::new(0u32);
+        let present_on_second = || {
+            calls.set(calls.get() + 1);
+            std::future::ready(Ok(calls.get() >= 2))
+        };
+        assert!(super::poll_confirm(&present_on_second).await.unwrap());
+        assert_eq!(calls.get(), 2, "stops as soon as the entry shows up");
+
+        // A failed read is an error, never "lost" (which would sign a second copy).
+        let failing = || std::future::ready(Err(Error::NotFound));
+        assert!(super::poll_confirm(&failing).await.is_err());
+    }
+
+    /// The same cases as forge-web's `isNonceSpent` tests.
+    #[test]
+    fn nonce_is_spent_follows_drive() {
+        use dash_sdk::platform::Identifier;
+        let spent =
+            |current: u64, nonce: u64| super::nonce_is_spent(current, nonce, Identifier::default());
+        let skipped = |behind: u64| 1u64 << (behind - 1 + 40);
+        assert!(!spent(10, 11));
+        assert!(!spent(10, 40), "far above the tip is free, not spent");
+        assert!(spent(10, 10));
+        assert!(spent(10, 9));
+        assert!(!spent(skipped(1) + 10, 9));
+        assert!(spent(skipped(2) + 10, 9));
+        assert!(!spent(skipped(2) + 10, 8));
+        assert!(!spent(skipped(24) + 100, 76));
+        assert!(spent(100, 75));
+    }
+
+    /// The wait is bounded per node and never bans: silence about a dropped transition is
+    /// not a dead node.
+    #[test]
+    fn the_result_wait_is_one_bounded_request_that_bans_nobody() {
+        let s = super::wait_settings();
+        assert_eq!(s.request_settings.retries, Some(0));
+        assert_eq!(s.request_settings.ban_failed_address, Some(false));
+        assert_eq!(
+            s.request_settings.timeout,
+            Some(super::WAIT_REQUEST_TIMEOUT)
+        );
+        assert!(s
+            .wait_timeout
+            .is_some_and(|t| t > super::WAIT_REQUEST_TIMEOUT));
     }
 }

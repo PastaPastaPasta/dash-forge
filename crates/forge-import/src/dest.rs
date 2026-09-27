@@ -10,7 +10,7 @@ use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts};
 use forge_core::keystore::BridgeIdentity;
 use forge_core::members::MemberReader;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
-use forge_core::resolve::{find_v2, repo_slug, resolve_id};
+use forge_core::resolve::{find_named, repo_slug, resolve_id};
 use forge_core::rules::v2::{Role, Visibility};
 use forge_core::scope::RepoRef;
 
@@ -126,7 +126,7 @@ impl DestRepo {
 }
 
 /// Resolve `spec` (`owner/name`, `dash://owner/name`, a repo id, or a bare name meaning the
-/// signer's) on the destination network. A forge-v1 repository is refused: v1 is read only.
+/// signer's) on the destination network.
 pub async fn resolve(
     client: &PlatformClient,
     signer: Option<&str>,
@@ -150,9 +150,6 @@ pub async fn resolve(
         let repo = resolve_id(client, spec)
             .await
             .with_context(|| format!("resolving repo {spec}"))?;
-        if repo.is_v1() {
-            bail!("{spec} is a forge-v1 repository (read only); mirror into a forge-v2 repository");
-        }
         return Ok(DestRepo {
             owner: repo.owner_id().to_string(),
             name: repo.name().to_string(),
@@ -173,7 +170,7 @@ pub async fn resolve(
     let name = repo_slug(&name)?;
     let owner_bytes = forge_core::platform::decode_identifier(&owner)
         .with_context(|| format!("owner {owner:?} is not an identity id"))?;
-    let existing = find_v2(client, &forge, owner_bytes, &name).await?;
+    let existing = find_named(client, &forge, owner_bytes, &name).await?;
     Ok(DestRepo {
         owner,
         name,

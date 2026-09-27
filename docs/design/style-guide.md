@@ -53,7 +53,7 @@ colors: {
 ### Signature elements
 1. **Verification chip** — every repo view carries a compact chip row: `refs ✓ proof · packs ✓ sha256 · src: platform/ipfs/s3`. Colors per semantic palette. Clicking opens the trust panel explaining the verification chain.
 2. **Cost preview** — any write button shows cost inline before signing, **DASH primary, USD secondary** (`~0.0003 DASH ≈ $0.01`); destructive deletes show refund estimate in green. Running spend surfaced in settings.
-3. **Identity pill** — DPNS name + dicebear avatar (yappr generator) + abbreviated identity id; consistent everywhere an owner/author appears. Collaborators shown with token-role badge (WRITE/MAINTAIN).
+3. **Identity pill** — DPNS name + dicebear avatar (yappr generator) + abbreviated identity id; consistent everywhere an owner/author appears. Members shown with a role badge (writer/maintainer).
 4. **Backend badge** — `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed` on repo headers and clone box.
 
 ### Accessibility
@@ -64,7 +64,7 @@ colors: {
 ### Rust (forge-core, git-remote-dash, dg, forge-relay, forge-import)
 - One cargo workspace; edition 2021+; `clippy -D warnings`, `rustfmt` CI-enforced; `#![forbid(unsafe_code)]` outside vetted FFI.
 - Depend on rs-sdk/rs-dpp workspace-pinned to a Platform release tag; SDK touched only inside `forge-core::platform` (PlatformClient) — binaries consume forge-core services.
-- Errors: `thiserror` taxonomy mirroring the product error classes (insufficient credits → bridge link, frozen token, timeout-retryable…); every user-facing failure maps to an actionable message.
+- Errors: `thiserror` taxonomy mirroring the product error classes (insufficient credits → bridge link, not a member (write refused at consensus), timeout-retryable…); every user-facing failure maps to an actionable message.
 - All Platform writes via WriteEngine (idempotent ST lifecycle + journal); no ad-hoc document creation.
 - Secrets: OS keychain/agent only; no WIF/mnemonic in logs, journals, or `Debug` impls (newtype with redacted Debug).
 
@@ -75,9 +75,9 @@ colors: {
 - Heavy work (materialization, search indexing, pack assembly) in web workers; main thread renders.
 
 ### Cross-language parity
-- Ref-resolution / event-fold / cost rules exist twice (Rust + TS) by necessity → both implement `FORGE_RULES_V1` against **shared JSON conformance vectors** (`forge-contracts/vectors/`); CI runs both suites on every vector change.
+- Ref-resolution / event-fold / cost rules exist twice (Rust + TS) by necessity → both implement `FORGE_RULES_V2` against **shared JSON conformance vectors** (`forge-contracts/vectors/`); CI runs both suites on every vector change.
 - Every list read: index-backed orderBy + cursor pagination; never assume < 100 results.
-- Constants (contract IDs, template versions, fee schedule) generated from `forge-contracts/deployments/*.json` into both languages.
+- Constants (contract IDs, fee schedule) generated from `forge-contracts/deployments/*.json` into both languages.
 
 ### Repo layout (monorepo)
 ```
@@ -87,13 +87,13 @@ crates/
   dg/              # CLI bin (clap; gh-style aliases)
   forge-relay/       # webhook daemon
   forge-import/      # importer (Forgejo-semantics mapping)
-forge-contracts/     # registry + repo template JSON, deploy scripts, deployments/, vectors/
+forge-contracts/     # forge-v2 contract JSON (forge-core, forge-collab), deploy-v2 + fixture scripts, deployments/, vectors/
 forge-web/           # Next.js static app (pnpm)
 spikes/              # Phase 0 throwaway prototypes
 ```
 
 ### Quality gates
-- CI: cargo test/clippy/fmt + TS typecheck/lint/vitest + builds on every PR; testnet integration suite nightly + pre-release (see e2e plan).
+- CI: cargo test/clippy/fmt + TS typecheck/lint/vitest + builds on every PR; devnet (moutai) integration suite nightly + pre-release (see e2e plan).
 - Conventional commits; PRs small and single-purpose.
 - Logging: `tracing` (Rust) / `debug` namespaces (TS); helper honors git's `GIT_TRACE` conventions.
 - Cost discipline: any code path that broadcasts a state transition must route through CostEngine so estimates/audits never drift from reality.

@@ -1,118 +1,151 @@
 'use client'
 
 /**
- * Trust panel — THE signature element. An "assay readout" that expands from the verification
- * chip to show the whole trust chain of a repo view, top to bottom, the way a foundry stamps
- * a certificate of assay on struck metal:
+ * The Verification card (`ux-dx-spec.md` §6) — the signature element on every repo view.
  *
- *   Platform proof  →  refs  →  content hashes  →  byte source
- *
- * Every state shown comes from {@link deriveTrust} over checks that actually ran this session
- * (roadmap invariant 4) — never from what the app intends to check. It also states the honest
- * trust posture (S0.3, roadmap D-C): the web app is trust-MINIMIZED, not trustless — the
- * quorum public keys every proof is checked against come from one known HTTPS endpoint.
+ * Collapsed, one line: `Verified · refs by proof · 214 objects by hash · from r2.dev`.
+ * Expanded, four plain sentences, each with its state (icon + word + color, never color
+ * alone): chain data, branch tip, file contents, where the bytes came from. Every state comes
+ * from {@link deriveTrust} over checks that actually ran this session (roadmap invariant 4),
+ * never from what the app intends to check. The footer always states how far to trust the
+ * app itself.
  */
 
-import { useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { useId, useState } from 'react'
+import { ChevronRight, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { TrustLink, TrustReport } from '@/lib/view'
+import { shortOid, timeAgo, type TrustLink, type TrustReport } from '@/lib/view'
+import { Author } from '@/components/author'
 import { TRUST_META } from './verification-chip'
-import { Oid } from './oid'
 
-function Step({
-  step,
-  title,
-  link,
-  serial,
-}: {
-  step: string
-  title: string
-  link: TrustLink
-  serial?: string
-}): JSX.Element {
+/** Inline `code` spans for the backticked parts of a sentence (ref names, oids). */
+function Sentence({ text }: { text: string }): JSX.Element {
+  return (
+    <>
+      {text.split('`').map((part, i) =>
+        i % 2 === 1 ? (
+          <code key={i} className="font-mono text-anvil-800 dark:text-anvil-100">
+            {part}
+          </code>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  )
+}
+
+function StateWord({ link }: { link: TrustLink }): JSX.Element {
   const meta = TRUST_META[link.state]
   return (
-    <li className="relative flex gap-3 pb-4 last:pb-0">
-      {/* rail */}
-      <div className="flex flex-col items-center">
-        <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800', meta.klass)}>
-          <meta.Icon className="h-3.5 w-3.5" aria-hidden />
-        </span>
-        <span className="mt-1 w-px flex-1 bg-anvil-200 last:hidden dark:bg-anvil-750" aria-hidden />
+    <span className={cn('inline-flex shrink-0 items-center gap-1 text-[11px] font-medium', meta.klass)}>
+      {link.checking ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <meta.Icon className="h-3 w-3" aria-hidden />}
+      {link.checking ? 'Checking…' : meta.label}
+    </span>
+  )
+}
+
+function Row({ title, link, children }: { title: string; link: TrustLink; children?: React.ReactNode }): JSX.Element {
+  return (
+    <li className="border-b border-anvil-200 py-2.5 first:pt-0 last:border-b-0 last:pb-0 dark:border-anvil-750">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{title}</span>
+        <StateWord link={link} />
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] uppercase tracking-wide text-anvil-400 dark:text-anvil-500">
-            {step}
-          </span>
-          <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{title}</span>
-          <span className={cn('text-[11px] font-mono', meta.klass)}>{meta.label}</span>
-        </div>
-        <p className="mt-0.5 text-[12px] leading-snug text-anvil-500 dark:text-anvil-400">{link.detail}</p>
-        {serial ? (
-          <div className="mt-1.5">
-            <Oid value={serial} chars={12} />
-          </div>
-        ) : null}
-      </div>
+      <p className="mt-0.5 text-[12px] leading-snug text-anvil-600 dark:text-anvil-300">
+        {children ?? <Sentence text={link.detail} />}
+      </p>
+      {link.note ? (
+        <p className="mt-1 text-[11px] leading-snug text-anvil-500 dark:text-anvil-400">{link.note}</p>
+      ) : null}
     </li>
   )
 }
 
-export function TrustPanel({
-  report,
-  serial,
-  tipOid,
-}: {
-  report: TrustReport
-  /** The repo the proofs were read for: the v1 repo contract id or the forge-v2 repo id. */
-  serial?: string
-  /** The commit the attested ref points at. */
-  tipOid?: string
-}): JSX.Element {
+/** The branch-tip sentence, with the signer as an identity pill (DPNS name when known). */
+function TipSentence({ report }: { report: TrustReport }): JSX.Element {
+  const { tip } = report
+  if (tip.heads.length === 0) return <Sentence text={tip.detail} />
+  const heads = [...tip.heads].sort((a, b) => b.createdAt - a.createdAt)
+  const name = tip.name === '' ? 'This ref' : tip.name
+  if (heads.length === 1) {
+    const h = heads[0]!
+    return (
+      <>
+        <code className="font-mono text-anvil-800 dark:text-anvil-100">{name}</code> ={' '}
+        <code className="font-mono text-anvil-800 dark:text-anvil-100">{shortOid(h.oid)}</code>, the latest signed update by{' '}
+        <Author identityId={h.author} link={false} className="align-middle" />, {timeAgo(h.createdAt)}.
+      </>
+    )
+  }
+  return (
+    <>
+      <Sentence text={tip.detail} />
+      <span className="mt-1 block space-y-1">
+        {heads.map((h) => (
+          <span key={`${h.id}${h.oid}`} className="flex flex-wrap items-center gap-1">
+            <code className="font-mono text-anvil-800 dark:text-anvil-100">{shortOid(h.oid)}</code> by{' '}
+            <Author identityId={h.author} link={false} /> {timeAgo(h.createdAt)}
+          </span>
+        ))}
+      </span>
+    </>
+  )
+}
+
+export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const bodyId = useId()
   const meta = TRUST_META[report.overall]
+  const checking = report.chain.checking === true
 
   return (
-    <div className="rounded-lg border border-anvil-200 bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-850">
+    <section
+      aria-label="Verification"
+      data-testid="verification-card"
+      data-state={report.overall}
+      className="rounded-lg border border-anvil-200 bg-anvil-50 dark:border-anvil-750 dark:bg-anvil-850"
+    >
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-anvil-100 dark:hover:bg-anvil-800"
+        aria-controls={bodyId}
+        className="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-anvil-100 dark:hover:bg-anvil-800"
       >
-        <meta.Icon className={cn('h-4 w-4 shrink-0', meta.klass)} aria-hidden />
-        <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">Assay</span>
-        <span className={cn('font-mono text-[11px]', meta.klass)}>{meta.label}</span>
-        <span className="hidden truncate text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline">
-          refs {report.refs.summary} · content {report.content.summary}
+        {checking ? (
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
+        ) : (
+          <meta.Icon className={cn('mt-0.5 h-4 w-4 shrink-0', meta.klass)} aria-hidden />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block text-dense font-medium text-anvil-800 dark:text-anvil-100">Verification</span>
+          <span data-testid="verification-summary" className={cn('block text-[12px]', checking ? 'text-anvil-500 dark:text-anvil-400' : meta.klass)}>
+            {report.summary}
+          </span>
         </span>
         <ChevronRight
-          className={cn(
-            'ml-auto h-4 w-4 shrink-0 text-anvil-400 transition-transform',
-            open && 'rotate-90',
-          )}
+          className={cn('mt-0.5 h-4 w-4 shrink-0 text-anvil-400 transition-transform', open && 'rotate-90')}
           aria-hidden
         />
       </button>
 
       {open ? (
-        <div className="animate-fade-in border-t border-anvil-200 px-4 py-4 dark:border-anvil-750">
+        <div id={bodyId} className="animate-fade-in border-t border-anvil-200 px-3 py-3 dark:border-anvil-750">
           <ol className="mb-3">
-            <Step step="01" title="Platform proofs" link={report.proofs} serial={serial} />
-            <Step step="02" title="Refs" link={report.refs} serial={tipOid} />
-            <Step step="03" title="Content hashes" link={report.content} />
-            <Step step="04" title="Byte source" link={report.source} />
+            <Row title="Chain data" link={report.chain} />
+            <Row title="Branch tip" link={report.tip}>
+              <TipSentence report={report} />
+            </Row>
+            <Row title="File contents" link={report.content} />
+            <Row title="Where the bytes came from" link={report.source} />
           </ol>
-          <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[12px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
-            Trust-minimized, not trustless: proofs are only as good as the {report.networkLabel} quorum
-            keys they are checked against, and this app fetches those from{' '}
-            <span className="font-mono">{report.quorumHost}</span>. Whoever controls
-            that endpoint could vouch for false data.
+          <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
+            This app is served by GitHub Pages. If you don&apos;t trust that, pin the IPFS build or use the CLI, which
+            needs no website.
           </p>
         </div>
       ) : null}
-    </div>
+    </section>
   )
 }

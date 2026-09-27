@@ -1,5 +1,7 @@
 # PRD 04 — Storage Backends (Platform primary; IPFS / S3 / HTTPS / mirrors for fee reduction)
 
+> **Partly historical.** References to "the repo contract" and MAINTAIN-gated `config` come from forge-v1 (one contract per repository, with token access control), removed on 2026-09-26. `config` is now a forge-core document written by maintainers ([forge-v2](../contracts/forge-v2.md)); the as-built storage section below is current.
+
 **Platform is primary storage and always the source of truth**: refs and pack manifests live on Platform in every mode. Backends control only where **pack bytes** rest. External backends are verifiable caches — integrity comes from manifest SHA-256 + git OIDs, never from the host. This is the "reduced fees on certain projects" layer; GA in Phase 4 (platform + basic ipfs read earlier for import/dogfood needs).
 
 ## Backend descriptor
@@ -50,7 +52,7 @@ User guide: [`docs/guides/bring-your-own-storage.md`](../guides/bring-your-own-s
 **Where things live.** The backend descriptor above assumed that the on-chain `config.backend` chooses where a push writes. As built, it does not, because the chain cannot hold the credentials a write needs:
 - **Profiles** (`forge_core::storage::profiles`) live in `~/.config/dash-forge/storage.toml` (or `$DASH_FORGE_STORAGE_CONFIG`). Kinds are `s3 | ipfs-kubo | ipfs-pinning-service | platform`. Secret fields hold only `env:VAR` or `keychain:<service>/<account>` references (macOS `security`, freedesktop `secret-tool`). They resolve into the redacting `keystore::Secret`, and loading a file that contains a literal secret fails without echoing it. Field names are chosen so the web app's encrypted vault can store the same shape.
 - **Policy** (`forge_core::storage::policy`) is in git config: `dash.storage` (profile names), `dash.replicas` (N, defaulting to every target) and `dash.platformFallback`, with `remote.<name>.dash*` overrides. **No policy means Platform only**, byte-for-byte the old behaviour, including the resumable chunk journal.
-- The on-chain `config.backend { mode, uris }` only **advertises** the policy's mode and public read bases (`dg storage advertise`, via `RepoService::set_backend`). The contract schemas are unchanged (repo-v1, nested `backend`).
+- The on-chain `config.backend { mode, uris }` only **advertises** the policy's mode and public read bases (`dg storage advertise`, via `RepoService::set_backend`). The contract schema is unchanged (forge-core `config`, nested `backend`).
 
 **Push path** (`git-remote-dash/src/helper.rs`):
 1. Build the pack.

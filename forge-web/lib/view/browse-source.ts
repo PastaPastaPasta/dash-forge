@@ -18,7 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { CHUNK_PAYLOAD_MAX, IPFS_GATEWAYS, PACK_KIND } from '../constants'
+import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import {
   BrowseReader,
   FlatIndex,
@@ -27,22 +27,20 @@ import {
 } from '../browse'
 import {
   CHUNK_QUERY_MAX,
-  isV2Copies,
-  readV2PackCopies,
-  v2PacksOfKind,
+  readPackCopies,
+  packsOfKind,
   type AsOf,
-  liveGitPackManifests,
-  liveLocatorManifests,
   readNewestManifestOfKind,
   readRepoPackManifests,
   repoKey,
   repoSource,
   type PackManifest,
   type RepoRef,
-  type V2RepoRef,
 } from '../repo'
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
+import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
+import { describePack, readGateways } from './storage-status'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -183,8 +181,8 @@ async function queryChunkBatch(
  * always resolved from the row actually returned (its real length), never assumed full.
  *
  * Chunk payloads are served through the session LRU: only the seqs absent from the cache
- * are queried (one batch — the chunk index, `(packHash, seq)` on v1 and
- * `(repoId, $ownerId, packHash, seq)` on forge-v2, is unique per key, so no
+ * are queried (one batch — the chunk index, `(repoId, $ownerId, packHash, seq)`, is unique
+ * per key, so no
  * `in`-starvation fallback is needed), and every fetched chunk is cached for later ranges.
  */
 async function fetchPlatformRange(
@@ -195,10 +193,11 @@ async function fetchPlatformRange(
   end: number,
 ): Promise<Uint8Array> {
   const packHashHex = manifest.packHash
-  // Keyed by repo and uploader, not the pack hash alone: on forge-v2 every writer has its own
-  // copy of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for
-  // an honest one — nor one repo's for another's.
-  const cachePrefix = `${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
+  // Keyed by network, repo and uploader, not the pack hash alone: every writer has its own copy
+  // of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for an
+  // honest one — nor one repo's for another's, nor one network's for another's. A fork reads
+  // its parent's chunks under the parent's repo id, so the two share entries.
+  const cachePrefix = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
   const firstSeq = Math.floor(start / CHUNK_PAYLOAD_MAX)
   const lastSeq = Math.floor((end - 1) / CHUNK_PAYLOAD_MAX)
   const seqs: number[] = []
@@ -259,7 +258,8 @@ export class PackUnavailableError extends Error {
     readonly hosts: readonly string[],
     /** Whether some mirror answered with bytes that failed the sha256 check. */
     readonly corrupt: boolean,
-    reason: string,
+    /** Why, per host where known (`host: message; …`). */
+    readonly reason: string,
   ) {
     super(
       `pack ${packHash.slice(0, 12)}… could not be fetched from its storage (${
@@ -279,12 +279,14 @@ export class PackUnavailableError extends Error {
  */
 export function externalFetchUrls(
   uris: readonly string[],
-  gateways: readonly string[] = IPFS_GATEWAYS,
+  gateways: readonly string[] = readGateways(),
 ): string[] {
   const out: string[] = []
   for (const uri of uris) {
-    if (/^https?:\/\//i.test(uri)) out.push(uri)
-    const ipfs = /^ipfs:\/\/(.+)$/i.exec(uri)
+    // A manifest is written by whoever pushed: a URL at this machine, a private network or
+    // over plain http would have every reader's browser request its own local services.
+    if (isPublicHttpsUrl(uri)) out.push(uri)
+    const ipfs = /^ipfs:\/\/([A-Za-z0-9]+)$/.exec(uri)
     if (ipfs !== null) {
       for (const gw of gateways) out.push(`${gw.replace(/\/+$/, '')}/ipfs/${ipfs[1]}`)
     }
@@ -346,6 +348,11 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
  * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
  */
 const deadUrls = new Set<string>()
+
+/** "Try again": ask every mirror afresh, including the ones that failed this session. */
+export function forgetDeadMirrors(): void {
+  deadUrls.clear()
+}
 
 /** Test hook: forget the dead-URL list and the per-origin queues. */
 export function resetExternalFetchState(): void {
@@ -587,8 +594,8 @@ async function firstSequential<T, R>(
   return null
 }
 
-/** A v2 chunk locator: `platform://<core>/<repoId>/<owner>/<packHash>` (forge-core `scope.rs`). */
-const PLATFORM_LOCATOR_V2 = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{64})$/i
+/** A chunk locator: `platform://<core>/<repoId>/<owner>/<packHash>` (forge-core `scope.rs`). */
+const PLATFORM_LOCATOR = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{64})$/i
 
 /**
  * The chunk reads a `storage 1` manifest's `platform://` locators name. A fork records each
@@ -596,21 +603,19 @@ const PLATFORM_LOCATOR_V2 = /^platform:\/\/([^/]+)\/([^/]+)\/([^/]+)\/([0-9a-f]{
  * the parent's scope, keyed `(parentRepoId, uploader, packHash, seq)`. Each read is the
  * manifest re-pointed at that scope: the parent's `repoId`, the locator's uploader, storage 0.
  *
- * Only forge-v2 locators into THIS network's forge-core, and only of this manifest's own pack
- * (a locator naming another pack would download it in full before the hash check refused
- * it). The v1 form (`platform://<contract>/<packHash>`) is skipped, like any locator a
- * browser cannot follow.
+ * Only locators into THIS network's forge-core, and only of this manifest's own pack (a
+ * locator naming another pack would download it in full before the hash check refused it).
+ * Any other form is skipped, like any locator a browser cannot follow.
  */
 function platformLocatorReads(
   repo: RepoRef,
   manifest: PackManifest,
-): { readonly repo: V2RepoRef; readonly manifest: PackManifest }[] {
-  if (repo.kind !== 'v2') return []
+): { readonly repo: RepoRef; readonly manifest: PackManifest }[] {
   const want = manifest.packHash.toLowerCase()
   const seen = new Set<string>()
-  const out: { repo: V2RepoRef; manifest: PackManifest }[] = []
+  const out: { repo: RepoRef; manifest: PackManifest }[] = []
   for (const uri of manifest.uris) {
-    const [, core, repoId, owner, hash] = PLATFORM_LOCATOR_V2.exec(uri) ?? []
+    const [, core, repoId, owner, hash] = PLATFORM_LOCATOR.exec(uri) ?? []
     if (core !== repo.forge.core || repoId === undefined || owner === undefined) continue
     if (hash?.toLowerCase() !== want || seen.has(`${repoId}/${owner}`)) continue
     seen.add(`${repoId}/${owner}`)
@@ -620,6 +625,26 @@ function platformLocatorReads(
     })
   }
   return out
+}
+
+/**
+ * A repo whose stored packs no place could serve: the refs are fine, the code is not
+ * readable right now. Carries every pack and where it was looked for, so the view can list
+ * the places tried instead of a spinner or a bare error.
+ */
+export class StorageUnreachableError extends Error {
+  constructor(readonly packs: readonly UnavailablePack[]) {
+    super(
+      `none of this repo's ${packs.length} live packs could be fetched from their storage: ` +
+        packs.map((u) => u.reason).join('; '),
+    )
+    this.name = 'StorageUnreachableError'
+  }
+}
+
+/** The {@link UnavailablePack} a {@link PackUnavailableError} describes. */
+export function unavailableOf(e: PackUnavailableError): UnavailablePack {
+  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt }
 }
 
 /** Record in the repo's content-check ledger where an artifact's bytes came from. */
@@ -659,7 +684,7 @@ export function artifactRangeFetch(
     return bytes
   }
   return async (start: number, end: number, copy?: number) => {
-    // forge-v2: a range cannot be hashed on its own. The reader re-hashes every object it
+    // A range cannot be hashed on its own. The reader re-hashes every object it
     // builds from one and asks for a specific `copy` when the current one fails it; without
     // one, a copy that cannot serve the range at all falls through to the next in order.
     const copies = manifest.copies ?? [manifest]
@@ -675,6 +700,10 @@ export function artifactRangeFetch(
       } catch (e) {
         lastErr = e
       }
+    }
+    // The rail's "where the bytes came from" row lists the places that did not answer.
+    if (lastErr instanceof PackUnavailableError) {
+      noteContentCheck(repoKey(repo), { unreachable: describePack(unavailableOf(lastErr)) })
     }
     throw lastErr
   }
@@ -718,7 +747,7 @@ export async function loadArtifactBytesProgress(
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
   if (manifest.copies === undefined) return loadOneCopy(sdk, repo, manifest, onProgress, cancel)
-  // forge-v2: every writer may hold a copy of a pack. Read them in `orderPackCopies` order
+  // Every writer may hold a copy of a pack. Read them in `orderPackCopies` order
   // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
   // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
   // pack no copy serves is unreadable.
@@ -831,77 +860,34 @@ async function loadExternalCopy(
 }
 
 /**
- * Order git-pack manifests into the canonical `packRef` space.
- *
- * PACKREF ORDERING (VERIFIED / corrected): the objectLocator's `packRef` is "an index into
- * the manifest's pack list" (forge-core `pack/locator.rs`), but no explicit pack list is
- * stored on-chain — so reader and writer must share a *deterministic* ordering of the kind-0
- * pack manifests. The platform total order is `($createdAt, $id)` (data-contracts §2.3, §4),
- * so packs are sorted **oldest-first by `($createdAt, documentId)`** — NOT by reversing the
- * `$createdAt desc` query result, which drops the `$id` tiebreak on equal timestamps and is
- * wrong past one page. When the owning locator's publish time is known, the list is bounded to
- * packs that existed at/before it (`createdAt <= asOf`): a locator only indexes packs present
- * when it was built, and later incremental packs are outside its `packRef` space.
- */
-export function orderGitPacks(
-  gitPacks: readonly PackManifest[],
-  asOf?: number,
-): PackManifest[] {
-  const bounded = asOf === undefined ? [...gitPacks] : gitPacks.filter((m) => m.createdAt <= asOf)
-  return bounded.sort((a, b) =>
-    a.createdAt !== b.createdAt
-      ? a.createdAt - b.createdAt
-      : a.documentId < b.documentId
-        ? -1
-        : a.documentId > b.documentId
-          ? 1
-          : 0,
-  )
-}
-
-/**
  * The pack list a locator's `packRef` indexes — THE normative definition, shared by both
  * clients and by whatever publishes a locator.
  *
  * `packRef` is "an index into the manifest's pack list", but no pack list is stored on-chain,
- * so reader and writer must derive the same one. It is: **the LIVE kind-0 packs as of the
- * locator's `$createdAt`, oldest-first by `($createdAt, $id)`.** Three parts, each
- * load-bearing:
+ * so reader and writer must derive the same one. It is the kind-0 packs of `v2PackList`
+ * (`forge-v2.md` §4, parity with forge-core `repo.rs::locator_pack_space`): every pack once
+ * however many writers hold a copy, positioned by its first upload `($createdAt, $id)`, as of
+ * the locator (a locator only indexes packs that existed when it was built). Superseded
+ * packs stay in place, so a repack never renumbers what an older locator meant.
  *
- * * *as of the locator* — a locator only indexes packs that existed when it was built; later
- *   incremental packs are outside its space.
- * * *live* — a repack consolidates several packs into one and marks the originals
- *   `supersedes`. Counting superseded packs would leave every index shifted by however many
- *   of them happened to survive, and whether they survive is incidental: `repack` deletes
- *   only the CALLER's own manifests, so in a multi-author repo some remain. Liveness is
- *   computed within the as-of bound, so a later repack cannot retroactively change what an
- *   older locator meant.
- * * *oldest-first by `($createdAt, $id)`* — the platform total order, not a reversed `desc`
- *   query, which drops the `$id` tiebreak on equal timestamps.
- *
- * This used to differ between the two browse paths: the indexed path counted ALL kind-0
- * packs while the fallback counted live ones, so the two disagreed about which bytes
- * `packRef 0` meant — a valid offset in the wrong pack, undetectable downstream.
+ * The indexed path and the fallback clone both read this list, so they always agree about
+ * which bytes `packRef 0` means.
  */
 export function locatorPackSpace(
   manifests: readonly PackManifest[],
   asOf?: AsOf,
 ): PackManifest[] {
-  // forge-v2: the v2 pack list's kind-0 packs (`forge-v2.md` §4), superseded ones included
-  // and in place — a locator's packRefs index every git pack listed as of it.
-  if (isV2Copies(manifests)) return v2PacksOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
-  const bound = typeof asOf === 'object' ? asOf.createdAt : asOf
-  const bounded = bound === undefined ? manifests : manifests.filter((m) => m.createdAt <= bound)
-  return orderGitPacks(liveGitPackManifests(bounded))
+  // The pack list's kind-0 packs (`forge-v2.md` §4), superseded ones included and in place —
+  // a locator's packRefs index every git pack listed as of it.
+  return packsOfKind(manifests, PACK_KIND.GIT_PACK, asOf)
 }
 
 /**
- * The live index fragments (objectLocators), newest first: v1 per `liveLocatorManifests`;
- * forge-v2 from the v2 pack list's kind-1 packs, those a verified pack supersedes left out.
+ * The live index fragments (objectLocators), newest first: the pack list's kind-1 packs,
+ * those a verified pack supersedes left out.
  */
 function locatorFragments(manifests: readonly PackManifest[]): PackManifest[] {
-  if (!isV2Copies(manifests)) return liveLocatorManifests(manifests)
-  return v2PacksOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
+  return packsOfKind(manifests, PACK_KIND.OBJECT_LOCATOR)
     .filter((p) => !p.superseded)
     .reverse()
 }
@@ -961,12 +947,9 @@ export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatInd
   // Index lookup (`kind ==`, `$createdAt desc`, limit 1) — independent of manifest volume.
   const newest = await readNewestManifestOfKind(sdk, repo, PACK_KIND.FLAT_INDEX)
   if (!newest) return null
-  // forge-v2: any writer can post a kind-2 manifest, so read the pack's copies in order and
-  // accept only bytes that hash to `packHash` (loadArtifactBytes checks each copy).
-  const flatManifest =
-    repo.kind === 'v2'
-      ? await readV2PackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
-      : newest
+  // Any writer can post a kind-2 manifest, so read the pack's copies in order and accept only
+  // bytes that hash to `packHash` (loadArtifactBytes checks each copy).
+  const flatManifest = await readPackCopies(sdk, repo, newest.packHash, PACK_KIND.FLAT_INDEX)
   if (!flatManifest) return null
   const bytes = await loadArtifactBytes(sdk, repo, flatManifest)
   return FlatIndex.parse(bytes)
@@ -1039,11 +1022,8 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // consolidated, so the only way to fail is a fragment published concurrently with a
   // repack. Checked from the manifest list alone, before any bytes are fetched.
   for (const f of fragments) {
-    // v1: as of the fragment's `$createdAt`; forge-v2: as of its first upload `(createdAt, id)`.
-    const asOf = locatorPackSpace(
-      manifests,
-      isV2Copies(manifests) ? { createdAt: f.createdAt, id: f.documentId } : f.createdAt,
-    )
+    // As of the fragment's first upload `(createdAt, id)`.
+    const asOf = locatorPackSpace(manifests, { createdAt: f.createdAt, id: f.documentId })
     if (asOf.length > livePacks.length) return behind('index-behind')
     if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
   }

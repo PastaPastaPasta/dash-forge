@@ -88,7 +88,7 @@ export function RepoScaffold({
         <EmptyState
           icon={GitBranch}
           title="Repo not found"
-          body={`Neither a forge-v2 repo nor an authentic registry listing resolves ${addr.owner}/${addr.name} on this network.`}
+          body={`No repo ${addr.owner}/${addr.name} exists on this network.`}
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
       </AppShell>

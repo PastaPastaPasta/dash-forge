@@ -42,7 +42,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const { data, loading, error, reload } = useAsync<Listed<PullView>>(
-    () => listPulls(sdk!, home.repo, undefined, 100),
+    () => listPulls(sdk!, home.repo, 100),
     [ready, repoKey(home.repo)],
     { enabled: ready && sdk !== null },
   )

@@ -1,7 +1,7 @@
 /**
- * FORGE_RULES_V1 — the cross-client-parity heart of Dash Forge (TypeScript port).
+ * FORGE_RULES — the cross-client-parity heart of Dash Forge (TypeScript port).
  *
- * Dash Platform enforces token spend, schema, and uniqueness at consensus, but it has no
+ * Dash Platform enforces the forge-v2 writer gates, schema, and uniqueness at consensus, but it has no
  * CAS, cannot read glob patterns, and cannot fold an append-only event log into "is this
  * issue open". Those decisions are made client-side, and every conforming client must
  * make them IDENTICALLY. This module is the TypeScript half of that shared logic; the
@@ -16,16 +16,11 @@
  * `createdAt` carried on every document.
  */
 
-/** The versioned rules identifier shared with forge-core and the conformance vectors. */
-export const FORGE_RULES_V1 = 'FORGE_RULES_V1' as const
-
 export * from './types'
 export { compareKey, compareStrings, isLegalRefName, isNullOid } from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
-export { AuthzResolver, holdingsAny, holdingsAsOf } from './holdings'
-export { displayRefName, resolveRef } from './resolveRef'
-export { foldIssueState, foldPrState } from './fold'
+export { displayRefName, mergeBaseTips, resolveRef } from './resolveRef'
 export { overlayTree } from './overlay'
-// FORGE_RULES_V2 (forge-v2 shared-contract repositories)
+// FORGE_RULES_V2: the forge-v2 membership, event-fold, pack and numbering rules
 export * as v2 from './v2'
 export { FORGE_RULES_V2 } from './v2'

@@ -10,15 +10,15 @@
 //!   ref + pack-manifest + chunk read/write) `git-remote-dash` calls.
 //! - [`refs`] — complete ref-update reads (keyset scan + completeness fallback) shared by
 //!   ref listing and PR base-tip resolution.
-//! - [`tokens`] — `TokenService`: the collaborator ACL (grant/suspend/revoke = token
-//!   mint/freeze/destroy; balances = the on-chain collaborator list).
-//! - [`collab`] — issue / PR / review / release / label services + the registry social
-//!   graph (stars / follows), folding state through [`rules`].
+//! - [`members`] — repository membership: `maintainer` / `writer` documents.
+//! - [`collab`] — issues, PRs, reviews, releases, labels, stars and follows on forge-collab,
+//!   folding state through [`rules`].
 //! - [`pack`] — chunk geometry and the pure split/join chunker.
 //! - [`backends`] — the `PackBackend` trait (`platform | ipfs | s3 | https`).
 //! - [`storage`] — bring-your-own storage: user profiles, a repo's replication policy,
 //!   the push-side `StorageTarget` fan-out, and the gateway-racing reader.
-//! - [`rules`] — `FORGE_RULES_V1`: ref resolution, event folds, protected-pattern matching.
+//! - [`rules`] — `FORGE_RULES_V2`: ref resolution, event folds, protected-pattern matching,
+//!   membership, numbering, approvals and the pack reader rule.
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`envelope`] — the `encryptedFor` scheme (`ecdh-secp256k1-aes256-cbc`), matching Platform.
@@ -50,7 +50,6 @@ pub mod resolve;
 pub mod rules;
 pub mod scope;
 pub mod storage;
-pub mod tokens;
 pub mod user_error;
 pub mod webhooks;
 

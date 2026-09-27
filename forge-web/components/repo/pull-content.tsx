@@ -6,9 +6,9 @@
  * review verdicts), a comment composer, and mark-as-merged / close / reopen.
  *
  * **It cannot merge code**, stated here because the name suggests otherwise. "Mark as merged"
- * appends a `merge` event carrying the PR head oid. The fold accepts that event only from a
- * WRITE or MAINTAIN holder, and only once the head has been a tip of the base ref — which a
- * push must do. So the control is shown only to WRITE/MAINTAIN holders ({@link pullActions})
+ * appends a `merge` event carrying the PR head oid. Consensus accepts that event only from a
+ * maintainer or writer, and the fold applies it only once the head has been a tip of the base
+ * ref — which a push must do. So the control is shown only to members ({@link pullActions})
  * and says whether the head is already on the base branch. For a base branch that has moved
  * on, the merge commit is not the head oid at all; that merge is recorded with the CLI
  * (`dg pr merge --merge-oid`).
@@ -34,6 +34,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
+import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -59,9 +60,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
 
-  // What the PR controls are gated on: v1, the viewer's current WRITE/MAINTAIN holdings (the
-  // token-history cache the fold reads, so usually free); forge-v2, a current maintainer or
-  // writer document (the membership cache approvals read).
+  // What the PR controls are gated on: a current maintainer or writer document (the
+  // membership cache approvals read).
   const holdings = useAsync<Holdings | null>(
     () => readViewerPermissions(sdk!, home.repo, identity!, network),
     [ready, repoKey(home.repo), identity ?? '', network],
@@ -87,7 +87,6 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     viewer: identity,
     // Signed in but not yet read: withhold the controls without a "can't" message.
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
-    model: home.repo.kind,
   })
   const base = pull.baseRefName || 'the base branch'
 
@@ -156,19 +155,19 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
             <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{pull.baseRefName || '?'}</span> · {timeAgo(pull.createdAt)}
           </span>
           {pull.headOid ? <span className="flex items-center gap-1 text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
+          <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} className="ml-auto" />
         </div>
         {/* Where the PR's objects actually live. Without this a reviewer has a commit id
             with no stated home: a PR's head normally sits in the contributor's own repo, and
-            the patch document's source pointer (v1 sourceContractId, v2 sourceRepoId) is the
-            only pointer to it. */}
+            the patch document's source pointer (sourceRepoId) is the only pointer to it. */}
         {pull.sourceId ? (
           <div className="mt-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
             <span className="text-anvil-500 dark:text-anvil-400">
-              {home.repo.kind === 'v2' && pull.sourceId === home.repo.repoId ? (
+              {pull.sourceId === home.repo.repoId ? (
                 <>Objects live in this repo</>
               ) : (
                 <>
-                  Objects live in {home.repo.kind === 'v1' ? 'contract' : 'repo'}{' '}
+                  Objects live in repo{' '}
                   <span className="font-mono break-all">{pull.sourceId}</span>
                 </>
               )}

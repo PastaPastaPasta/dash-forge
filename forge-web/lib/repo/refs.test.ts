@@ -13,10 +13,16 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { base64ToHex, bytesToBase64 } from '../sdk'
-import { DOC, type V1RepoRef } from './contract'
+import { DOC, type RepoRef } from './contract'
 import { hasMissingParent, readRefs } from './refs'
 
-const REPO: V1RepoRef = { kind: 'v1', contractId: 'contract', ownerId: 'owner', name: '' }
+const REPO: RepoRef = {
+  forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
+  repoId: 'R',
+  ownerId: 'owner',
+  name: 'n',
+  visibility: 'public',
+}
 
 /** Real `sha256(refName)` — the rules layer rejects updates whose hash doesn't match. */
 function refHashBytes(seed: number): Uint8Array {
@@ -33,7 +39,7 @@ function oidHex(seed: number): string {
 
 type Doc = Record<string, unknown>
 
-/** A refUpdate row; `$createdAt` is absent, as on the deployed repo-v1 type. */
+/** A refUpdate row; `$createdAt` is left out, so rows order by `$id` alone. */
 function updateDoc(id: string, refSeed: number, newSeed: number, prevSeed = 0): Doc {
   return {
     $id: id,
@@ -95,7 +101,8 @@ function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boo
         else if (q.documentTypeName === DOC.refUpdate) {
           const where = q.where ?? []
           const gt = where.find((w) => w[1] === '>')
-          const eq = where.find((w) => w[1] === '==')
+          // Every query is scoped `repoId ==` (one repo here); the ref equality is the other `==`.
+          const eq = where.find((w) => w[1] === '==' && w[0] === 'refNameHash')
           let docs = sorted
           if (gt && !opts.ignoreRange) docs = docs.filter((d) => hexOf(d) > base64ToHex(gt[2] as string))
           if (eq) docs = docs.filter((d) => hexOf(d) === base64ToHex(eq[2] as string))
@@ -179,8 +186,9 @@ describe('readRefs keyset scan', () => {
       oid: oidHex(150),
     })
     expect(refs).toHaveLength(3)
-    const eqReads = seen.filter((q) => q.where?.some((w) => w[1] === '==') && q.documentTypeName === DOC.refUpdate)
-    expect(eqReads.map((q) => base64ToHex(q.where?.[0]?.[2] as string))).toContain(refHashHex(7))
+    const refEq = (q: QueryLike) => q.where?.find((w) => w[0] === 'refNameHash' && w[1] === '==')
+    const eqReads = seen.filter((q) => refEq(q) !== undefined && q.documentTypeName === DOC.refUpdate)
+    expect(eqReads.map((q) => base64ToHex(refEq(q)?.[2] as string))).toContain(refHashHex(7))
   })
 
   it('falls back to the reflog read alone when a prevOid has no parent', async () => {
@@ -192,7 +200,9 @@ describe('readRefs keyset scan', () => {
     const { sdk, seen } = mockDrive(rows, { dropOnKeyset: victim })
     const refs = await readRefs(sdk, REPO)
 
-    expect(seen.some((q) => q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === '$createdAt' && !q.where?.length)).toBe(true)
+    // The reflog read: `$createdAt` order, scoped to the repo and nothing else.
+    const scopeOnly = (q: QueryLike) => (q.where ?? []).every((w) => w[0] === 'repoId')
+    expect(seen.some((q) => q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === '$createdAt' && scopeOnly(q))).toBe(true)
     expect(refs.find((r) => r.refNameHash === refHashHex(2))?.state).toMatchObject({
       state: 'resolved',
       oid: oidHex(3),

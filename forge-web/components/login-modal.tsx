@@ -12,8 +12,8 @@
  *
  * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
  * (callers can open it on a view directly: Renew opens Import). On a network without forge-v2
- * (no contract group to bind a key to, testnet today) only the v1 path exists: the identity
- * file signs with its HIGH/CRITICAL key for this tab.
+ * (no contract group to bind a key to) there is nothing to sign for: Import shows "not
+ * deployed".
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -28,7 +28,8 @@ import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile, parseIdentityFileText } from '@/lib/auth'
+import { NotDeployedState } from '@/components/ui/network-badge'
+import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
 import { appConnectAvailable } from '@/lib/auth/app-connect'
 import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
@@ -72,7 +73,7 @@ export function LoginModal(): JSX.Element {
       ? 'A pasted key signs for this tab only, with whatever power it has.'
       : limitedKeys
         ? `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
-        : `Your key signs writes on ${ACTIVE_NETWORK.key}. It stays in this tab, never sent anywhere.`
+        : `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
 
   return (
     <Dialog open={open} onClose={close} title="Sign in to Dash Forge" description={description} className="max-w-lg">
@@ -93,7 +94,7 @@ export function LoginModal(): JSX.Element {
             }}
           />
         ) : (
-          <V1FileView onDone={close} />
+          <NotDeployedState />
         )
       ) : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
@@ -124,23 +125,19 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const { limitedKeys } = useAuth()
   const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
+  // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
+  if (!limitedKeys) return <NotDeployedState />
   return (
     <div className="space-y-2">
-      {limitedKeys && walletAvailable ? (
+      {walletAvailable ? (
         <Tile testId="tile-wallet" icon={Wallet} title="Use my Dash wallet" body="Scan a QR with a wallet that supports Platform login. It grants Forge a limited key." onClick={() => onPick('wallet')} />
       ) : null}
-      {limitedKeys ? (
-        <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet. ~0.0005 DASH per issue or push." onClick={() => onPick('create')} />
-      ) : null}
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet. ~0.0005 DASH per issue or push." onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
         icon={Upload}
-        title={limitedKeys ? 'Import an identity file or recovery phrase' : 'Import an identity file'}
-        body={
-          limitedKeys
-            ? 'Your master key is used once, right now, to create a limited key for this browser. It is not stored.'
-            : 'The bridge / dg JSON export. Its signing key stays in this tab only.'
-        }
+        title="Import an identity file or recovery phrase"
+        body="Your master key is used once, right now, to create a limited key for this browser. It is not stored."
         onClick={() => onPick('import')}
       />
       <div className="pt-2">
@@ -402,32 +399,6 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         Create this browser&apos;s key
       </Button>
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
-      <ErrorBox error={error} />
-    </div>
-  )
-}
-
-/** Networks without forge-v2 (testnet): an identity file's HIGH/CRITICAL key, this tab only. */
-function V1FileView({ onDone }: { onDone: () => void }): JSX.Element {
-  const { loginWithRawKey, isLoading, controller } = useAuth()
-  const [error, setError] = useState<string | null>(null)
-  const onFile = async (file: File): Promise<void> => {
-    setError(null)
-    try {
-      const parsed = parseIdentityFileText(await file.text())
-      controller.checkFileNetwork(parsed.networkKey)
-      await loginWithRawKey(parsed.identityId, parsed.signingKeyWif)
-      onDone()
-    } catch (e) {
-      setError(errorMessage(e))
-    }
-  }
-  return (
-    <div className="space-y-3">
-      <FilePicker label="Choose an identity file" onFile={(f) => void onFile(f)} disabled={isLoading} />
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {ACTIVE_NETWORK.key} has no Forge contract group yet, so there are no limited keys here: the file&apos;s signing key is held in this tab and forgotten on reload.
-      </p>
       <ErrorBox error={error} />
     </div>
   )

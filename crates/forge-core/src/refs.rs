@@ -55,11 +55,9 @@
 //!
 //! One path does still use a cursor: a ref with more than a page of updates is read with
 //! `refNameHash == h` paged by `startAfter`. That is single-branch, so the sibling-branch
-//! drop cannot happen, but protocol 13 still skips rows sharing the page boundary's
-//! `$createdAt` (docs/BUILDING.md, "same-block ties"), and repo-v1 ref updates do not return
-//! `$createdAt` from a proved query, so the tie probe cannot repair it. That read is the one
-//! `base_ref_tips` always used; it goes away with forge-v2 on protocol 14, whose cursor is
-//! bounded by document id. The mock's `ref_history` is exact, so no test here covers it.
+//! drop cannot happen; on protocol 14 the cursor is bounded by document id, so rows sharing
+//! the page boundary's `$createdAt` are not skipped. The mock's `ref_history` is exact, so
+//! no test here covers it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,13 +65,16 @@ use crate::error::{Error, Result};
 use crate::platform::{
     FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter, QueryOrder,
 };
-use crate::rules::RefUpdate;
+use crate::rules::v2::{is_well_formed, ContentDoc, ContentKind, Visibility};
+use crate::rules::{ConfigDoc, MergeBaseTips, RefUpdate};
 use crate::scope::DocScope;
 
 /// The plain ref-update document type.
 pub(crate) const DOC_REF_UPDATE: &str = "refUpdate";
 /// The MAINTAIN-gated ref-update document type.
 pub(crate) const DOC_PROTECTED_REF_UPDATE: &str = "protectedRefUpdate";
+/// The repository `config` document type (protected patterns, default branch).
+pub(crate) const DOC_CONFIG: &str = "config";
 
 /// Both ref-update types, each with the `protected` flag its updates carry into the fold.
 const REF_UPDATE_TYPES: [(&str, bool); 2] =
@@ -107,12 +108,44 @@ pub(crate) trait RefDocSource {
 
     /// Every `doc_type` update in `$createdAt` order — the fallback.
     async fn full_scan(&self, doc_type: &str) -> Result<Vec<FetchedDocument>>;
+
+    /// Whether a ref-update row is well-formed for the repository (forge-v2 §5); the readers
+    /// skip the rest before any rule sees them, as forge-web does. Every row, by default.
+    fn well_formed(&self, _d: &FetchedDocument) -> bool {
+        true
+    }
 }
 
-/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: on
-/// forge-v2 every query leads with `repoId == R` (the `refState` and `reflog` indexes are
-/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`), on v1 the repo
-/// contract is the scope.
+/// Whether `d` is well-formed: forge-v2's §5 rule (this client reads public repositories only;
+/// `RepoRef::require_readable` refuses the rest).
+fn well_formed_in(kind: ContentKind, d: &FetchedDocument) -> bool {
+    is_well_formed(&content_of(kind, d), Visibility::Public)
+}
+
+/// The §5 content view of a ref-update or config row.
+fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
+    ContentDoc {
+        kind,
+        title: None,
+        body: None,
+        ref_name: d.field_str("refName"),
+        base_ref_name: None,
+        source_ref_name: None,
+        ref_name_hash: d.field_hex("refNameHash"),
+        base_ref_name_hash: None,
+        source_ref_name_hash: None,
+        path: None,
+        default_branch: d.field_str("defaultBranch"),
+        protected_patterns: Some(crate::scope::doc_text_list(d, "protectedPatterns"))
+            .filter(|p| !p.is_empty()),
+        enc: d.field_hex("enc").filter(|h| !h.is_empty()),
+        epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+    }
+}
+
+/// [`RefDocSource`] over a live Platform connection, inside one repository's scope: every
+/// query leads with `repoId == R` (the `refState` and `reflog` indexes are
+/// `(repoId, refNameHash, $createdAt)` and `(repoId, $createdAt)`).
 pub(crate) struct PlatformRefSource<'a> {
     pub(crate) client: &'a PlatformClient,
     pub(crate) contract: &'a LoadedContract,
@@ -166,10 +199,14 @@ impl RefDocSource for PlatformRefSource<'_> {
             )
             .await
     }
+
+    fn well_formed(&self, d: &FetchedDocument) -> bool {
+        well_formed_in(ContentKind::RefUpdate, d)
+    }
 }
 
 /// Read every ref's complete history of the repository `scope` names, from `contract`
-/// (forge-core on v2, the repo contract on v1). See the module docs.
+/// (forge-core). See the module docs.
 pub async fn read_all_ref_updates(
     client: &PlatformClient,
     contract: &LoadedContract,
@@ -181,6 +218,52 @@ pub async fn read_all_ref_updates(
         scope,
     })
     .await
+}
+
+/// The repository's **complete** `config` history (append-only, non-deletable), as
+/// [`ConfigDoc`]s ordered by `$createdAt`.
+///
+/// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
+/// UNPROTECTED, so a truncated history does not merely go stale — it silently re-admits
+/// plain `refUpdate`s on protected refs that the rules had correctly rendered inert.
+/// forge-web reads the same timeline, and the two clients must fold the same input.
+pub async fn read_config_history(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+) -> Result<Vec<ConfigDoc>> {
+    let docs = client
+        .query_all_documents(
+            contract,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::asc("$createdAt")],
+        )
+        .await?;
+    Ok(docs
+        .iter()
+        .filter(|d| well_formed_in(ContentKind::Config, d))
+        .map(crate::repo::config_doc)
+        .collect())
+}
+
+/// The history of the ref named `ref_name` that a PR merge into it is verified against
+/// ([`crate::rules::merge_base_tips`]): its updates and the config timeline, folded so that a
+/// plain `refUpdate` on a protected ref (inert, §4) never counts as a base tip.
+pub async fn read_merge_base(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    ref_name: &str,
+) -> Result<MergeBaseTips> {
+    let hash = crate::backends::sha256(ref_name.as_bytes());
+    let updates = read_ref_history(client, contract, scope, hash).await?;
+    let configs = read_config_history(client, contract, scope).await?;
+    Ok(crate::rules::merge_base_tips(
+        &updates,
+        &configs,
+        &hex::encode(hash),
+    ))
 }
 
 /// Read one ref's complete history (both types) of the repository `scope` names.
@@ -209,7 +292,9 @@ pub(crate) async fn ref_history_with(
     let mut out = Vec::new();
     for (doc_type, protected) in REF_UPDATE_TYPES {
         for d in src.ref_history(doc_type, hash).await? {
-            out.push(ref_update_from_doc(&d, &hash_hex, protected));
+            if src.well_formed(&d) {
+                out.push(ref_update_from_doc(&d, &hash_hex, protected));
+            }
         }
     }
     Ok(out)
@@ -232,7 +317,10 @@ pub(crate) async fn read_all_with(src: &impl RefDocSource) -> Result<RefHistorie
              every update in reflog order"
         );
     } else {
-        let by_hash = group(&docs)?;
+        let by_hash = group(src, &docs)?;
+        // Runs on well-formed rows only (as forge-web's does): a skipped malformed update
+        // whose `newOid` a later update names as its parent sends every read to the full
+        // reflog below. Slower, never wrong, and the same in both clients.
         let dangling = by_hash.values().filter(|u| has_missing_parent(u)).count();
         if dangling == 0 {
             return Ok(by_hash);
@@ -248,7 +336,7 @@ pub(crate) async fn read_all_with(src: &impl RefDocSource) -> Result<RefHistorie
     for (doc_type, protected) in REF_UPDATE_TYPES {
         full.push((dedupe(src.full_scan(doc_type).await?), protected, doc_type));
     }
-    group(&full)
+    group(src, &full)
 }
 
 /// Drop repeated `$id`s, keeping the first occurrence.
@@ -312,10 +400,13 @@ async fn keyset_scan(
 
 /// Group rows per ref. Within a ref, plain updates come before protected ones and each
 /// source keeps its read order; the fold re-sorts by `(createdAt, id)` regardless.
-fn group(docs: &[(Vec<FetchedDocument>, bool, &str)]) -> Result<RefHistories> {
+fn group(
+    src: &impl RefDocSource,
+    docs: &[(Vec<FetchedDocument>, bool, &str)],
+) -> Result<RefHistories> {
     let mut by_hash = RefHistories::new();
     for (rows, protected, doc_type) in docs {
-        for d in rows {
+        for d in rows.iter().filter(|d| src.well_formed(d)) {
             let hash = ref_hash(d, doc_type)?;
             by_hash.entry(hash).or_default().push(ref_update_from_doc(
                 d,
@@ -389,7 +480,7 @@ mod tests {
         FetchedDocument {
             id: format!("id{id:06}"),
             owner_id: "pusher".into(),
-            // The deployed repo-v1 type never recorded `$createdAt` (design-freeze-2 §3).
+            // The scan must not depend on `$createdAt` being present.
             created_at: None,
             fields,
         }
@@ -651,6 +742,41 @@ mod tests {
         assert_eq!(got.iter().filter(|u| u.protected).count(), 4);
         let ids: BTreeSet<&str> = got.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(ids.len(), 4);
+    }
+
+    /// forge-v2 readers skip a malformed ref update before any rule sees it, as forge-web
+    /// does: ciphertext in a public repo, and a name that does not hash to its key.
+    #[test]
+    fn v2_readers_skip_malformed_ref_updates() {
+        use crate::backends::sha256;
+        use crate::rules::v2::ContentKind;
+        let doc = |name: &str, hash: [u8; 32], enc: bool| {
+            let mut fields = BTreeMap::new();
+            fields.insert("refNameHash".into(), FieldValue::Bytes32(hash));
+            fields.insert("refName".into(), FieldValue::Text(name.into()));
+            fields.insert("newOid".into(), FieldValue::Bytes(vec![1; 20]));
+            if enc {
+                fields.insert("enc".into(), FieldValue::Bytes(vec![9; 40]));
+                fields.insert("epoch".into(), FieldValue::integer(0));
+            }
+            FetchedDocument {
+                id: "d".into(),
+                owner_id: "o".into(),
+                created_at: Some(1),
+                fields,
+            }
+        };
+        let main = sha256(b"refs/heads/main");
+        let ok = doc("refs/heads/main", main, false);
+        assert!(super::well_formed_in(ContentKind::RefUpdate, &ok));
+        assert!(!super::well_formed_in(
+            ContentKind::RefUpdate,
+            &doc("refs/heads/main", main, true)
+        ));
+        assert!(!super::well_formed_in(
+            ContentKind::RefUpdate,
+            &doc("refs/heads/other", main, false)
+        ));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "name": "public_sha256_match",
+  "description": "Public: the name hashes to the key by sha256.",
+  "case": "ref_name_hashes",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refName": "refs/heads/main",
+      "refNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3"
+    }
+  },
+  "expected": true
+}

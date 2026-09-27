@@ -1,0 +1,16 @@
+{
+  "name": "patch_ref_hash_uppercase_hex",
+  "description": "The hash comparison is on the bytes: upper-case hex of the right hash agrees.",
+  "case": "well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "patch",
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "F921BD05E68B03740C450E565E0E6173E546193170B2DD404DDB6F153E9B5BF3"
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

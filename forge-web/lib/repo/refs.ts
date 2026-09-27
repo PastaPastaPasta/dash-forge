@@ -1,5 +1,5 @@
 /**
- * Ref reads — branch/tag enumeration + tip resolution (data-contracts §2.3, §4).
+ * Ref reads — branch/tag enumeration + tip resolution (`forge-v2.md` §2).
  *
  * Every ref's complete update history comes from a **keyset scan** over the `refState` index
  * (`refNameHash, $createdAt`): pages of `refNameHash > last`, 100 rows each, with no
@@ -8,8 +8,8 @@
  * (an equality query, single-branch) and the scan moves past it. Cost: ⌈updates/100⌉
  * queries per type plus one per such ref. Parity: forge-core `refs::read_all_ref_updates`.
  *
- * WHY NO CURSOR: paging `refState` with `startAfter` loses rows on testnet (protocol 13) —
- * 32 of 229 updates on the nightly repo. Drive's v0 lowering applies the cursor document's
+ * WHY NO CURSOR: paging `refState` with `startAfter` lost rows on protocol 13 — 32 of 229
+ * updates on the old nightly repo. Drive's v0 lowering applies the cursor document's
  * lower-level bounds to every sibling `refNameHash` branch, not only the cursor's own, so a
  * page omits rows from later refs and can come back short (the only end-of-data signal a
  * pager has). Same family as dashpay/platform#4396; the orderBy-only shape is still unfixed
@@ -26,8 +26,8 @@
  * LIMITS (same as forge-core `refs`, whose module doc has the detail): the check sees only
  * mid-chain gaps — a missing newest update or a wholly missing ref leaves no dangling
  * `prevOid`. And a ref with more than a page of updates is read by `==` paged with
- * `startAfter`: single-branch, so no sibling drop, but protocol 13's same-`$createdAt`
- * boundary skip still applies to repo-v1 ref updates until forge-v2 on protocol 14.
+ * `startAfter`: single-branch, so no sibling drop (and protocol 14 no longer skips rows that
+ * share the boundary's `$createdAt`).
  *
  * Tip resolution folds a ref's full update history (both types, with the `protected` flag
  * set per source) through {@link resolveRef}, honoring as-of protected-pattern config.
@@ -263,7 +263,7 @@ export async function readAllRefUpdates(
  * page pins a branch at its 100th push — the tip stops advancing and every later commit
  * becomes unreachable through the UI. It also feeds {@link historicalTipsPredicate}, where
  * a truncated tip set makes a genuinely merged PR fold as still-open. Parity: forge-core
- * `refs::read_ref_history` (behind `base_ref_tips`).
+ * `refs::read_ref_history` (behind `read_merge_base`).
  */
 export async function readRefUpdates(
   sdk: EvoSDK,
@@ -285,7 +285,7 @@ export async function readRefUpdates(
  *
  * The display name comes from the newest update whose `refName` actually hashes to this key,
  * on the `(createdAt, id)` total order. `refName` is caller-supplied content while only
- * `refNameHash` is indexed, so a token holder can file an update under `main`'s hash carrying
+ * `refNameHash` is indexed, so a writer can file an update under `main`'s hash carrying
  * any legal name; `resolveRef` already ignores such an update, and naming the ref from it
  * would show a different branch name than a client that does not. Taking the last element of
  * the plain-then-protected concatenation — which is not even the newest update overall —

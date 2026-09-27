@@ -1,5 +1,7 @@
 # Dash Forge — Execution Tracker
 
+> **Historical.** This is the build log of forge-v1 (a global registry contract plus one contract per repository, with WRITE/MAINTAIN token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility: the registry, the `repo-v1` template, the token ACLs and the testnet deployments named below no longer exist in the code. The current plan is [docs/roadmap.md](docs/roadmap.md); the current design is [forge-v2](docs/contracts/forge-v2.md). The log below is kept as written.
+
 Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build state. Update every session.
 
 > **2026-09-24:** this log records the July build. "Complete" below means *demonstrated on testnet*, not *usable by real users*. Forward planning now lives in [docs/roadmap.md](docs/roadmap.md).

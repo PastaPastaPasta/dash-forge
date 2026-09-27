@@ -1,5 +1,5 @@
 /**
- * objectLocator reader — the git-MIDX analog (data-contracts §2.3, S0.5).
+ * objectLocator reader — the git-MIDX analog (`forge-v2.md` §4, S0.5).
  *
  * Read-side port of `crates/forge-core/src/pack/locator.rs`. Layout:
  *   fanout(256 × u32 BE) || rows

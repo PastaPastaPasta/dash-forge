@@ -36,7 +36,7 @@ export function CommitsContent({
   return (
     <div className="space-y-4">
       <RefSwitcher home={home} addr={addr} current={selected} />
-      <BrowseBoundary repo={home.repo}>
+      <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader) => <LogBody reader={reader} tipOid={tipOid} addr={addr} />}
       </BrowseBoundary>
     </div>

@@ -55,8 +55,7 @@ impl std::fmt::Debug for StaticWebhook {
     }
 }
 
-/// The on-disk TOML shape (all optional; CLI flags override). Unknown keys (such as the v1
-/// relay's `secrets` map or `registry-contract-id`) are ignored.
+/// The on-disk TOML shape (all optional; CLI flags override). Unknown keys are ignored.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct FileConfig {
@@ -74,6 +73,9 @@ struct FileConfig {
     web_base_url: Option<String>,
     use_platform_webhooks: Option<bool>,
     listen: Option<String>,
+    state_dir: Option<PathBuf>,
+    /// Retry delays in seconds (default 60, 300, 1800, 7200, 43200, 86400).
+    retry_schedule_secs: Option<Vec<u64>>,
     #[serde(default)]
     webhook: Vec<StaticWebhook>,
 }
@@ -107,6 +109,14 @@ pub struct RelayConfig {
     pub listen: Option<String>,
     /// Statically configured webhooks (plaintext secrets; local testing).
     pub static_webhooks: Vec<StaticWebhook>,
+    /// Where the durable delivery queue lives (`<state dir>/deliveries`); `None` when no
+    /// default could be resolved (no `FORGE_RELAY_STATE_DIR`, `XDG_STATE_HOME` or `HOME`).
+    pub state_dir: Option<PathBuf>,
+    /// Whether the state dir was chosen explicitly (`--state-dir` or `state-dir` in the
+    /// config file): then a queue that cannot be durable is fatal, not a fallback to memory.
+    pub state_dir_explicit: bool,
+    /// Retry delays after the 1st, 2nd, ... failed delivery (the last repeats).
+    pub retry_schedule: Vec<Duration>,
 }
 
 /// CLI overrides applied on top of the file config.
@@ -130,6 +140,8 @@ pub struct CliOverrides {
     pub listen: Option<String>,
     /// `--web-base-url`.
     pub web_base_url: Option<String>,
+    /// `--state-dir`.
+    pub state_dir: Option<PathBuf>,
 }
 
 impl RelayConfig {
@@ -141,9 +153,7 @@ impl RelayConfig {
                 let raw = std::fs::read_to_string(path).map_err(|e| {
                     RelayError::Io(format!("reading config {}: {e}", path.display()))
                 })?;
-                toml::from_str(&raw).map_err(|e| {
-                    RelayError::Config(format!("parsing config {}: {e}", path.display()))
-                })?
+                parse_toml(path, &raw)?
             }
             Some(path) => {
                 return Err(RelayError::Config(format!(
@@ -161,7 +171,6 @@ impl RelayConfig {
             devnet_name: file.devnet_name.clone(),
             dapi_addresses: file.dapi_addresses.clone(),
             quorum_base_url: file.quorum_url.clone(),
-            registry: None,
         };
         let target = cli
             .network
@@ -196,8 +205,82 @@ impl RelayConfig {
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
             listen: cli.listen.clone().or(file.listen),
             static_webhooks: file.webhook,
+            state_dir_explicit: cli.state_dir.is_some() || file.state_dir.is_some(),
+            state_dir: cli
+                .state_dir
+                .clone()
+                .or(file.state_dir)
+                .or_else(|| crate::queue::default_state_dir().ok()),
+            retry_schedule: retry_schedule(file.retry_schedule_secs)?,
         })
     }
+}
+
+/// The state dir a config file names (`state-dir`), else the default: what
+/// `forge-relay deliveries --config <file>` reads, the same as `run --config <file>` writes.
+/// Reads the file only (no network settings are resolved).
+pub fn state_dir_from_file(path: &std::path::Path) -> Result<PathBuf> {
+    /// Only the key this needs, so nothing else of the file (a static webhook's secret) is
+    /// even kept.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct StateDirOnly {
+        state_dir: Option<PathBuf>,
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| RelayError::Io(format!("reading config {}: {e}", path.display())))?;
+    let file: StateDirOnly = parse_toml(path, &raw)?;
+    match file.state_dir {
+        Some(d) => Ok(d),
+        None => crate::queue::default_state_dir(),
+    }
+}
+
+/// Parse a config file. A syntax error is reported by line and column only: toml's own
+/// message quotes the offending line, which can hold a static webhook's secret.
+fn parse_toml<T: serde::de::DeserializeOwned>(path: &std::path::Path, raw: &str) -> Result<T> {
+    toml::from_str(raw).map_err(|e| {
+        let at = e.span().map_or_else(String::new, |span| {
+            let before = raw.get(..span.start).unwrap_or(raw);
+            let line = before.matches('\n').count() + 1;
+            let col = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+            format!(" at line {line}, column {col}")
+        });
+        RelayError::Config(format!(
+            "parsing config {}: invalid TOML{at} (the line is not shown: it may hold a secret)",
+            path.display()
+        ))
+    })
+}
+
+/// The longest configurable retry delay: past the 48 h expiry a retry would never run.
+const MAX_RETRY_DELAY_SECS: u64 = 48 * 3600;
+
+/// The retry schedule: `FORGE_RELAY_RETRY_SCHEDULE` (comma-separated seconds; for tests and
+/// live checks), else the config file's `retry-schedule-secs`, else the default.
+fn retry_schedule(file: Option<Vec<u64>>) -> Result<Vec<Duration>> {
+    let secs = match std::env::var("FORGE_RELAY_RETRY_SCHEDULE") {
+        Ok(v) if !v.trim().is_empty() => v
+            .split(',')
+            .map(|s| s.trim().parse::<u64>())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                RelayError::Config(format!(
+                    "FORGE_RELAY_RETRY_SCHEDULE must be comma-separated seconds: {e}"
+                ))
+            })?,
+        _ => file.unwrap_or_default(),
+    };
+    if secs.iter().any(|s| !(1..=MAX_RETRY_DELAY_SECS).contains(s)) {
+        return Err(RelayError::Config(format!(
+            "retry delays must be 1 to {MAX_RETRY_DELAY_SECS} seconds (entries expire after 48 h)"
+        )));
+    }
+    Ok(if secs.is_empty() {
+        crate::queue::DEFAULT_SCHEDULE.to_vec()
+    } else {
+        secs.into_iter().map(Duration::from_secs).collect()
+    })
 }
 
 #[cfg(test)]
@@ -231,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_full_toml_and_ignores_v1_keys() {
+    fn parses_full_toml_and_ignores_unknown_keys() {
         let src = r#"
 network = "testnet"
 identity = "/tmp/relay.json"
@@ -242,16 +325,13 @@ allow-private = true
 lookback = 3
 web-base-url = "https://forge.example"
 use-platform-webhooks = false
-registry-contract-id = "IGNORED"
+unknown-key = "IGNORED"
 
 [[webhook]]
 repo = "owner/ccc"
 url = "http://127.0.0.1:9000/hook?token=t"
 events = ["push"]
 secret = "s3cr3t"
-
-[secrets]
-"deadbeef" = "ignored"
 "#;
         let cfg = load_str("full", src, &CliOverrides::default()).unwrap();
         assert_eq!(cfg.target.network, Network::Testnet);
@@ -265,6 +345,32 @@ secret = "s3cr3t"
         let dumped = format!("{cfg:?}");
         assert!(!dumped.contains("s3cr3t"), "{dumped}");
         assert!(!dumped.contains("token=t"), "{dumped}");
+    }
+
+    #[test]
+    fn a_toml_error_does_not_echo_the_file() {
+        let src = "[[webhook]]\nrepo = \"o/r\"\nsecret = \"hunter2-secret\" oops\n";
+        let err = load_str("bad-toml", src, &CliOverrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(err.contains("line 3"), "{err}");
+        let dir = std::env::temp_dir().join(format!("relay-cfg-sd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("relay.toml");
+        std::fs::write(&path, src).unwrap();
+        let err = state_dir_from_file(&path).unwrap_err().to_string();
+        assert!(!err.contains("hunter2"), "{err}");
+        std::fs::write(&path, "state-dir = \"/srv/q\"\n[[webhook]]\nsecret = 1\n").unwrap();
+        assert_eq!(state_dir_from_file(&path).unwrap(), PathBuf::from("/srv/q"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn retry_delays_are_bounded() {
+        assert!(retry_schedule(Some(vec![60, 172_800])).is_ok());
+        assert!(retry_schedule(Some(vec![0])).is_err());
+        assert!(retry_schedule(Some(vec![u64::MAX])).is_err());
     }
 
     #[test]

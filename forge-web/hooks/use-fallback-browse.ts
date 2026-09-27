@@ -29,6 +29,8 @@ export interface FallbackBrowse {
   readonly progress: FallbackProgress | null
   readonly context: BrowseContext | null
   readonly error: string | null
+  /** The thrown value behind `error` (e.g. a StorageUnreachableError listing the places tried). */
+  readonly cause: unknown
   readonly start: () => void
 }
 
@@ -41,6 +43,7 @@ export function useFallbackBrowse(
   const [progress, setProgress] = useState<FallbackProgress | null>(null)
   const [context, setContext] = useState<BrowseContext | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cause, setCause] = useState<unknown>(null)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -61,6 +64,7 @@ export function useFallbackBrowse(
       .catch((e: unknown) => {
         if (!mounted.current) return
         setError(errorMessage(e))
+        setCause(e)
         setStatus('error')
       })
   }, [])
@@ -104,6 +108,7 @@ export function useFallbackBrowse(
       .catch((e: unknown) => {
         if (cancelled || !mounted.current) return
         setError(errorMessage(e))
+        setCause(e)
         setStatus('error')
       })
     return () => {
@@ -112,5 +117,5 @@ export function useFallbackBrowse(
     // livePacks identity tracks its load; the repo key scopes the cache probe.
   }, [repo === null ? '' : repoKey(repo), sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { status, progress, context, error, start }
+  return { status, progress, context, error, cause, start }
 }

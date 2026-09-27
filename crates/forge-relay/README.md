@@ -4,7 +4,7 @@ Delivers forge-v2 repository activity as GitHub-shaped webhooks (`push`, `issues
 `pull_request`, `issue_comment`, `pull_request_review`, `release`, `check_run`), signed
 with `X-Hub-Signature-256`. A relay is trusted for availability only: consumers verify what a
 webhook says against Platform (see `examples/ci_consumer.rs`, which folds the pushed ref's
-history and checks the tip). forge-v1 repositories are read-only and are not served.
+history and checks the tip).
 
 ## How a hook reaches a relay
 
@@ -52,9 +52,40 @@ export, so the host holds no signing keys or mnemonic:
 docker build -f crates/forge-relay/Dockerfile -t forge-relay .   # or ghcr.io/pastapastapasta/forge-relay:<version>
 docker run --rm --read-only \
   -v "$PWD/relay-key.json:/id/relay.json:ro" \
+  -v relay-state:/state \
   forge-relay --identity /id/relay.json --network testnet
 # a devnet: --network devnet --devnet-name moutai
 ```
+
+Both images keep the retry queue in `/state` (`FORGE_RELAY_STATE_DIR=/state`, owned by the
+image's non-root user, mode 0700). The named volume `relay-state` keeps pending retries across
+container restarts; a fresh named volume takes the image's ownership. Without `-v ...:/state`,
+Docker gives the container an anonymous volume there, which `--rm` deletes.
+
+If the state dir cannot be used (not writable, a symlink, or owned by another user; a
+directory of the relay user's with looser permissions is tightened to 0700):
+
+- when it was set explicitly (`--state-dir`, or `state-dir` in the config file) the relay
+  exits with an error;
+- when it is the default (including `FORGE_RELAY_STATE_DIR`, which the images set, so a
+  container without a usable `/state` still runs), the relay starts on an
+  in-memory queue: retries work but are lost on restart. It logs a warning on every start, and
+  the health endpoint reports `"durable": false`.
+
+**Upgrading from an image without `/state`:** a `relay-state` volume that an older image
+created (or that was first mounted somewhere else) can be owned by root, which the non-root
+relay cannot write. Give it to the image's user once, then start the relay as usual:
+
+```sh
+# the release image (ghcr.io/...; distroless, user nonroot = uid 65532)
+docker run --rm -v relay-state:/state busybox sh -c 'chown 65532:65532 /state && chmod 700 /state'
+# an image built from crates/forge-relay/Dockerfile (user relay = uid 10001)
+docker run --rm -v relay-state:/state busybox sh -c 'chown 10001:10001 /state && chmod 700 /state'
+```
+
+`docker stop` (SIGTERM) and ctrl-c stop the relay gracefully: it stops delivering, writes each
+hook's undelivered events (the in-flight one and those still in its in-memory queue) to the
+retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -63,20 +94,31 @@ docker run --rm --read-only \
 | `--poll-interval <s>` | 15 | Seconds between polls. |
 | `--refresh-cycles <n>` | 4 | Re-read the webhook documents every n polls. |
 | `--lookback <n>` | 0 | At startup, deliver the last n documents of each stream. |
-| `--listen <addr>` | off | Health endpoint (`200 ok`). |
+| `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
-| `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing. |
+| `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
+| `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
 
 ## Delivery semantics
 
-- **Best effort, with retries inside one window.** Each delivery gets up to 5 attempts with
-  backoff within 30 s; then it is logged as `DEAD-LETTER` and dropped. There is no durable
-  queue: nothing is retried later, and events queued when the relay stops are lost.
+- **Retried durably once a delivery has failed; events not yet attempted at shutdown are
+  lost.** Each delivery gets up to 5 attempts within 30 s. If they all fail, the delivery goes
+  to the relay's **retry queue** on local disk and is retried 1 min, 5 min, 30 min, 2 h, 12 h
+  and 24 h later (then every 24 h), across restarts, until it succeeds or is 48 h old; then it
+  is dropped with one `DEAD-LETTER` log line. A graceful stop (SIGTERM, ctrl-c) also writes
+  the events still waiting in a hook's in-memory queue, or in flight; a crash or `kill -9`
+  loses them, and documents not yet polled are not replayed either (cursors are not persisted;
+  see "No cursor state" below). A failure retrying cannot fix is not queued: a body over
+  1 MiB, a receiver answering 4xx other than 408 or 429, or a URL the SSRF guard refuses (also
+  when its host resolves to a private address, even briefly), is logged as `DEAD-LETTER` at
+  once; a host that does not resolve is retried. See [Delivery queue](#delivery-queue).
 - `X-GitHub-Delivery` is derived from the hook id and the source document id, so every relay
-  sends the same id for the same document; dedupe on it.
-- Polling never waits on a receiver. Each hook has its own worker and queue (256 events;
-  beyond that, events are dead-lettered). After 3 failed deliveries in a row a hook's circuit
-  opens for 1 minute, doubling up to an hour while it keeps failing; one success closes it.
+  and every retry sends the same id for the same document; dedupe on it.
+- Polling never waits on a receiver. Each hook has its own worker and in-memory queue (256
+  events; beyond that, events go to the retry queue). After 3 failed deliveries in a row a
+  hook's circuit opens for 1 minute, doubling up to an hour while it keeps failing; one
+  success closes it. While it is open, the hook's new events and retries wait in the retry
+  queue until it closes (they are not spent against it).
   Each attempt takes a slot (2 per destination host and address, 8 per address) and frees it
   before backing off; an attempt that waits 5 s for a slot is retried. Known limit: receivers
   behind one shared CDN/anycast address share its 8 slots, so a few slow tenants there can
@@ -85,7 +127,7 @@ docker run --rm --read-only \
 - Repos are polled concurrently (8 at a time), each within a 20 s budget per cycle, checked
   between streams; a poll cut short resumes at the stage it stopped in. Discovery runs in its
   own task, and a new repo is polled only once its hooks are registered.
-- No state on disk. A restart starts from "now" (or `--lookback` for the repo-level
+- No cursor state on disk (only the retry queue). A restart starts from "now" (or `--lookback` for the repo-level
   streams). A repo first served while the relay runs is read from its earliest hook's
   `$createdAt`, never from before the relay started; a repo that drops out and returns
   resumes where it stopped, but not before its hook's own `$createdAt` (nothing from while a
@@ -107,3 +149,39 @@ docker run --rm --read-only \
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped
   at 1 MiB.
 - Logs never contain secrets or payload bodies; URLs are logged as scheme and host only.
+
+## Delivery queue
+
+The retry queue is local to your relay: one JSON file per delivery in
+`<state dir>/deliveries/`, the directory mode 0700 and each file 0600. Nothing is sent
+anywhere else.
+
+- **What is stored:** the delivery id, repo id, hook id, event name, source document id, the
+  JSON body (built from public chain data), attempt count, times, and the last error (URLs
+  reduced to scheme and host). **Not** the secret and not the URL.
+- **Retries** go through the hook's *current* subscription: they are signed with its current
+  secret and sent to its current URL, through the same SSRF guard (resolved again and pinned).
+  If the hook was removed or disabled meanwhile, the entry is dropped with a log line and
+  never delivered. So **changing a hook's URL redirects its queued events (up to 48 h of
+  them) to the new URL, signed with the new secret.** The bodies are public chain data; if
+  the new receiver must not get the old events, remove the hook and add a new one (a new hook
+  id) instead of re-pointing it.
+- **Retention:** pending entries are dropped after 48 h. At most 500 pending entries per hook,
+  1000 per repo, 5000 in total and 256 MiB of bodies. Past a hook's or repo's bound its own
+  oldest entry is dropped; past a global bound, the oldest entry of the repo holding the most,
+  so one busy or hostile repo cannot push out the others' retries. Every drop logs a line.
+  Dropped entries are kept without their body for 7 days (at most 1000) so you can see what
+  was lost.
+- **Inspect it** (reads the files only; no network):
+
+  ```sh
+  forge-relay deliveries [--state-dir <dir> | --config <toml>] [--json]
+  ```
+
+  It works while the relay runs (it takes no lock).
+
+  It lists each pending or dropped delivery: status, hook id, repo, event, attempts, time
+  to the next attempt, age, and the last error or drop reason.
+- **Schedule:** the default is 1 min, 5 min, 30 min, 2 h, 12 h, 24 h. `retry-schedule-secs` in
+  the config file, or `FORGE_RELAY_RETRY_SCHEDULE=10,20` (comma-separated seconds, for
+  testing), overrides it; each delay must be 1 s to 48 h.

@@ -6,9 +6,12 @@
  * module and `docs/contracts/forge-v2.md` (§3 events, §4 packs, §5 private repos, §6
  * numbering and approvals) for the normative text.
  *
- * The event order and per-kind effects are v1's own (`./fold`), so the two rule versions
- * cannot drift apart where they are meant to agree.
+ * The per-kind event effects live in `./fold`, shared with forge-core's `rules.rs`.
  */
+
+import { hmac } from '@noble/hashes/hmac.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import {
   applyIssueEvent,
@@ -20,7 +23,7 @@ import {
   prStateOf,
   sorted,
 } from './fold'
-import { compareKey, compareStrings } from './oid'
+import { compareKey, compareStrings, refNameHashMatches } from './oid'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
 
 /** The versioned rules identifier for forge-v2 repositories. */
@@ -83,7 +86,7 @@ function authorEventApplies(e: Event, targetAuthor: string): boolean {
   return (e.kind === 'close' || e.kind === 'reopen') && e.actor === targetAuthor
 }
 
-/** Both document types, applicable ones only, in v1's `(createdAt, id)` order (stable). */
+/** Both document types, applicable ones only, in `(createdAt, id)` order (stable). */
 function mergedLog(
   events: readonly Event[],
   authorEvents: readonly Event[],
@@ -398,6 +401,12 @@ export interface ContentDoc {
   readonly refName?: string | null
   readonly baseRefName?: string | null
   readonly sourceRefName?: string | null
+  /** `refNameHash` (ref updates), hex: the indexed key `refName` must hash to. */
+  readonly refNameHash?: string | null
+  /** `baseRefNameHash` (patches), hex. */
+  readonly baseRefNameHash?: string | null
+  /** `sourceRefNameHash` (patches), hex. */
+  readonly sourceRefNameHash?: string | null
   /** `config.defaultBranch`. */
   readonly defaultBranch?: string | null
   /** `config.protectedPatterns`. */
@@ -435,14 +444,45 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
 
 /**
  * Plaintext xor `enc`, and the visibility says which (`forge-v2.md` §5): a public repo's
- * document has no `enc` and its kind's required plaintext field, if the kind has one; a
- * private repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields.
+ * document has no `enc`, its kind's required plaintext field, if the kind has one, and ref
+ * names that hash (sha256) to their indexed keys ({@link refNameHashesAgree}); a private
+ * repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields (its
+ * names are checked after decryption).
  */
 export function isWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
   const [required, plaintext] = contentFields(doc)
   const encrypted = present(doc.enc)
-  if (visibility === 'public') return !encrypted && (required === null || present(required))
+  if (visibility === 'public') {
+    return !encrypted && (required === null || present(required)) && refNameHashesAgree(doc, null)
+  }
   return encrypted && doc.epoch != null && !plaintext.some(present)
+}
+
+/**
+ * Whether every ref name a document carries hashes to the key it is indexed under
+ * (`refName`/`refNameHash`, `baseRefName`/`baseRefNameHash`, `sourceRefName`/
+ * `sourceRefNameHash`); ports `ref_name_hashes_agree` (vectors `ref_name_hashes__*`).
+ * `refKey` null: public, `sha256(name)`. Otherwise the epoch's `K_ref` (hex) and `doc` the
+ * decrypted content: `HMAC-SHA256(K_ref, name)` (`docs/security/private-repos.md` §4.5). A
+ * present name needs its hash, and they must agree (hex, case-insensitive); a hash with no
+ * name has nothing to check.
+ */
+export function refNameHashesAgree(doc: ContentDoc, refKey: string | null): boolean {
+  const key = refKey === null ? null : hexToBytes(refKey)
+  const matches = (name: string, hash: string): boolean =>
+    key === null
+      ? refNameHashMatches(name, hash)
+      : bytesToHex(hmac(sha256, key, new TextEncoder().encode(name))) === hash.toLowerCase()
+  const agrees = (name: string | null | undefined, hash: string | null | undefined): boolean =>
+    name == null || name.length === 0 || (hash != null && hash.length > 0 && matches(name, hash))
+  switch (doc.kind) {
+    case 'refUpdate':
+      return agrees(doc.refName, doc.refNameHash)
+    case 'patch':
+      return agrees(doc.baseRefName, doc.baseRefNameHash) && agrees(doc.sourceRefName, doc.sourceRefNameHash)
+    default:
+      return true
+  }
 }
 
 // ---------------------------------------------------------------------------

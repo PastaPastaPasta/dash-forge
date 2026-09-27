@@ -1,0 +1,50 @@
+{
+  "name": "protected_update_on_protected_ref_is_a_tip",
+  "description": "A protectedRefUpdate moves a protected ref: its commit is a tip.",
+  "case": "merge_base_tips",
+  "rules": "v2",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": true,
+        "author": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": true,
+        "author": "maint",
+        "createdAt": 200
+      }
+    ],
+    "configHistory": [
+      {
+        "id": "c1",
+        "createdAt": 10,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      }
+    ],
+    "refNameHash": "H"
+  },
+  "expected": {
+    "historical": [
+      "A",
+      "B"
+    ],
+    "tip": "B",
+    "current": "B"
+  }
+}

@@ -8,26 +8,42 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Archive, Code2, GitCommit, GitPullRequest, Lock, MessageSquare, Settings } from 'lucide-react'
+import { Archive, Code2, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
+import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
-import { V1Badge } from '@/components/ui/v1-badge'
+import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
-const TABS = [
-  { label: 'Code', path: '/repo', icon: Code2, refAware: true, match: ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers'] },
-  { label: 'Commits', path: '/repo/commits', icon: GitCommit, refAware: true, match: ['/repo/commits', '/repo/commit'] },
-  { label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, match: ['/repo/issues', '/repo/issue'] },
-  { label: 'Pulls', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull'] },
-  { label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, match: ['/repo/settings'] },
-]
+/**
+ * The five tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Releases ·
+ * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
+ * tab; a writer sees the same page as a read-only Members list.
+ */
+const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers', '/repo/commits', '/repo/commit']
+
+/** Match a route with or without the export's trailing slash. */
+const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p)
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const pathname = usePathname()
+  const pathname = bare(usePathname())
   const refParam = useParam('ref')
+  const counts = useTargetCounts(home.repo)
+  const { role } = useViewerRole(home.repo)
+  const tabs = [
+    { label: 'Code', path: '/repo', icon: Code2, refAware: true, match: CODE_ROUTES, count: null },
+    { label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, match: ['/repo/issues', '/repo/issue'], count: counts.issues },
+    { label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull'], count: counts.pulls },
+    { label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, match: ['/repo/releases', '/repo/release'], count: null },
+    ...(role === 'maintainer'
+      ? [{ label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, match: ['/repo/settings'], count: null }]
+      : role === 'writer'
+        ? [{ label: 'Members', path: '/repo/settings', icon: Users, refAware: false, match: ['/repo/settings'], count: null }]
+        : []),
+  ]
 
   return (
     <div className="mb-5">
@@ -38,16 +54,16 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
             {home.repo.name || addr.name}
           </Link>
-          {home.repo.kind === 'v2' && home.repo.visibility === 'private' ? (
+          {home.repo.visibility === 'private' ? (
             <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">
               <Lock className="h-3 w-3" aria-hidden /> private
             </span>
           ) : null}
-          {home.repo.kind === 'v1' ? <V1Badge /> : null}
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <StarButton repo={home.repo} listingId={home.listingId} count={home.starCount} />
+          <CopyLinkButton repo={addr} />
+          <StarButton repo={home.repo} count={home.starCount} />
         </div>
       </div>
 
@@ -62,23 +78,29 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       ) : null}
 
       {/* Nav */}
-      <nav className="mt-4 flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
-        {TABS.map((tab) => {
+      <nav aria-label="Repository" className="mt-4 flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+        {tabs.map((tab) => {
           const active = tab.match.includes(pathname)
           const Icon = tab.icon
           return (
             <Link
               key={tab.path}
               href={repoHref(tab.path, addr, tab.refAware && refParam ? { ref: refParam } : {})}
+              aria-current={active ? 'page' : undefined}
               className={cn(
-                'inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors',
+                'inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors',
                 active
                   ? 'border-forge-500 text-anvil-900 dark:text-anvil-50'
-                  : 'border-transparent text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
+                  : 'border-transparent text-anvil-600 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
               )}
             >
               <Icon className="h-3.5 w-3.5" aria-hidden />
               {tab.label}
+              {tab.count !== null ? (
+                <span className="rounded-full bg-anvil-100 px-1.5 text-[11px] tabular-nums text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
+                  {tab.count}
+                </span>
+              ) : null}
             </Link>
           )
         })}

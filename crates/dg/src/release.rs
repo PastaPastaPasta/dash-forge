@@ -14,7 +14,7 @@ use serde_json::json;
 
 use forge_core::backends::PackMeta;
 use forge_core::collab::v2::Collab;
-use forge_core::collab::{Release, ReleaseAsset, ReleaseInput, ReleaseService};
+use forge_core::collab::{Release, ReleaseAsset, ReleaseInput};
 use forge_core::rules::v2::Role;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{
@@ -109,7 +109,7 @@ async fn upload_asset(
 }
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
-    let s = Session::open_v2(ctx, &args.repo).await?;
+    let s = Session::open(ctx, &args.repo).await?;
     let collab = s.collab();
     let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.
@@ -200,13 +200,6 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
 async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
     let s = Session::open(ctx, repo).await?;
-    if s.repo.is_v1() {
-        let r = ReleaseService::new(&s.client, &s.identity, &s.bridge)
-            .list_releases(s.repo.v1_contract_id()?)
-            .await
-            .context("list_releases")?;
-        return Ok((r, Vec::new()));
-    }
     Ok(Collab::reader(&s.client).releases(&s.repo).await?)
 }
 

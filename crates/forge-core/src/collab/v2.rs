@@ -16,9 +16,6 @@
 //! number by the §6 rule and are resumable: the signed create is journaled before it is
 //! broadcast, so re-running an interrupted create re-broadcasts the same bytes instead of
 //! opening a second issue.
-//!
-//! v1 repositories are read by the services in the parent module and refused here
-//! ([`crate::Error::V1ReadOnly`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -127,7 +124,7 @@ pub struct Target {
 
 /// An `issue` document, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Issue {
+pub struct Issue {
     /// The issue number.
     pub number: u32,
     /// Document `$id`.
@@ -144,7 +141,7 @@ pub struct V2Issue {
     pub imported: Option<Imported>,
 }
 
-impl V2Issue {
+impl Issue {
     /// This issue as an event / comment target.
     pub fn target(&self) -> Target {
         Target {
@@ -158,7 +155,7 @@ impl V2Issue {
 
 /// A `patch` (pull request) document, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Patch {
+pub struct Patch {
     /// The PR number (independent of issue numbers).
     pub number: u32,
     /// Document `$id`.
@@ -185,7 +182,7 @@ pub struct V2Patch {
     pub imported: Option<Imported>,
 }
 
-impl V2Patch {
+impl Patch {
     /// This PR as an event / comment target.
     pub fn target(&self) -> Target {
         Target {
@@ -218,7 +215,7 @@ pub struct PatchInput {
 
 /// A `comment`, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Comment {
+pub struct Comment {
     /// Document `$id`.
     pub document_id: String,
     /// Author.
@@ -233,7 +230,7 @@ pub struct V2Comment {
 
 /// A `review`, flattened.
 #[derive(Debug, Clone)]
-pub struct V2Review {
+pub struct Review {
     /// Document `$id`.
     pub document_id: String,
     /// Reviewer (`$ownerId`).
@@ -284,7 +281,7 @@ impl<T> Listed<T> {
 #[derive(Debug, Clone)]
 pub struct IssueView {
     /// The issue.
-    pub issue: V2Issue,
+    pub issue: Issue,
     /// Open/closed, labels, assignees.
     pub state: IssueState,
 }
@@ -293,7 +290,7 @@ pub struct IssueView {
 #[derive(Debug, Clone)]
 pub struct PatchView {
     /// The PR.
-    pub patch: V2Patch,
+    pub patch: Patch,
     /// Open/closed/merged, labels, draft.
     pub state: PrState,
     /// The base ref's current tip (hex), when it has one.
@@ -376,9 +373,9 @@ fn number_of(d: &FetchedDocument) -> u32 {
         .unwrap_or_default()
 }
 
-/// A fetched `issue` as a [`V2Issue`].
-pub fn issue_from_doc(d: &FetchedDocument) -> V2Issue {
-    V2Issue {
+/// A fetched `issue` as a [`Issue`].
+pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
+    Issue {
         number: number_of(d),
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
@@ -389,9 +386,9 @@ pub fn issue_from_doc(d: &FetchedDocument) -> V2Issue {
     }
 }
 
-/// A fetched `patch` as a [`V2Patch`].
-pub fn patch_from_doc(d: &FetchedDocument) -> V2Patch {
-    V2Patch {
+/// A fetched `patch` as a [`Patch`].
+pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
+    Patch {
         number: number_of(d),
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
@@ -410,8 +407,8 @@ pub fn patch_from_doc(d: &FetchedDocument) -> V2Patch {
     }
 }
 
-fn comment_from_doc(d: &FetchedDocument) -> V2Comment {
-    V2Comment {
+fn comment_from_doc(d: &FetchedDocument) -> Comment {
+    Comment {
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
         body: d.field_str("body").unwrap_or_default(),
@@ -420,8 +417,8 @@ fn comment_from_doc(d: &FetchedDocument) -> V2Comment {
     }
 }
 
-fn review_from_doc(d: &FetchedDocument) -> V2Review {
-    V2Review {
+fn review_from_doc(d: &FetchedDocument) -> Review {
+    Review {
         document_id: d.id.clone(),
         reviewer: d.owner_id.clone(),
         verdict: Verdict::from_code(d.field_u64("verdict").unwrap_or_default()),
@@ -458,6 +455,9 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         ref_name: d.field_str("refName"),
         base_ref_name: d.field_str("baseRefName"),
         source_ref_name: d.field_str("sourceRefName"),
+        ref_name_hash: d.field_hex("refNameHash"),
+        base_ref_name_hash: d.field_hex("baseRefNameHash"),
+        source_ref_name_hash: d.field_hex("sourceRefNameHash"),
         path: d.field_str("path"),
         default_branch: None,
         protected_patterns: None,
@@ -466,25 +466,14 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
     }
 }
 
-/// Whether a fetched document is well-formed for a repo of `visibility` (§5). Readers skip
-/// the rest.
+/// Whether a fetched document is well-formed for a repo of `visibility` (§5, the shared
+/// [`is_well_formed`] rule). Readers skip the rest.
 ///
-/// A patch must also carry ref names that hash to their indexed hashes: readers find the
-/// base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
+/// That includes a patch whose ref names do not hash to their indexed hashes: readers find
+/// the base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
 /// patch whose two disagree would be folded against one ref and merged into another.
 pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibility) -> bool {
     is_well_formed(&content_of(kind, d), visibility)
-        && (kind != ContentKind::Patch || patch_ref_hashes_agree(d))
-}
-
-/// `sha256(baseRefName) == baseRefNameHash`, and the same for the source ref when present
-/// (a private patch carries no plaintext names, so there is nothing to compare).
-fn patch_ref_hashes_agree(d: &FetchedDocument) -> bool {
-    let agrees = |name: &str, hash: &str| match d.field_str(name) {
-        Some(n) if !n.is_empty() => d.field_bytes32(hash) == Some(sha256(n.as_bytes())),
-        _ => true,
-    };
-    agrees("baseRefName", "baseRefNameHash") && agrees("sourceRefName", "sourceRefNameHash")
 }
 
 /// The creator-side properties of a new `issue`.
@@ -726,11 +715,10 @@ impl<'a> Collab<'a> {
         doc_engine(self.client, identity, bridge)
     }
 
-    /// The forge-v2 contracts of `repo`, refusing v1 and private repos.
+    /// The forge-v2 contracts of `repo`, refusing private repos.
     fn forge(repo: &RepoRef) -> Result<&ForgeIds> {
-        let forge = repo.require_v2()?;
         repo.require_readable()?;
-        Ok(forge)
+        Ok(repo.forge())
     }
 
     async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
@@ -760,10 +748,7 @@ impl<'a> Collab<'a> {
     }
 
     fn visibility(repo: &RepoRef) -> Visibility {
-        match repo {
-            RepoRef::V2 { visibility, .. } => *visibility,
-            RepoRef::V1 { .. } => Visibility::Public,
-        }
+        repo.visibility
     }
 
     /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
@@ -844,7 +829,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Issue `number` of `repo`, if it exists and is well-formed.
-    pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<V2Issue>> {
+    pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<Issue>> {
         Ok(self
             .target_doc(repo, TargetKind::Issue, number)
             .await?
@@ -853,7 +838,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Pull request `number` of `repo`, if it exists and is well-formed.
-    pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<V2Patch>> {
+    pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<Patch>> {
         Ok(self
             .target_doc(repo, TargetKind::Patch, number)
             .await?
@@ -904,7 +889,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The newest `limit` issues (0 = one page of 100), newest first.
-    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Issue>> {
+    pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<Issue>> {
         Ok(self
             .newest(repo, TargetKind::Issue, limit)
             .await?
@@ -912,7 +897,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The newest `limit` pull requests (0 = one page of 100), newest first.
-    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<Listed<V2Patch>> {
+    pub async fn list_patches(&self, repo: &RepoRef, limit: u32) -> Result<Listed<Patch>> {
         Ok(self
             .newest(repo, TargetKind::Patch, limit)
             .await?
@@ -925,7 +910,7 @@ impl<'a> Collab<'a> {
         &self,
         forge: &ForgeIds,
         source_repo_id: &str,
-    ) -> Result<Vec<V2Patch>> {
+    ) -> Result<Vec<Patch>> {
         let collab = self.client.fetch_contract(&forge.collab).await?;
         let docs = self
             .client
@@ -982,7 +967,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Every well-formed comment on a target, oldest first.
-    pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<V2Comment>> {
+    pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Comment>> {
         let collab = self.collab_contract(repo).await?;
         Ok(self
             .by_target(&collab, DOC_COMMENT, "targetId", target_id)
@@ -994,7 +979,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Every well-formed review on a patch, oldest first.
-    pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<V2Review>> {
+    pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<Review>> {
         let collab = self.collab_contract(repo).await?;
         Ok(self
             .by_target(&collab, DOC_REVIEW, "patchId", patch_id)
@@ -1008,7 +993,7 @@ impl<'a> Collab<'a> {
     // --- reads: folded state --------------------------------------------------------
 
     /// An issue's state (§3 fold).
-    pub async fn issue_state(&self, repo: &RepoRef, issue: &V2Issue) -> Result<IssueState> {
+    pub async fn issue_state(&self, repo: &RepoRef, issue: &Issue) -> Result<IssueState> {
         let log = self.target_log(repo, &issue.document_id).await?;
         Ok(fold_issue_state_v2(
             &log.events,
@@ -1026,42 +1011,37 @@ impl<'a> Collab<'a> {
         Ok(Some(IssueView { issue, state }))
     }
 
-    /// Every oid the base ref has ever pointed at (the monotonic merge-reachability set,
-    /// the same one forge-web uses) and its current tip.
+    /// The base ref as merge verification sees it ([`rules::merge_base_tips`]): every oid it
+    /// has validly pointed at (the monotonic merge-reachability set, the same one forge-web
+    /// uses), its newest tip and where it points now. A plain `refUpdate` on a protected
+    /// branch is inert (§4) and contributes nothing.
     pub async fn base_ref_tips(
         &self,
         repo: &RepoRef,
         base_ref_name: &str,
-    ) -> Result<(BTreeSet<String>, Option<String>)> {
+    ) -> Result<rules::MergeBaseTips> {
         let core = self.core_contract(repo).await?;
-        let updates = crate::refs::read_ref_history(
-            self.client,
-            &core,
-            &repo.scope()?,
-            sha256(base_ref_name.as_bytes()),
-        )
-        .await?;
-        Ok(tips_of(&updates))
+        crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name).await
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a base tip).
-    pub async fn patch_view(&self, repo: &RepoRef, patch: V2Patch) -> Result<PatchView> {
+    pub async fn patch_view(&self, repo: &RepoRef, patch: Patch) -> Result<PatchView> {
         let log = self.target_log(repo, &patch.document_id).await?;
-        let (tips, base_tip) = self.base_ref_tips(repo, &patch.base_ref_name).await?;
+        let base = self.base_ref_tips(repo, &patch.base_ref_name).await?;
         let state = fold_pr_state_v2(
             &log.events,
             &log.author_events,
             &patch.author,
-            base_tip.as_deref(),
-            |oid, _| tips.contains(oid),
+            base.tip.as_deref(),
+            |oid, _| base.contains(oid),
         );
-        let head_on_base = tips.contains(&patch.head_oid);
+        let head_on_base = base.contains(&patch.head_oid);
         Ok(PatchView {
             patch,
             state,
-            base_tip,
+            base_tip: base.current,
             head_on_base,
-            base_tips: tips,
+            base_tips: base.historical.into_iter().collect(),
         })
     }
 
@@ -1069,8 +1049,8 @@ impl<'a> Collab<'a> {
     pub async fn approvals(
         &self,
         repo: &RepoRef,
-        patch: &V2Patch,
-    ) -> Result<(Approvals, Vec<V2Review>)> {
+        patch: &Patch,
+    ) -> Result<(Approvals, Vec<Review>)> {
         let oracle = self.member_oracle(repo).await?;
         self.approvals_with(repo, patch, &oracle).await
     }
@@ -1086,9 +1066,9 @@ impl<'a> Collab<'a> {
     pub async fn approvals_with(
         &self,
         repo: &RepoRef,
-        patch: &V2Patch,
+        patch: &Patch,
         oracle: &RoleOracle,
-    ) -> Result<(Approvals, Vec<V2Review>)> {
+    ) -> Result<(Approvals, Vec<Review>)> {
         let reviews = self.reviews(repo, &patch.document_id).await?;
         let rule: Vec<RuleReview> = reviews
             .iter()
@@ -1656,9 +1636,17 @@ impl<'a> Collab<'a> {
         if self.own_star(&collab, repo).await?.is_some() {
             return Ok(false);
         }
+        // indexOnly: a star has no stored row, so a spent nonce is settled by looking for
+        // this identity's star, not by reading the (row-less) document id back.
+        let probe = || async { Ok(self.own_star(&collab, repo).await?.is_some()) };
         match self
             .engine()?
-            .create_document(&collab, DOC_STAR, Self::with_repo(repo, BTreeMap::new())?)
+            .create_index_only(
+                &collab,
+                DOC_STAR,
+                Self::with_repo(repo, BTreeMap::new())?,
+                probe,
+            )
             .await
         {
             Ok(_) => Ok(true),
@@ -1717,25 +1705,6 @@ fn kind_verb(kind: EventKind) -> &'static str {
 
 fn is_hex_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// Every non-deleted `newOid` of a ref's history, and the newest one by `(createdAt, id)`.
-fn tips_of(updates: &[rules::RefUpdate]) -> (BTreeSet<String>, Option<String>) {
-    let deleted =
-        |u: &rules::RefUpdate| u.new_oid.is_empty() || u.new_oid.bytes().all(|b| b == b'0');
-    let tips = updates
-        .iter()
-        .filter(|u| !deleted(u))
-        .map(|u| u.new_oid.clone())
-        .collect();
-    // The current tip is the newest update's, and none when that update deleted the ref.
-    let newest = updates
-        .iter()
-        .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-    (
-        tips,
-        newest.filter(|u| !deleted(u)).map(|u| u.new_oid.clone()),
-    )
 }
 
 /// Split release revisions into the newest per tag (newest first) and the rest.
@@ -2022,28 +1991,6 @@ mod tests {
         );
         assert_eq!(prev.len(), 1);
         assert_eq!(prev[0].document_id, "a");
-    }
-
-    #[test]
-    fn tips_skip_deletions_and_pick_the_newest() {
-        let u = |id: &str, at: u64, oid: &str| rules::RefUpdate {
-            id: id.into(),
-            ref_name_hash: String::new(),
-            ref_name: "refs/heads/main".into(),
-            prev_oid: String::new(),
-            new_oid: oid.into(),
-            force: false,
-            protected: false,
-            author: "a".into(),
-            created_at: at,
-        };
-        let zero = "0".repeat(40);
-        let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero), u("3", 3, "bb")]);
-        assert_eq!(tips.len(), 2);
-        assert_eq!(tip.as_deref(), Some("bb"));
-        // A branch whose newest update deleted it has no tip (its old tips still count).
-        let (tips, tip) = tips_of(&[u("1", 1, "aa"), u("2", 2, &zero)]);
-        assert_eq!((tips.len(), tip), (1, None));
     }
 
     #[test]

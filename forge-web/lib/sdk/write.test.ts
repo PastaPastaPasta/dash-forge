@@ -1,25 +1,20 @@
 /**
  * WriteEngine unit tests — network-free parity + encoding checks.
  *
- * The token gate table, cost math, base58 identifier encoding, WIF parsing, identity-file
- * extraction and the calibrated cost model are deterministic and verified here against the same
- * `repo-v1.json` the CLI compiles in, so a drift between the browser and Rust write encodings
- * fails CI without needing testnet.
+ * The cost math, base58 identifier encoding, WIF parsing, identity-file extraction and the
+ * calibrated cost model are deterministic and verified here, so a drift between the browser
+ * and Rust write encodings fails CI without needing a network.
  */
 
 import { describe, expect, it } from 'vitest'
 
-import repoV1 from '../../../forge-contracts/templates/repo-v1.json'
 import {
-  REPO_CREATE_GATES,
   asConsensusRefusal,
   isAlreadyExistsError,
   isNonceUsedError,
   newIntent,
-  createGateFor,
   isStaleDocumentIdError,
   pendingWriteKey,
-  previewDocumentCreate,
 } from './write'
 import {
   CREDITS_PER_DASH,
@@ -40,41 +35,6 @@ import {
 import { decodeWif, isLikelyWif, normalizeToWif, parsePrivateKey } from '../auth/wif'
 import { parseIdentityFile } from '../auth/identity-file'
 import { normalizeRepoName } from '../repo/writes'
-
-// ---------------------------------------------------------------------------
-// Token gate table — MUST match repo-v1.json tokenCost.create declarations
-// ---------------------------------------------------------------------------
-
-describe('token gate table (repo-v1 parity)', () => {
-  it('matches every tokenCost.create in the bundled template', () => {
-    const schemas = (repoV1 as { documentSchemas: Record<string, unknown> }).documentSchemas
-    for (const [name, schemaRaw] of Object.entries(schemas)) {
-      const schema = schemaRaw as { tokenCost?: { create?: { tokenPosition: number; amount: number } } }
-      const create = schema.tokenCost?.create
-      if (create) {
-        expect(REPO_CREATE_GATES[name], `${name} should be gated`).toEqual({
-          position: create.tokenPosition,
-          amount: create.amount,
-        })
-      } else {
-        expect(REPO_CREATE_GATES[name], `${name} should be ungated`).toBeUndefined()
-      }
-    }
-  })
-
-  it('leaves ungated author-owned types without a gate', () => {
-    for (const t of ['issue', 'patch', 'comment', 'event', 'review']) {
-      expect(createGateFor(t)).toBeUndefined()
-    }
-  })
-
-  it('gates refUpdate at WRITE (0) and release/label/config at MAINTAIN (1)', () => {
-    expect(createGateFor('refUpdate')).toEqual({ position: 0, amount: 1 })
-    expect(createGateFor('release')).toEqual({ position: 1, amount: 1 })
-    expect(createGateFor('label')).toEqual({ position: 1, amount: 1 })
-    expect(createGateFor('config')).toEqual({ position: 1, amount: 1 })
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Cost preview
@@ -111,17 +71,6 @@ describe('cost preview', () => {
 
   it('previews deletes of indexOnly types as refunds', () => {
     expect(previewDelete('star').credits).toBeLessThan(0)
-  })
-
-  it('folds the token spend into a gated create preview', () => {
-    const gated = previewDocumentCreate('release')
-    expect(gated.tokenAmount).toBe(1)
-    expect(gated.tokenPosition).toBe(1)
-    expect(gated.dash).toBeGreaterThan(0)
-
-    const ungated = previewDocumentCreate('issue')
-    expect(ungated.tokenAmount).toBe(0)
-    expect(ungated.tokenPosition).toBeUndefined()
   })
 })
 
@@ -208,7 +157,7 @@ describe('identity-file parsing', () => {
     ],
   }
 
-  it('picks the CRITICAL auth key (highest privilege that covers doc + token ops)', () => {
+  it('picks the CRITICAL auth key (the highest privilege a document write accepts)', () => {
     const parsed = parseIdentityFile(file)
     expect(parsed.identityId).toBe('8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB')
     expect(parsed.network).toBe('testnet')

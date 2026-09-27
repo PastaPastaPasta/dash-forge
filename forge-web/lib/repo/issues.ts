@@ -1,35 +1,22 @@
 /**
- * Issue / PR reads — list + fold (data-contracts §2.3, §4; `forge-v2.md` §3, §5, §6).
+ * Issue / PR reads — list + fold (`forge-v2.md` §3, §5, §6).
  *
- * forge-v2 repos fold `event` + `authorEvent` through FORGE_RULES_V2 (`foldIssueStateV2` /
- * `foldPrStateV2`): an event's existence is its authorization, so no ACL history is read.
- * Lists read the repo's two feeds (`(repoId, $createdAt)`) once and fold every row from them,
- * rather than two queries per row. Documents that are not well-formed for the repo's
- * visibility (`isWellFormed`: plaintext xor `enc`) are skipped everywhere. The rest of this
- * note describes v1.
- *
- * Issue/PR *state* is not an on-chain field (mutation ownership forbids a maintainer
- * editing an author-owned doc); it is a deterministic fold of the append-only `event` log
- * via {@link foldIssueState} / {@link foldPrState}. Spam events from non-holders exist but
- * are inert. Actor authorization is evaluated **as-of** each event's `$createdAt` from the
- * token-history — supplied here as an {@link AuthzResolver}.
- *
- * TOKEN-HISTORY WIRING: the as-of WRITE/MAINTAIN holdings come from the system token-history
- * contract (mint/freeze/unfreeze/destroy), reconstructed by {@link resolveAuthz} /
- * {@link readTokenHistory}. Each read below resolves that history once (when the caller does
- * not supply an {@link AuthzResolver}) so holder-gated actions — a non-author maintainer's
- * close / label / merge — fold correctly. If the history read fails the resolver is empty and
- * the fold still honors the target author's own close/reopen (graceful degradation).
+ * Issue/PR *state* is not an on-chain field (mutation ownership forbids a maintainer editing
+ * an author-owned doc); it is a deterministic fold of the append-only `event` + `authorEvent`
+ * logs through FORGE_RULES_V2 (`foldIssueStateV2` / `foldPrStateV2`). `event` is member-gated
+ * and `authorEvent` author-gated at consensus, so an event's existence is its authorization
+ * and no ACL history is read. Lists read the repo's two feeds (`(repoId, $createdAt)`) once
+ * and fold every row from them, rather than two queries per row. Documents that are not
+ * well-formed for the repo's visibility (`isWellFormed`: plaintext xor `enc`) are skipped
+ * everywhere.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
-  AuthzResolver,
   compareKey,
-  foldIssueState,
-  foldPrState,
-  isNullOid,
+  mergeBaseTips,
+  type ConfigDoc,
   type Event,
   type IsAncestor,
   type IssueState,
@@ -50,21 +37,14 @@ import {
   num,
   str,
   toEvent,
-  V2_DOC,
   wellFormed,
   type RepoRef,
-  type V2RepoRef,
 } from './contract'
+import { readConfigHistory } from './config'
 import { readRefUpdates } from './refs'
 import { readRoleOracle } from './members'
 import { repoSource } from './source'
-import { resolveAuthz } from './tokens'
 import { base64ToHex } from '../sdk'
-
-/** An empty authorization resolver (target-author actions only; token history unavailable). */
-export function emptyAuthz(): AuthzResolver {
-  return new AuthzResolver([])
-}
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 function titleOf(doc: PlainDocument): string {
@@ -121,8 +101,8 @@ export interface PullView {
   readonly baseOidAtOpen: string
   readonly headOid: string
   /**
-   * Where the PR's objects actually live: the **source** repo contract id (v1) or `repo`
-   * document id (v2 `sourceRepoId`), base58.
+   * Where the PR's objects actually live: the **source** `repo` document id
+   * (`sourceRepoId`), base58.
    *
    * Surfaced because a reviewer cannot fetch a PR without it: a PR's head commit usually
    * sits in a different repo (a fork) from the one it targets, and this is the only pointer
@@ -134,7 +114,7 @@ export interface PullView {
   /**
    * Whether {@link headOid} has been a tip of the base ref — the exact test the fold applies
    * to a `merge` event naming the head, so a merge mark will count iff this is true (and the
-   * marker holds WRITE or MAINTAIN). False when the base history or head is unknown.
+   * marker is a writer or maintainer). False when the base history or head is unknown.
    */
   readonly headOnBase: boolean
   /** Archived from another forge (`imported` provenance present) rather than opened here. */
@@ -193,13 +173,11 @@ export interface ReviewView {
  *
  * COMPLETENESS IS LOAD-BEARING, not a nicety. `foldIssueState` / `foldPrState` are folds
  * over the whole log: a close at row 101 that never arrives leaves the issue open forever.
- * `event` carries no `tokenCost` in the repo contract template, so anyone can append —
- * a stranger padding a fresh issue with 100 inert events would permanently freeze its
- * displayed state if this read stopped at one page. It pages to exhaustion, and
+ * It pages to exhaustion, and
  * {@link queryAllDocuments} throws rather than returning a short answer if it cannot
  * prove it reached the end. Parity: forge-core `CollabEngine::fetch_events` uses
- * `query_all_documents` for exactly this reason. On forge-v2 the log is `event` and
- * `authorEvent` merged in `($createdAt, $id)` order ({@link readTargetLog} keeps them apart).
+ * `query_all_documents` for exactly this reason. The log is `event` and `authorEvent` merged
+ * in `($createdAt, $id)` order ({@link readTargetLog} keeps them apart).
  */
 export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Event[]> {
   const log = await readTargetLog(sdk, repo, targetId)
@@ -207,9 +185,9 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
 }
 
 /**
- * A target's state documents, by the type that admitted them. v1 has only `event`; forge-v2
- * splits member events (`event`) from the author's own close/reopen (`authorEvent`,
- * `forge-v2.md` §3), and the v2 fold needs to know which is which.
+ * A target's state documents, by the type that admitted them: member events (`event`) and
+ * the author's own close/reopen (`authorEvent`, `forge-v2.md` §3). The fold needs to know
+ * which is which.
  */
 export interface TargetLog {
   readonly events: Event[]
@@ -229,7 +207,7 @@ const FEED_TTL_MS = 30_000
 const feedCache = new Map<string, { at: number; promise: Promise<Map<string, TargetLog> | null> }>()
 
 /** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
-function readRepoFeedCached(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog> | null> {
+function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
   const key = `${repo.forge.collab}:${repo.repoId}`
   const hit = feedCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise
@@ -241,8 +219,8 @@ function readRepoFeedCached(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, T
   return promise
 }
 
-/** Drop a repo's cached feed (tests; and after a write lands, with v2 writes). */
-export function invalidateRepoFeed(repo: V2RepoRef): void {
+/** Drop a repo's cached feed (tests; and after a write lands). */
+export function invalidateRepoFeed(repo: RepoRef): void {
   feedCache.delete(`${repo.forge.collab}:${repo.repoId}`)
 }
 
@@ -270,18 +248,17 @@ export async function readTargetLog(
         }),
       ),
     )
-  if (repo.kind === 'v1') return { events: await read(DOC.event), authorEvents: [] }
-  const [events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+  const [events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
   return { events, authorEvents }
 }
 
 /**
- * forge-v2: every `event` and `authorEvent` of a repo, grouped by target — the repo feed
+ * Every `event` and `authorEvent` of a repo, grouped by target — the repo feed
  * (`(repoId, $createdAt)` on both types), read to completion once so a list page folds all of
  * its rows without a query per row. `event` is member-gated and `authorEvent` author-gated at
  * consensus, so the feed is bounded by real activity, not by what strangers post.
  */
-async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, TargetLog> | null> {
+async function readRepoFeed(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
   const source = repoSource(repo)
   const read = async (type: string): Promise<Event[]> =>
     toEvents(
@@ -292,7 +269,7 @@ async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, T
   let events: Event[]
   let authorEvents: Event[]
   try {
-    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(V2_DOC.authorEvent)])
+    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
   } catch (e) {
     // Too much activity to read up front: the caller folds rows one target at a time.
     if (e instanceof IncompleteReadError) return null
@@ -318,8 +295,8 @@ async function readRepoFeed(sdk: EvoSDK, repo: V2RepoRef): Promise<Map<string, T
  * Reviews were write-only across the whole codebase until this existed: the CLI could post
  * "changes requested" and no reader, view or command ever queried it back, so the verdict
  * was a paid-for record invisible to everyone — including the contributor it was addressed
- * to. Complete, for the same reason the event log is: `review` is un-gated, so anyone may
- * append, and a verdict buried past row 100 is exactly the one that matters.
+ * to. Complete, for the same reason the event log is: a verdict buried past row 100 is
+ * exactly the one that matters.
  * Parity: forge-core `PullRequestService::list_reviews`.
  */
 export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): Promise<ReviewView[]> {
@@ -348,26 +325,19 @@ export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): 
 }
 
 /**
- * Read one issue and fold its state. v1 resolves the token-history authz when not supplied;
- * forge-v2 needs no ACL (`log`, when given, is the target's slice of the repo feed).
+ * Read one issue and fold its state (`log`, when given, is the target's slice of the repo
+ * feed).
  */
 export async function readIssue(
   sdk: EvoSDK,
   repo: RepoRef,
   issueDoc: PlainDocument,
-  authz?: AuthzResolver,
   log?: TargetLog,
 ): Promise<IssueView> {
   const id = str(issueDoc, '$id')
   const author = str(issueDoc, '$ownerId')
-  let state: IssueState
-  if (repo.kind === 'v1') {
-    const resolver = authz ?? (await resolveAuthz(sdk, repo))
-    state = foldIssueState(await readEvents(sdk, repo, id), author, resolver)
-  } else {
-    const l = log ?? (await readTargetLog(sdk, repo, id))
-    state = foldIssueStateV2(l.events, l.authorEvents, author)
-  }
+  const l = log ?? (await readTargetLog(sdk, repo, id))
+  const state: IssueState = foldIssueStateV2(l.events, l.authorEvents, author)
   return {
     id,
     number: num(issueDoc, 'number'),
@@ -385,7 +355,7 @@ const LIST_MAX_PAGES = 5
 
 /**
  * The newest `limit` issues or patches of a repo, `$createdAt` descending, and how many were
- * skipped on the way. forge-v2 skips documents that are not well-formed for the repo's
+ * skipped on the way. It skips documents that are not well-formed for the repo's
  * visibility (`forge-v2.md` §5), and in a private repo also ciphertext from non-members: this
  * client decrypts nothing yet, and §5 shows a stranger's ciphertext to no one. Skipped rows do
  * not shorten the page: the read continues (newest-first, by a `$createdAt <` bound, so no
@@ -397,7 +367,7 @@ async function newestTargets(
   type: 'issue' | 'patch',
   limit: number,
 ): Promise<{ documents: PlainDocument[]; hidden: number }> {
-  const oracle = repo.kind === 'v2' && repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
+  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
   const shown = (d: PlainDocument): boolean => {
     if (!wellFormed(repo, type, d)) return false
     // Private: only members' ciphertext is shown (as encrypted); strangers' is hidden.
@@ -425,8 +395,8 @@ async function newestTargets(
       if (shown(d)) out.push(d)
       else hidden++
     }
-    // v1 has no hidden rows, so one page answers; a short page is the end of the list.
-    if (repo.kind === 'v1' || documents.length < limit) break
+    // A short page is the end of the list.
+    if (documents.length < limit) break
     const oldest = documents[documents.length - 1]?.['$createdAt']
     if (typeof oldest !== 'number' || oldest === before) break
     before = oldest
@@ -435,9 +405,9 @@ async function newestTargets(
 }
 
 /**
- * Fold a page of issue or patch rows. forge-v2: from the repo feed, read once for the whole
- * page. v1: one row at a time, keeping a row (state unverified) whose event log cannot be read
- * to completion.
+ * Fold a page of issue or patch rows from the repo feed, read once for the whole page — or,
+ * when the feed is too large, one row at a time, keeping a row (state unverified) whose event
+ * log cannot be read to completion.
  */
 async function foldRows<T>(
   sdk: EvoSDK,
@@ -446,14 +416,14 @@ async function foldRows<T>(
   foldOne: (doc: PlainDocument, log: TargetLog | undefined) => Promise<T>,
   incomplete: (doc: PlainDocument) => T,
 ): Promise<T[]> {
-  // forge-v2: fold from the repo feed while it is small; otherwise (feed = null) each row
-  // reads its own target log, as v1 does.
-  const feed = repo.kind === 'v2' && documents.length > 0 ? await readRepoFeedCached(sdk, repo) : null
-  // Per-row tolerance. `issue`, `event` and `comment` are un-gated, so one target padded
-  // past the reader's completeness bound must not take down a whole page of issues — and
+  // Fold from the repo feed while it is small; otherwise (feed = null) each row reads its own
+  // target log.
+  const feed = documents.length > 0 ? await readRepoFeedCached(sdk, repo) : null
+  // Per-row tolerance. One target padded past the reader's completeness bound must not take
+  // down a whole page of issues — and
   // dropping the row silently would be the same class of bug this all fixes. The row is
   // kept with `stateComplete: false`; callers render the state as unverified. (A PR row also
-  // reads its base ref's history, which can fail the same way, on either model.)
+  // reads its base ref's history, which can fail the same way.)
   return Promise.all(
     documents.map((doc) =>
       foldOne(doc, feed === null ? undefined : feed.get(str(doc, '$id')) ?? EMPTY_LOG).catch((e: unknown) => {
@@ -464,20 +434,18 @@ async function foldRows<T>(
   )
 }
 
-/** List issues (newest first) with folded state. Resolves the v1 authz once for the page. */
+/** List issues (newest first) with folded state. */
 export async function listIssues(
   sdk: EvoSDK,
   repo: RepoRef,
-  authz?: AuthzResolver,
   limit = 50,
 ): Promise<Listed<IssueView>> {
-  const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
   const { documents, hidden } = await newestTargets(sdk, repo, 'issue', limit)
   const rows = await foldRows(
     sdk,
     repo,
     documents,
-    (doc, log) => readIssue(sdk, repo, doc, resolver, log),
+    (doc, log) => readIssue(sdk, repo, doc, log),
     incompleteIssueView,
   )
   return Object.assign(rows, { hidden })
@@ -498,7 +466,7 @@ function incompleteIssueView(doc: PlainDocument): IssueView {
 }
 
 /**
- * A historical-tips merge predicate for {@link foldPrState}: a merge oid stays valid once
+ * A historical-tips merge predicate for `foldPrStateV2`: a merge oid stays valid once
  * the base ref advances past it, so the predicate tests membership in the set of every tip
  * the base ref has EVER had — not reflexive equality (the BLOCKER-1 fix). Built from the
  * base ref's full `refUpdate`/`protectedRefUpdate` history.
@@ -516,48 +484,64 @@ function readImported(doc: PlainDocument): { imported: boolean; importedUrl: str
   return { imported: true, importedUrl: typeof url === 'string' ? url : '' }
 }
 
-/** A patch's source pointer: v1 `sourceContractId`, forge-v2 `sourceRepoId`. */
-function sourceIdOf(repo: RepoRef, doc: PlainDocument): string {
-  return asIdentifierString(doc[repo.kind === 'v1' ? 'sourceContractId' : 'sourceRepoId'])
+/** A patch's source pointer (`sourceRepoId`). */
+function sourceIdOf(doc: PlainDocument): string {
+  return asIdentifierString(doc['sourceRepoId'])
 }
 
 /** A base ref's tips, as a PR read needs them. */
 export interface BaseRefTips {
-  /** Every oid the ref has ever pointed at (deletions excluded), oldest first. */
-  readonly historical: string[]
-  /** The newest of those — the ref's current tip. */
+  /**
+   * Every oid a VALID update set the ref to (deletions excluded), oldest first, each once:
+   * the merge-reachability set. A plain `refUpdate` on a protected ref is inert (§4) and not
+   * in it ({@link mergeBaseTips}).
+   */
+  readonly historical: readonly string[]
+  /** The newest of those: the fold's base tip. */
   readonly tip: string | undefined
   /**
    * Where the ref pointed at `openedAt`: `''` when it was deleted then, `undefined` when it
-   * had no update yet. Raw history, like `tip`: only a diff baseline, never a trust input.
+   * had no valid update yet. Only a diff baseline, never a trust input.
    */
   readonly atOpen: string | undefined
 }
 
 /**
- * Derive {@link BaseRefTips} from a ref's full update history, on the `(createdAt, id)` total
- * order. A null `newOid` is a deletion, never a reachable tip, so the current tip is the
- * newest NON-null one — parity with forge-core `base_ref_tips`, where taking the last element
- * of the plain-then-protected concatenation was neither the newest update nor deletion-aware.
+ * Derive {@link BaseRefTips} from a ref's full update history and the repo's config
+ * timeline: `historical` and `tip` are the shared {@link mergeBaseTips} rule (parity with
+ * forge-core `read_merge_base`), `atOpen` is where the valid history pointed when the PR
+ * was opened.
  */
-export function baseRefTips(updates: readonly RefUpdate[], openedAt: number): BaseRefTips {
-  const ordered = [...updates].sort(compareKey)
-  const historical = ordered.map((u) => u.newOid).filter((o) => !isNullOid(o))
-  const openOid = ordered.filter((u) => u.createdAt <= openedAt).at(-1)?.newOid
+export function baseRefTips(
+  updates: readonly RefUpdate[],
+  configHistory: readonly ConfigDoc[],
+  refNameHashHex: string,
+  openedAt: number,
+): BaseRefTips {
+  const tips = mergeBaseTips(updates, configHistory, refNameHashHex)
+  const before = mergeBaseTips(
+    updates.filter((u) => u.createdAt <= openedAt),
+    configHistory,
+    refNameHashHex,
+  )
   return {
-    historical,
-    tip: historical[historical.length - 1],
-    atOpen: openOid === undefined ? undefined : isNullOid(openOid) ? '' : openOid,
+    historical: tips.historical,
+    tip: tips.tip ?? undefined,
+    atOpen: before.tip === null ? undefined : before.current ?? '',
   }
 }
 
-/** Read one PR (patch) and fold its state, using the historical-tips merge predicate. */
+/**
+ * Read one PR (patch) and fold its state, using the historical-tips merge predicate over the
+ * base ref's VALID history. `configHistory` yields the repo's config timeline (read here when
+ * not given; a list shares one read across its rows).
+ */
 export async function readPull(
   sdk: EvoSDK,
   repo: RepoRef,
   patchDoc: PlainDocument,
-  authz?: AuthzResolver,
   log?: TargetLog,
+  configHistory?: () => Promise<readonly ConfigDoc[]>,
 ): Promise<PullView> {
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
@@ -569,19 +553,17 @@ export async function readPull(
   let isAncestor: IsAncestor = () => false
   let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
-    tips = baseRefTips(await readRefUpdates(sdk, repo, baseRefNameHashRaw), createdAt)
+    const [updates, configs] = await Promise.all([
+      readRefUpdates(sdk, repo, baseRefNameHashRaw),
+      configHistory ? configHistory() : readConfigHistory(sdk, repo),
+    ])
+    tips = baseRefTips(updates, configs, byteFieldToHex(patchDoc, 'baseRefNameHash'), createdAt)
     isAncestor = historicalTipsPredicate(tips.historical)
   }
   const baseTip = tips.tip
 
-  let state: PrState
-  if (repo.kind === 'v1') {
-    const resolver = authz ?? (await resolveAuthz(sdk, repo))
-    state = foldPrState(await readEvents(sdk, repo, id), author, resolver, baseTip, isAncestor)
-  } else {
-    const l = log ?? (await readTargetLog(sdk, repo, id))
-    state = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor)
-  }
+  const l = log ?? (await readTargetLog(sdk, repo, id))
+  const state: PrState = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor)
   let headOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
     try {
@@ -602,7 +584,7 @@ export async function readPull(
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     headOid,
-    sourceId: sourceIdOf(repo, patchDoc),
+    sourceId: sourceIdOf(patchDoc),
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
     headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
     ...readImported(patchDoc),
@@ -611,27 +593,28 @@ export async function readPull(
   }
 }
 
-/** List PRs (patches, newest first) with folded state. Resolves the v1 authz once for the page. */
+/** List PRs (patches, newest first) with folded state. */
 export async function listPulls(
   sdk: EvoSDK,
   repo: RepoRef,
-  authz?: AuthzResolver,
   limit = 50,
 ): Promise<Listed<PullView>> {
-  const resolver = repo.kind === 'v1' ? authz ?? (await resolveAuthz(sdk, repo)) : undefined
   const { documents, hidden } = await newestTargets(sdk, repo, 'patch', limit)
+  // One config read for the whole page, made by the first row that has a base ref.
+  let configs: Promise<readonly ConfigDoc[]> | undefined
+  const configHistory = () => (configs ??= readConfigHistory(sdk, repo))
   const rows = await foldRows(
     sdk,
     repo,
     documents,
-    (doc, log) => readPull(sdk, repo, doc, resolver, log),
-    (doc) => incompletePullView(repo, doc),
+    (doc, log) => readPull(sdk, repo, doc, log, configHistory),
+    incompletePullView,
   )
   return Object.assign(rows, { hidden })
 }
 
 /** A PR row whose event log could not be read completely: identity only, no folded state. */
-function incompletePullView(repo: RepoRef, doc: PlainDocument): PullView {
+function incompletePullView(doc: PlainDocument): PullView {
   let headOid = ''
   const raw = doc['headOid']
   if (typeof raw === 'string' && raw.length > 0) {
@@ -655,7 +638,7 @@ function incompletePullView(repo: RepoRef, doc: PlainDocument): PullView {
     headOid,
     // The source pointer is plain document content, not a fold — it is readable even when
     // the event log is not, and it is what a reviewer needs to fetch the PR at all.
-    sourceId: sourceIdOf(repo, doc),
+    sourceId: sourceIdOf(doc),
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     headOnBase: false,
     ...readImported(doc),

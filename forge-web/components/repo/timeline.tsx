@@ -4,8 +4,8 @@
  * Timeline — the interleaved comment + event + review stream of an issue/PR. Comments render
  * the author pill + markdown body; events render a compact, git-native one-liner ("closed
  * this", "added the bug label"); reviews render their verdict and the commit they were made
- * against. Spam events from non-holders are already folded out of state, but appear here as
- * the audit trail they are.
+ * against. An `authorEvent` the fold ignores (not a close/reopen by the author) still appears
+ * here as the audit trail it is.
  */
 
 import { Check, GitMerge, Lock, LockOpen, MessageSquare, Tag, UserPlus, X } from 'lucide-react'

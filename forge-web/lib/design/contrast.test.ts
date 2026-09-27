@@ -7,7 +7,7 @@ import { avatarFill, hslToRgb, whiteContrast } from './avatar'
 /**
  * WCAG 2 AA contrast for the design tokens, checked without a browser.
  *
- * The nightly axe run (e2e/a11y.spec.ts) is the end-to-end check, but it needs live testnet
+ * The nightly axe run (e2e/a11y.spec.ts) is the end-to-end check, but it needs live devnet
  * data to render the elements that fail — the landing only showed the DPNS-name identity
  * pill in dash blue once a repo card resolved its owner's name. These tests pin the token
  * pairs so a regression fails in `pnpm test`, offline.
@@ -86,6 +86,34 @@ describe('dash-blue text tokens meet WCAG AA', () => {
   it('the brand value itself is not a text color (the nightly axe failure)', () => {
     // #008de4 on anvil-800 is 4.28:1: the identity pill's DPNS name that axe flagged.
     expect(contrast(rgb(dash.DEFAULT!), rgb(anvil['800']!))).toBeLessThan(AA_TEXT)
+  })
+})
+
+describe('Verification state words meet WCAG AA', () => {
+  // `text-{state}-700 dark:text-{state}`: the -700 shade on light surfaces, the base on dark.
+  it.each([['verify'], ['caution']])('%s', (state) => {
+    const ramp = colors[state] as Record<string, string>
+    for (const bg of Object.values(LIGHT_SURFACES)) {
+      expect(contrast(rgb(ramp['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+    for (const bg of Object.values(DARK_SURFACES)) {
+      expect(contrast(rgb(ramp.DEFAULT!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+  })
+})
+
+describe('danger text meets WCAG AA', () => {
+  const danger = colors['danger'] as Record<string, string>
+  it.each(Object.entries(LIGHT_SURFACES))('danger-700 on %s (light theme)', (_, bg) => {
+    expect(contrast(rgb(danger['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+  it.each(Object.entries(DARK_SURFACES))('danger-400 on %s (dark theme)', (_, bg) => {
+    expect(contrast(rgb(danger['400']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+  it('the base value is not a text color on the darkest or lightest-gray surface', () => {
+    // 4.01:1 on anvil-950: the storage wizard's axe failure (a danger button).
+    expect(contrast(rgb(danger.DEFAULT!), rgb(anvil['950']!))).toBeLessThan(AA_TEXT)
+    expect(contrast(rgb(danger.DEFAULT!), rgb(anvil['100']!))).toBeLessThan(AA_TEXT)
   })
 })
 

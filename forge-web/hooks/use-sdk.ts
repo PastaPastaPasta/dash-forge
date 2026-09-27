@@ -5,8 +5,8 @@
  *
  * The WASM SDK cannot run during SSG (S0.3), so every data page mounts a loading shell on the
  * server and calls this hook after hydration. It initializes the process-wide {@link evoSdkService}
- * on the active network with the registry, DPNS and forge-v2 contracts preloaded, and
- * (optionally) a v1 repo contract in view. Idempotent: repeated mounts share the one connection.
+ * on the active network with the DPNS and forge-v2 contracts preloaded (plus any extra ids the
+ * caller names). Idempotent: repeated mounts share the one connection.
  */
 
 import { useEffect, useState } from 'react'
@@ -43,11 +43,11 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
 
   useEffect(() => {
     let cancelled = false
-    const { registryContractId: registry, dpnsContractId: dpns, v2 } = NETWORKS[network]
+    const { dpnsContractId: dpns, v2 } = NETWORKS[network]
     const extras = key.length > 0 ? key.split(',') : []
     const contractIds = [
       ...new Set(
-        [registry, dpns, v2?.core, v2?.collab, ...extras].filter(
+        [dpns, v2?.core, v2?.collab, ...extras].filter(
           (id): id is string => typeof id === 'string' && id.length > 0,
         ),
       ),

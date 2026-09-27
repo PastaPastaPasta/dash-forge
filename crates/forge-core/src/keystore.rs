@@ -150,8 +150,7 @@ pub fn describe_key_source(source: &Path) -> String {
 
 /// Security levels acceptable for signing a document create/delete, in preference
 /// order. Document ops accept HIGH (spike S0.7); CRITICAL also works and is the
-/// fallback when a HIGH key is absent. Token-admin ops (mint/freeze/destroy) require
-/// CRITICAL — see [`BridgeIdentity::token_admin_key`].
+/// fallback when a HIGH key is absent.
 pub const DOC_OP_LEVELS: [&str; 2] = ["HIGH", "CRITICAL"];
 
 impl BridgeIdentity {
@@ -243,16 +242,6 @@ impl BridgeIdentity {
                 Error::Config("no HIGH or CRITICAL AUTHENTICATION key in identity file".into())
             })
     }
-
-    /// Pick the AUTHENTICATION/CRITICAL key required for token-admin operations
-    /// (mint/freeze/destroy). HIGH is rejected at consensus for these (spike S0.7).
-    pub fn token_admin_key(&self) -> Result<&IdentityKey> {
-        self.auth_key("CRITICAL").ok_or_else(|| {
-            Error::Config(
-                "no CRITICAL AUTHENTICATION key in identity file (required for token admin)".into(),
-            )
-        })
-    }
 }
 
 #[cfg(test)]
@@ -336,13 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn token_admin_key_requires_critical() {
-        let id = BridgeIdentity::from_json(FIXTURE).unwrap();
-        // No CRITICAL key in the fixture — token admin must fail loudly.
-        assert!(id.token_admin_key().is_err());
-    }
-
-    #[test]
     fn load_from_missing_file_is_io_error() {
         let err = BridgeIdentity::load_from_file("/nonexistent/definitely-not-here.json")
             .expect_err("missing file should error");
@@ -381,7 +363,7 @@ mod tests {
         assert_eq!(key.id, 5);
         assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
         assert!(
-            id.token_admin_key().is_err(),
+            id.auth_key("CRITICAL").is_none(),
             "a limited key is never CRITICAL"
         );
         assert!(id.mnemonic.expose().is_empty());

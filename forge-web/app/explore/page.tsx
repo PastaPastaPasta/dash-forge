@@ -14,7 +14,7 @@ import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { ErrorState, Spinner } from '@/components/ui/states'
-import { NotDeployedState, isV2Deployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { repoHref } from '@/hooks/use-query-param'
@@ -49,8 +49,8 @@ export default function ExplorePage(): JSX.Element {
   const on = ready && sdk !== null && forge !== null
 
   const recent = useAsync(() => listRecentRepos(sdk!, { network, limit: 24 }), [ready, network], { enabled: on })
-  const recentV2 = recent.data?.v2 ?? []
-  const releases = useAsync(() => latestReleases(sdk!, forge!, recentV2.map(repoLite)), [recentV2.map((r) => r.key).join(',')], {
+  const recentRepos = recent.data ?? []
+  const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.data !== null,
   })
 
@@ -69,8 +69,8 @@ export default function ExplorePage(): JSX.Element {
     { enabled: signedIn },
   )
   // Assigned / mentioned: no index, so scan the repos I own or belong to (the inbox's set).
-  const ownedV2 = mine.data?.owned.filter((r) => r.kind === 'v2') ?? []
-  const memberOf = [...ownedV2, ...(mine.data?.member ?? [])]
+  const owned = mine.data?.owned ?? []
+  const memberOf = [...owned, ...(mine.data?.member ?? [])]
   const watched = memberOf.slice(0, SCAN_REPOS_MAX)
   const scan = useAsync(
     async () => scanAssignedAndMentions(sdk!, forge!, me, await resolveDpnsName(sdk!, me, network), watched.map(repoLite)),
@@ -78,7 +78,7 @@ export default function ExplorePage(): JSX.Element {
     { enabled: signedIn && mine.data !== null },
   )
 
-  if (!isV2Deployed()) {
+  if (!isForgeDeployed()) {
     return (
       <AppShell wide>
         <NotDeployedState />
@@ -115,11 +115,11 @@ export default function ExplorePage(): JSX.Element {
             <Section title="My repos" icon={GitBranch} state={mine} empty="You don't own any repos yet." emptyAction={<NewRepoLink />}>
               {() => (
                 <>
-                  <RepoGrid repos={ownedV2} />
-                  <FirstN shown={ownedV2.length} cap={MY_REPOS_MAX} what="repos" order="by name" />
+                  <RepoGrid repos={owned} />
+                  <FirstN shown={owned.length} cap={MY_REPOS_MAX} what="repos" order="by name" />
                 </>
               )}
-              {() => ownedV2.length === 0}
+              {() => owned.length === 0}
             </Section>
             <Section title="Repos I maintain or write to" icon={UserCheck} state={mine} empty="No one has added you as a maintainer or writer.">
               {(d) => (
@@ -171,8 +171,8 @@ export default function ExplorePage(): JSX.Element {
         ) : null}
 
         <Section title="Recent repos" icon={GitBranch} state={recent} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
-          {(d) => <RepoGrid repos={d.v2} />}
-          {(d) => d.v2.length === 0}
+          {(d) => <RepoGrid repos={d} />}
+          {(d) => d.length === 0}
         </Section>
 
         <Section

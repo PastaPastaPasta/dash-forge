@@ -42,7 +42,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-On forge-v2, creating a repository will cost about **0.001 DASH**. A push to your own bucket costs about **0.0003 DASH** today. On today's testnet (v1) a repository costs about 1.18 tDASH, which is free test money. Storing packs on Platform costs about 0.28 DASH per MiB. The full table is in [Costs](guides/costs.md).
+Creating a repository costs about **0.001 DASH**. A push to your own bucket costs about **0.0003 DASH**. Storing packs on Platform costs about 0.28 DASH per MiB. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## When is it on mainnet?
 
@@ -50,9 +50,11 @@ After **Dash Platform protocol 14** activates on mainnet. forge-v2 depends on pr
 
 | Network | Status |
 |---|---|
-| **Testnet** | v1 is live: one contract per repository, token-based access. Protocol 14 is expected on testnet shortly before mainnet. |
-| **Devnet moutai** | forge-v2 contracts are registered. The CLI and web app cannot use them yet; client support is landing now. |
+| **Devnet moutai** | Live. forge-v2 is registered, and `dg`, `git-remote-dash` and forge.dashhq.org use it. |
+| **Testnet** | Not deployed. Testnet runs protocol 13; forge-v2 is registered there when protocol 14 reaches it, shortly before mainnet. |
 | **Mainnet** | Not deployed. The forge-v2 contracts will be registered once protocol 14 is active. |
+
+An earlier version of Forge (forge-v1, one contract per repository) ran on testnet. It was removed on 2026-09-26 with no backwards compatibility, so its repositories cannot be read or migrated.
 
 `dg doctor` shows which network you are on, its protocol version, and whether forge-v2 is deployed there.
 
@@ -80,7 +82,7 @@ No. Your repositories are on Platform and in your storage. Your identity survive
 
 ## I lost my 12 words and my identity file.
 
-Then that identity is gone. Nobody can recover it, and nobody can sign as it again. Everything it published stays readable and clonable. Its repositories can no longer gain or lose members, because only the owner can change membership. On forge-v2, members it already added can keep pushing; on v1, token holders can too. To carry on under a new identity, create a new repository and push your clone to it. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
+Then that identity is gone. Nobody can recover it, and nobody can sign as it again. Everything it published stays readable and clonable. Its repositories can no longer gain or lose members, because only the owner can change membership. Members it already added can keep pushing. To carry on under a new identity, create a new repository and push your clone to it. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
 
 ## Where do I report a bug?
 

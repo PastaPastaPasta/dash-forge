@@ -58,18 +58,9 @@ async fn login(ctx: &Ctx) -> Result<()> {
     // only when it differs from the deployment file's: config outranks that file, so
     // copying the file's list here would pin it past a devnet reset that updates the file.
     let mut config = Config::load().unwrap_or_default();
-    let previous_network = config
-        .network_settings()
-        .resolve()
-        .ok()
-        .map(|t| t.network.key());
     config.network = Some(ctx.network().kind().to_string());
     config.devnet_name = ctx.network().devnet_name().map(str::to_string);
     config.dapi_addresses = explicit_dapi_addresses(ctx.network());
-    // A registry override belongs to the network it was set for.
-    if previous_network.as_deref() != Some(network.as_str()) {
-        config.registry_contract_id = None;
-    }
     config.default_identity = Some(dest.to_string_lossy().to_string());
     config.default_identity_id = Some(bridge.identity_id.clone());
     config.save()?;

@@ -1,5 +1,7 @@
 # Dash Platform — Constraints & Research Findings
 
+> **Historical.** Research from the forge-v1 design phase (protocol 12). Most Platform limits below still apply, but the design consequences that rely on per-repo contracts and token-cost ACLs describe forge-v1, which was removed on 2026-09-26. The current design is [forge-v2](../contracts/forge-v2.md) on Platform protocol 14.
+
 All findings verified against the local monorepo `../platform` (version **4.0.0-beta.3**, protocol v12 era). File paths below are relative to that repo. These numbers are the load-bearing inputs to every Dash Forge design decision.
 
 ## 1. Hard system limits

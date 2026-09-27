@@ -85,6 +85,16 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`
 }
 
+/** A URL's host for display; an `ipfs://` or `platform://` locator by its scheme alone. */
+export function urlHost(url: string): string {
+  if (/^(ipfs|platform):/i.test(url)) return url.slice(0, url.indexOf(':')).toLowerCase()
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
+  }
+}
+
 /** A short, readable identity fallback when no DPNS name is known. */
 export function shortIdentity(id: string, chars = 6): string {
   if (id.length <= chars * 2 + 1) return id

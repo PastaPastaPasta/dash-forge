@@ -2,7 +2,7 @@
 
 /**
  * ProfileContent — an identity's profile: the identity pill (DPNS-resolved), follower/following
- * counts (O(1) registry count trees), a follow/unfollow toggle, and the repos it owns. The
+ * counts (O(1) forge-collab count trees), a follow/unfollow toggle, and the repos it owns. The
  * `name` address is an identity id (what authors + search resolve to).
  *
  * The follow toggle reads whether the viewer already follows this identity before offering an
@@ -12,13 +12,7 @@
 import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
-import {
-  followRelation,
-  readFollowerCount,
-  readFollowingCount,
-  readV2FollowCounts,
-  resolveOwner,
-} from '@/lib/repo'
+import { followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -29,14 +23,14 @@ import { IdentityPill } from '@/components/ui/identity-pill'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { NotDeployedState, isForgeDeployed, isRegistryDeployed } from '@/components/ui/network-badge'
+import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 
 interface ProfileData {
   /** The identity id the address resolved to (it may have been a DPNS name). */
   readonly identityId: string
   readonly name: string | null
   readonly repos: DiscoveredRepo[]
-  /** forge-v2 repos this identity is a maintainer or writer of (and does not own). */
+  /** Repos this identity is a maintainer or writer of (and does not own). */
   readonly memberOf: DiscoveredRepo[]
   /** `null` when the count read failed — shown as unknown, never as a false 0. */
   readonly followers: number | null
@@ -63,14 +57,8 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       const identityId = await resolveOwner(sdk!, address)
       if (identityId === null) return null
       const forge = NETWORKS[network].v2
-      // Follows live in forge-collab where forge-v2 is deployed, else in the v1 registry.
       const noCounts = { followers: null, following: null }
-      const follows = forge !== null
-        ? readV2FollowCounts(sdk!, forge, identityId).catch(() => noCounts)
-        : Promise.all([
-            readFollowerCount(sdk!, identityId, { network }).catch(() => null),
-            readFollowingCount(sdk!, identityId, { network }).catch(() => null),
-          ]).then(([followers, following]) => ({ followers, following }))
+      const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
       const [name, repos, counts] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
         listReposByOwner(sdk!, identityId, { network }),
@@ -82,15 +70,15 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
     { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
   )
   const identityId = data?.identityId ?? address
-  // forge-v2 follows live in forge-collab; networks without it use the v1 registry.
+  // Follows live in forge-collab.
   const forge = NETWORKS[network].v2
-  const canFollow = forge !== null || isRegistryDeployed()
+  const canFollow = forge !== null
 
   const isSelf = identity === identityId
   const follow = useRelationToggle({
     enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
-    ...followRelation(sdk!, signer, identity ?? '', forge, identityId, network),
+    ...followRelation(sdk!, signer, identity ?? '', forge, identityId),
   })
 
   const toggleFollow = (): void => {

@@ -14,6 +14,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
 import { KeysPanel } from '@/components/keys-panel'
+import { GatewaysField } from '@/components/gateways-field'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
@@ -22,15 +23,27 @@ export default function SettingsPage(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
+  const gateways = (
+    <section aria-labelledby="gateways-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+      <h2 id="gateways-title" className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">
+        Your IPFS gateways
+      </h2>
+      <GatewaysField />
+    </section>
+  )
+
   if (!identity) {
     return (
       <AppShell>
-        <EmptyState
-          icon={Wallet}
-          title="Not signed in"
-          body="Sign in to see your balance and account settings."
-          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
-        />
+        <div className="mx-auto max-w-xl space-y-6">
+          <EmptyState
+            icon={Wallet}
+            title="Not signed in"
+            body="Sign in to see your balance and account settings."
+            action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
+          />
+          {gateways}
+        </div>
       </AppShell>
     )
   }
@@ -71,9 +84,21 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">Storage</h2>
+          <p className="text-dense text-anvil-600 dark:text-anvil-300">
+            Your buckets and IPFS nodes for browser pushes, tested from this page, with their keys encrypted in this browser.
+          </p>
+          <Link href="/settings/storage" className="mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
+            Storage settings →
+          </Link>
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
           <KeysPanel />
         </section>
+
+        {gateways}
 
         <p className="text-center text-[12px] text-anvil-400">
           <Link href="/" className="hover:underline">Back to discovery</Link>

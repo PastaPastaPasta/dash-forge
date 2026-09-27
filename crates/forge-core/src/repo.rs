@@ -1,10 +1,8 @@
 //! [`RepoService`] — the git data plane `git-remote-dash` and `dg` drive.
 //!
 //! Every operation takes a resolved [`RepoRef`] and reaches its documents through the
-//! repo's [`DocScope`]: on forge-v2 that is the network's shared forge-core contract with
-//! `repoId == R` on every query and write; on forge-v1 it is the repo's own contract. v1
-//! repositories are **read only**: every write refuses them with [`Error::V1ReadOnly`]
-//! before signing anything.
+//! repo's [`DocScope`]: the network's shared forge-core contract with `repoId == R` on every
+//! query and write.
 //!
 //! - [`RepoService::write_ref_update`] / [`RepoService::read_refs`] — append a ref update
 //!   (`protectedRefUpdate` for a protected ref, routed by the as-of config rule) and fold a
@@ -12,11 +10,11 @@
 //! - [`RepoService::write_pack_manifest`] / [`RepoService::read_pack_manifests`] and the
 //!   chunk tier ([`PlatformChunkTarget`]).
 //! - [`RepoService::fetch_artifact`] — read a pack: external copies first, then Platform
-//!   chunks. On v2 each uploader has its own copy of a pack; readers try them in the
+//!   chunks. Each uploader has its own copy of a pack; readers try them in the
 //!   `FORGE_RULES_V2` order (maintainers', then writers', then former members'), and use
 //!   the first that hash-verifies ([`crate::rules::v2::order_pack_copies`]).
-//! - [`RepoService::repack`] — consolidate the live packs into one superseding pack. On v2
-//!   nothing is deleted: chunks and manifests are permanent (forge-v2 §4).
+//! - [`RepoService::repack`] — consolidate the live packs into one superseding pack. Nothing
+//!   is deleted: chunks and manifests are permanent (forge-v2 §4).
 //!
 //! Repository creation is [`crate::create`]; resolution is [`crate::resolve`]; membership
 //! is [`crate::members`]. This module names no rs-sdk type (style guide §B).
@@ -36,8 +34,8 @@ use crate::rules::{self, ConfigDoc, RefState};
 use crate::scope::{self, DocScope, RepoRef};
 use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
 
-// Document type names (the git data plane; the same names in forge-core and repo-v1).
-const DOC_CONFIG: &str = "config";
+// Document type names (the git data plane in forge-core).
+use crate::refs::DOC_CONFIG;
 use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
 const DOC_PACK_MANIFEST: &str = "packManifest";
 
@@ -65,7 +63,7 @@ pub struct PackManifestInfo {
     pub storage: u64,
     /// Offset-index part count.
     pub offset_index_parts: u64,
-    /// External copies (`uris`: a typed array on v2, a JSON string on v1).
+    /// External copies (`uris`, a typed string array).
     pub uris: Vec<String>,
     /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
     pub supersedes: Vec<[u8; 32]>,
@@ -336,7 +334,7 @@ pub struct LocalReseed {
 }
 
 /// A repository's current members as the pack reader rule needs them (maintainers'
-/// copies first): empty on v1, where every copy is the repo contract's own.
+/// copies first).
 pub type RoleMap = BTreeMap<String, Role>;
 
 /// The git data-plane service, bound to one signing identity and its keys.
@@ -368,8 +366,8 @@ impl<'a> RepoService<'a> {
         WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)
     }
 
-    /// The contract holding `repo`'s git data (forge-core, or the v1 repo contract),
-    /// fetched and registered with the proof verifier.
+    /// The contract holding `repo`'s git data (forge-core), fetched and registered with the
+    /// proof verifier.
     pub async fn repo_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.scope()?.contract_id).await
     }
@@ -382,9 +380,8 @@ impl<'a> RepoService<'a> {
         Ok((scope, contract))
     }
 
-    /// The writable (v2) scope and contract of `repo`, or [`Error::V1ReadOnly`].
+    /// The scope and contract of `repo`, for writing.
     async fn writable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
-        repo.require_v2()?;
         self.readable(repo).await
     }
 
@@ -413,7 +410,7 @@ impl<'a> RepoService<'a> {
         let hasher = crate::private::Public;
         let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
 
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
         let doc_type = if protected {
             DOC_PROTECTED_REF_UPDATE
@@ -456,7 +453,7 @@ impl<'a> RepoService<'a> {
     /// deferred to the push-side pipeline that has the object store.
     pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
         let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
 
         let mut out = Vec::with_capacity(by_hash.len());
@@ -477,7 +474,7 @@ impl<'a> RepoService<'a> {
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
         let (scope, contract) = self.readable(repo).await?;
-        let configs = self.fetch_config_history(&scope, &contract).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         Ok(current_protected_patterns(&configs))
     }
 
@@ -526,8 +523,7 @@ impl<'a> RepoService<'a> {
             if !BACKEND_URIS_V2.fits(list) {
                 return Err(Error::Config(format!(
                     "config.backend.uris holds at most {} URLs of at most {} bytes each",
-                    BACKEND_URIS_V2.max_items.unwrap_or_default(),
-                    BACKEND_URIS_V2.max_item_len.unwrap_or_default()
+                    BACKEND_URIS_V2.max_items, BACKEND_URIS_V2.max_item_len
                 )));
             }
         }
@@ -631,8 +627,7 @@ impl<'a> RepoService<'a> {
         docs.iter().map(manifest_info).collect()
     }
 
-    /// Every manifest of `pack_hash` (on v2 each uploader may hold a copy; on v1 the index
-    /// is unique, so at most one).
+    /// Every manifest of `pack_hash` (each uploader may hold a copy).
     pub async fn read_pack_copies(
         &self,
         repo: &RepoRef,
@@ -721,12 +716,8 @@ impl<'a> RepoService<'a> {
         )])
     }
 
-    /// The uploader → current role map the v2 pack reader rule ranks copies by. Empty on
-    /// v1 (a v1 pack has exactly one copy).
+    /// The uploader → current role map the pack reader rule ranks copies by.
     pub async fn copy_roles(&self, repo: &RepoRef) -> Result<RoleMap> {
-        if repo.is_v1() {
-            return Ok(RoleMap::new());
-        }
         let members = crate::members::MemberReader::new(self.client)
             .list(repo)
             .await?;
@@ -1337,33 +1328,6 @@ impl<'a> RepoService<'a> {
         )
         .await
     }
-
-    // --- internal read helpers ---
-
-    /// The repo's **complete** `config` history (append-only, non-deletable), as
-    /// [`ConfigDoc`]s ordered by `$createdAt`.
-    ///
-    /// Paged to exhaustion. `config_as_of` treats "no config in force at time T" as
-    /// UNPROTECTED, so a truncated history does not merely go stale — it silently
-    /// re-admits plain `refUpdate`s on protected refs that the rules layer had correctly
-    /// rendered inert. forge-web reads the same timeline, and the two clients must fold the
-    /// same input.
-    async fn fetch_config_history(
-        &self,
-        scope: &DocScope,
-        contract: &LoadedContract,
-    ) -> Result<Vec<ConfigDoc>> {
-        let docs = self
-            .client
-            .query_all_documents(
-                contract,
-                DOC_CONFIG,
-                &scope.filters([]),
-                &[QueryOrder::asc("$createdAt")],
-            )
-            .await?;
-        Ok(docs.iter().map(config_doc).collect())
-    }
 }
 
 /// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates
@@ -1379,17 +1343,7 @@ pub async fn read_valid_tips(
     repo.require_readable()?;
     let scope = repo.scope()?;
     let contract = client.fetch_contract(&scope.contract_id).await?;
-    let configs: Vec<ConfigDoc> = client
-        .query_all_documents(
-            &contract,
-            DOC_CONFIG,
-            &scope.filters([]),
-            &[QueryOrder::asc("$createdAt")],
-        )
-        .await?
-        .iter()
-        .map(config_doc)
-        .collect();
+    let configs = crate::refs::read_config_history(client, &contract, &scope).await?;
     let hash = crate::backends::sha256(ref_name.as_bytes());
     let updates = crate::refs::read_ref_history(client, &contract, &scope, hash).await?;
     Ok(updates
@@ -1592,7 +1546,7 @@ fn plan_push_index(
 
 /// The repository's pack list (`FORGE_RULES_V2::v2_pack_list`, forge-v2.md §4) over its
 /// manifests: every pack once, however many uploaders hold a copy, with its `packRef` among
-/// the packs of its kind. `roles` ranks the copies (empty on v1, where each pack has one).
+/// the packs of its kind. `roles` ranks the copies.
 /// Copies are listed unchecked (`verified: None`), so no pack counts as superseded here;
 /// supersession only changes which packs a reader fetches whole, never a position.
 pub fn pack_list(
@@ -1976,7 +1930,7 @@ mod tests {
             .map(|m| m.document_id.clone())
             .collect();
         assert_eq!(order, ["m", "w", "s"]);
-        // With no membership known (v1), the order is by time.
+        // With no membership known, the order is by time.
         let order: Vec<_> = order_copies(&copies, &RoleMap::new())
             .iter()
             .map(|m| m.document_id.clone())

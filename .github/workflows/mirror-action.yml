@@ -10,7 +10,7 @@ name: Mirror Action
 on:
   workflow_dispatch:
   schedule:
-    # Monday midday: well clear of testnet-nightly (06:00), which signs as the same
+    # Monday midday: well clear of the Devnet Nightly (06:00), which signs as the same
     # OWNER identity; two jobs signing at once can collide on identity nonces.
     - cron: "41 12 * * 1"
   pull_request:
@@ -61,7 +61,7 @@ jobs:
         run: bash action/test.sh
 
   # A separate probe job so the live job's CONCLUSION is literally `skipped` when the
-  # fixture identity is absent (see testnet-nightly.yml for why that matters).
+  # fixture identity is absent (see nightly.yml for why that matters).
   fixtures:
     name: fixture identity configured?
     if: github.event_name != 'pull_request'
@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
 
       # Pinned modern protoc: Ubuntu's 3.21 breaks the tenderdash proto build
-      # (testnet-nightly.yml has the details).
+      # (nightly.yml has the details).
       - name: Install protoc
         env:
           PROTOC_VERSION: '28.3'
