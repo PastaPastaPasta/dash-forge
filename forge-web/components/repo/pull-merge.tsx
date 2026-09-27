@@ -39,7 +39,7 @@ export function PullMerge({
 /** What the PR page adds to the merge panel. */
 export interface MergeExtras {
   readonly allowedMethods?: number
-  readonly squashAuthors?: readonly string[] | null
+  readonly squashAuthors?: { readonly authors: readonly string[]; readonly complete: boolean } | null
   readonly deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
 }
 

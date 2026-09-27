@@ -48,6 +48,7 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
+import { deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
   createComment,
@@ -247,19 +248,17 @@ function PullPage({
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
   /**
-   * Delete the PR's source branch in its repo (M7): a ref update to the null oid from its tip.
-   * Refused, as `dg pr merge --delete-branch` refuses, for the base branch itself and for the
-   * source repo's default branch.
+   * Delete the PR's source branch in its repo (M7): a ref update to the null oid from the merged
+   * head. Refused (`deleteBranchProblem`) for the base or default branch, and when the branch
+   * moved past the head that was merged.
    */
-  const deleteSourceBranch = async (src: RepoRef, refName: string): Promise<void> => {
+  const deleteSourceBranch = async (src: RepoRef, refName: string, headOid: string, defaultBranch: string | undefined): Promise<void> => {
     if (!sdk || !signer) throw new Error('sign in to continue')
-    if (src.repoId === repo.repoId && refName === pull.baseRefName) throw new Error("the PR's source branch is its base branch; not deleted")
-    const bundle = await readConfigBundle(sdk, src)
-    const dflt = bundle.config?.defaultBranch
-    if (dflt !== undefined && dflt !== '' && (refName === dflt || refName === `refs/heads/${dflt}`)) throw new Error(`${refName.replace(/^refs\/heads\//, '')} is the default branch of ${src.name}; not deleted`)
     const tip = await readBranchTip(sdk, src, refName)
+    const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch, headOid, tip })
+    if (problem !== null) throw new Error(problem)
     if (tip === null) return
-    await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(tip.length), prevOid: tip }, { intent: `delete-branch:${src.repoId}:${refName}:${tip}` })
+    await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(headOid.length), prevOid: headOid }, { intent: `delete-branch:${src.repoId}:${refName}:${headOid}` })
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
@@ -382,6 +381,14 @@ function PullPage({
     signedIn: identity !== null && guard.disabledReason === null && !archived,
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
+  const sourceWrite = suggest.branchWrite
+  // The source repo's default branch (never deleted after a merge): the base repo's own config
+  // for a same-repo PR, else read once the merger could delete there.
+  const sourceDefault = useAsync(
+    async () => (sourceRef === null ? home.config?.defaultBranch ?? null : (await readConfigBundle(sdk!, sourceRef)).config?.defaultBranch ?? null),
+    [ready, sourceRef?.repoId ?? '', home.config?.defaultBranch ?? '', sourceWrite.can],
+    { enabled: ready && sdk !== null && open && sourceWrite.can },
+  )
   const canResolve = authorOrMember && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handler
   // reads the latest confirm (cost and guard) through a ref.
@@ -823,13 +830,16 @@ function PullPage({
                     }}
                     extras={{
                       allowedMethods: policyNow?.mergeMethods ?? 0,
-                      squashAuthors: commits.data === null ? null : commitAuthors(commits.data.commits),
+                      squashAuthors: commits.data === null ? null : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
                       deleteBranch: (() => {
                         const src = sourceRef ?? (crossRepo ? null : repo)
-                        if (!suggest.write.can || pull.sourceRefName === null || src === null || src.visibility !== 'public') return null
-                        if (src.repoId === repo.repoId && pull.sourceRefName === pull.baseRefName) return null
+                        if (!sourceWrite.can || pull.sourceRefName === null || src === null || src.visibility !== 'public' || !sourceDefault.settled) return null
                         const name = pull.sourceRefName
-                        return { label: `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`, run: () => deleteSourceBranch(src, name) }
+                        const dflt = sourceDefault.data ?? undefined
+                        // The fixed refusals are known before merging: the option is not offered.
+                        if (deleteBranchProblem({ refName: name, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch: dflt, headOid: pull.headOid }) !== null) return null
+                        const head = pull.headOid
+                        return { label: `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`, run: () => deleteSourceBranch(src, name, head, dflt) }
                       })(),
                     }}
                   />

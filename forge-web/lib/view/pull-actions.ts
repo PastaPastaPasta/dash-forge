@@ -253,6 +253,30 @@ export function mergeRefProblem(
   return null
 }
 
+/**
+ * Why "Delete the branch after merging" cannot delete the PR's source branch, or null when it
+ * can. Refused, as `dg pr merge --delete-branch` refuses (`deletable_source`), for the base branch
+ * itself and the source repo's default branch; and, beyond dg, unless the branch still points at
+ * the PR head that was merged: a commit pushed after it would be lost. `tip` undefined: not read
+ * yet (only the fixed refusals apply); null: the branch is already gone.
+ */
+export function deleteBranchProblem(i: {
+  readonly refName: string
+  readonly sameRepo: boolean
+  readonly baseRefName: string
+  readonly defaultBranch: string | undefined
+  readonly headOid: string
+  readonly tip?: string | null
+}): string | null {
+  const name = shortRef(i.refName)
+  if (i.sameRepo && i.refName === i.baseRefName) return "the PR's source branch is its base branch"
+  const d = i.defaultBranch
+  if (d !== undefined && d !== '' && (i.refName === d || i.refName === `refs/heads/${d}`)) return `${name} is the source repo's default branch`
+  if (i.tip === undefined || i.tip === null) return null
+  if (i.tip.toLowerCase() !== i.headOid.toLowerCase()) return `${name} moved to ${i.tip.slice(0, 9)} after the merged head; not deleted, so those commits are kept`
+  return null
+}
+
 function shortRef(ref: string): string {
   return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }

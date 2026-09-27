@@ -223,7 +223,8 @@ function identLine(who: MergeIdentity): string {
  * committer (`authors`: `Name <email>` of the PR's commits, oldest first, each once).
  */
 export function squashMessage(title: string, body: string, number: number, authors: readonly string[], committer: string): string {
-  // One line of title: the PR author wrote it (it cannot forge trailers or headers).
+  // One line of title: the PR author wrote it (it cannot forge trailers or headers). dg uses the
+  // raw title; a title holding a newline is the only case where the two differ, deliberately.
   let m = `${title.replace(/[\r\n\0]+/g, ' ').trim()} (#${number})`
   if (body.trim() !== '') m += `\n\n${body.replace(/\s+$/, '')}`
   const co = authors.filter((a) => a !== committer)

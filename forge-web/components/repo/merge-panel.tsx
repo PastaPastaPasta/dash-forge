@@ -81,8 +81,11 @@ export function MergePanel({
   onMerged: () => void
   /** The policy's `mergeMethods` bitmask (1 ff, 2 merge commit, 4 squash; 0 any). */
   allowedMethods?: number
-  /** `Name <email>` of the PR's commit authors, oldest first (the squash's Co-authored-by), or null while unknown. */
-  squashAuthors?: readonly string[] | null
+  /**
+   * `Name <email>` of the PR's commit authors, oldest first (the squash's Co-authored-by), or
+   * null while unknown; `complete` false when the commit list was capped (some may be missing).
+   */
+  squashAuthors?: { readonly authors: readonly string[]; readonly complete: boolean } | null
   /** Delete the PR's source branch after merging (the merger can write there), or null. */
   deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
 }): JSX.Element | null {
@@ -102,11 +105,15 @@ export function MergePanel({
   const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
 
   const policyAllows = (bit: number): boolean => allowedMethods === 0 || (allowedMethods & bit) !== 0
-  const [method, setMethod] = useState<'merge' | 'squash'>(() => (policyAllows(1) || policyAllows(2) ? 'merge' : 'squash'))
+  const [picked, setMethod] = useState<'merge' | 'squash' | null>(null)
+  // Until the merger picks, the method follows the policy (which may load after the panel).
+  const method: 'merge' | 'squash' = picked ?? (policyAllows(1) || policyAllows(2) ? 'merge' : 'squash')
   const committer = `${prefs.mergeName.trim()} <${prefs.mergeEmail.trim()}>`
-  const defaultSquash = squashMessage(pull.title, pull.body, pull.number, squashAuthors ?? [], committer)
+  // The default message waits for the authors: a squash made before would drop their credit.
+  const defaultSquash = squashAuthors === null ? null : squashMessage(pull.title, pull.body, pull.number, squashAuthors.authors, committer)
   const [squashText, setSquashText] = useState<string | null>(null)
-  const squashMsg = squashText ?? defaultSquash
+  const squashMsg = squashText ?? defaultSquash ?? ''
+  const squashReady = squashText !== null || defaultSquash !== null
   const [alsoDelete, setAlsoDelete] = useState(true)
   const input = useMemo<MergeInput>(
     () => ({
@@ -171,13 +178,20 @@ export function MergePanel({
   const [newTip, setNewTip] = useState<string | null>(null)
   const [deleted, setDeleted] = useState<string | null>(null)
 
-  // Upload estimate unknown until the pack exists; the documents are known.
-  const cost = sumPreviews([previewCreate('packManifest'), previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'), previewCreate('event')])
+  // Upload estimate unknown until the pack exists; the documents are known (and the branch
+  // deletion's ref update when it is ticked).
+  const deleting = deleteBranch !== null && alsoDelete
+  const cost = sumPreviews([
+    previewCreate('packManifest'),
+    previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
+    previewCreate('event'),
+    ...(deleting ? [previewCreate('refUpdate')] : []),
+  ])
   // Only a merge commit is authored; a fast-forward writes no commit.
   const identityOk = (button.kind !== 'merge-commit' && method !== 'squash') || mergeIdentityValid(prefs)
   // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
   const planBit = button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
-  const methodAllowed = method === 'squash' ? policyAllows(4) : planBit === 0 || policyAllows(planBit)
+  const methodAllowed = method === 'squash' ? policyAllows(4) && squashReady && squashMsg.trim() !== '' : planBit === 0 || policyAllows(planBit)
   const mergeable = button.kind === 'fast-forward' || button.kind === 'merge-commit'
 
   const start = useCallback(async () => {
@@ -308,7 +322,9 @@ export function MergePanel({
           <CopyRow text={button.checkout} />
         </div>
       ) : null}
-      {mergeable && !methodAllowed ? (
+      {mergeable && method === 'squash' && !squashReady ? (
+        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">Reading the PR&apos;s commits for the Co-authored-by lines…</p>
+      ) : mergeable && !methodAllowed && !(method === 'squash' && policyAllows(4)) ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">The branch policy does not allow this merge method; pick another.</p>
       ) : null}
       {mergeable && method === 'squash' && newTip === null ? (
@@ -316,7 +332,12 @@ export function MergePanel({
           <label htmlFor="squash-message" className="mb-1 block text-[12px] font-medium text-anvil-700 dark:text-anvil-200">
             Commit message
           </label>
-          <Textarea id="squash-message" value={squashMsg} onChange={(e) => setSquashText(e.target.value)} className="min-h-[96px] font-mono text-[12px]" />
+          <Textarea id="squash-message" value={squashMsg} onChange={(e) => setSquashText(e.target.value)} className="min-h-[96px] font-mono text-[12px]" disabled={!squashReady} />
+          {squashAuthors !== null && !squashAuthors.complete ? (
+            <p className="mt-1 text-[12px] text-caution-700 dark:text-caution-400">
+              This PR has more commits than the page lists: add any missing Co-authored-by lines (or squash with `dg pr merge --squash`).
+            </p>
+          ) : null}
         </div>
       ) : null}
       {mergeable && deleteBranch !== null && newTip === null ? (

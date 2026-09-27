@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchProblem, mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -251,5 +251,23 @@ describe('mergeBaseTip — the browser merge builds only on a base it may merge 
     expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, 'refs/heads/next', NOW)).toBe('')
     expect(mergeRefProblem('refs/heads/next', NOW, HEAD, MAIN)).toMatch(/retargeted.*open a new PR against the new base/)
     expect(mergeRefProblem(MAIN, NOW, HEAD, MAIN)).toBeNull()
+  })
+})
+
+describe('deleting the source branch after a merge (dg deletable_source, and the tip must be the merged head)', () => {
+  const H = 'ab'.repeat(20)
+  const base = { refName: 'refs/heads/feature', sameRepo: true, baseRefName: 'refs/heads/main', defaultBranch: 'main', headOid: H }
+  it('deletes a feature branch still at the merged head, or one already gone', () => {
+    expect(deleteBranchProblem(base)).toBeNull()
+    expect(deleteBranchProblem({ ...base, tip: H.toUpperCase() })).toBeNull()
+    expect(deleteBranchProblem({ ...base, tip: null })).toBeNull()
+  })
+  it('refuses the base branch and the default branch before anything is read', () => {
+    expect(deleteBranchProblem({ ...base, refName: 'refs/heads/main', baseRefName: 'refs/heads/main' })).toMatch(/its base branch/)
+    expect(deleteBranchProblem({ ...base, refName: 'refs/heads/main', sameRepo: false })).toMatch(/default branch/)
+    expect(deleteBranchProblem({ ...base, defaultBranch: 'refs/heads/feature' })).toMatch(/default branch/)
+  })
+  it('refuses a branch that moved past the merged head', () => {
+    expect(deleteBranchProblem({ ...base, tip: 'cd'.repeat(20) })).toMatch(/moved to cdcdcdcdc after the merged head/)
   })
 })

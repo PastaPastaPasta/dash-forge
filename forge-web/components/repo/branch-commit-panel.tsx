@@ -342,6 +342,8 @@ export function useSuggestions({
    * the PR's author or a base-repo member (the head update's route; dg's `head_route`).
    */
   write: { can: boolean; known: boolean }
+  /** Write access to the source branch alone (deleting it after a merge needs only this). */
+  branchWrite: { can: boolean; known: boolean }
   who: { name: string; email: string } | null
 } {
   const { sdk, network } = useSdk()
@@ -439,5 +441,5 @@ export function useSuggestions({
         </Button>
       </div>
     )
-  return { actions, bar, runner, write, who }
+  return { actions, bar, runner, write, branchWrite, who }
 }
