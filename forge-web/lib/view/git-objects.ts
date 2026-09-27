@@ -74,23 +74,136 @@ function parseIdent(line: string): GitIdent {
   }
 }
 
-/** Parse a raw git commit object body. */
+/**
+ * Parse a raw git commit object body the way git reads it (`parse_commit_buffer`): the tree is
+ * the FIRST header line, the parents are the `parent` lines directly after it, and author /
+ * committer are the first of each. A commit that says otherwise elsewhere in its header is
+ * not believed — web and git must agree on what a commit points at. {@link checkCommit}
+ * refuses such commits outright where it matters (merges).
+ */
 export function parseCommit(bytes: Uint8Array): CommitObject {
   const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
   const sep = text.indexOf('\n\n')
   const header = sep === -1 ? text : text.slice(0, sep)
   const message = sep === -1 ? '' : text.slice(sep + 2)
-  let tree = ''
+  const lines = header.split('\n')
+  const tree = lines[0]?.startsWith('tree ') ? (lines[0] as string).slice(5).trim() : ''
   const parents: string[] = []
-  let author: GitIdent = { name: '', email: '', when: 0 }
-  let committer: GitIdent = { name: '', email: '', when: 0 }
-  for (const line of header.split('\n')) {
-    if (line.startsWith('tree ')) tree = line.slice(5).trim()
-    else if (line.startsWith('parent ')) parents.push(line.slice(7).trim())
-    else if (line.startsWith('author ')) author = parseIdent(line.slice(7).trim())
-    else if (line.startsWith('committer ')) committer = parseIdent(line.slice(10).trim())
+  for (let i = 1; i < lines.length && (lines[i] as string).startsWith('parent '); i++) parents.push((lines[i] as string).slice(7).trim())
+  const first = (key: string): string | undefined => lines.find((l) => l.startsWith(`${key} `))?.slice(key.length + 1).trim()
+  const none: GitIdent = { name: '', email: '', when: 0 }
+  const a = first('author')
+  const c = first('committer')
+  return { tree, parents, author: a === undefined ? none : parseIdent(a), committer: c === undefined ? none : parseIdent(c), message }
+}
+
+/** A commit or tree that `git fsck` would refuse (or that git and this client would read differently). */
+export class MalformedObjectError extends Error {
+  constructor(
+    readonly oid: string,
+    reason: string,
+  ) {
+    super(`malformed git object ${oid.slice(0, 9)}: ${reason}`)
+    this.name = 'MalformedObjectError'
   }
-  return { tree, parents, author, committer, message }
+}
+
+const OID_HEX = /^[0-9a-f]{40}$/
+const IDENT = /^[^<>\n]* <[^<>\n]*> \d+ [+-]\d{4}$/
+
+/**
+ * Refuse a commit `git fsck` would refuse, or one git and this client could read differently:
+ * exactly one `tree` (first), then only contiguous `parent` lines, then `author`, then
+ * `committer`, each well-formed, every oid 40 lowercase hex; later headers (encoding, gpgsig
+ * and its continuation lines, mergetag) may not repeat any of those four.
+ */
+export function checkCommit(oid: string, bytes: Uint8Array): void {
+  const bad = (why: string): never => {
+    throw new MalformedObjectError(oid, why)
+  }
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    // A non-UTF-8 message is legal git; its header must still be plain ASCII.
+    text = new TextDecoder('latin1').decode(bytes)
+  }
+  const sep = text.indexOf('\n\n')
+  if (sep === -1) bad('no blank line after the header')
+  const lines = text.slice(0, sep).split('\n')
+  let i = 0
+  const take = (key: string): string | null => {
+    const line = lines[i]
+    if (line === undefined || !line.startsWith(`${key} `)) return null
+    i += 1
+    return line.slice(key.length + 1)
+  }
+  const tree = take('tree')
+  if (tree === null || !OID_HEX.test(tree)) bad('the first header line must be "tree <oid>"')
+  for (let p = take('parent'); p !== null; p = take('parent')) if (!OID_HEX.test(p)) bad('bad parent oid')
+  const author = take('author')
+  if (author === null || !IDENT.test(author)) bad('"author" must follow the parents, well-formed')
+  const committer = take('committer')
+  if (committer === null || !IDENT.test(committer)) bad('"committer" must follow the author, well-formed')
+  for (; i < lines.length; i++) {
+    const line = lines[i] as string
+    if (line.startsWith(' ')) continue // a continuation of a multi-line header (gpgsig)
+    const key = line.slice(0, line.indexOf(' ') === -1 ? line.length : line.indexOf(' '))
+    if (key === 'tree' || key === 'parent' || key === 'author' || key === 'committer') bad(`a second "${key}" header`)
+    if (key === '') bad('an empty header line')
+  }
+}
+
+/** The tree-entry modes git writes (fsck refuses anything else). */
+export const GIT_TREE_MODES: ReadonlySet<number> = new Set([0o40000, 0o100644, 0o100755, 0o120000, 0o160000])
+
+/** git's tree order: bytes, a subtree's name compared as if it ended in `/`. */
+function treeKey(name: Uint8Array, mode: number): Uint8Array {
+  if (mode !== 0o40000) return name
+  const k = new Uint8Array(name.length + 1)
+  k.set(name)
+  k[name.length] = 0x2f
+  return k
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return (a[i] as number) - (b[i] as number)
+  return a.length - b.length
+}
+
+/**
+ * Refuse a tree `git fsck` would refuse: every entry `<mode> <name>\0<20 bytes>` with a mode
+ * git writes (no leading zeros), names non-empty without `/` and not `.`, `..` or `.git`
+ * (any case), no name twice, entries in git's order; nothing left over.
+ */
+export function checkTree(oid: string, bytes: Uint8Array): void {
+  const bad = (why: string): never => {
+    throw new MalformedObjectError(oid, why)
+  }
+  const names = new Set<string>()
+  let prev: Uint8Array | null = null
+  let i = 0
+  while (i < bytes.length) {
+    let sp = i
+    while (sp < bytes.length && bytes[sp] !== 0x20) sp += 1
+    const modeText = new TextDecoder('latin1').decode(bytes.subarray(i, sp))
+    if (!/^[1-7][0-7]*$/.test(modeText)) bad(`bad mode "${modeText}"`)
+    const mode = parseInt(modeText, 8)
+    if (!GIT_TREE_MODES.has(mode)) bad(`mode ${modeText} is not one git writes`)
+    let nul = sp + 1
+    while (nul < bytes.length && bytes[nul] !== 0x00) nul += 1
+    if (nul + 21 > bytes.length) bad('truncated entry')
+    const raw = bytes.subarray(sp + 1, nul)
+    const name = new TextDecoder('latin1').decode(raw)
+    if (name === '' || name.includes('/') || name === '.' || name === '..' || name.toLowerCase() === '.git') bad(`bad entry name "${name}"`)
+    if (names.has(name)) bad(`entry "${name}" twice`)
+    names.add(name)
+    const key = treeKey(raw, mode)
+    if (prev !== null && compareBytes(prev, key) >= 0) bad('entries out of order')
+    prev = key
+    i = nul + 21
+  }
 }
 
 /** The subject (first line) of a commit message. */

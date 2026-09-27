@@ -65,12 +65,15 @@ function unwrap(raw: Uint8Array): GitObject {
 export interface MergeFs {
   /** Pass as isomorphic-git's `fs`. */
   readonly client: { readonly promises: Record<string, (...args: never[]) => Promise<unknown>> }
+  /** The first error an object read hit (reported to isomorphic-git as a missing file), if any. */
+  readError(): unknown
   /** Reads objects the merge wrote first, then `source`. */
   readonly reader: ObjectReader
 }
 
 export function createMergeFs(source: ObjectReader): MergeFs {
   const files = new Map<string, Uint8Array>()
+  let readError: unknown = undefined
   const written = new Map<string, GitObject>()
   const dirs = new Set<string>(['/'])
 
@@ -89,7 +92,10 @@ export function createMergeFs(source: ObjectReader): MergeFs {
     let obj: GitObject
     try {
       obj = await source.readObject(oid)
-    } catch {
+    } catch (e) {
+      // isomorphic-git only understands "no such file"; the real reason (a malformed object,
+      // the read budget, a network failure) is kept for the caller to rethrow.
+      readError ??= e
       throw new FsError('ENOENT', path)
     }
     return zlibSync(wrap(obj))
@@ -146,5 +152,5 @@ export function createMergeFs(source: ObjectReader): MergeFs {
       return w ? Promise.resolve(w) : source.readObject(oid)
     },
   }
-  return { client: { promises } as unknown as MergeFs['client'], reader }
+  return { client: { promises } as unknown as MergeFs['client'], reader, readError: () => readError }
 }

@@ -13,7 +13,7 @@
  * consensus would refuse.
  */
 
-import type { Holdings } from '../rules'
+import { isOidHex, isPlainBranchRef, type Holdings } from '../rules'
 import type { PullView } from '../repo'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -63,20 +63,29 @@ export type MergeButton =
 export interface MergeButtonInputs {
   /** From {@link pullActions}: the viewer is a current maintainer or writer and the PR is open. */
   readonly canMerge: boolean
+  /** Private repos are not merged in the browser yet (their packs must be encrypted). */
+  readonly isPublic: boolean
+  /** Why the PR's base or head cannot be merged at all (not a plain branch, no tip, bad oid), or null. */
+  readonly refProblem: string | null
+  /** The base repo's own reader is loaded (the merge never reads the base side from the fork). */
+  readonly baseLoaded: boolean
   readonly isMaintainer: boolean
   /** The base branch matches the repo's current protected patterns. */
   readonly baseProtected: boolean
   readonly narrow: boolean
   /** The worker's verdict, or null while it runs; an error string when it could not decide. */
-  readonly check: 'fast-forward' | 'merge' | 'conflict' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
+  readonly check: 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
   /** `dg pr checkout <repo> <n>` for the conflicts row. */
   readonly checkout: string
 }
 
 export function mergeButton(i: MergeButtonInputs): MergeButton {
   if (!i.canMerge) return { kind: 'hidden' }
+  if (!i.isPublic) return { kind: 'unavailable', reason: 'Private repositories are merged with `dg pr merge` for now.' }
+  if (i.refProblem !== null) return { kind: 'unavailable', reason: i.refProblem }
   if (i.baseProtected && !i.isMaintainer) return { kind: 'protected', label: 'Protected branch — maintainers only' }
   if (i.narrow) return { kind: 'mobile', label: 'Use a desktop browser for this step' }
+  if (!i.baseLoaded) return { kind: 'unavailable', reason: 'Load the base repo to merge (see Files changed below).' }
   const c = i.check
   if (c === null) return { kind: 'checking' }
   if (typeof c === 'object') return { kind: 'unavailable', reason: `Couldn't check the merge in the browser (${c.error}).` }
@@ -87,6 +96,8 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
       return { kind: 'merge-commit', label: 'Create merge commit and merge' }
     case 'conflict':
       return { kind: 'conflicts', label: "Can't merge in the browser — conflicts", checkout: i.checkout }
+    case 'malformed':
+      return { kind: 'unavailable', reason: 'This history holds a commit or tree git would reject or read differently; merge it with `dg pr merge` after checking it.' }
     case 'up-to-date':
       return { kind: 'unavailable', reason: 'The base branch already contains this head; record the merge with "Mark as merged".' }
     case 'unrelated':
@@ -123,4 +134,16 @@ export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullA
     markCountsNow: pull.headOnBase,
     mergeHint,
   }
+}
+
+/**
+ * Why a PR cannot be merged in the browser before anything is read: the base must be a plain
+ * branch that exists (`refs/heads/<name>`, check-ref-format; parity with `dg`'s
+ * `require_branch_ref`) and the head a full commit id. Null when both hold.
+ */
+export function mergeRefProblem(baseRefName: string, baseTipOid: string, headOid: string): string | null {
+  if (!isPlainBranchRef(baseRefName)) return `The PR's base "${baseRefName.slice(0, 80)}" is not a plain branch (refs/heads/<name>); it is not merged in the browser.`
+  if (!isOidHex(baseTipOid)) return 'The base branch does not exist (it has no tip); merge with `dg pr merge`.'
+  if (!isOidHex(headOid)) return 'The PR names no valid head commit.'
+  return null
 }

@@ -67,9 +67,20 @@ function withWorker<T>(
   })
 }
 
-/** Whether (and how) the PR merges, without building anything. */
+/** How long the automatic merge check may run before it gives up. */
+export const CHECK_TIMEOUT_MS = 60_000
+
+/** Whether (and how) the PR merges, without building anything; gives up after {@link CHECK_TIMEOUT_MS}. */
 export function checkMergeInWorker(reader: ObjectReader, input: MergeInput, signal?: AbortSignal): Promise<MergeCheck> {
-  return withWorker(reader, { type: 'check', input }, (m) => (m.type === 'checked' ? { value: m.check } : null), undefined, signal)
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), CHECK_TIMEOUT_MS)
+  signal?.addEventListener('abort', () => timeout.abort())
+  return withWorker(reader, { type: 'check', input }, (m) => (m.type === 'checked' ? { value: m.check } : null), undefined, timeout.signal)
+    .catch((e: unknown) => {
+      if (timeout.signal.aborted && !signal?.aborted) throw new Error(`the merge check took longer than ${CHECK_TIMEOUT_MS / 1000} s; merge with \`dg pr merge\``)
+      throw e
+    })
+    .finally(() => clearTimeout(timer))
 }
 
 /** Merge and build the pack. */

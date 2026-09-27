@@ -184,6 +184,18 @@ describe('merge step runner', () => {
     await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toMatchObject({ step: 'merge' })
   })
 
+  it('H2: refuses a base that is not a plain existing branch, or a bad head, before any work', async () => {
+    for (const d of [
+      deps({ pull: { id: 'P', number: 7, baseRefName: 'refs/tags/v1' } }),
+      deps({ pull: { id: 'P', number: 7, baseRefName: 'refs/heads/a..b' } }),
+      deps({ input: { ...deps().input, headOid: 'x'.repeat(40) } }),
+    ]) {
+      calls.length = 0
+      await expect(runMergeSteps(d, newRun(d.input), () => undefined)).rejects.toBeInstanceOf(MergeStopped)
+      expect(calls).toEqual([])
+    }
+  })
+
   it('phrases partial states', () => {
     expect(failureMessage({ ...newRun({ baseTip: BASE, headOid: HEAD }), done: ['fetch', 'merge', 'pack', 'upload'] }, 'manifest', 'x')).toBe('Pack stored; the pack manifest failed: x. Retry manifest.')
     expect(failureMessage({ ...newRun({ baseTip: BASE, headOid: HEAD }), done: ['upload', 'manifest', 'ref'] }, 'event', 'y')).toBe('Pack stored, manifest written and base branch moved; the merge event failed: y. Retry merge event.')

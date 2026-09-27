@@ -19,7 +19,7 @@ import { useEffect, useMemo, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
-import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type PullComparison, type RepoHome } from '@/lib/view'
+import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type ObjectReader, type PullComparison, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
@@ -173,6 +173,12 @@ export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string;
 /** Both sides' readers for a comparison of `baseRepo` with the repo `sourceId` names. */
 export interface ComparisonSides {
   readonly sides: DiffSides | null
+  /**
+   * The base repo's OWN reader, or null while it is not loaded. `sides.base` falls back to the
+   * head's repo for display; anything that decides what the base repo holds (the merge) must
+   * use this and never the fallback.
+   */
+  readonly baseOnly: ObjectReader | null
   readonly problems: readonly SideProblem[]
   /** A side is still resolving; its progress label. */
   readonly waiting: string | null
@@ -227,7 +233,7 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
       : headState.kind === 'loading'
         ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
         : null
-  return { sides, problems, waiting, sidesKey, crossRepo }
+  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo }
 }
 
 /** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */

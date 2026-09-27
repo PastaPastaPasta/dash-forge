@@ -16,7 +16,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { isLegalRefName, matchesProtected } from '../rules'
-import { readConfig } from './config'
+import { readConfigBundle } from './config'
 import { invalidateRepoFeed } from './issues'
 
 import { CHUNK_FIELDS, FIELD_MAX, MANIFEST_MAX_URIS, MANIFEST_URI_MAX_LEN } from '../constants'
@@ -271,7 +271,8 @@ export async function writeRefUpdate(
   options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] } = {},
 ): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
   const data = refUpdateData(input)
-  const patterns = options.protectedPatterns ?? (await readConfig(sdk, repo))?.protectedPatterns ?? []
+  // The complete config timeline's newest well-formed config: the one the rules apply.
+  const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
   const documentType = refUpdateType(input.refName, patterns)
   try {
     const r = await createDocumentIdempotent(sdk, auth, {

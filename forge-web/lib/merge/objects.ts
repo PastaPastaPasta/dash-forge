@@ -17,7 +17,7 @@
  */
 
 import { MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
-import { parseCommit, parseTree, type TreeEntry } from '../view/git-objects'
+import { checkCommit, checkTree, MalformedObjectError, parseCommit, parseTree, type TreeEntry } from '../view/git-objects'
 import type { ObjectReader } from '../view/tree-nav'
 
 /** Commits a walk may read before it gives up (a runaway or corrupt history). */
@@ -83,13 +83,17 @@ export async function newCommits(reader: ObjectReader, tip: string, have: readon
 async function readTreeEntries(reader: ObjectReader, oid: string): Promise<TreeEntry[]> {
   const obj = await reader.readObject(oid)
   if (obj.type !== 'tree') throw new Error(`${oid.slice(0, 9)} is a ${obj.type}, not a tree`)
+  checkTree(oid, obj.bytes)
   return parseTree(obj.bytes)
 }
 
 /**
- * Every object a pack must carry for `commits` (from {@link newCommits}): the commits, and
- * the trees and blobs of theirs no parent has at the same path. Submodule entries (gitlinks)
- * name commits of another repository and are never packed.
+ * Every object a pack must carry for `commits` (from {@link newCommits}): the commits, and the
+ * trees and blobs of theirs no parent has at the same path with the same mode. Every commit
+ * and tree read is checked as fsck would ({@link checkCommit}, {@link checkTree}): a malformed
+ * one stops the merge rather than be read differently from other clients. Whether an entry is
+ * a tree or a blob comes from the object itself, never only from the mode its tree claims.
+ * Submodule entries (gitlinks) name commits of another repository and are never packed.
  */
 export async function objectsToPack(reader: ObjectReader, commits: readonly string[]): Promise<GitObject[]> {
   const taken = new Set<string>()
@@ -98,6 +102,7 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
     if (taken.has(oid)) return null
     taken.add(oid)
     const obj = await reader.readObject(oid)
+    if (obj.type === 'tree') checkTree(oid, obj.bytes)
     out.push(obj)
     return obj
   }
@@ -116,17 +121,22 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
     for (const e of entries) {
       if (e.mode === MODE_GITLINK) continue
       const same = parentEntries.map((pe) => pe.find((x) => x.name === e.name)).filter((x): x is TreeEntry => x !== undefined)
-      if (same.some((x) => x.oid === e.oid)) continue
-      if (e.mode === MODE_TREE) {
-        await walkTree(e.oid, same.filter((x) => x.mode === MODE_TREE).map((x) => x.oid))
-      } else {
-        await take(e.oid)
+      // Skip only what a parent has at this path with the SAME mode and oid, and never on a
+      // parent's gitlink (its oid names nothing in this repository).
+      if (same.some((x) => x.oid === e.oid && x.mode === e.mode && x.mode !== MODE_GITLINK)) continue
+      const kind = (await reader.readObject(e.oid)).type
+      if ((kind === 'tree') !== (e.mode === MODE_TREE)) {
+        throw new MalformedObjectError(oid, `entry "${e.name}" is a ${kind} under mode ${e.mode.toString(8)}`)
       }
+      if (kind === 'tree') await walkTree(e.oid, same.filter((x) => x.mode === MODE_TREE).map((x) => x.oid))
+      else await take(e.oid)
     }
   }
   for (const c of commits) {
     const obj = await take(c)
     if (obj === null) continue
+    if (obj.type !== 'commit') throw new Error(`${c.slice(0, 9)} is a ${obj.type}, not a commit`)
+    checkCommit(c, obj.bytes)
     const commit = parseCommit(obj.bytes)
     const parentTrees = await Promise.all(
       commit.parents.map(async (p) => {

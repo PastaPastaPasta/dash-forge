@@ -1,64 +1,72 @@
 /**
- * The safety net under the pack builder: before anything is uploaded or any ref moves, prove
- * that every object reachable from the new tip is either in the merge pack or already in the
- * base repo. A merge must never move a branch to objects nobody can fetch.
+ * The safety net under the pack builder. Before anything is uploaded or any ref moves, prove
+ * that every object the new tip needs beyond the base tip's history can be read, hash-verified,
+ * from the merge pack or from the base repo's OWN reader. A merge must never move a branch to
+ * objects nobody can fetch.
  *
- * The walk descends only through objects the pack carries. An object the base repo already
- * holds is not descended into: the base repo's packs are self-contained (every pack a reader
- * accepts is), so its closure is there too. Presence in the base is asked of its browse index
- * (`locate`), which costs no download; a reader without one is asked to read the object.
- * The base's index is the snapshot the page loaded, so anything pushed to it since then counts
- * as missing: the check can refuse a good merge, never pass a broken one.
+ * The walk is the pack builder's (`newCommits` + `objectsToPack`), but with only the base tip as
+ * "had". So for a same-repo PR the head's commits, trees and blobs are each read back from the
+ * base repo, not assumed present because an index lists them: a writer can publish an index
+ * row, or a pack, that does not hold what it claims. Everything reachable from the base tip is
+ * the branch's existing history and is not re-proven. Commits and trees are checked as fsck
+ * would on the way.
+ *
+ * `base` must be the base repo's own reader, never a fallback to the PR's source repo.
  */
 
-import { BrowseReader, MODE_GITLINK, ObjectLocator } from '../browse'
-import { parseCommit, parseTree } from '../view/git-objects'
+import { BrowseReader, ObjectLocator, type GitObject } from '../browse'
+import { preferring } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
+import { newCommits, objectsToPack } from './objects'
 
-/** Objects the walk may visit before it gives up (and reports the merge as unverifiable). */
+/** Objects the walk may read before it gives up (and reports the merge as unverifiable). */
 export const VERIFY_OBJECT_CAP = 200_000
 
+class Missing extends Error {
+  constructor(readonly oid: string) {
+    super(`missing ${oid}`)
+  }
+}
+
 /**
- * Oids reachable from `tip` that are in neither `pack` nor `base` (empty: complete). Throws
- * when the walk is too large to finish, which callers treat as "not verified".
+ * The oids the new tip needs that neither `pack` nor `base` can produce (empty: complete; the
+ * walk stops at the first gap). Throws when the walk is too large to finish, which callers
+ * treat as "not verified".
  */
-export async function missingFromClosure(pack: Uint8Array, tip: string, base: ObjectReader, cap = VERIFY_OBJECT_CAP): Promise<string[]> {
+export async function missingFromClosure(pack: Uint8Array, tip: string, baseTip: string, base: ObjectReader, cap = VERIFY_OBJECT_CAP): Promise<string[]> {
   const { indexPacks, memoryPackSource, serializeLocator } = await import('../browse/indexer')
   const rows = pack.length > 32 ? await indexPacks([pack]) : []
-  const inPack = new Set(rows.map((r) => r.oidHex))
   const packReader = rows.length > 0 ? new BrowseReader(ObjectLocator.parse(serializeLocator(rows)), memoryPackSource([pack])) : null
-  const inBase = async (oid: string): Promise<boolean> => {
-    if (base.locate) return base.locate(oid) !== null
-    try {
-      await base.readObject(oid)
-      return true
-    } catch {
-      return false
-    }
+  const inPack = new Set(rows.map((r) => r.oidHex))
+  let reads = 0
+  const reader: ObjectReader = {
+    readObject: async (oid: string): Promise<GitObject> => {
+      if (++reads > cap) throw new Error(`the pack check stopped at its ${cap}-read limit`)
+      if (packReader !== null && inPack.has(oid)) return packReader.readObject(oid)
+      try {
+        return await base.readObject(oid)
+      } catch {
+        throw new Missing(oid)
+      }
+    },
   }
+  try {
+    const commits = await newCommits(reader, tip, baseTip === '' ? [] : [baseTip])
+    await objectsToPack(reader, commits)
+    return []
+  } catch (e) {
+    if (e instanceof Missing) return [e.oid]
+    throw e
+  }
+}
 
-  const missing: string[] = []
-  const seen = new Set<string>()
-  const stack = [tip]
-  while (stack.length > 0) {
-    const oid = stack.pop() as string
-    if (seen.has(oid)) continue
-    seen.add(oid)
-    if (seen.size > cap) throw new Error(`the pack check stopped at its ${cap}-object limit`)
-    if (!inPack.has(oid) || packReader === null) {
-      if (!(await inBase(oid))) missing.push(oid)
-      continue
-    }
-    const obj = await packReader.readObject(oid)
-    if (obj.type === 'commit') {
-      const c = parseCommit(obj.bytes)
-      stack.push(c.tree, ...c.parents)
-    } else if (obj.type === 'tree') {
-      for (const e of parseTree(obj.bytes)) if (e.mode !== MODE_GITLINK) stack.push(e.oid)
-    } else if (obj.type === 'tag') {
-      const m = /^object ([0-9a-f]{40})$/m.exec(new TextDecoder().decode(obj.bytes))
-      if (m) stack.push(m[1] as string)
-    }
-  }
-  return missing
+/**
+ * The readers a merge uses: `merge` reads the head's repo first and falls back to the base
+ * repo, and `base` is the base repo alone (what {@link missingFromClosure} proves against).
+ * Null until the base repo's OWN reader exists: nothing about the base is ever taken from the
+ * PR's source repo, which its author controls.
+ */
+export function mergeReaders(baseOnly: ObjectReader | null, head: ObjectReader | null): { merge: ObjectReader; base: ObjectReader } | null {
+  if (baseOnly === null) return null
+  return { merge: head === null ? baseOnly : preferring(head, baseOnly), base: baseOnly }
 }

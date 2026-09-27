@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { pullActions, type PullActionInputs } from './pull-actions'
+import { mergeButton, mergeRefProblem, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -117,5 +117,49 @@ describe('pullActions agrees with the fold', () => {
       // An author's merge through `authorEvent` is inert — merge is not an author action.
       expect(foldPrStateV2([], [mergeBy(AUTHOR)], AUTHOR, baseTip, isAncestor).merged).toBe(false)
     }
+  })
+})
+
+describe('H2: what the browser merge will move', () => {
+  const OID = 'ab'.repeat(20)
+  it('accepts only an existing plain branch and a full head oid', () => {
+    expect(mergeRefProblem('refs/heads/main', OID, OID)).toBeNull()
+    expect(mergeRefProblem('refs/heads/feature/x-1', OID, OID)).toBeNull()
+    const bad = [
+      'main',
+      'refs/tags/v1',
+      'refs/heads/',
+      'refs/heads/a..b',
+      'refs/heads/.x',
+      'refs/heads/x.lock',
+      'refs/heads/a b',
+      'refs/heads/a~1',
+      'refs/heads/a^',
+      'refs/heads/a:b',
+      'refs/heads/a?',
+      'refs/heads/a*',
+      'refs/heads/a[',
+      'refs/heads/a\\b',
+      'refs/heads/x/',
+      'refs/heads/x.',
+      'refs/heads/a@{b',
+      'refs/heads/a//b',
+      'refs/heads/a+b',
+      'refs/heads/a\nb',
+      'refs/heads/a\u007fb',
+    ]
+    for (const r of bad) expect(mergeRefProblem(r, OID, OID), r).not.toBeNull()
+    expect(mergeRefProblem('refs/heads/main', '', OID)).toMatch(/does not exist/)
+    expect(mergeRefProblem('refs/heads/main', OID, 'AB'.repeat(20))).toMatch(/head/)
+    expect(mergeRefProblem('refs/heads/main', OID, 'ab'.repeat(32))).toMatch(/head/)
+  })
+
+  it('the merge button refuses before checking anything', () => {
+    const ok = { canMerge: true, isPublic: true, refProblem: null, baseLoaded: true, isMaintainer: true, baseProtected: false, narrow: false, check: 'fast-forward' as const, checkout: 'dg pr checkout o/r 1' }
+    expect(mergeButton(ok).kind).toBe('fast-forward')
+    expect(mergeButton({ ...ok, refProblem: 'nope' })).toEqual({ kind: 'unavailable', reason: 'nope' })
+    expect(mergeButton({ ...ok, isPublic: false }).kind).toBe('unavailable')
+    expect(mergeButton({ ...ok, baseLoaded: false })).toMatchObject({ kind: 'unavailable', reason: expect.stringMatching(/Load the base repo/) })
+    expect(mergeButton({ ...ok, check: 'malformed' }).kind).toBe('unavailable')
   })
 })

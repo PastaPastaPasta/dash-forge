@@ -7,7 +7,7 @@
 import type { GitObject } from '../browse'
 import type { MergeCheck, MergeInput, MergeOutcome, MergePlan } from './engine'
 
-export type MergeResult = MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'up-to-date' | 'unrelated' }>
+export type MergeResult = MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'malformed' | 'up-to-date' | 'unrelated' }>
 
 export type ToWorker =
   | { readonly type: 'check'; readonly input: MergeInput }

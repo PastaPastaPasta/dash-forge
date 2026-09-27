@@ -15,21 +15,27 @@
 
 import diff3Merge from 'diff3'
 
+import { checkCommit, checkTree, MalformedObjectError } from '../view/git-objects'
 import { findMergeBase } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { createMergeFs } from './git-fs'
 import { newCommits, objectsToPack } from './objects'
 import { writePack } from './pack-writer'
 
+/** The largest file (in UTF-16 units, about bytes for text) merged line by line in the browser. */
+export const TEXT_MERGE_MAX_CHARS = 1024 * 1024
+
 /**
  * The line merge for files both sides changed: isomorphic-git's diff3, but refusing (as a
  * conflict) any file that is binary or not valid UTF-8 on any side. isomorphic-git hands the
  * driver the three versions decoded as UTF-8, so a NUL byte survives as U+0000 and an invalid
  * sequence becomes U+FFFD; merging those as text would commit a corrupted blob and call it
- * clean. Such files are merged with the CLI.
+ * clean. Such files, and files over {@link TEXT_MERGE_MAX_CHARS}, are merged with the CLI.
  */
 export function textOnlyMergeDriver({ branches, contents }: { branches: readonly string[]; contents: readonly string[] }): { cleanMerge: boolean; mergedText: string } {
   if (contents.some((c) => c.includes('\u0000') || c.includes('\ufffd'))) return { cleanMerge: false, mergedText: '' }
+  // A file this large is merged with the CLI: a line merge in the browser could stall the tab.
+  if (contents.some((c) => c.length > TEXT_MERGE_MAX_CHARS)) return { cleanMerge: false, mergedText: '' }
   const lines = (text: string): string[] => text.match(/^.*(\r?\n|$)/gm) ?? []
   const [base = '', ours = '', theirs = ''] = contents
   let mergedText = ''
@@ -77,6 +83,8 @@ export type MergePlan =
   | { readonly kind: 'fast-forward'; readonly newTip: string }
   | { readonly kind: 'merge'; readonly mergeBase: string }
   | { readonly kind: 'conflict'; readonly paths: readonly string[] }
+  /** A commit or tree fsck would refuse: nothing is merged in the browser. */
+  | { readonly kind: 'malformed'; readonly reason: string }
   | { readonly kind: 'up-to-date' }
   | { readonly kind: 'unrelated' }
 
@@ -95,7 +103,9 @@ export type MergeProgress = (phase: 'analyse' | 'merge' | 'pack', detail?: strin
  * The merge commit message, as `dg pr merge` writes it: the subject names the PR and its
  * source branch (else the head), the body is the PR title.
  */
-export function mergeMessage(prNumber: number, sourceLabel: string, title = ''): string {
+export function mergeMessage(prNumber: number, sourceLabel: string, rawTitle = ''): string {
+  // The PR author wrote the title: one line, bounded, so it cannot forge trailers or headers.
+  const title = rawTitle.replace(/[\r\n\0]+/g, ' ').trim().slice(0, 200)
   return title === '' ? `Merge pull request #${prNumber} from ${sourceLabel}\n` : `Merge pull request #${prNumber} from ${sourceLabel}\n\n${title}\n`
 }
 
@@ -108,7 +118,7 @@ interface ConflictData {
  * Classify the merge (no objects written). `reader` must read both sides (the base repo's
  * objects, and the head's source repo's).
  */
-export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'baseTip' | 'headOid'>): Promise<Exclude<MergePlan, { kind: 'conflict' }>> {
+export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'baseTip' | 'headOid'>): Promise<Exclude<MergePlan, { kind: 'conflict' | 'malformed' }>> {
   const { baseTip, headOid } = input
   if (baseTip === '') return { kind: 'fast-forward', newTip: headOid }
   const base = await findMergeBase(reader, baseTip, headOid)
@@ -162,9 +172,14 @@ export async function threeWayMerge(
       committer: who,
       mergeDriver: textOnlyMergeDriver,
     })
+    const underlying = fs.readError()
+    if (underlying !== undefined) throw underlying
     if (r.oid === undefined) throw new Error('the merge produced no commit')
     return { kind: 'merge', oid: r.oid, reader: fs.reader }
   } catch (e) {
+    // A read that failed underneath isomorphic-git surfaces as its own error, not "not found".
+    const underlying = fs.readError()
+    if (underlying !== undefined) throw underlying
     const err = e as ConflictData
     if (err.code === 'MergeConflictError') return { kind: 'conflict', paths: [...(err.data?.filepaths ?? [])] }
     // Conflicts isomorphic-git cannot express (add/add, file vs directory) come as this.
@@ -173,17 +188,63 @@ export async function threeWayMerge(
   }
 }
 
-/** What the merge button can offer: the plan, with a three-way merge tried for conflicts. */
-export type MergeCheck = 'fast-forward' | 'merge' | 'conflict' | 'up-to-date' | 'unrelated'
+/** Object reads one merge (or check) may make before it is refused as too large. */
+export const MERGE_READ_BUDGET = 100_000
 
-export async function checkMerge(reader: ObjectReader, input: MergeInput): Promise<MergeCheck> {
-  const plan = await planMerge(reader, input)
-  if (plan.kind !== 'merge') return plan.kind
-  return (await threeWayMerge(reader, input)).kind
+/** The merge would read more objects than {@link MERGE_READ_BUDGET}. */
+export class ReadBudgetError extends Error {
+  constructor(readonly budget: number) {
+    super(`this merge reads more than ${budget} objects; merge it with \`dg pr merge\``)
+    this.name = 'ReadBudgetError'
+  }
+}
+
+/**
+ * `reader` refusing (with {@link MalformedObjectError}) any commit or tree fsck would refuse:
+ * everything the merge reads — the history walks, isomorphic-git's tree merge, the pack
+ * walk — sees only objects git and this client read the same way.
+ */
+export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): ObjectReader {
+  let reads = 0
+  return {
+    readObject: async (oid) => {
+      // A small history can still name a huge number of paths (a tree DAG): cap the work.
+      if (++reads > budget) throw new ReadBudgetError(budget)
+      const obj = await reader.readObject(oid)
+      if (obj.type === 'commit') checkCommit(oid, obj.bytes)
+      else if (obj.type === 'tree') checkTree(oid, obj.bytes)
+      return obj
+    },
+    ...(reader.locate ? { locate: (oid: string) => reader.locate?.(oid) ?? null } : {}),
+  }
+}
+
+/** What the merge button can offer: the plan, with a three-way merge tried for conflicts. */
+export type MergeCheck = 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'up-to-date' | 'unrelated'
+
+export async function checkMerge(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheck> {
+  const reader = strictReader(raw, budget)
+  try {
+    const plan = await planMerge(reader, input)
+    if (plan.kind !== 'merge') return plan.kind
+    return (await threeWayMerge(reader, input)).kind
+  } catch (e) {
+    if (e instanceof MalformedObjectError) return 'malformed'
+    throw e
+  }
 }
 
 /** Run the whole merge: classify, merge when needed, and build the pack. */
-export async function runMerge(reader: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'up-to-date' | 'unrelated' }>> {
+export async function runMerge(raw: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'malformed' | 'up-to-date' | 'unrelated' }>> {
+  try {
+    return await runStrict(strictReader(raw), input, onProgress)
+  } catch (e) {
+    if (e instanceof MalformedObjectError) return { kind: 'malformed', reason: e.message }
+    throw e
+  }
+}
+
+async function runStrict(reader: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'up-to-date' | 'unrelated' }>> {
   onProgress?.('analyse')
   const plan = await planMerge(reader, input)
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated') return plan

@@ -11,6 +11,8 @@ import { useCallback, useRef, useState } from 'react'
 
 import type { RepoRef } from '@/lib/repo'
 import { previewCredits } from '@/lib/sdk'
+import { estimateChunkCredits } from '@/lib/sdk/cost'
+import { FANOUT_LEN, LOCATOR_ROW_LEN } from '@/lib/browse'
 import { policyForRepo, storeArtifact, type PlatformQuestion } from '@/lib/storage'
 import type { UploadPack } from '@/lib/merge/runner'
 import { formatBytes } from '@/lib/view'
@@ -34,6 +36,8 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
   // One answer per merge: the pack and its index fragment share it.
   const agreed = useRef<boolean | null>(null)
 
+  // The pack's object count, so the question can price the index fragment too.
+  const packObjects = useRef(0)
   const confirmPlatform = useCallback((q: PlatformQuestion): Promise<boolean> => {
     if (agreed.current !== null) return Promise.resolve(agreed.current)
     return new Promise<boolean>((resolve) => {
@@ -50,7 +54,8 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
   const config = storage.config
   const policy = config === null ? null : policyForRepo(config, repo.repoId)
   const upload = useCallback<UploadPack>(
-    async (bytes) => {
+    async (bytes, info) => {
+      if (agreed.current === null) packObjects.current = info.objectCount
       if (!sdk || !signer) throw new Error('sign in to continue')
       if (config === null) throw new Error("your storage settings aren't unlocked yet")
       const stored = await storeArtifact(sdk, signer, repo, bytes, { policy, profiles: config.profiles, confirmPlatform })
@@ -59,6 +64,8 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
     [sdk, signer, config, policy, repo, confirmPlatform],
   )
 
+  // The merge also stores its index fragment (fanout + 36 bytes per object) under the same answer.
+  const fragmentBytes = FANOUT_LEN + LOCATOR_ROW_LEN * packObjects.current
   const dialog =
     question === null ? null : (
       <Dialog
@@ -77,7 +84,13 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
           </>
         }
       >
-        <CostPreview cost={previewCredits(question.estimateCredits)} />
+        <CostPreview cost={previewCredits(question.estimateCredits + estimateChunkCredits(fragmentBytes))} />
+        <ul className="mt-2 space-y-0.5 text-[12px] text-anvil-600 dark:text-anvil-400">
+          <li>
+            The merge pack: {formatBytes(question.bytes)}, {packObjects.current} objects
+          </li>
+          <li>Its browse index: about {formatBytes(fragmentBytes)}</li>
+        </ul>
         <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">
           Configure a bucket in Settings → Storage to store packs for a fraction of this.
         </p>

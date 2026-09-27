@@ -24,6 +24,8 @@ import { writePackManifest, writeRefUpdate } from '../repo/push'
 import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
 import type { MergeResult } from './protocol'
+import { mergeRefProblem } from '../view/pull-actions'
+import { formatBytes } from '../view/format'
 
 export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event'
 
@@ -179,13 +181,17 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid) {
     throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
   }
+  // The base ref and head come from the PR document, which its author wrote: refuse anything
+  // but an existing plain branch and a full commit id before a byte is paid for.
+  const refProblem = mergeRefProblem(deps.pull.baseRefName, deps.input.baseTip, deps.input.headOid)
+  if (refProblem !== null) throw new MergeStopped(refProblem)
   let run: MergeRun = from
   const mark = (step: MergeStepId, patch: Partial<MergeRun> = {}, state: 'done' | 'skipped' = 'done', detail?: string): void => {
     run = { ...run, ...patch, done: [...run.done, step] }
     onStep({ step, state, ...(detail ? { detail } : {}) })
   }
   const attempt = async <T>(step: MergeStepId, work: () => Promise<T>): Promise<T> => {
-    onStep({ step, state: 'running' })
+    if (step !== 'upload') onStep({ step, state: 'running' })
     try {
       return await work()
     } catch (e) {
@@ -213,6 +219,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
       throw new MergeStepError(phase, reasonOf(e), run)
     }
     if (result.kind === 'conflict') throw new MergeStopped(`the merge has conflicts${result.paths.length ? ` in ${result.paths.join(', ')}` : ''}`)
+    if (result.kind === 'malformed') throw new MergeStopped(`${result.reason}; git would read this history differently, so it is not merged in the browser`)
     if (result.kind === 'up-to-date') throw new MergeStopped('the base branch already contains this head')
     if (result.kind === 'unrelated') throw new MergeStopped('the head and the base branch share no history')
     for (const s of ['fetch', 'merge'] as const) if (!run.done.includes(s)) mark(s)
@@ -223,7 +230,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     if (missing.length > 0) {
       throw new MergeStopped(`the merge pack would leave ${missing.length} object(s) unfetchable (${missing.slice(0, 3).map((o) => o.slice(0, 9)).join(', ')}); nothing was written. Merge with \`dg pr merge\``)
     }
-    mark('pack', { result: built }, 'done', `${built.objectCount} objects · ${built.pack.length} bytes · complete`)
+    mark('pack', { result: built }, 'done', `${built.objectCount} objects · ${formatBytes(built.pack.length)} · verified complete`)
   }
   const result = run.result as NonNullable<MergeRun['result']>
   const empty = result.objectCount === 0
@@ -233,6 +240,8 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
       mark('upload', {}, 'skipped', 'nothing new to store')
     } else {
       const upload = deps.upload
+      // What is about to be stored, shown before any storage is written to.
+      onStep({ step: 'upload', state: 'running', detail: `${formatBytes(result.pack.length)}, ${result.objectCount} objects` })
       const stored = await attempt('upload', async () => {
         if (upload === null) throw new Error('this build cannot upload packs from the browser yet; merge with `dg pr merge`')
         return upload(result.pack, { packHash: result.packHash, objectCount: result.objectCount })

@@ -47,12 +47,13 @@ function MergeReaders({
   checkout: string
   onMerged: () => void
 }): JSX.Element | null {
-  const { sides, sidesKey } = useComparisonSides(repo, pull.sourceId)
+  const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
   return (
     <MergePanel
       repo={repo}
       pull={pull}
       sides={sides}
+      baseOnly={baseOnly}
       sidesKey={sidesKey}
       baseTipOid={pullBase(pull, home).baseTipOid}
       protectedPatterns={home.config?.protectedPatterns ?? []}

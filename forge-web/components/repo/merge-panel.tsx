@@ -19,16 +19,15 @@ import { Check, GitMerge, Loader2, Minus, X } from 'lucide-react'
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { isLegalRefName, matchesProtected } from '@/lib/rules'
 import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
-import { missingFromClosure } from '@/lib/merge/verify'
+import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import type { MergeCheck, MergeInput } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
-import { mergeButton } from '@/lib/view/pull-actions'
+import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { useMergeUpload } from '@/components/repo/merge-upload'
 import { mergeIdentityValid } from '@/lib/view/prefs'
-import { tipOidOf, type DiffSides } from '@/lib/view'
-import { preferring } from '@/lib/view/pull-diff'
+import { tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
@@ -45,6 +44,7 @@ export function MergePanel({
   repo,
   pull,
   sides,
+  baseOnly,
   sidesKey,
   baseTipOid,
   protectedPatterns,
@@ -56,6 +56,8 @@ export function MergePanel({
   repo: RepoRef
   pull: PullView
   sides: DiffSides | null
+  /** The base repo's own reader (never the fork's); null until it loads. */
+  baseOnly: ObjectReader | null
   sidesKey: string
   baseTipOid: string
   protectedPatterns: readonly string[]
@@ -72,7 +74,11 @@ export function MergePanel({
   const { upload, dialog: uploadDialog, storageLabel, begin } = useMergeUpload(repo)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
-  const reader = useMemo(() => (sides === null ? null : preferring(sides.head, sides.base)), [sides])
+  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid)
+  // Merge reads prefer the head's repo and fall back to the base repo's own reader; they never
+  // run until that base reader exists, so nothing about the base is taken from the fork.
+  const readers = useMemo(() => mergeReaders(baseOnly, sides?.head ?? null), [sides, baseOnly])
+  const reader = readers?.merge ?? null
   const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
 
   const input = useMemo<MergeInput>(
@@ -92,7 +98,7 @@ export function MergePanel({
   // The worker's verdict. Each check owns its worker and aborts it when superseded or
   // unmounted, so a stale check never keeps reading objects.
   const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
-  const checkable = canMerge && reader !== null && pull.headOid !== '' && wide
+  const checkable = canMerge && repo.visibility === 'public' && refProblem === null && reader !== null && wide
   // The check reads the latest input without re-running when only the merger's name changes.
   const inputRef = useRef(input)
   inputRef.current = input
@@ -111,7 +117,17 @@ export function MergePanel({
     )
     return () => abort.abort()
   }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
-  const button = mergeButton({ canMerge, isMaintainer, baseProtected, narrow: !wide, check, checkout })
+  const button = mergeButton({
+    canMerge,
+    isPublic: repo.visibility === 'public',
+    refProblem,
+    baseLoaded: baseOnly !== null,
+    isMaintainer,
+    baseProtected,
+    narrow: !wide,
+    check,
+    checkout,
+  })
 
   const [steps, setSteps] = useState<Partial<Record<MergeStepId, StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
@@ -129,7 +145,7 @@ export function MergePanel({
   const identityOk = button.kind !== 'merge-commit' || mergeIdentityValid(prefs)
 
   const start = useCallback(async () => {
-    if (!sdk || !signer || reader === null || busy) return
+    if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
     if (!guard.check(cost.credits)) return
     setBusy(true)
     setFailure(null)
@@ -150,7 +166,7 @@ export function MergePanel({
             const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
             return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
           },
-          verifyPack: (pack, tip) => missingFromClosure(pack, tip, sides?.base ?? reader),
+          verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
           readBaseTip: async () => {
             // The same rule the page's tip came from (resolveRef, then the provisional tip).
             const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
@@ -178,7 +194,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, sides, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
