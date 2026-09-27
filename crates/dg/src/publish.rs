@@ -23,7 +23,6 @@ use anyhow::{Context as _, Result};
 use serde_json::{json, Value};
 
 use forge_core::create::{create_repo, default_journal_dir, CreateRepoOpts, StepOutcome};
-use forge_core::network::NetworkSettings;
 use forge_core::repo::BACKEND_URIS_V2;
 use forge_core::resolve::repo_slug;
 use forge_core::storage::policy::git_config_scoped;
@@ -32,7 +31,7 @@ use forge_core::user_error::{codes, dash, web_url, UserError};
 
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
-use crate::git::{current_branch, dash_env, git, git_ok};
+use crate::git::{current_branch, dash_env, git, git_ok, pin_network};
 use crate::storage_wizard::shell_word;
 use crate::{CreateOptions, InitArgs, RepoCreateArgs};
 
@@ -986,44 +985,7 @@ fn configure_local(
         // target list, and a stale count could exceed it.
         let _ = git(root, &["config", "--unset", "dash.replicas"], &[]);
     }
-    // Whether the helper would pick dg's network from env + git config; pin it when not.
-    let want = ctx.network();
-    let helper_agrees = || {
-        NetworkSettings::from_env()
-            .overlay(NetworkSettings::from_git_config(|k| {
-                git_config_scoped(k).map(|(_, v)| v)
-            }))
-            .resolve()
-            .is_ok_and(|t| t.network == *want)
-    };
-    if !helper_agrees() {
-        set("dash.network", want.kind())?;
-        out.push(format!("dash.network={}", want.kind()));
-        if let Some(name) = want.devnet_name() {
-            set("dash.devnetName", name)?;
-            out.push(format!("dash.devnetName={name}"));
-        }
-        if !helper_agrees() {
-            if let forge_core::platform::Network::Devnet {
-                dapi_addresses,
-                quorum_base_url,
-                ..
-            } = want
-            {
-                set("dash.dapiAddresses", &dapi_addresses.join(","))?;
-                out.push("dash.dapiAddresses".into());
-                if let Some(q) = quorum_base_url {
-                    set("dash.quorumUrl", q)?;
-                    out.push(format!("dash.quorumUrl={q}"));
-                }
-            }
-        }
-        if !helper_agrees() {
-            tracing::warn!(
-                "git push may still resolve another network: DASH_FORGE_NETWORK and friends in the environment override git config"
-            );
-        }
-    }
+    out.extend(pin_network(ctx, root)?);
     Ok(out)
 }
 
@@ -1034,21 +996,47 @@ struct PushOutcome {
 }
 
 /// The helper's report file: its `done` / `error` events, one JSON object per line.
-struct Report(PathBuf);
+pub(crate) struct Report(PathBuf);
 
 impl Report {
-    fn new() -> Result<(tempfile::TempDir, Self)> {
+    pub(crate) fn new() -> Result<(tempfile::TempDir, Self)> {
         let dir = tempfile::tempdir().context("creating a temporary directory")?;
         let path = dir.path().join("report.jsonl");
         Ok((dir, Self(path)))
     }
 
-    fn events(&self) -> Vec<Value> {
+    /// The `(variable, path)` that tells a `git` child's helper to write here.
+    pub(crate) fn env(&self) -> [(&'static str, &Path); 1] {
+        [(REPORT_FILE_ENV, &self.0)]
+    }
+
+    pub(crate) fn events(&self) -> Vec<Value> {
         std::fs::read_to_string(&self.0)
             .unwrap_or_default()
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect()
+    }
+
+    /// The helper's last error: its catalogue code (E001 for one this `dg` does not know)
+    /// and, under `--json` (where the helper's own block was not shown), its
+    /// `message: cause`; in human mode a pointer to the block git already printed.
+    pub(crate) fn helper_error(events: &[Value], json: bool) -> Option<(&'static str, String)> {
+        let e = events.iter().rev().find(|e| e["event"] == "error")?;
+        let code = e["error"]["code"]
+            .as_str()
+            .and_then(forge_core::user_error::catalogued)
+            .unwrap_or(codes::UNEXPECTED);
+        // The helper's own error block is on the terminal just above.
+        if !json {
+            return Some((code, "git-remote-dash reported the error above".into()));
+        }
+        let m = e["error"]["message"].as_str().unwrap_or("git failed");
+        let cause = match e["error"]["cause"].as_str() {
+            Some(c) => format!("{m}: {c}"),
+            None => m.to_string(),
+        };
+        Some((code, cause))
     }
 }
 
@@ -1083,7 +1071,7 @@ fn run_push(
     }
     cmd.args([remote, spec.as_str()])
         .envs(dash_env(ctx))
-        .env(REPORT_FILE_ENV, &report.0)
+        .envs(report.env())
         .stdin(Stdio::inherit());
     if ctx.json {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
@@ -1100,36 +1088,18 @@ fn run_push(
     if status.success() {
         return Ok(PushOutcome { charged });
     }
-    let helper_error = events.iter().rev().find(|e| e["event"] == "error");
     let rejected = events.iter().rev().find(|e| e["event"] == "rejected");
-    let code = helper_error
-        .and_then(|e| e["error"]["code"].as_str())
-        .and_then(|c| {
-            forge_core::user_error::CATALOGUE
-                .iter()
-                .find(|(k, _)| *k == c)
-                .map(|(k, _)| *k)
-        })
-        .unwrap_or(codes::UNEXPECTED);
-    let cause = match helper_error {
-        // The helper's own error block is on the terminal just above.
-        Some(_) if !ctx.json => "git-remote-dash reported the error above".to_string(),
-        Some(e) => {
-            let m = e["error"]["message"].as_str().unwrap_or("git push failed");
-            match e["error"]["cause"].as_str() {
-                Some(c) => format!("{m}: {c}"),
-                None => m.to_string(),
-            }
-        }
-        None => match rejected {
+    let (code, cause) = Report::helper_error(&events, ctx.json).unwrap_or_else(|| {
+        let cause = match rejected {
             Some(r) => format!(
                 "{} was rejected: {}",
                 r["ref"].as_str().unwrap_or("the ref"),
                 r["reason"].as_str().unwrap_or("refused")
             ),
             None => format!("git push exited with {status}"),
-        },
-    };
+        };
+        (codes::UNEXPECTED, cause)
+    });
     let upstream = if track { "-u " } else { "" };
     Err(UserError::new(code, format!("the push of {branch} failed"))
         .cause(cause)

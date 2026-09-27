@@ -56,7 +56,7 @@ dg --version
 dg doctor
 ```
 
-`dg doctor` checks the toolchain, your identity, the network, the contracts, your storage profiles and your git config. At this point it reports that no identity is configured. That is the next step.
+`dg doctor` checks the toolchain, your identity, the network, the contracts, your storage profiles and your git config. On a fresh install it warns (`!`) that no identity is configured and no network is chosen yet, and exits 0: nothing is broken. `dg auth new` in the next step fixes both.
 
 ---
 
@@ -111,12 +111,7 @@ dg auth login --network devnet --devnet-name moutai ~/Downloads/dash-identity-<i
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
-`git-remote-dash` still needs the network for a repository `dg` did not set up (`dg init` and `dg repo create --push` write it into the repository's git config). Add it to your shell profile if you clone by hand, or the helper uses testnet and stops with "not deployed":
-
-```sh
-export DASH_FORGE_NETWORK=devnet
-export DASH_FORGE_DEVNET_NAME=moutai
-```
+`git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both.
 
 Then check everything:
 
@@ -221,12 +216,18 @@ dg storage use r2-main                 # this repository's packs go to r2-main
 git push -u origin main
 ```
 
-Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key.
-
-Or start from an empty clone:
+Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key. On a computer where `dg` has recorded no network, name it in the clone, which keeps it in the clone's git config:
 
 ```sh
-git clone dash://<your identity id>/my-project
+git clone -c dash.network=devnet -c dash.devnetName=moutai dash://<owner>/<repo>
+```
+
+The repository page's **Clone** box shows this command, with the network filled in.
+
+Or start from an empty clone. `dg repo clone` runs `git clone` and records the network in the clone:
+
+```sh
+dg repo clone <your identity id>/my-project
 cd my-project
 git switch -c main                  # an empty clone has no branch yet
 echo "# my-project" > README.md

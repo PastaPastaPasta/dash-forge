@@ -162,6 +162,8 @@ impl Helper {
     /// content), so that is loaded and checked here.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
+            // No forge-v2 here: E702 now, not after connecting to a network with nothing on it.
+            self.target.require_v2()?;
             let client = PlatformClient::connect(self.target.clone())
                 .await
                 .with_context(|| {
@@ -1762,19 +1764,17 @@ fn oid_to_bytes(oid: &str) -> Result<Vec<u8>> {
 /// Resolve the network and its forge-v2 contracts. Precedence, field by field: the
 /// environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`,
 /// `DASH_FORGE_QUORUM_URL` — what `dg` and forge-import set per invocation) > git config
-/// (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`, `dash.quorumUrl`) > the embedded
-/// deployment > testnet.
+/// (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`, `dash.quorumUrl`) > the network
+/// `dg auth new` / `dg auth login` saved in `config.toml` > the embedded deployment > testnet
+/// (`NetworkSettings::for_git_helper`).
 pub(crate) fn network_target() -> Result<NetworkTarget> {
-    resolve_network(
-        NetworkSettings::from_env(),
-        NetworkSettings::from_git_config(crate::git::config_get),
-    )
+    resolve_network(NetworkSettings::for_git_helper(crate::git::config_get)?)
 }
 
-fn resolve_network(env: NetworkSettings, git: NetworkSettings) -> Result<NetworkTarget> {
-    env.overlay(git)
-        .resolve()
-        .context("resolving the network (DASH_FORGE_NETWORK / git config dash.network)")
+fn resolve_network(settings: NetworkSettings) -> Result<NetworkTarget> {
+    settings.resolve().context(
+        "resolving the network (DASH_FORGE_NETWORK / git config dash.network / dg's config.toml)",
+    )
 }
 
 /// Whether `DASH_FORGE_SKIP_WRITE_PRECHECK` asks to bypass [`write_access_denied`].
@@ -2349,26 +2349,56 @@ mod tests {
         })
     }
 
+    /// The helper's layers with `dg`'s saved default `dg`, resolved.
+    fn network_key(env: NetworkSettings, git: NetworkSettings, dg: NetworkSettings) -> String {
+        let s = NetworkSettings::git_helper_layers(env, git, || Ok(dg)).unwrap();
+        resolve_network(s).unwrap().network.key()
+    }
+
+    fn dg_saved(network: &str) -> NetworkSettings {
+        NetworkSettings {
+            network: Some(network.into()),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn git_config_selects_a_devnet_when_the_env_is_silent() {
-        let t = resolve_network(NetworkSettings::default(), git_devnet()).unwrap();
-        assert_eq!(t.network.key(), "devnet-moutai");
+        let none = NetworkSettings::default;
+        assert_eq!(network_key(none(), git_devnet(), none()), "devnet-moutai");
+        // ... and over the network dg saved.
+        assert_eq!(
+            network_key(none(), git_devnet(), dg_saved("mainnet")),
+            "devnet-moutai"
+        );
     }
 
     #[test]
     fn the_env_beats_git_config() {
-        let env = NetworkSettings {
-            network: Some("testnet".into()),
+        let t = network_key(
+            dg_saved("testnet"),
+            git_devnet(),
+            NetworkSettings::default(),
+        );
+        assert_eq!(t, "testnet");
+    }
+
+    #[test]
+    fn the_network_dg_saved_applies_when_env_and_git_config_are_silent() {
+        // L-03: after `dg auth new --devnet-name moutai`, `git push` resolved testnet.
+        let none = NetworkSettings::default;
+        let moutai = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("moutai".into()),
             ..Default::default()
         };
-        let t = resolve_network(env, git_devnet()).unwrap();
-        assert_eq!(t.network.key(), "testnet");
+        assert_eq!(network_key(none(), none(), moutai), "devnet-moutai");
     }
 
     #[test]
     fn nothing_configured_is_testnet() {
-        let t = resolve_network(NetworkSettings::default(), NetworkSettings::default()).unwrap();
-        assert_eq!(t.network.key(), "testnet");
+        let none = NetworkSettings::default;
+        assert_eq!(network_key(none(), none(), none()), "testnet");
     }
 
     #[test]

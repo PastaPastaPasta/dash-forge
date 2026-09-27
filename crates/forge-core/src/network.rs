@@ -99,6 +99,53 @@ impl Network {
         }
     }
 
+    /// The network a deployment key names (`testnet`, `mainnet`, `devnet-<name>`), with no
+    /// devnet addresses: they come from the deployment when it is selected.
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "mainnet" => Network::Mainnet,
+            "testnet" => Network::Testnet,
+            key => Network::Devnet {
+                name: key.strip_prefix("devnet-").unwrap_or(key).to_string(),
+                dapi_addresses: Vec::new(),
+                quorum_base_url: None,
+            },
+        }
+    }
+
+    /// The `(key, value)` pairs that select this network, given the kind and devnet-name keys
+    /// of one layer (`["dash.network", "dash.devnetName"]`, the env var names, …).
+    pub fn selection<'k>(&self, [kind_key, name_key]: [&'k str; 2]) -> Vec<(&'k str, String)> {
+        let mut pairs = vec![(kind_key, self.kind().to_string())];
+        if let Some(name) = self.devnet_name() {
+            pairs.push((name_key, name.to_string()));
+        }
+        pairs
+    }
+
+    /// The `dg` flags that select this network: `--network devnet --devnet-name moutai`.
+    pub fn dg_flags(&self) -> String {
+        join(&self.selection(["--network", "--devnet-name"]), " ", " ")
+    }
+
+    /// The git config that selects this network for the remote helper, in `scope` (`""` for
+    /// this repository, `"--global "` for every one).
+    pub fn git_config_command(&self, scope: &str) -> String {
+        let git = format!("git config {scope}");
+        let pairs = join(
+            &self.selection(GIT_NETWORK_KEYS),
+            " ",
+            &format!(" && {git}"),
+        );
+        format!("{git}{pairs}")
+    }
+
+    /// The environment that selects this network for one command:
+    /// `DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai`.
+    pub fn env_assignments(&self) -> String {
+        join(&self.selection([ENV_NETWORK, ENV_DEVNET_NAME]), "=", " ")
+    }
+
     /// The env vars that select this network in a child process (`git` → git-remote-dash).
     /// Every var is always present so a stale inherited value cannot leak through.
     pub fn env_vars(&self) -> Vec<(&'static str, String)> {
@@ -355,6 +402,22 @@ pub fn deployment_keys() -> impl Iterator<Item = &'static str> {
     EMBEDDED_DEPLOYMENTS.iter().map(|(key, _)| *key)
 }
 
+/// The network a "not deployed here" message points to: the first embedded deployment with
+/// forge-v2 contracts, mainnet first, then testnet, then the devnets by name. `None` when no
+/// network has a deployment.
+pub fn suggested_v2_network() -> Option<Network> {
+    let rank = |k: &str| match k {
+        "mainnet" => 0,
+        "testnet" => 1,
+        _ => 2,
+    };
+    // deployment_keys() is sorted, so ties on rank keep name order.
+    deployment_keys()
+        .filter(|k| deployment(k).ok().flatten().is_some_and(|d| d.v2.is_some()))
+        .min_by_key(|k| rank(k))
+        .map(Network::from_key)
+}
+
 /// The embedded deployment for `key`, or `None` when no file exists for it.
 pub fn deployment(key: &str) -> Result<Option<Deployment>> {
     let Some((_, raw)) = EMBEDDED_DEPLOYMENTS.iter().find(|(k, _)| *k == key) else {
@@ -433,6 +496,18 @@ const ENV_KEYS: [&str; 4] = [
     ENV_QUORUM_URL,
 ];
 
+/// `k<sep>v` for each pair, joined by `between`.
+fn join(pairs: &[(&str, String)], sep: &str, between: &str) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}{sep}{v}"))
+        .collect::<Vec<_>>()
+        .join(between)
+}
+
+/// The git config keys that pick the network kind and devnet name.
+pub const GIT_NETWORK_KEYS: [&str; 2] = ["dash.network", "dash.devnetName"];
+
 /// The git config keys, in [`NetworkSettings::from_lookup`] order.
 const GIT_CONFIG_KEYS: [&str; 4] = [
     "dash.network",
@@ -440,6 +515,9 @@ const GIT_CONFIG_KEYS: [&str; 4] = [
     "dash.dapiAddresses",
     "dash.quorumUrl",
 ];
+
+/// `dg`'s `config.toml` keys. It records no quorum URL, so that slot names no key.
+const DG_CONFIG_KEYS: [&str; 4] = ["network", "devnet_name", "dapi_addresses", ""];
 
 /// `Some(trimmed)` for a non-empty value; an empty setting counts as unset, so
 /// `DASH_FORGE_DEVNET_NAME=` (as [`Network::env_vars`] exports for testnet) falls through.
@@ -477,6 +555,66 @@ impl NetworkSettings {
     /// key, if set).
     pub fn from_git_config(get: impl Fn(&str) -> Option<String>) -> Self {
         Self::from_lookup(get, GIT_CONFIG_KEYS)
+    }
+
+    /// The layer `dg` saved as the default (`network`, `devnet_name`, `dapi_addresses` in
+    /// `config.toml`, written by `dg auth new` / `dg auth login`), for tools that take no
+    /// network flag of their own (the remote helper). Empty when there is no config file; a
+    /// file that cannot be read or does not parse is E204, as it is in `dg`.
+    pub fn from_dg_config() -> Result<Self> {
+        match crate::config_file::dg_config_path() {
+            Some(path) => Self::from_dg_config_file(&path),
+            None => Ok(Self::default()),
+        }
+    }
+
+    /// [`Self::from_dg_config`] for the `config.toml` at `path`.
+    pub fn from_dg_config_file(path: &std::path::Path) -> Result<Self> {
+        let Some(v) = crate::config_file::read_config_toml(path)? else {
+            return Ok(Self::default());
+        };
+        let key = |k: &str| v.get(k).and_then(toml::Value::as_str).map(str::to_string);
+        Ok(Self::from_lookup(key, DG_CONFIG_KEYS))
+    }
+
+    /// The remote helper's network layers: env > git config (read through `git_get`) >
+    /// dg's config.toml > (in [`Self::resolve`]) testnet (L-03).
+    pub fn for_git_helper(git_get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        Self::git_helper_layers(
+            Self::from_env(),
+            Self::from_git_config(git_get),
+            Self::from_dg_config,
+        )
+    }
+
+    /// Stack the remote helper's layers: `env` over `git`, then `dg` (the saved default) only
+    /// when those two leave the network open. `dg` is read lazily, so a `config.toml` that
+    /// does not parse (E204) fails only the invocations that would have used it.
+    pub fn git_helper_layers(
+        env: Self,
+        git: Self,
+        dg: impl FnOnce() -> Result<Self>,
+    ) -> Result<Self> {
+        let upper = env.overlay(git);
+        if upper.names_a_network() {
+            return Ok(upper);
+        }
+        Ok(upper.overlay(dg()?))
+    }
+
+    /// Whether no layer chose a network, so [`Self::resolve`] falls back to testnet.
+    pub fn is_unset(&self) -> bool {
+        self.network.is_none() && self.devnet_name.is_none()
+    }
+
+    /// Whether this layer picks one network by itself: a devnet name, or `testnet` /
+    /// `mainnet`. A bare `devnet` still needs a name from a lower layer.
+    fn names_a_network(&self) -> bool {
+        self.devnet_name.is_some()
+            || self
+                .network
+                .as_deref()
+                .is_some_and(|n| !n.eq_ignore_ascii_case("devnet"))
     }
 
     /// Build a layer from a key lookup. `keys` names network, devnet name, DAPI list and
@@ -946,6 +1084,132 @@ mod tests {
         assert!(
             matches!(&t.network, Network::Devnet { dapi_addresses, .. } if dapi_addresses == &["https://10.1.1.1:1443"])
         );
+    }
+
+    /// The remote helper's layers, resolved to a deployment key, with `dg`'s config.toml
+    /// holding `dg_toml`.
+    fn helper_key(env: NetworkSettings, git: NetworkSettings, dg_toml: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, dg_toml).unwrap();
+        NetworkSettings::git_helper_layers(env, git, || NetworkSettings::from_dg_config_file(&path))
+            .unwrap()
+            .resolve()
+            .unwrap()
+            .network
+            .key()
+    }
+
+    const DG_MOUTAI: &str = "network = \"devnet\"\ndevnet_name = \"moutai\"\n\
+                             default_identity = \"keychain:dash-forge/devnet-moutai/X\"\n";
+
+    #[test]
+    fn a_network_renders_as_flags_git_config_and_env() {
+        let moutai = Network::from_key("devnet-moutai");
+        assert_eq!(moutai.dg_flags(), "--network devnet --devnet-name moutai");
+        assert_eq!(
+            moutai.git_config_command("--global "),
+            "git config --global dash.network devnet && git config --global dash.devnetName moutai"
+        );
+        assert_eq!(
+            moutai.env_assignments(),
+            "DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai"
+        );
+        let main = Network::from_key("mainnet");
+        assert_eq!(main.dg_flags(), "--network mainnet");
+        assert_eq!(
+            main.git_config_command(""),
+            "git config dash.network mainnet"
+        );
+        assert_eq!(main.env_assignments(), "DASH_FORGE_NETWORK=mainnet");
+        assert_eq!(suggested_v2_network().unwrap().key(), "devnet-moutai");
+    }
+
+    #[test]
+    fn the_helper_falls_back_to_the_network_dg_saved() {
+        // L-03: `dg auth new --devnet-name moutai`, then a plain `git push` went to testnet.
+        let none = NetworkSettings::default;
+        assert_eq!(helper_key(none(), none(), DG_MOUTAI), "devnet-moutai");
+        // With no config.toml (or one that records no network) it is still testnet.
+        assert_eq!(helper_key(none(), none(), ""), "testnet");
+        let t = NetworkSettings::git_helper_layers(none(), none(), || {
+            NetworkSettings::from_dg_config_file(std::path::Path::new("/nonexistent/c.toml"))
+        })
+        .unwrap();
+        assert_eq!(t.resolve().unwrap().network, Network::Testnet);
+    }
+
+    #[test]
+    fn env_beats_git_config_beats_dg_config() {
+        let none = NetworkSettings::default;
+        let git = |k: &str| (k == "dash.network").then(|| "mainnet".to_string());
+        assert_eq!(
+            helper_key(none(), NetworkSettings::from_git_config(git), DG_MOUTAI),
+            "mainnet"
+        );
+        assert_eq!(
+            helper_key(
+                layer("testnet"),
+                NetworkSettings::from_git_config(git),
+                DG_MOUTAI
+            ),
+            "testnet"
+        );
+        // A git-config devnet with its own name ignores dg's saved devnet (and its addresses).
+        let paloma = NetworkSettings::from_git_config(|k| match k {
+            "dash.network" => Some("devnet".into()),
+            "dash.devnetName" => Some("paloma".into()),
+            _ => None,
+        });
+        let dg = format!("{DG_MOUTAI}dapi_addresses = \"10.9.9.9\"\n");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, dg).unwrap();
+        let s = NetworkSettings::git_helper_layers(none(), paloma, || {
+            NetworkSettings::from_dg_config_file(&path)
+        })
+        .unwrap();
+        assert_eq!(s.devnet_name.as_deref(), Some("paloma"));
+        assert_eq!(s.dapi_addresses, None);
+    }
+
+    #[test]
+    fn a_bare_devnet_above_takes_the_name_dg_saved() {
+        // `DASH_FORGE_NETWORK=devnet` alone needs a name; dg's config supplies it.
+        assert_eq!(
+            helper_key(layer("devnet"), NetworkSettings::default(), DG_MOUTAI),
+            "devnet-moutai"
+        );
+    }
+
+    #[test]
+    fn a_broken_dg_config_is_read_only_when_it_is_needed() {
+        let bad = |path: &std::path::Path| {
+            std::fs::write(path, "network = \n").unwrap();
+            NetworkSettings::from_dg_config_file(path)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // The environment chose: the broken file is never read.
+        let s = NetworkSettings::git_helper_layers(
+            layer("mainnet"),
+            NetworkSettings::default(),
+            || bad(&path),
+        )
+        .unwrap();
+        assert_eq!(s.network.as_deref(), Some("mainnet"));
+        // Nothing above chose: E204 naming the file, never a silent testnet.
+        let err = NetworkSettings::git_helper_layers(
+            NetworkSettings::default(),
+            NetworkSettings::default(),
+            || bad(&path),
+        )
+        .unwrap_err();
+        let u = crate::user_error::classify(
+            [&err as &(dyn std::error::Error + 'static)],
+            &crate::user_error::ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E204");
     }
 
     #[test]

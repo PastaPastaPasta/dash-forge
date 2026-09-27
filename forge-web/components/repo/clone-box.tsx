@@ -15,9 +15,11 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { Dialog } from '@/components/ui/dialog'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { RepoAddress } from '@/hooks/use-query-param'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
 import { formatBytes, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
+import { repoCommands } from '@/lib/view/repo-commands'
 import {
   compressInWorker,
   listFiles,
@@ -30,8 +32,7 @@ import {
 } from '@/lib/view/zip'
 
 export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
-  const slug = `${addr.owner}/${addr.name}`
-  const remote = `dash://${slug}`
+  const cmd = repoCommands(addr.owner, addr.name)
   const [installing, setInstalling] = useState(false)
 
   return (
@@ -47,16 +48,19 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         <BackendBadge backend={home.backend} />
       </div>
       <div className="p-3">
-        <CopyRow text={remote} label="Copy clone URL" />
+        <CopyRow text={cmd.remote} label="Copy clone URL" />
         <div className="hidden sm:block">
-          <CopyRow text={`git clone ${remote}`} />
+          <CopyRow text={cmd.gitClone} label="Copy git clone command" />
           <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
             needs git-remote-dash ·{' '}
             <button type="button" onClick={() => setInstalling(true)} className="hit-area underline hover:text-forge-800 dark:hover:text-forge-400">
               install
             </button>
           </p>
-          <CopyRow text={`dg repo clone ${slug}`} />
+          <CopyRow text={cmd.dgClone} label="Copy dg repo clone command" />
+          <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-network">
+            The repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>; both commands record that in the clone.
+          </p>
         </div>
         <p className="mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
           A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.

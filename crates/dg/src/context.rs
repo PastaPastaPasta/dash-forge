@@ -24,6 +24,9 @@ pub struct Ctx {
     pub yes: bool,
     /// The resolved network and the forge-v2 contracts deployed on it.
     pub target: NetworkTarget,
+    /// Nothing chose the network (no flag, no `config.toml` network, no environment), so
+    /// `target` is the built-in default.
+    pub network_is_default: bool,
     /// The resolved identity file path (from `--identity` / `DASH_FORGE_KEY` / config), if any.
     pub identity_path: Option<PathBuf>,
     /// `--identity` as given on the command line (not the environment or the default).
@@ -54,36 +57,32 @@ fn confirmation_required(cause: String) -> UserError {
         .note("nothing was written")
 }
 
-/// Stack the network layers in `dg`'s precedence order and resolve them.
+/// Stack the network layers in `dg`'s precedence order, for [`NetworkSettings::resolve`].
 ///
 /// Precedence, field by field: flags (`--network` / `--devnet-name` / `--dapi-addresses`) >
 /// config file > environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
 /// `DASH_FORGE_DAPI_ADDRESSES`) > the embedded
 /// `forge-contracts/deployments/<network>.json` > testnet. A lower layer that names a
 /// different network contributes nothing network-specific (see `NetworkSettings::overlay`).
-fn resolve_target(
-    flags: NetworkSettings,
-    config: &Config,
-    env: NetworkSettings,
-) -> Result<NetworkTarget> {
-    Ok(flags
-        .overlay(config.network_settings())
-        .overlay(env)
-        .resolve()?)
+fn stack(flags: NetworkSettings, config: &Config, env: NetworkSettings) -> NetworkSettings {
+    flags.overlay(config.network_settings()).overlay(env)
 }
 
 impl Ctx {
     /// Resolve the context from parsed CLI flags and the persisted config.
     ///
-    /// Network: see [`resolve_target`]. Identity: `--identity` > `DASH_FORGE_KEY` env >
-    /// config default.
+    /// Network: see [`stack`]. Identity: `--identity` > `DASH_FORGE_KEY` env > config
+    /// default.
     pub fn resolve(cli: &Cli, config: &Config) -> Result<Self> {
         let flags = NetworkSettings::from_flags(
             cli.network.map(|n| n.kind().to_string()),
             cli.devnet_name.clone(),
             cli.dapi_addresses.clone(),
         );
-        let target = resolve_target(flags, config, NetworkSettings::from_env())
+        let layers = stack(flags, config, NetworkSettings::from_env());
+        let network_is_default = layers.is_unset();
+        let target = layers
+            .resolve()
             .context("resolving the network (--network / --devnet-name / config.toml)")?;
 
         if cli
@@ -103,6 +102,7 @@ impl Ctx {
             json: cli.json,
             yes: cli.yes,
             target,
+            network_is_default,
             identity_path,
             cli_identity: cli.identity.clone(),
             stdin_tty: std::io::stdin().is_terminal(),
@@ -263,7 +263,10 @@ impl Ctx {
         Self {
             json,
             yes,
-            target: resolve_target(flags, &Config::default(), NetworkSettings::default()).unwrap(),
+            target: stack(flags, &Config::default(), NetworkSettings::default())
+                .resolve()
+                .unwrap(),
+            network_is_default: false,
             identity_path,
             cli_identity: None,
             stdin_tty,
@@ -290,16 +293,36 @@ mod tests {
             ..Default::default()
         };
         // Config wins over env.
-        let t =
-            resolve_target(NetworkSettings::default(), &config("testnet"), env.clone()).unwrap();
+        let t = stack(NetworkSettings::default(), &config("testnet"), env.clone())
+            .resolve()
+            .unwrap();
         assert_eq!(t.network, Network::Testnet);
         // Env applies when nothing above sets a network.
-        let t = resolve_target(NetworkSettings::default(), &Config::default(), env).unwrap();
+        let t = stack(NetworkSettings::default(), &Config::default(), env)
+            .resolve()
+            .unwrap();
         assert_eq!(t.network, Network::Mainnet);
         // A flag wins over config.
         let flags = NetworkSettings::from_flags(Some("mainnet".into()), None, None);
-        let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
+        let t = stack(flags, &config("testnet"), NetworkSettings::default())
+            .resolve()
+            .unwrap();
         assert_eq!(t.network, Network::Mainnet);
+    }
+
+    #[test]
+    fn only_an_empty_stack_is_the_default_network() {
+        let none = NetworkSettings::default;
+        let empty = stack(none(), &Config::default(), none());
+        assert!(empty.network.is_none() && empty.devnet_name.is_none());
+        assert_eq!(empty.resolve().unwrap().network, Network::Testnet);
+        // `dg auth new --devnet-name moutai` saved a network: not the default any more.
+        let saved = Config {
+            devnet_name: Some("moutai".into()),
+            ..config("devnet")
+        };
+        let t = stack(none(), &saved, none());
+        assert_eq!(t.resolve().unwrap().network.key(), "devnet-moutai");
     }
 
     #[test]
@@ -348,7 +371,9 @@ mod tests {
     #[test]
     fn devnet_name_flag_overrides_a_testnet_config() {
         let flags = NetworkSettings::from_flags(None, Some("moutai".into()), None);
-        let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
+        let t = stack(flags, &config("testnet"), NetworkSettings::default())
+            .resolve()
+            .unwrap();
         assert_eq!(t.network.key(), "devnet-moutai");
     }
 }

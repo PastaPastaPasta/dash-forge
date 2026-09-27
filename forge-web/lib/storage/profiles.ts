@@ -14,6 +14,7 @@ import { z } from 'zod'
 
 import { isPublicHttpsUrl } from '../net'
 import { isHeaderSafe } from './util'
+import { PUSH_COST_DASH } from '@/lib/sdk/cost'
 
 /** The kinds a profile can be (parity with forge-core `Profile`). */
 export type ProfileKind = 's3' | 'ipfs-kubo' | 'ipfs-pinning-service' | 'platform'
@@ -162,7 +163,7 @@ export const PROVIDERS: readonly ProviderPreset[] = [
   {
     id: 'platform',
     title: 'Dash Platform',
-    blurb: 'permanent, ~0.28 DASH per MiB',
+    blurb: `permanent, ~${PUSH_COST_DASH.perMib} DASH per MiB`,
     kind: 'platform',
     defaults: {},
     hints: {},

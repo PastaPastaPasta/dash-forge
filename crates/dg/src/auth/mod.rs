@@ -640,10 +640,12 @@ async fn login_source(
                     master.network
                 ))
                 .fix(format!(
-                    "add {}",
-                    match master.network.strip_prefix("devnet-") {
-                        Some(name) => format!("`--network devnet --devnet-name {name}`"),
-                        None => format!("`--network {}`", master.network),
+                    "add `{}`",
+                    if master.network == "devnet" {
+                        // A file that names no devnet: the name is the user's to fill in.
+                        "--network devnet --devnet-name <name>".to_string()
+                    } else {
+                        forge_core::platform::Network::from_key(&master.network).dg_flags()
                     }
                 ))
                 .into(),

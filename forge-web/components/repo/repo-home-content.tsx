@@ -13,6 +13,9 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, FileText, GitCommit, Rocket, Search } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
+import { repoCommands, shellWord } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
 import { walkFiles } from '@/lib/view/zip'
 import type { RepoHome, SelectedRef } from '@/lib/view'
@@ -268,7 +271,7 @@ function GoToFile({
  * repository, or start from scratch, and where the bytes will go.
  */
 function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddress; branch: string }): JSX.Element {
-  const remote = `dash://${addr.owner}/${addr.name}`
+  const cmd = repoCommands(addr.owner, addr.name)
   const configured = home.backend.kind !== 'platform' || home.backend.uris.length > 0
   return (
     <section
@@ -285,13 +288,20 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         </h2>
       </div>
       <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
-      <CopyRow text={`git remote add origin ${remote}`} />
-      <CopyRow text={`git push -u origin ${branch.replace(/^refs\/heads\//, '')}`} />
+      <CopyRow text={cmd.remoteAdd} />
+      <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
+      <CopyRow text={`git push -u origin ${shellWord(branch.replace(/^refs\/heads\//, ''))}`} />
       <h3 className="mb-1.5 mt-4 text-dense font-medium">Or start from scratch</h3>
-      <CopyRow text={`dg repo clone ${addr.owner}/${addr.name} && cd ${addr.name}`} />
+      <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} />
+      <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="empty-repo-network">
+        This repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>: the commands set that in the
+        repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
+      </p>
       <p className="mt-4 text-[12px] text-anvil-600 dark:text-anvil-300">
         Storage: packs go to <span className="font-mono">{configured ? home.backend.label : 'Platform'}</span>
-        {configured ? ' (set by the owner)' : ''} · Platform: manifest + refs only, ~0.0003 DASH per push
+        {configured
+          ? ` (set by the owner) · Platform: manifest + refs only, ~${dashRange(PUSH_COST_DASH.byo)} DASH per push`
+          : ` · a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH`}
       </p>
       <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         No git-remote-dash yet?{' '}
@@ -308,7 +318,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
-            No storage configured: pushes will be stored on Platform at ~0.28 DASH/MiB.{' '}
+            No storage configured: pushes will be stored on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB.{' '}
             <Link href="/settings/storage" className="font-medium text-forge-700 underline dark:text-forge-400">
               Configure storage →
             </Link>

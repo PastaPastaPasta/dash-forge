@@ -5,20 +5,18 @@
  * list prices, rounded, and say so.
  */
 
-import { CREDITS_PER_DASH, estimateChunkCredits } from '@/lib/sdk/cost'
+import { CREDITS_PER_DASH, dashRange, estimateChunkCredits, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { dashToUsd, formatDash } from '@/lib/view/format'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 
 const MIB = 1024 * 1024
-/** Manifest + ref update per push, measured on moutai (≈ 0.0003 DASH). */
-const PER_PUSH_DASH = 0.0003
 
 export function CostCard(): JSX.Element {
   const platform50 = estimateChunkCredits(50 * MIB) / CREDITS_PER_DASH
   const perMib = estimateChunkCredits(MIB) / CREDITS_PER_DASH
-  const pushes = PER_PUSH_DASH * 10
+  const pushes = PUSH_COST_DASH.byo.max * 10
   const rows: [string, string, string, string][] = [
-    ['Your R2 bucket', `manifest + refs ≈ ${formatDash(PER_PUSH_DASH)} DASH / push`, '≈ $0.001', `≈ ${formatDash(pushes)} DASH ≈ ${dashToUsd(pushes)} + $0.00`],
+    ['Your R2 bucket', `manifest + refs ≈ ${dashRange(PUSH_COST_DASH.byo)} DASH / push`, '≈ $0.001', `≈ ${formatDash(pushes)} DASH ≈ ${dashToUsd(pushes)} + $0.00`],
     ['Your B2 / S3 bucket', 'same', '≈ $0.0003 / $0.001', `≈ ${formatDash(pushes)} DASH + < $0.01`],
     ['Dash Platform', `${formatDash(perMib)} DASH / MiB, permanent`, '0', `≈ ${formatDash(platform50)} DASH ≈ ${dashToUsd(platform50)} first upload, then ${formatDash(perMib)} DASH per pushed MiB`],
   ]

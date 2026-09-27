@@ -55,6 +55,7 @@ SCENARIOS=(
   "21-review-round-trip"
   "22-issue-parity"
   "23-request-budgets"
+  "24-fresh-home-network"
 )
 
 # Optional subset filter (match by leading number or substring).
