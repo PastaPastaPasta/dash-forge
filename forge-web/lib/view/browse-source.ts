@@ -40,7 +40,16 @@ import {
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
-import { describePack, readGateways } from './storage-status'
+import {
+  describePack,
+  gatewayHealth,
+  gatewayOf,
+  noteRepoGateways,
+  readGateways,
+  readGatewaysFor,
+  resetGatewayHealth,
+  resetRepoGateways,
+} from './storage-status'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -352,12 +361,15 @@ const deadUrls = new Set<string>()
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
   deadUrls.clear()
+  resetGatewayHealth()
 }
 
-/** Test hook: forget the dead-URL list and the per-origin queues. */
+/** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
   deadUrls.clear()
   originSlots.clear()
+  resetGatewayHealth()
+  resetRepoGateways()
 }
 
 /**
@@ -431,6 +443,31 @@ function hostsOf(urls: readonly string[]): string[] {
 }
 
 /**
+ * Drop the URLs on an IPFS gateway that does not answer at all ({@link gatewayHealth}, one
+ * probe per gateway per session), with a `host: reason` line each: a retired or unreachable
+ * gateway then costs nothing instead of a timeout per pack, and the storage card can say
+ * which gateway failed and why. Non-gateway URLs pass through untouched.
+ */
+async function skipDeadGateways(
+  urls: readonly string[],
+): Promise<{ readonly live: string[]; readonly reasons: string[] }> {
+  const verdicts = await Promise.all(
+    urls.map(async (url) => {
+      const gw = gatewayOf(url)
+      return gw === null ? null : gatewayHealth(gw)
+    }),
+  )
+  const live: string[] = []
+  const reasons: string[] = []
+  urls.forEach((url, i) => {
+    const down = verdicts[i]
+    if (down === null || down === undefined) live.push(url)
+    else reasons.push(`${externalSourceName(url)}: gateway down (${down})`)
+  })
+  return { live, reasons: [...new Set(reasons)] }
+}
+
+/**
  * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
  * mirror in turn. `onServed` is told which URL answered, so the trust panel can name the host
  * bytes actually came from. A range cannot be hashed on its own: the reader re-hashes every
@@ -440,11 +477,14 @@ async function fetchExternalRange(
   manifest: PackManifest,
   start: number,
   end: number,
+  gateways: readonly string[],
   onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris)
+  const urls = externalFetchUrls(manifest.uris, gateways)
   let lastErr: unknown = 'no browser-fetchable mirror'
-  for (const url of urls.filter((u) => !deadUrls.has(u))) {
+  const { live: reachable, reasons: downReasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
+  if (reachable.length === 0 && downReasons.length > 0) lastErr = downReasons.join('; ')
+  for (const url of reachable) {
     try {
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
       onServed?.(url)
@@ -475,22 +515,27 @@ function errorText(e: unknown): string {
  */
 async function fetchExternalWhole(
   manifest: PackManifest,
+  gateways: readonly string[],
   onServed?: (uri: string) => void,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris)
+  const urls = externalFetchUrls(manifest.uris, gateways)
   const want = manifest.packHash.toLowerCase()
-  const live = urls.filter((u) => !deadUrls.has(u))
+  const { live, reasons: downReasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
   if (live.length === 0) {
     throw new PackUnavailableError(
       manifest.packHash,
       hostsOf(urls),
       false,
-      urls.length === 0 ? 'nothing to try' : 'every mirror already failed this session',
+      urls.length === 0
+        ? 'nothing to try'
+        : downReasons.length > 0
+          ? downReasons.join('; ')
+          : 'every mirror already failed this session',
     )
   }
   let corrupt = false
-  const reasons: string[] = []
+  const reasons: string[] = [...downReasons]
   const timedOut: string[] = []
   // Cancels the losing mirrors once one has served the pack (or the whole clone gave up):
   // an ipfs:// URI fans out to one request per gateway, and each would otherwise download
@@ -674,10 +719,11 @@ export function artifactRangeFetch(
           lastErr = e
         }
       }
-      if (lastErr !== undefined && externalFetchUrls(copy.uris).length === 0) {
+      const gateways = readGatewaysFor(repoKey(repo))
+      if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
         throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
       }
-      return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
+      return fetchExternalRange(copy, start, end, gateways, (uri) => noteSource(repo, uri))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
     noteSource(repo)
@@ -846,12 +892,13 @@ async function loadExternalCopy(
       reasons.push(`platform: ${errorText(e)}`)
     }
   }
-  if (reasons.length === 0) return fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+  const gateways = readGatewaysFor(repoKey(repo))
+  if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, uri), cancel)
   const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
     new PackUnavailableError(manifest.packHash, ['platform', ...hosts], corrupt || bad, [...reasons, ...why].join('; '))
-  if (externalFetchUrls(manifest.uris).length === 0) throw unavailable([], [], false)
+  if (externalFetchUrls(manifest.uris, gateways).length === 0) throw unavailable([], [], false)
   try {
-    return await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+    return await fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, uri), cancel)
   } catch (e) {
     // Report the chunk failures alongside the mirrors', not only the mirrors'.
     if (e instanceof PackUnavailableError) throw unavailable(e.hosts, [errorText(e)], e.corrupt)
@@ -1003,6 +1050,8 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door.
   const manifests = await readRepoPackManifests(sdk, repo)
+  // The gateways this repo's pushes recorded reach its IPFS node: try them first.
+  noteRepoGateways(repoKey(repo), manifests.flatMap((m) => m.uris))
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)

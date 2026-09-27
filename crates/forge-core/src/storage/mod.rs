@@ -92,6 +92,20 @@ mod tests {
     }
 
     #[test]
+    fn retired_gateways_are_not_defaults() {
+        // ipfs.io and dweb.link answer 429 with `Sunset: Mon, 21 Sep 2026`; w3s.link and
+        // nftstorage.link redirect to them (B-1). A default list of dead hosts makes every
+        // IPFS-only repo unreadable.
+        let g = default_ipfs_gateways();
+        for dead in ["ipfs.io", "dweb.link", "w3s.link", "nftstorage.link"] {
+            assert!(
+                !g.iter().any(|u| u == &format!("https://{dead}")),
+                "{dead} is retired but still a default: {g:?}"
+            );
+        }
+    }
+
+    #[test]
     fn human_bytes_units() {
         assert_eq!(human_bytes(812), "812 B");
         assert_eq!(human_bytes(4096), "4.0 KiB");

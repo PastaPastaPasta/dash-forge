@@ -291,7 +291,7 @@ impl Helper {
         let svc = &svc;
         let repo = &conn.repo;
         let contract = &svc.repo_contract(repo).await?;
-        let reader = &PackReader::from_user_config();
+        let reader = &svc.repo_reader(repo, &git_packs).await;
         // Membership only ranks copies; if it cannot be read, fall back to time order
         // rather than failing the clone (every copy is still hash-verified).
         let roles = &svc.copy_roles(repo).await.unwrap_or_else(|e| {

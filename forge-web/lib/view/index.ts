@@ -101,6 +101,7 @@ export {
 export { crossCheckQuorumKeysCached, type QuorumCrossCheck } from './quorum-check'
 export {
   describeUnavailable,
+  onlyGatewaysFailed,
   normalizeGateway,
   readGateways,
   setUserGateways,

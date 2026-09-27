@@ -1051,6 +1051,26 @@ impl<'a> RepoService<'a> {
             .await
     }
 
+    /// A reader over the user's gateway list with this repo's OWN public gateways first
+    /// (the `…/ipfs/` bases it recorded on chain in `manifests` and `config.backend.uris`):
+    /// they reach the node that holds the content, which a shared default gateway may not.
+    /// A config that cannot be read only costs the preference, never the read.
+    pub async fn repo_reader(&self, repo: &RepoRef, manifests: &[PackManifestInfo]) -> PackReader {
+        let backend = match self.readable(repo).await {
+            Ok((scope, contract)) => self
+                .newest_config(&scope, &contract)
+                .await
+                .ok()
+                .flatten()
+                .map(|d| scope::backend_uris(&d))
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let manifest_uris: Vec<&String> = manifests.iter().flat_map(|m| &m.uris).collect();
+        PackReader::from_user_config()
+            .prefer_gateways(crate::storage::read::repo_gateways(&backend, manifest_uris))
+    }
+
     /// Fetch one manifest's artifact, SHA-256-verified against it.
     ///
     /// External copies go first: every recorded URI, raced with `reader`'s IPFS gateway
@@ -1188,7 +1208,7 @@ impl<'a> RepoService<'a> {
         }
 
         let roles = self.copy_roles(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests).await;
         let mut pack_blobs = Vec::new();
         for (hash, copies) in group_by_hash(&git) {
             let (sealed, m) = self
@@ -1355,7 +1375,7 @@ impl<'a> RepoService<'a> {
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
         let roles = self.copy_roles(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests).await;
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
             let (bytes, best) = match self
@@ -1435,7 +1455,7 @@ impl<'a> RepoService<'a> {
             )));
         }
         let contract = self.repo_contract(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests).await;
         let mut report = LocalReseedReport::default();
         for m in &live {
             if !force
@@ -1580,7 +1600,7 @@ impl<'a> RepoService<'a> {
 
         // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`.
         let contract = self.repo_contract(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests).await;
         let mut parts = Vec::with_capacity(live_locators.len() + 1);
         for m in live_locators.iter().rev() {
             let sealed = self

@@ -27,9 +27,9 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
-import { externalFetchUrls, resetExternalFetchState } from './browse-source'
+import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
 import { contentChecks, resetContentChecks } from './content-checks'
-import { describeUnavailable } from './storage-status'
+import { describeUnavailable, noteRepoGateways, overrideDefaultGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
 /** A repo whose session caches key by `repoId` (each test uses its own). */
@@ -159,6 +159,7 @@ describe('startFallback with external-storage packs', () => {
     vi.useRealTimers()
     resetContentChecks()
     resetExternalFetchState()
+    overrideDefaultGateways(null)
   })
 
   it('skips an external pack no mirror serves, reports it, and still serves the rest', async () => {
@@ -252,14 +253,51 @@ describe('startFallback with external-storage packs', () => {
     const ext = blobPack('pinned on ipfs\n')
     const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreitest'] })
     const repo = testRepo('fallback-ipfs')
+    overrideDefaultGateways(['https://gw-a.example', 'https://gw-b.example'])
     const [first, second] = externalFetchUrls(external.uris)
-    expect(first).toBe('https://ipfs.io/ipfs/bafkreitest')
-    // The first gateway is down; the second serves the right bytes.
-    stubFetch({ [second as string]: () => ext.pack })
+    expect(first).toBe('https://gw-a.example/ipfs/bafkreitest')
+    // The first gateway is down; the second answers its liveness probe and serves the bytes.
+    stubFetch({ 'https://gw-b.example/ipfs/bafkqaaa': () => new Uint8Array(), [second as string]: () => ext.pack })
     const ctx = await startFallback(mockSdk(new Map()), repo, [external])
     expect(ctx.unavailable).toEqual([])
     expect((await ctx.reader.readObject(ext.oid)).type).toBe('blob')
-    expect(contentChecks(repo.repoId).sources).toEqual(['dweb.link'])
+    expect(contentChecks(repo.repoId).sources).toEqual(['gw-b.example'])
+  })
+
+  it("tries the repo's own recorded gateway first, and skips a dead gateway without fetching the pack", async () => {
+    const ext = blobPack('on my own gateway\n')
+    // The push recorded its node's public gateway next to the CID (forge-core targets.rs).
+    const external = manifestFor(ext.pack, 1, {
+      storage: 1,
+      chunkCount: 0,
+      uris: ['https://mine.example/ipfs/bafkreimine', 'ipfs://bafkreimine'],
+    })
+    const repo = testRepo('fallback-own-gw')
+    noteRepoGateways(repo.repoId, external.uris)
+    overrideDefaultGateways(['https://dead.example'])
+    const calls = stubFetch({
+      'https://mine.example/ipfs/bafkqaaa': () => new Uint8Array(),
+      'https://mine.example/ipfs/bafkreimine': () => ext.pack,
+    })
+    const ctx = await startFallback(mockSdk(new Map()), repo, [external])
+    expect(ctx.unavailable).toEqual([])
+    expect(contentChecks(repo.repoId).sources).toEqual(['mine.example'])
+    // The repo's gateway is first; a dead gateway never gets a pack request.
+    expect(calls.filter((u) => u.includes('bafkreimine'))[0]).toBe('https://mine.example/ipfs/bafkreimine')
+    expect(calls.filter((u) => u === 'https://dead.example/ipfs/bafkreimine')).toEqual([])
+  })
+
+  it('names every dead gateway when no gateway works, so the card can say which failed', async () => {
+    const ext = blobPack('nobody can serve this\n')
+    const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreigone'] })
+    overrideDefaultGateways(['https://retired.example'])
+    vi.stubGlobal('fetch', (url: string) =>
+      Promise.resolve(new Response('', { status: url.includes('retired.example') ? 429 : 504 })),
+    )
+    const err = await startFallback(mockSdk(new Map()), testRepo('fallback-no-gw'), [external]).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(StorageUnreachableError)
+    const packs = (err as StorageUnreachableError).packs
+    expect(packs[0]?.reason).toMatch(/retired\.example: gateway down \(HTTP 429\)/)
   })
 
   it('treats a mirror serving the wrong bytes as unavailable, not as content', async () => {

@@ -42,7 +42,7 @@ export interface ContentChecks {
   readonly corruptMirrorPacks: readonly string[]
   /**
    * Places that did not serve a pack, with why, as the card lists them
-   * (`pub-9a1.r2.dev (timed out)`, `ipfs (not found on 3 gateways)`).
+   * (`pub-9a1.r2.dev (timed out)`, `ipfs gateway ipfs.io (down: HTTP 429)`).
    */
   readonly unreachable: readonly string[]
 }

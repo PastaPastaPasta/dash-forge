@@ -9,7 +9,7 @@
 //!
 //! ```toml
 //! [read]
-//! ipfs_gateways = ["https://ipfs.io", "https://dweb.link"]  # optional override
+//! ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]  # optional override
 //!
 //! [profiles.r2-main]
 //! kind = "s3"
