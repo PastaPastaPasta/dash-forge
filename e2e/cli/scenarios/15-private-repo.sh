@@ -130,7 +130,7 @@ step "COLLAB (removed) clones again -> refused; the old clone still has the old 
 if git_dash "$ID_COLLAB" "$LOG-c2" clone "$REMOTE" "${WORKROOT}/s15-collab2"; then
   bad "a removed member cloned after the rotation"
 elif grep -qE 'E307|E310' "$LOG-c2.err"; then
-  ok "removed member refused ($(grep -oE 'E30[69]' "$LOG-c2.err" | head -1))"
+  ok "removed member refused ($(grep -oE 'E3(07|10)' "$LOG-c2.err" | head -1))"
 else
   cat "$LOG-c2.err" >&2
   is_flake "$LOG-c2.err" && skip_scenario "removed-member clone failed on a flake"
