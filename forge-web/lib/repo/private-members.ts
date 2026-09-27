@@ -60,7 +60,7 @@ import {
   type WrapDoc,
 } from './private-session'
 import { repoSource } from './source'
-import { assertNoPlaintext, grantMember, revokeMember } from './writes'
+import { assertNoPlaintext, grantMembershipDoc, revokeMembershipDoc } from './writes'
 
 
 /** An identity as the messages name it: its first 8 characters. */
@@ -637,7 +637,9 @@ async function rotateWith(
   const removing = exclude.length > 0
   const allowed = [...plan.recipients.map((r) => r.identity), ...plan.unreachable]
   // `from`: the epoch this step chains from and its key (the caller's copy is wiped here).
+  // `skip`: when `from` is burned, the nearest non-burned epoch below it and its key.
   let from = { epoch: plan.from, raw: (await rawEpochKey(session, c, plan.from)).raw }
+  let skip = session.resolution.burned.has(plan.from) ? await skipBelow(session, c, plan.from) : null
   let burned: number | null = null
   try {
     for (;;) {
@@ -708,11 +710,13 @@ async function rotateWith(
               onStep?.({ kind: 'wrapped', identity: r.identity, epoch })
             }
           }
-          await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, true)
+          await postAnchor(c, session, next.keys, epoch, from.epoch, null, intent, true)
           if ((await confirmAnchor(c, epoch, next.keys.commit, drop, onStep)) === 'lost') return { lost: epoch }
           onStep?.({ kind: 'burned', epoch })
           burned = epoch
-          from.raw.fill(0)
+          // The next epoch skips this burned one to the nearest non-burned epoch below it.
+          if (skip === null) skip = from
+          else from.raw.fill(0)
           from = { epoch, raw: next.raw }
           next = { keys: next.keys, raw: new Uint8Array(0) }
           continue
@@ -720,7 +724,7 @@ async function rotateWith(
         if ((await straysAt(c, epoch, allowed)).length > 0) {
           throw new PrivateMembersError(`key epoch ${epoch} reached someone it must not; run the rotation again`, 'E310')
         }
-        await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, false)
+        await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, false, skip?.raw ?? null)
         return { epoch, commit: next.keys.commit }
       } finally {
         next.raw.fill(0)
@@ -728,7 +732,27 @@ async function rotateWith(
     }
   } finally {
     from.raw.fill(0)
+    skip?.raw.fill(0)
   }
+}
+
+/**
+ * The nearest non-burned epoch below the burned epoch `burned` and its raw key (§5.3 skip link),
+ * from this reader's own accepted wraps. Every epoch between it and `burned` must be readable
+ * and burned; otherwise the chain cannot be continued from here: refused.
+ */
+async function skipBelow(session: PrivateSession, c: PrivateWriteContext, burned: number): Promise<{ epoch: number; raw: Uint8Array }> {
+  const r = session.resolution
+  for (let s = burned - 1; s >= 0; s--) {
+    if (!r.keys.has(s)) break
+    if (r.burned.has(s)) continue
+    if (acceptedOwnWraps(session, c.auth.identityId, s).length === 0) break
+    return { epoch: s, raw: (await rawEpochKey(session, c, s)).raw }
+  }
+  throw new PrivateMembersError(
+    `key epoch ${burned} is burned and you hold no key of the epoch below it that the next epoch must skip to; a maintainer who holds it must rotate`,
+    'E310',
+  )
 }
 
 async function freshKey(repoId: Uint8Array, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {
@@ -746,11 +770,20 @@ async function postAnchor(
   keys: EpochKeys,
   epoch: number,
   prevEpoch: number,
-  prevEpochKey: Uint8Array,
+  /** K_prev; null for a burned anchor (§5.3: its key may sit with someone who never held the key below). */
+  prevEpochKey: Uint8Array | null,
   intent: string,
   burned: boolean,
+  /** The key of the nearest non-burned epoch below a burned `prevEpoch` (§5.3 `skipEpochKey`). */
+  skipEpochKey: Uint8Array | null = null,
 ): Promise<void> {
-  const fields = { ...currentConfigFields(session), prevEpoch, prevEpochKey: new Uint8Array(prevEpochKey), ...(burned ? { burned: true as const } : {}) }
+  const fields = {
+    ...currentConfigFields(session),
+    prevEpoch,
+    ...(prevEpochKey !== null ? { prevEpochKey: new Uint8Array(prevEpochKey) } : {}),
+    ...(skipEpochKey !== null ? { skipEpochKey: new Uint8Array(skipEpochKey) } : {}),
+    ...(burned ? { burned: true as const } : {}),
+  }
   try {
     const enc = await sealDoc(keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch }, fields, { anchor: true })
     await postConfig(
@@ -765,7 +798,8 @@ async function postAnchor(
       `${intent}:anchor:${epoch}:${keyTag(keys)}${burned ? ':burned' : ''}`,
     )
   } finally {
-    fields.prevEpochKey.fill(0)
+    fields.prevEpochKey?.fill(0)
+    fields.skipEpochKey?.fill(0)
   }
 }
 
@@ -794,7 +828,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
       )
     }
   })
-  await grantMember(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
+  await grantMembershipDoc(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
   await waitForMembers(c, (rows) => holds(rows, memberId, role))
   await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
 }
@@ -933,7 +967,7 @@ export async function removePrivateMember(
       await sleep(POLL_MS)
     }
   }
-  await revokeMember(c.sdk, c.auth, c.repo, memberId, role)
+  await revokeMembershipDoc(c.sdk, c.auth, c.repo, memberId, role)
   onStep?.({ kind: 'deleted' })
   onStep?.({ kind: 'waiting', what: 'the member list to drop them' })
   const rows = await waitForMembers(c, (r) => !holds(r, memberId, role))
@@ -1031,29 +1065,36 @@ async function anchorChanges(
 
 /**
  * Whether `config` could stand in for the anchor of `epoch`: it opens with the epoch's key (so it
- * carries the same commitment), with the same `burned` flag, and chains to the same key of
- * `epoch - 1` (§5.3). False when this reader cannot read the epoch.
+ * carries the same commitment) and repeats the anchor's whole chain link: the same `burned` flag,
+ * `prevEpoch`, and keys (`prevEpochKey`, `skipEpochKey`) committing to the same keys (§5.3).
+ * False when this reader cannot read the epoch.
  */
 async function sameAnchor(session: PrivateSession, epoch: number, config: Anchor['config']): Promise<boolean> {
   const r = session.resolution
   const keys = r.keys.get(epoch)
-  if (keys === undefined) return false
-  const opened = await openWithKey(
-    { type: 'config', ownerId: config.owner, epoch, id: config.id, createdAtBlockHeight: config.createdAtBlockHeight, enc: config.enc },
-    keys,
-    true,
-  )
-  if (opened.status !== 'readable') return false
-  const { burned, prevEpoch, prevEpochKey } = opened.fields
+  const anchor = r.anchors.get(epoch)
+  if (keys === undefined || anchor === undefined) return false
+  const open = async (x: Anchor['config']) => {
+    const o = await openWithKey({ type: 'config', ownerId: x.owner, epoch, id: x.id, createdAtBlockHeight: x.createdAtBlockHeight, enc: x.enc }, keys, true)
+    return o.status === 'readable' ? o.fields : null
+  }
+  const [mine, theirs] = [await open(config), await open(anchor.config)]
+  const wipe = (f: typeof mine) => {
+    f?.prevEpochKey?.fill(0)
+    f?.skipEpochKey?.fill(0)
+  }
   try {
-    if ((burned === true) !== r.burned.has(epoch)) return false
-    if (epoch === 0) return true
-    const prevCommit = r.anchors.get(epoch - 1)?.commit
-    if (prevEpoch !== epoch - 1 || prevEpochKey === undefined || prevCommit == null) return false
-    const prev = await EpochKeys.import(session.repoId, epoch - 1, prevEpochKey)
-    return bytesEqual(prev.commit, prevCommit)
+    if (mine === null || theirs === null) return false
+    const same = (x?: Uint8Array, y?: Uint8Array) => (x === undefined) === (y === undefined) && (x === undefined || bytesEqual(x, y as Uint8Array))
+    return (
+      (mine.burned === true) === (theirs.burned === true) &&
+      mine.prevEpoch === theirs.prevEpoch &&
+      same(mine.prevEpochKey, theirs.prevEpochKey) &&
+      same(mine.skipEpochKey, theirs.skipEpochKey)
+    )
   } finally {
-    prevEpochKey?.fill(0)
+    wipe(mine)
+    wipe(theirs)
   }
 }
 
@@ -1198,12 +1239,15 @@ async function reanchorEpochsOf(
       session.ctx,
     )
     if (opened.status !== 'readable') throw new PrivateMembersError(`the anchor of epoch ${e} does not open; repair the repo first`, 'E310')
-    const { prevEpoch, prevEpochKey, burned } = opened.fields
+    const { prevEpoch, prevEpochKey, skipEpochKey, burned } = opened.fields
     try {
-      // The same key, chain pair and burned flag (§5.3): the re-anchor stands in for the anchor.
+      // The same key and the whole chain link (§5.3: prevEpoch, prevEpochKey, skipEpochKey,
+      // burned): the re-anchor stands in for the anchor.
       const fields = {
         ...currentConfigFields(session),
-        ...(prevEpoch !== undefined && prevEpochKey !== undefined ? { prevEpoch, prevEpochKey } : {}),
+        ...(prevEpoch !== undefined ? { prevEpoch } : {}),
+        ...(prevEpochKey !== undefined ? { prevEpochKey } : {}),
+        ...(skipEpochKey !== undefined ? { skipEpochKey } : {}),
         ...(burned === true ? { burned } : {}),
       }
       const enc = await sealDoc(keys, { type: 'config', ownerId: self, epoch: e }, fields, { anchor: true })
@@ -1220,6 +1264,7 @@ async function reanchorEpochsOf(
       )
     } finally {
       prevEpochKey?.fill(0)
+      skipEpochKey?.fill(0)
     }
     onStep?.({ kind: 'reanchored', epoch: e })
   }

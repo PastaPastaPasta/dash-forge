@@ -32,7 +32,7 @@ import { listIssues, readReviews } from './issues'
 import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
-import { assertNoPlaintext } from './writes'
+import { assertNoPlaintext, grantMember, revokeMember } from './writes'
 import type { PackManifest, RepoRef } from './index'
 
 // ---------------------------------------------------------------------------
@@ -544,6 +544,15 @@ describe('rotation and repair planning', () => {
     expect(plan?.rotate).toEqual([b58(CAROL)])
     expect(plan?.wrap).toEqual([b58(DAN)])
     expect(planRepair(await sessionFor(w, BOB), b58(BOB), FORGE.core)).toBeNull()
+  })
+})
+
+describe('a private repo has no plain membership path', () => {
+  it('the plain grant and revoke writers refuse a private repo before any read or write', async () => {
+    const noSdk = new Proxy({}, { get: () => { throw new Error('touched the SDK') } }) as unknown as EvoSDK
+    const auth = { identityId: b58(ALICE), network: 'devnet' as const, getSigningKeyWif: () => 'x' }
+    await expect(grantMember(noSdk, auth, REPO_REF, b58(CAROL), 'writer')).rejects.toThrow(/private-repo flow/)
+    await expect(revokeMember(noSdk, auth, REPO_REF, b58(CAROL), 'writer')).rejects.toThrow(/private-repo flow/)
   })
 })
 

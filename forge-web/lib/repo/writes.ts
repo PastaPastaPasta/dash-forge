@@ -660,10 +660,41 @@ async function findMembership(sdk: EvoSDK, repo: RepoRef, role: Role, memberId: 
 }
 
 /**
- * Grant `memberId` a role on a repo: the owner creates a `maintainer` or `writer`
+ * A private repo's membership changes only through `lib/repo/private-members.ts`
+ * (`addPrivateMember` / `removePrivateMember`): an add must hand out the key and a removal must
+ * re-anchor and rotate (`private-repos.md` §5.3, §5.5). The plain writers refuse it.
+ */
+export class PrivateMembershipError extends Error {
+  constructor(action: 'add' | 'remove') {
+    super(
+      `members of a private repo can only be ${action === 'add' ? 'added' : 'removed'} through the private-repo flow (it ${action === 'add' ? 'hands them the key' : 'rotates the key'}); add your encryption key to this browser to manage members`,
+    )
+    this.name = 'PrivateMembershipError'
+  }
+}
+
+/**
+ * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
+ * Refused on a private repo ({@link PrivateMembershipError}).
  */
 export async function grantMember(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  memberId: string,
+  role: Role,
+  intent?: string,
+): Promise<WriteResult> {
+  if (repo.visibility === 'private') throw new PrivateMembershipError('add')
+  return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
+}
+
+/**
+ * The membership document write alone, for any repo. Only `private-members.ts` calls it for a
+ * private repo, inside the add flow (after its checks, before the key wrap).
+ */
+export async function grantMembershipDoc(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
@@ -688,8 +719,26 @@ export async function grantMember(
   return result
 }
 
-/** Revoke a role: the owner deletes the membership document. No-op when there is none. */
+/**
+ * Revoke a role on a public repo: the owner deletes the membership document. No-op when there
+ * is none. Refused on a private repo ({@link PrivateMembershipError}).
+ */
 export async function revokeMember(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  memberId: string,
+  role: Role,
+): Promise<DeleteResult> {
+  if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  return revokeMembershipDoc(sdk, auth, repo, memberId, role)
+}
+
+/**
+ * The membership document delete alone, for any repo. Only `private-members.ts` calls it for a
+ * private repo, inside the removal flow (after the re-anchors, before the rotation).
+ */
+export async function revokeMembershipDoc(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,

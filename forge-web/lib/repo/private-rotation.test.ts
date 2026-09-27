@@ -140,11 +140,11 @@ vi.mock('./writes', async (orig) => {
   const real = await orig<typeof import('./writes')>()
   return {
     ...real,
-    grantMember: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: Membership['role']) => {
+    grantMembershipDoc: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: Membership['role']) => {
       members.push({ identity: memberId, role, createdAt: 99 })
       return { documentId: 'm', confirmed: true, actualCredits: 0 }
     },
-    revokeMember: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: string) => {
+    revokeMembershipDoc: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: string) => {
       if (revokeFails) throw new Error('network: revoke failed')
       members = members.filter((m) => !(m.identity === memberId && m.role === role))
       return { deleted: true, actualCredits: 0 }
@@ -415,7 +415,7 @@ describe('burn and contiguity review', () => {
     // BOB anchors epoch 1 burned and wraps it to ALICE only: nobody outside the members holds it.
     maintainer(BOB)
     const raw = new Uint8Array(32).fill(0x81)
-    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, burned: true })
     wrap(BOB, ALICE, 1, raw)
     const before = await aliceSession()
     expect(before.resolution.burned.has(1)).toBe(true)
@@ -455,7 +455,7 @@ describe('burn and contiguity review', () => {
   it('#3 a re-anchor keeps the burned flag of the epoch', async () => {
     maintainer(BOB)
     const raw = new Uint8Array(32).fill(0x91)
-    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, burned: true })
     wrap(BOB, ALICE, 1, raw)
     await removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-burner').catch(() => undefined)
     const s = await aliceSession()
@@ -477,7 +477,7 @@ describe('burn and contiguity review', () => {
     wrap(BOB, CAROL, 1, raw)
     // CAROL pre-posts a config under the same key: same commitment, another flag or chain pair.
     const prevEpochKey = 'other' in extra ? new Uint8Array(32).fill(0x13) : new Uint8Array(K0)
-    await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey, ...('burned' in extra ? { burned: true as const } : {}) })
+    await anchor(CAROL, k1, 'burned' in extra ? { defaultBranch: 'main', prevEpoch: 0, burned: true } : { defaultBranch: 'main', prevEpoch: 0, prevEpochKey })
     await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/would change/)
     expect(isMaintainerNow(BOB)).toBe(true)
   })
@@ -555,7 +555,7 @@ describe('burn and contiguity review', () => {
   it('#7 adding a member while the current epoch is burned writes nothing', async () => {
     maintainer(BOB)
     const raw = new Uint8Array(32).fill(0xb1)
-    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, burned: true })
     wrap(BOB, ALICE, 1, raw)
     const DAN = id(0x25)
     await expect(addPrivateMember(ctx, b58(DAN), 'writer', 'add-dan')).rejects.toThrow()
@@ -615,7 +615,7 @@ describe('correctness review of the burn fixes', () => {
     await anchor(BOB, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
     wrap(BOB, ALICE, 1, raw)
     wrap(BOB, CAROL, 1, raw)
-    await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, burned: true })
     const configs = (chain['config'] ?? []).length
     const wraps = (chain['repoKey'] ?? []).length
     await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/comes first/)
@@ -689,7 +689,7 @@ describe('correctness review of the burn fixes', () => {
   it('M3 re-running a removal while the current epoch is burned rotates past it', async () => {
     maintainer(BOB)
     const raw = new Uint8Array(32).fill(0x63)
-    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, burned: true })
     wrap(BOB, ALICE, 1, raw)
     // CAROL was already removed by an earlier run.
     members = members.filter((m) => m.identity !== b58(CAROL))
