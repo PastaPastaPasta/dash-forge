@@ -64,10 +64,13 @@ jobs:
         run: pnpm build
       # E2E_SKIP_BUILD serves the `out/` just built instead of building a second time. Both
       # projects run: chromium (every spec) and webkit (sign-in resilience).
+      # The "showcase repos" specs read imported mirrors that are being rebuilt after the
+      # 2026-09-27 moutai reset: excluded until the re-mirror is announced (then drop the
+      # --grep-invert).
       - name: Playwright
         env:
           E2E_SKIP_BUILD: '1'
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test --grep-invert "showcase repos"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
