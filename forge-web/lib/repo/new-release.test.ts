@@ -6,6 +6,7 @@ import {
   publishRelease,
   assetFilesProblem,
   assetPlanProblem,
+  carriedAssets,
   plannedAsset,
   releaseIntent,
   releaseTextProblem,
@@ -22,6 +23,32 @@ const S3: StorageProfile = {
   secrets: { accessKeyId: 'AKID', secretAccessKey: 'secret' },
 }
 const PLATFORM: StorageProfile = { name: 'platform', settings: { kind: 'platform', provider: 'platform' }, secrets: {} }
+
+describe('carriedAssets (D-504)', () => {
+  const H = 'ab'.repeat(32)
+  const existing = {
+    assets: [
+      { name: 'app.tar.gz', sha256: H, size: 200000, uris: ['https://a.example/app'] },
+      { name: 'CHANGES.txt', sha256: H, size: null, uris: ['https://a.example/c'] },
+    ],
+  }
+  it('keeps every current asset when the revision uploads none (a yank)', () => {
+    expect(carriedAssets(existing, [])).toEqual([
+      { name: 'app.tar.gz', sha256: H, sizeBytes: 200000, uris: ['https://a.example/app'] },
+      { name: 'CHANGES.txt', sha256: H, sizeBytes: 0, uris: ['https://a.example/c'] },
+    ])
+  })
+  it('drops only an asset a new upload of the same name replaces', () => {
+    expect(carriedAssets(existing, [{ name: 'app.tar.gz' }]).map((a) => a.name)).toEqual(['CHANGES.txt'])
+  })
+  it('a new tag carries nothing', () => {
+    expect(carriedAssets(null, [])).toEqual([])
+  })
+  it('counts kept assets against the 4096-byte field', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ name: `a${i}`, sha256: H, sizeBytes: 1, uris: [`https://a.example/${'x'.repeat(200)}${i}`] }))
+    expect(assetPlanProblem([{ name: 'new', size: 1 }], policyFor(['r2'], 'one'), [S3], many)).toMatch(/a release holds 4096/)
+  })
+})
 
 describe('release input rules', () => {
   it('accepts git tag names and refuses what git check-ref-format would', () => {
@@ -134,7 +161,7 @@ describe('a private repo', () => {
     const file = { name: 'a.bin', size: 3, arrayBuffer: vi.fn(async () => new ArrayBuffer(3)) }
     const input = { tagName: 'v1', name: '', notes: '', files: [file], draft: 'd' }
     await expect(publishRelease(sdk, auth, repo, input, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
-    await expect(publishRelease(sdk, auth, repo, { ...input, files: [], stored: [{ name: 'a', sha256: '00', sizeBytes: 1, uris: ['https://x'] }] }, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
+    await expect(publishRelease(sdk, auth, repo, { ...input, files: [], stored: { name: '', notes: '', assets: [{ name: 'a', sha256: '00', sizeBytes: 1, uris: ['https://x'] }] } }, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
     expect(file.arrayBuffer).not.toHaveBeenCalled()
     expect(touched).not.toHaveBeenCalled()
   })

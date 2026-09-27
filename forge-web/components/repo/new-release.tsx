@@ -18,11 +18,12 @@ import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Plus, XCircle } from '
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, formatBytes } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
-import type { ReleaseAsset } from '@/lib/repo/writes'
 import {
   ReleaseWriteError,
+  type ResolvedRelease,
   assetFilesProblem,
   assetPlanProblem,
+  carriedAssets,
   plannedAsset,
   publishRelease,
   releaseTextProblem,
@@ -118,27 +119,40 @@ function NewReleaseDialog({
   const [tag, setTag] = useState('')
   const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
+  const [yanked, setYanked] = useState(false)
   const [files, setFiles] = useState<File[]>([])
   const [progress, setProgress] = useState<Record<string, AssetState>>({})
   const [phase, setPhase] = useState<'edit' | 'publishing' | 'unconfirmed' | 'done'>('edit')
   const [touched, setTouched] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
-  // After an unconfirmed release write: the assets it named. Retry writes exactly these.
-  const [pendingAssets, setPendingAssets] = useState<readonly ReleaseAsset[] | null>(null)
+  // After an unconfirmed release write: the release it named. Retry writes exactly it.
+  const [pendingAssets, setPendingAssets] = useState<ResolvedRelease | null>(null)
 
   const policy = config && repo ? policyForRepo(config, repo.repoId) : null
   const profiles = useMemo(() => config?.profiles ?? [], [config])
   const targets = externalTargets(policy, profiles)
   const trimmedTag = tag.trim()
+  // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
+  // blank is kept, so a yank or a notes edit never drops the files (D-504).
+  const existing = releases?.current.find((r) => r.tagName === trimmedTag) ?? null
+  const kept = useMemo(() => carriedAssets(existing, files), [existing, files])
+  const finalName = title.trim() || existing?.name || ''
+  const finalNotes = notes.trimEnd() || existing?.notes || ''
   const problem =
-    tagProblem(trimmedTag) ?? releaseTextProblem({ name: title.trim(), notes: notes.trimEnd() }) ?? assetFilesProblem(files) ?? assetPlanProblem(files, policy, profiles)
+    tagProblem(trimmedTag) ?? releaseTextProblem({ name: finalName, notes: finalNotes }) ?? assetFilesProblem(files) ?? assetPlanProblem(files, policy, profiles, kept)
   // The release document as it will be written, with placeholder hashes: sizes the cost.
   const cost = useMemo(
-    () => previewCreate('release', { tagName: trimmedTag, name: title.trim(), notes: notes.trimEnd(), assets: JSON.stringify(files.map((f) => plannedAsset(f.name, f.size, policy, profiles))) }),
-    [trimmedTag, title, notes, files, policy, profiles],
+    () =>
+      previewCreate('release', {
+        tagName: trimmedTag,
+        name: finalName,
+        notes: finalNotes,
+        yanked,
+        assets: JSON.stringify([...kept, ...files.map((f) => plannedAsset(f.name, f.size, policy, profiles))]),
+      }),
+    [trimmedTag, finalName, finalNotes, yanked, kept, files, policy, profiles],
   )
-  const existing = releases?.current.find((r) => r.tagName === trimmedTag) ?? null
   const locked = phase !== 'edit'
 
   const publish = async (): Promise<void> => {
@@ -156,7 +170,7 @@ function NewReleaseDialog({
         sdk,
         signer,
         repo,
-        { tagName: trimmedTag, name: title.trim(), notes: notes.trimEnd(), files, draft, ...(pendingAssets ? { stored: pendingAssets } : {}) },
+        { tagName: trimmedTag, name: title.trim(), notes: notes.trimEnd(), files, draft, yanked, ...(pendingAssets ? { stored: pendingAssets } : {}) },
         { policy, profiles },
         (e) => {
           if (e.step === 'upload' && e.event.phase === 'start') {
@@ -192,7 +206,7 @@ function NewReleaseDialog({
       if (inner instanceof UnconfirmedWriteError && e instanceof ReleaseWriteError) {
         // The write may still land: keep the content AND its stored assets fixed, so a retry
         // uploads nothing and finishes the same signed write.
-        setPendingAssets(e.assets)
+        setPendingAssets(e.resolved)
         setPhase('unconfirmed')
         setError(`${message}${context} Retry finishes the same write; nothing is signed twice.`)
       } else {
@@ -252,15 +266,24 @@ function NewReleaseDialog({
         {existing ? (
           <p role="note" className="flex items-start gap-1.5 text-[12px] text-caution-700 dark:text-caution-400">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            {trimmedTag} already has a release{existing.name ? ` (“${existing.name}”)` : ''}. This one replaces it as the current release; its assets are not carried over, and the old one is listed as previous.
+            {trimmedTag} already has a release{existing.name ? ` (“${existing.name}”)` : ''}. This one replaces it as the current release and keeps its{' '}
+            {kept.length === 1 ? '1 asset' : `${kept.length} assets`}
+            {existing.assets.length > kept.length ? ` (a new file of the same name replaces ${existing.assets.length - kept.length})` : ''}, and its title and notes where you leave them blank. The old one is listed as previous.
+            {existing.yanked && !yanked ? ' It is yanked now: publishing without "Yanked" ticked un-yanks it.' : ''}
           </p>
         ) : null}
         <Field label="Title (optional)" htmlFor="release-title">
-          <Input id="release-title" value={title} onChange={(e) => setTitle(e.target.value)} disabled={locked} />
+          <Input id="release-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={existing?.name || undefined} disabled={locked} />
         </Field>
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
-          <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} disabled={locked} />
+          <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notes || undefined} disabled={locked} />
         </Field>
+        <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
+          <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />
+          <span>
+            Yanked: withdraw it (shown with a warning; its assets stay listed and downloadable).
+          </span>
+        </label>
         {repo.visibility === 'private' ? null : (
         <div className="space-y-1.5">
           <label htmlFor="release-assets" className="flex items-center gap-1.5 text-dense font-medium text-anvil-700 dark:text-anvil-200">

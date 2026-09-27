@@ -87,9 +87,7 @@ async fn upload_asset(
     targets: &[ExternalTarget],
     required: usize,
 ) -> Result<ReleaseAsset> {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
+    let name = upload_name(path)
         .context("an asset path needs a file name")?
         .to_string();
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -125,6 +123,10 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     collab
         .require_role(&s.repo, Role::Maintainer, &format!("publish release {tag}"))
         .await?;
+    // A release for this tag supersedes the current one (newest per tag wins), so what the
+    // command does not change is carried forward: `--yanked` alone must not drop the files.
+    let (current, _) = collab.releases(&s.repo).await?;
+    let existing = current.into_iter().find(|r| &r.tag_name == tag);
     let targets = if args.assets.is_empty() {
         None
     } else {
@@ -145,8 +147,22 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
             forge_core::storage::human_bytes(total)
         )
     };
+    let kept = existing.as_ref().map_or(String::new(), |r| {
+        format!(
+            "; it replaces the current {tag} release and keeps its {} other asset(s){}",
+            r.assets
+                .iter()
+                .filter(|a| !uploads_replace(&args.assets, &a.name))
+                .count(),
+            if r.yanked && !args.yanked {
+                " (it is yanked now: without --yanked this un-yanks it)"
+            } else {
+                ""
+            }
+        )
+    });
     ctx.confirm_or_cancel(&format!(
-        "Publish release {tag} of {}{with}? (one small document, ~0.0002 DASH)",
+        "Publish release {tag} of {}{with}{kept}? (one small document, ~0.0002 DASH)",
         s.repo.display()
     ))?;
     let mut uploaded = Vec::new();
@@ -166,13 +182,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         }
     }
     let before = s.balance().await;
-    let input = ReleaseInput {
-        tag_name: tag.clone(),
-        name: args.name.clone(),
-        notes: args.notes.clone(),
-        yanked: args.yanked,
-        assets: uploaded,
-    };
+    let input = superseding_input(existing.as_ref(), args, uploaded);
     let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
         anyhow::Error::from(e).context(if input.assets.is_empty() {
             "nothing was written"
@@ -200,6 +210,74 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// The asset name an upload of `path` records.
+fn upload_name(path: &Path) -> Option<&str> {
+    path.file_name().and_then(|n| n.to_str())
+}
+
+/// Whether one of `uploads` records an asset named `name` (and so replaces that asset).
+fn uploads_replace(uploads: &[PathBuf], name: &str) -> bool {
+    uploads.iter().any(|p| upload_name(p) == Some(name))
+}
+
+/// The release `args` publishes (D-504). The newest release per tag wins, so a revision
+/// that left out what it did not mean to change would drop it: the current release's name
+/// and notes stay unless given, and its assets stay, except those a new upload of the same
+/// name replaces. `--yanked` is the one field each revision states afresh (a republish
+/// without it un-yanks).
+fn superseding_input(
+    existing: Option<&Release>,
+    args: &ReleaseCreateArgs,
+    uploaded: Vec<ReleaseAsset>,
+) -> ReleaseInput {
+    let keep = |given: &str, old: fn(&Release) -> &str| match (given, existing) {
+        ("", Some(r)) => old(r).to_string(),
+        _ => given.to_string(),
+    };
+    let mut assets: Vec<ReleaseAsset> = existing
+        .into_iter()
+        .flat_map(|r| &r.assets)
+        .filter(|a| !uploaded.iter().any(|u| u.name == a.name))
+        .cloned()
+        .collect();
+    assets.extend(uploaded);
+    ReleaseInput {
+        tag_name: args.tag.clone(),
+        name: keep(&args.name, |r| &r.name),
+        notes: keep(&args.notes, |r| &r.notes),
+        yanked: args.yanked,
+        assets,
+    }
+}
+
+/// Why `asset` cannot be downloaded verified (D-517): it records no SHA-256 to check the
+/// bytes against. Releases mirrored by forge-import before it hashed assets record `""`;
+/// without this, every candidate "failed verification" and the error blamed a pack.
+/// Nothing is downloaded unverified: there is no opt-out.
+fn unverifiable(asset: &ReleaseAsset, repo: &str, tag: &str) -> Option<UserError> {
+    (!forge_core::rules::is_sha256_hex(&asset.sha256)).then(|| {
+        UserError::new(
+            codes::INTEGRITY,
+            format!(
+                "asset {:?} of release {tag:?} has no recorded SHA-256, so it cannot be verified",
+                crate::fmt::safe(&asset.name)
+            ),
+        )
+        .cause(if asset.sha256.is_empty() {
+            "the release records an empty sha256 (a release mirrored by an older forge-import, which did not hash assets)".to_string()
+        } else {
+            format!("the recorded sha256 {:?} is not 64 hex digits", crate::fmt::safe(&asset.sha256))
+        })
+        .fix(format!(
+            "a maintainer of {repo} re-runs the import with a current forge-import: it downloads and hashes each asset and republishes the release"
+        ))
+        .fix(format!(
+            "or re-publishes it with the file: `dg release create {repo} --tag {tag} --asset <file>`"
+        ))
+        .note("nothing was downloaded: dg only saves bytes it can check against the recorded hash")
+    })
 }
 
 fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
@@ -307,6 +385,9 @@ async fn download(
     if asset.uris.is_empty() {
         bail!("asset {:?} records no URI to download from", asset.name);
     }
+    if let Some(e) = unverifiable(&asset, repo, tag) {
+        return Err(e.into());
+    }
     // The gateway the uploader recorded reaches its node: try it before the shared list.
     let reader = PackReader::from_user_config()
         .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris));
@@ -403,5 +484,107 @@ mod no_readable_copy_tests {
         );
         assert!(!e.message.contains('\u{1b}'), "{:?}", e.message);
         assert!(cause.len() < 600, "each copy is capped: {}", cause.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(name: &str, sha: char) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.into(),
+            sha256: sha.to_string().repeat(64),
+            size_bytes: 10,
+            uris: vec![format!("https://a.example/{name}")],
+            uri: None,
+        }
+    }
+
+    fn current() -> Release {
+        Release {
+            document_id: "d1".into(),
+            tag_name: "v1".into(),
+            name: "One".into(),
+            notes: "first".into(),
+            yanked: false,
+            assets: vec![asset("app.tar.gz", 'a'), asset("CHANGES.txt", 'b')],
+            publisher: "M".into(),
+            created_at: 1,
+        }
+    }
+
+    fn args(extra: &[&str]) -> ReleaseCreateArgs {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: ReleaseCreateArgs,
+        }
+        let mut argv = vec!["dg", "o/r", "--tag", "v1"];
+        argv.extend_from_slice(extra);
+        Wrap::parse_from(argv).a
+    }
+
+    fn names(assets: &[ReleaseAsset]) -> Vec<(String, char)> {
+        assets
+            .iter()
+            .map(|a| (a.name.clone(), a.sha256.chars().next().unwrap_or('-')))
+            .collect()
+    }
+
+    /// D-504: `--yanked` alone republished the tag with no assets, name or notes.
+    #[test]
+    fn yanking_keeps_the_assets_name_and_notes() {
+        let input = superseding_input(Some(&current()), &args(&["--yanked"]), Vec::new());
+        assert!(input.yanked);
+        assert_eq!(
+            (input.name.as_str(), input.notes.as_str()),
+            ("One", "first")
+        );
+        assert_eq!(names(&input.assets), names(&current().assets));
+    }
+
+    #[test]
+    fn given_fields_win_and_a_same_named_upload_replaces_its_asset() {
+        let a = args(&["--notes", "second", "--asset", "dist/app.tar.gz"]);
+        let input = superseding_input(Some(&current()), &a, vec![asset("app.tar.gz", 'c')]);
+        assert!(!input.yanked, "a republish without --yanked un-yanks");
+        assert_eq!(
+            (input.name.as_str(), input.notes.as_str()),
+            ("One", "second")
+        );
+        assert_eq!(
+            names(&input.assets),
+            [
+                ("CHANGES.txt".to_string(), 'b'),
+                ("app.tar.gz".to_string(), 'c')
+            ]
+        );
+        assert!(uploads_replace(&a.assets, "app.tar.gz"));
+        assert!(!uploads_replace(&a.assets, "CHANGES.txt"));
+    }
+
+    #[test]
+    fn a_new_tag_has_only_what_was_given() {
+        let input = superseding_input(None, &args(&["--yanked"]), Vec::new());
+        assert!(input.assets.is_empty() && input.name.is_empty() && input.notes.is_empty());
+    }
+
+    /// D-517: an asset with no recorded hash is refused with its own error, not E503.
+    #[test]
+    fn an_asset_without_a_hash_is_refused_by_name_with_the_fix() {
+        let mut a = asset("fd", 'a');
+        assert!(unverifiable(&a, "o/r", "v0.1.0").is_none());
+        a.sha256 = String::new();
+        let e = unverifiable(&a, "o/r", "v0.1.0").expect("refused");
+        assert_eq!(e.code, codes::INTEGRITY);
+        let text = e.to_json().to_string();
+        assert!(text.contains("no recorded SHA-256"), "{text}");
+        assert!(text.contains("forge-import"), "{text}");
+        assert!(text.contains("nothing was downloaded"), "{text}");
+        assert!(!text.contains("reseed"), "{text}");
+        a.sha256 = "nothex".into();
+        assert!(unverifiable(&a, "o/r", "v0.1.0").is_some());
     }
 }
