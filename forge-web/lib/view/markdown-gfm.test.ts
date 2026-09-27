@@ -217,6 +217,19 @@ describe('review regressions', () => {
     expect(links('[r]: https://r.io\n\n[a [b][r] c][]')).toEqual(['https://r.io'])
   })
 
+  it('keeps a space at the end of a span', () => {
+    expect(para('a <b>Note: </b>text')).toEqual([
+      { t: 'text', v: 'a ' },
+      { t: 'strong', c: [{ t: 'text', v: 'Note: ' }] },
+      { t: 'text', v: 'text' },
+    ])
+  })
+
+  it('treats a tag named like an Object.prototype member as an unknown tag', () => {
+    expect(para('<constructor>kept</constructor> <toString>x</toString>')).toEqual([{ t: 'text', v: 'kept x' }])
+    expect(parseMarkdown('<constructor>\nblock\n</constructor>').every((b) => b.t !== 'element')).toBe(true)
+  })
+
   it('keeps closing-tag offsets right after characters whose lowercase is longer (İ)', () => {
     expect(para('İİİ<kbd>x</kbd> after')).toEqual([
       { t: 'text', v: 'İİİ' },

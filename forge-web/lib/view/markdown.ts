@@ -423,7 +423,7 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
     add(ch)
     i += 1
   }
-  pendingSpaces = 0 // trailing spaces of the whole run are dropped
+  if (depth === 0) pendingSpaces = 0 // a paragraph's trailing spaces go; a span's (`<b>Note: </b>x`) stay
   flush()
   return out
 }
@@ -542,7 +542,7 @@ function inlineTag(
   if (DROP_WITH_CONTENTS.has(tag.name)) {
     return { node: null, end: closing === -1 ? src.length : closing + tag.name.length + 3 }
   }
-  const alias = SPAN_ALIASES[tag.name]
+  const alias = Object.hasOwn(SPAN_ALIASES, tag.name) ? SPAN_ALIASES[tag.name] : undefined
   const kept = INLINE_TAGS.has(tag.name) ? (tag.name as 'kbd' | 'sub' | 'sup') : undefined
   if ((alias !== undefined || kept !== undefined || tag.name === 'a') && closing !== -1 && depth < MAX_INLINE_DEPTH) {
     const c = parseInline(src.slice(end, closing), depth + 1, htmlOnly)
@@ -788,7 +788,7 @@ function htmlItems(src: string): Item[] {
     const tag = close - open <= MAX_TAG_CHARS ? parseTag(src, open, close) : null
     i = open + 1
     if (tag === null) continue
-    const container = CONTAINERS[tag.name]
+    const container = Object.hasOwn(CONTAINERS, tag.name) ? CONTAINERS[tag.name] : undefined
     if (container !== undefined || tag.name === 'hr') {
       flushText(open)
       if (tag.name === 'hr') items.push({ t: 'hr' })
