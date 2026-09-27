@@ -485,6 +485,16 @@ describe('burn and contiguity review', () => {
     expect(s.anchors.get(1)?.owner).toBe(b58(ALICE))
   })
 
+  it('a removal whose surviving current epoch the remover cannot read is refused before anything is deleted', async () => {
+    // CAROL, a maintainer, anchored epoch 1 and wrapped it to herself only.
+    maintainer(CAROL)
+    const raw = new Uint8Array(32).fill(0xc1)
+    await anchor(CAROL, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(CAROL, CAROL, 1, raw)
+    await expect(removePrivateMember(ctx, b58(BOB), 'writer', 'rm-bob')).rejects.toThrow(/stays current/)
+    expect(members.some((m) => m.identity === b58(BOB))).toBe(true)
+  })
+
   it('#5 re-adding a maintainer whose old config would take over an epoch is refused', async () => {
     // CAROL (a maintainer back then) posted a config for epoch 1; she is a writer now.
     const evil = new Uint8Array(32).fill(0x66)

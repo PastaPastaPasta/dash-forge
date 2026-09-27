@@ -796,6 +796,18 @@ export async function removePrivateMember(
 ): Promise<number | null> {
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
   // epochs first (refused when this browser cannot read one), so no epoch vanishes or falls back.
+  // The rotation after the delete chains from the epoch that stays current: refuse now, before
+  // anything is deleted, when this browser cannot read it (a maintainer who holds it must remove).
+  await withFreshSession(c, async (s) => {
+    if (removalEffect(s.members, memberId, role) === 'none') return
+    const kept = role === 'maintainer' ? keptEpoch(s, memberId) : s.resolution.currentEpoch
+    if (kept !== null && !s.resolution.keys.has(kept)) {
+      throw new PrivateMembersError(
+        `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
+        'E310',
+      )
+    }
+  })
   let before: number | undefined
   if (role === 'maintainer') {
     before = await withFreshSession(c, async (s) => {
