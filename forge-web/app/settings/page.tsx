@@ -95,7 +95,7 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Diffs</h2>
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Diffs and merges</h2>
           <DisplayPrefsPanel />
         </section>
 

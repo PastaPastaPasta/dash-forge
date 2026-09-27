@@ -1,6 +1,6 @@
 /**
  * Display preferences kept in this browser (localStorage; none of them is secret): how diffs
- * render.
+ * render, and the name and email a browser merge commit is authored with.
  */
 
 /** Diff colors. `colorblind` is blue (added) and orange (deleted), for red/green colorblindness. */
@@ -11,12 +11,17 @@ export interface Prefs {
   readonly diffLayout: 'split' | 'unified'
   readonly ignoreWhitespace: boolean
   readonly palette: DiffPalette
+  /** Who a browser merge commit is authored and committed by. */
+  readonly mergeName: string
+  readonly mergeEmail: string
 }
 
 export const DEFAULT_PREFS: Prefs = {
   diffLayout: 'split',
   ignoreWhitespace: false,
   palette: 'standard',
+  mergeName: '',
+  mergeEmail: '',
 }
 
 export const PREFS_KEY = 'forge.prefs.v1'
@@ -32,11 +37,19 @@ export function parsePrefs(raw: string | null): Prefs {
   }
   if (typeof o !== 'object' || o === null) return DEFAULT_PREFS
   const r = o as Record<string, unknown>
+  const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.slice(0, max) : '')
   return {
     diffLayout: r['diffLayout'] === 'unified' ? 'unified' : 'split',
     ignoreWhitespace: r['ignoreWhitespace'] === true,
     palette: r['palette'] === 'colorblind' ? 'colorblind' : 'standard',
+    mergeName: text(r['mergeName'], 200),
+    mergeEmail: text(r['mergeEmail'], 200),
   }
+}
+
+/** Whether a merge identity is usable: a name, and an email git would accept. */
+export function mergeIdentityValid(p: Pick<Prefs, 'mergeName' | 'mergeEmail'>): boolean {
+  return p.mergeName.trim() !== '' && !/[<>\n]/.test(p.mergeName) && /^[^\s<>@]+@[^\s<>@]+$/.test(p.mergeEmail.trim())
 }
 
 /**

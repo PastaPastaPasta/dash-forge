@@ -1,0 +1,277 @@
+'use client'
+
+/**
+ * MergePanel — the browser merge (`ux-dx-spec.md` §5.7), for a PR's maintainers and writers.
+ *
+ * The button says what it will do, decided in the merge worker before anything is offered:
+ * `Merge (fast-forward)`, `Create merge commit and merge`, or a disabled
+ * `Can't merge in the browser — conflicts` with the `dg pr checkout` line. A writer on a
+ * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
+ * desktop browser for this step". The click runs the step list (fetch → merge → build pack →
+ * upload → packManifest → ref update → merge event), and a failure names what already exists
+ * and offers to resume.
+ */
+
+import { useCallback, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { Check, GitMerge, Loader2, Minus, X } from 'lucide-react'
+
+import type { PullView, RepoRef } from '@/lib/repo'
+import { matchesProtected } from '@/lib/rules'
+import { previewCreate, sumPreviews } from '@/lib/sdk'
+import type { MergeInput } from '@/lib/merge/engine'
+import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
+import {
+  EMPTY_RUN,
+  MERGE_STEPS,
+  MergeStepError,
+  retryLabel,
+  runMergeSteps,
+  type MergeRun,
+  type MergeStepId,
+} from '@/lib/merge/runner'
+import { mergeButton } from '@/lib/view/pull-actions'
+import { publishMergeIndex } from '@/lib/merge/locator'
+import { useMergeUpload } from '@/components/repo/merge-upload'
+import { mergeIdentityValid } from '@/lib/view/prefs'
+import type { DiffSides } from '@/lib/view'
+import { preferring } from '@/lib/view/pull-diff'
+import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
+import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
+import { useAuth } from '@/contexts/auth-context'
+import { useWriteGuard } from '@/hooks/use-write-guard'
+import { Button } from '@/components/ui/button'
+import { CopyRow } from '@/components/ui/copy-row'
+import { CostPreview } from '@/components/ui/cost-preview'
+import { Oid } from '@/components/ui/oid'
+import { cn } from '@/lib/utils'
+
+type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
+
+export function MergePanel({
+  repo,
+  pull,
+  sides,
+  sidesKey,
+  baseTipOid,
+  protectedPatterns,
+  canMerge,
+  isMaintainer,
+  checkout,
+  onMerged,
+}: {
+  repo: RepoRef
+  pull: PullView
+  sides: DiffSides | null
+  sidesKey: string
+  baseTipOid: string
+  protectedPatterns: readonly string[]
+  canMerge: boolean
+  isMaintainer: boolean
+  checkout: string
+  onMerged: () => void
+}): JSX.Element | null {
+  const { sdk } = useSdk()
+  const { signer } = useAuth()
+  const guard = useWriteGuard()
+  const [prefs] = usePrefs()
+  const wide = useMinWidth(1024)
+  const { upload, dialog: uploadDialog, storageLabel, begin } = useMergeUpload(repo)
+  const baseRefName = pull.state.baseRef ?? pull.baseRefName
+  const baseProtected = matchesProtected(baseRefName, protectedPatterns)
+  const reader = useMemo(() => (sides === null ? null : preferring(sides.head, sides.base)), [sides])
+  const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
+
+  const input = useMemo<MergeInput>(
+    () => ({
+      baseTip: baseTipOid,
+      headOid: pull.headOid,
+      prNumber: pull.number,
+      sourceLabel: pull.sourceRefName ?? pull.headOid,
+      title: pull.title,
+      author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
+      headInBase: sameRepo,
+    }),
+    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo],
+  )
+
+  const check = useAsync(
+    // The check needs a name for the trial merge commit; the real one is written on click.
+    () => checkMergeInWorker(reader!, { ...input, author: { name: 'check', email: 'check@forge' } }),
+    [sidesKey, baseTipOid, pull.headOid],
+    { enabled: canMerge && reader !== null && pull.headOid !== '' && wide },
+  )
+  const button = mergeButton({
+    canMerge,
+    isMaintainer,
+    baseProtected,
+    narrow: !wide,
+    check: check.error ? { error: check.error } : check.data,
+    checkout,
+  })
+
+  const [steps, setSteps] = useState<Partial<Record<MergeStepId, StepState>>>({})
+  const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
+  const [run, setRun] = useState<MergeRun>(EMPTY_RUN)
+  const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
+  const [stopped, setStopped] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [newTip, setNewTip] = useState<string | null>(null)
+
+  // Upload estimate unknown until the pack exists; the documents are known.
+  const cost = sumPreviews([previewCreate('packManifest'), previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'), previewCreate('event')])
+  const identityOk = mergeIdentityValid(prefs)
+
+  const start = useCallback(async () => {
+    if (!sdk || !signer || reader === null || busy) return
+    if (!guard.check(cost.credits)) return
+    setBusy(true)
+    setFailure(null)
+    setStopped(null)
+    begin()
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}`
+    try {
+      const done = await runMergeSteps(
+        {
+          sdk,
+          auth: signer,
+          repo,
+          pull: { id: pull.id, number: pull.number, baseRefName },
+          protectedPatterns,
+          input,
+          merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
+          upload,
+          publishIndex: upload === null ? null : async (pack, packHash) => {
+            const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
+            return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+          },
+          intent,
+        },
+        run,
+        (e) => {
+          setSteps((s) => ({ ...s, [e.step]: e.state }))
+          if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
+        },
+      )
+      setRun(done)
+      setNewTip(done.result?.newTip ?? null)
+      onMerged()
+    } catch (e) {
+      if (e instanceof MergeStepError) {
+        setRun(e.run)
+        setSteps((s) => ({ ...s, [e.step]: 'failed' }))
+        setFailure({ step: e.step, message: e.message })
+      } else {
+        setStopped(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [sdk, signer, reader, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, protectedPatterns, input, run, baseTipOid, onMerged, upload, begin])
+
+  if (button.kind === 'hidden') return null
+  const started = Object.keys(steps).length > 0
+
+  return (
+    <section aria-label="Merge" data-testid="merge-panel" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+      <div className="flex flex-wrap items-center gap-3">
+        <GitMerge className="h-4 w-4 text-anvil-400" aria-hidden />
+        <span className="text-dense text-anvil-700 dark:text-anvil-200">
+          Into <span className="font-mono">{baseRefName.replace(/^refs\/heads\//, '')}</span>
+          {baseTipOid ? (
+            <>
+              {' '}
+              at <Oid value={baseTipOid} chars={7} copyable={false} />
+            </>
+          ) : null}
+        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="merge-button-state" data-state={button.kind}>
+          {button.kind === 'checking' ? (
+            <Button disabled>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Checking the merge…
+            </Button>
+          ) : button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
+            <Button variant="primary" onClick={start} loading={busy} disabled={!identityOk || busy || newTip !== null || guard.disabledReason !== null}>
+              {failure ? retryLabel(failure.step) : button.label}
+            </Button>
+          ) : button.kind === 'unavailable' ? (
+            <span className="text-dense text-anvil-600 dark:text-anvil-400">{button.reason}</span>
+          ) : (
+            <Button disabled>{button.label}</Button>
+          )}
+        </div>
+      </div>
+
+      {button.kind === 'conflicts' ? (
+        <div className="mt-3">
+          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Resolve it locally, push the result, and the PR merges:</p>
+          <CopyRow text={button.checkout} />
+        </div>
+      ) : null}
+      {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && !identityOk ? (
+        <p className="mt-2 text-[12px] text-caution">
+          A browser merge commit is authored with your name and email. Set them in{' '}
+          <Link href="/settings" className="underline">
+            Settings
+          </Link>{' '}
+          first.
+        </p>
+      ) : null}
+      {button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+          <CostPreview cost={cost} />
+          <span>
+            plus the pack&apos;s storage{storageLabel ? ` on ${storageLabel}` : ''}
+          </span>
+        </div>
+      ) : null}
+
+      {started ? (
+        <ol aria-label="Merge steps" className="mt-3 space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
+          {MERGE_STEPS.map(({ id, label }) => {
+            const s = steps[id] ?? 'todo'
+            return (
+              <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
+                <StepIcon state={s} />
+                {label}
+                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
+              </li>
+            )
+          })}
+        </ol>
+      ) : null}
+      {failure ? (
+        <p role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger">
+          {failure.message}
+        </p>
+      ) : null}
+      {stopped ? (
+        <p role="alert" className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
+          Merge stopped: {stopped}. Nothing was written.
+        </p>
+      ) : null}
+      {newTip ? (
+        <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
+          Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
+        </p>
+      ) : null}
+      {uploadDialog}
+    </section>
+  )
+}
+
+function StepIcon({ state }: { state: StepState }): JSX.Element {
+  switch (state) {
+    case 'done':
+      return <Check className="h-4 w-4 text-verify" aria-hidden />
+    case 'running':
+      return <Loader2 className="h-4 w-4 animate-spin text-anvil-400" aria-hidden />
+    case 'skipped':
+      return <Minus className="h-4 w-4 text-anvil-400" aria-hidden />
+    case 'failed':
+      return <X className="h-4 w-4 text-danger" aria-hidden />
+    default:
+      return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
+  }
+}
