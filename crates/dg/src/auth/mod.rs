@@ -641,7 +641,12 @@ async fn login_source(
                 ))
                 .fix(format!(
                     "add `{}`",
-                    forge_core::platform::Network::from_key(&master.network).dg_flags()
+                    if master.network == "devnet" {
+                        // A file that names no devnet: the name is the user's to fill in.
+                        "--network devnet --devnet-name <name>".to_string()
+                    } else {
+                        forge_core::platform::Network::from_key(&master.network).dg_flags()
+                    }
                 ))
                 .into(),
         );

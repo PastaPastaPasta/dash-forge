@@ -1228,8 +1228,13 @@ fn network_fix_command(n: &Network, from: &GitNetworkSource, in_repo: bool) -> S
             "unset {ENV_NETWORK} {ENV_DEVNET_NAME} {ENV_DAPI_ADDRESSES} (git reads them before any config)"
         );
     }
-    let local = in_repo && matches!(from.scope.as_deref(), Some("local" | "worktree"));
-    n.git_config_command(if local { "" } else { "--global " })
+    // A worktree value outranks a local one, so it is fixed in its own scope.
+    let scope = match from.scope.as_deref() {
+        Some("worktree") if in_repo => "--worktree ",
+        Some("local") if in_repo => "",
+        _ => "--global ",
+    };
+    n.git_config_command(scope)
 }
 
 fn in_git_repo() -> bool {
@@ -1599,6 +1604,10 @@ mod tests {
         assert_eq!(
             network_fix_command(&Network::Mainnet, &from(Some("local")), true),
             "git config dash.network mainnet"
+        );
+        assert_eq!(
+            network_fix_command(&Network::Mainnet, &from(Some("worktree")), true),
+            "git config --worktree dash.network mainnet"
         );
         // ... but not from outside that repository.
         assert_eq!(

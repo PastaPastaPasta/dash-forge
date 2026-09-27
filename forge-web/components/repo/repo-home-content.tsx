@@ -16,7 +16,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { BYO_PUSH_DASH } from '@/lib/sdk/cost'
 import { formatDash } from '@/lib/view/format'
-import { repoCommands } from '@/lib/view/repo-commands'
+import { repoCommands, shellWord } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
 import { walkFiles } from '@/lib/view/zip'
 import type { RepoHome, SelectedRef } from '@/lib/view'
@@ -291,9 +291,9 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
       <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
       <CopyRow text={cmd.remoteAdd} />
       <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
-      <CopyRow text={`git push -u origin ${branch.replace(/^refs\/heads\//, '')}`} />
+      <CopyRow text={`git push -u origin ${shellWord(branch.replace(/^refs\/heads\//, ''))}`} />
       <h3 className="mb-1.5 mt-4 text-dense font-medium">Or start from scratch</h3>
-      <CopyRow text={`${cmd.dgClone} && cd ${addr.name}`} />
+      <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} />
       <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="empty-repo-network">
         This repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>: the commands set that in the
         repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
