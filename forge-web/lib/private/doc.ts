@@ -68,6 +68,11 @@ export interface StoredPrivateDoc extends PrivateDoc {
   readonly id?: PrivateId
   /** `$createdAtBlockHeight`; a document without it is malformed (§8.1 step 7). */
   readonly createdAtBlockHeight?: number
+  /**
+   * `$updatedAtBlockHeight` of a replaceable document (issue, patch, comment): an edit is judged
+   * by the late-content rule too (§8.2 "edits are judged too").
+   */
+  readonly updatedAtBlockHeight?: number
   readonly enc: Uint8Array
 }
 
@@ -231,7 +236,7 @@ export function __unsafeSealDocWithNonce(
   return sealDocWith(keys, doc, fields, options, async () => new Uint8Array(nonce))
 }
 
-export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late'
+export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit'
 
 export type OpenResult =
   | { readonly status: 'readable'; readonly fields: DocFields }
@@ -357,5 +362,10 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   if (result.status !== 'readable') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
   if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
+  // An edit re-seals the text: a late one (by a non-member, past the grace period) replaced the
+  // original, which is gone (§8.2 "edits are judged too").
+  if (isHeight(doc.updatedAtBlockHeight) && doc.updatedAtBlockHeight > doc.createdAtBlockHeight) {
+    if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.updatedAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('lateEdit')
+  }
   return result
 }

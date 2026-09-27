@@ -22,22 +22,23 @@ import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
 
 /** Why a document is hidden. */
-export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late'
+export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit'
 
 /** Hidden documents, by reason. */
 export type HiddenCounts = Readonly<Record<HiddenReason, number>>
 
-const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0 }
+const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0 }
 
 /** The sentence each reason is shown with. */
 export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
   notEncrypted: 'not encrypted for this repo',
   wrongKey: 'wrong or missing key',
   late: 'written after the key was rotated',
+  lateEdit: 'edited after its author was removed; the original text is gone',
 }
 
 export function totalHidden(h: HiddenCounts): number {
-  return h.notEncrypted + h.wrongKey + h.late
+  return h.notEncrypted + h.wrongKey + h.late + h.lateEdit
 }
 
 /** A tally that counts hidden documents while a read runs. */
@@ -126,9 +127,9 @@ export function idField(doc: PlainDocument, field: string): Uint8Array | undefin
   }
 }
 
-/** `$createdAtBlockHeight` as a number, or undefined. */
-export function blockHeightOf(doc: PlainDocument): number | undefined {
-  const v = doc['$createdAtBlockHeight']
+/** A block-height system field (`$createdAtBlockHeight` by default) as a number, or undefined. */
+export function blockHeightOf(doc: PlainDocument, field: '$createdAtBlockHeight' | '$updatedAtBlockHeight' = '$createdAtBlockHeight'): number | undefined {
+  const v = doc[field]
   if (typeof v === 'number') return v
   if (typeof v === 'bigint') return Number(v)
   if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v)
@@ -144,7 +145,16 @@ function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPriva
   const id = idField(doc, '$id')
   const enc = bytesField(doc, 'enc')
   if (ownerId === undefined || enc === undefined || doc['epoch'] == null) return null
-  const base = { type, ownerId, epoch: num(doc, 'epoch'), id, createdAtBlockHeight: blockHeightOf(doc), enc }
+  const updated = blockHeightOf(doc, '$updatedAtBlockHeight')
+  const base = {
+    type,
+    ownerId,
+    epoch: num(doc, 'epoch'),
+    id,
+    createdAtBlockHeight: blockHeightOf(doc),
+    ...(updated !== undefined ? { updatedAtBlockHeight: updated } : {}),
+    enc,
+  }
   switch (type) {
     case 'issue':
     case 'patch':
@@ -214,6 +224,8 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
       switch (opened.reason) {
         case 'late':
           return { ok: false, reason: 'late' }
+        case 'lateEdit':
+          return { ok: false, reason: 'lateEdit' }
         case 'badTag':
           return { ok: false, reason: 'notEncrypted' }
         default:
