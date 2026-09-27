@@ -24,7 +24,7 @@ import {
   readTree,
   selectRef,
   timeAgo,
-  tipOidOf,
+  selectedTip,
   type TreeEntry,
 } from '@/lib/view'
 import { countCommits, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
@@ -78,10 +78,10 @@ export function RepoHomeContent({
 }): JSX.Element {
 
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
-  if (refParam && !selected.ref) {
+  if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
-  const tipOid = tipOidOf(selected.ref)
+  const tipOid = selectedTip(selected)
   // An enumerated ref with no tip was deleted (null-oid update), even the default branch.
   // Only a ref with no entry at all (fresh repo) gets the empty-repo invitation below.
   if (!tipOid && selected.ref) {

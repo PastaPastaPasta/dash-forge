@@ -26,8 +26,9 @@ import {
   parseLineHash,
   readBlob,
   readTree,
-  selectBrowseRef,
+  selectedTip,
   selectLine,
+  selectRef,
   treeAtPath,
   visibleRows,
   VIRTUALIZE_LINES,
@@ -45,6 +46,7 @@ import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { BASE_PATH } from '@/lib/short-url'
+import { bytesToBase64 } from '@/lib/sdk/query'
 import { cn } from '@/lib/utils'
 
 interface BlobData {
@@ -76,8 +78,9 @@ export function BlobContent({
   path: string
   refParam?: string
 }): JSX.Element {
-  const { selected, tipOid } = selectBrowseRef(home.branches, home.tags, home.defaultBranch, refParam)
-  if (refParam && !selected.ref && !tipOid) {
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+  const tipOid = selectedTip(selected)
+  if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
@@ -94,7 +97,7 @@ export function BlobContent({
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <BlobBody reader={reader} tipOid={tipOid} path={path} addr={addr} />}
+        {(reader) => <BlobBody key={`${tipOid}:${path}`} reader={reader} tipOid={tipOid} path={path} addr={addr} />}
       </BrowseBoundary>
     </div>
   )
@@ -114,10 +117,16 @@ function BlobBody({
   const { data, loading, error, reload } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
   const name = path.split('/').pop() ?? path
   const [renderLarge, setRenderLarge] = useState(false)
+  // An image that is also text (SVG) can be read as code too, as on GitHub.
+  const [showCode, setShowCode] = useState(false)
 
-  const display = data ? blobDisplay(name, data.bytes, data.text, renderLarge) : null
+  const shown = data ? blobDisplay(name, data.bytes, data.text, renderLarge) : null
+  const display: BlobDisplay | null =
+    shown?.kind === 'image' && showCode && data?.text != null ? { kind: 'text', text: data.text } : shown
   const downloadHref = useObjectUrl(data?.bytes, 'application/octet-stream')
-  const imageHref = useObjectUrl(data?.bytes, display?.kind === 'image' ? display.type : null)
+  // "View raw" shows text in the tab (text/plain runs no script, even for HTML content).
+  const rawHref = useObjectUrl(shown?.kind === 'confirm-large' ? data?.bytes : undefined, 'text/plain;charset=utf-8')
+  const imageHref = useImageUrl(data?.bytes, shown?.kind === 'image' ? shown.type : null)
 
   if (loading) return <LoadingBlock label="Reconstructing blob" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
@@ -128,7 +137,7 @@ function BlobBody({
   if (!data || !display) return <LoadingBlock />
 
   const origin = typeof window === 'undefined' ? '' : window.location.origin
-  const permalink = `${origin}${BASE_PATH}${repoHref('/repo/blob', addr, { path, ref: tipOid })}`
+  const permalink = `${origin}${BASE_PATH}${repoHref('/repo/blob/', addr, { path, ref: tipOid })}`
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -139,6 +148,21 @@ function BlobBody({
           <span className="shrink-0 text-anvil-500 dark:text-anvil-400">{formatBytes(data.bytes.length)}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {shown?.kind === 'image' && data.text !== null ? (
+            <div className="inline-flex rounded-md border border-anvil-200 p-0.5 text-[12px] dark:border-anvil-750">
+              {(['Preview', 'Code'] as const).map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  aria-pressed={showCode === (label === 'Code')}
+                  onClick={() => setShowCode(label === 'Code')}
+                  className={cn('rounded px-2 py-0.5', showCode === (label === 'Code') && 'bg-anvil-200 dark:bg-anvil-750')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <Oid value={data.oid} chars={9} />
           {downloadHref ? (
             <a
@@ -156,7 +180,7 @@ function BlobBody({
         size={data.bytes.length}
         name={name}
         imageHref={imageHref}
-        downloadHref={downloadHref}
+        rawHref={rawHref}
         permalink={permalink}
         onRenderLarge={() => setRenderLarge(true)}
       />
@@ -169,7 +193,7 @@ function BlobView({
   size,
   name,
   imageHref,
-  downloadHref,
+  rawHref,
   permalink,
   onRenderLarge,
 }: {
@@ -177,7 +201,7 @@ function BlobView({
   size: number
   name: string
   imageHref: string | null
-  downloadHref: string | null
+  rawHref: string | null
   permalink: string
   onRenderLarge: () => void
 }): JSX.Element {
@@ -186,7 +210,7 @@ function BlobView({
       if (imageHref === null) return <LoadingBlock />
       return (
         <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
-          {/* An <img> of a blob: URL: an SVG shown this way runs no script and loads nothing. */}
+          {/* An <img> runs no script and loads nothing; see useImageUrl for why SVG is a data: URL. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
         </div>
@@ -196,9 +220,9 @@ function BlobView({
         <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
           <p>This file is {formatBytes(size)}. Rendering it in the page is slow, so it is not shown by default.</p>
           <div className="flex gap-2">
-            {downloadHref ? (
+            {rawHref ? (
               <a
-                href={downloadHref}
+                href={rawHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-7 items-center rounded-md border border-anvil-300 px-2.5 text-dense hover:bg-anvil-100 dark:border-anvil-700 dark:hover:bg-anvil-800"
@@ -242,16 +266,49 @@ function useObjectUrl(bytes: Uint8Array | undefined, type: string | null): strin
   return url
 }
 
-/** Row height of the line table (13px text, leading-5). Windowing positions rows by it. */
+/**
+ * The URL an image preview is shown from. Raster images get a `blob:` URL. An SVG gets a
+ * `data:` URL instead: a `blob:` URL has this app's origin, so "Open image in new tab" would
+ * load the SVG as a same-origin document and run its script (an XSS any committer could plant).
+ * A `data:` document is opaque-origin, and browsers refuse top-level `data:` navigation.
+ */
+function useImageUrl(bytes: Uint8Array | undefined, type: string | null): string | null {
+  const svg = type === 'image/svg+xml'
+  const dataUrl = useMemo(() => (svg && bytes ? `data:image/svg+xml;base64,${bytesToBase64(bytes)}` : null), [svg, bytes])
+  const blobUrl = useObjectUrl(svg ? undefined : bytes, svg ? null : type)
+  return dataUrl ?? blobUrl
+}
+
+/**
+ * Row height of the line table (13px text, leading-5). Windowing and `#L` scrolling position
+ * rows by it, so the cells carry no vertical padding (browsers give a `td` 1px) and never wrap.
+ */
 const ROW_PX = 20
 
-const CODE_CELL = 'whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200'
+const CODE_CELL = 'whitespace-pre py-0 px-4 align-top text-anvil-800 dark:text-anvil-200'
 
-/** The selected `#L` range, kept in step with the URL fragment. */
-function useLineSelection(lineCount: number): [LineRange | null, (range: LineRange) => void] {
+/**
+ * Characters some engines break a `whitespace-pre` line on (WebKit wraps U+2028/U+2029),
+ * shown as the visible markers editors use, so every row stays one line high.
+ */
+const LINE_SEPARATORS = /[\u2028\u2029]/g
+const visibleSeparators = (line: string): string => line.replace(LINE_SEPARATORS, (c) => (c === '\u2028' ? '\u23ce' : '\u00b6'))
+
+/**
+ * The selected `#L` range, kept in step with the URL fragment. `onHash` is told the range
+ * whenever it comes from the URL (on open, or an edited fragment), not from a click, so only
+ * those scroll the page.
+ */
+function useLineSelection(lineCount: number, onHash: (range: LineRange) => void): [LineRange | null, (range: LineRange) => void] {
   const [range, setRange] = useState<LineRange | null>(null)
+  const onHashRef = useRef(onHash)
+  onHashRef.current = onHash
   useEffect(() => {
-    const read = (): void => setRange(parseLineHash(window.location.hash, lineCount))
+    const read = (): void => {
+      const next = parseLineHash(window.location.hash, lineCount)
+      setRange(next)
+      if (next !== null) onHashRef.current(next)
+    }
     read()
     window.addEventListener('hashchange', read)
     return () => window.removeEventListener('hashchange', read)
@@ -266,7 +323,15 @@ function useLineSelection(lineCount: number): [LineRange | null, (range: LineRan
 
 function TextLines({ text, name, permalink }: { text: string; name: string; permalink: string }): JSX.Element {
   const lines = useMemo(() => text.split('\n'), [text])
-  const [range, select] = useLineSelection(lines.length)
+  const tableRef = useRef<HTMLTableElement>(null)
+  // Scroll a range from the URL into view (the table is laid out by the time effects run).
+  const [range, select] = useLineSelection(lines.length, (r) => {
+    requestAnimationFrame(() => {
+      if (tableRef.current === null) return
+      const top = tableRef.current.getBoundingClientRect().top + window.scrollY + (r.start - 1) * ROW_PX
+      window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3) })
+    })
+  })
   const [copied, setCopied] = useState(false)
   const href = range ? `${permalink}#${lineHash(range)}` : permalink
 
@@ -287,7 +352,6 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
 
   // Long files render only the rows near the viewport (D-055: a 1 MB file was 81k DOM nodes).
   const virtual = lines.length > VIRTUALIZE_LINES
-  const tableRef = useRef<HTMLTableElement>(null)
   const [win, setWin] = useState({ from: 0, to: 200 })
   const { from, to } = virtual ? win : { from: 0, to: lines.length }
   useLayoutEffect(() => {
@@ -313,15 +377,6 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
     }
   }, [virtual, lines.length])
 
-  // Scroll a linked range into view once, when the page opens on it.
-  const scrolled = useRef(false)
-  useEffect(() => {
-    if (range === null || scrolled.current || tableRef.current === null) return
-    scrolled.current = true
-    const top = tableRef.current.getBoundingClientRect().top + window.scrollY + (range.start - 1) * ROW_PX
-    window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3) })
-  }, [range])
-
   const copyPermalink = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(href)
@@ -343,10 +398,13 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
         data-selected={on || undefined}
         className={cn('h-5', on ? 'bg-caution/15' : 'hover:bg-anvil-50 dark:hover:bg-anvil-900/60')}
       >
-        <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 text-right align-top text-anvil-500 dark:text-anvil-400 dark:border-anvil-850">
+        <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 py-0 text-right align-top text-anvil-500 dark:text-anvil-400 dark:border-anvil-850">
           <a
             href={`#L${n}`}
+            // Not a tab stop per line: a long file would put thousands before the page's rail.
+            tabIndex={-1}
             onClick={(e) => {
+              if (e.metaKey || e.ctrlKey) return // open in a new tab, as a link does
               e.preventDefault()
               select(selectLine(range, n, e.shiftKey))
             }}
@@ -357,9 +415,9 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
         </td>
         {hlLines ? (
           // highlight.js escapes all text and emits only class-bearing spans.
-          <td className={CODE_CELL} dangerouslySetInnerHTML={{ __html: hlLines[i] || ' ' }} />
+          <td className={CODE_CELL} dangerouslySetInnerHTML={{ __html: visibleSeparators(hlLines[i] || ' ') }} />
         ) : (
-          <td className={CODE_CELL}>{lines[i] || ' '}</td>
+          <td className={CODE_CELL}>{visibleSeparators(lines[i] || ' ')}</td>
         )}
       </tr>,
     )

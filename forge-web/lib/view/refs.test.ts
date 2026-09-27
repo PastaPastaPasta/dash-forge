@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, refParamFor, selectBrowseRef, selectRef } from './refs'
+import { isLive, refParamFor, selectedTip, selectRef } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -85,24 +85,27 @@ describe('refParamFor', () => {
   })
 })
 
-describe('selectBrowseRef (permalinks, D-054)', () => {
+describe('pinned commits (permalinks, D-054)', () => {
   const commit = 'AbCdEf0123456789abcdef0123456789ABCDEF01'
-  it('reads a full commit id no ref claims as a pinned commit', () => {
-    const { selected, tipOid } = selectBrowseRef(branches, tags, 'main', commit)
-    expect(tipOid).toBe(commit.toLowerCase())
+  it('reads a full commit id no ref is named as a pinned commit', () => {
+    const selected = selectRef(branches, tags, 'main', commit)
+    expect(selected.pinned).toBe(commit.toLowerCase())
+    expect(selectedTip(selected)).toBe(commit.toLowerCase())
     expect(selected.ref).toBeUndefined()
     expect(selected.name).toBe('abcdef0')
   })
 
   it('prefers a branch that has the name, and resolves the default branch', () => {
     const named = [...branches, ref(`refs/heads/${commit}`, '9'.repeat(40))]
-    expect(selectBrowseRef(named, tags, 'main', commit).tipOid).toBe('9'.repeat(40))
-    expect(selectBrowseRef(branches, tags, 'main', '').tipOid).toBe('1'.repeat(40))
+    expect(selectedTip(selectRef(named, tags, 'main', commit))).toBe('9'.repeat(40))
+    expect(selectRef(named, tags, 'main', commit).pinned).toBeUndefined()
+    expect(selectedTip(selectRef(branches, tags, 'main', ''))).toBe('1'.repeat(40))
   })
 
   it('leaves an unknown short name unresolved', () => {
-    const { selected, tipOid } = selectBrowseRef(branches, tags, 'main', 'abcdef0')
+    const selected = selectRef(branches, tags, 'main', 'abcdef0')
     expect(selected.ref).toBeUndefined()
-    expect(tipOid).toBeNull()
+    expect(selected.pinned).toBeUndefined()
+    expect(selectedTip(selected)).toBeNull()
   })
 })

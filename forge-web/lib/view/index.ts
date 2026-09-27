@@ -135,7 +135,7 @@ export {
   isDiverged,
   isLive,
   refParamFor,
-  selectBrowseRef,
+  selectedTip,
   selectRef,
   tipOidOf,
   type SelectedRef,

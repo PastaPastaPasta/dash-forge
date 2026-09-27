@@ -84,8 +84,11 @@ export interface TrustInputs {
   readonly quorum?: QuorumCrossCheck
   /** The short name of the ref this page attests (`main`). */
   readonly refName?: string
-  /** Its folded state, or `missing` when the selected name matches no ref. */
-  readonly tip: RefState | 'missing'
+  /**
+   * Its folded state, `missing` when the selected name matches no ref, or a commit pinned by
+   * id (a permalink), which no ref vouches for.
+   */
+  readonly tip: RefState | 'missing' | { readonly pinned: string }
   readonly checks: ContentChecks
   /** The repo config's backend label: what the owner declared, not what served bytes. */
   readonly configuredBackend: string
@@ -189,6 +192,14 @@ function deriveTip(input: TrustInputs): TipLink {
   const name = input.refName ?? ''
   const shown = name === '' ? 'This ref' : `\`${name}\``
   const tip = input.tip
+  if (tip !== 'missing' && 'pinned' in tip) {
+    return {
+      name: shortOid(tip.pinned),
+      heads: [],
+      state: 'partial',
+      detail: `Commit \`${shortOid(tip.pinned)}\`, opened by its id. Its objects are hash-checked, but no branch or tag was checked to point at it.`,
+    }
+  }
   const heads: readonly RefHead[] =
     tip === 'missing' || tip.state === 'unborn'
       ? []

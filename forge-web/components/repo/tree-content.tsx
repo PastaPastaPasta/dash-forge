@@ -4,7 +4,7 @@
 
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { commitRootTree, readTree, selectBrowseRef, treeAtPath, type TreeEntry } from '@/lib/view'
+import { commitRootTree, readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { FileList } from '@/components/repo/file-list'
@@ -30,8 +30,9 @@ export function TreeContent({
   path: string
   refParam?: string
 }): JSX.Element {
-  const { selected, tipOid } = selectBrowseRef(home.branches, home.tags, home.defaultBranch, refParam)
-  if (refParam && !selected.ref && !tipOid) {
+  const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
+  const tipOid = selectedTip(selected)
+  if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
