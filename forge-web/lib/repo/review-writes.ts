@@ -22,6 +22,7 @@ import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Po
 import type { EventKind } from '../rules'
 import {
   ConsensusRefusal,
+  precheckEdit,
   GATE_REFUSED_CODE,
   queryAllDocuments,
   replaceDocumentIdempotent,
@@ -589,6 +590,8 @@ async function replace(
     // A private edit re-seals the whole text: without the revision it was read at, a concurrent
     // edit would be overwritten, not refused (the CLI guards every sealed edit the same way).
     if (expectedRevision === undefined) throw new Error(`a private ${documentType} edit needs the revision it was read at`)
+    // The author, the repo and the revision are checked before any key is opened.
+    await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
     const sealed = await sealEdit(sdk, auth, repo, documentType, { ...seal!.bind }, seal!.current, changes, seal!.patchEpoch, seal!.imported)
     // Legacy plaintext stored next to `enc` goes in the same replace (as the CLI's re-seal does):
     // `undefined` removes a field from the stored document.

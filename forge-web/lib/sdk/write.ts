@@ -1474,6 +1474,26 @@ export interface ReplaceParams {
   readonly confirmTimeoutMs?: number
 }
 
+/**
+ * The checks an edit makes before any key work (parity: the CLI's sealed edit, E601 / E203 /
+ * E607): the stored document is the signer's, belongs to `expectRepoId`, and is still at
+ * `expectedRevision`. Throws the error each would; reads only.
+ */
+export async function precheckEdit(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  p: { contractId: string; documentType: string; documentId: string; expectRepoId?: string; expectedRevision?: bigint },
+): Promise<void> {
+  const doc = (await facades(sdk).documents.get(p.contractId, p.documentType, p.documentId)) as FetchedDocumentLike | null
+  if (doc === null || doc === undefined) throw new Error(`${p.documentType} ${p.documentId} was not found`)
+  if (doc.ownerId.toBase58() !== auth.identityId) throw new WriteAuthError('only the author can edit this')
+  checkOwnRepo(doc.toJSON(sdk.version())['repoId'], p.expectRepoId)
+  const revision = doc.revision ?? 1n
+  if (p.expectedRevision !== undefined && p.expectedRevision !== revision) {
+    throw new Error(`this ${p.documentType} changed since you opened it (revision ${revision}); reload and edit again`)
+  }
+}
+
 /** Refuse an edit of a document that belongs to another repo than the one the edit names. */
 export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined): void {
   if (expected === undefined) return

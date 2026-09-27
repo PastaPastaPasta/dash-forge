@@ -25,6 +25,10 @@ vi.mock('../sdk', async (importOriginal) => {
       writes.push({ documentType: p.documentType, data: p.data, ...(p.intent ? { intent: p.intent } : {}) })
       return { documentId: D(writes.length), confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
+    precheckEdit: vi.fn(async (_sdk: unknown, _auth: unknown, p: { documentId: string }) => {
+      prechecks.push(p.documentId)
+      if (precheckFails) throw new Error('only the author can edit this')
+    }),
     replaceDocumentIdempotent: vi.fn(async (_sdk: unknown, _auth: unknown, p: { documentType: string; changes: Record<string, unknown>; expectedRevision?: bigint; expectRepoId?: string }) => {
       replaces.push({ documentType: p.documentType, changes: p.changes, expectedRevision: p.expectedRevision, expectRepoId: p.expectRepoId })
       return { documentId: 'x', revision: 2n, cost: { credits: 0, dash: 0 }, actualCredits: null }
@@ -32,6 +36,8 @@ vi.mock('../sdk', async (importOriginal) => {
   }
 })
 
+const prechecks: string[] = []
+let precheckFails = false
 const replaces: { documentType: string; changes: Record<string, unknown>; expectedRevision?: bigint; expectRepoId?: string }[] = []
 const sealed: unknown[][] = []
 vi.mock('./private-writes', async (importOriginal) => {
@@ -198,6 +204,13 @@ describe('assignees and labels (F-1)', () => {
     expect(replaces[1]).toMatchObject({ expectedRevision: 2n, expectRepoId: PRIVATE.repoId })
     // A private comment edit without the revision it read is refused (both clients guard edits by revision).
     await expect(updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'x', seal: { current: { body: 'was' }, bind: { targetId: PR } } })).rejects.toThrow(/revision/)
+    // The author (and repo, revision) is checked before any key work: a refused precheck seals nothing.
+    const sealedBefore = sealed.length
+    precheckFails = true
+    await expect(updateComment(sdk, auth(BOB), PRIVATE, { id: PR, body: 'y', expectedRevision: 2n, seal: { current: { body: 'was' }, bind: { targetId: PR } } })).rejects.toThrow(/author/)
+    precheckFails = false
+    expect(sealed.length).toBe(sealedBefore)
+    expect(prechecks.length).toBeGreaterThan(0)
     // A public edit is plaintext, as before.
     await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
     expect(replaces[2]?.changes).toEqual({ title: 'pub' })

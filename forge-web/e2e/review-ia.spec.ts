@@ -31,7 +31,7 @@ test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
 test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('CONTRIB')), 'OWNER / CONTRIB / COLLAB identity files not found')
-test.describe.configure({ mode: 'serial', timeout: 360_000 })
+test.describe.configure({ mode: 'serial', timeout: 600_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
 const ids = process.env['E2E_IDENTITY_DIR'] ? { owner: idOf('OWNER'), contrib: idOf('CONTRIB'), collab: idOf('COLLAB') } : { owner: '', contrib: '', collab: '' }
@@ -96,6 +96,7 @@ async function eventually(page: Page, check: () => Promise<void>, tries = 6): Pr
 }
 
 test.beforeAll(() => {
+  test.setTimeout(900_000)
   if (!process.env['E2E_IDENTITY_DIR'] || !BIN) return
   rmSync(WORK, { recursive: true, force: true })
   mkdirSync(join(WORK, 'src', 'src'), { recursive: true })
