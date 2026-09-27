@@ -132,7 +132,8 @@ pub enum Command {
         /// env-configured targets (FORGE_S3_* / FORGE_IPFS_*); prefer --profile.
         #[arg(long, conflicts_with = "profile")]
         backend: Option<Backend>,
-        /// Storage profile (from `dg storage add`) for the consolidated pack.
+        /// Storage profile(s) (from `dg storage add`) for the consolidated pack; a comma-
+        /// separated list stores it on each, and every one must confirm.
         #[arg(long)]
         profile: Option<String>,
     },
@@ -213,6 +214,11 @@ pub struct CreateOptions {
     /// The git remote to add for the repo (default: origin). Pushing flows only.
     #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
+    /// Record the storage's public URL on chain even though it is not a public https
+    /// address (loopback, LAN, plain http, a temporary tunnel). Without it the command stops
+    /// before creating anything.
+    #[arg(long)]
+    pub allow_private_uri: bool,
 }
 
 impl CreateOptions {
@@ -739,6 +745,11 @@ pub struct StorageAddArgs {
     /// pinning service: seconds to wait for `pinned`.
     #[arg(long)]
     pub pin_timeout_secs: Option<u64>,
+    /// Let pushes record this profile's public URL / public gateway on chain even though it
+    /// is not a public https address (loopback, LAN, plain http, a temporary tunnel): for a
+    /// local test or a LAN-only mirror. Pushes refuse such an address otherwise.
+    #[arg(long)]
+    pub allow_private_uri: bool,
 }
 
 /// A storage backend mode (`repo backend set`).

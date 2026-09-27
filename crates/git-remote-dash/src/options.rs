@@ -36,6 +36,15 @@ pub struct OptionState {
     pub from_promisor: bool,
     /// A latched fatal condition (shallow requested) that must abort the next fetch/list.
     pub fatal: Option<String>,
+    /// `git push -o <value>` values (`option push-option <value>`), in order.
+    pub push_options: Vec<String>,
+}
+
+impl OptionState {
+    /// Whether `git push -o <name>` was given.
+    pub fn has_push_option(&self, name: &str) -> bool {
+        self.push_options.iter().any(|o| o == name)
+    }
 }
 
 /// The reply to emit for an `option` line.
@@ -135,6 +144,15 @@ pub fn handle_option(state: &mut OptionState, rest: &str) -> OptionReply {
             state.from_promisor = truthy(value);
             OptionReply::Ok
         }
+        // `git push -o <string>`: one line per option. git C-quotes the value
+        // (`quote_c_style` in transport-helper.c `set_helper_option`) only when it holds a
+        // character that needs it; the options this helper knows never do, so a quoted value
+        // is kept as it came and simply matches nothing. Answering `ok` is required: git dies
+        // with "helper … does not support 'push-option'" on anything else.
+        "push-option" => {
+            state.push_options.push(value.to_string());
+            OptionReply::Ok
+        }
         // Everything else: let git fall back.
         _ => OptionReply::Unsupported,
     }
@@ -193,6 +211,22 @@ mod tests {
         assert_eq!(s.filter.as_deref(), Some("blob:none"));
         assert_eq!(handle_option(&mut s, "from-promisor 1"), OptionReply::Ok);
         assert!(s.from_promisor);
+    }
+
+    #[test]
+    fn push_options_are_accepted_and_recorded() {
+        let mut s = OptionState::default();
+        assert_eq!(
+            handle_option(&mut s, "push-option allow-private-uri"),
+            OptionReply::Ok
+        );
+        assert_eq!(
+            handle_option(&mut s, "push-option ci.skip"),
+            OptionReply::Ok
+        );
+        assert!(s.has_push_option("allow-private-uri"));
+        assert!(!s.has_push_option("allow"));
+        assert_eq!(s.push_options, ["allow-private-uri", "ci.skip"]);
     }
 
     #[test]

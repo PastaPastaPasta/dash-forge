@@ -357,7 +357,7 @@ impl Helper {
         // storage.toml must not block it.
         let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
             Some(
-                PushPolicy::load(self.remote.as_deref())
+                PushPolicy::load_for_push(self.remote.as_deref(), options)
                     .context("reading the storage policy (dash.storage / dash.replicas)")?,
             )
         } else {

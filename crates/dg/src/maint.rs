@@ -33,6 +33,19 @@ pub async fn repack(
 ) -> Result<()> {
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
+    // `--profile a,b`: the consolidated pack goes to every listed profile, and each must
+    // confirm (so older packs gain the copies a new storage policy asks for).
+    let profile_names: Vec<&str> = profile
+        .map(|p| {
+            p.split(',')
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    for name in &profile_names {
+        refuse_unpublishable_profile(name, "nothing repacked")?;
+    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
@@ -62,23 +75,28 @@ pub async fn repack(
 
     // The consolidated pack's destination: Platform (default), an external profile
     // (verified upload), or a legacy env-configured backend (migrates cold history out).
-    let profile_target = profile.map(external_profile_target).transpose()?;
-    let external = if profile_target.is_some() {
-        None
-    } else {
+    let profile_targets = profile_names
+        .iter()
+        .map(|n| external_profile_target(n))
+        .collect::<Result<Vec<_>>>()?;
+    let external = if profile_targets.is_empty() {
         build_external_backend(backend)?
+    } else {
+        None
     };
-    let profile_targets: Vec<&dyn StorageTarget> = profile_target
+    let profile_refs: Vec<&dyn StorageTarget> = profile_targets
         .iter()
         .map(|t| t as &dyn StorageTarget)
         .collect();
-    let target = match (&profile_target, &external) {
-        (Some(_), _) => RepackTarget::Replicated {
-            targets: &profile_targets,
-            required: 1,
-        },
-        (None, Some(b)) => RepackTarget::External(b.as_ref()),
-        (None, None) => RepackTarget::Platform,
+    let target = if !profile_refs.is_empty() {
+        RepackTarget::Replicated {
+            targets: &profile_refs,
+            required: profile_refs.len(),
+        }
+    } else if let Some(b) = &external {
+        RepackTarget::External(b.as_ref())
+    } else {
+        RepackTarget::Platform
     };
 
     let report = svc.repack(&handle, target).await.context("repack failed")?;
@@ -147,6 +165,9 @@ pub async fn reseed(
 ) -> Result<()> {
     let repo = repo.context("`dg reseed` needs a repository: dg reseed <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
+    if let Some(name) = profile {
+        refuse_unpublishable_profile(name, "nothing reseeded")?;
+    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
@@ -378,6 +399,13 @@ fn load_external_profile(name: &str) -> Result<forge_core::storage::Profile> {
         )));
     }
     Ok(profile)
+}
+
+/// Refuse before anything is written when the named profile would record a non-public
+/// read address (see [`crate::storage::check_publishable`]).
+fn refuse_unpublishable_profile(name: &str, lead: &str) -> Result<()> {
+    let profile = load_external_profile(name)?;
+    crate::storage::check_publishable([(name, &profile)], false, lead)
 }
 
 /// A verified-upload target for the named external profile.

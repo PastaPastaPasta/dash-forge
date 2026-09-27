@@ -14,14 +14,18 @@
 //!   gateway list, hash-verifying every candidate; Platform chunks are the caller's last
 //!   resort.
 //! - [`cors`] — browser-readability checks and the exact provider CORS config to paste.
+//! - [`publish`] — which read URLs may be recorded on chain (public https only).
+//! - [`copies`] — how many copies each live pack has, against a policy's N.
 //!
 //! Nothing in this module is operated by the Forge project: every endpoint is the user's
 //! own, or a public gateway that is only ever trusted for bytes that hash-verify.
 
+pub mod copies;
 pub mod cors;
 pub mod local;
 pub mod policy;
 pub mod profiles;
+pub mod publish;
 pub mod read;
 pub mod targets;
 

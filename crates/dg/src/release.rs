@@ -65,6 +65,11 @@ fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> 
         .note("nothing was uploaded or written")
         .into());
     }
+    crate::storage::check_publishable(
+        policy.external.iter().map(|(n, p)| (n.as_str(), p)),
+        false,
+        "release not created",
+    )?;
     let http = forge_core::storage::http_client();
     let targets = policy
         .external

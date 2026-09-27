@@ -442,10 +442,20 @@ impl S3Backend {
 
     /// `HEAD` `key` on the API endpoint: `Some(size)` when present, `None` on 404.
     pub async fn head_object(&self, key: &str) -> Result<Option<u64>> {
+        self.head(key, false).await
+    }
+
+    /// A signed `HEAD` of `key`: `Some(size)` when present, `None` on 404 — and on 403 too
+    /// when `forbidden_is_unknown`.
+    async fn head(&self, key: &str, forbidden_is_unknown: bool) -> Result<Option<u64>> {
         let prepared = self.prepare("HEAD", key, &[], EMPTY_PAYLOAD_SHA256)?;
         let resp = self.send(Method::HEAD, prepared, None).await?;
         match resp.status() {
             StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::FORBIDDEN if forbidden_is_unknown => {
+                tracing::debug!(key, "HEAD returned 403 (no s3:ListBucket?); uploading");
+                Ok(None)
+            }
             s if s.is_success() => Ok(Some(
                 resp.headers()
                     .get(reqwest::header::CONTENT_LENGTH)
@@ -458,6 +468,19 @@ impl S3Backend {
                 auth_hint(s)
             ))),
         }
+    }
+
+    /// The size of the object at `key` for the pre-upload "already there?" check, or `None`
+    /// when it is absent **or the store will not say**.
+    ///
+    /// AWS answers a HEAD of a missing key with `403 Forbidden`, not `404`, when the caller
+    /// lacks `s3:ListBucket` on the bucket (HeadObject, "Permissions":
+    /// <https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html>). A key limited
+    /// to Put/Get/DeleteObject — the least privilege a push needs — would otherwise fail every
+    /// new pack. Keys are content-addressed, so an unneeded upload is harmless: the PUT
+    /// decides, and fails loudly itself when the key really cannot write.
+    async fn existing_size(&self, key: &str) -> Result<Option<u64>> {
+        self.head(key, true).await
     }
 
     /// `GET` `key` (optionally a range) from the API endpoint, signed when credentialed.
@@ -591,7 +614,7 @@ impl PackBackend for S3Backend {
     /// [`Self::reput`] once when that check fails.
     async fn put(&self, bytes: &[u8], meta: &PackMeta) -> Result<Vec<Uri>> {
         let key = self.object_key(&Self::pack_key(&meta.pack_hash));
-        if self.head_object(&key).await? != Some(bytes.len() as u64) {
+        if self.existing_size(&key).await? != Some(bytes.len() as u64) {
             self.put_object(&key, bytes, "application/octet-stream")
                 .await?;
         }
@@ -854,5 +877,47 @@ mod tests {
         let b = S3Backend::new(cfg(true));
         let p = b.prepare("GET", "k", &[], EMPTY_PAYLOAD_SHA256).unwrap();
         assert!(p.headers.is_empty());
+    }
+
+    /// AWS answers a HEAD of a missing key with 403 when the caller lacks `s3:ListBucket`
+    /// (the least-privilege policy the guide documents): the pre-upload check must treat
+    /// that as "unknown" and upload, and the PUT decides.
+    #[tokio::test]
+    async fn a_403_on_the_pre_upload_head_still_uploads() {
+        use crate::test_http::{serve, Reply};
+        let (base, log) = serve(|req| match req.method.as_str() {
+            "HEAD" => Reply::new(403, ""),
+            "PUT" => Reply::new(200, ""),
+            _ => Reply::new(404, ""),
+        });
+        let backend = S3Backend::new(S3Config {
+            endpoint: base,
+            region: "us-east-1".into(),
+            bucket: "b".into(),
+            path_style: true,
+            public_url: None,
+            prefix: String::new(),
+            credentials: Some(S3Credentials {
+                access_key_id: "AKID".into(),
+                secret_access_key: Secret::new("s"),
+                session_token: None,
+            }),
+        });
+        let bytes = b"pack bytes".to_vec();
+        let meta = PackMeta::for_bytes(&bytes);
+        let uris = backend
+            .put(&bytes, &meta)
+            .await
+            .expect("put despite HEAD 403");
+        assert_eq!(uris.len(), 1);
+        let methods: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.method.clone())
+            .collect();
+        assert_eq!(methods, ["HEAD", "PUT"]);
+        // `head_object` itself still reports the 403 to callers that need an answer.
+        assert!(backend.head_object("k").await.is_err());
     }
 }

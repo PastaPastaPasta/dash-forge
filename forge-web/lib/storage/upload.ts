@@ -146,6 +146,10 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
   const s = p.settings
   if (s.kind === 's3') {
     const key = artifactKey(s, hashHex)
+    // Any HEAD failure means "unknown, upload it": AWS answers a HEAD of a missing key with 403,
+    // not 404, when the key lacks s3:ListBucket (HeadObject, "Permissions":
+    // https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html), and keys are
+    // content-addressed, so an unneeded PUT is harmless (parity with forge-core `S3Backend::put`).
     const existing = await headObject(s, p.secrets, key).catch(() => null)
     if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
     try {

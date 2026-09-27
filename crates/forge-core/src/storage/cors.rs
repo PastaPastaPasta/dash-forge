@@ -5,9 +5,22 @@
 //! That needs, on the PUBLIC read URL:
 //! - `Access-Control-Allow-Origin` (`*` or the app origin) on GET responses,
 //! - a successful preflight for the `Range` request header,
-//! - `Access-Control-Expose-Headers` including `Content-Range`, `Content-Length` and
-//!   `ETag`, so the app can see partial-content framing.
+//! - a `206` answer to a ranged GET.
+//!
+//! `Content-Range` in `Access-Control-Expose-Headers` is nice to have, not needed: the
+//! browse reader (`forge-web/lib/view/browse-source.ts`, `fetchExternalRange` /
+//! `fetchBody`) accepts any `ok`/`206` body and slices a whole-body answer itself; it never
+//! reads `Content-Range`. So a store that does not expose it (Storj linksharing sends no
+//! `Access-Control-Expose-Headers` at all) is a warning, not a failure.
+//!
+//! Response headers are read the way a browser reads them (Fetch standard, "extract header
+//! list values"): every line of a repeated header counts, values are comma-separated
+//! lists, and names compare case-insensitively. kubo and the public IPFS gateways send
+//! `Access-Control-Allow-Headers` / `Access-Control-Expose-Headers` as several lines. `*`
+//! is a wildcard in both lists for a request without credentials, which is what the web
+//! app's reads are (`fetch` defaults to `credentials: "same-origin"`).
 
+use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, StatusCode};
 
 /// The origin the checks present (any https origin works for a `*` policy; a policy
@@ -22,30 +35,51 @@ pub struct CorsReport {
     pub get_allows_origin: bool,
     /// The `OPTIONS` preflight for a ranged GET succeeded and allowed `range`.
     pub preflight_allows_range: bool,
-    /// `Content-Range` is exposed to scripts.
+    /// `Content-Range` is exposed to scripts (nice to have; see the module docs).
     pub exposes_content_range: bool,
     /// A ranged GET came back `206`.
     pub range_206: bool,
     /// Problems, one line each, in user terms.
     pub problems: Vec<String>,
+    /// Things that do not stop the web app, one line each.
+    pub warnings: Vec<String>,
 }
 
 impl CorsReport {
-    /// Whether a browser can read packs from the URL.
+    /// Whether a browser can read packs from the URL. `Content-Range` exposure is not
+    /// required (the reader does not use it).
     pub fn browser_ok(&self) -> bool {
-        self.get_allows_origin
-            && self.preflight_allows_range
-            && self.exposes_content_range
-            && self.range_206
+        self.get_allows_origin && self.preflight_allows_range && self.range_206
     }
 }
 
-fn header_list_contains(value: Option<&reqwest::header::HeaderValue>, needle: &str) -> bool {
-    value.and_then(|v| v.to_str().ok()).is_some_and(|v| {
+/// A response header as a browser "gets" it: every line of `name`, joined with `, `
+/// (Fetch: "get"), or `None` when absent or not text.
+fn header_combined(h: &HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<&str> = h
+        .get_all(name)
+        .iter()
+        .map(|v| v.to_str().ok())
+        .collect::<Option<_>>()?;
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
+/// Whether the list header `name` (every line, comma-separated) names `needle`
+/// (case-insensitively) or holds the `*` wildcard (valid for a request without
+/// credentials, which is what the web app sends).
+fn header_list_contains(h: &HeaderMap, name: &str, needle: &str) -> bool {
+    header_combined(h, name).is_some_and(|v| {
         v.split(',')
             .map(str::trim)
-            .any(|h| h == "*" || h.eq_ignore_ascii_case(needle))
+            .any(|item| item == "*" || item.eq_ignore_ascii_case(needle))
     })
+}
+
+/// Whether `Access-Control-Allow-Origin` admits the web app (exactly `*` or its origin),
+/// and the value. Repeated lines combine (`*, *`), which a browser rejects too.
+fn allows_probe_origin(h: &HeaderMap) -> (bool, String) {
+    let allow = header_combined(h, "access-control-allow-origin").unwrap_or_default();
+    (allow == "*" || allow == PROBE_ORIGIN, allow)
 }
 
 /// Probe `url` (an object that exists and is at least 2 bytes long) for browser readability.
@@ -69,11 +103,8 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
                 ));
             }
             let h = resp.headers();
-            let allow = h
-                .get("access-control-allow-origin")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default();
-            r.get_allows_origin = allow == "*" || allow == PROBE_ORIGIN;
+            let allow;
+            (r.get_allows_origin, allow) = allows_probe_origin(h);
             if !r.get_allows_origin {
                 r.problems.push(if allow.is_empty() {
                     "GET responses carry no Access-Control-Allow-Origin header — browsers cannot \
@@ -87,11 +118,11 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
                 });
             }
             r.exposes_content_range =
-                header_list_contains(h.get("access-control-expose-headers"), "content-range");
+                header_list_contains(h, "access-control-expose-headers", "content-range");
             if r.get_allows_origin && !r.exposes_content_range {
-                r.problems.push(
-                    "Content-Range is not in Access-Control-Expose-Headers — the web app cannot \
-                     frame ranged reads"
+                r.warnings.push(
+                    "Content-Range is not in Access-Control-Expose-Headers; browsing works \
+                     without it (the web app slices ranged reads itself)"
                         .to_string(),
                 );
             }
@@ -110,8 +141,8 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
         Ok(resp) => {
             let h = resp.headers();
             r.preflight_allows_range = resp.status().is_success()
-                && h.contains_key("access-control-allow-origin")
-                && header_list_contains(h.get("access-control-allow-headers"), "range");
+                && allows_probe_origin(h).0
+                && header_list_contains(h, "access-control-allow-headers", "range");
             if !r.preflight_allows_range {
                 r.problems.push(format!(
                     "the CORS preflight for a Range request was refused (status {}) — allow the \
@@ -139,11 +170,8 @@ pub async fn probe_preflight(client: &Client, url: &str) -> Result<(), String> {
         .await
         .map_err(|e| format!("OPTIONS {url} failed: {e}"))?;
     let h = resp.headers();
-    let origin = h
-        .get("access-control-allow-origin")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    if !resp.status().is_success() || !(origin == "*" || origin == PROBE_ORIGIN) {
+    let (allowed, origin) = allows_probe_origin(h);
+    if !resp.status().is_success() || !allowed {
         return Err(format!(
             "the CORS preflight from {PROBE_ORIGIN} was refused (status {}{})",
             resp.status(),
@@ -154,7 +182,7 @@ pub async fn probe_preflight(client: &Client, url: &str) -> Result<(), String> {
             }
         ));
     }
-    if !header_list_contains(h.get("access-control-allow-headers"), "range") {
+    if !header_list_contains(h, "access-control-allow-headers", "range") {
         return Err("the CORS preflight does not allow the `Range` request header".into());
     }
     Ok(())
@@ -190,30 +218,112 @@ pub fn provider_of(endpoint: &str) -> Provider {
     }
 }
 
-/// The exact CORS configuration to apply for `provider`, with how to apply it.
+/// The request headers a signed browser request sends that are not CORS-safelisted (the web
+/// app's S3 client, `forge-web/lib/storage/cors.ts` `SIGNED_HEADERS`).
+pub const SIGNED_HEADERS: [&str; 6] = [
+    "authorization",
+    "content-type",
+    "range",
+    "x-amz-content-sha256",
+    "x-amz-date",
+    "x-amz-security-token",
+];
+
+/// The response headers the rules expose (`Content-Range` is nice to have; see the module
+/// docs).
+const EXPOSE: [&str; 3] = ["Content-Range", "Content-Length", "ETag"];
+
+/// The two S3 CORS rules (parity with forge-web `lib/storage/cors.ts` `s3Rules`):
+/// - **read**, any origin: `GET`/`HEAD` with the `range` request header. The objects are
+///   public; every Forge web app, and any mirror of it, reads them.
+/// - **write**, the web app's origin only: `PUT`/`GET`/`HEAD`/`DELETE` with the SigV4
+///   headers, so pushes, merges and release uploads from the browser can sign requests.
+///
+/// Header names are lowercase: browsers send `Access-Control-Request-Headers` as sorted,
+/// byte-lowercased names (Fetch standard), and some stores match `AllowedHeaders`
+/// case-sensitively (Garage refuses a `range` preflight for `["Range"]`). Names are listed
+/// rather than `*`, which Cloudflare's R2 documentation does not describe.
+pub fn s3_cors_rules(origin: &str) -> serde_json::Value {
+    serde_json::json!([
+        {
+            "AllowedOrigins": ["*"],
+            "AllowedMethods": ["GET", "HEAD"],
+            "AllowedHeaders": ["range"],
+            "ExposeHeaders": EXPOSE,
+            "MaxAgeSeconds": 86400
+        },
+        {
+            "AllowedOrigins": [origin],
+            "AllowedMethods": ["PUT", "GET", "HEAD", "DELETE"],
+            "AllowedHeaders": SIGNED_HEADERS,
+            "ExposeHeaders": EXPOSE,
+            "MaxAgeSeconds": 86400
+        }
+    ])
+}
+
+/// The same two rules in Backblaze B2's native form (`b2 bucket update --cors-rules`).
+fn b2_cors_rules(origin: &str) -> serde_json::Value {
+    let expose: Vec<String> = EXPOSE.iter().map(|h| h.to_ascii_lowercase()).collect();
+    serde_json::json!([
+        {
+            "corsRuleName": "dashForgeRead",
+            "allowedOrigins": ["*"],
+            "allowedOperations": ["s3_get", "s3_head", "b2_download_file_by_name"],
+            "allowedHeaders": ["range"],
+            "exposeHeaders": expose,
+            "maxAgeSeconds": 86400
+        },
+        {
+            "corsRuleName": "dashForgeWrite",
+            "allowedOrigins": [origin],
+            "allowedOperations": ["s3_put", "s3_get", "s3_head", "s3_delete"],
+            "allowedHeaders": SIGNED_HEADERS,
+            "exposeHeaders": expose,
+            "maxAgeSeconds": 86400
+        }
+    ])
+}
+
+fn pretty(v: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
+/// The exact CORS configuration to apply for `provider`, with how to apply it: a read rule
+/// for every origin and a write rule for the web app ([`s3_cors_rules`]).
 pub fn cors_fix(provider: Provider, bucket: &str) -> String {
+    let rules = s3_cors_rules(PROBE_ORIGIN);
+    let document = pretty(&serde_json::json!({ "CORSRules": rules }));
+    let tail = "The first rule lets any browser read the (public) packs; the second lets the web \
+                app at "
+        .to_string()
+        + PROBE_ORIGIN
+        + " push, merge and upload with your key.";
     match provider {
         Provider::R2 => format!(
             "Cloudflare dashboard → R2 → {bucket} → Settings → CORS Policy → Add CORS policy, paste:\n\
-[\n  {{\n    \"AllowedOrigins\": [\"*\"],\n    \"AllowedMethods\": [\"GET\", \"HEAD\"],\n    \"AllowedHeaders\": [\"Range\"],\n    \"ExposeHeaders\": [\"Content-Range\", \"Content-Length\", \"ETag\"],\n    \"MaxAgeSeconds\": 86400\n  }}\n]\n\
-Also enable public access: Settings → Public access → R2.dev subdomain (or connect a custom domain)."
+             {}\n{tail}\n\
+             Also enable public access: Settings → Public access → R2.dev subdomain (or connect a custom domain).",
+            pretty(&rules)
         ),
         Provider::B2 => format!(
-            "Save as cors.json and run `b2 bucket update --cors-rules \"$(cat cors.json)\" {bucket} allPublic`:\n\
-[\n  {{\n    \"corsRuleName\": \"dashForgeRead\",\n    \"allowedOrigins\": [\"*\"],\n    \"allowedOperations\": [\"s3_get\", \"s3_head\", \"b2_download_file_by_name\"],\n    \"allowedHeaders\": [\"range\"],\n    \"exposeHeaders\": [\"content-range\", \"content-length\", \"etag\"],\n    \"maxAgeSeconds\": 86400\n  }}\n]"
+            "Save as cors.json and run `b2 bucket update --cors-rules \"$(cat cors.json)\" {bucket} allPublic` \
+             (with a key that has writeBuckets):\n{}\n{tail}",
+            pretty(&b2_cors_rules(PROBE_ORIGIN))
         ),
         Provider::Aws => format!(
             "Save as cors.json and run `aws s3api put-bucket-cors --bucket {bucket} --cors-configuration file://cors.json`:\n\
-{{\n  \"CORSRules\": [\n    {{\n      \"AllowedOrigins\": [\"*\"],\n      \"AllowedMethods\": [\"GET\", \"HEAD\"],\n      \"AllowedHeaders\": [\"Range\"],\n      \"ExposeHeaders\": [\"Content-Range\", \"Content-Length\", \"ETag\"],\n      \"MaxAgeSeconds\": 86400\n    }}\n  ]\n}}\n\
-The objects also need public read: a bucket policy granting s3:GetObject on arn:aws:s3:::{bucket}/*, \
-or a CloudFront distribution as public_url."
+             {document}\n{tail}\n\
+             The objects also need public read: a bucket policy granting s3:GetObject on arn:aws:s3:::{bucket}/*, \
+             or a CloudFront distribution as public_url."
         ),
         Provider::Other => format!(
-            "MinIO answers CORS for every origin by default (`MINIO_API_CORS_ALLOW_ORIGIN`, default \"*\"). \
-If it is restricted, set MINIO_API_CORS_ALLOW_ORIGIN=\"*\" on the server. For public reads run \
-`mc anonymous set download <alias>/{bucket}`. Other S3-compatible stores: apply this S3 CORS document \
-with their put-bucket-cors equivalent:\n\
-{{\"CORSRules\":[{{\"AllowedOrigins\":[\"*\"],\"AllowedMethods\":[\"GET\",\"HEAD\"],\"AllowedHeaders\":[\"Range\"],\"ExposeHeaders\":[\"Content-Range\",\"Content-Length\",\"ETag\"],\"MaxAgeSeconds\":86400}}]}}"
+            "Garage, RustFS and most S3-compatible stores take this document through the S3 API: save it as \
+             cors.json and run `aws --endpoint-url <your endpoint> s3api put-bucket-cors --bucket {bucket} \
+             --cors-configuration file://cors.json`:\n{document}\n{tail}\n\
+             Garage applies it to its web endpoint too (the public URL). MinIO community edition (archived) \
+             has no per-bucket CORS: it answers every origin unless `mc admin config set <alias> api \
+             cors_allow_origin=…` restricted it; for public reads run `mc anonymous set download <alias>/{bucket}`."
         ),
     }
 }
@@ -222,7 +332,6 @@ with their put-bucket-cors equivalent:\n\
 pub fn kubo_cors_fix() -> &'static str {
     "kubo's gateway sends Access-Control-Allow-Origin: * by default. If it was changed, reset it:\n\
 ipfs config --json Gateway.HTTPHeaders.Access-Control-Allow-Origin '[\"*\"]'\n\
-ipfs config --json Gateway.HTTPHeaders.Access-Control-Expose-Headers '[\"Content-Range\", \"Content-Length\", \"ETag\"]'\n\
 then restart the daemon."
 }
 
@@ -248,16 +357,33 @@ mod tests {
     }
 
     #[test]
-    fn fixes_are_valid_json_and_name_the_bucket() {
-        for p in [Provider::R2, Provider::B2, Provider::Aws] {
+    fn fixes_are_valid_json_with_the_read_and_the_write_rule() {
+        for p in [Provider::R2, Provider::B2, Provider::Aws, Provider::Other] {
             let fix = cors_fix(p, "my-bucket");
             assert!(fix.contains("my-bucket"));
-            let start = fix.find(['[', '{']).unwrap();
+            let start = fix.find("\n[").or_else(|| fix.find("\n{")).unwrap() + 1;
             let end = fix.rfind([']', '}']).unwrap();
             let json: serde_json::Value = serde_json::from_str(&fix[start..=end])
                 .unwrap_or_else(|e| panic!("{p:?} fix is not JSON: {e}\n{fix}"));
-            assert!(json.to_string().to_ascii_lowercase().contains("range"));
+            let rules = json.get("CORSRules").unwrap_or(&json).as_array().unwrap();
+            assert_eq!(rules.len(), 2, "{p:?}: a read and a write rule");
+            let text = json.to_string();
+            // Lowercase header names: Garage matches AllowedHeaders case-sensitively and
+            // browsers send lowercase names.
+            assert!(text.contains(r#"["range"]"#), "{p:?}: {text}");
+            assert!(!text.contains(r#""Range""#), "{p:?}: {text}");
+            assert!(text.contains(PROBE_ORIGIN), "{p:?}: {text}");
+            for h in SIGNED_HEADERS {
+                assert!(text.contains(h), "{p:?}: {h}");
+            }
+            assert!(text.to_ascii_lowercase().contains("put"), "{p:?}");
         }
+        let other = cors_fix(Provider::Other, "b");
+        assert!(
+            other.contains("Garage") && other.contains("RustFS"),
+            "{other}"
+        );
+        assert!(!other.contains("MINIO_API_CORS_ALLOW_ORIGIN"), "{other}");
     }
 
     #[test]
@@ -268,9 +394,118 @@ mod tests {
             exposes_content_range: true,
             range_206: true,
             problems: vec![],
+            warnings: vec![],
         };
         assert!(r.browser_ok());
+        // The reader never reads Content-Range: not exposing it is only a warning.
         r.exposes_content_range = false;
-        assert!(!r.browser_ok());
+        assert!(r.browser_ok());
+        let broken: [fn(&mut CorsReport); 3] = [
+            |r| r.get_allows_origin = false,
+            |r| r.preflight_allows_range = false,
+            |r| r.range_206 = false,
+        ];
+        for breaks in broken {
+            let mut b = r.clone();
+            breaks(&mut b);
+            assert!(!b.browser_ok());
+        }
+    }
+
+    #[test]
+    fn header_lists_follow_fetch() {
+        let mut h = HeaderMap::new();
+        h.append(
+            "access-control-allow-headers",
+            "Content-Type".parse().unwrap(),
+        );
+        h.append(
+            "access-control-allow-headers",
+            " RANGE , x-a".parse().unwrap(),
+        );
+        assert!(header_list_contains(
+            &h,
+            "access-control-allow-headers",
+            "range"
+        ));
+        assert!(header_list_contains(
+            &h,
+            "Access-Control-Allow-Headers",
+            "x-a"
+        ));
+        assert!(!header_list_contains(
+            &h,
+            "access-control-allow-headers",
+            "etag"
+        ));
+        h.append("access-control-expose-headers", "*".parse().unwrap());
+        assert!(header_list_contains(
+            &h,
+            "access-control-expose-headers",
+            "content-range"
+        ));
+        assert!(!header_list_contains(&h, "access-control-max-age", "x"));
+        // Access-Control-Allow-Origin: one `*` or the exact origin; two lines combine.
+        h.insert("access-control-allow-origin", "*".parse().unwrap());
+        assert!(allows_probe_origin(&h).0);
+        h.append("access-control-allow-origin", "*".parse().unwrap());
+        assert_eq!(allows_probe_origin(&h), (false, "*, *".to_string()));
+        h.insert("access-control-allow-origin", PROBE_ORIGIN.parse().unwrap());
+        assert!(allows_probe_origin(&h).0);
+    }
+
+    /// Storj linksharing: `Access-Control-Allow-Origin: *`, `Allow-Headers: *`, and no
+    /// `Access-Control-Expose-Headers` at all. Browsing works, so the test passes with a
+    /// warning.
+    #[tokio::test]
+    async fn no_exposed_content_range_passes_with_a_warning() {
+        use crate::test_http::{serve, Reply};
+        let (base, _) = serve(|req| {
+            let r = if req.method == "OPTIONS" {
+                Reply::new(200, "")
+            } else {
+                Reply::new(206, "ab").header("content-range", "bytes 0-1/10")
+            };
+            r.header("access-control-allow-origin", "*")
+                .header("access-control-allow-headers", "*")
+                .header("access-control-allow-methods", "GET, HEAD")
+        });
+        let r = probe_cors(&reqwest::Client::new(), &format!("{base}/raw/k/b/o")).await;
+        assert!(r.browser_ok(), "{r:?}");
+        assert!(!r.exposes_content_range);
+        assert!(r.problems.is_empty(), "{r:?}");
+        assert_eq!(r.warnings.len(), 1, "{r:?}");
+    }
+
+    /// kubo (and ipfs.io, 4everland) send `Access-Control-Expose-Headers` and
+    /// `Access-Control-Allow-Headers` as several header lines; the first line alone does not
+    /// name Content-Range / Range.
+    #[tokio::test]
+    async fn repeated_cors_header_lines_are_all_read() {
+        use crate::test_http::{serve, Reply};
+        let (base, _) = serve(|req| {
+            let r = if req.method == "OPTIONS" {
+                Reply::new(200, "")
+            } else {
+                Reply::new(206, "ab").header("content-range", "bytes 0-1/10")
+            };
+            r.header("access-control-allow-origin", "*")
+                .header("access-control-allow-headers", "Content-Type")
+                .header("access-control-allow-headers", "Range")
+                .header(
+                    "access-control-allow-headers",
+                    "User-Agent, X-Requested-With",
+                )
+                .header("access-control-expose-headers", "Content-Length")
+                .header("access-control-expose-headers", "Content-Range")
+                .header("access-control-expose-headers", "X-Ipfs-Path")
+        });
+        let url = format!("{base}/ipfs/bafkqaaa");
+        let client = reqwest::Client::new();
+        let r = probe_cors(&client, &url).await;
+        assert!(r.exposes_content_range, "{r:?}");
+        assert!(r.preflight_allows_range, "{r:?}");
+        assert!(r.browser_ok() && r.problems.is_empty(), "{r:?}");
+        assert_eq!(probe_preflight(&client, &url).await, Ok(()));
     }
 }

@@ -450,6 +450,9 @@ pub fn equivalent_command(a: &StorageAddArgs) -> String {
     if a.virtual_hosted {
         words.push("--virtual-hosted".into());
     }
+    if a.allow_private_uri {
+        words.push("--allow-private-uri".into());
+    }
     words.join(" ")
 }
 

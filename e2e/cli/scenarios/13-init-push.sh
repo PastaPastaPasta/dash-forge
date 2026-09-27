@@ -39,7 +39,7 @@ balance() { # balance <out> — the OWNER's balance in credits
 step "1. dg storage add (flags, env: secret)"
 if DASH_FORGE_STORAGE_CONFIG="$CFG" "$DG" storage add "$PROFILE" --kind s3 --endpoint "$MINIO" \
      --bucket forge-byo --public-url "${MINIO}/forge-byo" --prefix "e2e/${RUN_ID}/s13" \
-     --access-key-id minioadmin --secret-access-key env:FORGE_E2E_MINIO_SECRET \
+     --access-key-id minioadmin --secret-access-key env:FORGE_E2E_MINIO_SECRET --allow-private-uri \
      >"$LOG-add.out" 2>&1; then
   ok "profile ${PROFILE} added"
 else

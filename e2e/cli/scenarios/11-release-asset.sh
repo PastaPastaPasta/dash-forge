@@ -40,6 +40,8 @@ public_url = "${MINIO}/forge-byo"
 prefix = "e2e/${RUN_ID}/releases"
 access_key_id = "minioadmin"
 secret_access_key = "env:FORGE_E2E_MINIO_SECRET"
+# A loopback MinIO URL: a local fixture, never readable by anyone else.
+allow_private_uri = true
 EOF
 printf '[read]\nipfs_gateways = []\n' >"$READER_CFG"
 head -c 20000 /dev/urandom | gzip -c >"$ASSET"

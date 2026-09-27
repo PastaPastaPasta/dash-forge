@@ -2,8 +2,8 @@
  * The storage wizard's live test (`ux-dx-spec.md` §3.1 step 3), run from this page, so it
  * checks exactly what the browser will do later — including CORS, which a CLI test cannot see.
  *
- * S3 rows: signed PUT → signed GET → anonymous GET via the public URL → ranged read with
- * `Content-Range` visible → CORS for browser pushes (PUT) → delete probe.
+ * S3 rows: signed PUT → signed GET → anonymous GET via the public URL → ranged read (206;
+ * `Content-Range` exposure is not required) → CORS for browser pushes (PUT) → delete probe.
  * IPFS rows: kubo API → add + CID + pin → gateway re-read (Range) → public gateway →
  * pinning service → unpin.
  *
@@ -19,6 +19,7 @@
 import { S3Error, deleteObject, getObject, getPublic, objectUrl, publicObjectUrl, putObject, type S3Settings } from './s3'
 import { IpfsError, addVerified, gatewayUrl, kuboVersion, pinningReachable, unpin, type IpfsSettings } from './ipfs'
 import { normalizedPrefix, publishProblem, type ProfileSecrets, type StorageProfile } from './profiles'
+import { isTemporaryHost } from '../net'
 import { sha256Hex } from './sigv4'
 import { bytesEqual, errText, timedFetch } from './util'
 
@@ -38,7 +39,7 @@ export const S3_ROWS: readonly { id: RowId; label: string }[] = [
   { id: 'put', label: 'signed PUT' },
   { id: 'get', label: 'signed GET' },
   { id: 'public', label: 'anonymous GET via public URL' },
-  { id: 'range', label: 'ranged read (Content-Range visible)' },
+  { id: 'range', label: 'ranged read (206 Partial Content)' },
   { id: 'cors-put', label: 'CORS preflight (PUT) for browser pushes' },
   { id: 'delete', label: 'delete probe' },
 ]
@@ -88,6 +89,22 @@ async function redirects(url: string | URL): Promise<boolean> {
 async function whyBlocked(url: string | URL): Promise<'down' | 'redirect' | 'cors'> {
   if (!(await reachable(url))) return 'down'
   return (await redirects(url)) ? 'redirect' : 'cors'
+}
+
+/**
+ * A warning suffix for a public address that is temporary (a quick tunnel, Tailscale Funnel):
+ * readable today, but recorded on chain forever.
+ */
+export function temporaryNote(url: string): string {
+  let host = ''
+  try {
+    host = new URL(url).hostname
+  } catch {
+    return ''
+  }
+  return isTemporaryHost(host)
+    ? `. Warning: ${host} is a temporary tunnel name that changes or disappears when the tunnel restarts, and the address is recorded on chain forever; use a stable domain for real repositories`
+    : ''
 }
 
 /** A unique probe body, so a stale cached object can never pass for this run's upload. */
@@ -155,7 +172,7 @@ async function probeS3(p: StorageProfile & { settings: S3Settings }, report: Rep
     else {
       publicOk = true
       if (unpublishable) report('public', 'fail', `Readable from here, but ${unpublishable}`)
-      else report('public', 'ok', `anonymous GET ${publicHost}`)
+      else report('public', 'ok', `anonymous GET ${publicHost}${temporaryNote(publicUrl)}`)
     }
   } catch {
     const why = await whyBlocked(publicUrl)
@@ -173,7 +190,9 @@ async function probeS3(p: StorageProfile & { settings: S3Settings }, report: Rep
     try {
       const got = await getPublic(s, key, 'bytes=0-9')
       if (got.status !== 206) report('range', 'fail', `a ranged GET returned ${got.status} instead of 206: browsing needs HTTP Range support on the public URL`)
-      else if (got.contentRange === null) report('range', 'fail', 'Content-Range is not exposed to scripts (Access-Control-Expose-Headers)', true)
+      // The browse reader never reads Content-Range (it slices a whole-body answer itself), so
+      // a store that does not expose it (Storj linksharing) still works.
+      else if (got.contentRange === null) report('range', 'ok', 'Range honoured (Content-Range is not exposed to scripts; browsing does not need it)')
       else report('range', 'ok', 'Range honoured, Content-Range exposed')
     } catch {
       report('range', 'fail', 'the ranged read was refused: allow the Range request header in the bucket’s CORS rules', true)
@@ -244,7 +263,7 @@ async function probeIpfs(p: StorageProfile & { settings: IpfsSettings }, report:
     const r = await readBack(gatewayUrl(s.publicGateway, cid), body, false)
     if (!r.ok) report('public-gateway', 'fail', `the public gateway ${r.detail}`, r.cors)
     else if (unpublishable) report('public-gateway', 'fail', `Readable from here, but ${unpublishable}`)
-    else report('public-gateway', 'ok', `anonymous read through ${new URL(s.publicGateway).host}`)
+    else report('public-gateway', 'ok', `anonymous read through ${new URL(s.publicGateway).host}${temporaryNote(s.publicGateway)}`)
   }
 
   report('pinning', 'running', '')

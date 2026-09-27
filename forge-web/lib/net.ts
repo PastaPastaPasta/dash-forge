@@ -32,6 +32,17 @@ export function isPrivateHost(hostname: string): boolean {
   return false
 }
 
+/**
+ * Whether `hostname` is a name that stops working when a process restarts or a machine is
+ * renamed: a Cloudflare quick tunnel (`*.trycloudflare.com`) or Tailscale Funnel (`*.ts.net`).
+ * Public, so readers may fetch it, but a poor address to record on chain forever: the storage
+ * test says so. forge-core `storage/publish.rs` refuses to push to one without an override.
+ */
+export function isTemporaryHost(hostname: string): boolean {
+  const h = hostname.toLowerCase()
+  return h.endsWith('.trycloudflare.com') || h.endsWith('.ts.net')
+}
+
 /** Whether `url` is a public https URL (what readers may fetch and a manifest may record). */
 export function isPublicHttpsUrl(url: string): boolean {
   try {

@@ -105,6 +105,9 @@ impl Flow {
         flag("display-name", Some(&opts.display_name));
         flag("default-branch", opts.default_branch.as_deref());
         flag("remote", opts.remote.as_deref());
+        if opts.allow_private_uri {
+            words.push("--allow-private-uri".into());
+        }
         words.join(" ")
     }
 }
@@ -232,7 +235,7 @@ pub fn default_name(dir: &str) -> Option<String> {
 
 /// A `dash://` URL's `(owner, name)`, ignoring a trailing `/` or `.git`; `name` is `None` for
 /// the id form (`dash://<repoId>`).
-fn parse_dash_url(url: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn parse_dash_url(url: &str) -> Option<(String, Option<String>)> {
     let rest = url.strip_prefix("dash://")?.trim_end_matches('/');
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     match rest.split_once('/') {
@@ -575,6 +578,12 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         .or_else(|| local.as_ref().and_then(|l| l.branch.clone()))
         .unwrap_or_else(|| "main".into());
     let storage = choose_storage(ctx, opts, size).await?;
+    // The new repo's config advertises these read bases, and its pushes record them.
+    crate::storage::check_publishable(
+        storage.policy.external.iter().map(|(n, p)| (n.as_str(), p)),
+        opts.allow_private_uri,
+        "repository not created",
+    )?;
     if local.is_some() {
         storage.require_secrets()?;
     }
@@ -865,7 +874,14 @@ async fn wire_and_push(
     // GitHub `origin` stays the upstream when the Forge remote is `--remote forge`).
     let track = local.upstream_remote(branch).is_none_or(|r| r == remote);
     let before = client.get_balance(&plan.owner).await.ok();
-    let outcome = run_push(ctx, &local.root, remote, branch, track)?;
+    let outcome = run_push(
+        ctx,
+        &local.root,
+        remote,
+        branch,
+        track,
+        opts.allow_private_uri,
+    )?;
     let after = client.get_balance(&plan.owner).await.ok();
     // The helper's own measurement; the balance change only when it reported none.
     let push_cost = outcome
@@ -997,6 +1013,7 @@ fn run_push(
     remote: &str,
     branch: &str,
     track: bool,
+    allow_private_uri: bool,
 ) -> Result<PushOutcome> {
     let (_dir, report) = Report::new()?;
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
@@ -1008,6 +1025,12 @@ fn run_push(
     cmd.arg("push");
     if track {
         cmd.arg("-u");
+    }
+    if allow_private_uri {
+        cmd.args([
+            "-o",
+            forge_core::storage::publish::ALLOW_PRIVATE_URI_PUSH_OPTION,
+        ]);
     }
     cmd.args([remote, spec.as_str()])
         .envs(dash_env(ctx))
@@ -1219,6 +1242,7 @@ mod tests {
             display_name: String::new(),
             default_branch: Some("trunk".into()),
             remote: Some("forge".into()),
+            allow_private_uri: true,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
             let line = flow.equivalent("proj", "r2,platform", &opts);
@@ -1235,6 +1259,7 @@ mod tests {
             assert_eq!(got.description, "my project", "{line}");
             assert_eq!(got.default_branch.as_deref(), Some("trunk"), "{line}");
             assert_eq!(got.remote(), "forge", "{line}");
+            assert!(got.allow_private_uri, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }
     }
