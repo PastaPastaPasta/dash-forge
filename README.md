@@ -38,7 +38,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
    ```
    Without a storage profile, `dg init` stops before spending and prices the alternative; pass `--storage platform` to keep packs on Platform (~0.28 DASH/MiB).
 
-`dg init` prints the repository's web address. Prefer the browser? On [forge.dashhq.org](https://forge.dashhq.org), **Sign in** creates an identity for you or connects your Dash wallet, **Settings → Storage** sets up your bucket, and **New → Repository** creates the repository. The [quick start guide](docs/guides/quick-start.md) walks through each step.
+`dg init` prints the repository's web address. Prefer the browser? On [forge.dashhq.org](https://forge.dashhq.org), **Sign in** creates an identity for you (or connects your Dash wallet; today only Dash Wallet iOS on devnet, with limits: see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)), **Settings → Storage** sets up your bucket, and **New → Repository** creates the repository. The [quick start guide](docs/guides/quick-start.md) walks through each step.
 
 ## What you can do
 
@@ -46,8 +46,8 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 - **Bring your own storage.** Packs go to your S3-compatible bucket (R2, B2, AWS S3, MinIO), your IPFS node or pinning service, or Platform, with N-of-M replication. Set it up with `dg storage add` or the web app's storage wizard.
 - **Collaborate.** Writers and maintainers enforced at consensus, issues, labels, pull requests from a branch or a fork, reviews that count only from members on the current head, real merges (`dg pr merge`), releases with hash-checked assets, forks and stars.
 - **Mirror GitHub.** `forge-import` (or `dg import`) copies code, issues, PRs, releases and labels, and the [Mirror Action](action/README.md) keeps the copy in sync from GitHub Actions, idempotently and under a cost cap.
-- **Keep keys contained.** `dg auth` and the web app sign with *limited keys*: a budget, an expiry, and usable only on Forge's contracts, enforced by Platform. The master key signs only one-time steps and is never stored. CLI keys live in the OS keychain; browser keys in an encrypted vault (passkey or passphrase). CI gets one pasteable `dfk1:` runner key.
-- **Use the web app.** Browse code, commits and diffs; file and triage issues; review PRs; publish releases; manage members and storage; Explore and a local notifications inbox. Sign in by creating an identity in the browser, importing one, or scanning a QR code with Dash Wallet.
+- **Keep keys contained.** `dg auth` and the web app sign with *limited keys*: a budget, an expiry, and usable only on Forge's contracts, enforced by Platform. The master key signs only one-time steps and is not stored (unless you ask for `dg auth login --full-key`). CLI keys live in the OS keychain; browser keys in an encrypted vault (passkey or passphrase). CI gets one pasteable `dfk1:` runner key.
+- **Use the web app.** Browse code, commits and diffs; file and triage issues; review PRs; publish releases; manage members and storage; Explore and a local notifications inbox. Sign in by creating an identity in the browser, importing one, or scanning a QR code with Dash Wallet (today: Dash Wallet iOS on devnet, with limits; see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)).
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
 - **Wire up CI.** `dg webhook add` plus a relay you run yourself (`forge-relay`) turn on-chain activity into GitHub-shaped webhooks, with a durable retry queue.
 

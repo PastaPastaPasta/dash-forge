@@ -90,7 +90,7 @@ On a devnet the deposit is proven with a chain lock, which takes a few minutes. 
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
 - **With the Dash bridge**: <https://bridge.thepasta.org/?network=devnet-moutai>, then **Download Key Backup**.
 
-To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve); [Identity and keys](identity-and-keys.md#limited-keys) says which wallets and networks work today, and the caveats.
+To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that works only in Dash Wallet iOS on devnet; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
 ---
 
@@ -109,7 +109,7 @@ dg auth login --network devnet --devnet-name moutai ~/Downloads/dash-identity-<i
   stored in macOS Keychain (dash-forge/devnet-moutai/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
 ```
 
-The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no keychain (over SSH, in a container), the key goes to a passphrase-sealed file instead.
+The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
 `git-remote-dash` still needs the network for a repository `dg` did not set up (`dg init` and `dg repo create --push` write it into the repository's git config). Add it to your shell profile if you clone by hand, or the helper uses testnet and stops with "not deployed":
 

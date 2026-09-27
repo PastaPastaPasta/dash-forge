@@ -101,7 +101,7 @@ Things to know:
 A web page is whoever served it. If the page, or a script it loads, is compromised, anything you paste into it is gone.
 
 - **Never paste your MASTER key, your 12 words, or your main identity file into a website.** That includes forge.dashhq.org. Nothing on Forge needs them.
-- The web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a key for the browser from the terminal: `dg auth export --new-key --reveal-secrets --format dfk1 -o key.dfk1` and paste that key under **Advanced**.
+- The web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a key for the browser from the terminal: `dg auth export --new-key --reveal-secrets --format dfk1 -o key.dfk1`, then under **Advanced** enter the identity id and the key's WIF (the last `:`-separated field of the `dfk1` value). It signs for that tab only.
 - For CI, give a pipeline its own limited key: `dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1` makes one, and the file's one line is the `DASH_FORGE_KEY` secret.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
@@ -148,7 +148,7 @@ A limited key is an identity key with four restrictions:
 | CLI (`dg auth new` / `login` / `keys add`) | 0.25 DASH | 180 days |
 | CI runner (`dg auth export --new-key`, Mirror Action) | 0.5 DASH | 365 days |
 
-All are editable at creation (`--budget`, `--expires`). Before binding a key, `dg` checks on chain that the contract group holds exactly forge-core and forge-collab, and nothing else.
+All are editable at creation (`--budget`, `--expires`). Before binding a key, `dg` checks on chain that the contract group holds forge-core and forge-collab and nothing but Forge's own contracts ([trust roots](#trust-roots)).
 
 From the terminal:
 
@@ -168,7 +168,7 @@ Ways to get one in the web app (**Sign in**):
 |---|---|
 | Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. |
 | Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. |
-| Use my Dash wallet | Scan the QR code with Dash Wallet (or tap **Open in Dash Wallet** on the phone) and approve; the first time, approve a second code that adds Forge's key to your identity. Your wallet hands the key over encrypted. **Check that the identity shown is yours**: a response does not prove who answered, and anyone who saw the QR code could answer. The app refuses if more than one identity answers. Today's Dash Wallet grants one contract per approval and **no spending limit or expiry**: issues and pull requests take one more approval, and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
+| Use my Dash wallet | Scan the QR code with Dash Wallet (or tap **Open in Dash Wallet** on the phone) and approve; the first time, approve a second code that adds Forge's key to your identity. Your wallet hands the key over encrypted. **Check that the identity shown is yours**: a response does not prove who answered, and anyone who saw the QR code could answer. On the App Connect contract the app refuses if more than one identity answers; on the key-exchange contract today's wallets use, the first answer wins, so check the id ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). Today's Dash Wallet grants a key with **no spending limit or expiry** (on iOS, for one contract per approval, so issues and pull requests take one more approval), and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
 | Advanced: paste a key | A HIGH or CRITICAL key, for this tab only, lost on reload. It has no limits Forge set. Never paste a master key. |
 
 The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. A write that would overrun either is refused before it is signed, and the sheet that opens says which one blocks. **Settings → This browser's key** shows the budget and expiry and has these actions:
@@ -179,7 +179,7 @@ The header shows your balance and the key's remaining budget. It turns amber whe
 - **Revoke on chain** disables this browser's key. It needs your identity file once.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
 
-For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key** and **Revoke on chain** reads **Disable key on chain**.
+For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key**, **Revoke on chain** reads **Disable key on chain**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
 
 Losing a device costs nothing beyond that key's remaining budget. Register a new key and disable the old one.
 
@@ -193,16 +193,16 @@ The **Use my Dash wallet** tile speaks the key exchange that today's Dash Wallet
 | Dash Wallet iOS and Android | testnet | Once forge-v2 is on testnet (protocol 14). |
 | Dash Wallet Android | devnets | No: it pins the testnet contract. |
 | Dash Wallet Android | mainnet | No: the feature is off on mainnet builds. |
-| A wallet that grants group-bound, limited keys through App Connect | moutai, and every network at protocol 14 | Yes: one approval, and no warning. |
+| A wallet that grants group-bound, limited keys through App Connect | moutai, and every network at protocol 14 | Yes: one approval, and no warning. None ships yet; unit-tested. |
 
 What to expect with today's wallets:
 
-- **Two approvals.** A wallet grants a key for one contract per approval. The first covers repositories and pushes (forge-core). The first issue, PR, review or star asks for one more approval (**Approve issues and pull requests**), for forge-collab. The first sign-in also asks you to approve a second code that adds Forge's key to your identity.
+- **Two approvals (iOS).** The iOS wallet grants a key for one contract per approval. The first covers repositories and pushes (forge-core); the first sign-in also asks you to approve a second code that adds that key to your identity. The first issue, PR, review or star asks for one more approval (**Approve issues and pull requests**), for forge-collab, plus, the first time, a second code that registers that key. Android's key is not bound to any contract, so it covers both at once (see the next point).
 - **No spending limit or expiry.** The wallets register the key without a budget or an expiry (Android's is not even bound to a contract), and Platform cannot add limits to such a key later. The app warns about it on the confirmation step and in Settings, and prefers a passkey to protect it. **Replace with a limited key** (your identity file or 12 words, once) swaps it for a normal budgeted key and disables the wallet's keys in the same update.
 - **A disabled wallet key can come back.** The wallet derives the same key every time, so after you disable it, signing in with that wallet again would re-register the same key. Forge refuses that sign-in; use Import instead.
 - **Check the identity yourself.** The answer does not prove who sent it: on the wallets' contract, whoever answers the QR code first is the identity Forge shows. Compare the full identity id with what your wallet shows, character for character. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 5 minutes; keep the QR code private.
 
-The wallet-side fixes (group-scoped, limited grants; a signature that proves which identity answered) are filed upstream as drafts in [`docs/upstream/`](../upstream/app-connect-responder-auth.md).
+Drafts of the wallet-side fixes (group-scoped, limited grants; a signature that proves which identity answered) are in [`docs/upstream/`](../upstream/app-connect-responder-auth.md), for the owner to file with dashpay.
 
 CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file. `dg auth export --format dfk1` writes only limited keys.
 

@@ -29,7 +29,7 @@ These guides describe what is on `master` today. Features that are specified but
 - private repositories;
 - the `forge.dashhq.org/mirror` setup wizard.
 
-Dash Wallet sign-in works, with limits set by today's wallets: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at moutai's key-exchange contract (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
