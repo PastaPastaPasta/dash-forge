@@ -100,6 +100,9 @@ test.describe('network resilience', () => {
     await expect(BANNER(page)).toBeVisible({ timeout: 60_000 })
     await expect(BANNER(page)).toContainText("Can't reach Dash Platform right now")
     await expect(BANNER(page)).toContainText(/Trying again in \d+ s/)
+    // The alert announces the outage once; the per-second countdown sits outside it (M5).
+    await expect(BANNER(page).getByRole('alert')).toContainText("Can't reach Dash Platform right now")
+    await expect(BANNER(page).getByRole('alert')).not.toContainText(/Trying again in/)
     // The raw error is behind a disclosure, not the page.
     await expect(page.getByText('Could not reach Platform', { exact: true })).toHaveCount(0)
     // Fail closed: nothing reads as verified.
@@ -132,12 +135,8 @@ test.describe('network resilience', () => {
     await issue.click()
     const retry = page.getByRole('button', { name: 'Try again' }).first()
     await expect(retry).toBeVisible({ timeout: 90_000 })
-    // Content read earlier stays, but nothing next to the banner claims it is verified (M4).
-    await expect(page.getByTestId('verification-summary')).not.toHaveText(/^Verified/)
+    // Nothing read before the outage is presented as verified while Platform is away (M4).
     await expect(page.getByText(/^Verified/)).toHaveCount(0)
-    // The live region announces the outage, not a per-second countdown (M5).
-    await expect(BANNER(page).getByRole('alert')).toContainText("Can't reach Dash Platform right now")
-    await expect(BANNER(page).getByRole('alert')).not.toContainText(/Trying again in/)
     await shot(page, 'nr-3-outage')
     // Before the fix the SDK kept every node banned: Try again showed "no available
     // addresses" until a full reload.
