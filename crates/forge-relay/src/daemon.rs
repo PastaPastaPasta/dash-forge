@@ -897,6 +897,17 @@ impl RepoState {
         }
     }
 
+    /// Whether `d` is a close (kind 1) of a target this relay has already seen closed or
+    /// merged. GitHub sends one `closed` per closing (with `merged: true` for a merge), so a
+    /// close after a merge, or a second close, is not delivered again: it would reach
+    /// receivers as a separate `closed` with `merged: false` (D-602). A reopen clears it.
+    fn repeats_a_close(&self, d: &FetchedDocument) -> bool {
+        d.field_u64("kind") == Some(1)
+            && d.field_bytes32("targetId")
+                .map(forge_core::platform::encode_identifier)
+                .is_some_and(|id| self.closed.contains(&id))
+    }
+
     /// Whether a merge event's `oid` was set on the PR's base ref by a valid update (see
     /// [`ingest::translate_event`]). `true` for other kinds (nothing to verify). The base ref's
     /// hash must be `sha256(baseRefName)`, or the merge is unverified.
@@ -1102,11 +1113,12 @@ async fn poll_repo_rest(
                 }
                 _ => {
                     let verified = st.merge_verified(d);
+                    let repeat_close = st.repeats_a_close(d);
                     note_activity(st, d);
                     // A head update that did not move the head (older, stranger's, malformed)
                     // is not a `synchronize`.
                     let moved = follow_head(st, d, doc_type == DOC_AUTHOR_EVENT);
-                    if d.field_u64("kind") == Some(16) && !moved {
+                    if (d.field_u64("kind") == Some(16) && !moved) || repeat_close {
                         None
                     } else {
                         ingest::translate_event(&st.meta, d, &st.targets, verified)
@@ -1535,6 +1547,39 @@ mod tests {
         // A baseRefName that does not hash to baseRefNameHash: unverified.
         st.targets.insert(target, pr("refs/heads/other", &hash));
         assert!(!st.merge_verified(&merge(&"ab".repeat(20))));
+    }
+
+    /// D-602: a merge then a close on one PR reached receivers as `closed` merged:true and a
+    /// second `closed` merged:false. GitHub sends one `closed`.
+    #[test]
+    fn a_close_after_a_merge_or_close_is_not_delivered_again() {
+        let mut st = state_with_threads(0);
+        let event = |kind: u64| FetchedDocument {
+            id: format!("e{kind}"),
+            owner_id: "M".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("targetId".into(), FieldValue::identifier([4; 32])),
+                ("kind".into(), FieldValue::integer(kind)),
+            ]),
+        };
+        assert!(
+            !st.repeats_a_close(&event(1)),
+            "the first close is delivered"
+        );
+        note_activity(&mut st, &event(3));
+        assert!(!st.repeats_a_close(&event(3)), "only closes are dropped");
+        assert!(
+            st.repeats_a_close(&event(1)),
+            "a close after the merge is not"
+        );
+        note_activity(&mut st, &event(2));
+        assert!(!st.repeats_a_close(&event(1)), "a close after a reopen is");
+        note_activity(&mut st, &event(1));
+        assert!(st.repeats_a_close(&event(1)), "a second close is not");
     }
 
     #[test]

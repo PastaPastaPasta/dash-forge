@@ -13,14 +13,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{Collab, Numbered, PatchInput, Target, TargetKind};
+use forge_core::collab::v2::{Collab, Numbered, PatchInput, PrBase, Target, TargetKind};
 use forge_core::collab::{ReleaseInput, Verdict};
+use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
-use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2};
-use forge_core::rules::EventKind;
+use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2, Visibility};
+use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
@@ -172,7 +174,20 @@ pub struct Sink<'a> {
     /// The destination's members (maintainers and writers), read once: an imported item by
     /// a member is an earlier mirror's copy; one by anyone else is a squatter.
     members: Option<BTreeSet<String>>,
+    /// The local git mirror, when this run has one: where a merge commit's ancestry is
+    /// checked (see [`Sink::merge_proof`]).
+    mirror: Option<PathBuf>,
+    /// Each destination PR's base as the readers fold it, by target `$id`. Filled wherever
+    /// a patch is read.
+    opened: BTreeMap<String, PrBase>,
+    /// Bases already re-read for read-after-write lag this run ([`BASE_LAG_WAITS`]): the lag
+    /// is waited out once, not once per PR.
+    lag_waited: BTreeSet<String>,
 }
+
+/// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
+/// (read-after-write lag across nodes): about 20 s in all.
+const BASE_LAG_WAITS: &[u64] = &[1_500, 3_000, 5_000, 10_000];
 
 /// Attempts at finding a free number for one item.
 const MAX_NUMBER_TRIES: usize = 4;
@@ -263,7 +278,128 @@ impl<'a> Sink<'a> {
             ledger,
             index: None,
             members: None,
+            mirror: None,
+            opened: BTreeMap::new(),
+            lag_waited: BTreeSet::new(),
         }
+    }
+
+    /// Check merge commits against the local git mirror at `dir` (see [`Sink::merge_proof`]).
+    #[must_use]
+    pub fn with_mirror(mut self, dir: Option<PathBuf>) -> Self {
+        self.mirror = dir;
+        self
+    }
+
+    /// The base tips a reader checks PR `target_id`'s merge against: the base it was opened
+    /// against, at its `$createdAt` ([`pr_base_tips`], as `Collab::patch_view` folds it). A PR
+    /// this run has not read was opened now (after this run's push). None without a
+    /// destination (a dry run of a repo not created yet).
+    async fn base_tips(
+        &mut self,
+        target_id: &str,
+        base_ref: &str,
+        freshness: Freshness,
+    ) -> Result<MergeBaseTips> {
+        let PrBase {
+            ref_name: base_ref,
+            opened_at,
+        } = self.opened.get(target_id).cloned().unwrap_or(PrBase {
+            ref_name: base_ref.to_string(),
+            opened_at: u64::MAX,
+        });
+        let Some(repo) = self.repo.as_ref() else {
+            return Ok(MergeBaseTips::default());
+        };
+        // A private repo's ref names are sealed: Collab reads (and caches) its updates.
+        if repo.visibility == Visibility::Private {
+            return Ok(self
+                .collab
+                .base_ref_tips(repo, &base_ref, opened_at)
+                .await?);
+        }
+        // One read of the repo's git history per process (`Synced`), shared by every PR of
+        // the run; `Now` when this run's own push may not show yet.
+        let client = self.ledger.client;
+        let core = client.fetch_contract(&repo.forge().core).await?;
+        Ok(forge_core::refs::read_merge_base(
+            client,
+            &core,
+            &repo.scope()?,
+            &base_ref,
+            opened_at,
+            freshness,
+        )
+        .await?)
+    }
+
+    /// The oid a merge event for `t` names so that every reader counts it (D-602), or `None`
+    /// when no such oid can be shown.
+    ///
+    /// Readers count a merge whose `oid` has been a valid tip of the PR's base (the
+    /// monotonic membership rule, `forge-v2.md` §3, [`pr_base_tips`]); they walk no commit
+    /// graph. The source's merge commit (GitHub's `merge_commit_sha`, GitLab's merge or
+    /// squash commit) is almost never a tip the mirror pushed: the base moved on before the
+    /// next sync. So the importer, which has the commits, names instead the newest pushed
+    /// base tip that CONTAINS the merge commit (`git merge-base --is-ancestor` in the local
+    /// mirror): the membership rule then proves "reachable from the base tip" exactly. A merge
+    /// into a base that is not mirrored, or deleted, or whose history dropped the merge commit
+    /// has no such tip; the caller then records a close instead.
+    ///
+    /// A dry run is priced before this run's push, so the mirror's own base tip (which the
+    /// push is about to record) stands in for the chain's newest one.
+    async fn merge_proof(&mut self, t: &SrcTarget, target_id: &str) -> Result<Option<Vec<u8>>> {
+        let (Some(merged), Some(patch), Some(dir)) = (&t.merged_oid, &t.patch, self.mirror.clone())
+        else {
+            return Ok(None);
+        };
+        let merged = hex::encode(merged);
+        let base = &patch.base_ref_name;
+        // The mirror's own tip of the base: this run's push put it on chain (a dry run is
+        // priced before that push, so it stands in for the chain's newest tip there).
+        let local = crate::gitsync::local_tip(&dir, base)
+            .filter(|tip| crate::gitsync::is_ancestor(&dir, &merged, tip));
+        let contains = |tips: &MergeBaseTips| -> Option<String> {
+            tips.historical
+                .iter()
+                .rev()
+                .find(|tip| crate::gitsync::is_ancestor(&dir, &merged, tip))
+                .cloned()
+        };
+        let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
+        // A PR opened against a base that did not exist then has no tips, and no merge into
+        // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
+        let base_counts = tips.tip.is_some() || !self.opened.contains_key(target_id);
+        if self.ledger.dry_run {
+            return Ok(contains(&tips)
+                .or(local.filter(|_| base_counts))
+                .and_then(|tip| hex::decode(tip).ok()));
+        }
+        // The node answering the base's history may not have seen this run's push yet: when
+        // the mirror's tip contains the merge but the chain does not show that tip, re-read
+        // for a while before settling for a close (which, under --state, is never revisited).
+        // Only where the wait can help: a base readers count for this PR, and the same ref
+        // the destination PR folds against (a PR retargeted at the source keeps its original
+        // base on chain); and once per base per run.
+        let folded = self
+            .opened
+            .get(target_id)
+            .map_or(base.as_str(), |b| b.ref_name.as_str());
+        let may_lag = base_counts && folded == base && !self.lag_waited.contains(base);
+        let waits = if may_lag { BASE_LAG_WAITS } else { &[] };
+        for wait in waits {
+            let seen = local.as_ref().is_none_or(|l| tips.contains(l));
+            if contains(&tips).is_some() || seen {
+                break;
+            }
+            // Marked only when a wait happens: a PR whose merge the mirror lacks (no `local`)
+            // must not use up the one wait a later PR on the same base may need.
+            self.lag_waited.insert(base.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(*wait)).await;
+            self.collab.refs_changed();
+            tips = self.base_tips(target_id, base, Freshness::Now).await?;
+        }
+        Ok(contains(&tips).and_then(|tip| hex::decode(tip).ok()))
     }
 
     /// Whether `author` may have mirrored an item: the signer, or a member of the
@@ -367,7 +503,15 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
+    /// Mirror the releases. Each asset records the SHA-256 readers verify it against: the
+    /// source's digest, the hash already recorded for the same file, or one computed from
+    /// its bytes ([`crate::assets`], D-517). A release recorded by an older import with no
+    /// hash is therefore republished once, with it.
+    ///
+    /// Written oldest first (sources list newest first), so the documents' `$createdAt`
+    /// follows the releases' own order; readers order by version anyway (L-14).
     async fn sync_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
+        let mut known = crate::assets::Known::default();
         let existing: BTreeMap<String, String> = match &self.repo {
             Some(repo) => self
                 .collab
@@ -377,14 +521,16 @@ impl<'a> Sink<'a> {
                 .0
                 .into_iter()
                 .map(|r| {
+                    known.add(&r.tag_name, &r.assets);
                     let assets = serde_json::to_string(&r.assets).unwrap_or_default();
                     (r.tag_name, fingerprint(&r.name, &r.notes, &assets))
                 })
                 .collect(),
             None => BTreeMap::new(),
         };
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
-        for r in releases {
+        let fetch = crate::assets::Https::default();
+        let mut budget = crate::assets::RUN_BYTES;
+        for r in releases.iter().rev() {
             if r.tag_name.is_empty() || r.tag_name.len() > 63 {
                 self.ledger.warn(format!(
                     "release tag {:?} does not fit the 63 bytes a release holds; skipped",
@@ -392,7 +538,37 @@ impl<'a> Sink<'a> {
                 ));
                 continue;
             }
-            let assets = serde_json::to_string(&r.assets).unwrap_or_default();
+            let mut assets_in = r.assets.clone();
+            let dry = self.ledger.dry_run;
+            for w in crate::assets::fill_hashes(
+                &r.tag_name,
+                &mut assets_in,
+                &known,
+                &fetch,
+                !dry,
+                &mut budget,
+            )
+            .await
+            {
+                self.ledger.warn(w);
+            }
+            if dry {
+                // Priced, not fetched: an asset a real run would hash changes the release.
+                for a in assets_in.iter_mut().filter(|a| a.sha256.is_empty()) {
+                    a.sha256 = "0".repeat(64);
+                }
+            }
+            let before = assets_in.len();
+            let assets_in = crate::model::fit_assets(assets_in);
+            let dropped = r.dropped + before - assets_in.len();
+            if dropped > 0 {
+                self.ledger.warn(format!(
+                    "release {}: {dropped} of its assets do not fit the 4096 bytes a release \
+                     lists; left out",
+                    r.tag_name
+                ));
+            }
+            let assets = serde_json::to_string(&assets_in).unwrap_or_default();
             if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &r.notes, &assets)) {
                 continue;
             }
@@ -401,8 +577,9 @@ impl<'a> Sink<'a> {
                 name: r.name.clone(),
                 notes: r.notes.clone(),
                 yanked: false,
-                assets: r.assets.clone(),
+                assets: assets_in,
             };
+            let (collab, repo) = (&self.collab, self.repo.as_ref());
             let credits = collab_doc_credits(
                 CollabDoc::Release,
                 (r.tag_name.len() + r.name.len() + r.notes.len() + assets.len() + 40) as u64,
@@ -472,7 +649,7 @@ impl<'a> Sink<'a> {
         let current = if fresh {
             Current::new_target()
         } else {
-            self.current(&target).await?
+            self.current(t, &target).await?
         };
         self.sync_state(t, &target, &current).await?;
         self.sync_comments(t, &target, fresh).await?;
@@ -498,7 +675,10 @@ impl<'a> Sink<'a> {
                 .imported_targets(repo)
                 .await
                 .context("reading the destination's issues and pull requests")?;
-            for (target, imported) in targets {
+            for (target, imported, base) in targets {
+                if let Some(b) = base {
+                    self.opened.insert(target.id.clone(), b);
+                }
                 if let Some(i) = imported.filter(|i| !i.url.is_empty()) {
                     index.push((i.url, target));
                 }
@@ -522,11 +702,13 @@ impl<'a> Sink<'a> {
                     .issue(repo, t.number)
                     .await?
                     .map(|i| (i.target(), i.imported)),
-                TargetKind::Patch => self
-                    .collab
-                    .patch(repo, t.number)
-                    .await?
-                    .map(|p| (p.target(), p.imported)),
+                TargetKind::Patch => {
+                    let p = self.collab.patch(repo, t.number).await?;
+                    if let Some(p) = &p {
+                        self.opened.insert(p.document_id.clone(), p.base());
+                    }
+                    p.map(|p| (p.target(), p.imported))
+                }
             };
             match at {
                 // Nothing there: new, unless it landed elsewhere (a taken number) earlier —
@@ -694,7 +876,10 @@ impl<'a> Sink<'a> {
         })
     }
 
-    async fn current(&self, target: &Target) -> Result<Current> {
+    /// `target`'s state as every reader folds it: a PR's merge counts only if its oid has
+    /// been a valid tip of the base it was opened against ([`pr_base_tips`]), exactly the
+    /// predicate forge-web and `dg` use, so "merged" here is "shown merged".
+    async fn current(&mut self, t: &SrcTarget, target: &Target) -> Result<Current> {
         let repo = need(self.repo.as_ref())?;
         let log = self.collab.target_log(repo, &target.id).await?;
         Ok(match target.kind {
@@ -708,33 +893,44 @@ impl<'a> Sink<'a> {
                 }
             }
             TargetKind::Patch => {
-                // `merged`: whether a merge was RECORDED (so it is never written twice).
-                // `open`: what a reader that cannot prove the merge reachable shows — an
-                // imported merge commit was never a tip of the mirror's base branch, so
-                // such readers ignore it, and the mirror also records a close.
-                let fold = |reachable: bool| {
-                    fold_pr_state_v2(
-                        &log.events,
-                        &log.author_events,
-                        &target.author,
-                        Some(""),
-                        |_, _| reachable,
-                        false,
-                    )
-                };
-                let (recorded, strict) = (fold(true), fold(false));
+                let base = t
+                    .patch
+                    .as_ref()
+                    .map_or("refs/heads/main", |p| p.base_ref_name.as_str());
+                let tips = self.base_tips(&target.id, base, Freshness::Synced).await?;
+                let s = fold_pr_state_v2(
+                    &log.events,
+                    &log.author_events,
+                    &target.author,
+                    tips.tip.as_deref(),
+                    |oid, _| tips.contains(oid),
+                    false,
+                );
                 Current {
-                    open: strict.open,
-                    merged: recorded.merged,
-                    draft: strict.draft,
-                    labels: strict.labels,
+                    open: s.open,
+                    merged: s.merged,
+                    draft: s.draft,
+                    labels: s.labels,
                 }
             }
         })
     }
 
-    /// The member events that take `current` to `t`'s state, in order.
-    fn state_events(t: &SrcTarget, current: &Current) -> Vec<StateEvent> {
+    /// The member events that take `current` to `t`'s state, in order. `merge_proof` is the
+    /// oid a merge event names ([`Sink::merge_proof`]): a pushed base tip containing the
+    /// source's merge commit, which every reader counts; `None` when there is none.
+    ///
+    /// A PR the source merged gets a merge event when it can be proved, and otherwise a close
+    /// (a merge into a base that is not mirrored, or no longer there): readers then show it
+    /// closed, never open. Never both: a close after a counted merge would be delivered by
+    /// the relay as a second, unmerged `closed`. A PR that reads closed but not merged (an
+    /// older import, or a base pushed since) still takes a merge event, which the fold
+    /// applies after a close, so a re-run repairs it. A merged PR is never reopened.
+    fn state_events(
+        t: &SrcTarget,
+        current: &Current,
+        merge_proof: Option<Vec<u8>>,
+    ) -> Vec<StateEvent> {
         let mut out = Vec::new();
         for l in t.labels.difference(&current.labels) {
             out.push((EventKind::LabelAdd, Some(l.clone()), None));
@@ -753,16 +949,15 @@ impl<'a> Sink<'a> {
                 None,
             ));
         }
-        if let (Some(oid), false) = (&t.merged_oid, current.merged) {
-            out.push((EventKind::Merge, None, Some(oid.clone())));
+        if current.merged {
+            return out;
         }
-        // A merged PR is closed too: readers that cannot prove an imported merge reachable
-        // (it was never a tip of the mirror's base) then show it closed, not open; exact
-        // readers still show it merged (a close after a merge changes nothing for them).
         let closed = t.closed || t.merged_oid.is_some();
-        if closed && current.open {
+        if t.merged_oid.is_some() && merge_proof.is_some() {
+            out.push((EventKind::Merge, None, merge_proof));
+        } else if closed && current.open {
             out.push((EventKind::Close, None, None));
-        } else if !closed && !current.open && !current.merged {
+        } else if !closed && !current.open {
             out.push((EventKind::Reopen, None, None));
         }
         out
@@ -774,8 +969,20 @@ impl<'a> Sink<'a> {
         target: &Target,
         current: &Current,
     ) -> Result<()> {
+        let mut proof = None;
+        if t.merged_oid.is_some() && !current.merged {
+            proof = self.merge_proof(t, &target.id).await?;
+            if proof.is_none() {
+                self.ledger.warn(format!(
+                    "{} was merged, but no mirrored tip of its base {} contains the merge \
+                     commit (the base is not mirrored, or was deleted); recorded as closed",
+                    t.imported.url,
+                    t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str())
+                ));
+            }
+        }
         let (collab, repo) = (&self.collab, self.repo.as_ref());
-        for (kind, value, oid) in Self::state_events(t, current) {
+        for (kind, value, oid) in Self::state_events(t, current, proof) {
             let credits = collab_doc_credits(
                 CollabDoc::Event,
                 120 + value.as_deref().map_or(0, str::len) as u64,
@@ -959,7 +1166,7 @@ mod tests {
     #[test]
     fn an_unchanged_target_needs_no_events() {
         let t = target(TargetKind::Issue);
-        assert!(Sink::state_events(&t, &Current::new_target()).is_empty());
+        assert!(Sink::state_events(&t, &Current::new_target(), None).is_empty());
     }
 
     #[test]
@@ -970,7 +1177,7 @@ mod tests {
         let mut cur = Current::new_target();
         cur.labels = ["old".to_string()].into();
         assert_eq!(
-            kinds(&Sink::state_events(&t, &cur)),
+            kinds(&Sink::state_events(&t, &cur, None)),
             vec![
                 EventKind::LabelAdd,
                 EventKind::LabelRemove,
@@ -984,40 +1191,72 @@ mod tests {
             ..Current::new_target()
         };
         assert_eq!(
-            kinds(&Sink::state_events(&t, &cur)),
+            kinds(&Sink::state_events(&t, &cur, None)),
             vec![EventKind::Reopen]
         );
     }
 
+    /// D-602: the merge event names a base tip that contains the merge commit (every
+    /// reader counts it), with no close after it (the relay delivered that as a second,
+    /// unmerged `closed`). Without such a tip the PR is recorded closed.
     #[test]
-    fn a_merge_is_written_once_with_a_close_for_strict_readers() {
+    fn a_provable_merge_is_one_merge_event_and_an_unprovable_one_a_close() {
         let mut t = target(TargetKind::Patch);
         t.closed = true;
         t.merged_oid = Some(vec![1; 20]);
+        let tip = vec![9; 20];
+        let events = Sink::state_events(&t, &Current::new_target(), Some(tip.clone()));
+        assert_eq!(kinds(&events), vec![EventKind::Merge]);
         assert_eq!(
-            kinds(&Sink::state_events(&t, &Current::new_target())),
-            vec![EventKind::Merge, EventKind::Close]
+            events[0].2.as_deref(),
+            Some(&tip[..]),
+            "the base tip, not the merge commit"
         );
-        // Merge recorded, but a strict reader still sees it open (the first run was
-        // interrupted between the two): only the close is missing.
-        let recorded_open = Current {
-            merged: true,
+        // Base not mirrored (or deleted): closed, never left open.
+        assert_eq!(
+            kinds(&Sink::state_events(&t, &Current::new_target(), None)),
+            vec![EventKind::Close]
+        );
+    }
+
+    /// An earlier import left the PR closed-but-not-merged (the D-602 data): a re-run adds
+    /// the merge event, which the fold applies after the close.
+    #[test]
+    fn a_closed_unmerged_import_is_repaired_by_a_merge_event() {
+        let mut t = target(TargetKind::Patch);
+        t.closed = true;
+        t.merged_oid = Some(vec![1; 20]);
+        let closed = Current {
+            open: false,
             ..Current::new_target()
         };
         assert_eq!(
-            kinds(&Sink::state_events(&t, &recorded_open)),
-            vec![EventKind::Close]
+            kinds(&Sink::state_events(&t, &closed, Some(vec![9; 20]))),
+            vec![EventKind::Merge]
         );
+        // Still unprovable: nothing more to write (it already reads closed).
+        assert!(Sink::state_events(&t, &closed, None).is_empty());
+    }
+
+    #[test]
+    fn a_merged_pr_takes_no_more_state_events() {
+        let mut t = target(TargetKind::Patch);
+        t.closed = true;
+        t.merged_oid = Some(vec![1; 20]);
         let done = Current {
             open: false,
             merged: true,
             ..Current::new_target()
         };
-        assert!(Sink::state_events(&t, &done).is_empty());
-        // A merged PR is never reopened, whatever the source says.
+        assert!(Sink::state_events(&t, &done, Some(vec![9; 20])).is_empty());
+        // Never reopened, whatever the source says; labels still follow the source.
         t.closed = false;
         t.merged_oid = None;
-        assert!(Sink::state_events(&t, &done).is_empty());
+        t.labels = ["bug".to_string()].into();
+        assert_eq!(
+            kinds(&Sink::state_events(&t, &done, None)),
+            vec![EventKind::LabelAdd]
+        );
     }
 
     #[test]
@@ -1025,7 +1264,7 @@ mod tests {
         let mut t = target(TargetKind::Patch);
         t.draft = true;
         assert_eq!(
-            kinds(&Sink::state_events(&t, &Current::new_target())),
+            kinds(&Sink::state_events(&t, &Current::new_target(), None)),
             vec![EventKind::Draft]
         );
         t.draft = false;
@@ -1033,6 +1272,9 @@ mod tests {
             draft: true,
             ..Current::new_target()
         };
-        assert_eq!(kinds(&Sink::state_events(&t, &cur)), vec![EventKind::Ready]);
+        assert_eq!(
+            kinds(&Sink::state_events(&t, &cur, None)),
+            vec![EventKind::Ready]
+        );
     }
 }

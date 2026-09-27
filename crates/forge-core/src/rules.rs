@@ -435,10 +435,12 @@ pub fn is_legal_ref_name(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('-') && !name.bytes().any(|b| b <= 0x20 || b == 0x7f)
 }
 
-/// Whether `h` is a real 32-byte content hash rendered as 64 lowercase-or-upper hex chars
-/// (as every live `refNameHash` is — a `bytes32` field). Symbolic test keys (short
-/// non-hex strings) are not, so the fold-side preimage check below only binds real data.
-fn is_content_hash(h: &str) -> bool {
+/// Whether `h` is a SHA-256 rendered as 64 hex digits (either case): a real content hash,
+/// as every live `refNameHash` is (a `bytes32` field) and every release asset records.
+/// Symbolic test keys (short non-hex strings) are not, so the fold-side preimage check below
+/// only binds real data.
+#[must_use]
+pub fn is_sha256_hex(h: &str) -> bool {
     h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -534,7 +536,7 @@ pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Op
 }
 
 /// A PR's base ref as merge verification sees it: see [`merge_base_tips`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeBaseTips {
     /// Every commit a VALID update has set the ref to (deletions excluded), oldest first in
@@ -664,7 +666,7 @@ pub fn is_update_valid(u: &RefUpdate, config_history: &[ConfigDoc]) -> bool {
     if !is_legal_ref_name(&u.ref_name) {
         return false;
     }
-    if is_content_hash(&u.ref_name_hash) && !ref_name_hash_matches(&u.ref_name, &u.ref_name_hash) {
+    if is_sha256_hex(&u.ref_name_hash) && !ref_name_hash_matches(&u.ref_name, &u.ref_name_hash) {
         return false;
     }
 
