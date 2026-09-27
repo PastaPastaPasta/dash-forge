@@ -1056,19 +1056,15 @@ impl<'a> RepoService<'a> {
     /// they reach the node that holds the content, which a shared default gateway may not.
     /// A config that cannot be read only costs the preference, never the read.
     pub async fn repo_reader(&self, repo: &RepoRef, manifests: &[PackManifestInfo]) -> PackReader {
-        let backend = match self.readable(repo).await {
-            Ok((scope, contract)) => self
-                .newest_config(&scope, &contract)
-                .await
-                .ok()
-                .flatten()
-                .map(|d| scope::backend_uris(&d))
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        let manifest_uris: Vec<&String> = manifests.iter().flat_map(|m| &m.uris).collect();
+        let mut backend = Vec::new();
+        if let Ok((scope, contract)) = self.readable(repo).await {
+            if let Ok(Some(config)) = self.newest_config(&scope, &contract).await {
+                backend = scope::backend_uris(&config);
+            }
+        }
+        let recorded = backend.iter().chain(manifests.iter().flat_map(|m| &m.uris));
         PackReader::from_user_config()
-            .prefer_gateways(crate::storage::read::repo_gateways(&backend, manifest_uris))
+            .prefer_gateways(crate::storage::read::repo_gateways(recorded))
     }
 
     /// Fetch one manifest's artifact, SHA-256-verified against it.

@@ -340,6 +340,9 @@ impl PackReader {
 /// anything from the network, so it measures the gateway itself, not content routing.
 pub const IDENTITY_CID: &str = "bafkqaaa";
 
+/// How long a gateway gets to answer the [`IDENTITY_CID`] liveness probe.
+pub const GATEWAY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// What a gateway liveness probe found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayHealth {
@@ -437,7 +440,7 @@ pub async fn fetch_from_gateways(
     timeout: Duration,
 ) -> Vec<(String, std::result::Result<(), String>)> {
     futures::future::join_all(gateways.iter().map(|gw| async move {
-        let health = probe_gateway(client, gw, Duration::from_secs(10)).await;
+        let health = probe_gateway(client, gw, GATEWAY_PROBE_TIMEOUT).await;
         if !health.is_up() {
             return (gw.clone(), Err(health.describe()));
         }
@@ -458,16 +461,13 @@ pub async fn fetch_from_gateways(
     .await
 }
 
-/// The repo's own public IPFS gateways, from what is recorded on chain: the `…/ipfs/`
-/// bases its `config.backend.uris` advertises, then the gateway of every `…/ipfs/<cid>` URL
-/// its pack manifests record, in first-seen order. Only public `https` gateways: a manifest
+/// The public IPFS gateways `uris` name (what a repo recorded on chain: its
+/// `config.backend.uris` `…/ipfs/` bases, then the gateway of every `…/ipfs/<cid>` URL its
+/// pack manifests record), in first-seen order. Only public `https` gateways: a manifest
 /// is written by whoever pushed, and must not steer readers at loopback or LAN hosts.
-pub fn repo_gateways<'a>(
-    backend_uris: impl IntoIterator<Item = &'a String>,
-    manifest_uris: impl IntoIterator<Item = &'a String>,
-) -> Vec<String> {
+pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for u in backend_uris.into_iter().chain(manifest_uris) {
+    for u in uris {
         let Some((base, _)) = u.split_once("/ipfs/") else {
             continue;
         };
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn repo_gateways_come_from_the_chain_and_are_public() {
-        let backend = vec![
+        let backend = [
             "https://pub.r2.dev".to_string(),
             "https://my-gw.example/ipfs/".to_string(),
             "ipfs://".to_string(),
@@ -611,7 +611,7 @@ mod tests {
             "ipfs://bafyx".to_string(),
         ];
         assert_eq!(
-            repo_gateways(&backend, &manifests),
+            repo_gateways(backend.iter().chain(&manifests)),
             vec!["https://my-gw.example", "https://other-gw.example"]
         );
     }

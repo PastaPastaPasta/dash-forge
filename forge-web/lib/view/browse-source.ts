@@ -42,6 +42,7 @@ import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
 import {
   describePack,
+  gatewayDownReason,
   gatewayHealth,
   gatewayOf,
   noteRepoGateways,
@@ -454,17 +455,26 @@ async function skipDeadGateways(
   const verdicts = await Promise.all(
     urls.map(async (url) => {
       const gw = gatewayOf(url)
-      return gw === null ? null : gatewayHealth(gw)
+      return { url, down: gw === null ? null : await gatewayHealth(gw) }
     }),
   )
   const live: string[] = []
-  const reasons: string[] = []
-  urls.forEach((url, i) => {
-    const down = verdicts[i]
-    if (down === null || down === undefined) live.push(url)
-    else reasons.push(`${externalSourceName(url)}: gateway down (${down})`)
-  })
-  return { live, reasons: [...new Set(reasons)] }
+  const reasons = new Set<string>()
+  for (const { url, down } of verdicts) {
+    if (down === null) live.push(url)
+    else reasons.add(gatewayDownReason(externalSourceName(url), down))
+  }
+  return { live, reasons: [...reasons] }
+}
+
+/** An artifact's fetchable URLs, and those still worth trying (not failed this session, gateway up). */
+async function mirrorUrls(
+  manifest: PackManifest,
+  gateways: readonly string[],
+): Promise<{ readonly urls: string[]; readonly live: string[]; readonly downReasons: string[] }> {
+  const urls = externalFetchUrls(manifest.uris, gateways)
+  const { live, reasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
+  return { urls, live, downReasons: reasons }
 }
 
 /**
@@ -480,11 +490,9 @@ async function fetchExternalRange(
   gateways: readonly string[],
   onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris, gateways)
-  let lastErr: unknown = 'no browser-fetchable mirror'
-  const { live: reachable, reasons: downReasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
-  if (reachable.length === 0 && downReasons.length > 0) lastErr = downReasons.join('; ')
-  for (const url of reachable) {
+  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
+  let lastErr: unknown = downReasons.join('; ') || 'no browser-fetchable mirror'
+  for (const url of live) {
     try {
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
       onServed?.(url)
@@ -519,19 +527,14 @@ async function fetchExternalWhole(
   onServed?: (uri: string) => void,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris, gateways)
+  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
   const want = manifest.packHash.toLowerCase()
-  const { live, reasons: downReasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
   if (live.length === 0) {
     throw new PackUnavailableError(
       manifest.packHash,
       hostsOf(urls),
       false,
-      urls.length === 0
-        ? 'nothing to try'
-        : downReasons.length > 0
-          ? downReasons.join('; ')
-          : 'every mirror already failed this session',
+      urls.length === 0 ? 'nothing to try' : downReasons.join('; ') || 'every mirror already failed this session',
     )
   }
   let corrupt = false

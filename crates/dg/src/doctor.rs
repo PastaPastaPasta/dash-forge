@@ -825,10 +825,14 @@ fn public_probe_url(profile: &Profile) -> Option<String> {
             .public_url
             .as_ref()
             .map(|u| format!("{}/dash-forge-cors-check", u.trim_end_matches('/'))),
-        // `bafkqaaa` is the empty identity CID: every gateway can serve it.
-        _ => profile
-            .public_gateway()
-            .map(|g| format!("{}/ipfs/bafkqaaa", g.trim_end_matches('/'))),
+        // The empty identity CID: every gateway can serve it.
+        _ => profile.public_gateway().map(|g| {
+            format!(
+                "{}/ipfs/{}",
+                g.trim_end_matches('/'),
+                forge_core::storage::read::IDENTITY_CID
+            )
+        }),
     }
 }
 
@@ -837,34 +841,33 @@ fn public_probe_url(profile: &Profile) -> Option<String> {
 /// Probe every IPFS read gateway (`[read] ipfs_gateways`, else the shared defaults) and the
 /// public gateway of every IPFS profile with the empty identity CID.
 async fn check_read_gateways() -> Vec<Check> {
-    use forge_core::storage::read::probe_gateways;
+    use forge_core::storage::read::{probe_gateways, GATEWAY_PROBE_TIMEOUT};
     let profiles = StorageProfiles::load().unwrap_or_default();
     let list = profiles.ipfs_gateways();
-    let own: Vec<(String, String)> = profiles
-        .profiles
-        .iter()
-        .filter_map(|(n, p)| {
-            p.public_gateway()
-                .map(|g| (n.clone(), g.trim_end_matches('/').to_string()))
-        })
-        .collect();
     let mut all = list.clone();
-    all.extend(own.iter().map(|(_, g)| g.clone()));
-    all.dedup();
+    for p in profiles.profiles.values() {
+        if let Some(g) = p
+            .public_gateway()
+            .map(|g| g.trim_end_matches('/').to_string())
+        {
+            if !all.contains(&g) {
+                all.push(g);
+            }
+        }
+    }
     let health = probe_gateways(
         &forge_core::storage::http_client(),
         &all,
-        std::time::Duration::from_secs(10),
+        GATEWAY_PROBE_TIMEOUT,
     )
     .await;
-    gateway_checks(&profiles, &list, &own, &health)
+    gateway_checks(&profiles, &list, &health)
 }
 
 /// The rows for [`check_read_gateways`], from probe results (pure, for tests).
 fn gateway_checks(
     profiles: &StorageProfiles,
     list: &[String],
-    own: &[(String, String)],
     health: &[(String, forge_core::storage::read::GatewayHealth)],
 ) -> Vec<Check> {
     let up = |g: &str| health.iter().any(|(h, s)| h == g && s.is_up());
@@ -913,9 +916,10 @@ fn gateway_checks(
         if !matches!(p, Profile::IpfsKubo(_) | Profile::IpfsPinningService(_)) {
             continue;
         }
-        let row = match own.iter().find(|(n, _)| n == name) {
-            Some((_, g)) if up(g) => Check::ok("ipfs reach", format!("{name}: public gateway {g} is up")),
-            Some((_, g)) => Check::warn(
+        let own = p.public_gateway().map(|g| g.trim_end_matches('/'));
+        let row = match own {
+            Some(g) if up(g) => Check::ok("ipfs reach", format!("{name}: public gateway {g} is up")),
+            Some(g) => Check::warn(
                 "ipfs reach",
                 format!("{name}: its public gateway {g} does not answer ({})", why(g)),
                 "readers fall back to the shared gateways, which may not reach your node: fix the gateway, or keep a second, non-IPFS copy (`dg storage use <this>,<another>`)",
@@ -1099,7 +1103,6 @@ mod tests {
         let rows = gateway_checks(
             &profiles,
             &list,
-            &[],
             &gw_health(&[("https://a.example", false), ("https://b.example", false)]),
         );
         assert_eq!(rows[0].name, "gateways");
@@ -1118,7 +1121,6 @@ mod tests {
         let rows = gateway_checks(
             &profiles,
             &list,
-            &[],
             &gw_health(&[("https://a.example", true), ("https://b.example", false)]),
         );
         assert_eq!(rows[0].status, Status::Warn);
@@ -1138,11 +1140,9 @@ mod tests {
         )
         .unwrap();
         let list = vec!["https://a.example".to_string()];
-        let own = vec![("k".to_string(), "https://mine.example".to_string())];
         let rows = gateway_checks(
             &profiles,
             &list,
-            &own,
             &gw_health(&[("https://a.example", true), ("https://mine.example", true)]),
         );
         assert!(rows.iter().all(|c| c.status == Status::Ok));

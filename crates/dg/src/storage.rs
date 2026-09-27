@@ -676,10 +676,7 @@ async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
             r.fixes.push(kubo_cors_fix().to_string());
         }
     } else {
-        let gateways = StorageProfiles::load().map_or_else(
-            |_| forge_core::storage::default_ipfs_gateways(),
-            |p| p.ipfs_gateways(),
-        );
+        let gateways = StorageProfiles::load().unwrap_or_default().ipfs_gateways();
         check_shared_gateways(r, http, gateways, &cid, &body).await;
     }
     if let Profile::IpfsPinningService(p) = profile {
@@ -712,17 +709,16 @@ async fn check_shared_gateways(
         SHARED_GATEWAY_FETCH,
     )
     .await;
-    let (served, failed): (Vec<_>, Vec<_>) = results.into_iter().partition(|(_, r)| r.is_ok());
-    if let Some((gw, _)) = served.first() {
+    if let Some((gw, _)) = results.iter().find(|(_, res)| res.is_ok()) {
         r.pass(
             "shared gateway",
             format!("{gw} fetched the probe from this node (no public_gateway is set)"),
         );
         return;
     }
-    let tried = failed
+    let tried = results
         .iter()
-        .map(|(gw, why)| format!("{gw}: {}", why.as_ref().err().map_or("", String::as_str)))
+        .filter_map(|(gw, res)| res.as_ref().err().map(|e| format!("{gw}: {e}")))
         .collect::<Vec<_>>()
         .join("; ");
     r.warn(

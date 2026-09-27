@@ -131,7 +131,21 @@ const IDENTITY_CID = 'bafkqaaa'
 const GATEWAY_PROBE_TIMEOUT_MS = 8_000
 
 /** A gateway's liveness: `null` when it answered, else why not (`HTTP 429`, `no answer in 8s`). */
-export type GatewayDown = string | null
+type GatewayDown = string | null
+
+/** The failure line for a URL skipped because its gateway is down (read back by {@link describePack}). */
+export function gatewayDownReason(host: string, why: string): string {
+  return `${host}: gateway down (${why})`
+}
+
+/** The `why` of a {@link gatewayDownReason} message, or null. */
+function gatewayDownWhy(message: string): string | null {
+  const m = /^gateway down \((.*)\)$/.exec(message)
+  return m === null ? null : (m[1] as string)
+}
+
+/** How {@link describePack} names a failed IPFS gateway (and how {@link onlyGatewaysFailed} spots one). */
+const GATEWAY_PLACE = 'ipfs gateway '
 
 const gatewayHealthCache = new Map<string, Promise<GatewayDown>>()
 
@@ -202,11 +216,6 @@ function reasonsByHost(pack: UnavailablePack): Map<string, string> {
   return out
 }
 
-/** Why one IPFS gateway failed: its liveness verdict when it was skipped as down, else the read's. */
-function gatewayWhy(message: string): string {
-  const down = /gateway down \(([^)]*)\)/.exec(message)
-  return down !== null ? `down: ${down[1]}` : classify(message, false)
-}
 
 /**
  * Where one pack was looked for and why each place failed. Order: Platform chunks, then
@@ -220,8 +229,9 @@ export function describePack(pack: UnavailablePack, gateways: readonly string[] 
   for (const [host, message] of reasonsByHost(pack)) {
     if (host === 'platform') {
       places.push(`the parent repo's chunks on Platform (${classify(message, true)})`)
-    } else if (gatewayHosts.has(host) || /gateway down \(/.test(message)) {
-      ipfs.push(`ipfs gateway ${host} (${gatewayWhy(message)})`)
+    } else if (gatewayHosts.has(host) || gatewayDownWhy(message) !== null) {
+      const down = gatewayDownWhy(message)
+      ipfs.push(`${GATEWAY_PLACE}${host} (${down !== null ? `down: ${down}` : classify(message, false)})`)
     } else {
       places.push(`${host} (${classify(message, false)})`)
     }
@@ -233,7 +243,7 @@ export function describePack(pack: UnavailablePack, gateways: readonly string[] 
 
 /** Whether every failed place for `packs` is an IPFS gateway (so adding a gateway may help). */
 export function onlyGatewaysFailed(places: readonly string[]): boolean {
-  return places.length > 0 && places.every((p) => p.startsWith('ipfs gateway '))
+  return places.length > 0 && places.every((p) => p.startsWith(GATEWAY_PLACE))
 }
 
 /** Every distinct place, over a set of unreadable packs. */

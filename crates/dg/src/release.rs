@@ -277,10 +277,7 @@ async fn download(
     }
     // The gateway the uploader recorded reaches its node: try it before the shared list.
     let bytes = PackReader::from_user_config()
-        .prefer_gateways(forge_core::storage::read::repo_gateways(
-            std::iter::empty(),
-            &asset.uris,
-        ))
+        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris))
         .fetch_verified(
             &asset.uris,
             &asset.sha256.to_ascii_lowercase(),
