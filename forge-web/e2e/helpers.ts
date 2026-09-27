@@ -71,6 +71,45 @@ export async function nodeSdk(): Promise<any> {
   return sdk
 }
 
+/**
+ * The showcase mirrors' owners (`evidence/showcase` in the QA harness), by DPNS label. A devnet
+ * reset re-mints them under new identity ids but the same names, so specs resolve the names
+ * instead of hardcoding ids. `E2E_SHOWCASE_<KEY>` (an identity id) overrides one.
+ */
+export const SHOWCASE_OWNERS = {
+  SHARKDP: 'unofficial-sharkdp-mirror',
+  JQLANG: 'unofficial-jqlang-mirror',
+  PREACTJS: 'unofficial-preactjs-mirror',
+  CHARMBRACELET: 'unofficial-charmbracelet-mirror',
+  BURNTSUSHI: 'unofficial-burntsushi-mirror',
+} as const
+
+const showcaseOwnerCache = new Map<string, Promise<string>>()
+
+/**
+ * A showcase repo `{ owner, name }` whose owner is the identity id its DPNS name resolves to
+ * (read in Node through evo-sdk, independent of the app), or `E2E_SHOWCASE_<KEY>` when set.
+ * Throws when the name does not resolve, which means the showcase is not mirrored on this devnet.
+ */
+export async function showcaseRepo(
+  key: keyof typeof SHOWCASE_OWNERS,
+  name: string,
+): Promise<{ readonly owner: string; readonly name: string }> {
+  const override = process.env[`E2E_SHOWCASE_${key}`]
+  if (override) return { owner: override, name }
+  let owner = showcaseOwnerCache.get(key)
+  if (owner === undefined) {
+    const label = `${SHOWCASE_OWNERS[key]}.dash`
+    owner = nodeSdk().then(async (sdk) => {
+      const id = await sdk.dpns.resolveName(label)
+      if (!id) throw new Error(`${label} does not resolve on ${E2E_DEVNET}: the showcase mirrors are not there (set E2E_SHOWCASE_${key})`)
+      return String(id)
+    })
+    showcaseOwnerCache.set(key, owner)
+  }
+  return { owner: await owner, name }
+}
+
 export const SCREENSHOT_DIR = join(__dirname, 'screenshots')
 
 export function shot(page: Page, name: string) {

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * The blob view on showcase repos imported on moutai (their code is stable):
@@ -7,11 +7,18 @@ import { collectPageErrors, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } fro
  *   E2E_DEVNET=moutai pnpm exec playwright test blob-view.spec.ts
  */
 
-const FD = { owner: 'A9SDYE5MzimZGRMNfEJZYvxArYneQ3t5zJYYiwmZHD3u', name: 'fd' } as const
-const JQ = { owner: 'HhqJrGsV3GhX43rKmXUD3tBnPEKqoeXv3Wo6sePAVYYk', name: 'jq' } as const
+// Owners resolve by DPNS name (helpers.ts `showcaseRepo`), so a devnet reset that re-mints them
+// under new ids does not break these specs.
+let FD: { readonly owner: string; readonly name: string }
+let JQ: { readonly owner: string; readonly name: string }
 
 test.describe('blob view (showcase repos)', () => {
   test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
+
+  test.beforeAll(async () => {
+    FD = await showcaseRepo('SHARKDP', 'fd')
+    JQ = await showcaseRepo('JQLANG', 'jq')
+  })
 
   test('bv-1. PNG and SVG blobs are previewed as images, never as inline SVG (D-054)', async ({ page }) => {
     const errors = collectPageErrors(page)

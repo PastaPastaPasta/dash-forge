@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * README, release-note and comment rendering on the showcase repos imported on moutai
@@ -8,13 +8,22 @@ import { E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
  *   E2E_DEVNET=moutai pnpm exec playwright test markdown-render.spec.ts
  */
 
-const FD = { owner: 'A9SDYE5MzimZGRMNfEJZYvxArYneQ3t5zJYYiwmZHD3u', name: 'fd' } as const
-const GLOW = { owner: '4JWDayd36nyAYLg8mChid5bMkYa49nzCPbX8vb6ACNz4', name: 'glow' } as const
-const RIPGREP = { owner: '541TCG56DE7YESd6WWxymLTgkMRH2zKP7Adrnw8oVrUk', name: 'ripgrep' } as const
-const PREACT = { owner: 'qrUbjpBNDWpFscytpp8w9Uw87DV7hSzH5CW7ux9ERCz', name: 'preact' } as const
+// Owners resolve by DPNS name (helpers.ts `showcaseRepo`), so a devnet reset that re-mints them
+// under new ids does not break these specs.
+let FD: { readonly owner: string; readonly name: string }
+let GLOW: { readonly owner: string; readonly name: string }
+let RIPGREP: { readonly owner: string; readonly name: string }
+let PREACT: { readonly owner: string; readonly name: string }
 
 test.describe('markdown rendering (showcase repos)', () => {
   test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
+
+  test.beforeAll(async () => {
+    FD = await showcaseRepo('SHARKDP', 'fd')
+    GLOW = await showcaseRepo('CHARMBRACELET', 'glow')
+    RIPGREP = await showcaseRepo('BURNTSUSHI', 'ripgrep')
+    PREACT = await showcaseRepo('PREACTJS', 'preact')
+  })
 
   test('md-1. the fd README: badges, relative links and a repo image (D-051)', async ({ page }) => {
     await page.goto(repoUrl('', '', FD), { waitUntil: 'domcontentloaded' })
