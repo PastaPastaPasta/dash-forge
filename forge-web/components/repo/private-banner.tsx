@@ -113,8 +113,8 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
     const setBy = r.currentEpoch === null ? undefined : session.anchors.get(r.currentEpoch)?.owner
     parts.push(
       <Note key="current" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-no-current">
-        You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer who holds it can repair
-        it from this repo&apos;s page.
+        You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer who holds it may be
+        able to hand it to you with Repair on this repo&apos;s page.
         {maintainer && setBy !== undefined ? (
           <>
             {' '}

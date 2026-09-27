@@ -79,6 +79,8 @@ export class PrivateMembersError extends Error {
     message: string,
     /** The CLI's error code for the same condition (E306–E310). */
     readonly code?: string,
+    /** A rotation that ended without its anchor in effect: another maintainer's key is the repo's. */
+    readonly outcome?: 'lost' | 'preempted' | 'mismatch',
   ) {
     super(message)
     this.name = 'PrivateMembersError'
@@ -114,8 +116,6 @@ export interface RotationPlan {
   readonly unreachable: readonly string[]
   /** Identities explicitly excluded (removed, or wrapped without being members). */
   readonly excluded: readonly string[]
-  /** Documents to write: the missing wraps plus the anchor. */
-  readonly writes: number
 }
 
 /**
@@ -150,21 +150,18 @@ export function planRotation(
 
   // Epochs are contiguous (§5.3): the new one is always n + 1. A rotation that stopped after its
   // self-wrap left a pending n + 1 (the unique index keeps that wrap): its key is the one n + 1
-  // must use. When one of this signer's wraps there reached someone outside the remaining
-  // members, n + 1 is burned instead (anchored chain-only, then n + 2).
+  // must use, unless it must be burned ({@link mustBurn}): anchored chain-only, then n + 2.
   const epoch = n + 1
   if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
-  const mine = session.wraps.filter((w) => bytesEqual(w.row.owner, selfId) && w.row.epoch === epoch)
-  const selfWrap = mine.find((w) => bytesEqual(w.row.memberId, selfId)) ?? null
-  if (selfWrap !== null && selfWrap.row.recipientKeyId !== heldKeyId) {
+  const resume = pendingSelfWrap(session, self, epoch)
+  if (resume !== null && resume.row.recipientKeyId !== heldKeyId) {
     throw new PrivateMembersError(
-      `your pending key wrap of epoch ${epoch} went to your key ${selfWrap.row.recipientKeyId}, which this browser does not hold; add it here, or ask another maintainer to rotate`,
+      `your pending key wrap of epoch ${epoch} went to your key ${resume.row.recipientKeyId}, which this browser does not hold; add it here, or ask another maintainer to rotate`,
       'E310',
     )
   }
-  const resume = selfWrap
-  const burn = resume !== null && mine.some((w) => !remaining.includes(base58Encode(w.row.memberId)))
-  const wrappedBySelf = new Set(mine.filter((w) => w.row.epoch === epoch).map((w) => base58Encode(w.row.memberId)))
+  const mine = ownWraps(session, selfId, epoch)
+  const wrappedBySelf = new Set(mine.map((w) => base58Encode(w.row.memberId)))
   const ordered = [self, ...remaining.filter((id) => id !== self).sort((a, b) => compareBytes(decodeIdentifier(a), decodeIdentifier(b)))]
   const recipients: RotationRecipient[] = []
   const unreachable: string[] = []
@@ -177,21 +174,47 @@ export function planRotation(
     }
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
-  return {
-    from: n,
-    epoch,
-    resume,
-    burn,
-    recipients,
-    unreachable,
-    excluded: [...excluded],
-    // A burn: its anchor, then a full rotation to n + 2.
-    writes: burn ? 1 + recipients.length + 1 : recipients.filter((x) => !x.done).length + 1,
-  }
+  const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
+  return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
+}
+
+/** This signer's wraps at `epoch` in `session`. */
+function ownWraps(session: PrivateSession, selfId: Uint8Array, epoch: number): WrapDoc[] {
+  return session.wraps.filter((w) => bytesEqual(w.row.owner, selfId) && w.row.epoch === epoch)
+}
+
+/** This signer's standing self-wrap at `epoch` (an earlier run's journal), or null. */
+function pendingSelfWrap(session: PrivateSession, self: string, epoch: number): WrapDoc | null {
+  const selfId = decodeIdentifier(self)
+  return ownWraps(session, selfId, epoch).find((w) => bytesEqual(w.row.memberId, selfId)) ?? null
+}
+
+/**
+ * Whether a pending epoch must be burned rather than finished (§5.3, §5.5; parity: forge-core
+ * `keyring::rotate`): a removal never finishes a resumed epoch (a lagging read may hide the
+ * earlier run's wrap to the member being removed); any run burns one whose wraps reached someone
+ * outside the remaining members, or hold a key a remaining member no longer uses (a wrap cannot
+ * be replaced within an epoch).
+ */
+function mustBurn(
+  removing: boolean,
+  resumed: boolean,
+  mine: readonly WrapDoc[],
+  recipients: readonly RotationRecipient[],
+  remaining: readonly string[],
+): boolean {
+  if (removing && resumed) return true
+  return mine.some((w) => {
+    const id = base58Encode(w.row.memberId)
+    if (!remaining.includes(id)) return true
+    const r = recipients.find((x) => x.identity === id)
+    return r !== undefined && r.keyId !== w.row.recipientKeyId
+  })
 }
 
 /** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */
 export function rotationCost(plan: RotationPlan): CostPreview {
+  // A burn: the burned anchor, then every remaining member wrapped at the next epoch, then its anchor.
   const wraps = plan.burn ? plan.recipients.length : plan.recipients.filter((x) => !x.done).length
   return sumPreviews([...Array.from({ length: wraps }, () => previewCreate('repoKey')), previewCreate('config'), ...(plan.burn ? [previewCreate('config')] : [])])
 }
@@ -540,7 +563,7 @@ export async function rotateRepoKey(
   // rotates that. A second loss in a row is reported rather than chased.
   onStep?.({ kind: 'lost', epoch })
   if (!afterLoss) await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
-  throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and the repair check ran after it.`, 'E310')
+  throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and the repair check ran after it.`, 'E310', 'lost')
 }
 
 /**
@@ -563,10 +586,11 @@ async function confirmAnchor(
       throw new PrivateMembersError(
         `key epoch ${epoch} is anchored, but a config for epoch ${verdict.preempted} by ${short(verdict.by)} was posted before it and now follows it, so its key is the repo's current key; the owner can remove that maintainer to drop it.`,
         'E310',
+        'preempted',
       )
     }
     if (verdict === 'mismatch') {
-      throw new PrivateMembersError(`the anchor of epoch ${epoch} does not carry the key you wrapped; run the rotation again`, 'E310')
+      throw new PrivateMembersError(`the anchor of epoch ${epoch} does not carry the key you wrapped; run the rotation again`, 'E310', 'mismatch')
     }
     await sleep(POLL_MS)
   }
@@ -597,77 +621,83 @@ async function rotateWith(
   await assertMembersSettled(c, session, drop)
   const self = plan.recipients[0]
   if (self === undefined || self.identity !== c.auth.identityId) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
-  const kn = await rawEpochKey(session, c, plan.from)
+  const selfId = decodeIdentifier(self.identity)
+  const removing = exclude.length > 0
+  const allowed = [...plan.recipients.map((r) => r.identity), ...plan.unreachable]
+  // `from`: the epoch this step chains from and its key (the caller's copy is wiped here).
+  let from = { epoch: plan.from, raw: (await rawEpochKey(session, c, plan.from)).raw }
+  let burned: number | null = null
   try {
-    // n + 1's key: the pending self-wrap's (the unique index keeps it; it is the only key n + 1
-    // can have for this signer), else a fresh one.
-    const pending = plan.resume
-    const next: { keys: EpochKeys; raw: Uint8Array } =
-      pending !== null
-        ? await c.ops.unwrapRaw({
-            document: pending.raw,
-            counterpartyKey: keyOf(session, c.auth.identityId, pending.senderKeyId),
-            repoId: session.repoId,
-            epoch: plan.epoch,
-          })
-        : await freshKey(session.repoId, plan.epoch)
-    try {
-      // The self-wrap first (the journal). A self-wrap that stands unseen by this read (a retry
-      // whose read lagged it) stops the run: it re-plans from a read that shows it.
-      const selfOutcome = self.done
-        ? await standingOutcome(c, session, next.keys, self.identity, self.keyId)
-        : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
-      if (selfOutcome.kind === 'different') {
-        throw new PrivateMembersError(`an earlier run of this rotation already wrapped epoch ${plan.epoch}; run it again in a moment`, 'E310')
-      } else if (selfOutcome.kind === 'unreadable') {
-        throw unusableWrap(selfOutcome, self.identity, plan.epoch)
-      }
-      onStep?.({ kind: 'wrapped', identity: self.identity, epoch: plan.epoch })
-      // Which of this signer's wraps at n + 1 stand now (a fresh read): any outside the remaining
-      // members means n + 1's key is burned.
-      const allowed = [...plan.recipients.map((r) => r.identity), ...plan.unreachable]
-      const strays = await straysAt(c, plan.epoch, allowed)
-      if (strays.length > 0) {
-        // §5.3 burn: anchor n + 1 chain-only with that key, then rotate to n + 2 from it.
-        await postAnchor(c, session, next.keys, plan.epoch, plan.from, kn.raw, intent, true)
-        // n + 2 chains from n + 1's key: only once the burned anchor is n + 1's. When another
-        // maintainer's n + 1 came first, stop (the repair check takes over from theirs).
-        if ((await confirmAnchor(c, plan.epoch, next.keys.commit, drop, onStep)) === 'lost') return { lost: plan.epoch }
-        onStep?.({ kind: 'burned', epoch: plan.epoch })
-        const n2 = plan.epoch + 1
-        const after = await freshKey(session.repoId, n2)
-        try {
-          for (const r of plan.recipients) {
-            requireSame(await postWrap(c, session, after.keys, after.raw, r.identity, r.keyId, intent), r.identity, n2)
-            onStep?.({ kind: 'wrapped', identity: r.identity, epoch: n2 })
-          }
-          if ((await straysAt(c, n2, allowed)).length > 0) throw new PrivateMembersError(`key epoch ${n2} reached someone it must not; stopped`, 'E310')
-          await postAnchor(c, session, after.keys, n2, plan.epoch, next.raw, intent, false)
-          return { epoch: n2, commit: after.keys.commit }
-        } finally {
-          after.raw.fill(0)
+    for (;;) {
+      const epoch = from.epoch + 1
+      if (burned !== null) await assertMembersSettled(c, session, drop)
+      // The key of `epoch`: this signer's pending self-wrap's (an earlier run's; the unique index
+      // keeps it), else a fresh one; a self-wrap that stands unseen by this read is adopted.
+      const pending = pendingSelfWrap(session, self.identity, epoch)
+      let next =
+        pending !== null
+          ? await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, self.identity, pending.senderKeyId), repoId: session.repoId, epoch })
+          : await freshKey(session.repoId, epoch)
+      try {
+        let adopted = false
+        const selfOutcome = pending !== null ? { kind: 'same' as const } : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
+        if (selfOutcome.kind === 'different') {
+          const standing = await readOwnWrap(c, session, epoch, self.identity)
+          if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
+          next.raw.fill(0)
+          next = standing
+          adopted = true
+        } else if (selfOutcome.kind === 'unreadable') {
+          throw unusableWrap(selfOutcome, self.identity, epoch)
         }
+        onStep?.({ kind: 'wrapped', identity: self.identity, epoch })
+        // An earlier run's key may already sit with someone who must not have it: a removal never
+        // trusts a read that may lag that run's wrap; any run burns on a stray it can see, or on
+        // a standing wrap it cannot replace.
+        const mine = ownWraps(session, selfId, epoch)
+        let leak =
+          (removing && (pending !== null || adopted)) ||
+          mustBurn(false, false, mine, plan.recipients, allowed) ||
+          (await straysAt(c, epoch, allowed)).length > 0
+        if (!leak) {
+          const done = new Set(mine.map((w) => base58Encode(w.row.memberId)))
+          for (const r of plan.recipients.slice(1)) {
+            const outcome = done.has(r.identity)
+              ? await standingOutcome(c, session, next.keys, r.identity, r.keyId)
+              : await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)
+            if (outcome.kind !== 'same') {
+              leak = true
+              break
+            }
+            onStep?.({ kind: 'wrapped', identity: r.identity, epoch })
+          }
+        }
+        if (leak) {
+          if (burned !== null) {
+            throw new PrivateMembersError(`key epoch ${epoch} needs burning too; it was left unanchored. Run Repair again.`, 'E310')
+          }
+          // §5.3 burn: anchor `epoch` chain-only with that key; the next epoch chains from it, once
+          // this anchor is the epoch's (else another maintainer's stands: build nothing on ours).
+          await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, true)
+          if ((await confirmAnchor(c, epoch, next.keys.commit, drop, onStep)) === 'lost') return { lost: epoch }
+          onStep?.({ kind: 'burned', epoch })
+          burned = epoch
+          from.raw.fill(0)
+          from = { epoch, raw: next.raw }
+          next = { keys: next.keys, raw: new Uint8Array(0) }
+          continue
+        }
+        if ((await straysAt(c, epoch, allowed)).length > 0) {
+          throw new PrivateMembersError(`key epoch ${epoch} reached someone it must not; run the rotation again`, 'E310')
+        }
+        await postAnchor(c, session, next.keys, epoch, from.epoch, from.raw, intent, false)
+        return { epoch, commit: next.keys.commit }
+      } finally {
+        next.raw.fill(0)
       }
-      // A normal rotation: every remaining member, then the anchor.
-      for (const r of plan.recipients.slice(1)) {
-        // Already wrapped by an earlier run: verify it holds this key (a refused duplicate would
-        // still pay its fee), else post it.
-        const outcome = r.done
-          ? await standingOutcome(c, session, next.keys, r.identity, r.keyId)
-          : await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)
-        requireSame(outcome, r.identity, plan.epoch)
-        onStep?.({ kind: 'wrapped', identity: r.identity, epoch: plan.epoch })
-      }
-      if ((await straysAt(c, plan.epoch, allowed)).length > 0) {
-        throw new PrivateMembersError(`key epoch ${plan.epoch} reached someone it must not; run the rotation again`, 'E310')
-      }
-      await postAnchor(c, session, next.keys, plan.epoch, plan.from, kn.raw, intent, false)
-      return { epoch: plan.epoch, commit: next.keys.commit }
-    } finally {
-      next.raw.fill(0)
     }
   } finally {
-    kn.raw.fill(0)
+    from.raw.fill(0)
   }
 }
 
@@ -827,13 +857,19 @@ export async function removePrivateMember(
     if (removalEffect(s.members, memberId, role) === 'none') return
     const kept = chainFrom(s, memberId, role)
     if (kept !== null && !s.resolution.keys.has(kept)) {
-      const holders = role === 'maintainer' ? vanishing(s, memberId).holders : []
+      const holders = role === 'maintainer' ? vanishing(s, memberId).holders.filter((h) => h !== c.auth.identityId) : []
       throw new PrivateMembersError(
         holders.length > 0
-          ? `you can't read key epoch ${kept}, which ${holders.map(short).join(', ')} also hold${holders.length === 1 ? 's' : ''}; ask a maintainer who holds it to run Repair (it hands you the key), then remove again. Nothing was removed.`
+          ? `you can't read key epoch ${kept}, which ${holders.map(short).join(', ')} also hold${holders.length === 1 ? 's' : ''}; a maintainer who holds it can do the removal, or may be able to hand you the key with Repair. Nothing was removed.`
           : `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
         'E310',
       )
+    }
+    // Another staying maintainer's config that would come before this browser's re-anchor, and
+    // is not the same anchor, is known now: refuse before paying for anything.
+    if (role === 'maintainer') {
+      const changed = await anchorsAfterReanchor(s, memberId, c.auth.identityId)
+      if (changed.length > 0) throw anchorsWouldChange(changed)
     }
   })
   let before: number | undefined
@@ -865,14 +901,20 @@ export async function removePrivateMember(
   try {
     epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep, drop, before)
   } catch (e) {
-    // The membership is gone; the key must still move. The repair check (below) rotates when the
-    // removed member still holds the current key. If that fails too, the page's Repair finishes it.
-    onStep?.({ kind: 'waiting', what: 'the repair check after a failed rotation' })
-    try {
-      await runRepair(c, `${intent}:repair`, onStep, drop)
-    } catch {
-      throw afterRevoke(e)
+    // The membership is gone; the key must still move. The repair check rotates when the removed
+    // member still holds the current key (a lost rotation already ran it). If that fails too, the
+    // page's Repair finishes it. An outcome the owner must see (lost, pre-empted, mismatch) is
+    // reported after the repair, never swallowed.
+    const outcome = e instanceof PrivateMembersError ? e.outcome : undefined
+    if (outcome !== 'lost') {
+      onStep?.({ kind: 'waiting', what: 'the repair check after a failed rotation' })
+      try {
+        await runRepair(c, `${intent}:repair`, onStep, drop)
+      } catch {
+        throw afterRevoke(e)
+      }
     }
+    if (outcome !== undefined) throw e
     return null
   }
   // Once more, the repair check (§5.6): a concurrent rotation that lost, or one by a maintainer
@@ -898,20 +940,45 @@ export async function anchorsWithout(session: PrivateSession, leaving: string): 
 }
 
 /**
+ * {@link anchorsWithout} as it will be once this browser's re-anchors land (after every config
+ * that stands now): the epochs whose anchor another staying maintainer's config would change.
+ * Known from the first read, so a removal refuses before it writes anything.
+ */
+async function anchorsAfterReanchor(session: PrivateSession, leaving: string, self: string): Promise<number[]> {
+  const selfId = decodeIdentifier(self)
+  const last = Math.max(0, ...session.configRows.map((cfg) => cfg.createdAtBlockHeight)) + 1
+  const ours = epochsToReanchor(session, leaving).map((e, i) => {
+    const a = session.resolution.anchors.get(e) as Anchor
+    return { ...a.config, owner: selfId, id: new Uint8Array(32).fill(0xff), createdAtBlockHeight: last + i }
+  })
+  const staying = maintainersOf(session).filter((m) => !bytesEqual(m, decodeIdentifier(leaving)))
+  if (!staying.some((m) => bytesEqual(m, selfId))) staying.push(selfId)
+  const planned = new Set(ours.map((x) => x.epoch))
+  return anchorChanges({ ...session, configRows: [...session.configRows, ...ours] }, new IdSet(staying), new Set(vanishing(session, leaving).epochs), planned)
+}
+
+/**
  * The epochs whose anchor changes in substance when the maintainers are `maintainers` (sorted):
  * an epoch that exists now needs an anchor with the same key (commitment), the same `burned` flag
  * and the same chain pair (a config this reader cannot open only counts when it is the same
  * document); no new epoch may appear. `vanish`: epochs that must stop existing instead.
  */
-async function anchorChanges(session: PrivateSession, maintainers: IdSet, vanish: ReadonlySet<number> = new Set()): Promise<number[]> {
+async function anchorChanges(
+  session: PrivateSession,
+  maintainers: IdSet,
+  vanish: ReadonlySet<number> = new Set(),
+  /** Epochs a planned re-anchor (id 0xff…) stands in for: it counts as the same anchor. */
+  planned: ReadonlySet<number> = new Set(),
+): Promise<number[]> {
   const r = session.resolution
   const after = selectAnchors(session.configRows, maintainers)
   const changed = [...after.keys()].filter((e) => !r.anchors.has(e))
+  const isPlanned = (e: number, id: Uint8Array): boolean => planned.has(e) && id.every((b) => b === 0xff)
   for (const [e, a] of r.anchors) {
     const next = after.get(e)
     if (vanish.has(e)) {
       if (next !== undefined) changed.push(e)
-    } else if (next === undefined || (!bytesEqual(next.id, a.id) && !(await sameAnchor(session, e, next.config)))) {
+    } else if (next === undefined || (!bytesEqual(next.id, a.id) && !isPlanned(e, next.id) && !(await sameAnchor(session, e, next.config)))) {
       changed.push(e)
     }
   }
@@ -1066,8 +1133,7 @@ async function reanchorEpochsOf(
   await keepCurrentKey(c, session, memberId, intent)
   for (const e of epochs) {
     const keys = session.resolution.keys.get(e) as EpochKeys
-    const anchor = session.resolution.anchors.get(e)
-    if (anchor === undefined) continue
+    const anchor = session.resolution.anchors.get(e) as Anchor
     // Already re-anchored by this signer (an earlier attempt): a config of ours at this epoch
     // that stands in for the anchor. Never pay for it twice.
     let done = false

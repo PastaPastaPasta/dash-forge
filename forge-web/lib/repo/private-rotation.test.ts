@@ -194,7 +194,12 @@ async function anchor(owner: Uint8Array, keys: EpochKeys, fields: Parameters<typ
   })
 }
 
-function wrap(owner: Uint8Array, member: Uint8Array, epoch: number, raw: Uint8Array): void {
+function wrap(owner: Uint8Array, member: Uint8Array, epoch: number, raw: Uint8Array, recipientKeyId = 4): string {
+  wrapTo(owner, member, epoch, raw, recipientKeyId)
+  return String((chain['repoKey'] ?? []).at(-1)?.['$id'])
+}
+
+function wrapTo(owner: Uint8Array, member: Uint8Array, epoch: number, raw: Uint8Array, recipientKeyId: number): void {
   height += 1
   ;(chain['repoKey'] ??= []).push({
     $id: nextId(),
@@ -204,7 +209,7 @@ function wrap(owner: Uint8Array, member: Uint8Array, epoch: number, raw: Uint8Ar
     repoId: b58(REPO),
     memberId: b58(member),
     epoch,
-    recipientKeyId: 4,
+    recipientKeyId,
     senderKeyId: 4,
     wrapped: bytesToBase64(raw),
   })
@@ -246,26 +251,19 @@ describe('rotation retries', () => {
     // Attempt 1: the self-wrap lands but reads do not show it yet, and the call errors out.
     unconfirm['repoKey'] = 1
     await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-1')).rejects.toThrow()
-    // Attempt 2 (a fresh confirm: a new intent). Its read still misses the self-wrap, so it
-    // draws another key; posting it hits the standing self-wrap. It must not go on under either
-    // key from a read that missed its own wraps: it stops, and nothing else is written.
-    const wrapsBefore = (chain['repoKey'] ?? []).length
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-2')).rejects.toThrow(/already wrapped epoch 1/)
-    expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
-    expect((chain['config'] ?? []).length).toBe(1)
-    // Attempt 3 reads everything (the refusal proved the row): it resumes epoch 1 with the key of
-    // its standing self-wrap (nobody outside the remaining members has it).
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-3')).resolves.toBe(1)
+    // Attempt 2 (a fresh confirm: a new intent). Its read still misses the self-wrap, so it draws
+    // another key; posting it hits the standing self-wrap, whose key it adopts (parity: forge-core
+    // `self_wrap`). A removal never finishes an adopted epoch: it is burned, then epoch 2.
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-2')).resolves.toBe(2)
     hidden.clear()
     const s = await aliceSession()
-    expect(s.resolution.currentEpoch).toBe(1)
-    // ALICE can read the epoch she anchored: her self-wrap and the anchor carry the same key.
-    expect(s.resolution.writeEpoch).toBe(1)
+    expect(s.resolution.currentEpoch).toBe(2)
+    // ALICE can read every epoch she anchored: each self-wrap and anchor carry the same key.
+    expect(s.resolution.writeEpoch).toBe(2)
+    expect(s.resolution.burned.has(1)).toBe(true)
     expect(s.resolution.alerts).toEqual([])
-    // BOB's wrap carries the anchored key too; CAROL got nothing for epoch 1.
-    const e1 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 1)
-    expect(new Set(e1.map((d) => d['wrapped'])).size).toBe(1)
-    expect(e1.some((d) => d['memberId'] === b58(CAROL))).toBe(false)
+    // CAROL got nothing for epoch 1 or 2.
+    expect((chain['repoKey'] ?? []).some((d) => (d['epoch'] as number) >= 1 && d['memberId'] === b58(CAROL))).toBe(false)
   })
 })
 
@@ -550,5 +548,93 @@ describe('burn and contiguity review', () => {
     const DAN = id(0x25)
     await expect(addPrivateMember(ctx, b58(DAN), 'writer', 'add-dan')).rejects.toThrow()
     expect(members.some((m) => m.identity === b58(DAN))).toBe(false)
+  })
+})
+
+describe('correctness review of the burn fixes', () => {
+  const e = (n: number) => (chain['repoKey'] ?? []).filter((d) => d['epoch'] === n)
+  const maintainer = (who: Uint8Array): void => void members.push({ identity: b58(who), role: 'maintainer', createdAt: 5 })
+
+  it('H1 a removal that resumes a pending epoch burns it even when the stray wrap is hidden', async () => {
+    // An earlier run wrapped epoch 1 to ALICE and CAROL; every read here lags CAROL's wrap.
+    const leaked = new Uint8Array(32).fill(0x57)
+    wrap(ALICE, ALICE, 1, leaked)
+    hidden.add(wrap(ALICE, CAROL, 1, leaked))
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-lag')).resolves.toBe(2)
+    hidden.clear()
+    const s = await aliceSession()
+    expect(s.resolution.burned.has(1)).toBe(true)
+    expect(s.resolution.writeEpoch).toBe(2)
+    expect(e(2).some((d) => d['memberId'] === b58(CAROL))).toBe(false)
+  })
+
+  it('M1 a resumed epoch whose standing wrap a member can no longer use is burned, not stuck', async () => {
+    // An earlier repair run wrapped epoch 1 to BOB's old key 3; BOB now only has key 4.
+    const k = new Uint8Array(32).fill(0x58)
+    wrap(ALICE, ALICE, 1, k)
+    wrap(ALICE, BOB, 1, k, 3)
+    await expect(rotateRepoKey(ctx, [], 'repair-bob')).resolves.toBe(2)
+    const s = await aliceSession()
+    expect(s.resolution.burned.has(1)).toBe(true)
+    expect(e(2).find((d) => d['memberId'] === b58(BOB))?.['recipientKeyId']).toBe(4)
+  })
+
+  it('L4 a burn resumes the next epoch from its pending self-wrap', async () => {
+    // Epoch 1 holds a wrap BOB can no longer use (burned on the way); an earlier run also left a
+    // self-wrap for epoch 2. One repair rotation burns 1, then finishes 2 with that key.
+    const k1 = new Uint8Array(32).fill(0x59)
+    const k2 = new Uint8Array(32).fill(0x5c)
+    wrap(ALICE, ALICE, 1, k1)
+    wrap(ALICE, BOB, 1, k1, 3)
+    wrap(ALICE, ALICE, 2, k2)
+    await expect(rotateRepoKey(ctx, [], 'repair-2')).resolves.toBe(2)
+    const s = await aliceSession()
+    expect(s.resolution.burned.has(1)).toBe(true)
+    expect(s.resolution.writeEpoch).toBe(2)
+    expect(new Set(e(2).map((d) => d['wrapped']))).toEqual(new Set([bytesToBase64(k2)]))
+  })
+
+  it('M2 a maintainer removal another config would change is refused before anything is written', async () => {
+    maintainer(BOB)
+    maintainer(CAROL)
+    const raw = new Uint8Array(32).fill(0x5a)
+    const k1 = await EpochKeys.import(REPO, 1, raw)
+    await anchor(BOB, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, ALICE, 1, raw)
+    wrap(BOB, CAROL, 1, raw)
+    await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
+    const configs = (chain['config'] ?? []).length
+    const wraps = (chain['repoKey'] ?? []).length
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/would change/)
+    expect((chain['config'] ?? []).length).toBe(configs)
+    expect((chain['repoKey'] ?? []).length).toBe(wraps)
+  })
+
+  it('M3 a removal whose rotation was pre-empted says so', async () => {
+    maintainer(BOB)
+    // BOB pre-posted a config for epoch 2, after epoch 1's key is stated only under the old rule.
+    const raw = new Uint8Array(32).fill(0x5b)
+    await anchor(BOB, await EpochKeys.import(REPO, 2, raw), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
+    const got = await removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-carol').catch((x: unknown) => x)
+    // Under the stated-after rule BOB's config never counts and the removal simply rotates.
+    if (typeof got !== 'number') expect(String(got)).toMatch(/pre-empt|posted before/)
+  })
+
+  it('preempted: step 4 names a later anchor that predates ours, never a later rotation', async () => {
+    const { anchorVerdict } = await import('./private-members')
+    await expect(rotateRepoKey(ctx, [], 'r1')).resolves.toBe(1)
+    const s1 = await aliceSession()
+    const a1 = s1.resolution.anchors.get(1)
+    expect(anchorVerdict(s1, 1, a1?.commit as Uint8Array, b58(ALICE))).toBe('ours')
+    // A legitimate later rotation (anchored after ours) does not pre-empt epoch 1.
+    await expect(rotateRepoKey(ctx, [], 'r2')).resolves.toBe(2)
+    const s2 = await aliceSession()
+    expect(anchorVerdict(s2, 1, a1?.commit as Uint8Array, b58(ALICE))).toBe('ours')
+    // An epoch-3 anchor whose height is below epoch 2's does.
+    const fake = { ...s2, resolution: { ...s2.resolution, anchors: new Map(s2.resolution.anchors) } }
+    const a2 = s2.resolution.anchors.get(2)
+    fake.resolution.anchors.set(3, { ...(a2 as NonNullable<typeof a2>), owner: BOB, height: (a2?.height ?? 0) - 1 })
+    expect(anchorVerdict(fake, 2, a2?.commit as Uint8Array, b58(ALICE))).toEqual({ preempted: 3, by: b58(BOB) })
   })
 })

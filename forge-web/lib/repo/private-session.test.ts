@@ -414,22 +414,23 @@ describe('rotation and repair planning', () => {
     expect(plan.epoch).toBe(1)
     expect(plan.recipients.map((r) => r.identity)).toEqual([b58(ALICE), b58(BOB)])
     expect(plan.recipients.some((r) => r.identity === b58(CAROL))).toBe(false)
-    expect(plan.writes).toBe(3) // members (2) + anchor
+    expect(plan.recipients.filter((r) => !r.done)).toHaveLength(2) // + the anchor
     expect(rotationCost(plan).credits).toBeGreaterThan(0)
   })
 
-  it('a pending n + 1 is resumed: its self-wrap is the journal (no key is stored)', async () => {
+  it('a pending n + 1 is resumed by a repair rotation: its self-wrap is the journal (no key is stored)', async () => {
     const w = await world()
     w.members = w.members.filter((m) => m.identity !== b58(CAROL))
     // A rotation to epoch 1 stopped after the self-wrap and BOB's wrap.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, BOB, 1, 51))
     const s = await sessionFor(w, ALICE)
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
+    const plan = planRotation(s, b58(ALICE), [], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.resume?.row.epoch).toBe(1)
     expect(plan.burn).toBe(false)
-    expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([])
-    expect(plan.writes).toBe(1) // just the anchor
+    expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([]) // just the anchor
+    // A removal never finishes a resumed epoch: a lagging read may hide a wrap to the one leaving.
+    expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).burn).toBe(true)
   })
 
   it('a pending n + 1 to a key this browser does not hold is refused, not skipped', async () => {
@@ -449,8 +450,6 @@ describe('rotation and repair planning', () => {
     const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.burn).toBe(true)
-    // The burned anchor, then every remaining member wrapped at 2, then its anchor.
-    expect(plan.writes).toBe(1 + plan.recipients.length + 1)
   })
 
   it('epochs are contiguous: the new one is n + 1, whatever higher numbers others posted', async () => {

@@ -167,7 +167,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
                 size="sm"
                 variant="danger"
                 className="ml-auto"
-                disabled={guard.disabledReason !== null || locked || (cannotRead && !(m.role === 'maintainer' && vanishing(session, m.identity).epochs.length > 0))}
+                disabled={guard.disabledReason !== null || locked || !canChainFrom(session, m.identity, m.role)}
                 onClick={() => {
                   setSteps([])
                   setRemoving({ member: m.identity, role: m.role })
@@ -314,4 +314,10 @@ function VanishingNote({ session, leaving }: { session: PrivateSession; leaving:
       .
     </p>
   )
+}
+
+/** Whether this browser can read the epoch the rotation after removing `role` from `member` chains from. */
+function canChainFrom(session: PrivateSession, member: string, role: Role): boolean {
+  const from = chainFrom(session, member, role)
+  return from !== null && session.resolution.keys.has(from)
 }
