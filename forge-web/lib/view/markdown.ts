@@ -243,23 +243,14 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
   // One finder per (delimiter, offset) so each one's `from` only moves forward.
   const imageBracket = forwardFinder(src, ']')
   const imageParen = forwardFinder(src, ')')
-  const linkParen = forwardFinder(src, ')')
-  const refClose = forwardFinder(src, ']')
+  // Link destinations and `][ref]` labels are looked up from each `]`, and nested link text
+  // makes those positions go backwards, so they use exact next-occurrence tables (one pass).
+  const linkParen = nextIndexOf(src, ')')
+  const refClose = nextIndexOf(src, ']')
   const tick = forwardFinder(src, '`')
   const tagClose = forwardFinder(src, '>')
   const semicolon = forwardFinder(src, ';')
-  // Closing-tag lookups run on the lowercased source, one forward finder per tag name, so
-  // a run of unclosed `<kbd>` costs one scan, not one per tag.
-  const lower = src.includes('<') ? src.toLowerCase() : src
-  const closers = new Map<string, (from: number) => number>()
-  const closingTag = (name: string, from: number): number => {
-    let f = closers.get(name)
-    if (f === undefined) {
-      f = forwardFinder(lower, `</${name}>`)
-      closers.set(name, f)
-    }
-    return f(from)
-  }
+  const closingTag = closingTags(src)
   const pairClose = { '*': forwardFinder(src, '*'), _: forwardFinder(src, '_'), '~': forwardFinder(src, '~') }
   const singleClose = { '*': forwardFinder(src, '*'), _: forwardFinder(src, '_') }
   // Matching `]` for each `[`, found by one stack pass (escapes and code spans skipped): link
@@ -435,6 +426,45 @@ function parseInline(src: string, depth = 0, htmlOnly = false): Inline[] {
   pendingSpaces = 0 // trailing spaces of the whole run are dropped
   flush()
   return out
+}
+
+/**
+ * `f(from)`: the index of the first `ch` at or after `from`, or -1, for any `from` in any order.
+ * One right-to-left pass builds the table, so every lookup is O(1).
+ */
+function nextIndexOf(src: string, ch: string): (from: number) => number {
+  let table: Int32Array | null = null
+  return (from) => {
+    if (table === null) {
+      table = new Int32Array(src.length + 1)
+      let next = -1
+      table[src.length] = -1
+      for (let k = src.length - 1; k >= 0; k--) {
+        if (src[k] === ch) next = k
+        table[k] = next
+      }
+    }
+    return from >= src.length ? -1 : (table[Math.max(0, from)] as number)
+  }
+}
+
+/**
+ * Closing-tag lookups: `f(name, from)` finds `</name>` at or after `from` (ignoring ASCII
+ * case), with one forward finder per name so a run of unclosed `<kbd>` costs one scan. Only
+ * ASCII letters are lowercased: `toLowerCase` changes some strings' length (`İ` becomes two
+ * units), which would shift every offset after it.
+ */
+function closingTags(src: string): (name: string, from: number) => number {
+  const lower = src.includes('<') ? src.replace(/[A-Z]+/g, (m) => m.toLowerCase()) : src
+  const finders = new Map<string, (from: number) => number>()
+  return (name, from) => {
+    let f = finders.get(name)
+    if (f === undefined) {
+      f = forwardFinder(lower, `</${name}>`)
+      finders.set(name, f)
+    }
+    return f(from)
+  }
 }
 
 /** Nesting cap for spans inside spans (a hostile `[[[[…](x)](x)…` stays shallow). */
@@ -741,18 +771,9 @@ const RAW_TEXT = new Set(['script', 'style', 'textarea', 'pre'])
  */
 function htmlItems(src: string): Item[] {
   const items: Item[] = []
-  const lower = src.toLowerCase()
   const gt = forwardFinder(src, '>')
   const lt = forwardFinder(src, '<')
-  const closers = new Map<string, (from: number) => number>()
-  const closing = (name: string, from: number): number => {
-    let f = closers.get(name)
-    if (f === undefined) {
-      f = forwardFinder(lower, `</${name}>`)
-      closers.set(name, f)
-    }
-    return f(from)
-  }
+  const closing = closingTags(src)
   let textStart = 0
   const flushText = (end: number): void => {
     const text = src.slice(textStart, end)
@@ -872,7 +893,7 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
         }
         if (name === 'pre') {
           const text = buf.join('\n').replace(/<[^<>]{0,1024}>/g, '')
-          blocks.push({ t: 'code', lang: '', v: decodeEntities(text).replace(/^\n+|\n+$/g, '') })
+          blocks.push({ t: 'code', lang: '', v: trimNewlines(decodeEntities(text)) })
         }
         return
       }
@@ -883,7 +904,7 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
     // heading
     const h = line.match(HEADING)
     if (h) {
-      blocks.push({ t: 'heading', level: h[1]?.length ?? 1, c: parseInline((h[2] ?? '').replace(/[ \t]+#+[ \t]*$/, '').trim()) })
+      blocks.push({ t: 'heading', level: h[1]?.length ?? 1, c: parseInline(stripClosingHashes(h[2] ?? '').trim()) })
       i += 1
       return
     }
@@ -975,6 +996,27 @@ function isBlockStart(line: string): boolean {
     HR.test(line) ||
     htmlBlockStart(line) === 'strong'
   )
+}
+
+/** An ATX heading's text without its optional closing `#`s (`## a ##`). A backward scan: the
+ * regex form `/[ \t]+#+[ \t]*$/` is quadratic on a long run of spaces. */
+function stripClosingHashes(s: string): string {
+  let end = s.length
+  while (end > 0 && (s[end - 1] === ' ' || s[end - 1] === '\t')) end -= 1
+  let j = end
+  while (j > 0 && s[j - 1] === '#') j -= 1
+  if (j === end) return s
+  if (j === 0) return ''
+  return s[j - 1] === ' ' || s[j - 1] === '\t' ? s.slice(0, j) : s
+}
+
+/** `s` without leading and trailing newlines (index loops, not a quadratic regex). */
+function trimNewlines(s: string): string {
+  let a = 0
+  let b = s.length
+  while (a < b && s[a] === '\n') a += 1
+  while (b > a && s[b - 1] === '\n') b -= 1
+  return s.slice(a, b)
 }
 
 /**

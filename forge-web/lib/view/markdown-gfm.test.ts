@@ -198,3 +198,40 @@ describe('raw HTML, as GitHub sanitizes it (D-052)', () => {
     expect(para('1 < 2 and <3 and <a href=>x')).toEqual([{ t: 'text', v: '1 < 2 and <3 and <a href=>x' }])
   })
 })
+
+describe('review regressions', () => {
+  const links = (s: string): string[] => {
+    const out: string[] = []
+    const walk = (ns: readonly Inline[]): void => {
+      for (const n of ns) {
+        if (n.t === 'link') out.push(n.href)
+        if ('c' in n) walk(n.c)
+      }
+    }
+    walk(para(s))
+    return out
+  }
+
+  it('finds a nested link destination after an outer bracket fails', () => {
+    expect(links('[a [b](c) d]( x)')).toEqual(['c'])
+    expect(links('[r]: https://r.io\n\n[a [b][r] c][]')).toEqual(['https://r.io'])
+  })
+
+  it('keeps closing-tag offsets right after characters whose lowercase is longer (İ)', () => {
+    expect(para('İİİ<kbd>x</kbd> after')).toEqual([
+      { t: 'text', v: 'İİİ' },
+      { t: 'tag', tag: 'kbd', c: [{ t: 'text', v: 'x' }] },
+      { t: 'text', v: ' after' },
+    ])
+    expect(para('İİİ<script>bad</script> after')).toEqual([{ t: 'text', v: 'İİİ after' }])
+  })
+
+  it('strips a heading\'s closing hashes, and is fast on long space runs', () => {
+    expect(parseMarkdown('## Title ##')).toEqual([{ t: 'heading', level: 2, c: [{ t: 'text', v: 'Title' }] }])
+    expect(parseMarkdown('# C#')).toEqual([{ t: 'heading', level: 1, c: [{ t: 'text', v: 'C#' }] }])
+    const t = performance.now()
+    parseMarkdown('# a' + ' '.repeat(200_000) + 'x')
+    parseMarkdown('<pre>\na' + '\n'.repeat(200_000) + 'b\n</pre>')
+    expect(performance.now() - t).toBeLessThan(1000)
+  })
+})

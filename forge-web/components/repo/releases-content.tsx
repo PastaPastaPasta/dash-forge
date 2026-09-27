@@ -285,12 +285,19 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
  */
 function DirectDownload({ asset }: { asset: ReleaseAssetView }): JSX.Element | null {
   const urls = directDownloadUrls(asset)
-  const [check, setCheck] = useState<{ ok: boolean; sha256: string; sizeMatches: boolean } | 'checking' | null>(null)
+  const [check, setCheck] = useState<{ ok: boolean; sha256: string; sizeMatches: boolean } | 'checking' | 'unreadable' | null>(null)
+  const latest = useRef(0)
   if (urls.length === 0) return null
   const pick = async (file: File | undefined): Promise<void> => {
     if (file === undefined) return
+    const token = ++latest.current // a slower earlier pick must not overwrite a later one
     setCheck('checking')
-    setCheck(await checkDownloadedFile(file, asset))
+    try {
+      const result = await checkDownloadedFile(file, asset)
+      if (latest.current === token) setCheck(result)
+    } catch {
+      if (latest.current === token) setCheck('unreadable')
+    }
   }
   return (
     <div className="basis-full space-y-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="direct-download">
@@ -305,10 +312,19 @@ function DirectDownload({ asset }: { asset: ReleaseAssetView }): JSX.Element | n
       <label className="inline-flex cursor-pointer items-center gap-1.5">
         <span className="underline">Check a downloaded file</span>
         <span>against the published SHA-256 (read in this tab, not uploaded)</span>
-        <input type="file" className="sr-only" onChange={(e) => void pick(e.target.files?.[0])} />
+        <input
+          type="file"
+          className="sr-only"
+          onChange={(e) => {
+            void pick(e.target.files?.[0])
+            e.target.value = '' // picking the same file again still checks it
+          }}
+        />
       </label>
       {check === 'checking' ? (
         <p>Checking…</p>
+      ) : check === 'unreadable' ? (
+        <p className="text-caution-700 dark:text-caution-400">That file could not be read.</p>
       ) : check?.ok ? (
         <p className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the file matches the published SHA-256.
