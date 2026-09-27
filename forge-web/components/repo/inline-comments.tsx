@@ -15,7 +15,6 @@ import { MessageSquare } from 'lucide-react'
 import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
 import { timeAgo, type CommentView } from '@/lib/view'
 import { anchorLabel, lineKey, placeThreads, type InlineThread } from '@/lib/view/inline-threads'
-import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -26,7 +25,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { PrivateComposeNote, SealedLimit, composeCost } from '@/components/repo/private-compose'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
 import { Oid } from '@/components/ui/oid'
 
 export function InlineCommentsProvider({
@@ -293,8 +292,9 @@ function Composer({
     body: body.trim(),
     ...(anchor ? { path: anchor.path } : {}),
   })
+  const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = async (): Promise<void> => {
-    if (posting || body.trim() === '' || !guard.check(cost.credits) || !sdk || !signer) return
+    if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return
     setPosting(true)
     setError(null)
     try {
@@ -309,7 +309,7 @@ function Composer({
       setBody('')
       onDone()
     } catch (e) {
-      setError(writeErrorMessage(e).message)
+      setError(guard.failed(e))
     } finally {
       setPosting(false)
     }
@@ -318,13 +318,14 @@ function Composer({
     <div className="space-y-2 font-sans">
       <Textarea aria-label={label} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment" className="min-h-[72px]" autoFocus />
       <SealedLimit repo={repo} kind="comment" text={body.trim() + (anchor?.path ?? '')} />
+      <BodyCounter repo={repo} text={body.trim()} field="comment" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CostPreview cost={cost} />
         <div className="flex gap-2">
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={posting}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" onClick={submit} loading={posting} disabled={body.trim() === '' || guard.disabledReason !== null}>
+          <Button size="sm" variant="primary" onClick={submit} loading={posting} disabled={body.trim() === '' || tooLong || guard.disabledReason !== null}>
             {replyTo ? 'Reply' : 'Add comment'}
           </Button>
         </div>

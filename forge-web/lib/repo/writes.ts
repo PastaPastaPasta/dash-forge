@@ -29,6 +29,7 @@ import {
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
   UnconfirmedWriteError,
+  contentHash,
   countDocuments,
   createDocumentIdempotent,
   deleteDocumentIdempotent,
@@ -188,8 +189,12 @@ export async function writeRepoDoc(
   /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
   writer?: PrivateWriter,
 ): Promise<WriteResult> {
+  // What the action says, before sealing: the retry cache compares this (sealed fields are
+  // encrypted afresh on every attempt, so the sealed data never matches itself).
+  let contentKey: string | undefined
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
+    contentKey = contentHash(documentType, scoped(repo, data))
     const w = writer ?? (await privateWriter(sdk, auth, repo))
     data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
     intent = sealedIntent(intent, w.keys)
@@ -201,6 +206,7 @@ export async function writeRepoDoc(
       documentType,
       data: scoped(repo, data),
       ...(intent ? { intent } : {}),
+      ...(contentKey ? { contentKey } : {}),
     })
   } finally {
     afterWrite(repo, auth.network, documentType)
@@ -392,14 +398,27 @@ async function createNumbered(
     writer = await privateWriter(sdk, auth, repo)
   }
   const next = (): Promise<number | null> => nextNumber(sdk, repo, type)
-  let number = await next()
+  // A retry of this action first finishes the number its last attempt signed: once that
+  // attempt is visible, allocation would hand out the next number, a new cache key, and a
+  // second issue (the pending write under the old number would never be looked at).
+  const triedKey = intentBase ? `forge:numbered:${auth.network}:${repo.repoId}:${type}:${intentBase}` : null
+  let number = readTriedNumber(triedKey) ?? (await next())
   for (let attempt = 0; attempt < 4; attempt++) {
     if (number === null) throw new Error(`this repo has no ${noun} numbers left to allocate`)
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
-      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)), number }
+      writeTriedNumber(triedKey, number)
+      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)
+      writeTriedNumber(triedKey, null)
+      return { ...result, number }
     } catch (e) {
+      // Refused for good (not a duplicate, which is renumbered below): nothing under this
+      // number is pending, so the action does not pin it any more. After a SupersededWriteError
+      // the number stays pinned on purpose: its intent `base#N` holds the tombstone, so every
+      // later retry of this action lands there and is answered the same way, never allocated a
+      // fresh number and posted as a second document.
+      if (e instanceof ConsensusRefusal && !isDuplicate(e)) writeTriedNumber(triedKey, null)
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
         const holder = await numberHolder(sdk, repo, type, number).catch(() => undefined)
@@ -412,6 +431,36 @@ async function createNumbered(
     }
   }
   throw new Error(`could not claim ${type === 'issue' ? 'an issue' : 'a PR'} number after several attempts; try again`)
+}
+
+/** How long a remembered number is kept: as long as the pending-write cache it points into. */
+const TRIED_NUMBER_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/** The number the last attempt of a numbered action signed (null when none is pending). */
+function readTriedNumber(key: string | null): number | null {
+  if (key === null || typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return null
+    const { n, at } = JSON.parse(raw) as { n?: unknown; at?: unknown }
+    if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0 || typeof at !== 'number' || Date.now() - at > TRIED_NUMBER_MAX_AGE_MS) {
+      window.localStorage.removeItem(key)
+      return null
+    }
+    return n
+  } catch {
+    return null
+  }
+}
+
+function writeTriedNumber(key: string | null, number: number | null): void {
+  if (key === null || typeof window === 'undefined') return
+  try {
+    if (number === null) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, JSON.stringify({ n: number, at: Date.now() }))
+  } catch {
+    // Best effort, like the pending-write cache it points into.
+  }
 }
 
 /** Who holds issue / PR `number` (its `$ownerId`), or null when nobody does. */

@@ -31,12 +31,10 @@ import {
 import { externalTargets, policyForRepo } from '@/lib/storage'
 import { UnconfirmedWriteError, previewCreate } from '@/lib/sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
-import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useIntent } from '@/hooks/use-intent'
 import { useStorageConfig } from '@/hooks/use-storage-config'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
@@ -115,7 +113,6 @@ function NewReleaseDialog({
   const repo = home.repo
   const { sdk, network } = useSdk()
   const { signer } = useAuth()
-  const openTopUp = useUiStore((s) => s.openTopUp)
   const guard = useWriteGuard()
   const { config } = useStorageConfig()
   const [tag, setTag] = useState('')
@@ -147,7 +144,7 @@ function NewReleaseDialog({
   const publish = async (): Promise<void> => {
     setTouched(true)
     if (phase === 'publishing' || phase === 'done') return
-    if (!sdk || !signer || !repo || problem !== null || !guard.check(cost.credits)) return
+    if (!sdk || !signer || !repo || problem !== null || !guard.check(cost)) return
     setPhase('publishing')
     setError(null)
     setStatus('Checking you are a maintainer…')
@@ -185,8 +182,7 @@ function NewReleaseDialog({
       const failedFile = current
       if (!(e instanceof ReleaseWriteError) && failedFile !== null) setProgress((p) => (p[failedFile]?.state === 'done' ? p : { ...p, [failedFile]: { state: 'failed' } }))
       const inner = e instanceof ReleaseWriteError ? e.cause : e
-      const { message, keyLimit } = writeErrorMessage(inner)
-      if (keyLimit) openTopUp({ blocker: 'key-budget' })
+      const message = guard.failed(inner)
       const context =
         e instanceof ReleaseWriteError && e.assetsStored > 0
           ? ` The ${e.assetsStored === 1 ? 'asset was' : `${e.assetsStored} assets were`} uploaded and verified (content-addressed): publishing again reuses them.`

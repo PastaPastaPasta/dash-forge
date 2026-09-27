@@ -154,7 +154,7 @@ function useConfigWrite(home: RepoHome, onSaved: () => void) {
   const current = home.config ?? DEFAULT_CONFIG
   const cost = (change: ConfigChange): Cost => previewConfig(applyConfigChange(current, change))
   const ask = (p: PendingConfig): void => {
-    if (guard.check(cost(p.change).credits)) setPending(p)
+    if (guard.check(cost(p.change))) setPending(p)
   }
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
@@ -310,7 +310,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             size="sm"
             disabled={!changed || problem !== null || guard.disabledReason !== null}
             onClick={() => {
-              if (guard.check(cost.credits)) setPending(edit)
+              if (guard.check(cost)) setPending(edit)
             }}
           >
             Save
@@ -557,7 +557,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
                 size="sm"
                 disabled={!changed || guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(cost.credits, 'collab')) setConfirming(true)
+                  if (guard.check(cost, 'collab')) setConfirming(true)
                 }}
               >
                 Save policy

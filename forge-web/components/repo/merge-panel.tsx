@@ -148,7 +148,7 @@ export function MergePanel({
 
   const start = useCallback(async () => {
     if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
-    if (!guard.check(cost.credits)) return
+    if (!guard.check(cost)) return
     setBusy(true)
     setFailure(null)
     setStopped(null)
@@ -196,7 +196,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0

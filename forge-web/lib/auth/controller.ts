@@ -31,7 +31,7 @@ import { errorMessage } from '../utils'
 import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
-import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS } from '../sdk/cost'
+import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
@@ -133,7 +133,7 @@ export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:rev
 /** The pre-sign estimate per kind (credits); 0 where none was ever measured. */
 export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
   'key:register': KEY_REGISTER_CREDITS,
-  'key:renew': KEY_REGISTER_CREDITS,
+  'key:renew': KEY_RENEW_CREDITS,
   'key:topup': KEY_LIMITS_UPDATE_CREDITS,
   'key:revoke': 0,
   'key:encryption': 0,
