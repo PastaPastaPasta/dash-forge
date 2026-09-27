@@ -144,7 +144,71 @@ interface CachedST {
   documentId: string
   /** The identity-contract nonce it was signed with (decimal); absent in older entries. */
   nonce?: string
+  /**
+   * {@link contentHash} of the document the transition carries. A retry whose content differs
+   * (the user edited the title after an unconfirmed attempt) must not rebroadcast these bytes.
+   */
+  content?: string
+  /**
+   * Earlier attempts of this action whose content was then edited (their document ids). They
+   * may still land: before this entry is called lost and signed afresh, each must be seen
+   * absent (D-008).
+   */
+  supersedes?: string[]
   cachedAt: number
+}
+
+/**
+ * What stays under an action's key once an earlier version of it was found on Platform: every
+ * later call with that intent answers {@link SupersededWriteError} at once and signs nothing.
+ * (Clearing the key instead would let the next retry sign the edit as a second document.)
+ */
+interface LandedTombstone {
+  landedAs: string
+  cachedAt: number
+}
+
+/** A cached attempt, as read back. */
+interface PendingST {
+  readonly bytes: Uint8Array
+  readonly documentId: string
+  readonly nonce: bigint | null
+  readonly content: string | null
+  readonly supersedes: readonly string[]
+}
+
+/**
+ * A stable hash of a write's content: the document type and its data, byte arrays as hex,
+ * object keys sorted. Two retries of one action with the same content hash alike; an edit
+ * between them does not.
+ */
+export function contentHash(documentType: string, data: Readonly<Record<string, unknown>>): string {
+  const canon = (v: unknown): unknown => {
+    if (v instanceof Uint8Array) return { $bytes: bytesToHex(v) }
+    if (typeof v === 'bigint') return { $bigint: v.toString() }
+    if (Array.isArray(v)) return v.map(canon)
+    if (v !== null && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.keys(v)
+          .sort()
+          .map((k) => [k, canon((v as Record<string, unknown>)[k])]),
+      )
+    }
+    return v
+  }
+  return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([documentType, canon(data)]))))
+}
+
+/**
+ * A retry whose content changed after an earlier attempt of the same action had already
+ * landed: the earlier version is on Platform, and the edited one was not sent (sending it
+ * would post a second document).
+ */
+export class SupersededWriteError extends Error {
+  constructor(readonly documentId: string) {
+    super('Your earlier attempt was posted before this edit, so the edited version was not sent. Reload to see it; edit it from there.')
+    this.name = 'SupersededWriteError'
+  }
 }
 
 /**
@@ -163,27 +227,66 @@ export function pendingWriteKey(ownerId: string, contractId: string, documentTyp
   return ST_CACHE_PREFIX + bytesToHex(sha256(new TextEncoder().encode(text)))
 }
 
-function savePendingST(key: string, documentId: string, bytes: Uint8Array, nonce: bigint): void {
+function savePendingST(key: string, documentId: string, bytes: Uint8Array, nonce: bigint, content: string, supersedes: readonly string[]): void {
   if (typeof window === 'undefined') return
   try {
-    const entry: CachedST = { data: bytesToBase64(bytes), documentId, nonce: nonce.toString(), cachedAt: Date.now() }
+    const entry: CachedST = {
+      data: bytesToBase64(bytes),
+      documentId,
+      nonce: nonce.toString(),
+      content,
+      ...(supersedes.length > 0 ? { supersedes: [...supersedes] } : {}),
+      cachedAt: Date.now(),
+    }
     window.localStorage.setItem(key, JSON.stringify(entry))
   } catch {
     // Non-fatal — retry safety is best-effort; the write still broadcasts.
   }
 }
-function loadPendingST(key: string): { bytes: Uint8Array; documentId: string; nonce: bigint | null } | null {
+/** Mark the action as done by an earlier version (`landedAs`); see {@link LandedTombstone}. */
+function tombstonePendingST(key: string, landedAs: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    const entry: LandedTombstone = { landedAs, cachedAt: Date.now() }
+    window.localStorage.setItem(key, JSON.stringify(entry))
+  } catch {
+    // Best effort, like the cache itself.
+  }
+}
+
+/** The document an earlier version of this action landed as, when a tombstone says so. */
+function landedAsOf(key: string): string | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<LandedTombstone>
+    if (typeof parsed.landedAs !== 'string' || typeof parsed.cachedAt !== 'number') return null
+    if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS) {
+      window.localStorage.removeItem(key)
+      return null
+    }
+    return parsed.landedAs
+  } catch {
+    return null
+  }
+}
+
+function loadPendingST(key: string): PendingST | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedST
+    if (typeof parsed.data !== 'string') return null
     if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS || !parsed.documentId) {
       window.localStorage.removeItem(key)
       return null
     }
     const nonce = typeof parsed.nonce === 'string' && /^[0-9]+$/.test(parsed.nonce) ? BigInt(parsed.nonce) : null
-    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId, nonce }
+    const content = typeof parsed.content === 'string' ? parsed.content : null
+    const supersedes = Array.isArray(parsed.supersedes) ? parsed.supersedes.filter((s): s is string => typeof s === 'string') : []
+    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId, nonce, content, supersedes }
   } catch {
     return null
   }
@@ -246,12 +349,53 @@ export function isNonceUsedError(e: unknown): boolean {
   return m.includes('nonce already present') || m.includes('invalid identity nonce') || m.includes('identity contract nonce')
 }
 
+/**
+ * This browser's key can no longer sign: it expired, was disabled, or is not on the identity.
+ * `reason` says which, for the renew sheet (`ux-dx-spec.md` §4: a spent or expired key is
+ * fixed by renewing, never by a raw error).
+ */
+export type KeyUnusableReason = 'expired' | 'disabled' | 'missing' | 'level'
+
+const KEY_UNUSABLE_TEXT: Readonly<Record<KeyUnusableReason, string>> = {
+  expired: "This browser's key has expired. Renew it to keep signing.",
+  disabled: "This browser's key was disabled on Platform. Renew it to keep signing.",
+  missing: "This browser's key is not on this identity. Sign in again (renew) to get one.",
+  level: "This browser's key cannot sign Forge writes (it is not a HIGH authentication key). Renew it to get one that can.",
+}
+
+export class KeyUnusableError extends Error {
+  constructor(readonly reason: KeyUnusableReason) {
+    super(KEY_UNUSABLE_TEXT[reason])
+    this.name = 'KeyUnusableError'
+  }
+}
+
+/** Why no AUTHENTICATION key of `identity` that `wif` controls can sign. */
+function unusableKeyError(identity: WasmIdentity, wif: string, network: Network): KeyUnusableError {
+  const mine = identity.publicKeys.filter((k) => k.purposeNumber === PURPOSE_AUTHENTICATION && controlsKey(k, wif, network))
+  const live = mine.filter((k) => k.disabledAt === undefined)
+  if (mine.length === 0) return new KeyUnusableError('missing')
+  if (live.length === 0) return new KeyUnusableError('disabled')
+  if (live.some((k) => k.expiresAt !== undefined && k.expiresAt <= BigInt(Date.now()))) return new KeyUnusableError('expired')
+  return new KeyUnusableError('level')
+}
+
 /** Raised when a required signing key is unavailable / does not match the identity. */
 export class WriteAuthError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'WriteAuthError'
   }
+}
+
+/** Figures a refusal names: what the key or the identity has, and what the write needed. */
+export interface RefusalFigures {
+  /** Credits left of the signing key's budget (40218). */
+  readonly remaining?: bigint
+  /** The identity's balance (40210, 30000). */
+  readonly balance?: bigint
+  /** What the transition required (from the key budget, or the balance). */
+  readonly required?: bigint
 }
 
 /**
@@ -263,14 +407,49 @@ export class ConsensusRefusal extends Error {
   constructor(
     readonly code: number,
     message: string,
+    readonly figures: RefusalFigures = {},
+    /**
+     * Whether the refused transition reached a block (where a refusal other than an
+     * {@link unpaid} one pays its processing fee): `false` when it was refused at the
+     * broadcast check (CheckTx), which charges nothing; `null` when it is not known.
+     */
+    readonly charged: boolean | null = null,
   ) {
     super(message)
     this.name = 'ConsensusRefusal'
   }
 
-  /** The key may not spend: budget exhausted/exceeded or expired (renew it, `ux-dx-spec.md` §4). */
+  /** The same refusal, known to come from the broadcast check (nothing charged). */
+  atBroadcast(): ConsensusRefusal {
+    return new ConsensusRefusal(this.code, this.message, this.figures, false)
+  }
+
+  /** Whether a fee was taken for it: reached a block and not an {@link unpaid} refusal. */
+  get feeCharged(): boolean | null {
+    if (this.unpaid || this.charged === false) return false
+    return this.charged
+  }
+
+  /**
+   * The key may not sign or spend: budget exhausted or exceeded, expired, disabled. The fix is
+   * a new key (renew) or, for a budget, a top-up of the key (`ux-dx-spec.md` §4).
+   */
   get isKeyLimit(): boolean {
     return KEY_LIMIT_CODES.has(this.code)
+  }
+
+  /** The identity's balance does not cover the write: top up the identity. */
+  get isBalance(): boolean {
+    return BALANCE_CODES.has(this.code)
+  }
+
+  /**
+   * Refusals Drive never charges for, wherever they happen: a key-limit, balance or nonce
+   * refusal (`validate_fees_of_event`: "nobody was allowed to be charged"), and the basic
+   * checks (field sizes, contract bounds) that run before any fee is computed.
+   */
+  get unpaid(): boolean {
+    return this.isKeyLimit || this.isBalance || UNPAID_CODES.has(this.code)
   }
 }
 
@@ -279,14 +458,51 @@ export class ConsensusRefusal extends Error {
  * it as done, and never as failed-and-safe-to-redo without checking.
  */
 export class UnconfirmedWriteError extends Error {
-  constructor(readonly documentId: string) {
-    super("Sent, not yet visible on Platform — we'll keep checking. Reload in a moment before trying again.")
+  constructor(
+    readonly documentId: string,
+    message = "Sent, not yet visible on Platform — we'll keep checking. Reload in a moment before trying again.",
+  ) {
+    super(message)
     this.name = 'UnconfirmedWriteError'
   }
 }
 
-/** Consensus codes for "this key may not spend": budget exhausted/exceeded, key expired. */
-export const KEY_LIMIT_CODES: ReadonlySet<number> = new Set([20015, 20016, 40218])
+/**
+ * The last answer to the broadcast was this browser's own request budget turning it away
+ * (`budget.ts`: every node rate-limited or unreachable), so the write may never have reached
+ * Platform. An earlier attempt might have, so it is handled like any unconfirmed write: the
+ * signed bytes stay cached and a retry re-sends them, never a second document.
+ */
+export class BusyWriteError extends UnconfirmedWriteError {
+  constructor(documentId: string) {
+    super(documentId, 'Platform nodes are busy, so this write may not have been sent. Try again in a minute: it re-sends the same signed write, never a second one.')
+    this.name = 'BusyWriteError'
+  }
+}
+
+/** The request budget's own refusal, made in this browser without reaching a node (`budget.ts`). */
+function isLocalGateRefusal(e: unknown): boolean {
+  return /rate limited|node unreachable a moment ago/.test(errorMessage(e))
+}
+
+/**
+ * Consensus codes for "this key may not sign or spend" (rs-dpp `errors/consensus/codes.rs`):
+ * budget exhausted (20015), expired (20016), disabled (20006, 40208), budget exceeded by this
+ * write (40218), expired at the block time (40219).
+ */
+export const KEY_LIMIT_CODES: ReadonlySet<number> = new Set([20006, 20015, 20016, 40208, 40218, 40219])
+
+/** The identity's balance does not cover the write (40210 insufficient balance, 30000 fee). */
+export const BALANCE_CODES: ReadonlySet<number> = new Set([30000, 40210])
+
+/** Refusals besides key-limit and balance ones that are never charged. */
+const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10417, 10421, 20014])
+
+/** Budget exceeded by this write: the key has some budget, not enough for this one. */
+export const BUDGET_EXCEEDED_CODE = 40218
+
+/** The identity-contract nonce is not the next one (another write of this identity took it). */
+export const INVALID_NONCE_CODE = 40204
 
 /** Duplicate unique properties: someone already holds the unique slot (an issue number). */
 export const DUPLICATE_UNIQUE_CODE = 40105
@@ -296,6 +512,36 @@ export const GATE_REFUSED_CODE = 40120
 
 /** A replace named a revision other than the stored one + 1 (`InvalidDocumentRevisionError`). */
 export const INVALID_REVISION_CODE = 40106
+
+/**
+ * The consensus refusals a write can meet, by the text Drive's error renders (`#[error(...)]`
+ * in rs-dpp 4.2.0-beta.4, `packages/rs-dpp/src/errors/consensus`). A refusal at broadcast
+ * (CheckTx) reaches the browser as the SDK's `Protocol error: <that text>` with no numeric
+ * code (the wasm error's `code` is -1), so the text is how it is recognised. Named groups
+ * carry the figures the UI shows (`remaining`, `balance`, `required`).
+ *
+ * A nonce refusal (40204) is deliberately not among them: for a rebroadcast of bytes already
+ * sent it means "a transition with this nonce is in", possibly this very one, so callers
+ * settle it by reading the chain ({@link isNonceUsedError}), never as a refusal.
+ */
+const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
+  [40218, /public key \d+ has (?<remaining>\d+) credits of budget left, the state transition requires (?<required>\d+)/i],
+  [20015, /public key \d+ has spent its whole budget and can no longer sign/i],
+  [20016, /public key \d+ expired at \d+ ms and can no longer sign/i],
+  [40219, /public key \d+ is expired at the block time/i],
+  [20006, /Identity key \d+ is disabled/i],
+  [40208, /Identity Public Key #\d+ is disabled/i],
+  [40210, /Insufficient identity \S+ balance (?<balance>\d+) required (?<required>\d+)/i],
+  [30000, /Current credits balance (?<balance>\d+) is not enough to pay (?<required>\d+) fee/i],
+  [40105, /has duplicate unique properties/i],
+  [40106, /Document \S+ has invalid revision/i],
+  [40120, /referenced \S+ \S+ not found for path/i],
+  [40127, /does not agree with the referenced document's/i],
+  [40128, /is immutable and cannot be changed by a replace/i],
+  [10421, /over its maxBytes of \d+/i],
+  [10417, /Document field \S+ size \d+ is more than system maximum/i],
+  [20014, /Batch member is outside the contract bounds of key/i],
+]
 
 /** The numeric consensus code a wasm error carries, if any. */
 function consensusCodeOf(e: unknown): number | null {
@@ -309,11 +555,32 @@ function consensusCodeOf(e: unknown): number | null {
   return null
 }
 
-/** The consensus refusal `e` is, or null when it is transport noise or unclassified. */
+function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
+  const out: { remaining?: bigint; balance?: bigint; required?: bigint } = {}
+  if (groups?.['remaining']) out.remaining = BigInt(groups['remaining'])
+  if (groups?.['balance']) out.balance = BigInt(groups['balance'])
+  if (groups?.['required']) out.required = BigInt(groups['required'])
+  return out
+}
+
+/**
+ * The consensus refusal `e` is, or null when it is transport noise or unclassified.
+ *
+ * Where it came from sets `charged`: a numeric code is the SDK's `StateTransitionBroadcastError`
+ * from a result wait, i.e. the transition's verdict in a block; Drive's text without a code is
+ * the SDK's `Protocol error` for a refusal at the broadcast check (CheckTx), where nothing is
+ * charged (measured live on moutai: a refused write leaves the balance unchanged).
+ */
 export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   if (e instanceof ConsensusRefusal) return e
+  const message = errorMessage(e)
   const code = consensusCodeOf(e)
-  return code === null ? null : new ConsensusRefusal(code, errorMessage(e))
+  for (const [patternCode, re] of REFUSAL_PATTERNS) {
+    if (code !== null && code !== patternCode) continue
+    const m = re.exec(message)
+    if (m) return new ConsensusRefusal(patternCode, message, figuresOf(m.groups), code !== null)
+  }
+  return code === null ? null : new ConsensusRefusal(code, message, {}, true)
 }
 
 /**
@@ -356,8 +623,11 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     return 'landed'
   } catch (e) {
     if (indexOnly && isAffectedStateSnapshot(e)) return 'landed'
-    const refusal = asConsensusRefusal(e)
-    if (refusal !== null) throw refusal
+    // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
+    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    // The result wait answers with the transition's verdict in a block, whatever shape the
+    // error takes: charged (unless Drive leaves that refusal unpaid).
+    if (refusal !== null) throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, true)
     return 'unknown'
   } finally {
     clearTimeout(timer)
@@ -424,9 +694,10 @@ async function settleUnanswered(
     try {
       await facades(sdk).stateTransitions.broadcastStateTransition(st)
     } catch (e) {
-      const refusal = asConsensusRefusal(e)
-      if (refusal !== null) throw refusal
-      // A used nonce shows as spent on the next round; "already exists" means pending.
+      // A used nonce shows as spent on the next round (this very transition may be what used
+      // it); "already exists" means pending. A refusal of the rebroadcast is a CheckTx answer.
+      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+      if (refusal !== null) throw refusal.atBroadcast()
     }
     if ((await awaitOutcome(sdk, st, indexOnly)) === 'landed') return 'landed'
   }
@@ -703,6 +974,11 @@ export interface CreateParams {
   readonly data: Record<string, unknown>
   /** The action this write belongs to ({@link newIntent}); a fresh token when omitted. */
   readonly intent?: string
+  /**
+   * What identifies this action's content across retries, when `data` itself is not stable
+   * (sealed fields are encrypted afresh on each attempt). Defaults to {@link contentHash}.
+   */
+  readonly contentKey?: string
   readonly requiredLevel?: number
   readonly confirmTimeoutMs?: number
   /** Whether the write landed, for types `documents.get` cannot fetch (indexOnly). */
@@ -748,34 +1024,109 @@ async function createDocumentUnlocked(
     clearPendingST(cacheKey)
     return { result: { documentId, confirmed, cost, actualCredits: null }, spend: spend('create', documentId) }
   }
-  /** A refusal was charged (a paid consensus failure): record it, then rethrow. */
-  const refused = (refusal: ConsensusRefusal, documentId: string): never => {
+  /**
+   * Consensus refused the write: nothing lands under this id. `charged`: it was refused in a
+   * block (its processing fee paid, unless Drive leaves that refusal unpaid), not at the
+   * broadcast check, which charges nothing. A paid one goes to the ledger as `refused:<type>`.
+   */
+  const refused = async (refusal: ConsensusRefusal, documentId: string, charged: boolean): Promise<never> => {
+    const r = charged ? refusal : refusal.atBroadcast()
+    if (r.feeCharged !== false) reportSpend(sdk, auth, spend('refused', documentId))
+    if (supersedes.length > 0) {
+      // An earlier version this attempt superseded may still land. Settle it now (on Platform:
+      // this action is done; not definitely absent: keep the entry so the next retry settles
+      // it), so the refused bytes are never replayed once the cause (a spent key, a short
+      // balance) is fixed: the next retry signs afresh.
+      await settleSuperseded()
+    }
     clearPendingST(cacheKey)
-    if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused', documentId))
-    throw refusal
+    throw r
+  }
+
+  // What this attempt carries. A retry of the same action (same intent) whose content was
+  // edited in between must not answer with the bytes signed for the old content (D-008).
+  // `contentKey`: the caller's key for the content when `data` is not stable across retries
+  // (a private repo's sealed fields are encrypted afresh each time).
+  const content = params.contentKey ?? contentHash(documentType, data)
+  /**
+   * Earlier attempts of this action whose content was edited since, oldest first. They may
+   * still land, so they are kept with the cache entry (and across reloads): every path that
+   * would sign this action afresh first checks each is on Platform (then the edit is not
+   * posted) or definitely absent.
+   */
+  let supersedes: string[] = []
+  /**
+   * The nonce of the newest superseded attempt, while it is free: the edit is signed with it,
+   * so at most one of the two can land.
+   */
+  let pinnedNonce: bigint | null = null
+
+  /**
+   * Before this action is signed afresh: an earlier version on Platform means the edit is not
+   * posted; one not yet definitely absent means wait. Only reads that answered "absent" (after
+   * a block's worth of waiting) let the action go on.
+   */
+  const settleSuperseded = async (): Promise<void> => {
+    for (const old of supersedes) {
+      if (await landed(old, LANDED_CHECK_MS)) {
+        tombstonePendingST(cacheKey, old)
+        throw new SupersededWriteError(old)
+      }
+      if (!(await absent(old))) throw new UnconfirmedWriteError(old)
+    }
+    supersedes = []
+    pinnedNonce = null
   }
 
   // A previous attempt at this same action timed out: finish it, never sign a second one —
   // unless its nonce is spent and its document definitely absent, when it can never land
   // (another write by this identity took the nonce) and the action is signed afresh below.
+  // An earlier version of this action already landed: this action is done, sign nothing.
+  const landedAs = landedAsOf(cacheKey)
+  if (landedAs !== null) throw new SupersededWriteError(landedAs)
   const cached = loadPendingST(cacheKey)
-  if (cached) {
+  if (cached && cached.content !== null && cached.content !== content) {
+    // Edited since the last attempt.
+    const { documentId, nonce } = cached
+    supersedes = [...cached.supersedes, documentId]
+    if (nonce === null) throw new UnconfirmedWriteError(documentId)
+    if (await nonceSpent(sdk, ownerId, contractId, nonce)) {
+      // Something took that nonce: the old attempt landed (a read may lag) or never will.
+      markNonceUsed(ownerId, contractId, nonce)
+      await settleSuperseded()
+    } else {
+      // Still free: nothing with this nonce landed, so the newest attempt is not in. Earlier
+      // versions carried forward were each pinned to this same nonce, so none is in either;
+      // one more look (a node may be a block ahead) before the edit takes the nonce.
+      for (const old of supersedes) {
+        if (await landed(old, 0)) {
+          tombstonePendingST(cacheKey, old)
+          throw new SupersededWriteError(old)
+        }
+      }
+      pinnedNonce = nonce
+    }
+  } else if (cached) {
     const { documentId } = cached
+    supersedes = [...cached.supersedes]
     let seen = await landed(documentId, 0)
     if (!seen) {
       const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
       try {
         await facades(sdk).stateTransitions.broadcastStateTransition(StateTransitionClass.fromBytes(cached.bytes))
       } catch (e) {
-        // Refused: the cached bytes cannot land. A used nonce: they landed (the poll sees
-        // them) or never will, so a retry may sign afresh. Already in, or a transport error:
-        // the poll decides, and the bytes stay cached until it sees them.
-        const refusal = asConsensusRefusal(e)
+        // A used nonce: they landed (the poll sees them) or never will. Refused: the cached
+        // bytes cannot land. Already in, or a transport error: the poll decides, and the
+        // bytes stay cached until it sees them. (The nonce check comes first: a rebroadcast
+        // of bytes that did land is answered "nonce already present".)
+        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
         if (refusal) {
+          // These bytes can never land. Settle any earlier version first, then clear, so a
+          // retry once the cause is fixed signs afresh instead of replaying refused bytes.
+          if (supersedes.length > 0) await settleSuperseded()
           clearPendingST(cacheKey)
-          throw refusal
+          throw refusal.atBroadcast()
         }
-        if (isNonceUsedError(e)) clearPendingST(cacheKey)
       }
       seen = await landed(documentId, confirmTimeoutMs)
     }
@@ -783,23 +1134,23 @@ async function createDocumentUnlocked(
     const lost =
       !seen && nonce !== null && (await nonceSpent(sdk, ownerId, contractId, nonce)) && (await absent(documentId))
     if (!lost || nonce === null) return done(documentId, seen)
-    clearPendingST(cacheKey)
     markNonceUsed(ownerId, contractId, nonce)
+    // This attempt is gone; an earlier version it superseded may not be.
+    await settleSuperseded()
+    clearPendingST(cacheKey)
   }
 
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
-  if (!signing) {
-    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
-  }
+  if (!signing) throw unusableKeyError(identity, wif, auth.network)
 
-  const build = () => signCreate(sdk, { ownerId, contractId, documentType, data, wif, publicKey: signing.publicKey })
+  const build = (nonce?: bigint) => signCreate(sdk, { ownerId, contractId, documentType, data, wif, publicKey: signing.publicKey, nonce })
 
-  let signed = await build()
+  let signed = await build(pinnedNonce ?? undefined)
   // A fresh transition whose nonce another write took after it was accepted is signed once
   // more (the first can never land); see settleUnanswered.
   for (let round = 0; ; round++) {
     for (let attempt = 0; ; attempt++) {
-      savePendingST(cacheKey, signed.documentId, signed.bytes, signed.nonce)
+      savePendingST(cacheKey, signed.documentId, signed.bytes, signed.nonce, content, supersedes)
       try {
         await facades(sdk).stateTransitions.broadcastStateTransition(signed.st)
         markNonceUsed(ownerId, contractId, signed.nonce)
@@ -810,8 +1161,10 @@ async function createDocumentUnlocked(
           return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
         }
         if (attempt === 0 && isNonceUsedError(e)) {
-          // The nonce source lagged: that nonce belongs to an earlier write. Skip past it.
+          // The nonce source lagged: that nonce belongs to an earlier write (perhaps the
+          // superseded attempt, when it was pinned). Settle those, then skip past it.
           markNonceUsed(ownerId, contractId, signed.nonce)
+          await settleSuperseded()
           signed = await build()
           continue
         }
@@ -819,11 +1172,13 @@ async function createDocumentUnlocked(
           // Refused at basic validation (nothing landed): learn the network's version from a
           // proved read and prepare the write once more.
           await facades(sdk).epoch.current()
-          signed = await build()
+          signed = await build(pinnedNonce ?? undefined)
           continue
         }
-        const refusal = asConsensusRefusal(e)
-        if (refusal) refused(refusal, signed.documentId)
+        // A nonce taken on a retry: settle it by reading the chain, like a lost answer below.
+        // Refused at the broadcast check (CheckTx): nothing ran, nothing was charged (D-007).
+        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+        if (refusal) await refused(refusal, signed.documentId, false)
         if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
           clearPendingST(cacheKey)
           throw e
@@ -832,7 +1187,9 @@ async function createDocumentUnlocked(
         // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
         // same bytes instead of signing a second document.
         markNonceUsed(ownerId, contractId, signed.nonce)
-        return done(signed.documentId, await landed(signed.documentId, confirmTimeoutMs))
+        const seen = await landed(signed.documentId, confirmTimeoutMs)
+        if (!seen && isLocalGateRefusal(e)) throw new BusyWriteError(signed.documentId)
+        return done(signed.documentId, seen)
       }
     }
 
@@ -853,10 +1210,12 @@ async function createDocumentUnlocked(
       }
     } catch (e) {
       // Consensus checked the transition and refused it: nothing will land under this id.
-      return refused(e as ConsensusRefusal, documentId)
+      const r = e as ConsensusRefusal
+      return await refused(r, documentId, r.charged !== false)
     }
     if (outcome === 'lost' && round === 0) {
       markNonceUsed(ownerId, contractId, signed.nonce)
+      await settleSuperseded()
       signed = await build()
       continue
     }
@@ -894,6 +1253,8 @@ async function signCreate(
     readonly data: Record<string, unknown>
     readonly wif: string
     readonly publicKey: unknown
+    /** Sign with this nonce (a retry superseding an unconfirmed attempt), not the next one. */
+    readonly nonce?: bigint | undefined
   },
 ): Promise<{ st: StateTransition; bytes: Uint8Array; documentId: string; nonce: bigint }> {
   const { ownerId, contractId, documentType, data } = p
@@ -904,7 +1265,7 @@ async function signCreate(
   // re-derives the id at the version it is given — so the id, the `Document` and the
   // transition all use this nonce and one version: the SDK's latest learned one. Drive refuses
   // a stale-version id and the caller retries; it is never silently misreported.
-  const nonce = await nextContractNonce(sdk, ownerId, contractId)
+  const nonce = p.nonce ?? (await nextContractNonce(sdk, ownerId, contractId))
   const platformVersion = sdk.version()
 
   const entropy = crypto.getRandomValues(new Uint8Array(32))
@@ -1004,9 +1365,7 @@ async function deleteDocumentUnlocked(
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
-  if (!signing) {
-    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
-  }
+  if (!signing) throw unusableKeyError(identity, wif, auth.network)
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: params.repo ?? null,
@@ -1034,9 +1393,11 @@ async function deleteDocumentUnlocked(
   } catch (e) {
     if (indexOnly && isAffectedStateSnapshot(e)) proven = true
     else {
-      const refusal = asConsensusRefusal(e)
+      // The SDK rebroadcasts on its own retries: "nonce already present" may be this delete
+      // having landed, so the gone-poll below decides it, never as a refusal.
+      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
       if (refusal !== null) {
-        if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
+        if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
         throw refusal
       }
       // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
@@ -1173,9 +1534,7 @@ async function replaceDocumentUnlocked(
   const identity = await facades(sdk).identities.fetch(auth.identityId)
   if (!identity) throw new WriteAuthError(`identity ${auth.identityId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
-  if (!signing) {
-    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
-  }
+  if (!signing) throw unusableKeyError(identity, wif, auth.network)
   const next = revision + 1n
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
@@ -1206,7 +1565,9 @@ async function replaceDocumentUnlocked(
       settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
     })
   } catch (e) {
-    const refusal = asConsensusRefusal(e)
+    // A nonce refusal of the SDK's own rebroadcast may be this replace having landed: the
+    // read-back below decides it.
+    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
     // A revision refusal on a retry: an earlier attempt of this edit may have landed (its answer
     // lost), leaving the stored revision already at `next`. Re-read; if the content matches, the
     // edit is done.
@@ -1214,7 +1575,7 @@ async function replaceDocumentUnlocked(
       return { result: { documentId, revision: next, cost, actualCredits: null }, spend: null }
     }
     if (refusal !== null) {
-      if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
+      if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
       throw refusal
     }
     if (!(await pollUntil(landed, confirmTimeoutMs))) {

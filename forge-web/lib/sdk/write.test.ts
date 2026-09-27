@@ -28,15 +28,7 @@ describe('replace: does the stored document hold a change?', () => {
     expect(sameValue(null, undefined)).toBe(true)
   })
 })
-import {
-  CREDITS_PER_DASH,
-  creditsToDash,
-  estimateCreateCredits,
-  previewCreate,
-  previewDelete,
-  sumPreviews,
-  textBytes,
-} from './cost'
+import { CREDITS_PER_DASH, creditsToDash, previewDelete } from './cost'
 import {
   base58CheckDecode,
   base58CheckEncode,
@@ -58,28 +50,7 @@ describe('cost preview', () => {
     expect(creditsToDash(CREDITS_PER_DASH)).toBe(1)
   })
 
-  it('matches the moutai measurements within 10 %', () => {
-    // Balance deltas measured on devnet moutai (protocol 14, 2026-09-25).
-    const measured: [string, Record<string, unknown>, number][] = [
-      ['issue', { title: 'z'.repeat(10) }, 57_681_940],
-      ['issue', { title: 'z'.repeat(10), body: 'z'.repeat(1000) }, 85_175_900],
-      ['issue', { title: 'z'.repeat(10), body: 'z'.repeat(4000) }, 167_691_860],
-      ['comment', { body: 'c'.repeat(10) }, 47_624_080],
-      ['comment', { body: 'c'.repeat(4000) }, 157_220_300],
-      ['star', {}, 27_792_520],
-      ['maintainer', {}, 39_381_960],
-    ]
-    for (const [type, data, actual] of measured) {
-      const est = estimateCreateCredits(type, data)
-      expect(Math.abs(est - actual) / actual, `${type} ${textBytes(data)}B`).toBeLessThan(0.1)
-    }
-  })
-
-  it('sums a repo creation (repo + maintainer + config) near 0.0013 DASH', () => {
-    const total = sumPreviews([previewCreate('repo', { name: 'demo' }), previewCreate('maintainer'), previewCreate('config')])
-    expect(total.dash).toBeGreaterThan(0.0012)
-    expect(total.dash).toBeLessThan(0.0014)
-  })
+  // Calibration against the measured moutai charges: cost.test.ts (D-011).
 
   it('previews deletes of indexOnly types as refunds', () => {
     expect(previewDelete('star').credits).toBeLessThan(0)

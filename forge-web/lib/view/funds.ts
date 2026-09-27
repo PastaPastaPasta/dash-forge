@@ -4,7 +4,7 @@
  * the worse one wins; the UI says which one blocks.
  */
 
-import { CREDITS_PER_DASH } from '../sdk/cost'
+import { CREDITS_PER_DASH, type CostPreview } from '../sdk/cost'
 
 /** Below this balance the pill turns amber (0.01 DASH). */
 export const LOW_BALANCE_CREDITS = CREDITS_PER_DASH / 100
@@ -88,16 +88,43 @@ export function fundsNotice(state: FundsState): { readonly key: string; readonly
   }
 }
 
-/** Whether a write estimated at `credits` fits, and if not, which budget blocks it. */
+
+/**
+ * When {@link fundsState} next changes by the clock alone: the key's expiry, or the moment it
+ * comes within {@link LOW_KEY_EXPIRY_MS} of it. Null when nothing is ahead.
+ */
+export function nextFundsChange(key: KeyLimits | null, now = Date.now()): number | null {
+  const at = key?.expiresAt ?? null
+  if (at === null || at <= now) return null
+  const low = at - LOW_KEY_EXPIRY_MS
+  return low > now ? low : at
+}
+
+/** What a write needs available: its preview, or a bare estimate (then it needs that much). */
+export type WriteNeed = number | Pick<CostPreview, 'credits' | 'admit'>
+
+/**
+ * Whether a write fits, and if not, which budget blocks it (D-012). Platform accepts a write
+ * only when the key budget and the balance cover what Drive estimates it may take
+ * (`CostPreview.admit`), which is more than it charges; a write short of that is refused and
+ * would have shown as "sent". So the check compares against `admit`, never the raw estimate.
+ * A bare number (a caller with no preview) is taken as both.
+ */
 export function affordability(
-  estimateCredits: number,
+  need: WriteNeed,
   balance: bigint,
   key: KeyLimits | null = null,
 ): { ok: true } | { ok: false; blocker: 'balance' | 'key-budget'; shortfall: bigint } {
-  if (estimateCredits <= 0) return { ok: true }
-  const need = BigInt(Math.ceil(estimateCredits))
+  const credits = typeof need === 'number' ? need : need.credits
+  if (credits <= 0) return { ok: true }
+  const admit = typeof need === 'number' ? { budget: credits, balance: credits } : need.admit
+  const budgetNeed = BigInt(Math.ceil(admit.budget))
+  const balanceNeed = BigInt(Math.ceil(admit.balance))
   const keyLeft = key?.remaining ?? null
-  if (keyLeft !== null && keyLeft < need && keyLeft <= balance) return { ok: false, blocker: 'key-budget', shortfall: need - keyLeft }
-  if (balance < need) return { ok: false, blocker: 'balance', shortfall: need - balance }
+  const keyShort = keyLeft !== null && keyLeft < budgetNeed
+  const balanceShort = balance < balanceNeed
+  // Both short: name the one that leaves less (topping up the other alone would not help).
+  if (keyShort && (!balanceShort || keyLeft <= balance)) return { ok: false, blocker: 'key-budget', shortfall: budgetNeed - keyLeft }
+  if (balanceShort) return { ok: false, blocker: 'balance', shortfall: balanceNeed - balance }
   return { ok: true }
 }

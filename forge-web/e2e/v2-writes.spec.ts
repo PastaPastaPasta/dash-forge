@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { idFile, repoUrl, shot, signedIn, unlock } from './helpers'
+import { fixtureWriteBlocked, idFile, idOrEmpty, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
@@ -15,13 +15,16 @@ import { idFile, repoUrl, shot, signedIn, unlock } from './helpers'
  * its cost preview, and the spend ledger in /settings records it.
  */
 
-const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
-const COLLAB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
+// The identities it signs as (E2E_IDENTITY_DIR, else the fixture pool); w6 approves PR #1 of the
+// read fixture (`DEMO`), so a run under minted identities points E2E_V2_OWNER at their own copy.
+const OWNER = idOrEmpty('OWNER')
+const COLLAB = idOrEmpty('COLLAB')
 const REPO = `e2e-${Date.now().toString(36)}`
 const ISSUE_TITLE = `Browser-written issue ${REPO}`
 
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
-test.skip(!existsSync(idFile('OWNER')), 'devnet test identities not found')
+test.skip(!['OWNER', 'COLLAB', 'CONTRIB'].every((n) => existsSync(idFile(n))), 'devnet test identities not found')
+test.skip(fixtureWriteBlocked('demo') !== null, fixtureWriteBlocked('demo') ?? '')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 
 /** Confirm the open dialog: it must show a cost, then report success and close. */
@@ -81,10 +84,12 @@ test('w3. contributor opens an issue, comments, and closes it as its author', as
 
 test('w4. the writer labels the issue with a member event', async ({ browser }) => {
   const page = await signedIn(browser, 'COLLAB', repoPath('issue', '&number=1'))
-  await page.getByLabel('Label', { exact: true }).fill('triaged')
-  await page.getByRole('button', { name: /add label/i }).click()
-  await confirmWrite(page, /sign & label/i)
-  await expect(page.getByText('triaged').first()).toBeVisible({ timeout: 60_000 })
+  // The label picker (#81): a label the repo has not defined yet is created, then applied.
+  await page.getByRole('button', { name: /edit labels/i }).click()
+  await page.getByLabel('Filter or create a label').fill('triaged')
+  await page.getByRole('button', { name: /create label/i }).click()
+  await confirmWrite(page, /sign & create/i)
+  await expect(page.getByLabel('Applied labels').locator('[data-label="triaged"]')).toBeVisible({ timeout: 90_000 })
   await shot(page, 'v2w-04-labelled')
 })
 

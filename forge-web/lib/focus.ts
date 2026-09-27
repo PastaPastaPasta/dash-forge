@@ -33,30 +33,31 @@ export function initialFocus(root: HTMLElement): HTMLElement {
 }
 
 /**
- * Keep Tab inside `root`: from the last tabbable Tab wraps to the first, from the first (or the
- * panel itself) Shift+Tab wraps to the last. Returns true when it moved focus.
+ * Keep Tab inside `root`: Tab moves to the next tabbable and wraps from the last to the first,
+ * Shift+Tab to the previous and wraps from the first (or the panel itself) to the last. Focus
+ * is always moved here, never left to the browser: Safari (and WebKit) by default tabs only
+ * between text fields, so its own Tab from a button would leave the panel for the page behind.
+ * Returns true when it handled the key.
  */
-export function trapTab(root: HTMLElement, e: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'preventDefault'>): boolean {
-  if (e.key !== 'Tab') return false
+export function trapTab(
+  root: HTMLElement,
+  e: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'preventDefault' | 'defaultPrevented'>,
+): boolean {
+  // A widget inside that already used the Tab (an editor indenting) keeps it.
+  if (e.key !== 'Tab' || e.defaultPrevented) return false
+  e.preventDefault()
   const items = tabbables(root)
   const active = document.activeElement
-  if (items.length === 0) {
-    e.preventDefault()
-    root.focus()
-    return true
+  const at = active instanceof HTMLElement ? items.indexOf(active) : -1
+  const step = e.shiftKey ? -1 : 1
+  // Not on a tabbable (the panel itself, or outside): Tab starts at the first, Shift+Tab at the last.
+  let next = at === -1 ? (e.shiftKey ? items.length - 1 : 0) : at + step
+  // Skip any candidate that will not take focus (visibility: hidden has client rects).
+  for (let tried = 0; tried < items.length; tried++, next += step) {
+    const el = items[((next % items.length) + items.length) % items.length] as HTMLElement
+    el.focus()
+    if (document.activeElement === el) return true
   }
-  const first = items[0] as HTMLElement
-  const last = items[items.length - 1] as HTMLElement
-  const inside = active instanceof Node && root.contains(active)
-  if (e.shiftKey && (!inside || active === first || active === root)) {
-    e.preventDefault()
-    last.focus()
-    return true
-  }
-  if (!e.shiftKey && (!inside || active === last)) {
-    e.preventDefault()
-    first.focus()
-    return true
-  }
-  return false
+  root.focus()
+  return true
 }

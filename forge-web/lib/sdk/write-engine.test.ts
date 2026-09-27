@@ -9,23 +9,34 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@dashevo/evo-sdk', () => {
   class Doc {
     id: { toBase58(): string }
-    constructor(o: { id?: string }) {
+    title: unknown
+    constructor(o: { id?: string; title?: unknown }) {
       this.id = { toBase58: () => o.id ?? '' }
+      this.title = o.title
     }
     toObject(): Record<string, unknown> {
       return { $id: this.id.toBase58() }
     }
-    static generateId(_t: string, _o: string, _c: string, _e: Uint8Array, nonce: bigint): Uint8Array {
-      return new Uint8Array(32).fill(Number(nonce % 250n) + 1)
+    static generateId(_t: string, _o: string, _c: string, entropy: Uint8Array, nonce: bigint): Uint8Array {
+      // Like Platform's: the nonce and the entropy (two writes at one nonce get two ids).
+      const id = new Uint8Array(32).fill(Number(nonce % 250n) + 1)
+      id[31] = entropy[0] ?? 0
+      return id
     }
-    static fromObject(o: { $id: string }): Doc {
-      return new Doc({ id: o.$id })
+    static fromObject(o: { $id: string; title?: unknown }): Doc {
+      return new Doc({ id: o.$id, title: o.title })
     }
   }
+  /** The title each signed nonce carries (what a broadcast of it would write). */
+  const carried = (globalThis as unknown as { __carried: Map<bigint, unknown> }).__carried ?? new Map<bigint, unknown>()
+  ;(globalThis as unknown as { __carried: Map<bigint, unknown> }).__carried = carried
+  let lastTitle: unknown
   class ST {
     nonce = 0n
+    title: unknown = lastTitle
     setIdentityContractNonce(n: bigint): void {
       this.nonce = n
+      carried.set(n, this.title)
     }
     sign(): void {}
     toBytes(): Uint8Array {
@@ -34,6 +45,7 @@ vi.mock('@dashevo/evo-sdk', () => {
     static fromBytes(b: Uint8Array): ST {
       const st = new ST()
       st.nonce = BigInt(b[0] ?? 0)
+      st.title = carried.get(st.nonce)
       return st
     }
   }
@@ -41,7 +53,9 @@ vi.mock('@dashevo/evo-sdk', () => {
     Document: Doc,
     StateTransition: ST,
     DocumentCreateTransition: class {
-      constructor(readonly o: { document: Doc }) {}
+      constructor(readonly o: { document: Doc }) {
+        lastTitle = o.document.title
+      }
       toDocumentTransition(): unknown {
         return this
       }
@@ -60,7 +74,10 @@ vi.mock('@dashevo/evo-sdk', () => {
 
 import {
   ConsensusRefusal,
+  KeyUnusableError,
+  SupersededWriteError,
   UnconfirmedWriteError,
+  contentHash,
   WAIT_SETTINGS,
   createDocumentIdempotent,
   deleteDocumentIdempotent,
@@ -76,7 +93,7 @@ const TEST_WIF = encodeWif(new Uint8Array(32).fill(7), 'devnet')
 
 interface Script {
   platformNonce: bigint
-  broadcast: (st: { nonce: bigint }) => void
+  broadcast: (st: { nonce: bigint; title?: unknown }) => void
   wait: (settings?: unknown) => Promise<unknown>
   exists: (id: string) => Promise<unknown>
   del?: () => Promise<void>
@@ -98,7 +115,7 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
       delete: async () => (s.del ? s.del() : undefined),
     },
     stateTransitions: {
-      broadcastStateTransition: async (st: { nonce: bigint }) => {
+      broadcastStateTransition: async (st: { nonce: bigint; title?: unknown }) => {
         signed.push(st.nonce)
         s.broadcast(st)
         balance -= 1000n
@@ -324,6 +341,401 @@ describe('write engine', () => {
     const r = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'N9' })
     expect(r.confirmed).toBe(true)
     expect(signed).toEqual([5n, 5n])
+  })
+})
+
+/** A localStorage for the pending-transition cache. */
+function withStorage(): () => void {
+  const store = new Map<string, string>()
+  vi.stubGlobal('window', {
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    },
+  })
+  return () => vi.unstubAllGlobals()
+}
+
+/** The SDK's error for a refusal at broadcast: kind Generic, `code` -1, Drive's text. */
+const sdkRefusal = (text: string) => ({ name: 'Generic', kind: 18, code: -1, message: `Failed to broadcast: Protocol error: ${text}` })
+const BUDGET_TEXT = `Identity ${OWNER} public key 5 has 90000000 credits of budget left, the state transition requires 100224000`
+
+describe('refusals at broadcast (D-007)', () => {
+  it('a key-budget refusal rejects as a ConsensusRefusal, is never "sent", and charges nothing', async () => {
+    const restore = withStorage()
+    try {
+      const spends: SpendEvent[] = []
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          throw sdkRefusal(BUDGET_TEXT)
+        },
+        wait: async () => ({}),
+        exists: async () => undefined,
+      }
+      const err = await createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'R1', intent: 'i' }).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ConsensusRefusal)
+      expect(err).not.toBeInstanceOf(UnconfirmedWriteError)
+      expect((err as ConsensusRefusal).code).toBe(40218)
+      expect((err as ConsensusRefusal).figures.required).toBe(100_224_000n)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(spends).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('a balance refusal likewise, and a retry signs afresh (nothing stays cached)', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      let refuse = true
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          if (refuse) throw sdkRefusal(`Insufficient identity ${OWNER} balance 111153640 required 137618340`)
+        },
+        wait: async () => ({}),
+        exists: async () => ({}),
+      }
+      const sdk = sdkOf(script, signed)
+      const params = { ...write, contractId: 'R2', intent: 'i' }
+      const err = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect((err as ConsensusRefusal).isBalance).toBe(true)
+      refuse = false
+      // After a top-up the same action is signed again. Refused at the broadcast check, the
+      // first transition never consumed its nonce, so the new one takes the same nonce.
+      await createDocumentIdempotent(sdk, auth([]), params)
+      expect(signed).toEqual([2n, 2n])
+    } finally {
+      restore()
+    }
+  })
+
+  it('a refusal in a block is charged and recorded; a key-limit one in a block is not', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        throw sdkRefusal(BUDGET_TEXT)
+      },
+      exists: async () => undefined,
+    }
+    await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'R3' })).rejects.toBeInstanceOf(ConsensusRefusal)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(spends).toEqual([])
+  })
+})
+
+describe('retry after an edit (D-008)', () => {
+  let contract = 0
+  let current = 'E0'
+  const issue = (title: string) => ({ contractId: current, documentType: 'issue', data: { title }, confirmTimeoutMs: 0, intent: 'draft-1' })
+  beforeEach(() => {
+    current = `E${++contract}`
+  })
+
+  it('the edited content lands, never the cached bytes of the old content', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      const broadcastTitles: unknown[] = []
+      const onChain = new Map<string, unknown>()
+      let lose = true
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: (st) => {
+          broadcastTitles.push(st.title)
+          // The first attempt's answer is lost (a timeout): it may or may not have landed.
+          if (lose) {
+            lose = false
+            throw new Error('grpc: deadline exceeded')
+          }
+          onChain.set(`n${st.nonce}`, st.title)
+        },
+        wait: async () => ({}),
+        exists: async () => (onChain.size > 0 ? {} : undefined),
+      }
+      const sdk = sdkOf(script, signed)
+      const first = await createDocumentIdempotent(sdk, auth([]), issue('RETRY-TITLE-A')).catch((e: unknown) => e)
+      expect(first).toBeInstanceOf(UnconfirmedWriteError)
+      // The user edits the title and submits the same draft again.
+      const r = await createDocumentIdempotent(sdk, auth([]), issue('RETRY-TITLE-B'))
+      expect(r.confirmed).toBe(true)
+      expect([...onChain.values()]).toEqual(['RETRY-TITLE-B'])
+      expect(broadcastTitles).toEqual(['RETRY-TITLE-A', 'RETRY-TITLE-B'])
+      // Re-signed with the first attempt's nonce: at most one of the two could ever land.
+      expect(signed).toEqual([2n, 2n])
+    } finally {
+      restore()
+    }
+  })
+
+  it('an unchanged retry still rebroadcasts the same bytes (no second document)', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      let calls = 0
+      let landed = false
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          calls += 1
+          if (calls === 1) throw new Error('grpc: deadline exceeded')
+          landed = true
+        },
+        wait: async () => ({}),
+        exists: async () => (landed ? {} : undefined),
+      }
+      const sdk = sdkOf(script, signed)
+      await createDocumentIdempotent(sdk, auth([]), issue('same')).catch(() => undefined)
+      await createDocumentIdempotent(sdk, auth([]), issue('same'))
+      expect(signed).toEqual([2n, 2n])
+    } finally {
+      restore()
+    }
+  })
+
+  it('when the old attempt landed after all, the edit is not posted as a second document', async () => {
+    const restore = withStorage()
+    try {
+      let calls = 0
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          calls += 1
+          if (calls === 1) throw new Error('grpc: deadline exceeded')
+        },
+        wait: async () => ({}),
+        // Unseen at first; then the old attempt shows up.
+        exists: async () => (calls >= 1 ? {} : undefined),
+      }
+      const sdk = sdkOf(script, [])
+      let seen = false
+      ;(sdk as unknown as { documents: { get: () => Promise<unknown> } }).documents.get = async () => {
+        const r = seen ? {} : undefined
+        seen = true
+        return r
+      }
+      await createDocumentIdempotent(sdk, auth([]), issue('OLD')).catch(() => undefined)
+      await expect(createDocumentIdempotent(sdk, auth([]), issue('NEW'))).rejects.toBeInstanceOf(SupersededWriteError)
+      expect(calls).toBe(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('contentHash tells content apart and is stable across key order', () => {
+    expect(contentHash('issue', { title: 'A', body: 'x' })).toBe(contentHash('issue', { body: 'x', title: 'A' }))
+    expect(contentHash('issue', { title: 'A' })).not.toBe(contentHash('issue', { title: 'B' }))
+    expect(contentHash('issue', { repoId: new Uint8Array([1]) })).not.toBe(contentHash('issue', { repoId: new Uint8Array([2]) }))
+  })
+})
+
+/** Drive's real text for a nonce already taken, as the SDK throws it at broadcast. */
+const NONCE_TEXT = `Identity ${OWNER} is trying to set an invalid identity nonce. The current identity nonce is 2, we are setting 2, error is nonce already present at tip`
+
+describe('a nonce refusal is never a "refused, try again" (review C1)', () => {
+  it('a cached rebroadcast answered with the real nonce text is settled by reading the chain', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      let calls = 0
+      let visible = false
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          calls += 1
+          // First attempt: the answer is lost, though it lands (read a moment later).
+          if (calls === 1) throw new Error('grpc: deadline exceeded')
+          // The retry's rebroadcast of the same bytes: Drive says the nonce is taken (by itself).
+          throw sdkRefusal(NONCE_TEXT)
+        },
+        wait: async () => ({}),
+        exists: async () => {
+          const r = visible ? {} : undefined
+          visible = calls >= 2
+          return r
+        },
+      }
+      const sdk = sdkOf(script, signed)
+      const params = { ...write, contractId: 'C1', intent: 'i', confirmTimeoutMs: 3000 }
+      await createDocumentIdempotent(sdk, auth([]), params).catch(() => undefined)
+      const r = await createDocumentIdempotent(sdk, auth([]), params)
+      expect(r.confirmed).toBe(true)
+      // One transition, sent twice; never a second document.
+      expect(signed).toEqual([2n, 2n])
+    } finally {
+      restore()
+    }
+  })
+
+  it('in settleUnanswered, a rebroadcast answered with the nonce text is not thrown as a refusal', async () => {
+    const signed: bigint[] = []
+    let nonceOnChain = 1n
+    let waits = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => {
+        if (signed.length > 1) throw sdkRefusal(NONCE_TEXT)
+      },
+      wait: async () => {
+        waits += 1
+        if (waits === 1) {
+          nonceOnChain = 1n
+          throw new Error('Timeout expired')
+        }
+        nonceOnChain = 2n
+        throw new Error('Timeout expired')
+      },
+      exists: async () => (nonceOnChain === 2n ? {} : undefined),
+    }
+    const sdk = sdkOf(script, signed)
+    ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () => nonceOnChain
+    const r = await createDocumentIdempotent(sdk, auth([]), { ...write, contractId: 'C1b', confirmTimeoutMs: 3000 })
+    expect(r.confirmed).toBe(true)
+  })
+})
+
+describe('a superseded attempt is remembered until settled (review C2)', () => {
+  it('A times out, the user edits, B times out, A lands: the retry never posts B beside A', async () => {
+    const restore = withStorage()
+    try {
+      const signed: { nonce: bigint; title: unknown }[] = []
+      const onChain = new Map<bigint, unknown>()
+      let nonceOnChain = 1n
+      let phase: 'A' | 'B' | 'retry' = 'A'
+      let aId = ''
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: (st) => {
+          signed.push({ nonce: st.nonce, title: st.title })
+          if (phase !== 'retry') throw new Error('grpc: deadline exceeded')
+        },
+        wait: async () => ({}),
+        exists: async (id: string) => (onChain.has(2n) && id === aId ? {} : undefined),
+      }
+      const sdk = sdkOf(script, [])
+      ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () => nonceOnChain
+      const issue = (title: string) => ({ contractId: 'C2', documentType: 'issue', data: { title }, confirmTimeoutMs: 0, intent: 'draft-c2' })
+      const a = await createDocumentIdempotent(sdk, auth([]), issue('A')).catch((e: unknown) => e)
+      aId = (a as UnconfirmedWriteError).documentId
+      phase = 'B'
+      await createDocumentIdempotent(sdk, auth([]), issue('B')).catch(() => undefined)
+      // A lands after all: its nonce (2) is taken and its document is there.
+      onChain.set(2n, 'A')
+      nonceOnChain = 2n
+      phase = 'retry'
+      const err = await createDocumentIdempotent(sdk, auth([]), issue('B')).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(SupersededWriteError)
+      // A and B were both signed with nonce 2, so at most one can land (the retry re-sends B's
+      // cached bytes, which the taken nonce refuses); nothing was ever signed at nonce 3.
+      expect(signed.every((s) => s.nonce === 2n)).toBe(true)
+      expect(signed.map((s) => s.title)).toEqual(['A', 'B', 'B'])
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('after "your earlier attempt was posted" (review N1, N4)', () => {
+  it('a second retry with the same intent is answered at once and signs nothing', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      let aId = ''
+      let aLanded = false
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          throw new Error('grpc: deadline exceeded')
+        },
+        wait: async () => ({}),
+        exists: async (id: string) => (aLanded && id === aId ? {} : undefined),
+      }
+      const sdk = sdkOf(script, signed)
+      let nonceOnChain = 1n
+      ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () => nonceOnChain
+      const issue = (title: string) => ({ contractId: 'N1', documentType: 'issue', data: { title }, confirmTimeoutMs: 0, intent: 'draft-n1' })
+      const a = await createDocumentIdempotent(sdk, auth([]), issue('A')).catch((e: unknown) => e)
+      aId = (a as UnconfirmedWriteError).documentId
+      aLanded = true
+      nonceOnChain = 2n
+      await expect(createDocumentIdempotent(sdk, auth([]), issue('B'))).rejects.toBeInstanceOf(SupersededWriteError)
+      const before = signed.length
+      // The composer kept the draft (a dialog whose intent lives on): the same click again.
+      await expect(createDocumentIdempotent(sdk, auth([]), issue('B'))).rejects.toBeInstanceOf(SupersededWriteError)
+      expect(signed.length).toBe(before)
+    } finally {
+      restore()
+    }
+  })
+
+  it('an edited retry refused for a disabled key is not replayed once the key is renewed', async () => {
+    const restore = withStorage()
+    try {
+      const signed: { nonce: bigint; title: unknown }[] = []
+      let phase: 'A' | 'B' | 'renewed' = 'A'
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: (st) => {
+          signed.push({ nonce: st.nonce, title: st.title })
+          if (phase === 'A') throw new Error('grpc: deadline exceeded')
+          if (phase === 'B') throw sdkRefusal('Identity key 5 is disabled')
+        },
+        wait: async () => ({}),
+        exists: async () => undefined,
+      }
+      const sdk = sdkOf(script, [])
+      let nonceOnChain = 1n
+      ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () => nonceOnChain
+      const issue = (title: string) => ({ contractId: 'N4', documentType: 'issue', data: { title }, confirmTimeoutMs: 0, intent: 'draft-n4' })
+      await createDocumentIdempotent(sdk, auth([]), issue('A')).catch(() => undefined)
+      phase = 'B'
+      await expect(createDocumentIdempotent(sdk, auth([]), issue('B'))).rejects.toBeInstanceOf(ConsensusRefusal)
+      // Another write took the nonce meanwhile (A never landed); the key is renewed.
+      nonceOnChain = 2n
+      phase = 'renewed'
+      const r = await createDocumentIdempotent(sdk, auth([]), issue('B'))
+      expect(r.confirmed).toBe(true)
+      // Signed afresh past every nonce used so far: the refused bytes (nonce 2) were not replayed.
+      const last = signed[signed.length - 1]!
+      expect(last.title).toBe('B')
+      expect(last.nonce > 2n).toBe(true)
+    } finally {
+      restore()
+    }
+  }, 60_000)
+
+  it('a refusal from the result wait is a block verdict: its fee goes to the ledger (N3)', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        throw sdkRefusal('referenced document Xyz not found for path repoId')
+      },
+      exists: async () => undefined,
+    }
+    await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(ConsensusRefusal)
+    await vi.waitFor(() => expect(spends.map((s) => s.kind)).toEqual(['refused:comment']), { timeout: 3000 })
+  })
+})
+
+describe('an unusable key (D-042)', () => {
+  it('an expired key throws KeyUnusableError("expired"), not a raw "no usable AUTHENTICATION key"', async () => {
+    const script: Script = { platformNonce: 1n, broadcast: () => undefined, wait: async () => ({}), exists: async () => ({}) }
+    const sdk = sdkOf(script, [])
+    ;(sdk as unknown as { identities: { fetch: () => Promise<unknown> } }).identities.fetch = async () => ({
+      balance: 10n ** 11n,
+      publicKeys: [{ keyId: 5, purposeNumber: 0, securityLevelNumber: 2, expiresAt: BigInt(Date.now() - 1000), validatePrivateKey: () => true }],
+      getPublicKeyById: () => ({}),
+    })
+    const err = await createDocumentIdempotent(sdk, auth([]), { ...write, contractId: 'K1' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(KeyUnusableError)
+    expect((err as KeyUnusableError).reason).toBe('expired')
   })
 })
 

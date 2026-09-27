@@ -41,6 +41,7 @@ import {
   type CreateRepoStep,
   type PrivateCreate,
   type RepoCreationJournal,
+  repoCreationFirsts,
 } from '@/lib/repo'
 import { createEpochZero } from '@/lib/repo/private-members'
 import { encryptionOps } from '@/lib/auth/encryption-key'
@@ -80,6 +81,13 @@ export default function NewRepoPage(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
   const guard = useWriteGuard()
   const forge = ACTIVE_NETWORK.v2
+  // A returning owner's repo costs less than the first (D-011): read which it is.
+  const creation = useAsync(
+    () => repoCreationFirsts(sdk!, identity!, forge!.core),
+    [ready, identity ?? '', forge?.core ?? ''],
+    { enabled: ready && sdk !== null && identity !== null && forge !== null },
+  )
+  const firsts = creation.data ?? { first: {}, rest: {} }
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -144,15 +152,15 @@ export default function NewRepoPage(): JSX.Element {
   const costOf = (i: CreateRepoInput) =>
     i.visibility === 'private'
       ? sumPreviews([
-          previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }),
-          previewCreate('maintainer'),
+          previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }, firsts.first),
+          previewCreate('maintainer', {}, firsts.rest),
           previewCreate('repoKey'),
-          previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }),
+          previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, firsts.rest),
         ])
       : sumPreviews([
-          previewCreate('repo', { ...i, visibility: 'public' }),
-          previewCreate('maintainer'),
-          previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }),
+          previewCreate('repo', { ...i, visibility: 'public' }, firsts.first),
+          previewCreate('maintainer', {}, firsts.rest),
+          previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }, firsts.rest),
         ])
   const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
 
@@ -348,7 +356,7 @@ export default function NewRepoPage(): JSX.Element {
             disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || privateBlocked !== null}
             title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
-              if (guard.check(cost.credits)) setConfirm(input())
+              if (guard.check(cost)) setConfirm(input())
             }}
           >
             Create repository

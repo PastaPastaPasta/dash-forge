@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
 
 /**
  * Repo home launch UX against the moutai forge-v2 fixture (read-only; nothing is signed):
@@ -14,7 +14,7 @@ import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, SCREENSHOT_DIR,
 
 
 const OWNER = process.env['E2E_V2_OWNER'] ?? '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
-const MAINTAINER = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
+const MAINTAINER = EMPTY.owner
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
 
 function url(path = '', extra = '', owner = OWNER, name = NAME): string {
@@ -127,10 +127,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
 
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    const openFilter = page.getByRole('button', { name: /^\d+ Open$/ })
+    const openFilter = page.getByRole('tab', { name: /^\d+ Open$/ })
     await expectLanded(page, page.getByText('README should explain the event split'))
     const listOpen = Number((await openFilter.innerText()).match(/(\d+)/)?.[1])
-    const listClosed = Number((await page.getByRole('button', { name: /^\d+ Closed$/ }).innerText()).match(/(\d+)/)?.[1])
+    const listClosed = Number((await page.getByRole('tab', { name: /^\d+ Closed$/ }).innerText()).match(/(\d+)/)?.[1])
     expect(listClosed, 'the fixture has closed issues').toBeGreaterThan(0)
     expect(await tabCount(/^Issues/)).toBe(listOpen)
 

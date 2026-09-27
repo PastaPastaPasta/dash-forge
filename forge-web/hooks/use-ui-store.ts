@@ -7,11 +7,10 @@
 
 import { create } from 'zustand'
 
+import type { TopUpReason } from '@/lib/view/write-errors'
+
 /** Why the top-up sheet opened: which budget blocks, and by how much (credits). */
-export interface TopUpReason {
-  readonly blocker: 'balance' | 'key-budget' | 'key-expiry'
-  readonly shortfall?: bigint
-}
+export type { TopUpReason }
 
 /**
  * A sign-in sheet view to open on directly (e.g. `import` to renew this browser's key; `grant`

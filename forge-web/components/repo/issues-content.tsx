@@ -32,11 +32,12 @@ import {
   utf8Length,
   type IssueListQuery,
 } from '@/lib/view/issue-query'
-import { createIssue, queryIssues, repoContractIds, repoKey, type IssueListPage, type IssueSelection, type LabelDef } from '@/lib/repo'
+import { createIssue, issueFirsts, queryIssues, repoContractIds, repoKey, type IssueListPage, type IssueSelection, type LabelDef } from '@/lib/repo'
+import { SupersededWriteError } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
-import { writeErrorMessage } from '@/lib/view/write-errors'
+import { useFirstWrite } from '@/hooks/use-first-write'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -51,7 +52,7 @@ import { HiddenNote } from '@/components/repo/hidden-note'
 import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
-import { SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
@@ -433,7 +434,9 @@ function ComposeIssueDialog({
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
 
-  const cost = composeCost(repo, 'issue', { title: title.trim(), body })
+  // Whether this issue is the repo's (or the author's) first, for a tight preview (D-011).
+  const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
+  const cost = composeCost(repo, 'issue', { title: title.trim(), body }, first)
   const bodyBytes = utf8Length(body)
 
   const pick = (t: IssueTemplate | null): void => {
@@ -444,7 +447,7 @@ function ComposeIssueDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || !guard.check(cost.credits, 'collab')) return
+    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
@@ -460,7 +463,16 @@ function ComposeIssueDialog({
       onCreated(created.number)
       onClose()
     } catch (e) {
-      setError(writeErrorMessage(e).message)
+      if (e instanceof SupersededWriteError) {
+        // The earlier version was posted: this draft is done (never post it a second time).
+        setTitle('')
+        setBody('')
+        setTemplate(null)
+        draft.renew()
+        onClose()
+        return
+      }
+      setError(guard.failed(e))
     } finally {
       setPending(false)
     }
@@ -501,7 +513,7 @@ function ComposeIssueDialog({
           links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
         />
         <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
-        {bodyBytes > BODY_MAX ? <p className="text-dense text-danger-700 dark:text-danger-400">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
+        <BodyCounter repo={repo} text={body} field="description" />
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             This template suggests the labels {template.labels.join(', ')}. A maintainer or writer applies labels after the issue is opened.

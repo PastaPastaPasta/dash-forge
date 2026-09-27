@@ -1,5 +1,5 @@
 /**
- * The Members section of a private repo's settings never offers the plain grant/revoke path
+ * The Collaborators section of a private repo's settings never offers the plain grant/revoke path
  * (`private-repos.md` §5.5): with the key in this browser it is the private panel (key epoch,
  * key-checked Add, rotating Remove); without it, a note to add the key and no Add or Remove.
  * It signs in as OWNER (the first run registers a limited key, so it is gated on E2E_WRITE like
@@ -10,13 +10,15 @@
  */
 
 import { expect, test } from '@playwright/test'
-import { deployment, nodeSdk, signedIn, waitForRepoResolved } from './helpers'
+import { deployment, idOrEmpty, nodeSdk, signedIn, waitForRepoResolved } from './helpers'
 import type { Page } from '@playwright/test'
 
-const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+// Who signs in and whose newest private-smoke repo is read (E2E_IDENTITY_DIR, else the fixture pool).
+const OWNER = idOrEmpty('OWNER')
 
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')
+test.skip(OWNER === '', 'OWNER identity file not found')
 
 let repoName: string | null = null
 
@@ -47,18 +49,18 @@ test('the owner never gets the plain Add or Remove on a private repo', async ({ 
   await noPlainPath(page)
 })
 
-test('signed out: the Members section of a private repo offers no Add or Remove', async ({ browser }) => {
+test('signed out: the Collaborators section of a private repo offers no Add or Remove', async ({ browser }) => {
   test.skip(repoName === null, 'no private-smoke repo on this devnet')
   const page = await (await browser.newContext()).newPage()
   await page.goto(`/repo/settings/?owner=${OWNER}&name=${repoName}`, { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
-  const members = page.locator('section', { hasText: 'Members' }).first()
+  const members = page.getByRole('region', { name: 'Collaborators' })
   await expect(members).toBeVisible({ timeout: 90_000 })
   await expect(members.getByRole('button', { name: /^(add|remove)$/i })).toHaveCount(0)
 })
 
 async function noPlainPath(page: Page): Promise<void> {
-  const members = page.locator('section', { hasText: 'Members' }).first()
+  const members = page.getByRole('region', { name: 'Collaborators' })
   await expect(members).toBeVisible({ timeout: 90_000 })
   // Either the private panel (key present) or the add-your-key note (no key): never the plain form.
   const privatePanel = page.getByTestId('private-members')

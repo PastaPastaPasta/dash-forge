@@ -184,6 +184,16 @@ export {
   type VerdictInput,
 } from './writes'
 export {
+  commentFirsts,
+  contractFirst,
+  eventFirsts,
+  followFirsts,
+  issueFirsts,
+  repoCreationFirsts,
+  reviewFirsts,
+  starFirsts,
+} from './first-write'
+export {
   EVENT_KIND_CODE,
   anchorData,
   commentData,

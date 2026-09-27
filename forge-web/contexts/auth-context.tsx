@@ -10,7 +10,6 @@
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   AuthController,
@@ -25,13 +24,16 @@ import {
 import { MissingGrantError } from '../lib/auth/controller'
 import type { WalletKey } from '../lib/auth/key-registration'
 import { useUiStore } from '../hooks/use-ui-store'
-import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
+import { DEFAULT_NETWORK, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
 import { errorMessage } from '../lib/utils'
-import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
+import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
+
+/** setTimeout's longest delay (about 24.8 days); a later change is re-armed from there. */
+const MAX_TIMER_MS = 2 ** 31 - 1
 
 /** A write kind (`create:issue`) → the toast title. */
 const SPEND_TITLES: Readonly<Record<string, string>> = {
@@ -244,9 +246,19 @@ export function AuthProvider({
     }
   }, [controller, sessionIdentity, onSpend])
   const keyLimits = session?.keyLimits ?? null
+  // The funds state depends on the clock (a key expires, or comes within a week of it): wake
+  // up at the next such moment and judge again, so the pill turns red when the key expires,
+  // not at the next reload (D-042).
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    const at = nextFundsChange(keyLimits, clock)
+    if (at === null) return
+    const timer = setTimeout(() => setClock(Date.now()), Math.min(Math.max(0, at - Date.now()) + 50, MAX_TIMER_MS))
+    return () => clearTimeout(timer)
+  }, [keyLimits, clock])
   const funds = useMemo(
-    () => (session ? fundsState(BigInt(session.balance), keyLimits) : null),
-    [session, keyLimits],
+    () => (session ? fundsState(BigInt(session.balance), keyLimits, clock) : null),
+    [session, keyLimits, clock],
   )
 
   const value = useMemo<AuthContextValue>(

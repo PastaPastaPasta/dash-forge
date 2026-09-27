@@ -38,7 +38,7 @@ const PAGES: [label: string, href: string, ready: (page: Page) => Locator][] = [
   ['pull', repoUrl('pull', '&number=1'), (page) => page.getByRole('region', { name: 'Approvals' })],
   ['stargazers', repoUrl('stargazers'), (page) => page.getByRole('main').locator('a[href*="/u"]').first()],
   ['releases', repoUrl('releases'), (page) => page.getByText(/No releases|Latest/).first()],
-  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('heading', { name: 'Members' })],
+  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Collaborators' }).getByText('WRITER', { exact: true })],
   ['empty-repo', repoUrl('', '', EMPTY), (page) => page.getByText(/empty|nothing pushed|push/i).first()],
 ]
 

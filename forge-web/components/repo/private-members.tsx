@@ -206,7 +206,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               variant="primary"
               disabled={trimmed === '' || idError !== null || keyCheck.data !== true || guard.disabledReason !== null || locked || cannotRead}
               onClick={() => {
-                if (guard.check(addMemberCost(role).credits)) setAdding(true)
+                if (guard.check(addMemberCost(role))) setAdding(true)
               }}
             >
               Add

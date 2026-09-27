@@ -51,7 +51,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     const demo = feed.locator('a', { hasText: 'forge-v2 demo' }).first()
     if (await demo.count()) {
       const demoRow = demo.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
-      await expect(demoRow.getByTitle(/Issues/)).toContainText('3')
+      // Issues #1-#4 (seed-v2-fixture.mjs; #4 came with the review-parity fixture).
+      await expect(demoRow.getByTitle(/Issues/)).toHaveText(/(^|\D)4(\D|$)/)
     }
     // Nothing v2 says "not deployed" here.
     await expect(page.getByText(/not deployed/i)).toHaveCount(0)
@@ -132,9 +133,11 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-7. settings list members from membership documents', async ({ page }) => {
     await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByRole('heading', { name: 'Members' }))
-    await expect(page.getByText('MAINTAINER').first()).toBeVisible()
-    await expect(page.getByText('WRITER').first()).toBeVisible()
+    // Settings → Collaborators (#66 renamed the old "Members" section, GitHub-style).
+    const collaborators = page.getByRole('region', { name: 'Collaborators' })
+    await expectLanded(page, collaborators.getByText('WRITER', { exact: true }))
+    await expect(collaborators.getByText('MAINTAINER', { exact: true })).toHaveCount(2)
+    await expect(collaborators.getByText('owner', { exact: true })).toBeVisible()
     await shot(page, 'v2-07-settings')
   })
 

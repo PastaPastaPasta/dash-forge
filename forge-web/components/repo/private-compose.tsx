@@ -10,8 +10,10 @@
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
-import { previewCreate, previewCredits, type CostPreview } from '@/lib/sdk'
-import { estimateBytesCredits } from '@/lib/sdk/cost'
+import { previewCreate, previewCredits, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { admissionFor, estimateBytesCredits } from '@/lib/sdk/cost'
+import { BODY_LIMIT, TITLE_LIMIT, textUse, type TextLimit } from '@/lib/view/text-limits'
+import { TextCounter } from '@/components/ui/text-counter'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
 export function privateComposeBlock(home: RepoHome): string | null {
@@ -40,11 +42,38 @@ export function PrivateComposeNote({ reason }: { reason: string }): JSX.Element 
  * bytes of framing per field, and a 29-byte frame), priced as such; public ones as they are. An
  * `event` is sealed only when it carries a value (a label, assignee or milestone).
  */
-export function composeCost(repo: RepoRef, kind: SealedKind | 'event', data: Readonly<Record<string, unknown>>): CostPreview {
+export function composeCost(
+  repo: RepoRef,
+  kind: SealedKind | 'event',
+  data: Readonly<Record<string, unknown>>,
+  first: FirstWrite = {},
+): CostPreview {
   const { used, fields, props } = sealedTextUse(kind, data)
-  if (repo.visibility !== 'private' || fields === 0 && kind === 'event') return previewCreate(kind, data)
+  if (repo.visibility !== 'private' || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
   const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
-  return previewCredits(estimateBytesCredits(kind, used + 3 * fields + 29, bind))
+  const sealedBytes = used + 3 * fields + 29
+  const credits = estimateBytesCredits(kind, sealedBytes, bind, first)
+  return previewCredits(credits, admissionFor(kind, sealedBytes, credits))
+}
+
+/**
+ * Whether a composer's text cannot be stored (D-049): on a private repo the sealed text limit,
+ * else the contract's own (`body` 5,120 bytes and characters, `title` 1,024 bytes / 256
+ * characters). A composer disables its submit on it, so nothing over-long is signed.
+ */
+export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>): boolean {
+  if (repo.visibility === 'private') {
+    const { used, limit } = sealedTextUse(kind, data)
+    return limit !== null && used > limit
+  }
+  const over = (v: unknown, limit: TextLimit): boolean => typeof v === 'string' && textUse(v, limit).over
+  return over(data['body'], BODY_LIMIT) || over(data['title'], TITLE_LIMIT)
+}
+
+/** The public composer's live byte counter for a body (private repos show {@link SealedLimit}). */
+export function BodyCounter({ repo, text, field = 'text' }: { repo: RepoRef; text: string; field?: string }): JSX.Element | null {
+  if (repo.visibility === 'private') return null
+  return <TextCounter text={text} limit={BODY_LIMIT} field={field} />
 }
 
 /**

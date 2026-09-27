@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS } from './funds'
+import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
+import { previewCreate } from '../sdk/cost'
 import { estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 import { stateEventRoute } from '../repo/writes'
 
@@ -65,6 +66,44 @@ describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
     expect(empty?.message).toMatch(/writes are off/)
     expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, -1), NOW))).toMatchObject({ key: 'empty:key-expiry', fix: 'renew-key' })
     expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW))?.key).toBe('empty:key-budget')
+  })
+})
+
+describe('affordability compares what Platform needs available, not the estimate (D-012)', () => {
+  // QA B-BUDGET3: an issue estimated at 0.000585 DASH, a key with 0.0009 left, refused on chain
+  // because Drive required 100,224,000 credits from the key's budget.
+  const issue = previewCreate('issue', { title: 'bob budget issue' })
+  const key = { remaining: 90_000_000n, total: 90_000_000n, expiresAt: null }
+  it('blocks the write QA saw refused, before signing', () => {
+    expect(issue.credits).toBeLessThan(200_000_000)
+    expect(affordability(issue, 10n ** 11n, key)).toMatchObject({ ok: false, blocker: 'key-budget' })
+  })
+  it('names the shortfall against the requirement', () => {
+    const r = affordability(issue, 10n ** 11n, key)
+    expect(r.ok ? 0n : r.shortfall).toBe(BigInt(issue.admit.budget) - 90_000_000n)
+  })
+  it('blocks a balance that covers the charge but not the requirement (QA B-LOWBAL)', () => {
+    // 111,153,640 credits left; Drive required 137,618,340 for the next issue.
+    expect(affordability(issue, 111_153_640n)).toMatchObject({ ok: false, blocker: 'balance' })
+  })
+  it('passes when both cover the requirement', () => {
+    expect(affordability(issue, 10n ** 11n, { remaining: 5_000_000_000n, total: 5_000_000_000n, expiresAt: null })).toEqual({ ok: true })
+  })
+})
+
+describe('nextFundsChange wakes the pill when the key expires (D-042)', () => {
+  it('is the 7-day mark first, then the expiry, then nothing', () => {
+    const at = NOW + 30 * DAY
+    const k = { remaining: 1n, total: 1n, expiresAt: at }
+    expect(nextFundsChange(k, NOW)).toBe(at - 7 * DAY)
+    expect(nextFundsChange(k, at - DAY)).toBe(at)
+    expect(nextFundsChange(k, at + 1)).toBeNull()
+    expect(nextFundsChange(null, NOW)).toBeNull()
+  })
+  it('the state it wakes to is empty / key-expiry', () => {
+    const k = { remaining: 5n, total: 5n, expiresAt: NOW + 1000 }
+    expect(fundsState(10n ** 11n, k, NOW).level).toBe('low')
+    expect(fundsState(10n ** 11n, k, NOW + 1000)).toMatchObject({ level: 'empty', reason: 'key-expiry' })
   })
 })
 

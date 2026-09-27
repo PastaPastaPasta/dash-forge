@@ -16,20 +16,20 @@ import { useEffect, useState } from 'react'
 import { Check, GitMerge, GitPullRequest, GitPullRequestClosed, ShieldCheck, X } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
 import { ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
-import { addEvent, createComment, createReview, readViewerPermissions, repoContractIds, repoKey, setTargetState, type VerdictInput } from '@/lib/repo'
+import { addEvent, commentFirsts, createComment, createReview, eventFirsts, readViewerPermissions, repoContractIds, repoKey, reviewFirsts, setTargetState, type VerdictInput } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import type { Policy, PolicyStatus } from '@/lib/rules/v2'
-import { previewCreate } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
-import { writeErrorMessage } from '@/lib/view/write-errors'
+import { useFirstWrite } from '@/hooks/use-first-write'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
 import { PullDiff } from '@/components/repo/pull-diff'
-import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -82,6 +82,19 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const [pending, setPending] = useState<Pending>(null)
   const [diffShown, setDiffShown] = useState(false)
 
+  // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
+  // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
+  // meanwhile, and a page view costs no reads.
+  const pullId = data?.pull.id ?? ''
+  const hasComments = data ? data.timeline.some((t) => t.kind === 'comment') : undefined
+  const hasReviews = data ? data.timeline.some((t) => t.kind === 'review') : false
+  const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && pullId !== ''
+  const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, pullId, identity!, hasComments), [pullId, identity ?? '', hasComments ?? ''], firstsReady)
+  const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, home.repo, identity!, hasReviews), [pullId, identity ?? '', hasReviews], firstsReady)
+  const stateType = viewerMember ? 'event' : 'authorEvent'
+  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, stateType, pullId, identity!), [pullId, identity ?? '', stateType], firstsReady)
+
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding PR" />
   if (error) return <ErrorState message={error} onRetry={reload} />
@@ -112,7 +125,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() })
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
+  const commentTooLong = composeTooLong(home.repo, 'comment', { body: comment.trim() })
   // A private repo's comments and reviews are sealed on write; only a member holding the
   // current key writes them (`private-compose.tsx`).
   const composeBlock = privateComposeBlock(home)
@@ -121,7 +135,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const target = { id: pull.id, number: pull.number }
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || !guard.check(commentCost.credits, 'collab')) return
+    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
@@ -131,7 +145,12 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       draft.renew()
       reload()
     } catch (e) {
-      setCommentError(writeErrorMessage(e).message)
+      if (e instanceof SupersededWriteError) {
+        setComment('')
+        draft.renew()
+        reload()
+      }
+      setCommentError(guard.failed(e))
     } finally {
       setPosting(false)
     }
@@ -157,8 +176,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   }
   const pendingCost =
     pending !== null && typeof pending === 'object'
-      ? composeCost(home.repo, 'review', { body: pending.body })
-      : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
+      ? composeCost(home.repo, 'review', { body: pending.body }, reviewFirst)
+      : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent', {}, eventFirst)
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -265,6 +284,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           <>
             <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+            <BodyCounter repo={home.repo} text={comment.trim()} field="comment" />
           </>
         )}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -290,7 +310,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant="primary"
                 onClick={postComment}
                 loading={posting}
-                disabled={comment.trim() === '' || guard.disabledReason !== null || archived}
+                disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null || archived}
                 title={guard.disabledReason ?? undefined}
               >
                 {identity ? 'Comment' : 'Sign in'}
@@ -308,9 +328,9 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 key={v}
                 size="sm"
                 variant={v === 'approve' ? 'primary' : 'outline'}
-                disabled={guard.disabledReason !== null || archived}
+                disabled={commentTooLong || guard.disabledReason !== null || archived}
                 onClick={() => {
-                  if (guard.check(composeCost(home.repo, 'review', { body: comment.trim() }).credits, 'collab')) setPending({ review: v, body: comment.trim() })
+                  if (!commentTooLong && guard.check(composeCost(home.repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ review: v, body: comment.trim() })
                 }}
               >
                 {VERDICT_TEXT[v]}

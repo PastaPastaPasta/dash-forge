@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { E2E_DEVNET, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { DEMO, E2E_DEVNET, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about
@@ -15,8 +15,6 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved
  * from the merge worker. Nothing is merged: refs are never pushed to the fixture.
  */
 
-const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
-const DEMO = 'forge-v2-demo'
 // E2E_C_RUN reuses an earlier run's repos (a resumed fork writes nothing twice).
 const RUN = process.env['E2E_C_RUN'] ?? Date.now().toString(36)
 const REPO = `e2e-c-${RUN}`
@@ -24,13 +22,14 @@ const FORK = `e2e-c-fork-${RUN}`
 const PR_TITLE = 'Greet by name'
 
 test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
-test.skip(!existsSync(idFile('OWNER')), 'devnet test identities not found')
+test.skip(!['OWNER', 'COLLAB', 'CONTRIB'].every((n) => existsSync(idFile(n))), 'devnet test identities not found')
+test.skip(fixtureWriteBlocked('demo') !== null, fixtureWriteBlocked('demo') ?? '')
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 
 let prNumber = 0
 
 function demo(path: string, extra = ''): string {
-  return `/repo/${path}${path ? '/' : ''}?owner=${OWNER}&name=${DEMO}${extra}`
+  return `/repo/${path}${path ? '/' : ''}?owner=${DEMO.owner}&name=${DEMO.name}${extra}`
 }
 
 /**
@@ -81,7 +80,7 @@ test('c2. contributor forks the fixture; the fork browses through the parent pac
   await dialog.getByRole('button', { name: /sign & fork|finish the fork/i }).click()
   await page.waitForURL(new RegExp(`name=${FORK}`), { timeout: 240_000 })
   await waitForRepoResolved(page)
-  await expect(page.getByTestId('forked-from')).toContainText(DEMO, { timeout: 60_000 })
+  await expect(page.getByTestId('forked-from')).toContainText(DEMO.name, { timeout: 60_000 })
   // README from the parent's Platform chunks, through the fork's platform:// manifests.
   await eventually(page, visible(page.getByText(/The forge-v2 read fixture/).first()))
   await shot(page, 'c-fork-page')
@@ -139,9 +138,10 @@ test('c5. a writer comments inline and requests changes; merge is maintainers-on
   await page.getByRole('button', { name: 'Add comment' }).click()
   await eventually(page, visible(page.getByTestId('inline-thread').getByText('Should this fall back to the user name?')))
 
-  // main is protected in the fixture: a writer cannot move it.
-  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'protected', { timeout: 60_000 })
-  await expect(page.getByRole('button', { name: 'Protected branch — maintainers only' })).toBeDisabled()
+  // main is protected in the fixture: a writer cannot move it. Since #66 (repo settings) the
+  // writer gets no merge panel at all; Branch rules says why.
+  await expect(page.getByTestId('protected-base')).toContainText('only maintainers can merge into it', { timeout: 60_000 })
+  await expect(page.getByTestId('merge-button-state')).toHaveCount(0)
 
   await page.getByRole('button', { name: /^request changes$/i }).click()
   await confirmWrite(page, /submit review/i)

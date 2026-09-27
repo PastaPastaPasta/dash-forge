@@ -33,8 +33,11 @@ export const DEMO = {
   name: process.env['E2E_V2_NAME'] ?? 'forge-v2-demo',
 } as const
 
-/** The fixture's `forge-v2-empty`: a repo with nothing pushed (the empty-repo state). */
-export const EMPTY = { owner: MAINTAINER, name: 'forge-v2-empty' } as const
+/**
+ * The fixture's `forge-v2-empty`: a repo with nothing pushed (the empty-repo state). A fixture
+ * seeded under other identities names its owner in E2E_V2_EMPTY_OWNER.
+ */
+export const EMPTY = { owner: process.env['E2E_V2_EMPTY_OWNER'] ?? MAINTAINER, name: 'forge-v2-empty' } as const
 
 /** A repo route: `repoUrl('issue', '&number=2')` → `/repo/issue/?owner=…&name=…&number=2`. */
 export function repoUrl(
@@ -136,6 +139,14 @@ export async function waitForRepoResolved(page: Page, timeout = 60_000): Promise
  * Target: 0 serious/critical on every page.
  */
 export async function runAxe(page: import('@playwright/test').Page, label: string) {
+  // axe reads computed colours: mid-way through a fade-in (the sign-in modal's 150 ms) text is
+  // blended with the backdrop and fails contrast it passes once shown. Let finite animations end
+  // first (infinite ones, such as a spinner, never do and are not waited for).
+  await page.waitForFunction(
+    () => document.getAnimations().every((a) => a.playState !== 'running' || (a.effect?.getComputedTiming().endTime ?? Infinity) === Infinity),
+    undefined,
+    { timeout: 5_000 },
+  )
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze()
@@ -189,6 +200,29 @@ export function idFile(name: string): string {
 /** The identity id recorded in {@link idFile}. */
 export function idOf(name: string): string {
   return (JSON.parse(readFileSync(idFile(name), 'utf8')) as { identityId: string }).identityId
+}
+
+/**
+ * {@link idOf}, or '' when the identity file is missing, for a spec's top-level constants: the
+ * spec's own `test.skip` then says why, instead of the whole file failing to load.
+ */
+export function idOrEmpty(name: string): string {
+  return existsSync(idFile(name)) ? idOf(name) : ''
+}
+
+/**
+ * Why a spec that writes to the read fixture must not run, or null. Identities of the spec's own
+ * (E2E_IDENTITY_DIR) are meant to write to their own copy of the fixture: pointing them at the
+ * shared one (DEMO / EMPTY left at their defaults) would write onto a repo only its seeder may.
+ */
+export function fixtureWriteBlocked(uses: 'demo' | 'empty' | 'both' = 'both'): string | null {
+  if (!IDENTITY_DIR) return null
+  const demo = uses !== 'empty' && !process.env['E2E_V2_OWNER']
+  const empty = uses !== 'demo' && !process.env['E2E_V2_EMPTY_OWNER']
+  if (demo || empty) {
+    return `E2E_IDENTITY_DIR is set: also point ${demo ? 'E2E_V2_OWNER' : 'E2E_V2_EMPTY_OWNER'} at the fixture copy those identities seeded`
+  }
+  return null
 }
 
 export const PASSPHRASE = 'e2e passphrase for the vault'

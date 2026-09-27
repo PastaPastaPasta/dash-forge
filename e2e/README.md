@@ -62,6 +62,17 @@ The CLI suite's repos are forge-v2 repos owned by the moutai OWNER fixture, crea
 
 Override the storage repo names with `STORAGE_E2E_REPO` / `STORAGE_E2E_REPO_B`. When you add a suite that writes, give it its own repo and add a row here.
 
+## The whole browser suite under identities of your own
+
+The write specs sign as the identities in `E2E_IDENTITY_DIR`: `OWNER`, `MAINTAINER`, `COLLAB`, `CONTRIB`, `CI-RUNNER` and `RELAY`, as `<ROLE>.identity.json`. When it is unset they use the shared pool. Some specs write to the read fixture: `v2-writes` approves PR #1 and `v2-pulls` forks it and opens a PR on it; `storage-wizard` sets a policy on `forge-v2-empty`. So your own identities need their own copy of the fixture.
+
+1. Seed it with `HOME=<dir> node forge-contracts/scripts/seed-v2-fixture.mjs`, where `<dir>/.config/dash-forge/test-identities/devnet-moutai/` holds your OWNER, MAINTAINER, COLLAB and CONTRIB.
+2. Point the specs at the copy with `E2E_V2_OWNER=<your OWNER id>` and `E2E_V2_EMPTY_OWNER=<your MAINTAINER id>`.
+
+With `E2E_IDENTITY_DIR` set and those overrides missing, the specs that would write to the shared fixture skip and say why.
+
+The read-only specs run on every PR that touches the web app (`.github/workflows/web-e2e.yml`), with no secrets, against the shared fixture.
+
 ## The partial-clone rule both clients follow
 
 A live pack whose storage cannot be reached does not fail a whole clone or browse:
