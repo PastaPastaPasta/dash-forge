@@ -63,6 +63,8 @@ interface AuthContextValue {
   /** The signing key's limits (a PV14 limited key), when it has any. */
   readonly keyLimits: KeyLimits | null
   readonly isLoading: boolean
+  /** The step a running sign-in is on, for the sheet (null when none). */
+  readonly step: string | null
   readonly error: string | null
   /** The key-free write signer for the WriteEngine, or null when logged out. */
   readonly signer: WriteAuth | null
@@ -217,6 +219,7 @@ export function AuthProvider({
       funds,
       keyLimits,
       isLoading: state.isLoading,
+      step: state.step ?? null,
       error: state.error,
       signer,
       storage: session?.storage ?? null,
@@ -229,7 +232,7 @@ export function AuthProvider({
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, vaults],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

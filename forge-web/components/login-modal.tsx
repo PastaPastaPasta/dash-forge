@@ -294,7 +294,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
           }}
         >
           <Field label="Passphrase" htmlFor="unlock-passphrase">
-            <Input id="unlock-passphrase" type="password" autoComplete="current-password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus />
+            <Input id="unlock-passphrase" type="password" autoComplete="current-password" onChange={(e) => setPassphrase(e.target.value)} autoFocus />
           </Field>
           <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
             Unlock
@@ -329,7 +329,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 }
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, vaults, identity, controller } = useAuth()
+  const { importIdentity, isLoading, step, vaults, identity, controller } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -447,7 +447,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
-        Create this browser&apos;s key
+        {isLoading && step ? `${step}…` : <>Create this browser&apos;s key</>}
       </Button>
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       <ErrorBox error={error} />
@@ -458,21 +458,37 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
 function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
   const { loginWithRawKey, isLoading } = useAuth()
   const [identityId, setIdentityId] = useState('')
-  const [key, setKey] = useState('')
+  // The pasted key lives only in the input's value property (an uncontrolled input): React
+  // mirrors a controlled input's value into the `value` attribute, which put the key in the
+  // DOM (and in Chrome's console warnings that print the element).
+  const keyRef = useRef<HTMLInputElement>(null)
+  const [hasKey, setHasKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const clearKey = (): void => {
+    if (keyRef.current) keyRef.current.value = ''
+    setHasKey(false)
+  }
+  useEffect(() => clearKey, [])
   const submit = async (): Promise<void> => {
-    if (isLoading) return
+    const key = keyRef.current?.value ?? ''
+    if (isLoading || key.trim() === '') return
     setError(null)
     try {
       await loginWithRawKey(identityId, key)
-      setKey('')
+      clearKey()
       onDone()
     } catch (e) {
       setError(errorMessage(e))
     }
   }
   return (
-    <div className="space-y-3">
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault()
+        void submit()
+      }}
+    >
       <div role="note" className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
         A pasted key has no limits Forge set: anything it can sign, this tab can sign. Never paste a master key. Prefer importing
         your identity once so Forge gets a limited key instead.
@@ -481,12 +497,12 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
         <Input id="adv-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
       </Field>
       <Field label="Private key (WIF or hex)" htmlFor="adv-key" hint="HIGH or CRITICAL authentication key. Held in this tab only.">
-        <Input id="adv-key" type="password" value={key} onChange={(e) => setKey(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
+        <Input id="adv-key" ref={keyRef} type="password" onChange={(e) => setHasKey(e.target.value.trim() !== '')} className="font-mono" spellCheck={false} autoComplete="off" />
       </Field>
-      <Button variant="danger" className="w-full" onClick={submit} loading={isLoading} disabled={identityId.trim() === '' || key.trim() === '' || isLoading}>
+      <Button type="submit" variant="danger" className="w-full" loading={isLoading} disabled={identityId.trim() === '' || !hasKey || isLoading}>
         Sign in for this tab
       </Button>
       <ErrorBox error={error} />
-    </div>
+    </form>
   )
 }

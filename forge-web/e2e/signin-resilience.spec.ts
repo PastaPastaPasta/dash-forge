@@ -18,9 +18,30 @@ import { PASSPHRASE, shot } from './helpers'
  *     again", and "Try again" recovers once the chunk loads.
  * s3. Platform never answers (DAPI and the quorum endpoint hang): every sub-view reaches its
  *     content or a named error within the connect timeout.
+ * s4. The owner's second report: Import → "Create this browser's key" (private repos on) spun
+ *     forever after the group check, with nothing broadcast. Same cause as s1: importIdentity
+ *     reads the stored keys (IndexedDB) before its first write. Now a named error, before
+ *     anything is written on chain.
+ * s5. A pasted private key never reaches the DOM (no `value` attribute, no password field
+ *     outside a form, whose Chrome warning prints the element into the console).
  *
  * Runs in Chromium and WebKit (`playwright.config.ts`). Local only: no key is registered.
  */
+
+/** A well-formed identity file whose master key belongs to no identity (nothing can be written). */
+function identityFile(): string {
+  const dir = join(tmpdir(), `forge-signin-resilience-${process.pid}`)
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, 'unreachable.identity.json')
+  writeFileSync(
+    file,
+    JSON.stringify({
+      identityId: '11111111111111111111111111111111111111111111',
+      identityKeys: [{ id: 0, purpose: 'AUTHENTICATION', securityLevel: 'MASTER', keyType: 'ECDSA_SECP256K1', privateKeyWif: encodeWif(new Uint8Array(32).fill(7), 'devnet') }],
+    }),
+  )
+  return file
+}
 
 /** The connect deadline (lib/auth/connect.ts CONNECT_MS) plus slack for a CI runner. */
 const WITHIN = 30_000
@@ -130,17 +151,7 @@ test('s3. Platform never answers: every sub-view reaches content or a named erro
 
   // Import: the form shows at once; submitting names the connect failure.
   await openSheet(page, 'import')
-  const dir = join(tmpdir(), `forge-signin-resilience-${process.pid}`)
-  mkdirSync(dir, { recursive: true })
-  const file = join(dir, 'unreachable.identity.json')
-  writeFileSync(
-    file,
-    JSON.stringify({
-      identityId: '11111111111111111111111111111111111111111111',
-      identityKeys: [{ id: 0, purpose: 'AUTHENTICATION', securityLevel: 'MASTER', keyType: 'ECDSA_SECP256K1', privateKeyWif: encodeWif(new Uint8Array(32).fill(7), 'devnet') }],
-    }),
-  )
-  await page.setInputFiles('input[type="file"]', file)
+  await page.setInputFiles('input[type="file"]', identityFile())
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
   await dialog.getByRole('button', { name: /create this browser's key/i }).click()
@@ -164,5 +175,72 @@ test('s3. Platform never answers: every sub-view reaches content or a named erro
   await page.getByLabel('Private key (WIF or hex)').fill(encodeWif(new Uint8Array(32).fill(9), 'devnet'))
   await dialog.getByRole('button', { name: /sign in for this tab/i }).click()
   await expect(failed).toBeVisible({ timeout: WITHIN })
+  await context.close()
+})
+
+test('s4. Import with an old tab blocking storage: a named error before any write', async ({ browser, baseURL }) => {
+  const context = await browser.newContext()
+  const old = await oldBuildTab(context, baseURL!)
+  const page = await context.newPage()
+  const writes: string[] = []
+  page.on('request', (r) => {
+    if (/broadcastStateTransition|waitForStateTransitionResult/.test(r.url())) writes.push(r.url())
+  })
+  await page.goto('/new/', { waitUntil: 'domcontentloaded' })
+  await openSheet(page, 'import')
+  await page.setInputFiles('input[type="file"]', identityFile())
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  await page.getByTestId('enable-private-repos').check()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: /create this browser's key/i }).click()
+  await expect(dialog.getByRole('alert')).toContainText('open in another tab', { timeout: WITHIN })
+  await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
+  expect(writes).toEqual([])
+  await shot(page, `signin-s4-import-blocked-${test.info().project.name}`)
+  await old.close()
+  await context.close()
+})
+
+test('s5. a pasted private key never reaches the DOM', async ({ page }) => {
+  const secret = encodeWif(new Uint8Array(32).fill(11), 'devnet')
+  const logged: string[] = []
+  page.on('console', (m) => logged.push(m.text()))
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await openSheet(page, 'advanced')
+  await page.getByLabel('Private key (WIF or hex)').fill(secret)
+  await page.getByLabel('Identity ID').fill('11111111111111111111111111111111111111111111')
+  expect(await page.content()).not.toContain(secret)
+  const loose = await page.evaluate(() => [...document.querySelectorAll('input[type=password]')].filter((i) => !i.closest('form')).map((i) => i.id))
+  expect(loose).toEqual([])
+  expect(logged.filter((t) => t.includes(secret))).toEqual([])
+})
+
+test('s6. a newer tab upgrading storage: this tab lets go at once and offers a reload', async ({ browser, baseURL }) => {
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  // Open the storage in this tab (Create reads the creation journal).
+  await openSheet(page, 'create')
+  await expect(page.getByTestId('mnemonic-words').locator('li')).toHaveCount(12, { timeout: 60_000 })
+
+  // A tab running a later build upgrades the database: this one must not block it.
+  const url = `${baseURL}/__newer-build-tab__/`
+  await context.route(url, (r) => r.fulfill({ contentType: 'text/html', body: '<!doctype html><title>newer Dash Forge tab</title>' }))
+  const newer = await context.newPage()
+  await newer.goto(url)
+  const upgraded = await newer.evaluate(
+    () =>
+      new Promise<string>((resolve) => {
+        const req = indexedDB.open('dash-forge', 99)
+        req.onblocked = () => resolve('blocked')
+        req.onsuccess = () => resolve('upgraded')
+        req.onerror = () => resolve(String(req.error))
+        setTimeout(() => resolve('no answer'), 10_000)
+      }),
+  )
+  expect(upgraded).toBe('upgraded')
+  await expect(page.getByTestId('storage-updated')).toContainText('updated in another tab')
+  await shot(page, `signin-s6-reload-banner-${test.info().project.name}`)
   await context.close()
 })

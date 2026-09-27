@@ -37,6 +37,30 @@ let blocked = false
 const blockedWaiters = new Set<() => void>()
 const memory = new Map<StoreName, Map<string, unknown>>()
 
+/**
+ * A newer Dash Forge (another tab) upgraded this browser's storage: this tab let go of it and
+ * runs an older build, so it should reload. The app shell shows a banner.
+ */
+let superseded = false
+const supersededListeners = new Set<() => void>()
+
+function markSuperseded(): void {
+  if (superseded) return
+  superseded = true
+  for (const l of supersededListeners) l()
+}
+
+export function storageSuperseded(): boolean {
+  return superseded
+}
+
+export function onStorageSuperseded(listener: () => void): () => void {
+  supersededListeners.add(listener)
+  return () => {
+    supersededListeners.delete(listener)
+  }
+}
+
 function hasIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined'
 }
@@ -58,10 +82,11 @@ function startOpen(): Promise<IDBDatabase> {
     req.onsuccess = () => {
       blocked = false
       const db = req.result
-      // A newer tab wants to upgrade: let go so it is not blocked, and reopen on next use.
+      // A newer tab wants to upgrade: let go so it is not blocked, and say this tab is behind.
       db.onversionchange = () => {
         db.close()
         if (opening === p) opening = null
+        markSuperseded()
       }
       resolve(db)
     }

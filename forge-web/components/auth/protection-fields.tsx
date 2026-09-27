@@ -73,8 +73,10 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
   if (passkey) passkeyVariant = 'subtle'
   else if (preferPasskey) passkeyVariant = 'primary'
 
+  // Passphrases are uncontrolled inputs (never mirrored into a `value` attribute), inside a
+  // form so the browser does not log the fields as "not contained in a form".
   const fields = (
-    <div className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
+    <form className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800" onSubmit={(e) => e.preventDefault()}>
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
       {preferPasskey && !passkey ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">
@@ -95,17 +97,26 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
         htmlFor="vault-passphrase"
         hint="Encrypts the key on this device (Argon2id, 64 MiB). Never sent anywhere."
       >
-        <Input id="vault-passphrase" type="password" autoComplete="new-password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+        <Input
+          id="vault-passphrase"
+          type="password"
+          autoComplete="new-password"
+          onChange={(e) => {
+            setPassphrase(e.target.value)
+            // The repeat field unmounts (and empties) with the passphrase: so does its state.
+            if (e.target.value === '') setConfirm('')
+          }}
+        />
       </Field>
       {passphraseSet ? (
         <Field label="Repeat passphrase" htmlFor="vault-passphrase-2">
-          <Input id="vault-passphrase-2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+          <Input id="vault-passphrase-2" type="password" autoComplete="new-password" onChange={(e) => setConfirm(e.target.value)} />
         </Field>
       ) : null}
       <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
         <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after 12 hours or when you sign out.
       </p>
-    </div>
+    </form>
   )
   return { fields, protection, problem }
 }
