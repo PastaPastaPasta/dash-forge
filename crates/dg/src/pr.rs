@@ -733,7 +733,9 @@ async fn merge(
         })?;
     steps.ok("event", format!("merge event {}", short(&event_id)));
 
-    // Re-read the fold: "merged" is what readers will say, not what we hoped.
+    // Re-read the fold: "merged" is what readers will say, not what we hoped. The push above
+    // moved the base branch, so the ref history is read again.
+    collab.refs_changed();
     let merged = match collab.patch(handle, view.patch.number).await? {
         Some(p) => collab
             .patch_view(handle, p)
