@@ -1,8 +1,8 @@
-//! `forge-import <github repo>`: mirror a GitHub repository into forge-v2, once or
-//! repeatedly.
+//! `forge-import <source>`: mirror a GitHub repository or a GitLab project into forge-v2,
+//! once or repeatedly. The source is a [`Source`]; everything else is shared.
 //!
-//! 1. Mirror the git data locally (`git clone --mirror`, then `fetch --prune`), read the
-//!    GitHub collaboration data (only what changed since the last run with `--state`).
+//! 1. Mirror the git data locally (branches, tags, PR/MR heads), read the collaboration
+//!    data (only what changed since the last run with `--state`).
 //! 2. Resolve the destination; price everything (the git push by a helper dry run, each
 //!    document by its bytes); refuse up front past `--max-spend`.
 //! 3. Push the git data through `git-remote-dash`, then write the collaboration documents
@@ -21,17 +21,16 @@ use forge_core::repo::credits_to_dash;
 
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
-use crate::github::{GithubClient, GithubRepoRef};
 use crate::gitsync::{GitPusher, PackStorage, PushReport, Refs};
 use crate::sink::Ledger;
-use crate::source_github::{self, Classes};
+use crate::source::{Classes, Source};
 use crate::state::{self, SyncState};
 use crate::summary::{Status, Summary};
 
 /// Everything the CLI resolved.
 pub struct ImportConfig {
-    /// The GitHub source.
-    pub source: GithubRepoRef,
+    /// The source (GitHub or GitLab).
+    pub source: Box<dyn Source>,
     /// The destination spec (default: the source's name, owned by the signer).
     pub dest: Option<String>,
     /// What to sync.
@@ -57,10 +56,7 @@ pub struct ImportConfig {
 /// Run an import. Always returns a summary (a failure is its status and error; what was
 /// spent before it is still reported).
 pub async fn run(cfg: &ImportConfig) -> Summary {
-    let mut summary = Summary::new(
-        cfg.network.network.key(),
-        format!("github.com/{}", cfg.source.slug()),
-    );
+    let mut summary = Summary::new(cfg.network.network.key(), cfg.source.display());
     let client = match PlatformClient::connect(cfg.network.clone()).await {
         Ok(c) => c,
         Err(e) => {
@@ -89,13 +85,12 @@ async fn run_inner<'a>(
     outcome: &mut Outcome<'a>,
 ) -> Result<()> {
     let started = state::now();
-    let gh = GithubClient::new(cfg.source.clone());
-    let meta = gh.repo_meta().context("reading the GitHub repository")?;
+    let src = cfg.source.as_ref();
+    let meta = src
+        .meta()
+        .with_context(|| format!("reading {}", src.display()))?;
     let signer_id = signer.map(Signer::id);
-    let spec = cfg
-        .dest
-        .clone()
-        .unwrap_or_else(|| cfg.source.repo.to_ascii_lowercase());
+    let spec = cfg.dest.clone().unwrap_or_else(|| src.default_name());
     let mut dest = dest::resolve(client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
 
@@ -108,8 +103,8 @@ async fn run_inner<'a>(
         existing_id.as_deref().unwrap_or_default(),
     );
     let since = sync_state.since();
-    let collab_src =
-        source_github::collect(&gh, &cfg.source, cfg.classes, since.as_deref(), cfg.limit)?;
+    let collab_src = src.collect(cfg.classes, since.as_deref(), cfg.limit)?;
+    summary.warnings.extend(collab_src.warnings.iter().cloned());
     if collab_src.truncated && cfg.state_path.is_some() {
         // Every run would take the same first `--limit` items and never reach the rest.
         summary.warnings.push(format!(
@@ -122,16 +117,15 @@ async fn run_inner<'a>(
     // Git data.
     let work = cfg.work_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!(
-            "forge-import-{}-{}-{}",
-            cfg.source.owner,
-            cfg.source.repo,
+            "forge-import-{}-{}",
+            src.default_name(),
             std::process::id()
         ))
     });
     let _cleanup = cfg.work_dir.is_none().then(|| TempDir(work.clone()));
     if cfg.classes.code {
-        gh.sync_mirror(&work).context("mirroring the git data")?;
-        crate::gitsync::sync_pull_heads(&work, &collab_src.open_pulls)
+        src.sync_mirror(&work).context("mirroring the git data")?;
+        crate::gitsync::sync_pull_heads(&work, &collab_src.open_pulls, src.pull_head_prefix())
             .context("preparing the open pull requests' heads")?;
     }
 
@@ -259,10 +253,11 @@ async fn run_inner<'a>(
         let description = meta
             .description
             .as_deref()
+            .map(str::trim)
             .filter(|d| !d.is_empty())
             .map_or_else(
-                || format!("Mirror of github.com/{}", cfg.source.slug()),
-                |d| format!("{d} (mirror of github.com/{})", cfg.source.slug()),
+                || format!("Mirror of {}", src.display()),
+                |d| format!("{d} (mirror of {})", src.display()),
             );
         let created = dest::create(
             client,
@@ -307,7 +302,7 @@ async fn run_inner<'a>(
     // Advance the incremental state only when every item was read and mirrored: items past
     // `--limit`, or skipped, are retried by the next run.
     let skipped = outcome.ledger.as_ref().map_or(0, |l| l.counts.skipped);
-    if collab_src.truncated || skipped > 0 {
+    if collab_src.truncated || collab_src.incomplete || skipped > 0 {
         return Ok(());
     }
     sync_state.save(started)

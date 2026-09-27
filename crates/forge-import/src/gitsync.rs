@@ -206,8 +206,9 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
 }
 
 /// Make the mirror's local `refs/mirror/pull/<n>/head` exactly the heads of the `open` PRs
-/// it fetched (`refs/pull/<n>/head`); a PR whose head was not fetched is left out.
-pub fn sync_pull_heads(git_dir: &Path, open: &[u64]) -> Result<()> {
+/// it fetched (`<source_prefix><n>/head`: `refs/pull/` on GitHub, `refs/merge-requests/` on
+/// GitLab); a PR whose head was not fetched is left out.
+pub fn sync_pull_heads(git_dir: &Path, open: &[u64], source_prefix: &str) -> Result<()> {
     use std::fmt::Write as _;
     let git = |args: &[&str]| -> Result<String> {
         let out = Command::new("git")
@@ -228,7 +229,7 @@ pub fn sync_pull_heads(git_dir: &Path, open: &[u64]) -> Result<()> {
     let mut script = String::new();
     let mut keep = std::collections::BTreeSet::new();
     for n in open {
-        let src = format!("refs/pull/{n}/head");
+        let src = format!("{source_prefix}{n}/head");
         if let Ok(oid) = git(&["rev-parse", "--verify", "--quiet", &src]) {
             let dst = format!("refs/mirror/pull/{n}/head");
             let _ = writeln!(script, "update {dst} {}", oid.trim());
@@ -560,7 +561,7 @@ dash: some human line"#;
         for n in ["1", "2", "3"] {
             git(d, &["update-ref", &format!("refs/pull/{n}/head"), &oid]);
         }
-        sync_pull_heads(d, &[1, 2, 9]).unwrap();
+        sync_pull_heads(d, &[1, 2, 9], "refs/pull/").unwrap();
         let heads = || {
             git(
                 d,
@@ -569,7 +570,7 @@ dash: some human line"#;
         };
         assert_eq!(heads(), "refs/mirror/pull/1/head\nrefs/mirror/pull/2/head");
         // PR 1 closed: its head leaves the local namespace, so `--prune` deletes it.
-        sync_pull_heads(d, &[2]).unwrap();
+        sync_pull_heads(d, &[2], "refs/pull/").unwrap();
         assert_eq!(heads(), "refs/mirror/pull/2/head");
     }
 

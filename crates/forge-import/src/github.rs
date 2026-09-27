@@ -613,6 +613,11 @@ fn gh_token() -> Option<String> {
     (out.status.success() && !t.is_empty()).then_some(t)
 }
 
+/// Standard base64 of `input` (for git's HTTP auth headers).
+pub fn base64(input: &[u8]) -> String {
+    base64_lite::encode(input)
+}
+
 /// Minimal standard base64 (for the git auth header); avoids a dependency for 20 lines.
 mod base64_lite {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

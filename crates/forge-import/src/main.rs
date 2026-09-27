@@ -1,5 +1,5 @@
-//! `forge-import`: mirror a GitHub repository into forge-v2 (once, or incrementally from CI),
-//! or run the gist author-claim check.
+//! `forge-import`: mirror a GitHub repository or a GitLab project into forge-v2 (once, or
+//! incrementally from CI), or run the gist author-claim check.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,9 +9,8 @@ use clap::{Parser, Subcommand};
 
 use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_import::budget::dash_to_credits;
-use forge_import::github::GithubRepoRef;
 use forge_import::importer::{self, ImportConfig};
-use forge_import::source_github::Classes;
+use forge_import::source::{self, Classes};
 use forge_import::summary::{Status, Summary};
 
 /// forge-import CLI.
@@ -19,11 +18,13 @@ use forge_import::summary::{Status, Summary};
 #[command(
     name = "forge-import",
     version = env!("DASH_FORGE_VERSION"),
-    about = "Mirror a GitHub repository into Dash Forge (forge-v2)",
+    about = "Mirror a GitHub repository or a GitLab project into Dash Forge (forge-v2)",
     args_conflicts_with_subcommands = true
 )]
 struct Cli {
-    /// The GitHub repository: `owner/repo`, `github.com/owner/repo` or its https URL.
+    /// The source. GitHub: `owner/repo`, `github.com/owner/repo` or its https URL (read with
+    /// `gh`). GitLab: `gitlab.com/group/project` or its https URL, or `group/project` with
+    /// `--gitlab-url` (read with `GITLAB_TOKEN`, a token with the `read_api` scope).
     source: Option<String>,
 
     #[command(flatten)]
@@ -41,9 +42,15 @@ struct RunArgs {
     #[arg(long, alias = "repo-name")]
     repo: Option<String>,
 
-    /// What to mirror: comma list of code, issues, prs, releases, labels (or all).
+    /// What to mirror: comma list of code, issues, prs, releases, labels (or all). `prs`
+    /// means merge requests for GitLab (`mrs` works too).
     #[arg(long, default_value = "all")]
     sync: String,
+
+    /// A self-hosted GitLab instance (`https://gitlab.example.org`): the source is then a
+    /// project path on it.
+    #[arg(long, value_name = "URL")]
+    gitlab_url: Option<String>,
 
     /// Incremental state file: only GitHub items updated since the last successful run are
     /// read. Optional; what is already mirrored is always decided on chain.
@@ -183,12 +190,12 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => {
-            let source = cli
-                .source
-                .context("missing the GitHub repository (owner/repo); see --help")?;
+            let spec = cli.source.context(
+                "missing the source (owner/repo, or gitlab.com/group/project); see --help",
+            )?;
             let r = cli.run;
             let cfg = ImportConfig {
-                source: GithubRepoRef::parse(&source)?,
+                source: source::parse(&spec, r.gitlab_url.as_deref())?,
                 dest: r.repo.clone(),
                 classes: Classes::parse(&r.sync)?,
                 state_path: r.state.clone(),
@@ -240,5 +247,33 @@ mod tests {
         assert_eq!(cli.source.as_deref(), Some("o/r"));
         assert_eq!(cli.run.max_spend, Some(0.05));
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parses_a_gitlab_invocation() {
+        let cli = Cli::try_parse_from([
+            "forge-import",
+            "team/app",
+            "--gitlab-url",
+            "https://git.example.org",
+            "--sync",
+            "code,issues,mrs",
+        ])
+        .unwrap();
+        let src = source::parse(
+            cli.source.as_deref().unwrap(),
+            cli.run.gitlab_url.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(src.display(), "git.example.org/team/app");
+        assert!(Classes::parse(&cli.run.sync).unwrap().prs);
+        assert_eq!(
+            source::parse("gitlab.com/g/p", None).unwrap().display(),
+            "gitlab.com/g/p"
+        );
+        assert_eq!(
+            source::parse("o/r", None).unwrap().display(),
+            "github.com/o/r"
+        );
     }
 }

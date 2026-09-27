@@ -8,9 +8,8 @@ use anyhow::Result;
 
 use forge_core::user_error::{codes, UserError};
 use forge_import::budget::dash_to_credits;
-use forge_import::github::GithubRepoRef;
 use forge_import::importer::{self, ImportConfig};
-use forge_import::source_github::Classes;
+use forge_import::source::{self, Classes};
 use forge_import::summary::{Status, Summary};
 
 use crate::context::Ctx;
@@ -18,8 +17,13 @@ use crate::context::Ctx;
 /// `dg import` options.
 #[derive(Debug, clap::Args)]
 pub struct ImportArgs {
-    /// The GitHub repository: `github.com/owner/repo`, its URL, or `owner/repo`.
+    /// The source. GitHub: `github.com/owner/repo`, its URL, or `owner/repo`. GitLab:
+    /// `gitlab.com/group/project` or its URL, or `group/project` with `--gitlab-url`
+    /// (token: `GITLAB_TOKEN`).
     pub url: String,
+    /// A self-hosted GitLab instance (`https://gitlab.example.org`).
+    #[arg(long, value_name = "URL")]
+    pub gitlab_url: Option<String>,
     /// Destination repository (`owner/name`, or a bare name of yours; default: the GitHub
     /// name). Created when missing.
     #[arg(long)]
@@ -98,8 +102,9 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
 /// `dg import`.
 pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
     let cfg = ImportConfig {
-        source: GithubRepoRef::parse(&a.url).map_err(|e| {
-            UserError::new(codes::USAGE, "not a GitHub repository").cause(e.to_string())
+        source: source::parse(&a.url, a.gitlab_url.as_deref()).map_err(|e| {
+            UserError::new(codes::USAGE, "not a GitHub repository or GitLab project")
+                .cause(e.to_string())
         })?,
         dest: a.repo.clone(),
         classes: Classes::parse(&a.sync)

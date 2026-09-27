@@ -28,48 +28,52 @@ use crate::model::{
     self, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcReview, SrcTarget,
 };
 
-/// Which classes to sync.
-#[derive(Debug, Clone, Copy, Default)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct Classes {
-    /// Branches and tags (and PR heads when `prs`).
-    pub code: bool,
-    /// Issues (with comments and state).
-    pub issues: bool,
-    /// Pull requests (with comments, reviews and state).
-    pub prs: bool,
-    /// Releases.
-    pub releases: bool,
-    /// Label definitions.
-    pub labels: bool,
+pub use crate::source::Classes;
+use crate::source::{Source, SourceMeta};
+
+/// A GitHub repository as a [`Source`].
+pub struct GithubSource {
+    repo: GithubRepoRef,
+    gh: GithubClient,
 }
 
-impl Classes {
-    /// Parse `code,issues,prs,releases,labels` (`all` = every class).
-    pub fn parse(s: &str) -> Result<Self> {
-        let mut c = Self::default();
-        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            match part {
-                "all" => {
-                    c = Self {
-                        code: true,
-                        issues: true,
-                        prs: true,
-                        releases: true,
-                        labels: true,
-                    }
-                }
-                "code" => c.code = true,
-                "issues" => c.issues = true,
-                "prs" | "pulls" => c.prs = true,
-                "releases" => c.releases = true,
-                "labels" => c.labels = true,
-                other => anyhow::bail!(
-                    "unknown sync class {other:?}: use code, issues, prs, releases, labels or all"
-                ),
-            }
+impl GithubSource {
+    /// Read `repo` through `gh`.
+    pub fn new(repo: GithubRepoRef) -> Self {
+        Self {
+            gh: GithubClient::new(repo.clone()),
+            repo,
         }
-        Ok(c)
+    }
+}
+
+impl Source for GithubSource {
+    fn display(&self) -> String {
+        format!("github.com/{}", self.repo.slug())
+    }
+
+    fn default_name(&self) -> String {
+        self.repo.repo.to_ascii_lowercase()
+    }
+
+    fn meta(&self) -> Result<SourceMeta> {
+        let m = self.gh.repo_meta()?;
+        Ok(SourceMeta {
+            default_branch: m.default_branch,
+            description: m.description,
+        })
+    }
+
+    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
+        collect(&self.gh, &self.repo, classes, since, limit)
+    }
+
+    fn sync_mirror(&self, dir: &std::path::Path) -> Result<()> {
+        self.gh.sync_mirror(dir)
+    }
+
+    fn pull_head_prefix(&self) -> &'static str {
+        "refs/pull/"
     }
 }
 
@@ -357,7 +361,7 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
 }
 
 /// Keep as many assets as fit the release's 4096-byte `assets` field.
-fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
+pub(crate) fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
     while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
         assets.pop();
     }

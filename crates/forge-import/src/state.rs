@@ -18,7 +18,7 @@ const OVERLAP_SECS: u64 = 600;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncState {
-    /// `github.com/owner/repo` this state belongs to.
+    /// The source this state belongs to (`github.com/owner/repo`, `gitlab.com/group/project`).
     pub source: String,
     /// The destination repo id.
     pub repo_id: String,
@@ -82,7 +82,7 @@ impl SyncState {
 
 /// The state key of a run: its source plus what it reads (`github.com/o/r
 /// [issues,prs,releases,labels,code] limit=0`).
-pub fn scope(source: &str, classes: crate::source_github::Classes, limit: usize) -> String {
+pub fn scope(source: &str, classes: crate::source::Classes, limit: usize) -> String {
     let c = classes;
     let on = [
         (c.code, "code"),

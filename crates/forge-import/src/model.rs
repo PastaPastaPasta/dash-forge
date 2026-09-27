@@ -112,36 +112,60 @@ pub struct SrcCollab {
     /// The source listed more issues/PRs than this run took (`--limit`): the incremental
     /// state must not advance past items that were never read.
     pub truncated: bool,
-    /// Open PRs (GitHub numbers) whose heads the git push mirrors.
+    /// Some of what was asked for could not be read (the token may not read comments or
+    /// labels): the incremental state must not advance, so a run that can read them sees
+    /// these items again.
+    pub incomplete: bool,
+    /// Open PRs/MRs (source numbers) whose heads the git push mirrors.
     pub open_pulls: Vec<u64>,
+    /// Things the user should know about what was read.
+    pub warnings: Vec<String>,
 }
 
-/// A GitHub item URL split into (`owner/repo`, the rest: `issues/12`,
-/// `pull/3#pullrequestreview-9`), lower-cased (GitHub names are case-insensitive).
-fn split_gh(url: &str) -> Option<(String, String)> {
-    let path = url
-        .strip_prefix("https://github.com/")?
-        .to_ascii_lowercase();
-    match path.splitn(3, '/').collect::<Vec<_>>().as_slice() {
-        [owner, repo, rest] if !owner.is_empty() && !repo.is_empty() && !rest.is_empty() => {
-            Some((format!("{owner}/{repo}"), (*rest).to_string()))
+/// An item URL split into (`host/repository`, the item: `issues/12`,
+/// `pull/3#pullrequestreview-9`, `merge_requests/4#note_7`), lower-cased (GitHub and GitLab
+/// paths are case-insensitive).
+///
+/// * GitHub: `https://github.com/<owner>/<repo>/<item>`.
+/// * GitLab (any host): `https://<host>/<group>/<subgroups…>/<project>/-/<item>`. The `/-/`
+///   separator ends a project path of any depth. GitLab now shows issues at `/-/work_items/`
+///   and still serves `/-/issues/`; both name the same issue.
+fn split_item(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("https://")?.to_ascii_lowercase();
+    let (host, path) = rest.split_once('/')?;
+    let (repo, item) = if host == "github.com" {
+        match path.splitn(3, '/').collect::<Vec<_>>().as_slice() {
+            [owner, repo, item] if !owner.is_empty() && !repo.is_empty() => {
+                (format!("{owner}/{repo}"), (*item).to_string())
+            }
+            _ => return None,
         }
-        _ => None,
-    }
+    } else {
+        let (repo, item) = path.split_once("/-/")?;
+        let item = match item.strip_prefix("work_items/") {
+            Some(n) => format!("issues/{n}"),
+            None => item.to_string(),
+        };
+        (repo.to_string(), item)
+    };
+    (!repo.is_empty() && !item.is_empty()).then(|| (format!("{host}/{repo}"), item))
 }
 
-/// Whether two item keys name the same source item: the same key, or the same GitHub
-/// repository (case-insensitive) and item. The repository must match: a document anyone can
-/// write must not claim an item of this mirror by its number alone.
+/// Whether two item keys name the same source item: the same key, or the same repository
+/// (case-insensitive) and item. The repository must match: a document anyone can write must
+/// not claim an item of this mirror by its number alone.
 pub fn same_item(a: &str, b: &str) -> bool {
-    a == b || matches!((split_gh(a), split_gh(b)), (Some(x), Some(y)) if x == y)
+    a == b || matches!((split_item(a), split_item(b)), (Some(x), Some(y)) if x == y)
 }
 
-/// Whether two keys name the same item of possibly different repositories (a renamed or
-/// transferred GitHub repo keeps its item paths). Only for documents the mirror itself
-/// wrote: its own earlier copy of an item survives a rename.
+/// Whether two keys name the same item of possibly different repositories on the same
+/// host (a renamed or transferred repository keeps its item paths). Only for documents the
+/// mirror itself wrote: its own earlier copy of an item survives a rename.
 pub fn same_item_renamed(a: &str, b: &str) -> bool {
-    same_item(a, b) || matches!((split_gh(a), split_gh(b)), (Some((_, x)), Some((_, y))) if x == y)
+    let host = |r: &str| r.split('/').next().unwrap_or_default().to_string();
+    same_item(a, b)
+        || matches!((split_item(a), split_item(b)),
+            (Some((ra, x)), Some((rb, y))) if x == y && host(&ra) == host(&rb))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -288,6 +312,61 @@ mod tests {
             "dash-v1://C/issues/4"
         ));
         assert!(!same_item("", "https://github.com/o/r/issues/1"));
+    }
+
+    #[test]
+    fn gitlab_items_match_by_project_path_of_any_depth() {
+        let a = "https://gitlab.com/Group/Sub/proj/-/issues/12";
+        assert!(same_item(
+            a,
+            "https://gitlab.com/group/sub/proj/-/issues/12"
+        ));
+        // GitLab's newer URL for the same issue.
+        assert!(same_item(
+            a,
+            "https://gitlab.com/group/sub/proj/-/work_items/12"
+        ));
+        assert!(!same_item(
+            a,
+            "https://gitlab.com/group/sub/proj/-/issues/13"
+        ));
+        assert!(!same_item(
+            a,
+            "https://gitlab.com/group/sub/proj/-/merge_requests/12"
+        ));
+        assert!(!same_item(a, "https://gitlab.com/group/other/-/issues/12"));
+        // A self-hosted instance is another repository, even at the same path.
+        assert!(!same_item(
+            a,
+            "https://git.example.org/group/sub/proj/-/issues/12"
+        ));
+        // Renames keep the item, on the same host only.
+        assert!(same_item_renamed(
+            a,
+            "https://gitlab.com/new/name/-/issues/12"
+        ));
+        assert!(!same_item_renamed(
+            a,
+            "https://git.example.org/new/name/-/issues/12"
+        ));
+        assert!(!same_item_renamed(
+            a,
+            "https://github.com/group/proj/issues/12"
+        ));
+        let note = "https://gitlab.com/g/p/-/merge_requests/3#note_99";
+        assert!(same_item(
+            note,
+            "https://gitlab.com/G/P/-/merge_requests/3#note_99"
+        ));
+        assert!(!same_item(
+            note,
+            "https://gitlab.com/g/p/-/merge_requests/3#note_98"
+        ));
+        // Without the `/-/` separator a URL is not a GitLab item (only the exact key matches).
+        assert!(!same_item(
+            "https://gitlab.com/g/p/issues/1",
+            "https://gitlab.com/g/q/issues/1"
+        ));
     }
 
     #[test]

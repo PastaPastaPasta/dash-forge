@@ -6,6 +6,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 |---|---|
 | [Quick start](quick-start.md) | install, get an identity, choose storage, publish with `dg init`, push, and see it on the web |
 | [Mirror a GitHub repository](mirror-a-github-repo.md) | keep a copy of a GitHub repository that nobody can take down, with the Mirror Action or `forge-import` |
+| [Mirror a GitLab project](mirror-a-gitlab-project.md) | the same for a project on gitlab.com or your own GitLab, with a GitLab CI template |
 | [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, MinIO or IPFS instead of on Platform, from the CLI or the browser |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |

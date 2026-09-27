@@ -1,0 +1,206 @@
+# Dash Forge mirror for GitLab CI: keeps a Forge repository (on Dash Platform) in step with
+# this GitLab project. Guide: docs/guides/mirror-a-gitlab-project.md.
+#
+# Use it from the project's .gitlab-ci.yml (pin a commit of dash-forge you have reviewed):
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/<commit>/integrations/gitlab/dash-forge-mirror.yml
+#   variables:
+#     FORGE_REPO: dash://<owner identity id>/<repo name>
+#     FORGE_SOURCE_REF: <the same commit>
+#
+# GitLab's push mirroring cannot target Forge: "The repository must be accessible over
+# http://, https://, ssh://, or git://" (docs.gitlab.com/user/project/repository/mirror/).
+# These jobs push with git-remote-dash instead.
+#
+#   forge-mirror-code  every branch or tag push, schedule and manual run: pushes
+#                      refs/heads/* and refs/tags/* with explicit refspecs. Never
+#                      `git push --mirror`: GitLab also has refs/merge-requests/*,
+#                      refs/pipelines/* and refs/environments/*, each of which would become
+#                      a paid ref update on Forge.
+#   forge-import       schedules and manual runs, when FORGE_IMPORT is "true": forge-import
+#                      mirrors issues, merge requests (and open ones' heads), labels and
+#                      releases, idempotently, under FORGE_COST_CAP per run.
+#
+# CI/CD variables (Settings > CI/CD > Variables):
+#   DASH_FORGE_KEY  File type, Protected. The CI identity file, or a file holding a
+#                   `dfk1:` runner key. An identity JSON cannot be masked (masked values are
+#                   one line of a restricted character set), hence a File variable.
+#   GITLAB_TOKEN    Masked, Protected, for forge-import: a project access token with
+#                   read_api (and read_repository for a private project). CI_JOB_TOKEN
+#                   cannot read issues, issue notes, discussions or labels
+#                   (docs.gitlab.com/ci/jobs/ci_job_token/).
+#   S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY  Masked, Protected, with FORGE_STORAGE_KIND=s3.
+# Protected variables reach only pipelines of protected branches and tags: the default
+# branch is protected by default; protect tags (`*`) too if they should mirror.
+
+variables:
+  # Required: the destination, dash://<owner identity id>/<name>.
+  FORGE_REPO: ""
+  FORGE_NETWORK: devnet
+  FORGE_DEVNET_NAME: moutai
+  # A published Dash Forge release to install (e.g. 0.1.0; checked against its SHA256SUMS
+  # by install.sh). Empty: the latest release, if there is one.
+  FORGE_VERSION: ""
+  # The dash-forge commit to build when no release can be installed. The helper runs with
+  # your key, so pin a full commit id you have reviewed, never a branch.
+  FORGE_SOURCE_REF: ""
+  FORGE_SOURCE_REPO: https://github.com/PastaPastaPasta/dash-forge
+  # Where packs go: platform, or s3 (your bucket, FORGE_S3_*).
+  FORGE_STORAGE_KIND: platform
+  FORGE_S3_ENDPOINT: ""
+  FORGE_S3_REGION: ""
+  FORGE_S3_BUCKET: ""
+  FORGE_S3_PUBLIC_URL: ""
+  FORGE_S3_PREFIX: ""
+  FORGE_S3_VIRTUAL_HOSTED: "false"
+  # forge-import on scheduled and manual pipelines.
+  FORGE_IMPORT: "false"
+  FORGE_SYNC: code,issues,prs,labels,releases
+  # Hard cap in DASH for one forge-import run.
+  FORGE_COST_CAP: "0.05"
+
+.dash-forge:
+  image: rust:1-bookworm
+  stage: deploy
+  # One mirror job at a time per project; a second run waits for the first
+  # (docs.gitlab.com/ci/resource_groups/).
+  resource_group: dash-forge-mirror
+  interruptible: false
+  variables:
+    # The whole history (new projects clone 20 commits deep; a shallow push is refused).
+    GIT_DEPTH: "0"
+    GIT_STRATEGY: clone
+  cache:
+    key: dash-forge-$FORGE_VERSION-$FORGE_SOURCE_REF
+    paths:
+      - .forge/bin/
+      - .forge/state/
+  before_script:
+    - |
+      # --- Install dg, git-remote-dash and forge-import into .forge/bin -------------------
+      set -eu
+      FORGE_DIR="$CI_PROJECT_DIR/.forge"
+      mkdir -p "$FORGE_DIR/bin" "$FORGE_DIR/state"
+      export PATH="$FORGE_DIR/bin:$PATH"
+      if ! command -v git-remote-dash >/dev/null || ! command -v forge-import >/dev/null || ! command -v dg >/dev/null; then
+        # A release first: install.sh (the same one the GitHub Mirror Action runs) checks
+        # the archive against the release's SHA256SUMS.
+        installer_ref=${FORGE_SOURCE_REF:-master}
+        [ -z "$FORGE_VERSION" ] || installer_ref="v${FORGE_VERSION#v}"
+        installed=false
+        if curl -fsSL "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/$installer_ref/install.sh" -o "$FORGE_DIR/install.sh"; then
+          if DASH_FORGE_VERSION="$FORGE_VERSION" DASH_FORGE_INSTALL_DIR="$FORGE_DIR/bin" \
+             DASH_FORGE_BINARIES="dg git-remote-dash forge-import" sh "$FORGE_DIR/install.sh"; then
+            installed=true
+          fi
+        fi
+        if [ "$installed" != true ]; then
+          # No release yet: build the pinned commit (the first run takes several minutes;
+          # the cache keeps the binaries). The Platform SDK's build needs protoc >= 22.
+          if [ -z "$FORGE_SOURCE_REF" ]; then
+            echo "No Dash Forge release could be installed, and FORGE_SOURCE_REF is empty: set it to a dash-forge commit to build." >&2
+            exit 1
+          fi
+          apt-get update -qq && apt-get install -y -qq unzip >/dev/null
+          curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip
+          unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          cargo install --locked --root "$FORGE_DIR" --git "$FORGE_SOURCE_REPO" --rev "$FORGE_SOURCE_REF" \
+            dg git-remote-dash forge-import
+        fi
+      fi
+      git-remote-dash --version
+      # --- The signing key --------------------------------------------------------------
+      # A File variable: DASH_FORGE_KEY is the path of a file holding the identity JSON or a
+      # dfk1: key. git-remote-dash takes a path, or the dfk1: value itself.
+      if [ -z "${DASH_FORGE_KEY:-}" ]; then
+        echo "DASH_FORGE_KEY is not set: add it as a File, Protected CI/CD variable (and run on a protected branch or tag)." >&2
+        exit 1
+      fi
+      if [ -f "$DASH_FORGE_KEY" ] && [ "$(head -c 5 "$DASH_FORGE_KEY")" = "dfk1:" ]; then
+        DASH_FORGE_KEY=$(tr -d '[:space:]' <"$DASH_FORGE_KEY")
+      fi
+      export DASH_FORGE_KEY
+      # --- Network and storage, scoped to this job (git's command-scope config) ----------
+      export DASH_FORGE_NETWORK="$FORGE_NETWORK" DASH_FORGE_DEVNET_NAME="$FORGE_DEVNET_NAME"
+      export DASH_FORGE_STORAGE_CONFIG="$FORGE_DIR/storage.toml"
+      rm -f "$DASH_FORGE_STORAGE_CONFIG"
+      n=${GIT_CONFIG_COUNT:-0}
+      if [ "$FORGE_STORAGE_KIND" = s3 ]; then
+        set -- --kind s3 --endpoint "$FORGE_S3_ENDPOINT" --bucket "$FORGE_S3_BUCKET" \
+          --access-key-id env:S3_ACCESS_KEY_ID --secret-access-key env:S3_SECRET_ACCESS_KEY
+        [ -z "$FORGE_S3_REGION" ] || set -- "$@" --region "$FORGE_S3_REGION"
+        [ -z "$FORGE_S3_PUBLIC_URL" ] || set -- "$@" --public-url "$FORGE_S3_PUBLIC_URL"
+        [ -z "$FORGE_S3_PREFIX" ] || set -- "$@" --prefix "$FORGE_S3_PREFIX"
+        [ "$FORGE_S3_VIRTUAL_HOSTED" != true ] || set -- "$@" --virtual-hosted
+        # Secrets are stored as env: references; their values never reach the disk.
+        dg storage add mirror "$@" >/dev/null
+        export "GIT_CONFIG_KEY_$n=dash.storage" "GIT_CONFIG_VALUE_$n=mirror"
+        n=$((n + 1))
+        export "GIT_CONFIG_KEY_$n=dash.platformFallback" "GIT_CONFIG_VALUE_$n=false"
+        n=$((n + 1))
+      elif [ "$FORGE_STORAGE_KIND" != platform ]; then
+        echo "FORGE_STORAGE_KIND must be platform or s3" >&2
+        exit 1
+      fi
+      export GIT_CONFIG_COUNT="$n"
+  after_script:
+    - rm -f "$CI_PROJECT_DIR/.forge/storage.toml" "$CI_PROJECT_DIR/.forge/install.sh"
+
+forge-mirror-code:
+  extends: .dash-forge
+  rules:
+    - if: $FORGE_REPO == ""
+      when: never
+    # Branch and tag pushes, scheduled pipelines, and "Run pipeline" in the UI
+    # (docs.gitlab.com/ci/jobs/job_rules/).
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    - |
+      set -eu
+      # The runner fetched only this pipeline's ref. Fetch every branch into a private
+      # namespace (so no origin/HEAD pointer and none of GitLab's hidden refs can reach the
+      # mirror), and the tags, pruning what GitLab deleted.
+      git fetch --prune --prune-tags --no-tags origin \
+        '+refs/heads/*:refs/forge/heads/*' '+refs/tags/*:refs/tags/*'
+      # dash.confirm=never: there is no terminal to confirm on; the push still prints its
+      # estimate and what it was charged. --prune mirrors deletions.
+      git -c dash.confirm=never push --prune "$FORGE_REPO" \
+        '+refs/forge/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+
+forge-import:
+  extends: .dash-forge
+  needs:
+    - job: forge-mirror-code
+      optional: true
+  rules:
+    - if: $FORGE_REPO == "" || $FORGE_IMPORT != "true"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  script:
+    - |
+      set -eu
+      if [ -z "${GITLAB_TOKEN:-}" ]; then
+        echo "GITLAB_TOKEN is not set: without it GitLab shows no comments or labels, and they are not mirrored." >&2
+      fi
+      rc=0
+      forge-import "$CI_PROJECT_PATH" --gitlab-url "$CI_SERVER_URL" \
+        --repo "$FORGE_REPO" --sync "$FORGE_SYNC" \
+        --state "$CI_PROJECT_DIR/.forge/state/state.json" --work-dir "$CI_PROJECT_DIR/.forge/work" \
+        --max-spend "$FORGE_COST_CAP" --yes --summary-json "$CI_PROJECT_DIR/.forge/summary.json" || rc=$?
+      rm -rf "$CI_PROJECT_DIR/.forge/work"
+      # 0 ok, 4 partial (some items were skipped; the next run retries them), 3 the cost cap
+      # was reached, 1 error.
+      case "$rc" in
+        0) ;;
+        4) echo "Some items were skipped; the next run retries them." ;;
+        *) exit "$rc" ;;
+      esac
+  artifacts:
+    when: always
+    paths:
+      - .forge/summary.json
+    expire_in: 30 days
