@@ -152,6 +152,8 @@ describe('renderers terminate quickly on hostile input', () => {
       ['[' + fill(MIB - 4, '[a](b)') + ']( )'],
       ['[a]: b\n\n' + fill(MIB, '![x]')],
       ['[a]: b\n\n' + fill(MIB, '[![x][a]][a] ')],
+      // Each outer bracket used to normalize its (under 999-character) text as a label.
+      ['[a]: b\n\n' + fill(MIB - 8, '[ '.repeat(333) + ' ]'.repeat(333))],
     ]
     await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown nested brackets', MIB_CALL_MS)
   }, 120_000)

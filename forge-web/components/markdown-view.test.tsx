@@ -10,7 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { IMAGE_HOSTS_KEY } from '@/lib/view/markdown-links'
 import { imageRepo, png } from '@/lib/view/image-repo-fixture'
-import { MarkdownView, REPO_IMAGE_MAX_BYTES, resetImageHostsForTest, type MarkdownRepoContext } from './markdown-view'
+import type { MarkdownRepoContext } from './markdown-view'
+
+/** The README image cap (5 MiB), as the review of #82 set it. */
+const IMAGE_CAP = 5 * 1024 * 1024
+
+/**
+ * The component, freshly imported for each test: the hosts a viewer loaded "this session" live
+ * in module state, so a new import is a new session.
+ */
+let MarkdownView: typeof import('./markdown-view').MarkdownView
 
 vi.mock('next/link', () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
@@ -25,9 +34,14 @@ vi.mock('next/link', () => ({
 let host: HTMLDivElement
 let root: Root
 
-beforeEach(() => {
+const newSession = async (): Promise<void> => {
+  vi.resetModules()
+  MarkdownView = (await import('./markdown-view')).MarkdownView
+}
+
+beforeEach(async () => {
   window.localStorage.clear()
-  resetImageHostsForTest()
+  await newSession()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -63,6 +77,16 @@ describe('GatedImage (D-053)', () => {
     expect(host.querySelectorAll('[data-testid="gated-image"]')).toHaveLength(1)
   })
 
+  it('listens for another tab\'s "Always allow" once per page, not once per image', async () => {
+    const add = vi.spyOn(window, 'addEventListener')
+    await render(<MarkdownView source={Array.from({ length: 20 }, (_, i) => `![i${i}](https://img.example/${i}.png)`).join(' ')} />)
+    expect(add.mock.calls.filter(([type]) => (type as string) === 'storage')).toHaveLength(1)
+    // Another tab allows the host: every waiting image loads.
+    window.localStorage.setItem(IMAGE_HOSTS_KEY, JSON.stringify(['img.example']))
+    await act(async () => window.dispatchEvent(new StorageEvent('storage', { key: IMAGE_HOSTS_KEY })))
+    expect(imgs()).toHaveLength(20)
+  })
+
   it('"Load" is for this session only; "Always allow" is remembered', async () => {
     await render(<MarkdownView source={SOURCE} />)
     await act(async () => button(/Load images from img\.example/).click())
@@ -73,15 +97,15 @@ describe('GatedImage (D-053)', () => {
 
     // A new session: only the always-allowed host loads without a click.
     act(() => root.unmount())
-    resetImageHostsForTest()
+    await newSession()
     root = createRoot(host)
     await render(<MarkdownView source={SOURCE} />)
     expect(imgs().map((i) => i.getAttribute('src'))).toEqual(['https://other.example/c.png'])
   })
 
   it('loads the repo\'s own README images at once, asking for http images over https', async () => {
-    await render(<MarkdownView source="![x](http://i.imgur.com/x.png)" images="auto" />)
-    expect(imgs().map((i) => i.getAttribute('src'))).toEqual(['https://i.imgur.com/x.png'])
+    await render(<MarkdownView source={'![x](http://i.imgur.com/x.png) <img src="http:\\\\a.example/y.png"> <img src="HTTP:b.example/z.png">'} images="auto" />)
+    expect(imgs().map((i) => i.getAttribute('src'))).toEqual(['https://i.imgur.com/x.png', 'https://a.example/y.png', 'https://b.example/z.png'])
   })
 
   it('shows a link, not a blank box, for an image that fails to load', async () => {
@@ -91,6 +115,26 @@ describe('GatedImage (D-053)', () => {
     const link = host.querySelector('[data-testid="image-failed"]')
     expect(link?.getAttribute('href')).toBe('https://gone.example/x.gif')
     expect(link?.textContent).toContain('Demo')
+  })
+})
+
+describe('anchors (review of #82)', () => {
+  it('puts an id on the element itself, so tables and lists stay valid', async () => {
+    await render(<MarkdownView source={'<table>\n<tr id="row1"><td id="Cell">x</td></tr>\n</table>\n\n<ul>\n<li id="item">y</li>\n</ul>'} />)
+    expect(host.querySelector('tr')?.id).toBe('user-content-row1')
+    expect(host.querySelector('td')?.id).toBe('user-content-cell')
+    expect(host.querySelector('li')?.id).toBe('user-content-item')
+    // Nothing but rows in the table body, nothing but items in the list.
+    expect([...(host.querySelector('tbody, table')?.children ?? [])].every((c) => ['TBODY', 'TR'].includes(c.tagName))).toBe(true)
+    expect([...(host.querySelector('ul')?.children ?? [])].every((c) => c.tagName === 'LI')).toBe(true)
+  })
+
+  it('makes `<a name>` a target that an in-page link reaches, and keeps `<a href name>` a link', async () => {
+    await render(<MarkdownView source={'<a name="install"></a>\n\n[Install](#install) and <a name="up" href="#top">top</a>'} />)
+    expect(host.querySelector('a[href="#user-content-install"]')?.textContent).toBe('Install')
+    expect(host.querySelector('#user-content-install')).not.toBeNull()
+    expect(host.querySelector('#user-content-up')?.getAttribute('href')).toBe('#user-content-top')
+    expect(host.querySelector('p:empty')).toBeNull()
   })
 })
 
@@ -122,15 +166,17 @@ describe('RepoImage (review of #82)', () => {
   })
 
   it('refuses a blob over the cap even when its stored size is small (delta-compressed)', async () => {
-    const { reader, tipOid, oids } = await imageRepo([{ name: 'big.png', delta: { base: png(1024), size: REPO_IMAGE_MAX_BYTES + MIB } }])
+    const { reader, tipOid, oids } = await imageRepo([{ name: 'big.png', delta: { base: png(1024), size: IMAGE_CAP + MIB } }])
     expect(reader.locate(oids['big.png'] as string)?.length).toBeLessThan(4096)
     const read = vi.spyOn(reader, 'readObject')
     await render(<MarkdownView source="![big](big.png)" images="auto" repo={repoContext(reader, tipOid)} />)
     await settle()
     expect(host.querySelector('[data-testid="repo-image"]')).toBeNull()
     expect(host.querySelector('[data-testid="repo-image-link"]')?.textContent).toBe('big')
-    // The blob was asked for with the cap, so the reader refused it before inflating.
-    expect(read).toHaveBeenCalledWith(oids['big.png'], { maxBytes: REPO_IMAGE_MAX_BYTES })
+    // No read ever produced the 6 MiB blob: it was refused before it was inflated.
+    const produced = await Promise.all(read.mock.results.map((r) => Promise.resolve(r.value).then((o: { bytes: Uint8Array }) => o.bytes.length, () => 0)))
+    expect(Math.max(...produced)).toBeLessThanOrEqual(IMAGE_CAP)
+    expect(read.mock.calls.some(([oid]) => oid === oids['big.png'])).toBe(true)
     expect(URL.createObjectURL).not.toHaveBeenCalled()
   })
 

@@ -107,31 +107,33 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
 }
 
 /** A link: an in-page anchor, a repo-relative path (to the blob view), or an external URL. */
-function MdLink({ href, children }: { href: string; children: ReactNode }): JSX.Element {
+function MdLink({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
   const { repo } = useContext(Ctx)
-  if (href === '#') return <>{children}</>
+  // An `<a href name>` is also an in-page target; a link that goes nowhere keeps only that.
+  const target = id === undefined ? undefined : anchorTarget(id)
+  if (href === '#') return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
   if (href.startsWith('#')) {
     // GitHub prefixes heading and `<a name>` ids with `user-content-`; so do the targets here.
-    const id = anchorTarget(decodeURIComponentSafe(href.slice(1)))
+    const to = anchorTarget(decodeURIComponentSafe(href.slice(1)))
     return (
-      <a href={`#${id}`} className={LINK}>
+      <a id={target} href={`#${to}`} className={LINK}>
         {children}
       </a>
     )
   }
   if (isRelativeHref(href)) {
     const path = repo ? resolveRepoPath(repo.dir, splitHref(href).path) : null
-    if (repo === null || path === null) return <>{children}</>
+    if (repo === null || path === null) return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
     const fragment = splitHref(href).fragment
-    const target = `${repoPathHref(repo, path, /\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
+    const to = `${repoPathHref(repo, path, /\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
     return (
-      <Link href={target} className={LINK}>
+      <Link id={target} href={to} className={LINK}>
         {children}
       </Link>
     )
   }
   return (
-    <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer noopener" className={LINK}>
+    <a id={target} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer noopener" className={LINK}>
       {children}
     </a>
   )
@@ -216,13 +218,6 @@ function useHostAllowed(host: string | null): boolean {
     () => host !== null && (sessionHosts.has(host) || readHosts().includes(host)),
     () => false,
   )
-}
-
-/** Test hook: forget this session's one-click hosts. */
-export function resetImageHostsForTest(): void {
-  sessionHosts.clear()
-  hostsRaw = undefined
-  notifyHosts()
 }
 
 const IMG = 'my-2 inline-block max-w-full rounded align-middle'
@@ -425,7 +420,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
         )
       case 'link':
         return (
-          <MdLink key={key} href={n.href}>
+          <MdLink key={key} href={n.href} id={n.id}>
             {renderInline(n.c, key)}
           </MdLink>
         )
@@ -563,77 +558,66 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
 
 /** An allowlisted HTML container. Only its tag, alignment, `open` and a checked `href` survive. */
 function renderElement(b: Extract<Block, { t: 'element' }>, key: string, slugs: Map<string, number>): ReactNode {
-  const el = renderElementTag(b, key, slugs)
-  if (b.id === undefined) return el
-  // An `id` / `<a name>` target: a zero-size anchor right before the element, so every
-  // element kind keeps its own markup (and a link's `#name` scrolls to it).
-  return (
-    <Fragment key={key}>
-      <a id={anchorTarget(b.id)} />
-      {el}
-    </Fragment>
-  )
-}
-
-function renderElementTag(b: Extract<Block, { t: 'element' }>, key: string, slugs: Map<string, number>): ReactNode {
   const kids = b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))
   const align = b.align === null ? undefined : tableAlignClass(b.align)
+  // An `id` (or an `<a name>`) is an in-page target, on the element itself (GitHub's prefix).
+  const id = b.id === undefined ? undefined : anchorTarget(b.id)
   switch (b.tag) {
     case 'details':
       return (
-        <details key={key} open={b.open} className="my-3 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
+        <details key={key} id={id} open={b.open} className="my-3 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
           {kids}
         </details>
       )
     case 'summary':
-      return <summary key={key} className="cursor-pointer font-medium">{kids}</summary>
+      return <summary key={key} id={id} className="cursor-pointer font-medium">{kids}</summary>
     case 'a':
-      return b.href === undefined ? <Fragment key={key}>{kids}</Fragment> : <MdLink key={key} href={b.href}>{kids}</MdLink>
+      return <MdLink key={key} href={b.href ?? '#'} id={b.id}>{kids}</MdLink>
     case 'p':
-      return <p key={key} className={cn('my-3 leading-relaxed', align)}>{kids}</p>
+      return <p key={key} id={id} className={cn('my-3 leading-relaxed', align)}>{kids}</p>
     case 'blockquote':
-      return <blockquote key={key} className="my-3 border-l-2 border-forge-500/40 pl-4 text-anvil-500 dark:text-anvil-400">{kids}</blockquote>
+      return <blockquote key={key} id={id} className="my-3 border-l-2 border-forge-500/40 pl-4 text-anvil-500 dark:text-anvil-400">{kids}</blockquote>
     case 'table':
       return (
         <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto">
-          <table className={cn('min-w-full border-collapse text-dense', align)}>{kids}</table>
+          <table id={id} className={cn('min-w-full border-collapse text-dense', align)}>{kids}</table>
         </ScrollRegion>
       )
     case 'thead':
-      return <thead key={key}>{kids}</thead>
+      return <thead key={key} id={id}>{kids}</thead>
     case 'tbody':
-      return <tbody key={key}>{kids}</tbody>
+      return <tbody key={key} id={id}>{kids}</tbody>
     case 'tfoot':
-      return <tfoot key={key}>{kids}</tfoot>
+      return <tfoot key={key} id={id}>{kids}</tfoot>
     case 'tr':
-      return <tr key={key} className="align-top">{kids}</tr>
+      return <tr key={key} id={id} className="align-top">{kids}</tr>
     case 'td':
-      return <td key={key} className={cn('px-3 py-2', align)}>{kids}</td>
+      return <td key={key} id={id} className={cn('px-3 py-2', align)}>{kids}</td>
     case 'th':
-      return <th key={key} className={cn('px-3 py-2 font-semibold', align)}>{kids}</th>
+      return <th key={key} id={id} className={cn('px-3 py-2 font-semibold', align)}>{kids}</th>
     case 'ul':
-      return <ul key={key} className="my-3 list-disc space-y-1 pl-6">{kids}</ul>
+      return <ul key={key} id={id} className="my-3 list-disc space-y-1 pl-6">{kids}</ul>
     case 'ol':
-      return <ol key={key} className="my-3 list-decimal space-y-1 pl-6">{kids}</ol>
+      return <ol key={key} id={id} className="my-3 list-decimal space-y-1 pl-6">{kids}</ol>
     case 'li':
-      return <li key={key}>{kids}</li>
+      return <li key={key} id={id}>{kids}</li>
     case 'dl':
-      return <dl key={key} className="my-3">{kids}</dl>
+      return <dl key={key} id={id} className="my-3">{kids}</dl>
     case 'dt':
-      return <dt key={key} className="font-semibold">{kids}</dt>
+      return <dt key={key} id={id} className="font-semibold">{kids}</dt>
     case 'dd':
-      return <dd key={key} className="ml-6">{kids}</dd>
+      return <dd key={key} id={id} className="ml-6">{kids}</dd>
     case 'h1':
     case 'h2':
-      return <h2 key={key} className={cn(HEADING_CLASS[b.tag === 'h1' ? 1 : 2], align)}>{kids}</h2>
+      return <h2 key={key} id={id} className={cn(HEADING_CLASS[b.tag === 'h1' ? 1 : 2], align)}>{kids}</h2>
     case 'h3':
-      return <h3 key={key} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h3>
+      return <h3 key={key} id={id} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h3>
     case 'h4':
     case 'h5':
     case 'h6':
-      return <h4 key={key} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h4>
+      return <h4 key={key} id={id} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h4>
     default:
-      return <div key={key} className={align}>{kids}</div>
+      return <div key={key} id={id} className={align}>{kids}</div>
   }
 }
 

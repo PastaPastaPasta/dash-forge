@@ -22,6 +22,7 @@ import {
   type GitObject,
   PACK_TYPE,
   gitOidHex,
+  baseMaxBytes,
   inflateDelta,
   inflateZlib,
   ObjectTooLargeError,
@@ -29,6 +30,7 @@ import {
   parseObjHeader,
   parseOfsBase,
   reconstructFromSpan,
+  storedMaxBytes,
 } from './pack'
 
 /**
@@ -183,6 +185,15 @@ function withinLimit(obj: GitObject, maxBytes: number): GitObject {
   return obj
 }
 
+/**
+ * Refuse, before fetching it, a pack entry too long to hold an object of at most `maxBytes`:
+ * its length is the pusher's claim, and fetching a 500 MiB entry to learn that its header
+ * says 500 MiB is the cost this avoids.
+ */
+function checkStoredLength(entry: LocatorEntry, maxBytes: number): void {
+  if (maxBytes !== Infinity && entry.length > storedMaxBytes(maxBytes)) throw new ObjectTooLargeError(entry.length, maxBytes)
+}
+
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
 const OBJECT_CACHE_BUDGET_BYTES = 8 * 1024 * 1024
 /** Objects above this size are never memoized (one huge blob must not evict everything). */
@@ -322,14 +333,17 @@ export class BrowseReader {
     const copies = this.packs.copyCount?.(entry.packRef) ?? 1
     const start = this.copyOf.get(entry.packRef) ?? 0
     let lastErr: unknown
+    let tooLarge: ObjectTooLargeError | null = null
     for (let i = 0; i < copies; i++) {
       const copy = (start + i) % copies
       let obj: GitObject
       try {
         obj = i === 0 ? await this.reconstruct(entry, maxBytes) : await this.reconstructFrom(entry, copy, maxBytes)
       } catch (e) {
-        if (e instanceof ObjectTooLargeError) throw e // the caller's limit, not a bad copy
-        lastErr = e
+        // Over the caller's limit in this copy: another copy may be the honest one (a
+        // tampered header must not hide it), and if every copy says so, that is the answer.
+        if (e instanceof ObjectTooLargeError) tooLarge = e
+        else lastErr = e
         continue
       }
       if (this.opts.verify === false) {
@@ -344,6 +358,7 @@ export class BrowseReader {
       }
       lastErr = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
     }
+    if (tooLarge !== null) throw tooLarge
     this.opts.onObject?.('failed')
     throw lastErr
   }
@@ -364,7 +379,8 @@ export class BrowseReader {
       const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
       return reconstructFromSpan(entry, slice, maxBytes)
     }
-    const walk = async (e: LocatorEntry): Promise<GitObject> => {
+    const walk = async (e: LocatorEntry, limit: number): Promise<GitObject> => {
+      checkStoredLength(e, limit)
       const self = await this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
       const h = parseObjHeader(self, 0)
       switch (h.type) {
@@ -372,24 +388,24 @@ export class BrowseReader {
         case PACK_TYPE.TREE:
         case PACK_TYPE.BLOB:
         case PACK_TYPE.TAG:
-          return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, maxBytes) }
+          return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, limit) }
         case PACK_TYPE.OFS_DELTA: {
           const [rel, dpos] = parseOfsBase(self, h.after)
           if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
           const baseEntry = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
           if (baseEntry === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
-          const base = await walk(baseEntry)
-          return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
+          const base = await walk(baseEntry, baseMaxBytes(maxBytes))
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, limit) }
         }
         case PACK_TYPE.REF_DELTA: {
-          const base = await this.readObject(bytesToHex(self.subarray(h.after, h.after + 20)), { maxBytes })
-          return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes) }
+          const base = await this.readObject(bytesToHex(self.subarray(h.after, h.after + 20)), { maxBytes: baseMaxBytes(maxBytes) })
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, limit) }
         }
         default:
           throw new Error(`unknown pack object type ${h.type}`)
       }
     }
-    return walk(entry)
+    return walk(entry, maxBytes)
   }
 
   /** Single contiguous span read (blob path): one ranged fetch, then reconstruct. */
@@ -405,18 +421,20 @@ export class BrowseReader {
    * bytes, resolve its immediate base individually (OFS by offset via the locator's offset
    * index, REF by OID), and apply. Avoids the single-span over-fetch (root tree 212×).
    */
-  private async decodeEntry(entry: LocatorEntry, maxBytes: number): Promise<GitObject> {
+  private async decodeEntry(entry: LocatorEntry, maxBytes: number, baseMax = baseMaxBytes(maxBytes)): Promise<GitObject> {
     // Keyed by the copy too: bytes decoded from one writer's copy must not stand in for
     // another's once a bad copy has been skipped.
     const addrKey = `${offsetKey(entry.packRef, entry.offset)}:${this.copyOf.get(entry.packRef) ?? 0}`
     const cached = this.objectsByAddr.get(addrKey)
     if (cached !== undefined) return withinLimit(cached, maxBytes)
-    const obj = await this.decodeEntryUncached(entry, maxBytes)
+    const obj = await this.decodeEntryUncached(entry, maxBytes, baseMax)
     this.objectsByAddr.set(addrKey, obj)
     return obj
   }
 
-  private async decodeEntryUncached(entry: LocatorEntry, maxBytes: number): Promise<GitObject> {
+  /** `maxBytes` bounds this entry and `baseMax` its delta bases, at any depth. */
+  private async decodeEntryUncached(entry: LocatorEntry, maxBytes: number, baseMax: number): Promise<GitObject> {
+    checkStoredLength(entry, maxBytes)
     const packRef = entry.packRef
     const self = await this.packs.fetchRange(packRef, entry.offset, entry.offset + entry.length, this.copyOf.get(packRef))
     const h = parseObjHeader(self, 0)
@@ -429,12 +447,12 @@ export class BrowseReader {
         return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, maxBytes) }
       case PACK_TYPE.OFS_DELTA: {
         const [rel, dpos] = parseOfsBase(self, h.after)
-        const base = await this.decodeByOffset(packRef, entry.offset - rel, maxBytes)
+        const base = await this.decodeByOffset(packRef, entry.offset - rel, baseMax)
         return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
       }
       case PACK_TYPE.REF_DELTA: {
         const oidHex = bytesToHex(self.subarray(h.after, h.after + 20))
-        const base = await this.decodeByOid(oidHex, maxBytes)
+        const base = await this.decodeByOid(oidHex, baseMax)
         return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes) }
       }
       default:
@@ -442,19 +460,19 @@ export class BrowseReader {
     }
   }
 
-  private async decodeByOffset(packRef: number, off: number, maxBytes: number): Promise<GitObject> {
+  private async decodeByOffset(packRef: number, off: number, baseMax: number): Promise<GitObject> {
     if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
     // Keyed by (packRef, offset): offsets repeat across packs, and an OFS base is always
     // in the referencing object's own pack.
     const e = this.offsetIndex.get(offsetKey(packRef, off))
     if (e === undefined) throw new Error(`base object at pack ${packRef} offset ${off} not in locator`)
-    return this.decodeEntry(e, maxBytes)
+    return this.decodeEntry(e, baseMax, baseMax)
   }
 
-  private async decodeByOid(oidHex: string, maxBytes: number): Promise<GitObject> {
+  private async decodeByOid(oidHex: string, baseMax: number): Promise<GitObject> {
     const e = this.locator.lookup(hexToBytes(oidHex))
     if (e === null) throw new Error(`REF_DELTA base not in locator: ${oidHex}`)
-    return this.decodeEntry(e, maxBytes)
+    return this.decodeEntry(e, baseMax, baseMax)
   }
 
   /**

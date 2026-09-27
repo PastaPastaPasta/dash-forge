@@ -46,7 +46,9 @@ export function urlHostOf(src: string): string | null {
  * serve http fail either way, and the renderer then links to the image instead.
  */
 export function upgradeHttp(src: string): string {
-  return /^http:\/\//i.test(src) ? `https://${src.slice(7)}` : src
+  // The URL parser reads `http:\\host`, `http:/host` and `http:host` as `http://host` too.
+  const m = /^http:[/\\]*/i.exec(src)
+  return m === null ? src : `https://${src.slice(m[0].length)}`
 }
 
 /** Hosts the viewer chose to always load images from, kept in this browser only. */

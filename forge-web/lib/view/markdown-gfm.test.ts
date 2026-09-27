@@ -385,6 +385,17 @@ describe('post-merge review of #82', () => {
     expect(parseMarkdown('<div id="top" align="center">\nx\n</div>')[0]).toMatchObject({ t: 'element', tag: 'div', id: 'top' })
   })
 
+  it('keeps an unclosed __ literal, and lets an em hold a strong', () => {
+    expect(para('__a__b')).toEqual([{ t: 'text', v: '__a__b' }])
+    expect(para('_a __b__ c_')).toEqual([
+      { t: 'em', c: [{ t: 'text', v: 'a ' }, { t: 'strong', c: [{ t: 'text', v: 'b' }] }, { t: 'text', v: ' c' }] },
+    ])
+  })
+
+  it('keeps both the link and the anchor of <a href name>', () => {
+    expect(para('<a name="top" href="#x">up</a>')).toEqual([{ t: 'link', href: '#x', id: 'top', c: [{ t: 'text', v: 'up' }] }])
+  })
+
   it('does not embolden intraword double underscores', () => {
     expect(para('my__var__name and __init__.py')).toEqual([
       { t: 'text', v: 'my__var__name and ' },

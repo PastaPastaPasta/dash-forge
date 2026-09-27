@@ -40,7 +40,13 @@ export type Inline =
   | { readonly t: 'em'; readonly c: readonly Inline[] }
   | { readonly t: 'del'; readonly c: readonly Inline[] }
   | { readonly t: 'code'; readonly v: string }
-  | { readonly t: 'link'; readonly href: string; readonly c: readonly Inline[] }
+  | {
+      readonly t: 'link'
+      readonly href: string
+      readonly c: readonly Inline[]
+      /** `<a href name|id>`: the link is also an in-page anchor target. */
+      readonly id?: string
+    }
   | {
       readonly t: 'image'
       readonly src: string
@@ -402,6 +408,20 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     }
     return run.opens
   }
+  /**
+   * The `_` closing an em opened before `from`: a lone `_`, not one of a run (the `__` of
+   * `_a __b__ c_` is a strong span inside the em). A few runs are skipped at most, so a line of
+   * `_a __` stays linear.
+   */
+  const emUnderscoreClose = (from: number): number => {
+    let u = find('_', from)
+    for (let tries = 0; u !== -1 && tries < 4 && at(u + 1) === '_'; tries++) {
+      let past = u
+      while (at(past) === '_') past += 1
+      u = find('_', past)
+    }
+    return u !== -1 && at(u + 1) === '_' ? -1 : u
+  }
   /** The `]` matching a `[` at `open`, when it is inside this span; else -1. */
   const closeOf = (open: number): number => {
     const close = doc.closeOf(open)
@@ -423,8 +443,8 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
 
   /**
    * A reference `[text][ref]` / `[text][]` / `[ref]` whose text is `[open..close]`. A label is
-   * at most {@link MAX_LABEL} characters (as CommonMark says), so a failed `[` costs O(1)
-   * however long its text: normalizing every one made nested brackets quadratic.
+   * at most {@link MAX_LABEL} characters and holds no `[` (as CommonMark says), so a failed `[`
+   * costs O(log n) however long its text: normalizing every one made nested brackets quadratic.
    */
   const reference = (open: number, close: number): { href: string; end: number } | null => {
     if (references.size === 0) return null
@@ -432,7 +452,10 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     const refEnd = at(close + 1) === '[' ? closeOf(close + 1) : close
     if (refEnd === -1) return null
     const [from, to] = refEnd > close + 2 ? [close + 2, refEnd] : [open + 1, close]
-    if (to - from > MAX_LABEL) return null
+    // A label holds no `[` (CommonMark): an outer bracket around links is never a reference,
+    // and checking that first (a binary search) keeps nested brackets from each normalizing
+    // up to 999 characters.
+    if (to - from > MAX_LABEL || doc.find('[', from, to) !== -1) return null
     const href = references.get(normalizeLabel(src.slice(from, to)))
     return href === undefined ? null : { href, end: refEnd + 1 }
   }
@@ -568,10 +591,17 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
         i = close + 2
         continue
       }
+      if (ch === '_') {
+        // An unclosed `__` is text, both characters: its second `_` opens no emphasis
+        // (`__a__b` is literal, as on GitHub).
+        add('__')
+        i += 2
+        continue
+      }
     }
     // em *x* / _x_ (an intraword `_` is literal: snake_case_names)
     if ((ch === '*' || (ch === '_' && underscoreOpens(i))) && depth < MAX_INLINE_DEPTH) {
-      const close = find(ch, i + 1)
+      const close = ch === '*' ? find('*', i + 1) : emUnderscoreClose(i + 1)
       if (close > i + 1 && (ch === '*' || !isWordChar(at(close + 1)))) {
         push({ t: 'em', c: parseSpan(doc, i + 1, close, depth + 1, false) })
         i = close + 1
@@ -664,8 +694,8 @@ function inlineTag(
   if (kept !== undefined) return { node: { t: 'tag', tag: kept, c }, end: past }
   if (alias !== undefined) return { node: { t: alias, c }, end: past }
   const href = tag.attrs['href']
-  if (href !== undefined) return { node: { t: 'link', href: safeHref(href), c }, end: past }
   const id = anchorId(tag.attrs)
+  if (href !== undefined) return { node: { t: 'link', href: safeHref(href), c, ...(id !== undefined ? { id } : {}) }, end: past }
   return id === undefined ? { node: null, end: after } : { node: { t: 'anchor', id, c }, end: past }
 }
 
