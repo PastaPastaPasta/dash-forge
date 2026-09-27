@@ -545,7 +545,7 @@ function Composer({
           ) : null}
         </div>
       </div>
-      {reviewing ? <p className="text-[11px] text-anvil-500 dark:text-anvil-400">A review comment stays in this browser, unpublished and free, until you submit the review.</p> : null}
+      {reviewing ? <p className="text-[11px] text-anvil-500 dark:text-anvil-400">A review comment is saved in this browser only (not on your account), unpublished and free, until you submit the review.</p> : null}
       {error ? (
         <p role="alert" className="text-dense text-danger-700 dark:text-danger-400">
           {error}

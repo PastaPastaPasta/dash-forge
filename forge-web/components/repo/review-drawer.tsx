@@ -29,6 +29,7 @@ import {
   addDraftComment,
   draftCost,
   draftIsEmpty,
+  draftWhereabouts,
   editDraftComment,
   newReviewDraft,
   partialSubmitMessage,
@@ -261,7 +262,9 @@ export function ReviewDrawer({
           className="absolute right-0 z-30 mt-2 w-[min(32rem,calc(100vw-2rem))] space-y-3 rounded-lg border border-anvil-200 bg-white p-4 text-left shadow-xl dark:border-anvil-750 dark:bg-anvil-950"
         >
           <h3 className="text-dense font-semibold">Finish your review</h3>
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Pending comments stay in this browser until you submit.</p>
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
+            {draftWhereabouts(repo.visibility === 'private')} Nothing is on Platform until you submit.
+          </p>
           {headMoved && draft ? (
             <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="draft-head-moved">
               The PR moved to <Oid value={headOid} chars={7} copyable={false} /> since you started. Your comments are anchored to{' '}

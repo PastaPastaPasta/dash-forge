@@ -10,6 +10,18 @@
 import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
 
+/**
+ * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
+ * NOT on the account (a draft on Platform would cost a write per edit), so another browser or
+ * device never sees it. It survives reloads and signing out and in again here (it is keyed by
+ * network, identity and PR, not by session); a private repo's only lasts while this tab is open.
+ */
+export function draftWhereabouts(privateRepo: boolean): string {
+  return privateRepo
+    ? 'Pending comments are saved in this tab only (a private repo’s are never written to disk): submit before closing it. Other browsers and devices do not see them.'
+    : 'Pending comments are saved in this browser only, for this identity: other browsers and devices do not see them. They stay through reloads and signing out and in again here.'
+}
+
 /** A fresh local draft for `prId` anchored to `headOid`. */
 export function newReviewDraft(input: { draftId: string; network: string; identity: string; repoId: string; prId: string; headOid: string; private: boolean; now: number }): ReviewDraft {
   return {

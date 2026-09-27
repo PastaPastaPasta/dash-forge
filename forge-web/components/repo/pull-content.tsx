@@ -43,6 +43,7 @@ import {
   Tag,
   UserPlus,
   X,
+  MessageSquareDashed,
 } from 'lucide-react'
 
 import type { CommentView, PullThread, RepoHome, TimelineItem } from '@/lib/view'
@@ -77,6 +78,7 @@ import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey } from '@/lib/view/inline-threads'
 import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
+import { draftIsEmpty, draftWhereabouts } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -628,6 +630,20 @@ function PullPage({
           <AlertTriangle className="mr-1.5 inline h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           The source branch <span className="font-mono">{shortRef(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
         </p>
+      ) : null}
+      {open && reviewDraft.draft !== null && !draftIsEmpty(reviewDraft.draft) ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" data-testid="pending-review-banner">
+          <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
+          <span className="min-w-0 flex-1">
+            You have a pending review ({reviewDraft.draft.comments.length} comment{reviewDraft.draft.comments.length === 1 ? '' : 's'}), not yet submitted.{' '}
+            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
+          </span>
+          {tab !== 'files' ? (
+            <Button size="sm" variant="outline" onClick={() => setTab('files')}>
+              Continue review
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {since !== null && open ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 bg-anvil-50 px-4 py-3 text-dense dark:border-anvil-700 dark:bg-anvil-900" data-testid="since-your-review">

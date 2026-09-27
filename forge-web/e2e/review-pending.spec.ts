@@ -43,6 +43,18 @@ const SLUG = `${ids.owner}/${REPO}`
 const WORK = join(tmpdir(), `dash-forge-${REPO}`)
 const FILE = 'src/greet.rs'
 let prNumber = 0
+// The reviewer's page from p1 on: a pending review lives in THIS browser's IndexedDB, so p2 and p3
+// reload it rather than open a new context (which would start from the saved sign-in state).
+let reviewer: Page | null = null
+
+/** Reload the reviewer's page (a reload locks the vault: unlock it). */
+async function reloadReviewer(): Promise<Page> {
+  const page = reviewer as Page
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await unlock(page)
+  await waitForRepoResolved(page)
+  return page
+}
 
 function env(who: string): NodeJS.ProcessEnv {
   return {
@@ -120,6 +132,7 @@ test.afterAll(() => rmSync(WORK, { recursive: true, force: true }))
 
 test('p1. a pending review: a line, a 3-line range and another line, nothing written', async ({ browser }) => {
   const page = await signedIn(browser, 'COLLAB', files())
+  reviewer = page
   await waitForRepoResolved(page)
   await expect(lineButton(page, 2)).toBeVisible({ timeout: 180_000 })
   await lineButton(page, 2).click()
@@ -139,16 +152,30 @@ test('p1. a pending review: a line, a 3-line range and another line, nothing wri
   await shot(page, 'review-pending-01-drafts')
 })
 
-test('p2. the draft survives a reload', async ({ browser }) => {
-  const page = await signedIn(browser, 'COLLAB', files())
-  await waitForRepoResolved(page)
+test('p2. the draft survives a reload and a sign-out and sign-in in the same browser, and says where it lives', async () => {
+  // The same browser context: a pending review is kept in this browser (IndexedDB), not on the
+  // account, so this is where it must survive.
+  let page = await reloadReviewer()
   await expect(page.getByTestId('pending-count')).toHaveText('3', { timeout: 120_000 })
   await expect(page.getByTestId('pending-comment')).toHaveCount(3, { timeout: 120_000 })
+  await expect(page.getByTestId('pending-review-banner')).toContainText('Pending comments are saved in this browser only')
+  // Sign out and in again: the draft is keyed by identity and PR, not by the session.
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await page.getByRole('button', { name: /lock & sign out/i }).click()
+  await expect(page.getByTestId('funds-pill')).toBeHidden({ timeout: 30_000 })
+  await expect(page.getByTestId('pending-review-banner')).toBeHidden()
+  await unlock(page)
+  await expect(page.getByTestId('pending-count')).toHaveText('3', { timeout: 120_000 })
+  await expect(page.getByTestId('pending-comment')).toHaveCount(3)
+  await page.getByRole('button', { name: /review changes/i }).click()
+  await expect(page.getByTestId('draft-whereabouts')).toContainText('saved in this browser only')
+  await page.getByRole('button', { name: /review changes/i }).click()
+  page = reviewer as Page
+  await shot(page, 'review-pending-01b-browser-only')
 })
 
-test('p3. a submit cut off after 2 documents resumes with Retry; nothing twice', async ({ browser }) => {
-  const page = await signedIn(browser, 'COLLAB', files())
-  await waitForRepoResolved(page)
+test('p3. a submit cut off after 2 documents resumes with Retry; nothing twice', async () => {
+  const page = reviewer as Page
   await expect(page.getByTestId('pending-count')).toHaveText('3', { timeout: 120_000 })
   await page.getByRole('button', { name: /review changes/i }).click()
   let panel = page.getByRole('region', { name: 'Finish your review' })
@@ -156,8 +183,7 @@ test('p3. a submit cut off after 2 documents resumes with Retry; nothing twice',
   await panel.getByLabel(/^Request changes/).check()
   // The summary and verdict are part of the draft: a reload keeps them.
   await page.waitForTimeout(600)
-  await page.reload()
-  await waitForRepoResolved(page)
+  await reloadReviewer()
   await expect(page.getByTestId('pending-count')).toHaveText('3', { timeout: 120_000 })
   await page.getByRole('button', { name: /review changes/i }).click()
   panel = page.getByRole('region', { name: 'Finish your review' })
