@@ -9,7 +9,7 @@
  * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
@@ -154,14 +154,21 @@ export function AuthProvider({
   // The list has been read successfully at least once. The sheet also proceeds on `vaultsError`:
   // a caller waiting on this flag alone would wait forever while storage is blocked.
   const [vaultsLoaded, setVaultsLoaded] = useState(false)
+  // Only the latest read may update the list: an older read that fails after a newer one
+  // succeeded must not report a failure.
+  const vaultRead = useRef(0)
   const reloadVaults = useCallback(() => {
+    const read = ++vaultRead.current
     controller.storedVaults().then(
       (v) => {
+        if (read !== vaultRead.current) return
         setVaults(v)
         setVaultsError(null)
         setVaultsLoaded(true)
       },
-      (e: unknown) => setVaultsError(errorMessage(e)),
+      (e: unknown) => {
+        if (read === vaultRead.current) setVaultsError(errorMessage(e))
+      },
     )
   }, [controller])
   useEffect(reloadVaults, [reloadVaults])

@@ -256,6 +256,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
   const { vaults, unlock, forget, isLoading } = useAuth()
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === initial)))
   const [passphrase, setPassphrase] = useState('')
+  const passphraseRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const v = vaults[pick] ?? vaults[0]
   if (!v) {
@@ -291,7 +292,9 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
             value={pick}
             onChange={(e) => {
               setPick(Number(e.target.value))
-              // The passphrase field may unmount (a passkey-only key) and come back empty.
+              // Another key: its passphrase starts empty, in the field (if it stays mounted) and
+              // in state (if it unmounts for a passkey-only key and comes back empty).
+              if (passphraseRef.current) passphraseRef.current.value = ''
               setPassphrase('')
             }}
             className="rounded border border-anvil-300 bg-transparent px-1 font-mono coarse:h-11 coarse:text-base dark:border-anvil-700"
@@ -320,7 +323,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
           }}
         >
           <Field label="Passphrase" htmlFor="unlock-passphrase">
-            <Input id="unlock-passphrase" type="password" autoComplete="current-password" onChange={(e) => setPassphrase(e.target.value)} autoFocus />
+            <Input id="unlock-passphrase" ref={passphraseRef} type="password" autoComplete="current-password" onChange={(e) => setPassphrase(e.target.value)} autoFocus />
           </Field>
           <Button type="submit" variant={v.methods.includes('passkey') ? 'outline' : 'primary'} className="w-full" loading={isLoading} disabled={passphrase === '' || isLoading}>
             Unlock
