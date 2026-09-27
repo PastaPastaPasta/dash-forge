@@ -249,6 +249,11 @@ pub enum Unreadable {
     BadTag,
     /// Written under a superseded epoch after the grace period by a non-member (§8.2).
     Late,
+    /// Sealed under an earlier use of this epoch number (one that stopped existing when its
+    /// anchor's maintainer was removed, §5.3) and older than the number's current anchor: a
+    /// different key, never this repository's current content. Set by the reading layer, not by
+    /// [`open_content`].
+    EarlierUse,
 }
 
 /// The result of [`open_content`].

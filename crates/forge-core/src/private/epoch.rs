@@ -172,7 +172,8 @@ pub struct EpochResolution {
     pub anchors: BTreeMap<u32, Anchor>,
     /// The key of every epoch the reader can read.
     pub keys: BTreeMap<u32, EpochKey>,
-    /// The epoch the reader writes under: the current epoch, if readable and not burned (§5.3).
+    /// The epoch the reader writes under: the current epoch, if readable, not burned (§5.3)
+    /// and not wrapped to a non-member (§5.6).
     pub write_epoch: Option<u32>,
     /// Readable epochs whose anchor is burned (§5.3): chain links only, never written under;
     /// content under one is late unless its author is a current member.
@@ -346,7 +347,11 @@ fn anchor_of(c: &ConfigRow) -> Anchor {
 
 /// Walk the `prevEpochKey` chain down from `start` (§5.3, L2), adding every epoch it reaches to
 /// `keys`, and raising `ChainBroken` where it stops early. Each anchor links to exactly the
-/// epoch below it (`prevEpoch = e − 1`).
+/// epoch below it (`prevEpoch = e − 1`). A burned anchor carries no `prevEpochKey`, so a walk
+/// that reaches one stops there; the anchor above a burned run carries `skipEpochKey`, the key of
+/// the nearest epoch below the run that is not burned, and the walk continues from that epoch
+/// (the burned epochs in between stay unreadable through this walk: nothing is sealed under
+/// them).
 fn walk_chain(
     repo_id: &[u8; 32],
     start: u32,
@@ -355,24 +360,27 @@ fn walk_chain(
     keys: &mut BTreeMap<u32, EpochKey>,
     alerts: &mut BTreeSet<Alert>,
 ) {
+    let open = |e: u32, key: &EpochKey| -> Option<Box<super::Fields>> {
+        let c = first[&e];
+        let header = DocHeader::new(DocKind::Config, c.owner, e);
+        match open_with(&EpochKeys::derive(repo_id, e, key), &header, &c.enc, true) {
+            Opened::Readable(f) => Some(f),
+            _ => None,
+        }
+    };
     let mut e = start;
     while e > 0 {
-        let config = first[&e];
         let broken = Alert::ChainBroken {
             epoch: e,
-            author: config.owner,
+            author: first[&e].owner,
         };
-        let header = DocHeader::new(DocKind::Config, config.owner, e);
-        let opened = open_with(
-            &EpochKeys::derive(repo_id, e, &keys[&e]),
-            &header,
-            &config.enc,
-            true,
-        );
-        let Opened::Readable(fields) = opened else {
+        let Some(fields) = open(e, &keys[&e]) else {
             alerts.insert(broken);
             return;
         };
+        if fields.burned {
+            return; // a chain link only from above (its skipEpochKey)
+        }
         let (Some(p), Some(pk)) = (fields.prev_epoch, fields.prev_epoch_key.clone()) else {
             alerts.insert(broken);
             return;
@@ -381,11 +389,33 @@ fn walk_chain(
             alerts.insert(broken);
             return;
         }
-        if keys.contains_key(&p) {
+        let below_burned = open(p, &pk).is_some_and(|f| f.burned);
+        if !below_burned {
+            if keys.contains_key(&p) {
+                return;
+            }
+            keys.insert(p, pk);
+            e = p;
+            continue;
+        }
+        // the burned epoch's own key (readable, and judged burned, like any epoch)
+        keys.entry(p).or_insert(pk);
+        // step over the burned run with the skip key: the nearest lower epoch it commits to
+        let target = fields.skip_epoch_key.as_ref().and_then(|sk| {
+            (0..p)
+                .rev()
+                .find(|&s| commits_to(s, sk))
+                .map(|s| (s, sk.clone()))
+        });
+        let Some((s, sk)) = target.filter(|(s, sk)| open(*s, sk).is_some_and(|f| !f.burned)) else {
+            alerts.insert(broken);
+            return;
+        };
+        if keys.contains_key(&s) {
             return;
         }
-        keys.insert(p, pk);
-        e = p;
+        keys.insert(s, sk);
+        e = s;
     }
 }
 
@@ -520,7 +550,10 @@ pub fn resolve_epochs(
     let mut alerts: Vec<Alert> = alerts.into_iter().collect();
     alerts.sort_by_key(Alert::sort_key);
 
-    let write_epoch = current_epoch.filter(|n| keys.contains_key(n) && !burned.contains(n));
+    // nothing is written under an epoch a non-member holds (§5.6): it waits for the rotation
+    let leaked = repair.as_ref().is_some_and(|r| !r.non_members.is_empty());
+    let write_epoch =
+        current_epoch.filter(|n| keys.contains_key(n) && !burned.contains(n) && !leaked);
     EpochResolution {
         current_epoch,
         anchors,

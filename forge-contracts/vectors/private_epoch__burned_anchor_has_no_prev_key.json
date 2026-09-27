@@ -1,11 +1,11 @@
 {
-  "name": "burned_current_requires_rotation",
-  "description": "a maintainer reading a burned current epoch is asked to rotate (RotationRequired with no members): any maintainer finishes an interrupted burn.",
+  "name": "burned_anchor_has_no_prev_key",
+  "description": "a reader whose only wrap is for burned epoch 1 (the leaked key) reads epoch 1 alone: the burned anchor carries no prevEpochKey, so K_0 never reaches someone who only ever held the burned key.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
     "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
-    "reader": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
     "memberships": [
       {
         "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -38,22 +38,12 @@
     ],
     "wraps": [
       {
-        "id": "7821e4726b0b9f2404421149c8c00bf6a74b8619a6c02256c04febd587703ea1",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 0,
-        "recipientKeyId": 4,
-        "keyEnabled": true,
-        "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-      },
-      {
         "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 1,
         "recipientKeyId": 4,
-        "keyEnabled": true,
-        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+        "keyEnabled": true
       },
       {
         "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
@@ -61,7 +51,8 @@
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
         "epoch": 1,
         "recipientKeyId": 4,
-        "keyEnabled": true
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
       }
     ]
   },
@@ -72,18 +63,11 @@
       "1": "495e48ee10b0cd4724b5da2f356f49ab20ab4f680f403202ee8dfa65334ed3af"
     },
     "readable": [
-      0,
       1
     ],
     "writeEpoch": null,
     "unanchored": [],
-    "alerts": [
-      {
-        "kind": "rotationRequired",
-        "epoch": 1,
-        "members": []
-      }
-    ],
+    "alerts": [],
     "repair": {
       "rotate": true,
       "nonMembers": [],

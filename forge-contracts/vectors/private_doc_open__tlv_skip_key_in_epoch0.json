@@ -1,6 +1,6 @@
 {
-  "name": "tlv_reserved_tag",
-  "description": "reserved tag 13 is malformed.",
+  "name": "tlv_skip_key_in_epoch0",
+  "description": "tag 12 in an epoch-0 config is malformed.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -18,11 +18,11 @@
       "members": []
     },
     "doc": {
-      "type": "issue",
+      "type": "config",
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
-      "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c40c6ac06b7a5e02b20236fe705f138c24fdccf238",
+      "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0b18702080a6549f56371975d7b304906fd07373c645f20e855a92875a9e95ccfb1a6c3d85dd5132051d554ffc1672d809dda0cf33374a96523da1a6a80a850864a3d2e0a8e5",
       "createdAtBlockHeight": 50
     }
   },

@@ -1,6 +1,6 @@
 {
   "name": "burned_epoch_chain_walks",
-  "description": "a wrap for epoch 2 walks the chain through burned epoch 1 down to 0: a burned epoch is still a link.",
+  "description": "a wrap for epoch 2 walks the chain through burned epoch 1 (prevEpochKey = K_1) and on to 0 with its skipEpochKey = K_0: a burned epoch is still a link.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -33,7 +33,7 @@
         "epoch": 1,
         "createdAtBlockHeight": 1000,
         "createdAt": 1000000,
-        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4bd7e61502d3114aaab8d75ccd3845c2c626431f5"
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d634c5478482a608c2a8f8b1b6d791adbb0322ede8"
       },
       {
         "id": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed",
@@ -41,7 +41,7 @@
         "epoch": 2,
         "createdAtBlockHeight": 2000,
         "createdAt": 2000000,
-        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a061cf7942ab2ec075bba43fe84f2972597b0ffa595a1e8a4572a2492136b5a6a24083b217d0612174a25d133153b61d4c19522e"
+        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a061cf7942ab2ec075bba43fe84f2972597b0ffa595a1e8a4572a2492136b5a6a24083b23d5a5be7ad564139ed594ac0b5efa6eb5e7e383dda5fccb3b23fb6cd360ca76a011b5a8d61cad9ed84a3153b1bdd4e4a00b063"
       }
     ],
     "wraps": [

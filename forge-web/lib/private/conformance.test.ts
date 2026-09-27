@@ -78,7 +78,7 @@ const DOC_KEYS = [
 ]
 const FIELDS = leaves(
   'title', 'body', 'refName', 'baseRefName', 'sourceRefName', 'defaultBranch', 'protectedPatterns',
-  'prevEpoch', 'prevEpochKey', 'path', 'burned',
+  'prevEpoch', 'prevEpochKey', 'path', 'burned', 'skipEpochKey',
 )
 const KEY_INPUT = ['repoId', 'key', 'epoch']
 const SEAL_PACK = leaves(...KEY_INPUT, 'fileId', 'plaintextMod251', 'plaintextHex')
@@ -205,6 +205,7 @@ function toFields(f: Obj): DocFields {
   if ('prevEpoch' in f) out.prevEpoch = num(f, 'prevEpoch')
   if ('prevEpochKey' in f) out.prevEpochKey = hex(f, 'prevEpochKey')
   if (f['burned'] === true) out.burned = true
+  if ('skipEpochKey' in f) out.skipEpochKey = hex(f, 'skipEpochKey')
   return out
 }
 
@@ -591,7 +592,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(168)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(181)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })

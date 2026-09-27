@@ -9,6 +9,7 @@
 
 import { constantTimeEqual, isU32, type Bytes } from './bytes'
 import { isLate, openWithKey, type AnchorRef, type OpenContext } from './doc'
+import type { DocFields } from './tlv'
 import { IdSet, bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys, importEpochKeyAndWipe } from './keys'
 
@@ -179,36 +180,71 @@ function sortAlerts(alerts: readonly EpochAlert[]): EpochAlert[] {
   )
 }
 
-/** One step of the chain walk: the previous epoch and its keys, or null when broken. */
-async function chainStep(
-  repoId: Uint8Array,
-  config: ConfigRow,
-  keys: EpochKeys,
-  anchors: ReadonlyMap<number, Anchor>,
-): Promise<{ epoch: number; keys: EpochKeys } | null> {
+/** Open `anchor` (a config) with `keys`: its fields, or null when it does not open. */
+async function openAnchor(anchor: Anchor, keys: EpochKeys): Promise<DocFields | null> {
+  const c = anchor.config
   const opened = await openWithKey(
-    {
-      type: 'config',
-      ownerId: config.owner,
-      epoch: config.epoch,
-      id: config.id,
-      createdAtBlockHeight: config.createdAtBlockHeight,
-      enc: config.enc,
-    },
+    { type: 'config', ownerId: c.owner, epoch: c.epoch, id: c.id, createdAtBlockHeight: c.createdAtBlockHeight, enc: c.enc },
     keys,
     true,
   )
-  if (opened.status !== 'readable') return null
-  const { prevEpoch, prevEpochKey } = opened.fields
-  if (prevEpoch === undefined || prevEpochKey === undefined) return null
-  const prevAnchor = anchors.get(prevEpoch)
-  // Contiguity (§5.3): an anchor at e chains to exactly e - 1.
-  if (prevEpoch !== config.epoch - 1 || prevAnchor === undefined) {
-    prevEpochKey.fill(0)
-    return null
+  return opened.status === 'readable' ? opened.fields : null
+}
+
+function wipe(f: DocFields | null): void {
+  f?.prevEpochKey?.fill(0)
+  f?.skipEpochKey?.fill(0)
+}
+
+/**
+ * One step of the chain walk from epoch `e` (§5.3): the epochs it reaches, the one to walk on from
+ * (null: stop here), and whether the chain breaks at `e`. A burned anchor carries no
+ * `prevEpochKey`, so the walk stops at it; the anchor above a burned run carries `skipEpochKey`,
+ * the key of the nearest epoch below the run that is not burned, and the walk steps over the run
+ * (a missing or wrong skip key still yields the burned epoch below, from `prevEpochKey`).
+ */
+async function chainStep(
+  repoId: Uint8Array,
+  anchor: Anchor,
+  keys: EpochKeys,
+  anchors: ReadonlyMap<number, Anchor>,
+): Promise<{ links: { epoch: number; keys: EpochKeys }[]; next: number | null; broken: boolean }> {
+  const e = anchor.config.epoch
+  const fields = await openAnchor(anchor, keys)
+  try {
+    const broken = { links: [], next: null, broken: true }
+    if (fields === null) return broken
+    if (fields.burned === true) return { links: [], next: null, broken: false }
+    const { prevEpoch, prevEpochKey } = fields
+    if (prevEpoch === undefined || prevEpochKey === undefined) return broken
+    const prevAnchor = anchors.get(prevEpoch)
+    // Contiguity (§5.3): an anchor at e chains to exactly e - 1.
+    if (prevEpoch !== e - 1 || prevAnchor === undefined) return broken
+    const prevKeys = await importEpochKeyAndWipe(repoId, prevEpoch, prevEpochKey.slice())
+    if (!matchesAnchor(prevKeys, prevAnchor)) return broken
+    const prev = { epoch: prevEpoch, keys: prevKeys }
+    const prevFields = await openAnchor(prevAnchor, prevKeys)
+    const prevBurned = prevFields?.burned === true
+    wipe(prevFields)
+    if (!prevBurned) return { links: [prev], next: prevEpoch, broken: false }
+    // Step over the burned run: the nearest lower epoch the skip key commits to, not burned itself.
+    const skip = fields.skipEpochKey
+    if (skip !== undefined) {
+      for (let s = prevEpoch - 1; s >= 0; s--) {
+        const sAnchor = anchors.get(s) as Anchor
+        const sKeys = await importEpochKeyAndWipe(repoId, s, skip.slice())
+        if (!matchesAnchor(sKeys, sAnchor)) continue
+        const sFields = await openAnchor(sAnchor, sKeys)
+        const ok = sFields !== null && sFields.burned !== true
+        wipe(sFields)
+        if (ok) return { links: [prev, { epoch: s, keys: sKeys }], next: s, broken: false }
+        break
+      }
+    }
+    return { links: [prev], next: null, broken: true }
+  } finally {
+    wipe(fields)
   }
-  const prevKeys = await importEpochKeyAndWipe(repoId, prevEpoch, prevEpochKey)
-  return matchesAnchor(prevKeys, prevAnchor) ? { epoch: prevEpoch, keys: prevKeys } : null
 }
 
 /**
@@ -251,13 +287,11 @@ export async function resolveEpochs(input: {
     if (walked.has(e) || e === 0) continue
     walked.add(e)
     const anchor = anchors.get(e) as Anchor
-    const step = await chainStep(repoId, anchor.config, keys.get(e) as EpochKeys, anchors)
-    if (step === null) {
-      alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
-    } else if (!keys.has(step.epoch)) {
-      keys.set(step.epoch, step.keys)
-      pending.push(step.epoch)
-    }
+    const step = await chainStep(repoId, anchor, keys.get(e) as EpochKeys, anchors)
+    if (step.broken) alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
+    const fresh = step.next !== null && !keys.has(step.next)
+    for (const l of step.links) if (!keys.has(l.epoch)) keys.set(l.epoch, l.keys)
+    if (fresh && step.next !== null) pending.push(step.next)
   }
 
   // §5.3 burned epochs: the flag of each readable epoch's anchor (only the anchor's counts).
@@ -297,7 +331,11 @@ export async function resolveEpochs(input: {
     currentEpoch,
     anchors,
     keys,
-    writeEpoch: currentEpoch !== null && keys.has(currentEpoch) && !burned.has(currentEpoch) ? currentEpoch : null,
+    // Nothing is written under an epoch a non-member holds (§5.6): it waits for the rotation.
+    writeEpoch:
+      currentEpoch !== null && keys.has(currentEpoch) && !burned.has(currentEpoch) && (repair?.nonMembers.length ?? 0) === 0
+        ? currentEpoch
+        : null,
     unanchored,
     alerts: sortAlerts(alerts),
     repair,

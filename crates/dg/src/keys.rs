@@ -218,13 +218,33 @@ fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> 
 /// wrap per member missing one.
 fn repair_estimate(kr: &Keyring) -> (u64, String) {
     match kr.resolution().repair.as_ref() {
-        Some(p) if p.rotate => rotation_estimate(distinct_members(kr.members())),
+        Some(p) if p.rotate => {
+            let members = distinct_members(kr.members());
+            if keyring::rotation_may_burn(kr) {
+                burn_estimate(members)
+            } else {
+                rotation_estimate(members)
+            }
+        }
         Some(p) if !p.missing_wraps.is_empty() => (
             WRAP_ESTIMATE_CREDITS * p.missing_wraps.len() as u64,
             format!("{} wrap(s)", p.missing_wraps.len()),
         ),
         _ => (0, "nothing".into()),
     }
+}
+
+/// A rotation that may first have to burn an earlier run's epoch (§5.5): the burned epoch's
+/// wraps and anchor, then the rotation's.
+pub fn burn_estimate(members: usize) -> (u64, String) {
+    let (one, _) = rotation_estimate(members);
+    (
+        2 * one,
+        format!(
+            "up to {} wrap(s) + 2 anchors (an earlier run's key must be burned)",
+            2 * members
+        ),
+    )
 }
 
 /// A rotation over `members` members (the rotator included): one wrap each and the anchor.

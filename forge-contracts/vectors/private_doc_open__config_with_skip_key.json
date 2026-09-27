@@ -1,6 +1,6 @@
 {
-  "name": "config_burned_anchor",
-  "description": "an epoch-1 anchor with tags 8 and 11 opens with burned = true and no prevEpochKey.",
+  "name": "config_with_skip_key",
+  "description": "an epoch-1 config with tags 8, 9 and 12 opens with its skipEpochKey.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -27,7 +27,7 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 1,
       "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
-      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9cc2c71a2a510ad23e4af9dc285bf3b180fe8ade1be1e55826633284d4657b8bb74aad1ab382bbcebb675605056476b308f6d85dd9138e5c8e70a501995",
+      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9cc2c71a2a510ad23e4af9dc285bf3b180fe8ade1be1e55826633284d4657b8bb74aad1ab382bbcebb6776071579f82f9905c711e7dd4af5478299d221175e8af28f11d2cce5f87a7b0fa5bd82c8f4f97b1df40b59b63e5921d389138dc1f93f3ecde6bae0f53d946748cabb9f0dfef82a70d97f9e4af6f0a058834d3c91826",
       "createdAtBlockHeight": 50
     }
   },
@@ -39,7 +39,8 @@
         "refs/heads/main"
       ],
       "prevEpoch": 0,
-      "burned": true
+      "prevEpochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "skipEpochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
     }
   }
 }

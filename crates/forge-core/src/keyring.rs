@@ -467,23 +467,13 @@ impl Keyring {
     /// earlier configs (from a past maintainer role) would count again, and may come first.
     #[must_use]
     pub fn maintainer_would_move_anchors(&self, who: [u8; 32]) -> Option<u32> {
+        // (A config of theirs above the current epoch never counts: it predates the epoch
+        // below it being stated, §5.3.)
         let before = &self.resolution;
-        // A config of theirs above the current epoch is invisible now (above the contiguous
-        // run) but becomes the anchor as soon as an honest rotation fills the epochs below it.
-        if let Some(e) = self
-            .rows
-            .configs
-            .iter()
-            .filter(|c| c.owner == who && before.current_epoch.is_none_or(|n| c.epoch > n))
-            .map(|c| c.epoch)
-            .min()
-        {
-            return Some(e);
-        }
         let after = self.resolution_if(who, true);
         if after.current_epoch != before.current_epoch {
             return Some(match (before.current_epoch, after.current_epoch) {
-                (Some(b), Some(a)) => b.min(a) + 1,
+                (Some(b), Some(a)) => b.min(a).saturating_add(1),
                 _ => 0,
             });
         }
@@ -661,7 +651,23 @@ impl Keyring {
         let Some(header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
-        open_content(&self.ctx, &header, &enc)
+        let opened = open_content(&self.ctx, &header, &enc);
+        let earlier = matches!(
+            opened,
+            Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
+        ) && self.earlier_use(header.epoch, header.created_at_block_height);
+        if earlier {
+            Opened::Unreadable(Unreadable::EarlierUse)
+        } else {
+            opened
+        }
+    }
+
+    /// Whether something written at `height` under `epoch` predates the epoch number's current
+    /// anchor: it was sealed under an earlier use of the number (§5.3), not tampered with.
+    pub fn earlier_use(&self, epoch: u32, height: Option<u64>) -> bool {
+        let anchor = self.resolution.anchors.get(&epoch);
+        matches!((anchor, height), (Some(a), Some(h)) if h < a.height)
     }
 
     /// The decrypted config timeline: every config that opens (any epoch the reader holds),
@@ -701,9 +707,10 @@ impl Keyring {
         self.resolution.keys.get(&epoch)
     }
 
-    /// `(prevEpoch, prevEpochKey)` of `epoch`'s anchor, which every later config of the epoch
-    /// repeats (§4.3). `None` for epoch 0; an error when the anchor does not open.
-    pub fn prev_of(&self, epoch: u32) -> Result<Option<(u32, EpochKey)>> {
+    /// The chain link of `epoch`'s anchor (`prevEpoch`, `prevEpochKey`, `skipEpochKey`, burned),
+    /// which every later config of the epoch repeats (§4.3). `None` for epoch 0; an error when
+    /// the anchor does not open.
+    pub fn link_of(&self, epoch: u32) -> Result<Option<ChainLink>> {
         if epoch == 0 {
             return Ok(None);
         }
@@ -720,13 +727,46 @@ impl Keyring {
                 Error::Config(format!("the anchor of key epoch {epoch} was not read"))
             })?;
         match self.open(DocKind::Config, doc) {
-            Opened::Readable(f) => match (f.prev_epoch, f.prev_epoch_key) {
-                (Some(p), Some(k)) => Ok(Some((p, k))),
-                _ => Err(PrivateError::Malformed.into()),
+            Opened::Readable(f) => match f.prev_epoch {
+                Some(prev) => Ok(Some(ChainLink {
+                    prev,
+                    prev_key: f.prev_epoch_key,
+                    skip_key: f.skip_epoch_key,
+                    burned: f.burned,
+                })),
+                None => Err(PrivateError::Malformed.into()),
             },
             _ => Err(Error::Config(format!(
                 "the anchor of key epoch {epoch} does not open with your keys"
             ))),
+        }
+    }
+}
+
+/// The chain fields of a config for `e ≥ 1` (§4.3, §5.3): `prevEpoch = e − 1`; `prevEpochKey`
+/// unless burned; `skipEpochKey` when `e − 1` is burned (the key of the nearest epoch below the
+/// burned run that is not burned); the burned flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainLink {
+    /// `prevEpoch`.
+    pub prev: u32,
+    /// `prevEpochKey` (none on a burned config).
+    pub prev_key: Option<EpochKey>,
+    /// `skipEpochKey`.
+    pub skip_key: Option<EpochKey>,
+    /// Tag 11.
+    pub burned: bool,
+}
+
+impl ChainLink {
+    /// The link's fields on top of `f`.
+    pub fn apply(&self, f: Fields) -> Fields {
+        Fields {
+            prev_epoch: Some(self.prev),
+            prev_epoch_key: self.prev_key.clone(),
+            skip_epoch_key: self.skip_key.clone(),
+            burned: self.burned,
+            ..f
         }
     }
 }
@@ -800,6 +840,9 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
             Some("not encrypted for this repo")
         }
         Opened::Unreadable(Unreadable::Late) => Some("written after the key was rotated"),
+        Opened::Unreadable(Unreadable::EarlierUse) => {
+            Some("sealed under an earlier use of its key epoch")
+        }
         Opened::Unreadable(_) => Some("wrong or missing key"),
     }
 }
@@ -987,13 +1030,14 @@ impl<'a> PrivateSigner<'a> {
     async fn post_anchor(&self, w: &WriteCtx, anchor: &AnchorInput<'_>) -> Result<String> {
         let (core, scope, owner) = (&w.core, &w.scope, w.me);
         let keys = EpochKeys::derive(&scope.repo_id, anchor.epoch, anchor.key);
-        let fields = Fields {
+        let base = Fields {
             default_branch: Some(anchor.default_branch.to_string()),
             protected_patterns: anchor.protected_patterns.to_vec(),
-            prev_epoch: anchor.prev.map(|(e, _)| e),
-            prev_epoch_key: anchor.prev.map(|(_, k)| k.clone()),
-            burned: anchor.burned,
             ..Fields::default()
+        };
+        let fields = match &anchor.link {
+            Some(l) => l.apply(base),
+            None => base,
         };
         let enc = crate::private::doc::seal(
             &keys,
@@ -1098,9 +1142,8 @@ impl PrivateSigner<'_> {
 struct AnchorInput<'k> {
     epoch: u32,
     key: &'k EpochKey,
-    prev: Option<(u32, &'k EpochKey)>,
-    /// Tag 11 (§5.3): the epoch only links the chain.
-    burned: bool,
+    /// The chain link (`None` for epoch 0).
+    link: Option<ChainLink>,
     default_branch: &'k str,
     protected_patterns: &'k [String],
     backend: FieldValue,
@@ -1113,14 +1156,12 @@ impl<'k> AnchorInput<'k> {
         cfg: &'k PrivateConfig,
         epoch: u32,
         key: &'k EpochKey,
-        prev: Option<(u32, &'k EpochKey)>,
-        burned: bool,
+        link: Option<ChainLink>,
     ) -> Self {
         Self {
             epoch,
             key,
-            prev,
-            burned,
+            link,
             default_branch: cfg.default_branch.as_deref().unwrap_or("main"),
             protected_patterns: &cfg.protected_patterns,
             backend: cfg.backend.clone().unwrap_or_else(|| backend_object(0)),
@@ -1162,8 +1203,7 @@ pub async fn create_private_state(
             &AnchorInput {
                 epoch: 0,
                 key: &key,
-                prev: None,
-                burned: false,
+                link: None,
                 default_branch: short_branch(default_branch),
                 protected_patterns: &[],
                 backend,
@@ -1267,6 +1307,73 @@ fn chain_from(kr: &Keyring, repo: &RepoRef) -> Result<(u32, EpochKey)> {
         .ok_or_else(|| kr.no_write(repo))
 }
 
+/// The chain link the anchor of `from.0 + 1` carries (§5.3): `prevEpoch = n`, and unless it is
+/// itself burned, `prevEpochKey = K_n` and, when `n` is burned, `skipEpochKey` = the key of the
+/// nearest epoch below the burned run that is not burned. `skip_below` is that key when the
+/// rotator already knows it (a burn it just posted), else it is looked up in `kr`.
+fn next_link(
+    kr: &Keyring,
+    from: &(u32, EpochKey),
+    from_burned: bool,
+    burned: bool,
+    skip_below: Option<&EpochKey>,
+) -> Result<ChainLink> {
+    let (n, k_n) = from;
+    if burned {
+        // the burned key may sit with someone who never held K_n: it carries no key below
+        return Ok(ChainLink {
+            prev: *n,
+            prev_key: None,
+            skip_key: None,
+            burned: true,
+        });
+    }
+    let skip_key = if from_burned {
+        Some(if let Some(k) = skip_below {
+            k.clone()
+        } else {
+            below_burned_run(kr, *n)?
+        })
+    } else {
+        None
+    };
+    Ok(ChainLink {
+        prev: *n,
+        prev_key: Some(k_n.clone()),
+        skip_key,
+        burned: false,
+    })
+}
+
+/// Whether the reader's next rotation may have to burn `n + 1` first (§5.5): an earlier run of
+/// theirs left a self-wrap there. For cost estimates only; the rotation decides for itself.
+pub fn rotation_may_burn(kr: &Keyring) -> bool {
+    kr.resolution
+        .current_epoch
+        .and_then(|n| n.checked_add(1))
+        .is_some_and(|next| {
+            kr.wraps
+                .iter()
+                .any(|w| w.epoch == next && w.owner == kr.reader && w.member == kr.reader)
+        })
+}
+
+/// The key of the nearest epoch below burned epoch `n`'s run that is not burned, from the
+/// reader's keys: every epoch between must be known burned.
+fn below_burned_run(kr: &Keyring, n: u32) -> Result<EpochKey> {
+    let res = &kr.resolution;
+    (0..n)
+        .rev()
+        .find(|e| !res.burned.contains(e))
+        .filter(|s| (s + 1..n).all(|e| res.burned.contains(&e)))
+        .and_then(|s| res.keys.get(&s).cloned())
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "key epoch {n} is burned and the epoch below its burned run is not readable to you"
+            ))
+        })
+}
+
 /// This signer's own self-wrap for `epoch`, opened: the key an earlier run drew for it (the
 /// unique index keeps that wrap, so it is the only key `epoch` can have for this signer).
 fn pending_key(kr: &Keyring, me: [u8; 32], epoch: u32) -> Option<EpochKey> {
@@ -1276,18 +1383,58 @@ fn pending_key(kr: &Keyring, me: [u8; 32], epoch: u32) -> Option<EpochKey> {
         .and_then(|w| w.key.clone())
 }
 
+/// What a rotation does with the key it holds for `n + 1` (§5.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Wrap it to the remaining members and anchor it.
+    Use,
+    /// It may have reached someone outside the remaining members: wrap it to the remaining
+    /// members anyway (so any maintainer can see the burn and chain from it), anchor it burned,
+    /// and rotate on to `n + 2`.
+    Burn,
+}
+
+/// What a rotation knows about the key it holds for `n + 1`.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct KeyFacts {
+    /// The rotation excludes someone (a removal).
+    removing: bool,
+    /// The key came from this signer's own earlier self-wrap.
+    resumed: bool,
+    /// A standing self-wrap with another key was found only on posting (a read that lagged it).
+    adopted: bool,
+    /// This signer's wraps at `n + 1` to someone outside the targets are visible.
+    strays: bool,
+    /// A standing wrap to a remaining member holds another key or names a key they no longer
+    /// use.
+    unusable: bool,
+}
+
+/// The decision of §5.5 for `n + 1` (pure).
+fn step_for(f: KeyFacts) -> Step {
+    // a removal cannot trust a read that may lag an earlier run's wrap to the member being
+    // removed; any run can see such a wrap once it is visible; and a wrap cannot be replaced
+    // within an epoch
+    if (f.removing && (f.resumed || f.adopted)) || f.strays || f.unusable {
+        Step::Burn
+    } else {
+        Step::Use
+    }
+}
+
 /// Rotate to the next epoch (§5.5 "remove member", steps 1–4): epochs are contiguous, so it is
 /// always `n + 1`. Wrap its key to every current member except `exclude` (self first), post
-/// the anchor with `prevEpoch = n`, `prevEpochKey = K_n`, and wait until a proved read shows
-/// whether this anchor is first.
+/// the anchor with its chain link ([`next_link`]), and wait until a proved read shows whether
+/// this anchor is first.
 ///
 /// `exclude` names identities that must not be wrapped even if a stale read still lists them
 /// (the member just removed). Resumable without a local journal: this signer's self-wrap for an
 /// unanchored `n + 1` is unwrapped and its key reused (§5.5 "crash between steps 2 and 3").
-/// When that key may have reached someone outside the remaining members, `n + 1` is anchored
-/// **burned** (a chain link only) and the rotation continues to `n + 2` (§5.3); if another
-/// maintainer's anchor for `n + 1` wins that race, nothing more is posted and the result says
-/// the rotation lost.
+/// When that key may have reached someone outside the remaining members ([`step_for`]), `n + 1`
+/// is wrapped to the remaining members, anchored **burned** (a chain link only, carrying no key
+/// below it) and the rotation continues to `n + 2`; if another maintainer's anchor for `n + 1`
+/// wins that race, nothing more is posted and the result says the rotation lost.
 pub async fn rotate(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
@@ -1295,14 +1442,11 @@ pub async fn rotate(
 ) -> Result<Rotation> {
     let w = signer.open(repo).await?;
     let me_b58 = signer.identity.id();
-    if w.kr.reader_role() != Some(Role::Maintainer) {
-        return Err(Error::NotPermitted {
-            action: format!("rotate the key of {}", repo.display()),
-            reason: "only a current maintainer can rotate a private repository's key".into(),
-            needs: "maintainer".into(),
-        });
-    }
+    require_rotator(&w.kr, repo)?;
     let mut from = chain_from(&w.kr, repo)?;
+    let mut from_burned = w.kr.resolution.burned.contains(&from.0);
+    // the key a burned run skips to, once this rotation burned an epoch itself
+    let mut skip_below: Option<EpochKey> = None;
     // A member with no usable key is skipped rather than blocking the rotation: the removed
     // member must lose the key now; the skipped one is wrapped by a repair later.
     let targets = rotation_targets(&w.kr, &me_b58, exclude);
@@ -1326,27 +1470,29 @@ pub async fn rotate(
             pending.map_or_else(EpochKey::generate, Ok)?,
         )
         .await?;
-        // An earlier run's key may already sit with someone who must not have it: a removal
-        // cannot trust a read that may lag that run's wrap to the member being removed, and any
-        // run can see such a wrap once it is visible.
-        let leaked = (removing && (resumed || adopted))
-            || !stray_wraps(signer, &w, repo, epoch, &targets)
-                .await?
-                .is_empty();
-        let done = if leaked {
-            None
-        } else {
+        let strays = !stray_wraps(signer, &w, repo, epoch, &targets)
+            .await?
+            .is_empty();
+        let mut facts = KeyFacts {
+            removing,
+            resumed,
+            adopted,
+            strays,
+            unusable: false,
+        };
+        let mut step = step_for(facts);
+        let (mut wrapped, mut skipped) = (Vec::new(), Vec::new());
+        if step == Step::Use {
             match wrap_all(signer, &w, epoch, &key, &targets).await? {
-                Ok(ws) => Some(ws),
-                // a standing wrap of ours to a key the member no longer uses cannot be replaced
-                // within the epoch: close it and wrap everyone again at the next one
+                Ok((a, b)) => (wrapped, skipped) = (a, b),
                 Err(member) => {
                     tracing::info!(epoch, %member, "a resumed epoch holds an unusable wrap; burning it");
-                    None
+                    facts.unusable = true;
+                    step = step_for(facts);
                 }
             }
-        };
-        let Some((wrapped, skipped)) = done else {
+        }
+        if step == Step::Burn {
             if burned.is_some() {
                 return Err(UserError::new(
                     codes::ROTATION_PENDING,
@@ -1358,8 +1504,13 @@ pub async fn rotate(
                 ))
                 .into());
             }
-            let input = AnchorInput::current(cfg, epoch, &key, Some((from.0, &from.1)), true);
-            if anchor_and_confirm(signer, &w, repo, &input).await? != w.me {
+            // C1: every remaining member gets the burned key, so any maintainer sees the burn
+            // and can chain from it; nothing is ever sealed under it. Wraps that cannot be
+            // posted (no key, a standing one that cannot be replaced) are skipped.
+            wrap_remaining(signer, &w, epoch, &key, &targets).await?;
+            let link = next_link(&w.kr, &from, from_burned, true, None)?;
+            let input = AnchorInput::current(cfg, epoch, &key, Some(link));
+            if !anchor_and_confirm(signer, &w, repo, &input).await? {
                 // another maintainer's anchor for this epoch won: theirs stands, and posting
                 // n + 2 from a key that is not the epoch's would fork the chain
                 return Ok(Rotation {
@@ -1368,72 +1519,79 @@ pub async fn rotate(
                 });
             }
             burned = Some(epoch);
+            if !from_burned {
+                skip_below = Some(from.1.clone());
+            }
             from = (epoch, key);
+            from_burned = true;
             continue;
-        };
+        }
         if let Some(stray) = stray_wraps(signer, &w, repo, epoch, &targets)
             .await?
             .first()
         {
             return Err(stray_error(epoch, *stray));
         }
-        let input = AnchorInput::current(cfg, epoch, &key, Some((from.0, &from.1)), false);
-        let owner = anchor_and_confirm(signer, &w, repo, &input).await?;
+        let link = next_link(&w.kr, &from, from_burned, false, skip_below.as_ref())?;
+        let input = AnchorInput::current(cfg, epoch, &key, Some(link));
+        let won = anchor_and_confirm(signer, &w, repo, &input).await?;
         return Ok(Rotation {
             epoch,
             wrapped,
             skipped,
-            won: owner == w.me,
+            won,
             burned,
         });
     }
 }
 
+fn require_rotator(kr: &Keyring, repo: &RepoRef) -> Result<()> {
+    if kr.reader_role() == Some(Role::Maintainer) {
+        return Ok(());
+    }
+    Err(Error::NotPermitted {
+        action: format!("rotate the key of {}", repo.display()),
+        reason: "only a current maintainer can rotate a private repository's key".into(),
+        needs: "maintainer".into(),
+    })
+}
+
 /// Post `anchor` (the commit point), then wait for a proved read that lists the epoch's configs
-/// and return the owner of its anchor (`select_anchors` orders by `($createdAtBlockHeight, raw
-/// $id)` among current maintainers). A resumed run may post a second anchor with the same key;
-/// the first is still this signer's. When our anchor made room for a current maintainer's
-/// **pre-posted** config of the next epoch (a lower block height than ours), that config is now
-/// the next epoch's anchor under a key nobody was handed through this rotation: refuse, naming
-/// its author.
+/// and say whether its anchor is this one: the same author **and** the same commitment
+/// (`select_anchors` orders by `($createdAtBlockHeight, raw $id)` among current maintainers). A
+/// resumed run may post a second anchor with the same key; the first is still this signer's.
 async fn anchor_and_confirm(
     signer: &PrivateSigner<'_>,
     w: &WriteCtx,
     repo: &RepoRef,
     anchor: &AnchorInput<'_>,
-) -> Result<[u8; 32]> {
+) -> Result<bool> {
     signer.post_anchor(w, anchor).await?;
-    let seen = signer
+    let ours = *EpochKeys::derive(&w.scope.repo_id, anchor.epoch, anchor.key).commit();
+    signer
         .poll(w, repo, ANCHOR_POLLS, |now| {
-            let anchors = &now.resolution.anchors;
-            let a = anchors.get(&anchor.epoch)?;
-            let next = anchor.epoch.checked_add(1).and_then(|n| anchors.get(&n));
-            let preempted = next
-                .filter(|n| a.owner == w.me && n.height < a.height)
-                .map(|n| n.owner);
-            Some((a.owner, preempted))
+            let a = now.resolution.anchors.get(&anchor.epoch)?;
+            Some(a.owner == w.me && a.commit == Some(ours))
         })
-        .await?;
-    match seen {
-        None => Err(Error::Timeout { retryable: true }),
-        Some((_, Some(by))) => Err(UserError::new(
-                    codes::ROTATION_PENDING,
-                    format!(
-                        "key epoch {} of {} was pre-empted by {}",
-                        anchor.epoch + 1,
-                        repo.display(),
-                        platform::encode_identifier(by)
-                    ),
-                )
-                .cause(format!(
-                    "they posted a config for epoch {} before this rotation anchored epoch {}; it now counts as that epoch's anchor",
-                    anchor.epoch + 1,
-                    anchor.epoch
-                ))
-                .fix("ask them, or remove them as a maintainer and rotate; `dg repo keys status` shows the epochs")
-                .into()),
-        Some((owner, None)) => Ok(owner),
+        .await?
+        .ok_or(Error::Timeout { retryable: true })
+}
+
+/// Wrap a burned epoch's key to every target but self (already wrapped); a member who cannot
+/// be wrapped is skipped (nothing is sealed under a burned key, and `n + 2` wraps everyone).
+async fn wrap_remaining(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    epoch: u32,
+    key: &EpochKey,
+    targets: &[String],
+) -> Result<()> {
+    for t in &targets[1..] {
+        signer
+            .post_wrap(w, epoch, key, platform::decode_identifier(t)?)
+            .await?;
     }
+    Ok(())
 }
 
 /// Wrap `key` of `epoch` to every target but the first (self, already wrapped): `Ok` with who
@@ -1508,7 +1666,10 @@ fn reanchor_plan(
         !res.keys.keys().any(|&r| r > u)
             && (u..=current).all(|e| res.anchors.get(&e).is_some_and(|a| a.owner == leaving))
             && !rows.wraps.iter().any(|w| {
-                w.epoch >= u
+                // the leaving maintainer's own wraps stop counting with the role (§5.4 (2)),
+                // and could otherwise pin an epoch they alone can read
+                w.owner != leaving
+                    && w.epoch >= u
                     && w.epoch <= current
                     && (staying.contains(&w.owner) || staying.contains(&w.member_id))
             })
@@ -1582,7 +1743,21 @@ pub async fn reanchor_before_removal(
     let w = signer.open(repo).await?;
     let leaving = platform::decode_identifier(leaving)?;
     if leaving == w.me {
-        return Ok(Reanchor::default());
+        let mine = anchored_by(&w.kr.resolution, w.me);
+        if mine.is_empty() {
+            return Ok(Reanchor::default());
+        }
+        return Err(UserError::new(
+            codes::ROTATION_PENDING,
+            format!(
+                "you can't remove your own maintainer role while you anchor key epochs {mine:?} of {}",
+                repo.display()
+            ),
+        )
+        .cause("your anchors stop counting with the role and nobody can re-anchor them first: every epoch from the lowest of them up would stop existing")
+        .fix("keep the role")
+        .note("nothing was removed")
+        .into());
     }
     let before = &w.kr.resolution;
     let (theirs, top) =
@@ -1610,16 +1785,32 @@ pub async fn reanchor_before_removal(
     let cfg = w.kr.config();
     for epoch in theirs {
         let key = &before.keys[&epoch];
-        let prev = w.kr.prev_of(epoch)?;
-        let burned = before.burned.contains(&epoch);
-        let input =
-            AnchorInput::current(cfg, epoch, key, prev.as_ref().map(|(p, k)| (*p, k)), burned);
+        let input = AnchorInput::current(cfg, epoch, key, w.kr.link_of(epoch)?);
         signer.post_anchor(&w, &input).await?;
         out.reanchored.push(epoch);
     }
     // Wraps from `leaving` stop counting with their role too (§5.4 (2)). If this signer's only
     // accepted wrap of `top` is theirs, it would lose the epoch it must chain the coming
     // rotation from: wrap it to itself first (older epochs follow through the chain).
+    let posted =
+        wrap_held_through(signer, &w, repo, leaving, top).await? || !out.reanchored.is_empty();
+    confirm_removal(signer, &w, repo, leaving, top, posted)
+        .await
+        .map(|()| out)
+}
+
+/// Wrap to this signer every epoch up to `top` it reads only through `leaving`'s wraps (they
+/// stop counting with the role, §5.4 (2), and the chain may not reach the epoch from `top`), and
+/// `top` itself when so. Returns whether anything was posted; a standing self-wrap with another
+/// key is an error (a wrap cannot be replaced within an epoch).
+async fn wrap_held_through(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    repo: &RepoRef,
+    leaving: [u8; 32],
+    top: u32,
+) -> Result<bool> {
+    let before = &w.kr.resolution;
     let maintainers: BTreeSet<[u8; 32]> =
         w.kr.rows
             .members
@@ -1627,45 +1818,109 @@ pub async fn reanchor_before_removal(
             .filter(|m| m.role == Role::Maintainer && m.identity != leaving)
             .map(|m| m.identity)
             .collect();
-    let held_otherwise = w.kr.wraps.iter().any(|x| {
-        x.epoch == top && x.member == w.me && maintainers.contains(&x.owner) && x.key.is_some()
-    });
-    let mut posted = !out.reanchored.is_empty();
-    if let (false, Some(key)) = (held_otherwise, before.keys.get(&top).cloned()) {
-        self_wrap(signer, &w, top, key).await?;
+    let held_otherwise = |e: u32| {
+        w.kr.wraps.iter().any(|x| {
+            x.epoch == e && x.member == w.me && maintainers.contains(&x.owner) && x.key.is_some()
+        })
+    };
+    // every epoch this signer reads only through `leaving`'s wraps (the chain may not reach it
+    // from `top` once those stop counting): wrap it to itself first
+    let only_theirs: Vec<u32> =
+        w.kr.wraps
+            .iter()
+            .filter(|x| x.member == w.me && x.owner == leaving && x.key.is_some())
+            .map(|x| x.epoch)
+            .filter(|&e| e <= top && !held_otherwise(e))
+            .chain((!held_otherwise(top)).then_some(top))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+    let mut posted = false;
+    for e in only_theirs {
+        let Some(key) = before.keys.get(&e).cloned() else {
+            continue;
+        };
+        let (_, adopted) = self_wrap(signer, w, e, key).await?;
+        if adopted {
+            return Err(UserError::new(
+                codes::ROTATION_PENDING,
+                format!("your own key wrap for epoch {e} of {} holds another key", repo.display()),
+            )
+            .cause("an earlier run of yours (a rotation that lost a race) left it, and a wrap cannot be replaced within an epoch")
+            .fix(format!("run `dg repo keys rotate {}` first, then the removal", repo.display()))
+            .note("nothing was removed")
+            .into());
+        }
         posted = true;
     }
-    // A later config of the same epoch by another current maintainer, earlier than the
-    // re-anchor, would become the anchor instead: check the outcome, not the intent.
+    Ok(posted)
+}
+
+/// Poll until the resolution without `leaving` keeps every epoch up to `top` as it was
+/// ([`removal_preserves`]): a later config of the same epoch by another current maintainer,
+/// earlier than the re-anchor, would become the anchor instead, so the outcome is checked, not
+/// the intent. The refusal names who took an anchor over.
+async fn confirm_removal(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    repo: &RepoRef,
+    leaving: [u8; 32],
+    top: u32,
+    posted: bool,
+) -> Result<()> {
+    let before = &w.kr.resolution;
     let polls = if posted { ANCHOR_POLLS } else { 1 };
-    let mut changed = None;
+    let mut changed: Option<(u32, Option<[u8; 32]>)> = None;
     let ok = signer
-        .poll(&w, repo, polls, |now| {
-            match removal_preserves(before, &now.resolution_if(leaving, false), top) {
+        .poll(w, repo, polls, |now| {
+            let after = now.resolution_if(leaving, false);
+            match removal_preserves(before, &after, top) {
                 Ok(()) => Some(()),
                 Err(e) => {
-                    changed = Some(e);
+                    let by = after
+                        .anchors
+                        .get(&e)
+                        .map(|a| a.owner)
+                        .filter(|o| *o != w.me);
+                    changed = Some((e, by));
                     None
                 }
             }
         })
         .await?;
     if ok.is_some() {
-        return Ok(out);
+        return Ok(());
     }
-    Err(UserError::new(
+    let (epoch, by) = changed.unwrap_or((top, None));
+    let mut err = UserError::new(
         codes::ROTATION_PENDING,
         format!(
-            "removing {} would change key epoch {} of {}",
+            "removing {} would change key epoch {epoch} of {}",
             platform::encode_identifier(leaving),
-            changed.unwrap_or(top),
             repo.display()
         ),
     )
-    .cause("once their key statements stop counting, that epoch's anchor, burned flag or chain link would differ from today's (or the re-anchor is not visible yet)")
-    .fix("run the command again in a moment; if it keeps failing, run `dg repo keys status` and ask the other maintainers")
-    .note("nothing was removed")
-    .into())
+    .cause("once their key statements stop counting, that epoch's anchor, burned flag or chain link would differ from today's (or the re-anchor is not visible yet)");
+    if let Some(by) = by {
+        err = err.cause(format!(
+            "a config for epoch {epoch} by {} would take over its anchor; remove them first",
+            platform::encode_identifier(by)
+        ));
+    }
+    Err(err
+        .fix("run the command again in a moment; if it keeps failing, run `dg repo keys status`")
+        .note("nothing was removed")
+        .into())
+}
+
+/// The existing epochs `who` anchors: a maintainer cannot drop their own role while this is not
+/// empty, since nobody could re-anchor them first (§5.3).
+fn anchored_by(res: &EpochResolution, who: [u8; 32]) -> Vec<u32> {
+    res.anchors
+        .iter()
+        .filter(|(_, a)| a.owner == who)
+        .map(|(&e, _)| e)
+        .collect()
 }
 
 /// The refusal of a maintainer removal that would lose readable epochs (see [`reanchor_plan`]).
@@ -1680,14 +1935,7 @@ fn unremovable(repo: &RepoRef, leaving: [u8; 32], epoch: Option<u32>) -> Error {
         format!("removing {who} from {} needs a maintainer who can read {what}", repo.display()),
     )
     .cause("you cannot read it: either it would stop existing with every epoch above it while another maintainer, or an epoch above it, still holds it, or it stays current and the removal's rotation must chain from it")
-    .fix(format!(
-        "or ask a maintainer who holds it to run `dg repo keys repair {}` (it wraps the key to you), then try again",
-        repo.display()
-    ))
-    .fix(format!(
-        "ask a maintainer who holds that epoch to run `dg collab remove {} {who} --role maintainer`",
-        repo.display()
-    ))
+    .fix("ask a maintainer who holds that epoch to wrap it to you (if it is the current epoch, `dg repo keys repair` on their side does it), then run the removal again")
     .note("nothing was removed")
     .into()
 }
@@ -1901,7 +2149,7 @@ mod tests {
             let fields = Fields {
                 default_branch: Some("main".into()),
                 prev_epoch: prev.map(|_| epoch - 1),
-                prev_epoch_key: prev.map(k),
+                prev_epoch_key: prev.filter(|_| !burned).map(k),
                 burned,
                 ..Fields::default()
             };
@@ -1974,6 +2222,21 @@ mod tests {
         }
     }
 
+    fn test_repo() -> RepoRef {
+        RepoRef {
+            forge: crate::network::ForgeIds {
+                core: "C".into(),
+                collab: "L".into(),
+                group: "G".into(),
+                superseded_in_group: vec![],
+            },
+            repo_id: "R".into(),
+            owner_id: "alice".into(),
+            name: "proj".into(),
+            visibility: crate::rules::v2::Visibility::Private,
+        }
+    }
+
     const ALICE: [u8; 32] = [1; 32];
     const BOB: [u8; 32] = [2; 32];
     const DAVE: [u8; 32] = [4; 32];
@@ -1995,18 +2258,7 @@ mod tests {
             .config(ALICE, 1, 11, Some(10), 20, true)
             .wrap(ALICE, ALICE, 1, 11);
         let kr = f.keyring(ALICE);
-        let repo = RepoRef {
-            forge: crate::network::ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                superseded_in_group: vec![],
-            },
-            repo_id: "R".into(),
-            owner_id: "alice".into(),
-            name: "proj".into(),
-            visibility: crate::rules::v2::Visibility::Private,
-        };
+        let repo = test_repo();
         assert!(
             kr.writer(&repo).is_err(),
             "nothing is written under a burned epoch"
@@ -2105,7 +2357,8 @@ mod tests {
             (DAVE, Role::Maintainer),
             (carol, Role::Maintainer),
         ];
-        // dave anchored epoch 3; alice's wrap for it lags, carol's does not
+        // dave anchored epoch 3; alice's wrap for it lags, while carol (who stays) wrapped it
+        // to herself: she holds it
         let mut f = three_epochs(&members);
         f.config(DAVE, 3, 13, Some(12), 40, false);
         f.wraps.push(WrapRow {
@@ -2114,13 +2367,14 @@ mod tests {
         });
         let last = f.wraps.len() - 1;
         f.wraps[last].epoch = 3;
-        f.wraps[last].owner = DAVE;
+        f.wraps[last].owner = carol;
         f.wraps[last].member_id = carol;
         assert_eq!(
             reanchor_plan(&f.keyring(ALICE).resolution, &f.rows(), DAVE),
             Err(Some(3))
         );
-        // a wrap for it only to a writer who stays: dropped, and they are named
+        // dave's wrap for it, only to a writer who stays: dropped, and they are named
+        f.wraps[last].owner = DAVE;
         f.wraps[last].member_id = BOB;
         f.members.push(MemberRow {
             identity: BOB,
@@ -2134,14 +2388,156 @@ mod tests {
     }
 
     #[test]
-    fn a_regranted_maintainers_preposted_future_config_refuses_the_grant() {
+    fn a_regranted_maintainers_preposted_future_config_is_inert() {
         let members = [(ALICE, Role::Maintainer), (BOB, Role::Writer)];
         let mut f = three_epochs(&members);
         // dave, a past maintainer, pre-posted epoch 4: above the gap at 3, invisible today
         f.config(DAVE, 4, 14, Some(13), 25, false);
         let kr = f.keyring(ALICE);
         assert_eq!(kr.resolution.current_epoch, Some(2));
-        assert_eq!(kr.maintainer_would_move_anchors(DAVE), Some(4));
+        assert_eq!(
+            kr.maintainer_would_move_anchors(DAVE),
+            None,
+            "a config posted before the epoch below it was stated never counts (§5.3)"
+        );
+    }
+
+    #[test]
+    fn a_rotation_burns_what_may_have_leaked_and_uses_the_rest() {
+        let f = KeyFacts::default;
+        assert_eq!(step_for(f()), Step::Use);
+        let resumed = KeyFacts {
+            resumed: true,
+            ..f()
+        };
+        assert_eq!(step_for(resumed), Step::Use, "a plain rotation resumes");
+        let removing = KeyFacts {
+            removing: true,
+            ..f()
+        };
+        assert_eq!(step_for(removing), Step::Use, "a removal with a fresh key");
+        assert_eq!(
+            step_for(KeyFacts {
+                resumed: true,
+                ..removing
+            }),
+            Step::Burn,
+            "never resumes"
+        );
+        assert_eq!(
+            step_for(KeyFacts {
+                adopted: true,
+                ..removing
+            }),
+            Step::Burn,
+            "nor adopts"
+        );
+        assert_eq!(
+            step_for(KeyFacts {
+                strays: true,
+                ..f()
+            }),
+            Step::Burn,
+            "a visible stray"
+        );
+        assert_eq!(
+            step_for(KeyFacts {
+                unusable: true,
+                ..resumed
+            }),
+            Step::Burn,
+            "unreplaceable"
+        );
+    }
+
+    #[test]
+    fn a_burned_anchor_carries_no_key_below_and_the_next_one_skips_the_run() {
+        let kr = three_epochs(&[(ALICE, Role::Maintainer)]).keyring(ALICE);
+        let from = (2, k(12));
+        let burn = next_link(&kr, &from, false, true, None).unwrap();
+        assert_eq!(
+            (
+                burn.prev,
+                burn.prev_key.is_none(),
+                burn.skip_key.is_none(),
+                burn.burned
+            ),
+            (2, true, true, true)
+        );
+        // right after burning 3 (from 2): epoch 4 chains to 3 and skips to 2
+        let after = next_link(&kr, &(3, k(13)), true, false, Some(&k(12))).unwrap();
+        assert_eq!(after.prev, 3);
+        assert_eq!(after.prev_key, Some(k(13)));
+        assert_eq!(after.skip_key, Some(k(12)));
+        // a plain link has no skip key
+        let plain = next_link(&kr, &from, false, false, None).unwrap();
+        assert_eq!((plain.prev_key, plain.skip_key), (Some(k(12)), None));
+    }
+
+    #[test]
+    fn any_maintainer_finishes_a_burn_it_was_wrapped() {
+        // alice burned epoch 1 and crashed; the burn path wrapped K_1 to carol (a maintainer)
+        let carol = [3; 32];
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer), (carol, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 10, false)
+            .config(ALICE, 1, 11, Some(10), 20, true)
+            .wrap(ALICE, carol, 0, 10)
+            .wrap(ALICE, carol, 1, 11);
+        let kr = f.keyring(carol);
+        let repo = test_repo();
+        assert_eq!(kr.burned_by(), Some((1, ALICE)), "carol sees the burn");
+        assert_eq!(
+            chain_from(&kr, &repo).unwrap(),
+            (1, k(11)),
+            "and can chain from it"
+        );
+        let r = kr.resolution.repair.as_ref().unwrap();
+        assert!(r.rotate, "her repair rotates");
+        // the rotation's anchor for 2 skips the burned run down to epoch 0
+        let link = next_link(&kr, &(1, k(11)), true, false, None).unwrap();
+        assert_eq!((link.prev, link.skip_key), (1, Some(k(10))));
+    }
+
+    #[test]
+    fn an_owner_cannot_drop_their_role_while_anchoring_an_epoch() {
+        let f = three_epochs(&[(ALICE, Role::Maintainer), (DAVE, Role::Maintainer)]);
+        let kr = f.keyring(ALICE);
+        assert_eq!(anchored_by(&kr.resolution, ALICE), vec![0, 1, 2]);
+        assert!(
+            anchored_by(&kr.resolution, DAVE).is_empty(),
+            "dave may leave"
+        );
+    }
+
+    #[test]
+    fn the_leaving_maintainers_own_wraps_never_pin_an_epoch() {
+        // dave anchored 3 and wrapped it only to alice (the remover), with a key she can't use
+        let mut f = three_epochs(&[(ALICE, Role::Maintainer), (DAVE, Role::Maintainer)]);
+        f.config(DAVE, 3, 13, Some(12), 40, false);
+        f.wraps.push(WrapRow {
+            id: [0xee; 32],
+            owner: DAVE,
+            member_id: ALICE,
+            epoch: 3,
+            recipient_key_id: 4,
+            key_enabled: true,
+            key: None,
+        });
+        let kr = f.keyring(ALICE);
+        assert_eq!(
+            reanchor_plan(&kr.resolution, &f.rows(), DAVE),
+            Ok((vec![], Some(2)))
+        );
+    }
+
+    #[test]
+    fn content_older_than_an_epochs_current_anchor_is_an_earlier_use() {
+        let kr = three_epochs(&[(ALICE, Role::Maintainer)]).keyring(ALICE);
+        // epoch 2's anchor is at height 30
+        assert!(kr.earlier_use(2, Some(29)));
+        assert!(!kr.earlier_use(2, Some(30)));
+        assert!(!kr.earlier_use(2, None));
+        assert!(!kr.earlier_use(9, Some(1)), "no such epoch");
     }
 
     #[test]

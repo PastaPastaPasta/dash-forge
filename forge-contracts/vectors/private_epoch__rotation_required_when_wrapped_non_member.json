@@ -1,6 +1,6 @@
 {
   "name": "rotation_required_when_wrapped_non_member",
-  "description": "the current epoch is wrapped to an identity that is not a member: the repair check rotates (H2).",
+  "description": "the current epoch is wrapped to an identity that is not a member: the repair check rotates (H2), and nothing is written under it meanwhile (no write epoch).",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -74,7 +74,7 @@
       0,
       1
     ],
-    "writeEpoch": 1,
+    "writeEpoch": null,
     "unanchored": [],
     "alerts": [
       {

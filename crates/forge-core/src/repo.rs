@@ -531,6 +531,25 @@ impl<'a> RepoService<'a> {
                 *self.cache() = Some(std::sync::Arc::clone(&fresh));
                 fresh.open_pack(repo, &sealed, size_bytes)
             }
+            // Every copy predates the epoch number's current anchor: sealed under an earlier
+            // use of the number (§5.3), a different key. Not corruption; skipped like late
+            // content.
+            Err(_)
+                if copies
+                    .iter()
+                    .all(|m| kr.earlier_use(header.epoch(), Some(m.created_at_block_height))) =>
+            {
+                Err(UserError::new(
+                    codes::LATE_CONTENT,
+                    format!(
+                        "pack {} was sealed under an earlier use of key epoch {}",
+                        &hex::encode(manifest.pack_hash)[..12],
+                        header.epoch()
+                    ),
+                )
+                .cause("that epoch number stopped existing when its anchor's maintainer was removed, and was used again with a new key")
+                .into())
+            }
             other => other,
         }
     }
@@ -848,17 +867,16 @@ impl<'a> RepoService<'a> {
         let owner = platform::decode_identifier(&self.identity.id())?;
         // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can serve
         // as the anchor if the anchor's author stops being a maintainer.
-        let prev = kr.prev_of(epoch)?;
-        let enc = w.seal_doc(
-            &DocHeader::new(DocKind::Config, owner, epoch),
-            &Fields {
-                default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
-                protected_patterns: cfg.protected_patterns.clone(),
-                prev_epoch: prev.as_ref().map(|(p, _)| *p),
-                prev_epoch_key: prev.map(|(_, k)| k),
-                ..Fields::default()
-            },
-        )?;
+        let base = Fields {
+            default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
+            protected_patterns: cfg.protected_patterns.clone(),
+            ..Fields::default()
+        };
+        let fields = match kr.link_of(epoch)? {
+            Some(l) => l.apply(base),
+            None => base,
+        };
+        let enc = w.seal_doc(&DocHeader::new(DocKind::Config, owner, epoch), &fields)?;
         let props = scope.props([
             ("enc", FieldValue::bytes(enc)),
             ("epoch", FieldValue::integer(u64::from(epoch))),

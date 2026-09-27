@@ -327,6 +327,8 @@ CONFIG0 = dict(type="config", ownerId=H(ownerId), epoch=0)
 CONFIG0_TLV = tlv((6, b"refs/heads/main"))
 CONFIG1 = dict(type="config", ownerId=H(ownerId), epoch=1)
 CONFIG1_TLV = tlv((6, b"refs/heads/main"), (7, b"refs/heads/main"), (8, u32(0)), (9, K0))
+CONFIG1_BURNED_TLV = tlv((6, b"refs/heads/main"), (7, b"refs/heads/main"), (8, u32(0)), (11, b"\x01"))
+CONFIG2 = dict(type="config", ownerId=H(ownerId), epoch=2)
 
 # The hex §11 prints, checked here so the files below never drift from the document
 DOC = {
@@ -443,9 +445,15 @@ def doc_seal_vectors():
          {"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0, "prevEpochKey": H(K0)},
          CONFIG1_TLV, True, "config anchor for epoch 1 with prevEpoch 0 and prevEpochKey K_0 (tags 8, 9)."),
         ("config_burned_anchor_epoch1", CONFIG1, K1,
-         {"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0,
-          "prevEpochKey": H(K0), "burned": True},
-         CONFIG1_TLV + tlv((11, b"\x01")), True, "a burned epoch-1 anchor: tag 11 = 0x01 after tags 8 and 9 (§5.3)."),
+         {"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0, "burned": True},
+         CONFIG1_BURNED_TLV, True,
+         "a burned epoch-1 anchor: tag 8 prevEpoch and tag 11 = 0x01, and no prevEpochKey: the burned key may sit "
+         "with someone who never held K_0 (§5.3)."),
+        ("config_anchor_epoch2_with_skip", CONFIG2, K2,
+         {"defaultBranch": "refs/heads/main", "prevEpoch": 1, "prevEpochKey": H(K1), "skipEpochKey": H(K0)},
+         tlv((6, b"refs/heads/main"), (8, u32(1)), (9, K1), (12, K0)), True,
+         "the anchor above burned epoch 1 carries prevEpochKey = K_1 and skipEpochKey = K_0 (tag 12), the key of "
+         "the nearest epoch below the burned run."),
         ("config_split_view", CONFIG1, Kx,
          {"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0, "prevEpochKey": H(K0)},
          CONFIG1_TLV, True, "the epoch-1 anchor plaintext under another key K_x carries COMMIT_x (§11 split view)."),
@@ -467,6 +475,12 @@ def doc_seal_vectors():
          "tags 8/9 are not allowed in an epoch-0 config."),
         ("burned_in_epoch0", CONFIG0, K0, {"defaultBranch": "refs/heads/main", "burned": True}, True,
          "tag 11 is not allowed in an epoch-0 config: epoch 0 is never burned."),
+        ("burned_with_prev_key", CONFIG1, K1,
+         {"defaultBranch": "refs/heads/main", "prevEpoch": 0, "prevEpochKey": H(K0), "burned": True}, True,
+         "a burned config never carries prevEpochKey: a writer refuses to seal it."),
+        ("burned_with_skip_key", CONFIG1, K1,
+         {"defaultBranch": "refs/heads/main", "prevEpoch": 0, "burned": True, "skipEpochKey": H(K0)}, True,
+         "nor skipEpochKey."),
         ("anchor_epoch1_without_prev", CONFIG1, K1, {"defaultBranch": "refs/heads/main"}, True,
          "an anchor for e >= 1 must carry prevEpoch and prevEpochKey."),
         ("non_anchor_epoch1_without_prev", CONFIG1, K1, {"defaultBranch": "refs/heads/dev"}, False,
@@ -610,7 +624,7 @@ def doc_open_vectors():
     strict = [
         ("tlv_title_twice", "tag 1 twice is malformed.", T + T + B, MALFORMED),
         ("tlv_out_of_order", "tags out of order (2 then 1) are malformed.", B + T, MALFORMED),
-        ("tlv_reserved_tag", "reserved tag 12 is malformed.", T + B + rec(12, b"x"), MALFORMED),
+        ("tlv_reserved_tag", "reserved tag 13 is malformed.", T + B + rec(13, b"x"), MALFORMED),
         ("tlv_burned_in_issue", "tag 11 (burned) is a config field: in an issue it is malformed.",
          T + B + rec(11, b"\x01"), MALFORMED),
         ("tlv_tag_zero", "tag 0 is not a field of any kind.", rec(0, b"x") + T + B, MALFORMED),
@@ -644,10 +658,24 @@ def doc_open_vectors():
       CONFIG1_TLV + rec(11, b"\x02"), CTX01, MALFORMED)
     v("tlv_burned_two_bytes", "tag 11 of length 2 is malformed.", c1, K1, CONFIG1_TLV + rec(11, b"\x01\x01"), CTX01,
       MALFORMED)
-    v("config_burned_anchor", "an epoch-1 anchor with tag 11 opens with burned = true.", c1, K1,
-      CONFIG1_TLV + rec(11, b"\x01"), CTX01,
+    v("config_burned_anchor", "an epoch-1 anchor with tags 8 and 11 opens with burned = true and no prevEpochKey.",
+      c1, K1, CONFIG1_BURNED_TLV, CTX01,
       readable({"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0,
-                "prevEpochKey": H(K0), "burned": True}))
+                "burned": True}))
+    v("tlv_burned_with_prev_key", "a burned config carrying tag 9 (prevEpochKey) is malformed.", c1, K1,
+      CONFIG1_TLV + rec(11, b"\x01"), CTX01, MALFORMED)
+    v("tlv_burned_with_skip_key", "a burned config carrying tag 12 (skipEpochKey) is malformed.", c1, K1,
+      CONFIG1_BURNED_TLV + rec(12, K0), CTX01, MALFORMED)
+    v("tlv_skip_key_in_epoch0", "tag 12 in an epoch-0 config is malformed.", c0, K0,
+      tlv((6, b"refs/heads/main"), (12, K0)), CTX0, MALFORMED)
+    v("tlv_skip_key_length_31", "tag 12 of 31 bytes is malformed.", c1, K1, CONFIG1_TLV + rec(12, K0[:31]), CTX01,
+      MALFORMED)
+    v("tlv_skip_key_in_issue", "tag 12 is a config field: in an issue it is malformed.", ISSUE, K0,
+      ISSUE_TLV + rec(12, K0), CTX0, MALFORMED)
+    v("config_with_skip_key", "an epoch-1 config with tags 8, 9 and 12 opens with its skipEpochKey.", c1, K1,
+      CONFIG1_TLV + rec(12, K0), CTX01,
+      readable({"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0,
+                "prevEpochKey": H(K0), "skipEpochKey": H(K0)}))
     v("content_under_burned_epoch_late",
       "an issue sealed under burned epoch 1 by a non-member is Unreadable(Late) at any height: nothing is written "
       "under a burned epoch.", dict(ISSUE, epoch=1), K1, ISSUE_TLV,
@@ -787,12 +815,16 @@ def member(identity, role, at=1):
     return dict(identity=identity, role=role, createdAt=at)
 
 
-def config(label, owner, epoch, K, height, prev=None, created_at=None, fields=b"", burned=False):
+def config(label, owner, epoch, K, height, prev=None, created_at=None, fields=b"", burned=False, skip=None):
     pt = fields
     if prev is not None:
-        pt = pt + tlv((8, u32(prev[0])), (9, prev[1]))
+        pt = pt + tlv((8, u32(prev[0])))
+        if not burned:
+            pt = pt + tlv((9, prev[1]))
     if burned:
         pt = pt + tlv((11, b"\x01"))
+    if skip is not None:
+        pt = pt + tlv((12, skip))
     _, enc = seal_doc(dict(type="config", ownerId=owner, epoch=epoch), K, pt)
     return dict(id=H(cid(label)), owner=owner, epoch=epoch, createdAtBlockHeight=height,
                 createdAt=height * 1000 if created_at is None else created_at, enc=H(enc))
@@ -1036,11 +1068,18 @@ def epoch_vectors():
        [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1)],
        dict(unanchored=[1], alerts=[dict(kind="epochGap", epoch=1, author=ALICE)]))
     c1_burned = config("c1-burned", ALICE, 1, K1, 1000, prev=(0, K0), burned=True)
+    ev("burned_anchor_has_no_prev_key",
+       "a reader whose only wrap is for burned epoch 1 (the leaked key) reads epoch 1 alone: the burned anchor "
+       "carries no prevEpochKey, so K_0 never reaches someone who only ever held the burned key.",
+       team, [c0, c1_burned], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1)],
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1-burned"}, readable=[1], writeEpoch=None,
+            repair=repair(rotate=True)))
     ev("burned_epoch_not_writable",
        "epoch 1's anchor is burned: it exists and is readable (a chain link), but nothing is written under it, "
        "content under it is late unless its author is a current member, a manifest under it is suspect, and the "
        "repair check rotates though no non-member is wrapped.",
-       team, [c0, c1_burned], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1)],
+       team, [c0, c1_burned],
+       [wrap("w0b", ALICE, BOB, 0, K0), wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1-burned"}, readable=[0, 1], writeEpoch=None,
             repair=repair(rotate=True), content=["late", "shown"],
             manifests=[dict(suspect=True, readable=False), dict(suspect=True, readable=True)]),
@@ -1049,17 +1088,43 @@ def epoch_vectors():
        manifests=[dict(headerEpoch=1, createdAtBlockHeight=1001, owner=MALLORY),
                   dict(headerEpoch=1, createdAtBlockHeight=1001, owner=BOB)])
     ev("burned_epoch_chain_walks",
-       "a wrap for epoch 2 walks the chain through burned epoch 1 down to 0: a burned epoch is still a link.",
-       team, [c0, c1_burned, config("c2", ALICE, 2, K2, 2000, prev=(1, K1))],
+       "a wrap for epoch 2 walks the chain through burned epoch 1 (prevEpochKey = K_1) and on to 0 with its "
+       "skipEpochKey = K_0: a burned epoch is still a link.",
+       team, [c0, c1_burned, config("c2", ALICE, 2, K2, 2000, prev=(1, K1), skip=K0)],
        [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2)],
        dict(currentEpoch=2, anchors={"0": "c0", "1": "c1-burned", "2": "c2"}, readable=[0, 1, 2], writeEpoch=2,
             repair=ok_repair, content=["late", "shown"]),
        content=[dict(epoch=1, createdAtBlockHeight=999_999, owner=MALLORY),
                 dict(epoch=0, createdAtBlockHeight=1000, owner=MALLORY)])
+    c2_burned = config("c2-burned", ALICE, 2, K2, 2000, prev=(1, K1), burned=True)
+    ev("skip_key_walks_past_burned",
+       "epoch 2 is burned; epoch 3's anchor carries prevEpochKey = K_2 and skipEpochKey = K_1, the nearest epoch "
+       "below that is not burned: one wrap for 3 reads 3, 2, then 1 and 0.",
+       team, [c0, c1, c2_burned, config("c3", ALICE, 3, K3, 3000, prev=(2, K2), skip=K1)],
+       [wrap("w3a", ALICE, ALICE, 3), wrap("w3b", ALICE, BOB, 3, K3)],
+       dict(currentEpoch=3, anchors={"0": "c0", "1": "c1", "2": "c2-burned", "3": "c3"}, readable=[0, 1, 2, 3],
+            writeEpoch=3, repair=ok_repair))
+    ev("consecutive_burned_skip",
+       "epochs 1 and 2 are both burned: epoch 3's skipEpochKey is K_0, the nearest epoch below the run that is not "
+       "burned; the walk reaches 2 (its prevEpochKey) and 0, and burned epoch 1 stays unreadable (nothing is sealed "
+       "under it).",
+       team, [c0, c1_burned, config("c2-burned", ALICE, 2, K2, 2000, prev=(1, K1), burned=True),
+              config("c3", ALICE, 3, K3, 3000, prev=(2, K2), skip=K0)],
+       [wrap("w3a", ALICE, ALICE, 3), wrap("w3b", ALICE, BOB, 3, K3)],
+       dict(currentEpoch=3, anchors={"0": "c0", "1": "c1-burned", "2": "c2-burned", "3": "c3"}, readable=[0, 2, 3],
+            writeEpoch=3, repair=ok_repair))
+    ev("missing_skip_key_chain_broken",
+       "epoch 2's anchor sits above burned epoch 1 but carries no skipEpochKey: the chain is broken at 2, and the "
+       "walk reaches burned epoch 1 only.",
+       team, [c0, c1_burned, config("c2", ALICE, 2, K2, 2000, prev=(1, K1))],
+       [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2)],
+       dict(currentEpoch=2, anchors={"0": "c0", "1": "c1-burned", "2": "c2"}, readable=[1, 2], writeEpoch=2,
+            alerts=[dict(kind="chainBroken", epoch=2, author=ALICE)], repair=ok_repair))
     ev("burned_current_requires_rotation",
        "a maintainer reading a burned current epoch is asked to rotate (RotationRequired with no members): any "
        "maintainer finishes an interrupted burn.",
-       team, [c0, c1_burned], [wrap("w1a", ALICE, ALICE, 1, K1), wrap("w1b", ALICE, BOB, 1)],
+       team, [c0, c1_burned],
+       [wrap("w0a", ALICE, ALICE, 0, K0), wrap("w1a", ALICE, ALICE, 1, K1), wrap("w1b", ALICE, BOB, 1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1-burned"}, readable=[0, 1], writeEpoch=None,
             alerts=[dict(kind="rotationRequired", epoch=1, members=[])], repair=repair(rotate=True)), reader=ALICE)
     ev("burned_flag_only_on_the_anchor_counts",
@@ -1068,15 +1133,16 @@ def epoch_vectors():
        [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1, repair=ok_repair))
     ev("rotation_required_when_wrapped_non_member",
-       "the current epoch is wrapped to an identity that is not a member: the repair check rotates (H2).",
+       "the current epoch is wrapped to an identity that is not a member: the repair check rotates (H2), and "
+       "nothing is written under it meanwhile (no write epoch).",
        team, [c0, c1], [wrap("w1a", ALICE, ALICE, 1, K1), wrap("w1b", ALICE, BOB, 1), wrap("w1m", ALICE, MALLORY, 1)],
-       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1,
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=None,
             alerts=[dict(kind="rotationRequired", epoch=1, members=[MALLORY])],
             repair=repair(rotate=True, non_members=[MALLORY])), reader=ALICE)
     ev("rotation_alert_only_for_maintainers",
        "the repair check finds a wrapped non-member, but only a maintainer's client is asked to rotate.",
        team, [c0, c1], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1), wrap("w1m", ALICE, MALLORY, 1)],
-       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1,
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=None,
             repair=repair(rotate=True, non_members=[MALLORY])))
     ev("missing_wrap_repaired_without_rotation", "a member with no wrap for the current epoch is wrapped, no rotation.",
        team + [member(FRANK, "writer")], [c0, c1], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1)],

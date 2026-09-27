@@ -1,6 +1,6 @@
 {
-  "name": "config_burned_anchor",
-  "description": "an epoch-1 anchor with tags 8 and 11 opens with burned = true and no prevEpochKey.",
+  "name": "tlv_burned_with_skip_key",
+  "description": "a burned config carrying tag 12 (skipEpochKey) is malformed.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -27,19 +27,11 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 1,
       "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
-      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9cc2c71a2a510ad23e4af9dc285bf3b180fe8ade1be1e55826633284d4657b8bb74aad1ab382bbcebb675605056476b308f6d85dd9138e5c8e70a501995",
+      "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bd0b9cc2c71a2a510ad23e4af9dc285bf3b180fe8ade1be1e55826633284d4657b8bb74aad1ab382bbcebb6756050569280da9458751a71d8a3587c2d99260d69f4b32cf51928c2538babb4fe5fdc3c92718862a662aa587062b841369b3c70cf3e2f",
       "createdAtBlockHeight": 50
     }
   },
   "expected": {
-    "status": "readable",
-    "fields": {
-      "defaultBranch": "refs/heads/main",
-      "protectedPatterns": [
-        "refs/heads/main"
-      ],
-      "prevEpoch": 0,
-      "burned": true
-    }
+    "status": "malformed"
   }
 }

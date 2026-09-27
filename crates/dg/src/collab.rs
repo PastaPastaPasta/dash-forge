@@ -75,10 +75,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
             if let Some(epoch) = kr.maintainer_would_move_anchors(id) {
                 return Err(UserError::new(
                     codes::ROTATION_PENDING,
-                    format!("making {member} a maintainer of {repo} would change key epoch {epoch}"),
+                    format!("{member} can't be made a maintainer of {repo} again"),
                 )
-                .cause("their key statements from an earlier maintainer role would count again and come first")
-                .fix(format!("rotate first: `dg repo keys rotate {repo}`, then add them"))
+                .cause(format!("they posted a config for key epoch {epoch} in an earlier maintainer role; it would count again and take over that epoch's anchor"))
+                .fix("add them as a writer, or make a new identity of theirs the maintainer")
                 .note("nothing was written")
                 .into());
             }
@@ -135,6 +135,14 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
     let private = handle.visibility == Visibility::Private;
+    if handle.owner_id() != s.identity.id() {
+        return Err(forge_core::Error::NotPermitted {
+            action: format!("remove a member of {repo}"),
+            reason: "only the repository's owner can change its members".into(),
+            needs: "owner".into(),
+        }
+        .into());
+    }
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
         private_remove_prompt(&members, repo, member, role)
@@ -173,7 +181,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let needs_rotation = private
         && !stays_maintainer
         && (removed
-            || still_holds_current_key(&signer, handle, member)
+            || rotation_still_pending(&signer, handle, member)
                 .await
                 .unwrap_or(false));
     let rotation = if needs_rotation {
@@ -277,7 +285,9 @@ fn not_rotated(e: &anyhow::Error, repo: &str, member: &str) -> anyhow::Error {
         format!("{member} was removed from {repo}, but the key was not rotated"),
     )
     .cause(format!("{}: {}", why.code, why))
-    .fix(format!("dg repo keys repair {repo}"))
+    .fix(format!(
+        "run `dg repo keys repair {repo}` (any maintainer can)"
+    ))
     .fix(format!("or run `dg collab remove {repo} {member}` again"))
     .note(format!(
         "until the key rotates, {member} can still read new content"
@@ -285,8 +295,24 @@ fn not_rotated(e: &anyhow::Error, repo: &str, member: &str) -> anyhow::Error {
     .into()
 }
 
-/// Whether `member` (not a member now) still holds the current epoch's key: an earlier
-/// removal's rotation did not finish, and the repair check names them.
+/// Whether an earlier removal of `member` (not a member now) left its rotation unfinished: the
+/// repair check still names them, or the current epoch is burned (the removal's rotation burned
+/// it and stopped before the next epoch).
+async fn rotation_still_pending(
+    signer: &PrivateSigner<'_>,
+    repo: &forge_core::scope::RepoRef,
+    member: &str,
+) -> Result<bool> {
+    let member = forge_core::platform::decode_identifier(member)?;
+    let kr = signer.keyring(repo).await?;
+    Ok(kr
+        .resolution()
+        .repair
+        .as_ref()
+        .is_some_and(|r| r.rotate && (r.non_members.is_empty() || r.non_members.contains(&member))))
+}
+
+/// Whether `member` (not a member now) still holds the current epoch's key.
 async fn still_holds_current_key(
     signer: &PrivateSigner<'_>,
     repo: &forge_core::scope::RepoRef,
