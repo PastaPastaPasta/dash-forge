@@ -22,9 +22,13 @@ import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as W
 import type { Network } from '../constants'
 import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
 import { authSdk, sleep } from '../sdk/facade'
+import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockedSecret, withEncryptionKey } from './vault'
+
+/** The step-timing flow of enabling private repos at sign-in (L-20). */
+export const PRIVATE_REPOS_FLOW = 'enable-private-repos'
 
 /** Purpose ENCRYPTION, key type ECDSA_SECP256K1 (DPP enums). */
 const PURPOSE_ENCRYPTION = 1
@@ -96,12 +100,13 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
   try {
     if (secret.length !== 32) throw new Error('an encryption private key is 32 bytes')
     const pub = await publicKeyHex(secret, network)
-    const match = (await requireIdentityKeys(sdk, identityId)).find(
+    const keys = await timed(PRIVATE_REPOS_FLOW, 'read identity keys (adopt)', () => requireIdentityKeys(sdk, identityId))
+    const match = keys.find(
       (k) => k.purposeNumber === PURPOSE_ENCRYPTION && k.keyTypeNumber === KEY_TYPE_ECDSA_SECP256K1 && k.disabledAt === undefined && k.data.toLowerCase() === pub,
     )
     if (match === undefined) throw new Error("that key is not an enabled encryption key of this identity")
     if (!isUsableEncryptionKey(match, coreId)) throw new Error('that encryption key is bound to another contract, so it cannot be used for Forge private repos')
-    await storeEncryptionKey(network, identityId, match.keyId, secret)
+    await timed(PRIVATE_REPOS_FLOW, 'seal into the vault', () => storeEncryptionKey(network, identityId, match.keyId, secret))
     return match.keyId
   } finally {
     secret.fill(0)
@@ -197,7 +202,7 @@ export async function importEncryptionKey(
   coreId: string,
   source: EncryptionMaterial | { readonly mnemonic: string; readonly identityIndex?: number },
 ): Promise<number | null> {
-  const candidates = (await requireIdentityKeys(sdk, identityId))
+  const candidates = (await timed(PRIVATE_REPOS_FLOW, 'read identity keys', () => requireIdentityKeys(sdk, identityId)))
     .filter((k) => isUsableEncryptionKey(k, coreId))
     .sort((a, b) => b.keyId - a.keyId)
   if (candidates.length === 0) return null
@@ -212,7 +217,7 @@ export async function importEncryptionKey(
   if (mnemonic === null) return null
   if (!(await isValidMnemonic(mnemonic))) throw new Error('those words are not a valid recovery phrase')
   for (const k of candidates) {
-    const secret = await deriveSecret(normalizeMnemonic(mnemonic), network, k.keyId, source.identityIndex ?? 0)
+    const secret = await timed(PRIVATE_REPOS_FLOW, `derive key ${k.keyId} from the phrase`, () => deriveSecret(normalizeMnemonic(mnemonic), network, k.keyId, source.identityIndex ?? 0))
     if ((await publicKeyHex(secret, network)) === k.data.toLowerCase()) return adoptEncryptionKey(sdk, network, identityId, coreId, secret)
     secret.fill(0)
   }

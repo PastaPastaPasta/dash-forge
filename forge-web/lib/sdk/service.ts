@@ -21,7 +21,8 @@
  * connection it started on, and a writer holding the handle keeps working across a swap.
  * A new connection is built:
  *   - every {@link REFRESH_MS} while the tab is visible, before the keys go stale;
- *   - when a read fails on stale keys or on no usable node: one reconnect, then one retry.
+ *   - when a read fails on stale keys or on no usable node: one reconnect, then one retry;
+ *   - before a write whose SDK call never refreshes the keys itself (L-06, {@link EvoSdkService.ensureFresh}).
  * A connect that fails is retried with backoff (D-058). Every connection is trusted: a
  * failure never falls back to unverified reads.
  *
@@ -95,6 +96,8 @@ export interface Carry {
 
 /** Reconnect this often while the tab is visible, well inside a quorum's lifetime (D-024). */
 export const REFRESH_MS = 5 * 60_000
+/** A write that needs fresh quorum keys ({@link EvoSdkService.ensureFresh}) reuses a connection this young. */
+export const FRESH_WRITE_MS = 30_000
 /** A failed read triggers a reconnect at most this often. */
 export const RECOVER_GAP_MS = 15_000
 /** Before reconnecting after "no available addresses", wait out rate-limit holds up to this. */
@@ -152,7 +155,7 @@ const READS: Readonly<Record<string, readonly string[]>> = {
   contracts: ['fetch', 'getHistory', 'getMany', 'getByRange', 'getLatestVersions'],
   dpns: ['resolveName', 'username', 'usernames', 'getUsernameByName'],
   epoch: ['current', 'epochsInfo', 'finalizedInfos'],
-  system: ['status', 'currentQuorumsInfo', 'totalCreditsInPlatform'],
+  system: ['status', 'currentQuorumsInfo', 'totalCreditsInPlatform', 'pathElements'],
   contractGroups: ['info', 'members', 'forContract'],
   group: ['info', 'infos', 'members'],
 }
@@ -225,6 +228,8 @@ type Facades = Record<string, Record<string, AnyFn>>
 
 export class EvoSdkService {
   private current: Connection | null = null
+  /** When {@link current} went live: its quorum keys are this old. */
+  private installedAt = -Infinity
   private generationNo = 0
   /** Bumped by a network switch and by `cleanup()`: an attempt started under another epoch is dropped. */
   private epoch = 0
@@ -461,6 +466,7 @@ export class EvoSdkService {
     const previous = this.current
     if (previous !== null) this.learn(previous.sdk)
     this.current = connection
+    this.installedAt = this.clock.now()
     this.generationNo++
     // Observable without React (the e2e suite waits for a swap to go live on it).
     if (typeof document !== 'undefined' && document.documentElement) {
@@ -526,6 +532,18 @@ export class EvoSdkService {
       if (this.epoch === epoch && this.current !== null) this.scheduleRefresh()
     })
     return run
+  }
+
+  /**
+   * Before a write whose result is proof-checked against the connection's quorum keys by an SDK
+   * call that never refreshes them (wasm-sdk `identityCreate`, L-06): build a new connection
+   * unless the current one is at most `maxAgeMs` old. Resolves to whether the connection is that
+   * fresh; a failed rebuild keeps the current one (the caller checks what landed instead).
+   */
+  async ensureFresh(maxAgeMs = FRESH_WRITE_MS): Promise<boolean> {
+    if (this.current === null) return false
+    if (this.clock.now() - this.installedAt <= maxAgeMs) return true
+    return this.refresh()
   }
 
   /** Force a fresh connection (e.g. after a network drop). Preserves the config. */

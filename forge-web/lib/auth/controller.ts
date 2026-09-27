@@ -28,6 +28,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
+import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
@@ -42,7 +43,7 @@ import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS } from './connect'
 import { withTimeout } from '../timeout'
 import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
-import { encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
   disableHeldKeys,
   isForgeBrowserKey,
@@ -346,6 +347,9 @@ export class AuthController {
     return { identityId, network, getSigningKeyWif: pick }
   }
 
+  /** Times the named steps of the running sign-in (`lib/step-timing.ts`, L-20); one clock per run. */
+  private stepTimer = stepClock('sign-in')
+
   /** The verified scopes of the open session's keys (main, and extra grants by key id). */
   private scopes: { main: KeyScope | null; extra: Map<number, KeyScope> } = { main: null, extra: new Map() }
 
@@ -355,6 +359,7 @@ export class AuthController {
   }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {
+    this.stepTimer = stepClock('sign-in')
     this.setState({ isLoading: true, error: null, step: null })
     try {
       const v = await fn()
@@ -363,11 +368,14 @@ export class AuthController {
     } catch (e) {
       this.setState({ isLoading: false, error: errorMessage(e), step: null })
       throw e
+    } finally {
+      this.stepTimer(null)
     }
   }
 
   /** Name the step a running sign-in is on. */
   private step(text: string): void {
+    this.stepTimer(text)
     this.setState({ step: text })
   }
 
@@ -613,7 +621,8 @@ export class AuthController {
     const core = NETWORKS[this.network].v2?.core
     if (core === undefined) return
     try {
-      const keyId = await importEncryptionKey(await this.getSdk(), this.network, identityId, core, material)
+      const sdk = await timed(PRIVATE_REPOS_FLOW, 'connect', () => this.getSdk())
+      const keyId = await importEncryptionKey(sdk, this.network, identityId, core, material)
       if (keyId === null) {
         this.setState({
           notice:

@@ -44,7 +44,11 @@ export interface AuthSdk {
   }
   documents: { query(q: unknown): Promise<Map<string, unknown>> }
   contracts: { fetch(id: string): Promise<unknown> }
-  system: { status(): Promise<{ toJSON(): { chain?: { coreChainLockedHeight?: number } } }> }
+  system: {
+    status(): Promise<{ toJSON(): { chain?: { coreChainLockedHeight?: number } } }>
+    /** Proven GroveDB elements at `path` (`getPathElements`); `elementType` is unset for a missing key. */
+    pathElements(path: Uint8Array[], keys: Uint8Array[]): Promise<{ readonly elementType?: string; readonly valueBytes?: Uint8Array }[]>
+  }
 }
 
 /** The typed facades of a connected SDK. */

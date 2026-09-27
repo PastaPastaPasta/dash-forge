@@ -37,6 +37,7 @@ import {
   depositAddressOf,
   depositBalance,
   readCreationJournal,
+  IdentityNotCreatedError,
   MIN_DEPOSIT_DUFFS,
   type CreateStage,
   type CreationJournal,
@@ -74,6 +75,14 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [stage, setStage] = useState<string | null>(null)
   const [seen, setSeen] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  // The last run's IdentityCreate did not land (L-06): its message says what the deposit allows,
+  // and "Try again" reuses the lock when enough of it is left ('retry').
+  const [notCreated, setNotCreated] = useState<'retry' | 'final' | null>(null)
+  // The words of the last run, for "Try again" (a resumed creation's words are typed, not shown).
+  const runWords = useRef<string | null>(null)
+  // The browser key the last run stored: when its identity turns out to exist, "Try again"
+  // checks this key instead of paying for a renewal (L-06). Memory only; dropped with the words.
+  const storedKey = useRef<{ identityId: string; keyId: number; wif: string } | null>(null)
   const [running, setRunning] = useState(false)
   // Checking typed words before a run (the library may still be downloading).
   const [preparing, setPreparing] = useState(false)
@@ -137,6 +146,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     () => () => {
       run.current?.abort()
       mnemonicRef.current = null
+      runWords.current = null
+      storedKey.current = null
     },
     [],
   )
@@ -169,6 +180,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const start = async (phrase: string): Promise<void> => {
     if (!protection || running || preparing) return
     setError(null)
+    setNotCreated(null)
     const m = normalizeMnemonic(phrase)
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
@@ -177,6 +189,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     }
     const deposit = await checkWords(m)
     if (deposit === null) return
+    runWords.current = m
     const controllerRun = new AbortController()
     run.current = controllerRun
     setRunning(true)
@@ -193,7 +206,12 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         trust: controller.groupTrust(),
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
-        persistKey: (id, k, o) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection, o),
+        persistKey: async (id, k, o) => {
+          await controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection, o)
+          // A staged key (a renewal in flight) is not the key this browser holds yet.
+          if (!o?.staged) storedKey.current = { identityId: id, keyId: k.keyId, wif: k.wif }
+        },
+        heldKey: async (id) => (storedKey.current?.identityId === id ? storedKey.current : null),
         onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),
         onDeposit: setSeen,
         onCharge: (id, charge) => controller.reportCharge(id, charge),
@@ -202,11 +220,16 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       await controller.openStored(identityId, null, key.limits)
       await clearCreationJournal(network)
       setMnemonic(null)
+      runWords.current = null
+      storedKey.current = null
       onDone()
     } catch (e) {
       // Never leave an unlocked key in memory without a session.
       controller.logout()
-      if (!isAbort(e)) setError(errorMessage(e))
+      if (!isAbort(e)) {
+        setError(errorMessage(e))
+        setNotCreated(e instanceof IdentityNotCreatedError ? (e.retryable ? 'retry' : 'final') : null)
+      }
       reloadVaults()
     } finally {
       if (run.current === controllerRun) run.current = null
@@ -215,11 +238,16 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   }
 
   const discard = async (): Promise<void> => {
-    if (!journal) return
+    // A creation that failed in this sheet has no `journal` state yet: read it.
+    const current = journal ?? (await readCreationJournal(network).catch(() => undefined))
+    if (!current) return
     setError(null)
+    setNotCreated(null)
+    runWords.current = null
+    storedKey.current = null
     try {
       if (discardWarning === null) {
-        const held = await withTimeout(depositBalance(network, journal), STEP_MS, 'Checking the deposit address').catch(() => -1)
+        const held = await withTimeout(depositBalance(network, current), STEP_MS, 'Checking the deposit address').catch(() => -1)
         if (held !== 0) {
           setDiscardWarning(
             held > 0
@@ -381,11 +409,26 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         transactions, so neither can take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block chain-locks it, which can take a few
         minutes.
       </p>
-      {error && !running ? (
+      {error && !running && notCreated === 'final' ? (
+        // Nothing left to retry with: this deposit cannot create the identity.
+        <div className="space-y-3" data-testid="signin-failed">
+          <ErrorBox error={error} />
+          <p className="text-dense text-anvil-600 dark:text-anvil-300">
+            Discard this creation and start again: new words and a new deposit of at least 0.02 DASH.
+          </p>
+          {discardWarning ? <p className="text-dense text-caution-700 dark:text-caution-400">{discardWarning}</p> : null}
+          <Button variant="outline" className="w-full" onClick={discard}>
+            {discardWarning ? 'Discard anyway' : 'Discard this creation'}
+          </Button>
+        </div>
+      ) : error && !running ? (
         <StepFailed
-          error={`${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).`}
+          {...(notCreated === 'retry'
+            ? { error, retryLabel: 'Try again with the same deposit' }
+            : { error: `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).` })}
           onRetry={() => {
-            if (mnemonic) void start(mnemonic)
+            const words = runWords.current ?? mnemonic
+            if (words) void start(words)
             else {
               setStep('loading')
               setAttempt((a) => a + 1)
