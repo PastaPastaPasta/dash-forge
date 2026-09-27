@@ -46,7 +46,7 @@ import {
   MessageSquareDashed,
 } from 'lucide-react'
 
-import type { CommentView, PullThread, RepoHome, TimelineItem } from '@/lib/view'
+import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
 import {
   addEvent,
@@ -57,6 +57,7 @@ import {
   reviewFirsts,
   deleteComment,
   readConfigBundle,
+  shortBranch,
   MERGE_METHODS,
   writeRefUpdate,
   defineLabel,
@@ -74,12 +75,12 @@ import {
 } from '@/lib/repo'
 import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
-import type { EventKind, Holdings, RefState } from '@/lib/rules'
+import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
-import { inlineCommentIds, lineKey } from '@/lib/view/inline-threads'
+import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { draftIsEmpty, draftWhereabouts } from '@/lib/view/pending-review'
@@ -308,7 +309,9 @@ function PullPage({
     { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
   const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
-  const canMoveHead = identity !== null && (isAuthor || isMember) && open && !writeBlocked
+  // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
+  const authorOrMember = identity !== null && (isAuthor || isMember)
+  const canMoveHead = authorOrMember && open && !writeBlocked
   const since = pullSinceYourReview(thread, identity)
 
   // ---- controls ---------------------------------------------------------------------------------
@@ -325,7 +328,7 @@ function PullPage({
     checksBlocking,
   })
   const base = pull.baseRefName || 'the base branch'
-  const canAuthorOrMember = identity !== null && (isAuthor || isMember) && !archived
+  const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
 
   const [comment, setComment] = useState('')
@@ -351,6 +354,10 @@ function PullPage({
   const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
+  /** Confirm an event write (the route's price checked against the balance first). */
+  const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
+    if (guard.check(cost, 'collab')) setPending(p)
+  }
   const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
@@ -375,18 +382,18 @@ function PullPage({
     signedIn: identity !== null && guard.disabledReason === null && !archived,
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
-  const canResolve = identity !== null && (isAuthor || isMember) && !writeBlocked && guard.disabledReason === null
-  // Stable across renders (the diff's lines re-render only when these change): the handlers
-  // read the latest cost and guard through a ref.
-  const resolveCheck = useRef<() => boolean>(() => true)
-  resolveCheck.current = () => guard.check(eventCost, 'collab')
+  const canResolve = authorOrMember && !writeBlocked && guard.disabledReason === null
+  // Stable across renders (the diff's lines re-render only when these change): the handler
+  // reads the latest confirm (cost and guard) through a ref.
+  const confirmResolve = useRef(confirmEvent)
+  confirmResolve.current = confirmEvent
   const resolvedKey = review.resolvedThreads.join(',')
   const threadActions = useMemo<ThreadActions>(
     () => ({
       canResolve,
       resolved: new Set(resolvedKey === '' ? [] : resolvedKey.split(',')),
       onResolve: (root, resolve) => {
-        if (resolveCheck.current()) setPending({ kind: 'resolve', root, resolve })
+        confirmResolve.current({ kind: 'resolve', root, resolve })
       },
       viewer: identity,
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
@@ -525,9 +532,11 @@ function PullPage({
       case 'review':
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
       case 'mark-merged':
+        return previewCreate('event')
       case 'label':
+        return previewCreate('event', { value: pending.label })
       case 'assign':
-        return previewCreate('event', pending.kind === 'label' ? { value: pending.label } : {})
+        return previewCreate('event', { value: pending.who })
       case 'dismiss':
         return previewCreate('event', { value: pending.reason })
       case 'define-label':
@@ -549,32 +558,11 @@ function PullPage({
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
   const inlineIds = useMemo(() => new Set(inlineCommentIds(thread.comments)), [thread.comments])
-  const repliesOf = useMemo(() => {
-    // Under the thread's ROOT (a reply to a reply belongs to the same thread).
-    const byId = new Map(thread.comments.map((c) => [c.id, c]))
-    const rootOf = (id: string): string => {
-      let cur = byId.get(id)
-      const seen = new Set<string>()
-      while (cur !== undefined && cur.replyTo !== null && !seen.has(cur.id)) {
-        seen.add(cur.id)
-        const parent = byId.get(cur.replyTo)
-        if (parent === undefined) break
-        cur = parent
-      }
-      return cur?.id ?? id
-    }
-    const m = new Map<string, CommentView[]>()
-    for (const c of thread.comments) {
-      if (c.replyTo === null || !inlineIds.has(c.id)) continue
-      const root = rootOf(c.id)
-      m.set(root, [...(m.get(root) ?? []), c])
-    }
-    return m
-  }, [thread.comments, inlineIds])
+  // Under the thread's root (a reply to a reply belongs to the same thread).
+  const repliesOf = useMemo(() => repliesByRoot(thread.comments), [thread.comments])
   const conversation = timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
   const resolved = new Set(review.resolvedThreads)
-  const headWords = phrases.data
-  const eventText = (e: TimelineItem & { kind: 'event' }): string | null => (e.event.kind === 'headUpdate' && e.event.id ? headWords?.get(e.event.id) ?? null : null)
+  const eventText = (e: Event): string | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
 
   const counts = {
     conversation: thread.comments.length + thread.reviews.length,
@@ -594,7 +582,6 @@ function PullPage({
   const linked = linkedIssues(pull.body)
   const checkout = checkoutCommand(repo, pull.number)
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
-  const shortRef = (r: string): string => r.replace(/^refs\/heads\//, '')
 
   return (
     <div className="mx-auto max-w-6xl space-y-4" data-testid="pull-page">
@@ -637,11 +624,11 @@ function PullPage({
             {status.label}
           </span>
           <span className="text-anvil-500 dark:text-anvil-400">
-            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{shortRef(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
+            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
             {pull.sourceRefName ? (
               <>
                 {' '}
-                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortRef(pull.sourceRefName)}</span>
+                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
             ) : null}{' '}
             · {timeAgo(pull.createdAt)}
@@ -661,7 +648,7 @@ function PullPage({
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
           <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
           <span className="min-w-0 flex-1">
-            {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortRef(pull.sourceRefName ?? '')}</span> is at{' '}
+            {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
           </span>
           <CostPreview cost={eventCost} />
@@ -670,7 +657,7 @@ function PullPage({
             size="sm"
             disabled={guard.disabledReason !== null}
             onClick={() => {
-              if (guard.check(eventCost, 'collab')) setPending({ kind: 'head', oid: sync.tip })
+              confirmEvent({ kind: 'head', oid: sync.tip })
             }}
           >
             Update PR head
@@ -680,7 +667,7 @@ function PullPage({
       {open && sync?.kind === 'deleted' && pull.sourceRefName ? (
         <p className="rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="source-deleted">
           <AlertTriangle className="mr-1.5 inline h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
-          The source branch <span className="font-mono">{shortRef(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
+          The source branch <span className="font-mono">{shortBranch(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
         </p>
       ) : null}
       {open && reviewDraft.draft !== null && !draftIsEmpty(reviewDraft.draft) ? (
@@ -745,7 +732,7 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
-                  eventText={(e) => eventText({ kind: 'event', at: e.createdAt, event: e })}
+                  eventText={eventText}
                   renderComment={(item) =>
                     commentSlots({
                       item,
@@ -780,7 +767,7 @@ function PullPage({
                       size="sm"
                       disabled={guard.disabledReason !== null}
                       onClick={() => {
-                        if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'ready' })
+                        confirmEvent({ kind: 'draft', to: 'ready' })
                       }}
                     >
                       Ready for review
@@ -1007,10 +994,10 @@ function PullPage({
                 canRequest={canAuthorOrMember && open && guard.disabledReason === null}
                 canDismiss={canMember && open}
                 onRequest={(who, remove) => {
-                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'request', who, remove })
+                  confirmEvent({ kind: 'request', who, remove })
                 }}
                 onDismiss={(row, reason) => {
-                  if (guard.check(previewCreate('event', { value: reason }, eventFirst), 'collab')) setPending({ kind: 'dismiss', row, reason })
+                  confirmEvent({ kind: 'dismiss', row, reason }, previewCreate('event', { value: reason }, eventFirst))
                 }}
               />
             </SidebarSection>
@@ -1051,7 +1038,7 @@ function PullPage({
               <button
                 type="button"
                 onClick={() => {
-                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'draft' })
+                  confirmEvent({ kind: 'draft', to: 'draft' })
                 }}
                 className="text-[12px] text-anvil-500 underline-offset-2 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400"
               >
@@ -1077,7 +1064,7 @@ function PullPage({
                 {pull.sourceRefName ? (
                   <>
                     {' '}
-                    on <span className="font-mono">{shortRef(pull.sourceRefName)}</span>
+                    on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
                   </>
                 ) : null}
               </p>
@@ -1353,7 +1340,7 @@ function BranchRules({
   status: PolicyStatus | null | 'unknown'
   checksBlocking: boolean
 }): JSX.Element {
-  const short = base.startsWith('refs/heads/') ? base.slice('refs/heads/'.length) : base
+  const short = shortBranch(base)
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
