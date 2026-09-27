@@ -120,21 +120,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let private = handle.visibility == Visibility::Private;
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
-        // After the removal: everyone else (the rotator included) gets a wrap, plus an anchor.
-        let keeps_other_role = members
-            .iter()
-            .any(|m| m.identity_id == member && m.role != role);
-        let remaining = crate::keys::distinct_members(&members)
-            - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
-        let (est, what) = crate::keys::rotation_estimate(remaining);
-        format!(
-            "Removing {member} rotates the repo key. New pushes, issues and comments will be \
-             unreadable to {member}. Everything {member} could already read stays readable to \
-             {member} — encryption can't take back what was shared.\n\
-             Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
-            role_name(role),
-            cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, dash_usd_price())
-        )
+        private_remove_prompt(&members, repo, member, role)
     } else {
         format!(
             "Remove {member} as a {} of {repo}? Their next push is refused at once",
@@ -144,6 +130,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
+    let signer = crate::keys::signer(&s);
+    // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
+    // same keys first, or the repo would fall back to an older key.
+    if private && role == forge_core::rules::v2::Role::Maintainer {
+        reanchor(&signer, handle, repo, member).await?;
+    }
     let removed = MemberService::new(client, &s.identity, &s.bridge)
         .revoke(handle, member, role)
         .await
@@ -151,36 +143,17 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     // A private removal rotates. Also when the member was already gone but the repair check
     // still names them (an earlier removal whose rotation did not finish): re-running
     // `dg collab remove` finishes it.
-    let signer = crate::keys::signer(&s);
     let needs_rotation = private
         && (removed
             || still_holds_current_key(&signer, handle, member)
                 .await
                 .unwrap_or(false));
     let rotation = if needs_rotation {
-        match rotate_after_removal(&signer, handle, member, role).await {
-            Ok(r) => Some(r),
-            Err(e) => {
-                let why = forge_core::user_error::classify(
-                    e.chain(),
-                    &forge_core::user_error::ErrorContext::default(),
-                );
-                return Err(UserError::new(
-                    codes::ROTATION_PENDING,
-                    format!(
-                        "{member} was removed from {}, but the key was not rotated",
-                        handle.display()
-                    ),
-                )
-                .cause(format!("{}: {}", why.code, why))
-                .fix(format!("dg repo keys repair {repo}"))
-                .fix(format!("or run `dg collab remove {repo} {member}` again"))
-                .note(format!(
-                    "until the key rotates, {member} can still read new content"
-                ))
-                .into());
-            }
-        }
+        Some(
+            rotate_after_removal(&signer, handle, member, role)
+                .await
+                .map_err(|e| not_rotated(&e, repo, member))?,
+        )
     } else {
         None
     };
@@ -212,6 +185,76 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         },
     );
     Ok(())
+}
+
+/// The verbatim §9 warning and the cost of a private removal: after it, everyone else (the
+/// rotator included) gets a wrap, plus an anchor.
+fn private_remove_prompt(
+    members: &[forge_core::members::Member],
+    repo: &str,
+    member: &str,
+    role: forge_core::rules::v2::Role,
+) -> String {
+    let keeps_other_role = members
+        .iter()
+        .any(|m| m.identity_id == member && m.role != role);
+    let remaining = crate::keys::distinct_members(members)
+        - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
+    let (est, what) = crate::keys::rotation_estimate(remaining);
+    format!(
+        "Removing {member} rotates the repo key. New pushes, issues and comments will be \
+         unreadable to {member}. Everything {member} could already read stays readable to \
+         {member} — encryption can't take back what was shared.\n\
+         Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
+        role_name(role),
+        cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, dash_usd_price())
+    )
+}
+
+/// Re-anchor every epoch `member` anchored before their maintainer role goes, or refuse.
+async fn reanchor(
+    signer: &PrivateSigner<'_>,
+    handle: &forge_core::scope::RepoRef,
+    repo: &str,
+    member: &str,
+) -> Result<()> {
+    let (_, unreadable) = forge_core::keyring::reanchor_before_removal(signer, handle, member)
+        .await
+        .context(
+            "re-anchoring the maintainer's key epochs before the removal (nothing was removed)",
+        )?;
+    if unreadable.is_empty() {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::ROTATION_PENDING,
+        format!("{member} anchored key epochs {unreadable:?} of {repo}, which you cannot read"),
+    )
+    .cause("removing them would make those epochs unreadable to every member")
+    .fix(format!(
+        "ask a maintainer who holds those epochs to run `dg collab remove {repo} {member} --role maintainer`"
+    ))
+    .note("nothing was removed")
+    .into())
+}
+
+/// The error of a removal whose rotation failed after the delete landed.
+fn not_rotated(e: &anyhow::Error, repo: &str, member: &str) -> anyhow::Error {
+    let why = forge_core::user_error::classify(
+        e.chain(),
+        &forge_core::user_error::ErrorContext::default(),
+    );
+    UserError::new(
+        codes::ROTATION_PENDING,
+        format!("{member} was removed from {repo}, but the key was not rotated"),
+    )
+    .cause(format!("{}: {}", why.code, why))
+    .fix(format!("dg repo keys repair {repo}"))
+    .fix(format!("or run `dg collab remove {repo} {member}` again"))
+    .note(format!(
+        "until the key rotates, {member} can still read new content"
+    ))
+    .into()
 }
 
 /// Whether `member` (not a member now) still holds the current epoch's key: an earlier
@@ -257,11 +300,16 @@ async fn rotate_after_removal(
     } else {
         Vec::new()
     };
-    forge_core::keyring::rotate(signer, repo, &exclude)
+    let first = forge_core::keyring::rotate(signer, repo, &exclude)
         .await
-        .context(
-        "rotating the repository key after the removal (run `dg repo keys repair` to finish it)",
-    )
+        .context("rotating the repository key after the removal")?;
+    // §5.6: a concurrent rotation that won from a stale member list may still have wrapped the
+    // removed member; the repair check then says rotate again. Once more settles what this
+    // removal changed; anything later is `dg repo keys repair`.
+    let report = forge_core::keyring::repair(signer, repo)
+        .await
+        .context("re-checking the key after the rotation")?;
+    Ok(report.rotated.unwrap_or(first))
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {

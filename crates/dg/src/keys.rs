@@ -174,8 +174,6 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     }
 }
 
-/// The estimate of a repair from the loaded keyring: a rotation's `members + 1` writes, or one
-/// wrap per member missing one.
 /// How many distinct identities hold a role (a member with both roles is one wrap).
 pub fn distinct_members(members: &[forge_core::members::Member]) -> usize {
     members
@@ -199,6 +197,8 @@ fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> 
     .into())
 }
 
+/// The estimate of a repair from the loaded keyring: a rotation's `members + 1` writes, or one
+/// wrap per member missing one.
 fn repair_estimate(kr: &Keyring) -> (u64, String) {
     match kr.resolution().repair.as_ref() {
         Some(p) if p.rotate => rotation_estimate(distinct_members(kr.members())),

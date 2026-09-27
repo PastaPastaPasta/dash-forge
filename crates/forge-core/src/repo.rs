@@ -372,8 +372,13 @@ pub struct RepoService<'a> {
     /// A private repository's keys, loaded once per service for reads and replaced by every
     /// write-time reload ([`Self::private_writer`], §5.3), so a rotation a write picked up is
     /// also what later reads (the push's convergence re-read, a locator fold) open with.
-    keyring: std::sync::Mutex<Option<std::sync::Arc<Keyring>>>,
+    keyring: KeyringCache,
 }
+
+/// A private repository's keys as one or more [`RepoService`]s share them: every write-time
+/// reload replaces the entry, so a helper's later services (the push's convergence re-read, a
+/// fetch) open with the keys its writes used.
+pub type KeyringCache = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Keyring>>>>;
 
 impl<'a> RepoService<'a> {
     /// Bind the service to `client`, the signer `identity`, and its `bridge` key material.
@@ -386,21 +391,25 @@ impl<'a> RepoService<'a> {
             client,
             identity,
             bridge,
-            keyring: std::sync::Mutex::new(None),
+            keyring: KeyringCache::default(),
         }
     }
 
-    /// [`Self::new`] with the keys of the (private) repository it will serve already loaded:
-    /// a helper invocation reads them once. Writes still re-read them ([`Self::private_writer`]).
+    /// [`Self::new`] sharing `cache`: a helper invocation reads a private repo's keys once, and
+    /// a reload by any of its services (every write re-reads them, [`Self::private_writer`])
+    /// is what the others open with next.
     pub fn with_keyring(
         client: &'a PlatformClient,
         identity: &'a LoadedIdentity,
         bridge: &'a BridgeIdentity,
-        keyring: Option<std::sync::Arc<Keyring>>,
+        cache: KeyringCache,
     ) -> Self {
-        let svc = Self::new(client, identity, bridge);
-        *svc.cache() = keyring;
-        svc
+        Self {
+            client,
+            identity,
+            bridge,
+            keyring: cache,
+        }
     }
 
     /// The signer's view for private-repository key operations.
@@ -454,12 +463,31 @@ impl<'a> RepoService<'a> {
 
     /// The bytes a reader hands to git for a fetched artifact: `sealed` itself for a public
     /// repo; for a private one, the plaintext (§3.5), after the late-content rule (§8.2).
+    /// `manifest` is the copy the bytes came from; see [`Self::open_artifact_of`] to judge the
+    /// pack by all of its copies.
     pub async fn open_artifact(
         &self,
         repo: &RepoRef,
         manifest: &PackManifestInfo,
         sealed: Vec<u8>,
     ) -> Result<Vec<u8>> {
+        self.open_artifact_of(repo, &[manifest], manifest.size_bytes, sealed)
+            .await
+    }
+
+    /// [`Self::open_artifact`] for a pack whose manifests are `copies` (every copy names the
+    /// same sealed bytes): the late-content rule reads the pack if ANY copy qualifies, since
+    /// a current member attesting the bytes makes them readable whoever else uploaded them.
+    pub async fn open_artifact_of(
+        &self,
+        repo: &RepoRef,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let Some(manifest) = copies.first() else {
+            return Err(Error::NotFound);
+        };
         if repo.visibility == Visibility::Public {
             return Ok(sealed);
         }
@@ -468,16 +496,19 @@ impl<'a> RepoService<'a> {
             sealed
                 .get(..crate::private::pack::HEADER_LEN)
                 .ok_or_else(|| sealed_error(&PrivateError::SealedPackCorrupt))?,
-            manifest.size_bytes,
+            size_bytes,
         )
         .map_err(|e| sealed_error(&e))?;
-        let owner = platform::decode_identifier(&manifest.owner_id)?;
-        let standing = kr.resolution().manifest_standing(
-            header.epoch(),
-            manifest.created_at_block_height,
-            &owner,
-        );
-        if !standing.readable {
+        // A manifest with no block height cannot be judged (§8.1): it never qualifies.
+        let readable = copies.iter().any(|m| {
+            m.created_at_block_height > 0
+                && platform::decode_identifier(&m.owner_id).is_ok_and(|owner| {
+                    kr.resolution()
+                        .manifest_standing(header.epoch(), m.created_at_block_height, &owner)
+                        .readable
+                })
+        });
+        if !readable {
             return Err(UserError::new(
                 codes::LATE_CONTENT,
                 format!(
@@ -492,7 +523,16 @@ impl<'a> RepoService<'a> {
             ))
             .into());
         }
-        kr.open_pack(repo, &sealed, manifest.size_bytes)
+        match kr.open_pack(repo, &sealed, size_bytes) {
+            // Sealed under an epoch newer than the keys this service holds (a rotation landed
+            // while it ran): read the keys again once.
+            Err(_) if !kr.resolution().keys.contains_key(&header.epoch()) => {
+                let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+                *self.cache() = Some(std::sync::Arc::clone(&fresh));
+                fresh.open_pack(repo, &sealed, size_bytes)
+            }
+            other => other,
+        }
     }
 
     /// A document write engine bound to the signer, signing with the HIGH doc-op key.
@@ -806,11 +846,16 @@ impl<'a> RepoService<'a> {
         }
         let epoch = w.write_epoch();
         let owner = platform::decode_identifier(&self.identity.id())?;
+        // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can serve
+        // as the anchor if the anchor's author stops being a maintainer.
+        let prev = kr.prev_of(epoch)?;
         let enc = w.seal_doc(
             &DocHeader::new(DocKind::Config, owner, epoch),
             &Fields {
                 default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
                 protected_patterns: cfg.protected_patterns.clone(),
+                prev_epoch: prev.as_ref().map(|(p, _)| *p),
+                prev_epoch_key: prev.map(|(_, k)| k),
                 ..Fields::default()
             },
         )?;
@@ -1155,7 +1200,18 @@ impl<'a> RepoService<'a> {
                         hex::encode(hash)
                     ))
                 })?;
-            pack_blobs.push(self.open_artifact(repo, m, sealed).await?);
+            // A pack this reader cannot open (late, or under an epoch it holds no key for) is
+            // left out, as reseed skips unreadable packs; the new pack is built from the tips
+            // and fails loudly if it needed objects only such a pack held.
+            match self
+                .open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                .await
+            {
+                Ok(plain) => pack_blobs.push(plain),
+                Err(e) => {
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "repack: skipping a pack this identity cannot open");
+                }
+            }
         }
         let tip_refs: Vec<&str> = tips.iter().map(String::as_str).collect();
         let consolidated = crate::pack::repack_from_packs(&pack_blobs, &tip_refs)?;

@@ -95,8 +95,9 @@ struct Conn {
     identity: LoadedIdentity,
     bridge: BridgeIdentity,
     repo: RepoRef,
-    /// A private repository's keys, read once when the helper connects.
-    keyring: Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+    /// A private repository's keys, read once when the helper connects and replaced by every
+    /// write-time reload of any of its services.
+    keyring: forge_core::repo::KeyringCache,
 }
 
 impl Conn {
@@ -106,7 +107,7 @@ impl Conn {
             &self.client,
             &self.identity,
             &self.bridge,
-            self.keyring.clone(),
+            std::sync::Arc::clone(&self.keyring),
         )
     }
 }
@@ -175,11 +176,13 @@ impl Helper {
                     .await
                     .with_context(|| format!("resolving repo {id}"))?,
             };
-            let keyring = if repo.visibility == forge_core::rules::v2::Visibility::Private {
-                Some(require_private_key(&client, &identity, &bridge, &repo).await?)
-            } else {
-                None
-            };
+            let keyring = forge_core::repo::KeyringCache::default();
+            if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                let kr = require_private_key(&client, &identity, &bridge, &repo).await?;
+                *keyring
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kr);
+            }
             tracing::info!(
                 repo = %repo.id(),
                 owner = %repo.owner_id(),
@@ -306,7 +309,7 @@ impl Helper {
                     if !got.eq_ignore_ascii_case(&hash) {
                         bail!("pack integrity check failed: expected {hash}, got {got}");
                     }
-                    match svc.open_artifact(repo, m, sealed).await {
+                    match svc.open_artifact_of(repo, copies, m.size_bytes, sealed).await {
                         Ok(b) => Ok((b, m)),
                         Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
                             tracing::warn!(pack = %hash, "{u}; skipping it");
@@ -826,7 +829,8 @@ async fn upload_push_pack(
 /// Sealing draws a fresh file id, so the same pack sealed twice has two hashes, and an
 /// interrupted push could never resume its journaled chunks or find its recorded manifest.
 /// So the sealed bytes (ciphertext only) are kept at `.git/dash/sealed/<repo>-<sha256 of the
-/// plaintext>.pack` and reused while their header still names the current write epoch.
+/// plaintext>.pack` and reused only while they open under the current write key and hash back
+/// to the plaintext.
 async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
     // A dry run stores nothing, so it seals nothing (and needs no write epoch): it prices the
     // plaintext pack, which differs from the sealed one by 36 + 16 bytes per 16 KiB.

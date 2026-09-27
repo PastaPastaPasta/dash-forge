@@ -119,7 +119,9 @@ function decodeText(value: Uint8Array, spec: TextSpec): string {
 /** Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). */
 export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
   const allowed = TAGS_OF[ctx.type]
-  const anchorWithPrev = ctx.type === 'config' && ctx.anchor === true && ctx.epoch >= 1
+  // Every config of an epoch e >= 1 carries prevEpoch/prevEpochKey, anchor or not (§4.3): any
+  // of them may become the anchor once an earlier one's author stops being a maintainer.
+  const anchorWithPrev = ctx.type === 'config' && ctx.epoch >= 1
   const view = new DataView(pt.buffer, pt.byteOffset, pt.byteLength)
   const out: {
     -readonly [K in keyof DocFields]: DocFields[K]
@@ -145,7 +147,7 @@ export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
     if (!allowed.includes(tag)) throw new MalformedError(`tag ${tag} is not a ${ctx.type} field`)
     const value = pt.subarray(start, end)
     if (tag === TAG.prevEpoch || tag === TAG.prevEpochKey) {
-      if (!anchorWithPrev) throw new MalformedError(`tag ${tag} outside an anchor for epoch >= 1`)
+      if (!anchorWithPrev) throw new MalformedError(`tag ${tag} outside a config for epoch >= 1`)
       if (tag === TAG.prevEpoch) {
         if (len !== 4) throw new MalformedError('prevEpoch is not 4 bytes')
         out.prevEpoch = view.getUint32(start)
@@ -184,7 +186,7 @@ function requireFields(f: DocFields, ctx: TlvContext, anchorWithPrev: boolean): 
       return
     case 'config':
       if (anchorWithPrev && (f.prevEpoch === undefined || f.prevEpochKey === undefined)) {
-        throw new MalformedError('an anchor for epoch >= 1 needs prevEpoch and prevEpochKey')
+        throw new MalformedError('a config for epoch >= 1 needs prevEpoch and prevEpochKey')
       }
       return
     case 'review':
