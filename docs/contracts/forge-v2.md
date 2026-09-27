@@ -47,13 +47,14 @@ References into forge-core carry `contractId`. The schema file holds the placeho
 
 | Type | Gate (create) | Mutable | Deletable | Notes |
 |---|---|---|---|---|
-| `issue` | anyone (fees are the spam floor) | yes, history kept; `repoId`, `number` immutable | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `authorEvent` uses); `repoId` → permanent `repo` |
-| `patch` (PR) | anyone | yes, history kept; `repoId`, `number`, `sourceRepoId` immutable | **no** | as `issue`, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRepoId` |
-| `comment` | anyone | yes; `repoId`, `targetId` immutable | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable |
-| `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; clients count approvals only from M/W holders (§6) |
-| `event` | M or W | no | **no** | every kind (close, reopen, merge, label, assign, retarget, draft, ready); §3 |
-| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind` is 1 (close) or 2 (reopen) only, enforced by the schema; indexes `(targetId, $createdAt)` and repo feed `(repoId, $createdAt)`; §3 |
+| `issue` | anyone (fees are the spam floor) | yes (title, body), history kept; `repoId`, `number` immutable; `$updatedAt` required | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `authorEvent` uses); `repoId` → permanent `repo` |
+| `patch` (PR) | anyone | yes (title, body), history kept; `repoId`, `number`, `sourceRepoId`, the four ref-name fields, `headOid` (the *initial* head; later heads are `headUpdate` events) and `draft` immutable; `$updatedAt` required | **no** | as `issue`, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRef (sourceRepoId, sourceRefNameHash)` ("the PRs from this branch"; `sourceRepoId ==` alone also uses it); optional `draft` (opened as a draft) |
+| `comment` | anyone | yes (body); `repoId`, `targetId` and the anchor (`replyTo`, `commitOid`, `path`, `line`, `side`, `startLine`, `reviewId`) immutable; `$updatedAt` required | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable; `reply (replyTo)` ("replies to my comment"; `nullSearchable: false`, so only replies are in it); `startLine` (first line of a range); `reviewId` → deletable `review` with `propertyAgreement {repoId: repoId, targetId: patchId, $ownerId: $ownerId}`, so only the reviewer can attach comments to their review, and only on its PR (consensus) |
+| `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; `(patchId, $createdAt)` rangeCountable (review count per PR); `commentCount` (how many `reviewId` comments the submit writes); clients count approvals only from M/W holders (§6) |
+| `event` | M or W | no | **no** | every kind 1–18 (§3); `refId` (a thread root, a reviewer, a review) with index `addressee (refId)` (`nullSearchable: false`: only events that carry a `refId` are in it); optional `enc`/`epoch` (`dependentRequired`), reserved and not written yet |
+| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind ∈ {1, 2, 9, 10, 11, 12, 13, 14, 16}`, enforced by the schema (`enum`); `refId`, `oid`; indexes `(targetId, $createdAt)`, repo feed `(repoId, $createdAt)` and `addressee (refId)` (sparse, as on `event`); §3 |
 | `checkRun` | M or W | yes (status progression); `repoId`, `headOid`, `name` immutable | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs |
+| `policy` | **M** | no | **no** | a branch policy: `requiredApprovals` 0–10, `approverRole` (0 any member, 1 maintainers), `requireChecks`, `mergeMethods` bitmask (1 fast-forward, 2 merge commit, 4 squash, 8 rebase; 0 any); newest by `($createdAt, $id)` wins; non-deletable so a revoked maintainer cannot revert it by deleting it; a client rule in the merge box, never consensus |
 | `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
 | `profile` | anyone | yes | yes | one per identity |
 | `star` | anyone | no | yes (unstar) | `indexOnly`: `(repoId)` countable = star count; `($ownerId)` with terminal `repoId` = my stars; one star per (repo, identity) is structural |
@@ -65,14 +66,14 @@ Shared shapes (`id`, `oid`, `h32`, `refName`, `body`, `enc`, …) are in `schema
 
 Issue and PR state changes are two document types, one per kind of authority, so a reader always knows which gate admitted a document:
 
-- **`event`** (close, reopen, merge, label, assign, retarget, draft, ready) is gated by `ownerRefersTo anyOf` with two operands:
+- **`event`** (every kind, table below) is gated by `ownerRefersTo anyOf` with two operands:
   1. a `maintainer` for `repoId` (deletable lookup `byRepoMember` into forge-core),
   2. a `writer` for `repoId`.
-- **`authorEvent`** (close, reopen) is gated by `ownerRefersTo anyOf` with two operands:
+- **`authorEvent`** (the author's kinds, table below) is gated by `ownerRefersTo anyOf` with two operands:
   1. the author of the target issue: the lookup `author($ownerId = writer, repoId, number = targetNumber)` on `issue`, with `propertyAgreement {"targetId": "$id"}`, so the issue found must be the one the document targets,
   2. the same for `patch`.
 
-  Its `kind` is an integer with `minimum 1, maximum 2`, so consensus refuses an author's merge, label or any other kind outright. It carries no `value` or `oid`.
+  Its `kind` is an integer with `enum [1, 2, 9, 10, 11, 12, 13, 14, 16]` (close, reopen, draft, ready, thread resolve and unresolve, review request and remove, head update), so an author's merge, label, assign, retarget, review dismissal or milestone is refused outright. The document fails the node's document schema validation, and the SDK runs the same validation and refuses to broadcast. It carries `refId` and `oid`, never `value`.
 
 For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `number` equal the document's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4. Both are indexed `(targetId, $createdAt)` (a target's history) and `(repoId, $createdAt)` (the repo's activity feed, which reads both types).
 
@@ -82,15 +83,23 @@ For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `num
 
 Both types are immutable and non-deletable, and the gate is judged at creation. **A document's existence therefore proves its writer was authorized at its block time**: an `event` proves the writer held a `maintainer` or `writer` document for the repo then, and an `authorEvent` proves the writer was the target's author. Revoking a maintainer later does not invalidate their past events, and nothing has to be reconstructed from membership history.
 
-**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2`, `forge-web/lib/rules/v2`).** The fold applies:
+**Kinds.** `kind` is a `u8` on both types (integer widths are fixed at registration). Payload fields: `value` (≤ 120 chars, plaintext), `oid`, `refId` (an identifier).
 
-| kind | from `event` (any M/W at write time) | from `authorEvent` |
-|---|---|---|
-| close, reopen | yes | yes |
-| merge | yes, if `oid` is reachable from the base tip | never (consensus refuses the kind) |
-| label+, label−, assign, unassign, retarget, draft, ready | yes | never |
+| # | kind | payload | from `event` (any M/W at write time) | from `authorEvent` |
+|---|---|---|---|---|
+| 1, 2 | close, reopen | — | yes | yes |
+| 3 | merge | `oid` merge commit | yes, if `oid` is reachable from the base tip | never (schema) |
+| 4, 5 | label+, label− | `value` label | yes | never (schema) |
+| 6, 7 | assign, unassign | `value` identity | yes | never (schema) |
+| 8 | retarget | `value` base ref | yes | never (schema) |
+| 9, 10 | draft, ready | — | yes | yes |
+| 11, 12 | threadResolve, threadUnresolve | `refId` thread root comment | yes | yes |
+| 13, 14 | reviewRequest, reviewRequestRemove | `refId` reviewer identity | yes | yes |
+| 15 | reviewDismiss | `refId` review, `value` reason | yes | never (schema) |
+| 16 | headUpdate | `oid` new head | yes | yes |
+| 17, 18 | milestoneSet, milestoneClear | `value` milestone | yes | never (schema) |
 
-An `authorEvent` whose `kind` is not close or reopen cannot exist on chain; the fold treats one handed to it as inert anyway, and ignores one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
+**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2`, `forge-web/lib/rules/v2`).** The author column is what consensus admits; the folds that read kinds 9–18 land with the review-parity rules (spec §7 PR 2); until then an author's draft/ready is ignored as before. `fold_pr_state_v2` applies kinds 1–10 to the PR state; `fold_pr_review_v2` folds kinds 11–18 into the review state (head, requested reviewers, resolved threads, dismissed reviews, milestone). An `authorEvent` of a kind outside the author set cannot exist on chain; the folds treat one handed to them as inert anyway, and ignore one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
 
 **Known design choices.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
 
@@ -145,7 +154,7 @@ A private repo is a `repo` with `visibility: "private"`; `visibility` is immutab
   - **"Plaintext or `enc`, not both, not neither" is a client rule** (`is_well_formed`, vectors `well_formed__*`). `propertyConstraints` compare integer expressions only and cannot test whether a string is present, and the meta-schema admits no `oneOf`/`not` at the document-type level. Each kind has plaintext fields and at most one required one: `issue` (`title` required, `body`), `patch` (`title` required, `body`, `baseRefName`, `sourceRefName`), `comment` (`body` required), `review` (`body`, optional: a review's content is its verdict and `commitOid`, which are never encrypted), a ref update (`refName` required), `config` (`defaultBranch`, `protectedPatterns`, neither required). In a **public** repo a document is well-formed when it has no `enc` and has its required field, if its kind has one. In a **private** repo it is well-formed when it has a non-empty `enc`, an `epoch`, and none of its plaintext fields, so a private repo's `refUpdate` carrying a plaintext `refName` is malformed. An empty string, or an empty `protectedPatterns` list, counts as absent. Clients skip a malformed document, and every other rule (approvals included) only sees well-formed ones.
   - **Ref names must hash to their keys** (part of `is_well_formed`; `ref_name_hashes_agree`, vectors `well_formed__*ref_hash*`, `ref_name_hashes__*`). A public `patch` whose `baseRefName` is present is well-formed only if `baseRefNameHash` is present and equals `sha256(baseRefName)`, and likewise `sourceRefName` / `sourceRefNameHash`; a public ref update likewise needs `sha256(refName) == refNameHash`. A hash with no name has nothing to check. Readers find a base's history and a ref's updates by the hash, and git and a merge act on the name; a document whose two disagree would be read as one branch and acted on as another. In a private repo the names are inside `enc`, and the same check runs after decryption with `HMAC-SHA256(K_ref,e, name)` (`docs/security/private-repos.md` §4.5). No other type carries a name/hash pair (`release.tagName` and `label.name` have no indexed hash).
   - Packs are encrypted before upload (Platform chunks or external storage): a 36-byte header and 16 KiB AES-256-GCM STREAM segments under a per-file key, so a browser decrypts any byte range. `packHash` is the sealed bytes' hash. Oids, sizes and timing stay visible.
-  - `$createdAtBlockHeight` is required on `config`, `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`, `issue`, `patch`, `comment` and `review` (private-repos.md §13): anchors are ordered and late content is judged by the network-set height, never the client-set `$createdAt`. forge-core's `enc` holds up to 1536 bytes (a config anchor carries up to 8 patterns, the default branch and the previous epoch's key).
+  - `$createdAtBlockHeight` is required on `config`, `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`, `issue`, `patch`, `comment` and `review` (private-repos.md §13), and `$updatedAt` / `$updatedAtBlockHeight` on the three editable content types `issue`, `patch` and `comment` (a replace sets them only when required): anchors are ordered and late content is judged by the network-set height, never the client-set `$createdAt`. forge-core's `enc` holds up to 1536 bytes (a config anchor carries up to 8 patterns, the default branch and the previous epoch's key).
 - **What a stranger can still do.** Issues and PRs are un-gated, so anyone can post plaintext into a private repo's namespace. Clients show only documents that decrypt under a key the reader holds, or that come from a member.
 
 The AEAD layouts, key derivation, anchors, rotation and conformance vectors are specified in `docs/security/private-repos.md` (reviewed; normative where it differs from this section). The cryptographic core is `forge-core::private` and `forge-web/lib/private`, held in byte-for-byte parity by the `private_*` vectors.
@@ -162,7 +171,27 @@ The AEAD layouts, key derivation, anchors, rotation and conformance vectors are 
 | Owner lock-out prevention | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | client rules (the base rules, shared by every client) |
 | Issue and PR numbering | client rule, see below |
-| PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current `headOid` and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3) and unknown verdicts neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
+| PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current head (the folded head: the newest `headUpdate`, else `patch.headOid`) and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3), unknown verdicts and dismissed reviews (`reviewDismiss`) neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
+| Review comments belong to their review | consensus: `comment.reviewId`'s `propertyAgreement` (`$ownerId`, `repoId`, `targetId` = `patchId`). Readers also filter by owner (`group_review_comments`) |
+| Branch policy (required approvals, approver role, checks, merge methods) | client rule in the merge box (`meets_policy`). The `policy` document is maintainer-gated at consensus, but nothing at consensus requires approvals, and a maintainer can override |
+| Open / closed counts | client rule: open is a fold over `event` + `authorEvent`, not a stored field, so no count index can hold it (§6.1) |
+
+### 6.1 Counts
+
+A provable `COUNT(*)` needs a `countable` or `rangeCountable` index whose properties the query's `==`/`in` clauses cover exactly (Platform book, `drive/document-count-trees.md`, "Choosing What to Set"), or cover all but the last property of a `rangeCountable` index. The second form is in rs-drive v4.2.0-beta.4 (`DriveDocumentCountQuery::find_countable_index_for_where_clauses`, "prefix-to-last", and `point_lookup_count_path_query`) but not yet in the book, which still describes exact coverage only; the live test (`forge-web/lib/repo/v2.live.test.ts`) exercises it. What the contracts count:
+
+| Count | Query | Index |
+|---|---|---|
+| Issues / PRs ever opened in a repo (open and closed) | `repoId ==` | `issue.number` / `patch.number` `(repoId, number)` rangeCountable |
+| Comments on an issue or PR | `targetId ==` (or `in` for a list page: one entry per target) | `comment.target (targetId, $createdAt)` rangeCountable |
+| Reviews on a PR | `patchId ==` / `in` | `review.patch (patchId, $createdAt)` rangeCountable |
+| Stars, followers | `repoId ==`, `identityId ==` | `star.byRepo`, `follow.byTarget` countable |
+
+A composite query (`documents.composite`, Platform 4.2) can prove a page of PRs plus a `counts` sub-query per type (bound from `$id` to `targetId` / `patchId`) under one merged proof. The count sub-query uses the same index picker, so these indexes serve it.
+
+**Open and closed counts are folded, because they are not stored.** An issue's or PR's state is the fold of its `event` and `authorEvent` documents (§3). Who may close, reopen or merge is decided per document at consensus, and a merge counts only if its commit is on the base branch, a rule no index evaluates. A count tree counts documents by their stored index values, so an open count would need a stored state field. That field could only live on the `issue`/`patch` document, which only its author can replace, while members close and merge. A separate summary document would be a second, unverified copy of the fold that any member could write wrongly. Neither is sound, so readers fold. The web's tab counts fold the cached list pages, and show no number while a list is incomplete (forge-web `listIssuesCached` / `listPullsCached`).
+
+**Requested reviewers** are also a fold (the newest request or remove per identity), so nothing counts them. `event.addressee (refId)` / `authorEvent.addressee` find the requests addressed to one identity (readers sort by `$createdAt`).
 
 **Numbering** (client rule, `allocate_number`, vectors `allocate_number__*`). Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
 
@@ -185,7 +214,13 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
 | Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
 | Pack list / `packRef` space (§4) | `v2_pack_list` | `v2_pack_list__*` |
-| Approvals | `count_approvals` | `approvals__*` |
+| Approvals (dismissed reviews skipped from PR 2) | `count_approvals` | `approvals__*` |
+| Review state (review-parity PR 2): folded head, requested reviewers, resolved threads, dismissals, milestone | `fold_pr_review_v2` | `fold_review_v2__*` |
+| Branch policy (PR 2) | `meets_policy` | `policy__*` |
+| Inline anchors: file-level, line, range (PR 2) | `anchor_of` | `anchor__*` |
+| A review's comments (PR 2) | `group_review_comments` | `review_group__*` |
+| Suggestion blocks (PR 2) | `parse_suggestions`, `apply_suggestion` | `suggestion__*` |
+| Linked issues, `fixes #n` (PR 2) | `linked_issues` | `linked_issues__*` |
 | Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
 | Private content: key derivation, ref-name hashes, `enc` seal/open with the ref-name hash check and the late-content rule (private-repos.md §2–§4, §8) | `EpochKeys::derive`, `ref_name_hash`, `open_content`, `is_late` | `private_kdf__*`, `private_ref_hash__*`, `private_doc_seal__*`, `private_doc_open__*`, `private_hedge__*` |
@@ -201,25 +236,25 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.4, `PlatformVersion` 14). The
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Document types / indexes | 12 / 26 | 11 / 23 |
-| Serialized contract | 11,876 B | 12,135 B |
-| Signed `DataContractCreate` v1 | **12,039 B** | **12,241 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.8% | 59.8% |
-| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.55 DASH** |
+| Document types / indexes | 12 / 26 | 12 / 27 |
+| Serialized contract | 11,876 B | 14,181 B |
+| Signed `DataContractCreate` v1 | **12,039 B** | **14,287 B** |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.8% | 69.8% |
+| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.61 DASH** |
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.15 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
+Total one-time registration fees are **1.21 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
 
-**Measured on devnet moutai**, as the deployer's balance change. The current pair (2026-09-26, with the private-repository changes of `docs/security/private-repos.md` §13):
+**Measured on devnet moutai**, as the deployer's balance change. The current contracts are the forge-core of 2026-09-26 (the private-repository changes of `docs/security/private-repos.md` §13) and the forge-collab of 2026-09-27 (the review-parity revision, `docs/design/review-parity-spec.md` §3):
 
 | | forge-core | forge-collab |
 |---|---|---|
-| Total cost | 0.605726 DASH (60,572,562,220 credits) | 0.555554 DASH (55,555,374,110 credits) |
-| of which the registration fee | 0.60 | 0.55 |
-| storage + processing | 0.0057 | 0.0056 |
+| Total cost | 0.605726 DASH (60,572,562,220 credits) | 0.616306 DASH (61,630,588,260 credits) |
+| of which the registration fee | 0.60 | 0.61 |
+| storage + processing | 0.0057 | 0.0063 |
 
-Together that is **1.161280 DASH**. The superseded registrations (§8) cost: the 2026-09-25 pair 0.605711 DASH (60,571,079,360 credits) + 0.555523 DASH (55,552,297,710 credits); the first two forge-collab attempts 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
+Together that is **1.222032 DASH**. The superseded registrations (§8) cost: the two review-parity iterations of 2026-09-27 0.616286 DASH (61,628,633,380 credits, nonce 8) and 0.616288 DASH (61,628,799,160 credits, nonce 9); the 2026-09-26 forge-collab 0.555554 DASH (55,555,374,110 credits); the 2026-09-25 pair 0.605711 DASH (60,571,079,360 credits) + 0.555523 DASH (55,552,297,710 credits); the first two forge-collab attempts 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
 
 ## 8. Deploying
 
@@ -250,9 +285,11 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
 - **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.4) by the moutai DEPLOYER `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. Current pair, registered on 2026-09-26 with `--force-new` from the schemas carrying the private-repository changes of `docs/security/private-repos.md` §13 (`$createdAtBlockHeight` required on `config`, `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`, `issue`, `patch`, `comment`, `review`; forge-core `enc.maxItems` 1536). Adding a required field is refused on update, so this is a new pair and a new group; documents under the old pair stay there, unread, and the read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`):
   - forge-core `GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL` (nonce 5)
-  - forge-collab `GCBfP3cMdxPNyAwEQC6ppfKCDEoNS9HHyF6aBrsK7fRr` (nonce 6)
+  - forge-collab `BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3UiyWi` (nonce 10), registered on 2026-09-27 with `--only collab --force-new --same-group` from the review-parity schema (`docs/design/review-parity-spec.md` §3, §3.9). An update may not add indexes, add a system field such as `$updatedAt` to `required`, or add an `enum` (`validate_update` refuses each), so this is a new registration. forge-core is unchanged, so the group and forge-core ids stay; the read fixture's collab documents were re-seeded under the new id
   - contract group `G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2` (`dash-forge`)
   - superseded, still on chain, not read by clients:
+    - forge-collab `FPyguscZqGtgeinc2zrsVC15FtyMyncRQai69YqJBEhL` (nonce 9) and `GRgj4H67q7VNVkZ4B2YvgiweFrRXYH3Bfy1MAxJ8W4AB` (nonce 8), two iterations of the review-parity schema on the same day: nonce 8 had `(replyTo, $createdAt)` / `(refId, $createdAt)` indexes, which every comment and event would have paid for (replaced by the sparse single-property form); nonce 9 lacked `$updatedAtBlockHeight`, which the private late-content rule needs for edits (private-repos.md §8.2).
+    - forge-collab `GCBfP3cMdxPNyAwEQC6ppfKCDEoNS9HHyF6aBrsK7fRr` (nonce 6), the §13 forge-collab, in the same group.
     - the 2026-09-25 pair: forge-core `GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L` (nonce 1) and forge-collab `CbsaT6oxuoESYhWuoJuPW9QikvAP7RS2x8NGQAYiwsMq` (nonce 4) in group `23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o`, from the schemas before §13.
     - forge-collab `9fCcSGF3UmajGCNHuuDGz2ou3Gm3EXhrwB3SRS9ocm4Y` (nonce 2), the first registration, whose `event` took all four operands. The split could not be an update: `--previous` reports `validate_update` refusing the removal of `event`'s `ownerRefersTo` operands (adding `authorEvent` alone would have been accepted).
     - forge-collab `6tm5ehZGoNSwenkCZkXjUm97Vt2bdXfFFsfh9KZ5N43W` (nonce 3), the split without `authorEvent`'s feed index. Adding an index is refused on update too ("we do not allow modifications of data contract index paths").

@@ -177,6 +177,8 @@
       ],
       "required": [
         "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
         "$createdAtBlockHeight",
         "repoId",
         "number"
@@ -190,7 +192,13 @@
       "immutable": [
         "repoId",
         "number",
-        "sourceRepoId"
+        "sourceRepoId",
+        "baseRefNameHash",
+        "baseRefName",
+        "sourceRefNameHash",
+        "sourceRefName",
+        "headOid",
+        "draft"
       ],
       "dependentRequired": {
         "enc": [
@@ -280,6 +288,10 @@
         "imported": {
           "$ref": "#/$defs/imported",
           "position": 13
+        },
+        "draft": {
+          "type": "boolean",
+          "position": 14
         }
       },
       "indices": [
@@ -323,16 +335,21 @@
           "unique": true
         },
         {
-          "name": "source",
+          "name": "sourceRef",
           "properties": [
             {
               "sourceRepoId": "asc"
+            },
+            {
+              "sourceRefNameHash": "asc"
             }
           ]
         }
       ],
       "required": [
         "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
         "$createdAtBlockHeight",
         "repoId",
         "number",
@@ -346,7 +363,14 @@
       "type": "object",
       "immutable": [
         "repoId",
-        "targetId"
+        "targetId",
+        "replyTo",
+        "commitOid",
+        "path",
+        "line",
+        "side",
+        "startLine",
+        "reviewId"
       ],
       "dependentRequired": {
         "enc": [
@@ -429,6 +453,29 @@
         "imported": {
           "$ref": "#/$defs/imported",
           "position": 10
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 11
+        },
+        "reviewId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 12,
+          "refersTo": {
+            "type": "deletableDocument",
+            "documentType": "review",
+            "propertyAgreement": {
+              "repoId": "repoId",
+              "targetId": "patchId",
+              "$ownerId": "$ownerId"
+            }
+          }
         }
       },
       "indices": [
@@ -454,10 +501,21 @@
               "$createdAt": "asc"
             }
           ]
+        },
+        {
+          "name": "reply",
+          "properties": [
+            {
+              "replyTo": "asc"
+            }
+          ],
+          "nullSearchable": false
         }
       ],
       "required": [
         "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
         "$createdAtBlockHeight",
         "repoId",
         "targetId"
@@ -517,6 +575,12 @@
         "imported": {
           "$ref": "#/$defs/imported",
           "position": 7
+        },
+        "commentCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "position": 8
         }
       },
       "indices": [
@@ -529,7 +593,8 @@
             {
               "$createdAt": "asc"
             }
-          ]
+          ],
+          "rangeCountable": true
         }
       ],
       "required": [
@@ -546,6 +611,11 @@
       "type": "object",
       "documentsMutable": false,
       "canBeDeleted": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
       "ownerRefersTo": {
         "anyOf": [
           {
@@ -626,6 +696,22 @@
         "oid": {
           "$ref": "#/$defs/oid",
           "position": 5
+        },
+        "refId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 6
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 7
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 8
         }
       },
       "indices": [
@@ -650,6 +736,15 @@
               "$createdAt": "asc"
             }
           ]
+        },
+        {
+          "name": "addressee",
+          "properties": [
+            {
+              "refId": "asc"
+            }
+          ],
+          "nullSearchable": false
         }
       ],
       "required": [
@@ -739,8 +834,31 @@
         "kind": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 2,
+          "maximum": 255,
+          "enum": [
+            1,
+            2,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            16
+          ],
           "position": 3
+        },
+        "refId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 4
+        },
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 5
         }
       },
       "indices": [
@@ -765,6 +883,15 @@
               "$createdAt": "asc"
             }
           ]
+        },
+        {
+          "name": "addressee",
+          "properties": [
+            {
+              "refId": "asc"
+            }
+          ],
+          "nullSearchable": false
         }
       ],
       "required": [
@@ -876,6 +1003,70 @@
         "headOid",
         "name",
         "status"
+      ],
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "type": "deletableDocument",
+        "contractId": "FORGE_CORE_CONTRACT_ID",
+        "documentType": "maintainer",
+        "lookup": {
+          "index": "byRepoMember",
+          "keys": {
+            "repoId": "repoId",
+            "memberId": "."
+          }
+        }
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "requiredApprovals": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "position": 1
+        },
+        "approverRole": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "position": 2
+        },
+        "requireChecks": {
+          "type": "boolean",
+          "position": 3
+        },
+        "mergeMethods": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "position": 4
+        }
+      },
+      "indices": [
+        {
+          "name": "created",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "requiredApprovals"
       ],
       "additionalProperties": false
     },

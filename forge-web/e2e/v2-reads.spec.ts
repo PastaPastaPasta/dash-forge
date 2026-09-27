@@ -20,7 +20,8 @@ import {
  * The fixture: repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a
  * writer, #2 closed by its author (`authorEvent`), #3 closed + labelled by a maintainer; PR #1
- * open with a maintainer approval, PR #2 merged; one star. `forge-v2-empty` (MAINTAINER) has
+ * open with a maintainer approval, PR #2 merged; issue #4 open; PR #3 the review-parity
+ * fixture (below); a branch `policy`; one star. `forge-v2-empty` (MAINTAINER) has
  * nothing pushed. The axe checks over these pages live in a11y.spec.ts.
  */
 
