@@ -243,6 +243,41 @@ export class ObjectLocator {
   }
 
   /**
+   * The distinct OIDs (hex) that start with `prefix` (hex digits, any length ≥ 2, odd allowed),
+   * in OID order, at most `limit` of them — git's short-id lookup over a pack index. The
+   * fanout narrows it to the first byte's slice; the rows are sorted, so the matches are one
+   * contiguous run found by binary search.
+   */
+  findByPrefix(prefix: string, limit = 2): string[] {
+    const hex = prefix.toLowerCase()
+    if (!/^[0-9a-f]{2,40}$/.test(hex)) return []
+    // The lowest OID the prefix allows: the prefix padded with zeros.
+    const low = new Uint8Array(OID_LEN)
+    for (let i = 0; i < hex.length; i++) {
+      const nibble = parseInt(hex[i] as string, 16)
+      low[i >> 1] = (low[i >> 1] as number) | (i % 2 === 0 ? nibble << 4 : nibble)
+    }
+    const b = low[0] as number
+    let lo = b === 0 ? 0 : this.fanout(b - 1)
+    let hi = this.fanout(b)
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (compareOid(this.bytes, this.rowStart(mid), low) < 0) lo = mid + 1
+      else hi = mid
+    }
+    const out: string[] = []
+    for (let i = lo; i < this.count && out.length < limit; i++) {
+      const start = this.rowStart(i)
+      let oid = ''
+      for (let k = 0; k < OID_LEN; k++) oid += (this.bytes[start + k] as number).toString(16).padStart(2, '0')
+      if (!oid.startsWith(hex)) break
+      // Rows repeat an OID once per pack that stores it.
+      if (out[out.length - 1] !== oid) out.push(oid)
+    }
+    return out
+  }
+
+  /**
    * Look up an object: read the fanout, take the one 1/256 slice for the OID's first
    * byte, and binary-search it. Returns `null` if absent.
    */

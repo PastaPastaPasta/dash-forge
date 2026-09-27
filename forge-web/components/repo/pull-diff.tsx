@@ -15,11 +15,11 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
-import { formatBytes, loadPullComparison, tipOidOf, type DiffSides, type ObjectReader, type PullComparison, type RepoHome } from '@/lib/view'
+import { formatBytes, loadPullComparison, MergeBaseCancelledError, tipOidOf, type DiffSides, type ObjectReader, type PullComparison, type RepoHome } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
@@ -291,17 +291,45 @@ export function ComparisonDiff({
   }, [onSides, sides])
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const { baseTipOid, baseOidAtOpen } = spec
-  const { data, loading, error, reload } = useAsync(
-    () =>
-      loadPullComparison(sides as DiffSides, {
-        baseTipOid,
-        baseOidAtOpen,
-        headOid: spec.headOid,
-        merged: spec.merged,
-        imported: spec.imported,
-      }),
+  // The merge-base search can read tens of thousands of commits on a long-lived branch: it
+  // reports how far it got, and "Stop" ends it (D-040).
+  const [commitsRead, setCommitsRead] = useState(0)
+  const search = useRef<AbortController | null>(null)
+  useEffect(() => () => search.current?.abort(), [])
+  const { data, loading, error, cause, reload } = useAsync(
+    () => {
+      search.current?.abort()
+      const controller = new AbortController()
+      search.current = controller
+      setCommitsRead(0)
+      return loadPullComparison(
+        sides as DiffSides,
+        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported },
+        { signal: controller.signal, onProgress: (n) => controller.signal.aborted || setCommitsRead(n) },
+      )
+    },
     [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
+  )
+  // A disabled comparison (a side reloading) must not keep walking history in the background.
+  const enabled = waiting === null && sides !== null && spec.headOid !== ''
+  useEffect(() => {
+    if (!enabled) search.current?.abort()
+  }, [enabled])
+  const searching = loading && commitsRead > 0
+  const searchProgress = (
+    <div className="flex flex-wrap items-center justify-center gap-3 rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
+      <Spinner
+        label={
+          searching ? `Finding where this PR branched: ${commitsRead.toLocaleString('en-US')} commits read` : 'Comparing pull request'
+        }
+      />
+      {searching ? (
+        <Button size="sm" variant="ghost" onClick={() => search.current?.abort()}>
+          Stop
+        </Button>
+      ) : null}
+    </div>
   )
 
   const range =
@@ -340,12 +368,17 @@ export function ComparisonDiff({
       </Frame>
     )
   }
-  if (loading && data === null) {
+  if (loading && data === null) return <Frame>{searchProgress}</Frame>
+  if (cause instanceof MergeBaseCancelledError) {
+    // Only an imported PR gets here (a native one falls back to its first parent): the user
+    // stopped the search, which says nothing about the history being incomplete.
     return (
       <Frame>
-        <div className="rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
-          <Spinner label="Comparing pull request" />
-        </div>
+        <Unavailable title="Search stopped" message={`${cause.message}. An imported PR is only shown against its exact base.`} problems={problems}>
+          <Button size="sm" onClick={reload}>
+            Search again
+          </Button>
+        </Unavailable>
       </Frame>
     )
   }
@@ -389,10 +422,16 @@ export function ComparisonDiff({
           {p.action ? <Button size="sm" onClick={p.action.run}>{p.action.label}</Button> : null}
         </div>
       ))}
-      {data.comparisonNote ? (
-        <p className="rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
-          {data.comparisonNote}
-        </p>
+      {searching ? searchProgress : null}
+      {data.comparisonNote && !searching ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
+          <span>{data.comparisonNote}</span>
+          {data.searchStopped ? (
+            <Button size="sm" variant="ghost" onClick={reload}>
+              Search again
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {(() => {
         const diff = (

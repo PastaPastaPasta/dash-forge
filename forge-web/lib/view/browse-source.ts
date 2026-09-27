@@ -19,6 +19,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
+import { loadIndexArtifact } from './index-cache'
 import {
   BrowseReader,
   FlatIndex,
@@ -991,6 +992,7 @@ export function buildPackSource(
       return artifactRangeFetch(sdk, repo, manifest)(start, end, copy)
     },
     copyCount: (packRef: number) => ordered[packRef]?.copies?.length ?? 1,
+    sizeOf: (packRef: number) => ordered[packRef]?.sizeBytes,
   }
 }
 
@@ -1135,8 +1137,12 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // query failure is enough to reach this.
   let locator: ObjectLocator
   try {
+    // Fragments are content-addressed: a verified copy from an earlier visit is reused
+    // instead of downloading the whole index on every page load (D-023).
     const parts = await Promise.all(
-      ordered.map(async (m) => ObjectLocator.parse(await loadArtifactBytes(sdk, repo, m))),
+      ordered.map(async (m) =>
+        ObjectLocator.parse(await loadIndexArtifact(ACTIVE_NETWORK.key, m.packHash, () => loadArtifactBytes(sdk, repo, m))),
+      ),
     )
     locator = ObjectLocator.merge(parts)
   } catch {

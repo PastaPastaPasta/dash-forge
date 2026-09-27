@@ -42,6 +42,9 @@ export {
 } from './pack'
 export {
   BrowseReader,
+  MissingObjectError,
+  READ_AHEAD_BLOCK,
+  readAheadSource,
   type BrowseReaderOptions,
   type ObjectVerdict,
   type PackSource,
