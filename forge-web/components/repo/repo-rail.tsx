@@ -18,6 +18,7 @@ import {
   contentChecks,
   deriveTrust,
   isLive,
+  readGatewaysFor,
   NO_CONTENT_CHECKS,
   subscribeContentChecks,
   timeAgo,
@@ -66,6 +67,7 @@ export function RepoRail({
     checks,
     configuredBackend: home.backend.label,
     configuredUris: home.backend.uris,
+    gateways: readGatewaysFor(key),
   })
 
   return (

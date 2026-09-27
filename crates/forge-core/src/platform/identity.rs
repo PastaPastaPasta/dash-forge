@@ -858,6 +858,22 @@ impl PlatformClient {
             .map_err(|e| sdk_err("reading DPNS names", e))
     }
 
+    /// The identity DPNS name `name` (`alice` or `alice.dash`, compared homograph-safe as
+    /// DPNS does) resolves to, or `None` when no such name is registered. A proof-verified
+    /// read of the DPNS `domain` document (`normalizedParentDomainName == "dash"`,
+    /// `normalizedLabel == <label>`) and its `records.identity`, as rs-sdk
+    /// `Sdk::resolve_dpns_name` does it.
+    pub async fn resolve_dpns_name(&self, name: &str) -> Result<Option<String>> {
+        // The trusted context provider verifies proofs only for contracts it was given:
+        // fetching DPNS through `fetch_contract` registers it.
+        self.fetch_contract(DPNS_CONTRACT_ID).await?;
+        self.sdk()
+            .resolve_dpns_name(name)
+            .await
+            .map(|id| id.map(|id| id.to_string(Encoding::Base58)))
+            .map_err(|e| sdk_err("resolving the DPNS name", e))
+    }
+
     /// Register DPNS name `label` for `identity_id`, signed by its CRITICAL (else HIGH)
     /// unbound authentication key from `bridge`. Returns the name as registered (`alice.dash`).
     pub async fn register_dpns_name(&self, bridge: &BridgeIdentity, label: &str) -> Result<String> {

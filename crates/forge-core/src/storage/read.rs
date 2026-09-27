@@ -5,8 +5,10 @@
 //! 1. every recorded `http(s)://` URL (S3 public origins, public IPFS gateway URLs),
 //! 2. every recorded `s3://bucket/key` a local profile can resolve (credentialed CLI read),
 //! 3. for every `ipfs://<cid>` (and every recorded `…/ipfs/<cid>` URL), the CID on each
-//!    gateway of the configured list (`storage.toml` `[read] ipfs_gateways`, else the
-//!    shared defaults in `forge-contracts/config/storage-defaults.json`).
+//!    gateway: first the repo's OWN public gateways (recorded on chain, see
+//!    [`PackReader::prefer_gateways`] and [`repo_gateways`]), then the configured list
+//!    (`storage.toml` `[read] ipfs_gateways`, else the shared defaults in
+//!    `forge-contracts/config/storage-defaults.json`).
 //!
 //! Candidates are raced two at a time (PRD 04 reader policy); a candidate only wins if its
 //! bytes hash to the manifest's SHA-256, so a lying or stale host costs a retry, never a
@@ -78,6 +80,9 @@ pub struct PackReader {
     s3_profiles: Vec<(String, String, S3Profile)>,
     /// Fixed per-candidate deadline override (tests); `None` = [`transfer_deadline`].
     candidate_timeout: Option<Duration>,
+    /// Origins the user configured (read gateways, profiles' public URLs and gateways): a
+    /// recorded URL on one of these is followed even when it is http or private.
+    trusted_origins: Vec<String>,
 }
 
 impl PackReader {
@@ -96,15 +101,38 @@ impl PackReader {
                 _ => None,
             })
             .collect();
+        let gateways: Vec<String> = gateways
+            .into_iter()
+            .map(|g| g.trim_end_matches('/').to_string())
+            .collect();
+        let mut configured: Vec<&str> = gateways.iter().map(String::as_str).collect();
+        for p in profiles.profiles.values() {
+            match p {
+                Profile::S3(s3) => configured.extend(s3.public_url.as_deref()),
+                Profile::IpfsKubo(k) => {
+                    configured.extend(k.gateway.as_deref());
+                    configured.extend(k.public_gateway.as_deref());
+                }
+                Profile::IpfsPinningService(k) => {
+                    configured.extend(k.gateway.as_deref());
+                    configured.extend(k.public_gateway.as_deref());
+                }
+                Profile::Platform(_) => {}
+            }
+        }
+        let trusted_origins = configured.into_iter().filter_map(origin_of).collect();
         Self {
             client: super::http_client(),
-            gateways: gateways
-                .into_iter()
-                .map(|g| g.trim_end_matches('/').to_string())
-                .collect(),
+            gateways,
             s3_profiles,
             candidate_timeout: None,
+            trusted_origins,
         }
+    }
+
+    /// Whether `url` is on an origin this user configured.
+    fn is_trusted_origin(&self, url: &str) -> bool {
+        origin_of(url).is_some_and(|o| self.trusted_origins.contains(&o))
     }
 
     /// A reader configured from the user's `storage.toml` (defaults when it is absent or
@@ -127,6 +155,23 @@ impl PackReader {
         self
     }
 
+    /// Put `preferred` in front of the gateway list (deduplicated): the repo's own public
+    /// gateways, which its owner recorded on chain and which reach the node holding the
+    /// content, so they are tried before any shared default.
+    #[must_use]
+    pub fn prefer_gateways(mut self, preferred: impl IntoIterator<Item = String>) -> Self {
+        let mut out: Vec<String> = preferred
+            .into_iter()
+            .map(|g| g.trim_end_matches('/').to_string())
+            .filter(|g| !g.is_empty())
+            .collect();
+        out.append(&mut self.gateways);
+        let mut seen = std::collections::BTreeSet::new();
+        out.retain(|g| seen.insert(g.clone()));
+        self.gateways = out;
+        self
+    }
+
     /// The gateway list in use.
     pub fn gateways(&self) -> &[String] {
         &self.gateways
@@ -144,7 +189,13 @@ impl PackReader {
                     if let Some(cid) = gateway_cid(raw) {
                         cids.push(cid);
                     }
-                    http.push(Candidate::Http(raw.clone()));
+                    // A manifest is written by whoever pushed: never follow it to plain
+                    // http, this machine or a private network (parity with forge-web
+                    // `externalFetchUrls`), unless it is on an origin this user configured
+                    // (a profile's public URL or gateway, a read gateway: their own NAS).
+                    if is_public_https(raw) || self.is_trusted_origin(raw) {
+                        http.push(Candidate::Http(raw.clone()));
+                    }
                 }
                 Some("s3") => {
                     let Some((bucket, key)) = uri.rest().and_then(|r| r.split_once('/')) else {
@@ -277,8 +328,18 @@ impl PackReader {
                 }
             }
         }
+        let hint = if candidates
+            .iter()
+            .all(|c| matches!(c, Candidate::Http(u) if gateway_cid(u).is_some()))
+        {
+            " — every candidate was an IPFS gateway: if the node holding this content is \
+             reachable through a gateway you know, add it to `[read] ipfs_gateways` in \
+             storage.toml (`dg storage status <repo>` shows which gateways answer)"
+        } else {
+            ""
+        };
         Err(Error::Io(format!(
-            "no external copy verified ({} candidate(s)): {}",
+            "no external copy verified ({} candidate(s)): {}{hint}",
             candidates.len(),
             reasons.join("; ")
         )))
@@ -304,6 +365,211 @@ impl PackReader {
             }
         }
         Err(last)
+    }
+}
+
+/// The empty identity CID: every working gateway serves it (0 bytes) without fetching
+/// anything from the network, so it measures the gateway itself, not content routing.
+pub const IDENTITY_CID: &str = "bafkqaaa";
+
+/// How long a gateway gets to answer the [`IDENTITY_CID`] liveness probe.
+pub const GATEWAY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a gateway liveness probe found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayHealth {
+    /// It answered `2xx` for [`IDENTITY_CID`].
+    Up,
+    /// It is being retired: `429`/`410` with a `Sunset` header (ipfs.io and dweb.link since
+    /// 2026-09-21), or `410 Gone`.
+    Retired(String),
+    /// It answered, but not with the content (`429` without `Sunset`, `5xx`, a redirect to a
+    /// retired gateway, …).
+    Down(String),
+}
+
+impl GatewayHealth {
+    /// Whether the gateway can serve reads.
+    pub fn is_up(&self) -> bool {
+        matches!(self, GatewayHealth::Up)
+    }
+
+    /// One line for a report: `up`, or why not.
+    pub fn describe(&self) -> String {
+        match self {
+            GatewayHealth::Up => "up".into(),
+            GatewayHealth::Retired(why) | GatewayHealth::Down(why) => why.clone(),
+        }
+    }
+}
+
+/// Classify a gateway's answer to `GET <gw>/ipfs/<IDENTITY_CID>`. Down means rate-limited
+/// or retired (429, 410) or broken (5xx); any other answer means the gateway is there (a
+/// 403/404 is a restricted gateway that serves only its own pins, e.g. a dedicated one).
+fn classify_gateway(status: reqwest::StatusCode, sunset: Option<&str>) -> GatewayHealth {
+    use reqwest::StatusCode;
+    let failing = status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::GONE
+        || status.is_server_error();
+    if !failing {
+        GatewayHealth::Up
+    } else if let Some(when) = sunset {
+        GatewayHealth::Retired(format!(
+            "{status} with Sunset: {when} (the gateway is retired)"
+        ))
+    } else if status == StatusCode::GONE {
+        GatewayHealth::Retired(format!("{status} (the gateway is retired)"))
+    } else {
+        GatewayHealth::Down(status.to_string())
+    }
+}
+
+/// Probe `gateway` (a base URL) with [`IDENTITY_CID`]; redirects are followed, so a gateway
+/// that forwards to a retired one reads as retired. Bounded by `timeout`.
+pub async fn probe_gateway(
+    client: &reqwest::Client,
+    gateway: &str,
+    timeout: Duration,
+) -> GatewayHealth {
+    let url = format!("{}/ipfs/{IDENTITY_CID}", gateway.trim_end_matches('/'));
+    match tokio::time::timeout(timeout, client.get(&url).send()).await {
+        Err(_) => GatewayHealth::Down(format!("no answer in {}s", timeout.as_secs())),
+        Ok(Err(e)) => GatewayHealth::Down(format!("unreachable: {e}")),
+        Ok(Ok(resp)) => {
+            let sunset = resp
+                .headers()
+                .get("sunset")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            classify_gateway(resp.status(), sunset.as_deref())
+        }
+    }
+}
+
+/// [`probe_gateway`] every gateway in `gateways` at once, in order.
+pub async fn probe_gateways(
+    client: &reqwest::Client,
+    gateways: &[String],
+    timeout: Duration,
+) -> Vec<(String, GatewayHealth)> {
+    futures::future::join_all(
+        gateways
+            .iter()
+            .map(|g| async move { (g.clone(), probe_gateway(client, g, timeout).await) }),
+    )
+    .await
+}
+
+/// Ask every gateway in `gateways` for `cid` at once and report, per gateway, whether it
+/// served exactly `expected` within `timeout` (a gateway that fails [`probe_gateway`] is
+/// not asked). What `dg storage test` uses to learn whether the shared gateways can reach
+/// a node that has no public gateway of its own.
+pub async fn fetch_from_gateways(
+    client: &reqwest::Client,
+    gateways: &[String],
+    cid: &str,
+    expected: &[u8],
+    timeout: Duration,
+) -> Vec<(String, std::result::Result<(), String>)> {
+    futures::future::join_all(gateways.iter().map(|gw| async move {
+        let health = probe_gateway(client, gw, GATEWAY_PROBE_TIMEOUT).await;
+        if !health.is_up() {
+            return (gw.clone(), Err(health.describe()));
+        }
+        let url = format!("{}/ipfs/{cid}", gw.trim_end_matches('/'));
+        let got = tokio::time::timeout(
+            timeout,
+            http_get_capped(client, &url, None, Some(expected.len() as u64)),
+        )
+        .await;
+        let res = match got {
+            Ok(Ok(b)) if b == expected => Ok(()),
+            Ok(Ok(_)) => Err("served different bytes".to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(format!("did not find it within {}s", timeout.as_secs())),
+        };
+        (gw.clone(), res)
+    }))
+    .await
+}
+
+/// The public IPFS gateways `uris` name (what a repo recorded on chain: its
+/// `config.backend.uris` `…/ipfs/` bases, then the gateway of every `…/ipfs/<cid>` URL its
+/// pack manifests record), in first-seen order. Only public `https` gateways: a manifest
+/// is written by whoever pushed, and must not steer readers at loopback or LAN hosts.
+pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for u in uris {
+        let Some((base, _)) = u.split_once("/ipfs/") else {
+            continue;
+        };
+        let base = base.trim_end_matches('/');
+        if is_public_https(base) && !out.iter().any(|g| g == base) {
+            out.push(base.to_string());
+            if out.len() == MAX_REPO_GATEWAYS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// At most this many of a repo's own gateways go ahead of the shared list: each is raced
+/// before any default, so a long list (even of honest gateways) would delay every read.
+pub const MAX_REPO_GATEWAYS: usize = 3;
+
+/// `scheme://host[:port]` of `url`, or `None`.
+fn origin_of(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    Some(u.origin().ascii_serialization()).filter(|o| o != "null")
+}
+
+/// Whether `url` is a public https URL: https, no userinfo, not a private host.
+fn is_public_https(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.host_str().is_some_and(|h| !is_private_host(h))
+    })
+}
+
+/// Whether `host` names this machine or a private / link-local network (literal addresses
+/// and reserved names only; parity with forge-web `lib/net.ts` `isPrivateHost`).
+fn is_private_host(host: &str) -> bool {
+    let h = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    // A fully qualified name (`nas.local.`) is the same host.
+    let h = h.strip_suffix('.').unwrap_or(&h);
+    if h == "localhost"
+        || [".localhost", ".local", ".internal"]
+            .iter()
+            .any(|s| h.ends_with(s))
+    {
+        return true;
+    }
+    match h.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let [a, b, ..] = v4.octets();
+            a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 168)
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some()
+        }
+        Err(_) => false,
     }
 }
 
@@ -360,6 +626,205 @@ mod tests {
                 Candidate::Http("https://gw2/ipfs/bafyq".into()),
             ]
         );
+    }
+
+    #[test]
+    fn the_repos_own_gateway_is_tried_before_the_defaults() {
+        let r = reader().prefer_gateways(["https://repo-gw.example/".to_string()]);
+        let c = r.candidates(&["ipfs://bafyq".into()]);
+        assert_eq!(
+            c,
+            vec![
+                Candidate::Http("https://repo-gw.example/ipfs/bafyq".into()),
+                Candidate::Http("https://gw1/ipfs/bafyq".into()),
+                Candidate::Http("https://gw2/ipfs/bafyq".into()),
+            ]
+        );
+        // A preferred gateway already in the list moves to the front, once.
+        let r = reader().prefer_gateways(["https://gw2".to_string()]);
+        assert_eq!(r.gateways(), ["https://gw2", "https://gw1"]);
+    }
+
+    #[test]
+    fn repo_gateways_come_from_the_chain_and_are_public() {
+        let backend = [
+            "https://pub.r2.dev".to_string(),
+            "https://my-gw.example/ipfs/".to_string(),
+            "ipfs://".to_string(),
+        ];
+        let manifests = vec![
+            "https://other-gw.example/ipfs/bafyx".to_string(),
+            "https://my-gw.example/ipfs/bafyy".to_string(),
+            "http://127.0.0.1:8080/ipfs/bafyz".to_string(),
+            "https://192.168.1.5/ipfs/bafyz".to_string(),
+            "https://nas.local/ipfs/bafyz".to_string(),
+            "https://user:pw@gw.example/ipfs/bafyz".to_string(),
+            "ipfs://bafyx".to_string(),
+        ];
+        assert_eq!(
+            repo_gateways(backend.iter().chain(&manifests)),
+            vec!["https://my-gw.example", "https://other-gw.example"]
+        );
+    }
+
+    #[test]
+    fn recorded_urls_on_private_hosts_are_not_followed_unless_configured() {
+        let r = reader();
+        let c = r.candidates(&[
+            "http://127.0.0.1:9000/b/p".into(),
+            "https://192.168.1.5/b/p".into(),
+            "https://nas.local./b/p".into(),
+            "http://pub.example/b/p".into(),
+            "https://pub.example/b/p".into(),
+        ]);
+        assert_eq!(c, vec![Candidate::Http("https://pub.example/b/p".into())]);
+        // The user's own profile's public URL (their NAS) is followed.
+        let profiles = StorageProfiles::parse(
+            "[profiles.nas]\nkind = \"s3\"\nendpoint = \"http://127.0.0.1:9000\"\nbucket = \"b\"\n\
+             public_url = \"http://127.0.0.1:9000/b\"\n",
+        )
+        .unwrap();
+        let r = PackReader::new(vec![], &profiles);
+        assert_eq!(
+            r.candidates(&["http://127.0.0.1:9000/b/p".into()]),
+            vec![Candidate::Http("http://127.0.0.1:9000/b/p".into())]
+        );
+    }
+
+    #[test]
+    fn repo_gateways_are_capped() {
+        let many: Vec<String> = (0..10)
+            .map(|i| format!("https://gw{i}.example/ipfs/bafy"))
+            .collect();
+        assert_eq!(repo_gateways(&many).len(), MAX_REPO_GATEWAYS);
+    }
+
+    #[test]
+    fn private_hosts_match_the_web_rules() {
+        for h in [
+            "localhost",
+            "a.localhost",
+            "nas.local",
+            "x.internal",
+            "10.1.2.3",
+            "127.0.0.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "172.16.0.1",
+            "192.168.0.1",
+            "0.0.0.0",
+            "[::1]",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:1.2.3.4",
+            "nas.local.",
+            "localhost.",
+        ] {
+            assert!(is_private_host(h), "{h}");
+        }
+        for h in [
+            "ipfs.filebase.io",
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.128.0.1",
+            "2606:4700::1",
+        ] {
+            assert!(!is_private_host(h), "{h}");
+        }
+    }
+
+    #[test]
+    fn a_sunset_429_is_a_retired_gateway() {
+        use reqwest::StatusCode;
+        assert_eq!(classify_gateway(StatusCode::OK, None), GatewayHealth::Up);
+        assert!(matches!(
+            classify_gateway(
+                StatusCode::TOO_MANY_REQUESTS,
+                Some("Mon, 21 Sep 2026 00:00:00 GMT")
+            ),
+            GatewayHealth::Retired(_)
+        ));
+        assert!(matches!(
+            classify_gateway(StatusCode::GONE, None),
+            GatewayHealth::Retired(_)
+        ));
+        assert!(matches!(
+            classify_gateway(StatusCode::GATEWAY_TIMEOUT, None),
+            GatewayHealth::Down(_)
+        ));
+        assert!(matches!(
+            classify_gateway(StatusCode::TOO_MANY_REQUESTS, None),
+            GatewayHealth::Down(_)
+        ));
+        // A restricted (dedicated) gateway refuses CIDs it does not pin, the probe included.
+        assert_eq!(
+            classify_gateway(StatusCode::FORBIDDEN, None),
+            GatewayHealth::Up
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_gateway_reads_the_identity_cid() {
+        let up = serve(vec![("/ipfs/bafkqaaa", Vec::new())]);
+        let client = reqwest::Client::new();
+        assert!(probe_gateway(&client, &up, Duration::from_secs(5))
+            .await
+            .is_up());
+        // A retired gateway: 429 with a Sunset header, as ipfs.io answers since 2026-09-21.
+        let retired = serve_status(
+            "429 Too Many Requests",
+            "sunset: Mon, 21 Sep 2026 00:00:00 GMT\r\n",
+        );
+        assert!(matches!(
+            probe_gateway(&client, &retired, Duration::from_secs(5)).await,
+            GatewayHealth::Retired(_)
+        ));
+        // Nothing listening: down, not a hang.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+        assert!(
+            !probe_gateway(&client, &format!("http://{addr}"), Duration::from_secs(5))
+                .await
+                .is_up()
+        );
+    }
+
+    /// Answer every request with `status` and the extra header lines `headers`.
+    fn serve_status(status: &'static str, headers: &'static str) -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h).unwrap();
+                    if h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\n{headers}content-length: 0\r\nconnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_gateway_only_failure_says_how_to_add_a_gateway() {
+        let base = serve(vec![]);
+        let r = PackReader::new(vec![base], &StorageProfiles::default());
+        let err = r
+            .fetch_verified(&["ipfs://bafynothere".into()], &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[read] ipfs_gateways"), "{err}");
     }
 
     #[test]
@@ -421,7 +886,8 @@ mod tests {
         let good = b"the real pack".to_vec();
         let hash = hex::encode(sha256(&good));
         let base = serve(vec![("/huge", vec![7u8; 1 << 20]), ("/good", good.clone())]);
-        let r = PackReader::new(vec![], &StorageProfiles::default());
+        // The stub is on loopback: listing it as a gateway makes it a configured origin.
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
         // The 1 MiB body is refused against the 13-byte manifest size, then /good wins.
         let got = r
             .fetch_verified(
@@ -447,7 +913,7 @@ mod tests {
             let _held: Vec<_> = silent.incoming().take(4).collect();
             std::thread::sleep(std::time::Duration::from_secs(30));
         });
-        let r = PackReader::new(vec![], &StorageProfiles::default())
+        let r = PackReader::new(vec![format!("http://{addr}")], &StorageProfiles::default())
             .with_candidate_timeout(std::time::Duration::from_millis(300));
         let started = std::time::Instant::now();
         let err = r
@@ -510,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn reports_every_failure_when_nothing_verifies() {
         let base = serve(vec![("/tampered", b"evil".to_vec())]);
-        let r = PackReader::new(vec![], &StorageProfiles::default());
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
         let err = r
             .fetch_verified(
                 &[format!("{base}/tampered"), format!("{base}/gone")],

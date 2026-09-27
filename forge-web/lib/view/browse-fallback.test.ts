@@ -27,9 +27,9 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
-import { externalFetchUrls, resetExternalFetchState } from './browse-source'
+import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
 import { contentChecks, resetContentChecks } from './content-checks'
-import { describeUnavailable } from './storage-status'
+import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
 /** A repo whose session caches key by `repoId` (each test uses its own). */
@@ -159,6 +159,7 @@ describe('startFallback with external-storage packs', () => {
     vi.useRealTimers()
     resetContentChecks()
     resetExternalFetchState()
+    overrideDefaultGateways(null)
   })
 
   it('skips an external pack no mirror serves, reports it, and still serves the rest', async () => {
@@ -229,7 +230,7 @@ describe('startFallback with external-storage packs', () => {
     const read = ctx.reader.readObject(inherited.oid)
     await expect(read).rejects.toThrow(/the parent repo's chunks on Platform/)
     await expect(read).rejects.not.toThrow(/external storage/)
-    expect(describeUnavailable(ctx.unavailable ?? [])).toEqual(["the parent repo's chunks on Platform (missing)"])
+    expect(describeUnavailable(ctx.unavailable ?? [], [])).toEqual(["the parent repo's chunks on Platform (missing)"])
     expect(contentChecks('FORK').unreachable).toEqual(["the parent repo's chunks on Platform (missing)"])
   })
 
@@ -252,14 +253,70 @@ describe('startFallback with external-storage packs', () => {
     const ext = blobPack('pinned on ipfs\n')
     const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreitest'] })
     const repo = testRepo('fallback-ipfs')
+    overrideDefaultGateways(['https://gw-a.example', 'https://gw-b.example'])
     const [first, second] = externalFetchUrls(external.uris)
-    expect(first).toBe('https://ipfs.io/ipfs/bafkreitest')
-    // The first gateway is down; the second serves the right bytes.
-    stubFetch({ [second as string]: () => ext.pack })
+    expect(first).toBe('https://gw-a.example/ipfs/bafkreitest')
+    // The first gateway is down; the second answers its liveness probe and serves the bytes.
+    stubFetch({ 'https://gw-b.example/ipfs/bafkqaaa': () => new Uint8Array(), [second as string]: () => ext.pack })
     const ctx = await startFallback(mockSdk(new Map()), repo, [external])
     expect(ctx.unavailable).toEqual([])
     expect((await ctx.reader.readObject(ext.oid)).type).toBe('blob')
-    expect(contentChecks(repo.repoId).sources).toEqual(['dweb.link'])
+    expect(contentChecks(repo.repoId).sources).toEqual(['gw-b.example'])
+  })
+
+  it("tries the gateway the repo's config advertises first, even when the manifest records only a CID", async () => {
+    const ext = blobPack('on my own gateway\n')
+    // The manifest records only `ipfs://`: the repo's gateway comes from `config.backend.uris`
+    // (the repo home notes it), so only that preference can put it ahead of the defaults.
+    const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreimine'] })
+    const repo = testRepo('fallback-own-gw')
+    noteRepoGateways(repo.repoId, 'config', ['https://mine.example/ipfs/'])
+    overrideDefaultGateways(['https://slow.example'])
+    const calls = stubFetch({
+      'https://mine.example/ipfs/bafkqaaa': () => new Uint8Array(),
+      'https://slow.example/ipfs/bafkqaaa': () => new Uint8Array(),
+      'https://mine.example/ipfs/bafkreimine': () => ext.pack,
+    })
+    const ctx = await startFallback(mockSdk(new Map()), repo, [external])
+    expect(ctx.unavailable).toEqual([])
+    expect(contentChecks(repo.repoId).sources).toEqual(['mine.example'])
+    expect(calls.filter((u) => u.endsWith('/bafkreimine'))[0]).toBe('https://mine.example/ipfs/bafkreimine')
+  })
+
+  it('skips a gateway that answered 429, but never one that only threw (a CORS-less 403/404)', async () => {
+    const ext = blobPack('served by the dedicated gateway\n')
+    const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreided'] })
+    const repo = testRepo('fallback-dedicated')
+    overrideDefaultGateways(['https://retired.example', 'https://dedicated.example'])
+    const calls: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      calls.push(url)
+      if (url.startsWith('https://retired.example/')) return Promise.resolve(new Response('', { status: 429 }))
+      // A dedicated gateway refuses the probe CID without CORS headers: the browser throws.
+      if (url.endsWith('/bafkqaaa')) return Promise.reject(new TypeError('Failed to fetch'))
+      return Promise.resolve(new Response(new Blob([ext.pack as BlobPart]), { status: 200 }))
+    })
+    const ctx = await startFallback(mockSdk(new Map()), repo, [external])
+    expect(ctx.unavailable).toEqual([])
+    expect(contentChecks(repo.repoId).sources).toEqual(['dedicated.example'])
+    expect(calls).not.toContain('https://retired.example/ipfs/bafkreided')
+  })
+
+  it('names a 429 gateway when no gateway works, and still tries it once when all look down', async () => {
+    const ext = blobPack('nobody can serve this\n')
+    const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreigone'] })
+    overrideDefaultGateways(['https://retired.example', 'https://broken.example'])
+    const calls: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      calls.push(url)
+      return Promise.resolve(new Response('', { status: url.includes('retired.example') ? 429 : 504 }))
+    })
+    const err = await startFallback(mockSdk(new Map()), testRepo('fallback-no-gw'), [external]).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(StorageUnreachableError)
+    const places = describeUnavailable((err as StorageUnreachableError).packs, readGateways())
+    expect(places.join(' | ')).toMatch(/ipfs gateway retired\.example \(/)
+    // Every URL looked down: each still got one real attempt rather than none.
+    expect(calls).toContain('https://retired.example/ipfs/bafkreigone')
   })
 
   it('treats a mirror serving the wrong bytes as unavailable, not as content', async () => {

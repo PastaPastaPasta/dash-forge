@@ -243,7 +243,7 @@ dg storage test kubo
 ```
 
 - `--gateway` is where the helper re-reads the upload to verify it. Without it, verification relies on the CID match plus the pin check alone.
-- `--public-gateway` also records `https://…/ipfs/<cid>` in the manifest, which browsers can use directly. Readers already race `ipfs://<cid>` across the public gateway list (see [Reading](#reading-gateways-and-fallbacks)), but content that only your node holds is only reachable through a gateway that can reach your node.
+- `--public-gateway` also records `https://…/ipfs/<cid>` in the manifest, which browsers can use directly, and every reader tries that gateway first. **Set it for any repo stored only on IPFS.** Without it, readers depend on the shared public gateways finding your node on the IPFS network, and a node at home behind NAT usually cannot be found: clones fail and the web page cannot show the code. `dg storage test` warns when no shared gateway could fetch its probe from your node, and `dg doctor` checks every gateway you rely on.
 - If the RPC API sits behind auth (kubo `API.Authorizations`, or a reverse proxy), add `--api-auth env:KUBO_AUTH`. It must hold the full `Authorization` header value, for example `Basic dXNlcjpwYXNz`.
 - CORS: kubo's gateway sends `Access-Control-Allow-Origin: *` by default. If you changed that:
   ```sh
@@ -322,7 +322,7 @@ Every clone, fetch, repack and reseed reads each pack like this:
 
 1. It tries every `https://` URL the manifest recorded (public bucket URLs, public gateway URLs).
 2. For each recorded `s3://bucket/key` where you have a profile for that bucket, it tries a signed GET. This covers private buckets. The secrets are resolved only when this step is actually reached. If several profiles name the same bucket (on different endpoints), each is tried in turn. Keys containing `.`, `..` or empty segments are never signed.
-3. It tries `ipfs://<cid>` on **every gateway in your list**, two at a time.
+3. It tries `ipfs://<cid>` on the repo's **own** public gateways first (the `…/ipfs/` URLs its pushes recorded and its advertised read URLs), then on **every gateway in your list**, two at a time.
 4. Only then does it fall back to Platform chunks, if the manifest has any.
 
 A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
@@ -330,12 +330,14 @@ A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
 - each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
 - when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned.
 
-The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. Override it for the CLI in `storage.toml`:
+The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
 
 ```toml
 [read]
-ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.io", "https://dweb.link"]
+ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]
 ```
+
+`dg doctor` probes every gateway in the list (and each IPFS profile's public gateway) and flags the dead ones. When no gateway can serve a repo, the web app says which gateways failed and offers to add one, instead of loading forever.
 
 `dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway.
 

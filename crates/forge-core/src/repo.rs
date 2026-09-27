@@ -361,14 +361,16 @@ pub struct LocalReseed {
 /// copies first).
 pub type RoleMap = BTreeMap<String, Role>;
 
-/// The git data-plane service, bound to one signing identity and its keys.
+/// The git data-plane service, bound to one signing identity and its keys, or to none.
 ///
-/// Constructed per operation batch: it borrows a connected [`PlatformClient`], the fetched
-/// signer [`LoadedIdentity`] and its [`BridgeIdentity`] key material.
+/// Constructed per operation batch: it borrows a connected [`PlatformClient`] and, for
+/// anything that signs (or opens a private repository), the fetched signer
+/// [`LoadedIdentity`] and its [`BridgeIdentity`] key material. A [`Self::reader`] has no
+/// signer: it reads a public repository anonymously (refs, manifests, packs from external
+/// copies or Platform chunks), and every signing operation fails with E301.
 pub struct RepoService<'a> {
     client: &'a PlatformClient,
-    identity: &'a LoadedIdentity,
-    bridge: &'a BridgeIdentity,
+    signer: Option<(&'a LoadedIdentity, &'a BridgeIdentity)>,
     /// A private repository's keys, loaded once per service for reads and replaced by every
     /// write-time reload ([`Self::private_writer`], §5.3), so a rotation a write picked up is
     /// also what later reads (the push's convergence re-read, a locator fold) open with.
@@ -389,10 +391,35 @@ impl<'a> RepoService<'a> {
     ) -> Self {
         Self {
             client,
-            identity,
-            bridge,
+            signer: Some((identity, bridge)),
             keyring: KeyringCache::default(),
         }
+    }
+
+    /// A service with no signer: reads a public repository anonymously. Signing operations
+    /// (and opening a private repository) fail with E301.
+    pub fn reader(client: &'a PlatformClient) -> Self {
+        Self {
+            client,
+            signer: None,
+            keyring: KeyringCache::default(),
+        }
+    }
+
+    /// The signer, or E301 naming what needed one.
+    fn identity_pair(&self) -> Result<(&'a LoadedIdentity, &'a BridgeIdentity)> {
+        self.signer.ok_or_else(|| {
+            UserError::new(codes::NO_IDENTITY, "no identity configured")
+                .cause("this operation signs (or opens a private repository), and it was started without an identity")
+                .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
+                .fix("or export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…>")
+                .into()
+        })
+    }
+
+    /// The signer's identity id (E301 without one).
+    fn identity_id(&self) -> Result<String> {
+        Ok(self.identity_pair()?.0.id())
     }
 
     /// [`Self::new`] sharing `cache`: a helper invocation reads a private repo's keys once, and
@@ -406,19 +433,19 @@ impl<'a> RepoService<'a> {
     ) -> Self {
         Self {
             client,
-            identity,
-            bridge,
+            signer: Some((identity, bridge)),
             keyring: cache,
         }
     }
 
-    /// The signer's view for private-repository key operations.
-    pub fn signer(&self) -> PrivateSigner<'a> {
-        PrivateSigner {
+    /// The signer's view for private-repository key operations (E301 without a signer).
+    pub fn signer(&self) -> Result<PrivateSigner<'a>> {
+        let (identity, bridge) = self.identity_pair()?;
+        Ok(PrivateSigner {
             client: self.client,
-            identity: self.identity,
-            bridge: self.bridge,
-        }
+            identity,
+            bridge,
+        })
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<Keyring>>> {
@@ -434,7 +461,7 @@ impl<'a> RepoService<'a> {
         if let Some(k) = self.cache().as_ref().filter(|k| *k.repo_id() == repo_id) {
             return Ok(std::sync::Arc::clone(k));
         }
-        let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        let fresh = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
         *self.cache() = Some(std::sync::Arc::clone(&fresh));
         Ok(fresh)
     }
@@ -446,7 +473,7 @@ impl<'a> RepoService<'a> {
         &self,
         repo: &RepoRef,
     ) -> Result<(Private, std::sync::Arc<Keyring>)> {
-        let kr = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        let kr = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
         *self.cache() = Some(std::sync::Arc::clone(&kr));
         let w = kr.writer(repo)?;
         Ok((w, kr))
@@ -527,7 +554,7 @@ impl<'a> RepoService<'a> {
             // Sealed under an epoch newer than the keys this service holds (a rotation landed
             // while it ran): read the keys again once.
             Err(_) if !kr.resolution().keys.contains_key(&header.epoch()) => {
-                let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+                let fresh = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
                 *self.cache() = Some(std::sync::Arc::clone(&fresh));
                 fresh.open_pack(repo, &sealed, size_bytes)
             }
@@ -537,7 +564,8 @@ impl<'a> RepoService<'a> {
 
     /// A document write engine bound to the signer, signing with the HIGH doc-op key.
     fn doc_engine(&self) -> Result<WriteEngine<'a>> {
-        WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)
+        let (identity, bridge) = self.identity_pair()?;
+        WriteEngine::new(self.client, identity, bridge.doc_op_key()?)
     }
 
     /// The contract holding `repo`'s git data (forge-core), fetched and registered with the
@@ -635,7 +663,7 @@ impl<'a> RepoService<'a> {
         } else {
             (DOC_REF_UPDATE, DocKind::RefUpdate)
         };
-        let owner = platform::decode_identifier(&self.identity.id())?;
+        let owner = platform::decode_identifier(&self.identity_id()?)?;
         let mut header = DocHeader::new(kind, owner, epoch);
         header.ref_name_hash = Some(ref_name_hash);
         header.new_oid = Some(new_oid.to_vec());
@@ -845,7 +873,7 @@ impl<'a> RepoService<'a> {
             backend.insert("uris".to_string(), FieldValue::text_list(uris));
         }
         let epoch = w.write_epoch();
-        let owner = platform::decode_identifier(&self.identity.id())?;
+        let owner = platform::decode_identifier(&self.identity_id()?)?;
         // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can serve
         // as the anchor if the anchor's author stops being a maintainer.
         let prev = kr.prev_of(epoch)?;
@@ -962,7 +990,7 @@ impl<'a> RepoService<'a> {
     ) -> Result<Vec<Uri>> {
         let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
-        PlatformBackend::new(&engine, &contract, &scope, self.identity.id())
+        PlatformBackend::new(&engine, &contract, &scope, self.identity_id()?)
             .put(bytes, meta)
             .await
     }
@@ -1018,7 +1046,7 @@ impl<'a> RepoService<'a> {
             }
         }
         Ok(vec![Uri(
-            scope.locator(&self.identity.id(), &meta.pack_hash)
+            scope.locator(&self.identity_id()?, &meta.pack_hash)
         )])
     }
 
@@ -1049,6 +1077,29 @@ impl<'a> RepoService<'a> {
         let contract = self.repo_contract(repo).await?;
         self.fetch_artifact_from(repo, &contract, manifest, reader)
             .await
+    }
+
+    /// A reader over the user's gateway list with this repo's OWN public gateways first:
+    /// they reach the node that holds the content, which a shared default gateway may not.
+    /// Only trusted records count: the `…/ipfs/` bases `config.backend.uris` advertises
+    /// (maintainer-written), then those in manifests uploaded by a CURRENT member (`roles`),
+    /// at most [`crate::storage::read::MAX_REPO_GATEWAYS`]. A past writer or a stranger
+    /// cannot put a stalling gateway ahead of every pack. A config that cannot be read only
+    /// costs the preference, never the read.
+    pub async fn repo_reader(
+        &self,
+        repo: &RepoRef,
+        manifests: &[PackManifestInfo],
+        roles: &RoleMap,
+    ) -> PackReader {
+        let mut backend = Vec::new();
+        if let Ok((scope, contract)) = self.readable(repo).await {
+            if let Ok(Some(config)) = self.newest_config(&scope, &contract).await {
+                backend = scope::backend_uris(&config);
+            }
+        }
+        PackReader::from_user_config()
+            .prefer_gateways(trusted_repo_gateways(&backend, manifests, roles))
     }
 
     /// Fetch one manifest's artifact, SHA-256-verified against it.
@@ -1112,11 +1163,17 @@ impl<'a> RepoService<'a> {
                 manifest.uris
             )));
         }
-        let engine = self.doc_engine()?;
-        let backend = PlatformBackend::new(&engine, contract, &scope, self.identity.id());
+        // A read: chunks are fetched with the connection alone, no signing key, so a clone of
+        // a public repo works without an identity.
         let mut last = Error::NotFound;
         for locator in &platform {
-            match backend.get(locator, None).await {
+            let read = match crate::backends::PlatformLocator::parse(locator) {
+                Ok(loc) => {
+                    crate::backends::platform::read_platform_pack(self.client, contract, &loc).await
+                }
+                Err(e) => Err(e),
+            };
+            match read {
                 Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
                     return Ok(bytes)
                 }
@@ -1172,7 +1229,7 @@ impl<'a> RepoService<'a> {
     /// resolved tips); publish the consolidated browse index (best-effort).
     pub async fn repack(&self, repo: &RepoRef, target: RepackTarget<'_>) -> Result<RepackReport> {
         let (_, contract) = self.writable(repo).await?;
-        let caller = self.identity.id();
+        let caller = self.identity_id()?;
 
         let refs = self.read_refs(repo).await?;
         let tips = resolved_tip_oids(&refs);
@@ -1188,7 +1245,7 @@ impl<'a> RepoService<'a> {
         }
 
         let roles = self.copy_roles(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut pack_blobs = Vec::new();
         for (hash, copies) in group_by_hash(&git) {
             let (sealed, m) = self
@@ -1351,11 +1408,11 @@ impl<'a> RepoService<'a> {
     /// are uploaded but not re-announced (a manifest is immutable).
     pub async fn reseed(&self, repo: &RepoRef, target: &dyn PackBackend) -> Result<ReseedReport> {
         let (_, contract) = self.writable(repo).await?;
-        let me = self.identity.id();
+        let me = self.identity_id()?;
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
         let roles = self.copy_roles(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
             let (bytes, best) = match self
@@ -1435,7 +1492,8 @@ impl<'a> RepoService<'a> {
             )));
         }
         let contract = self.repo_contract(repo).await?;
-        let reader = PackReader::from_user_config();
+        let roles = self.copy_roles(repo).await.unwrap_or_default();
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = LocalReseedReport::default();
         for m in &live {
             if !force
@@ -1580,7 +1638,7 @@ impl<'a> RepoService<'a> {
 
         // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`.
         let contract = self.repo_contract(repo).await?;
-        let reader = PackReader::from_user_config();
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut parts = Vec::with_capacity(live_locators.len() + 1);
         for m in live_locators.iter().rev() {
             let sealed = self
@@ -1694,6 +1752,21 @@ pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
 /// The `String`s of a list of [`Uri`]s.
 fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()
+}
+
+/// The repo's own public gateways a reader should try first: `config.backend.uris`'s
+/// (`backend`, maintainer-written), then those recorded in manifests whose uploader is a
+/// current member (`roles`), capped ([`crate::storage::read::repo_gateways`]).
+pub fn trusted_repo_gateways(
+    backend: &[String],
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<String> {
+    let members = manifests
+        .iter()
+        .filter(|m| roles.contains_key(&m.owner_id))
+        .flat_map(|m| &m.uris);
+    crate::storage::read::repo_gateways(backend.iter().chain(members))
 }
 
 /// Group manifests by pack hash (every copy of one pack together), in hash order.
@@ -2008,8 +2081,8 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
 mod tests {
     use super::{
         current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
-        order_copies, plan_push_index, repack_supersedes, PackManifestInfo, PushIndexPlan, RoleMap,
-        MAX_LOCATOR_FRAGMENTS,
+        order_copies, plan_push_index, repack_supersedes, trusted_repo_gateways, PackManifestInfo,
+        PushIndexPlan, RoleMap, MAX_LOCATOR_FRAGMENTS,
     };
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
@@ -2031,6 +2104,28 @@ mod tests {
             supersedes: Vec::new(),
             created_at_block_height: 0,
         }
+    }
+
+    #[test]
+    fn only_trusted_records_name_the_repos_own_gateways() {
+        let mut member = manifest("m", 1, 0, 1);
+        member.owner_id = "writer".into();
+        member.uris = vec!["https://member-gw.example/ipfs/bafym".into()];
+        let mut stranger = manifest("s", 2, 0, 2);
+        stranger.owner_id = "former-writer".into();
+        stranger.uris = vec!["https://stall.example/ipfs/bafys".into()];
+        let mut roles = RoleMap::new();
+        roles.insert("writer".into(), Role::Writer);
+        let backend = vec!["https://config-gw.example/ipfs/".to_string()];
+        assert_eq!(
+            trusted_repo_gateways(&backend, &[stranger.clone(), member.clone()], &roles),
+            vec!["https://config-gw.example", "https://member-gw.example"]
+        );
+        // With no member list, only the maintainer-written config counts.
+        assert_eq!(
+            trusted_repo_gateways(&backend, &[stranger, member], &RoleMap::new()),
+            vec!["https://config-gw.example"]
+        );
     }
 
     fn hashes(ms: &[PackManifestInfo]) -> Vec<u8> {

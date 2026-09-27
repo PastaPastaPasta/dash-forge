@@ -314,6 +314,7 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 struct Step {
     name: &'static str,
     ok: bool,
+    warn: bool,
     detail: String,
 }
 
@@ -332,7 +333,26 @@ impl Report {
             let mark = if ok { " OK " } else { "FAIL" };
             println!("  [{mark}] {name:<14} {detail}");
         }
-        self.steps.push(Step { name, ok, detail });
+        self.steps.push(Step {
+            name,
+            ok,
+            warn: false,
+            detail,
+        });
+    }
+
+    /// A problem that does not fail the test (what works still works).
+    fn warn(&mut self, name: &'static str, detail: impl Into<String>) {
+        let detail = detail.into();
+        if self.live {
+            println!("  [WARN] {name:<14} {detail}");
+        }
+        self.steps.push(Step {
+            name,
+            ok: true,
+            warn: true,
+            detail,
+        });
     }
 
     fn pass(&mut self, name: &'static str, detail: impl Into<String>) {
@@ -375,11 +395,20 @@ impl Report {
             .collect()
     }
 
+    /// The names of the checks that only warned.
+    pub fn warnings(&self) -> Vec<&'static str> {
+        self.steps
+            .iter()
+            .filter(|s| s.warn)
+            .map(|s| s.name)
+            .collect()
+    }
+
     /// The `--json` rows.
     pub fn steps_json(&self) -> Vec<serde_json::Value> {
         self.steps
             .iter()
-            .map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail}))
+            .map(|s| json!({"step": s.name, "ok": s.ok, "warn": s.warn, "detail": s.detail}))
             .collect()
     }
 }
@@ -474,7 +503,13 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
             for f in &r.fixes {
                 println!("\nFix:\n{f}");
             }
-            if ok {
+            let warned = r.warnings();
+            if ok && !warned.is_empty() {
+                println!(
+                    "\nChecks passed with warnings ({}): pushes work, but read the [WARN] rows above.",
+                    warned.join(", ")
+                );
+            } else if ok {
                 println!(
                     "\nAll checks passed — run `dg storage use <profiles>` in a repo to push here."
                 );
@@ -640,6 +675,9 @@ async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
         {
             r.fixes.push(kubo_cors_fix().to_string());
         }
+    } else {
+        let gateways = StorageProfiles::load().unwrap_or_default().ipfs_gateways();
+        check_shared_gateways(r, http, gateways, &cid, &body).await;
     }
     if let Profile::IpfsPinningService(p) = profile {
         test_pinning_auth(p, http, r).await;
@@ -647,6 +685,65 @@ async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
     r.check("cleanup", kubo.unpin(&cid).await, |()| {
         "probe unpinned".into()
     });
+}
+
+/// How long `dg storage test` gives the shared gateways to find a fresh probe CID.
+const SHARED_GATEWAY_FETCH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A profile without `public_gateway`: readers can only fetch what it stores through the
+/// shared gateway list (`[read] ipfs_gateways`, else the defaults), which must find this node
+/// on the IPFS network. Ask each live one for the probe just added; warn (never fail: git
+/// push works either way) when none serves it, since then an IPFS-only repo is unreadable.
+async fn check_shared_gateways(
+    r: &mut Report,
+    http: &reqwest::Client,
+    gateways: Vec<String>,
+    cid: &str,
+    body: &[u8],
+) {
+    if r.live {
+        println!(
+            "  ....   {:<14} asking {} shared gateway(s) for the probe (up to {} s)…",
+            "shared gateway",
+            gateways.len(),
+            SHARED_GATEWAY_FETCH.as_secs()
+        );
+    }
+    let results = forge_core::storage::read::fetch_from_gateways(
+        http,
+        &gateways,
+        cid,
+        body,
+        SHARED_GATEWAY_FETCH,
+    )
+    .await;
+    if let Some((gw, _)) = results.iter().find(|(_, res)| res.is_ok()) {
+        r.pass(
+            "shared gateway",
+            format!("{gw} fetched the probe from this node (no public_gateway is set)"),
+        );
+        return;
+    }
+    let tried = results
+        .iter()
+        .filter_map(|(gw, res)| res.as_ref().err().map(|e| format!("{gw}: {e}")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    r.warn(
+        "shared gateway",
+        format!(
+            "no IPFS gateway could fetch what this node stores ({}), so readers cannot clone \
+             or browse a repo stored only here. Set a public gateway that reaches this node \
+             (`dg storage add <name> … --public-gateway https://…`), add one that does to \
+             [read] ipfs_gateways in storage.toml, or add a second, non-IPFS profile to \
+             the repo's policy",
+            if tried.is_empty() {
+                "no gateways configured".to_string()
+            } else {
+                tried
+            }
+        ),
+    );
 }
 
 async fn test_pinning_auth(p: &PinningProfile, http: &reqwest::Client, r: &mut Report) {
@@ -786,7 +883,8 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let scope = handle.scope()?;
-    let reader = PackReader::from_user_config();
+    let roles = svc.copy_roles(&handle).await.unwrap_or_default();
+    let reader = svc.repo_reader(&handle, &manifests, &roles).await;
     let https = forge_core::backends::HttpsBackend::with_client(forge_core::storage::http_client());
 
     let mut packs = Vec::new();
@@ -915,6 +1013,57 @@ pub(crate) mod tests {
             crate::Command::Storage(StorageCommand::Add(a)) => *a,
             _ => panic!("expected storage add"),
         }
+    }
+
+    /// A gateway stub: `/ipfs/bafkqaaa` answers 200 (it is alive), everything else 504 (it
+    /// cannot find content), like a real gateway that cannot reach a NAT-ed node.
+    fn stub_gateway() -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h).unwrap();
+                    if h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let status = if line.contains("/ipfs/bafkqaaa ") {
+                    "200 OK"
+                } else {
+                    "504 Gateway Timeout"
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn no_gateway_reaching_the_node_is_a_warning_not_a_failure() {
+        let mut r = Report::default();
+        let http = reqwest::Client::new();
+        check_shared_gateways(&mut r, &http, vec![stub_gateway()], "bafkreiprobe", b"x").await;
+        assert!(r.ok(), "a warning must not fail the test");
+        assert_eq!(r.warnings(), ["shared gateway"]);
+        let detail = &r.steps[0].detail;
+        assert!(detail.contains("no IPFS gateway could fetch"), "{detail}");
+        assert!(detail.contains("--public-gateway"), "{detail}");
+        assert!(detail.contains("504"), "{detail}");
+
+        // No gateways at all is the same warning.
+        let mut r = Report::default();
+        check_shared_gateways(&mut r, &http, vec![], "bafkreiprobe", b"x").await;
+        assert_eq!(r.warnings(), ["shared gateway"]);
     }
 
     #[test]

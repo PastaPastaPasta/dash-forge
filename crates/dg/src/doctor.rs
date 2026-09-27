@@ -5,7 +5,9 @@
 //! **identity** (file, keys, permissions, on-chain existence and balance), **network**
 //! (target, DAPI reachable, forge-v2 / protocol-14 contracts present), **contracts** (where
 //! each id comes from), **storage** (every profile: valid, secrets resolvable, web CORS
-//! preflight on its public URL), **git config** (`dash.*` for this repository: storage
+//! preflight on its public URL), **read gateways** (every IPFS read gateway and each IPFS
+//! profile's public gateway answer; an IPFS profile nobody else can read through is
+//! flagged), **git config** (`dash.*` for this repository: storage
 //! policy, cost guard, network agreement with `dg`).
 //!
 //! `--fix` applies only local, reversible, free fixes: create the config directories with
@@ -196,6 +198,10 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         Section {
             title: "storage",
             checks: check_storage().await,
+        },
+        Section {
+            title: "read gateways",
+            checks: check_read_gateways().await,
         },
         Section {
             title: "git config",
@@ -819,11 +825,123 @@ fn public_probe_url(profile: &Profile) -> Option<String> {
             .public_url
             .as_ref()
             .map(|u| format!("{}/dash-forge-cors-check", u.trim_end_matches('/'))),
-        // `bafkqaaa` is the empty identity CID: every gateway can serve it.
-        _ => profile
-            .public_gateway()
-            .map(|g| format!("{}/ipfs/bafkqaaa", g.trim_end_matches('/'))),
+        // The empty identity CID: every gateway can serve it.
+        _ => profile.public_gateway().map(|g| {
+            format!(
+                "{}/ipfs/{}",
+                g.trim_end_matches('/'),
+                forge_core::storage::read::IDENTITY_CID
+            )
+        }),
     }
+}
+
+// --- read gateways -----------------------------------------------------------------------
+
+/// Probe every IPFS read gateway (`[read] ipfs_gateways`, else the shared defaults) and the
+/// public gateway of every IPFS profile with the empty identity CID.
+async fn check_read_gateways() -> Vec<Check> {
+    use forge_core::storage::read::{probe_gateways, GATEWAY_PROBE_TIMEOUT};
+    let profiles = StorageProfiles::load().unwrap_or_default();
+    let list = profiles.ipfs_gateways();
+    let mut all = list.clone();
+    for p in profiles.profiles.values() {
+        if let Some(g) = p
+            .public_gateway()
+            .map(|g| g.trim_end_matches('/').to_string())
+        {
+            if !all.contains(&g) {
+                all.push(g);
+            }
+        }
+    }
+    let health = probe_gateways(
+        &forge_core::storage::http_client(),
+        &all,
+        GATEWAY_PROBE_TIMEOUT,
+    )
+    .await;
+    gateway_checks(&profiles, &list, &health)
+}
+
+/// The rows for [`check_read_gateways`], from probe results (pure, for tests).
+fn gateway_checks(
+    profiles: &StorageProfiles,
+    list: &[String],
+    health: &[(String, forge_core::storage::read::GatewayHealth)],
+) -> Vec<Check> {
+    let up = |g: &str| health.iter().any(|(h, s)| h == g && s.is_up());
+    let why = |g: &str| {
+        health
+            .iter()
+            .find(|(h, _)| h == g)
+            .map_or_else(|| "not probed".to_string(), |(_, s)| s.describe())
+    };
+    let custom = profiles
+        .read
+        .ipfs_gateways
+        .as_ref()
+        .is_some_and(|l| !l.is_empty());
+    let source = if custom {
+        "[read] ipfs_gateways"
+    } else {
+        "the built-in defaults"
+    };
+    let mut out = Vec::new();
+    let dead: Vec<String> = list
+        .iter()
+        .filter(|g| !up(g))
+        .map(|g| format!("{g} ({})", why(g)))
+        .collect();
+    let live = list.iter().filter(|g| up(g)).count();
+    out.push(if dead.is_empty() {
+        Check::ok("gateways", format!("{live} of {} up ({source})", list.len()))
+    } else if live > 0 {
+        Check::warn(
+            "gateways",
+            format!("{live} of {} up ({source}); down: {}", list.len(), dead.join(", ")),
+            "drop the dead ones from [read] ipfs_gateways in storage.toml (reads skip them, at the cost of a timeout)",
+        )
+    } else {
+        // A warning, not a failure: repos on Platform or S3 storage need no gateway.
+        Check::warn(
+            "gateways",
+            format!("none of the IPFS read gateways answers ({source}): {}", dead.join(", ")),
+            "add a working gateway to [read] ipfs_gateways in storage.toml, e.g. `ipfs_gateways = [\"https://ipfs.filebase.io\"]`; until then ipfs:// copies are unreadable except through a repo's own public gateway",
+        )
+    });
+    // An IPFS-only profile must be reachable through SOME gateway, or what it stores is
+    // unreadable by anyone else.
+    for (name, p) in &profiles.profiles {
+        if !matches!(p, Profile::IpfsKubo(_) | Profile::IpfsPinningService(_)) {
+            continue;
+        }
+        let own = p.public_gateway().map(|g| g.trim_end_matches('/'));
+        let row = match own {
+            Some(g) if up(g) => Check::ok("ipfs reach", format!("{name}: public gateway {g} is up")),
+            Some(g) => Check::warn(
+                "ipfs reach",
+                format!("{name}: its public gateway {g} does not answer ({})", why(g)),
+                "readers fall back to the shared gateways, which may not reach your node: fix the gateway, or keep a second, non-IPFS copy (`dg storage use <this>,<another>`)",
+            ),
+            // A pinning service holds the content on its own well-connected nodes.
+            None if matches!(p, Profile::IpfsPinningService(_)) => Check::ok(
+                "ipfs reach",
+                format!("{name}: no public_gateway; the pinning service serves the content to the shared gateways"),
+            ),
+            None if live == 0 => Check::warn(
+                "ipfs reach",
+                format!("{name}: no public_gateway, and no shared gateway is up: nobody else can read what it stores"),
+                format!("set one: `dg storage add {name} --kind {} … --public-gateway https://<a gateway that reaches your node>`, add a working gateway to [read] ipfs_gateways, or pair it with a non-IPFS profile", p.kind()),
+            ),
+            None => Check::ok(
+                "ipfs reach",
+                format!("{name}: no public_gateway: readers use the shared gateways, which must find your node on the IPFS network (`dg storage test {name}` checks; a node behind NAT often cannot be found)"),
+            ),
+        };
+        out.push(row);
+    }
+    out
 }
 
 // --- git config --------------------------------------------------------------------------
@@ -961,6 +1079,96 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gw_health(list: &[(&str, bool)]) -> Vec<(String, forge_core::storage::read::GatewayHealth)> {
+        use forge_core::storage::read::GatewayHealth;
+        list.iter()
+            .map(|(g, up)| {
+                let h = if *up {
+                    GatewayHealth::Up
+                } else {
+                    GatewayHealth::Retired("429 with Sunset".into())
+                };
+                ((*g).to_string(), h)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_ipfs_only_profile_with_no_working_gateway_is_flagged() {
+        let profiles = StorageProfiles::parse(
+            "[profiles.k]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n",
+        )
+        .unwrap();
+        let list = vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string(),
+        ];
+        let rows = gateway_checks(
+            &profiles,
+            &list,
+            &gw_health(&[("https://a.example", false), ("https://b.example", false)]),
+        );
+        assert_eq!(rows[0].name, "gateways");
+        assert_eq!(rows[0].status, Status::Warn, "{}", rows[0].detail);
+        assert!(rows[0].detail.contains("none of the IPFS read gateways"));
+        assert_eq!(rows[1].name, "ipfs reach");
+        assert_eq!(rows[1].status, Status::Warn);
+        assert!(
+            rows[1].detail.contains("nobody else can read"),
+            "{}",
+            rows[1].detail
+        );
+
+        // One gateway up: the list warns about the dead one, and the profile row still says
+        // it depends on the shared gateways finding the node.
+        let rows = gateway_checks(
+            &profiles,
+            &list,
+            &gw_health(&[("https://a.example", true), ("https://b.example", false)]),
+        );
+        assert_eq!(rows[0].status, Status::Warn);
+        assert!(rows[0].detail.contains("1 of 2 up"), "{}", rows[0].detail);
+        assert!(
+            rows[1].detail.contains("no public_gateway"),
+            "{}",
+            rows[1].detail
+        );
+        assert_eq!(
+            rows[1].status,
+            Status::Ok,
+            "a shared gateway is up: only a note"
+        );
+
+        // A pinning service needs no public gateway of its own, even with none up.
+        let pinning = StorageProfiles::parse(
+            "[profiles.p]\nkind = \"ipfs-pinning-service\"\napi = \"http://127.0.0.1:5001\"\n\
+             pinning_endpoint = \"https://pins.example/psa\"\npinning_token = \"env:T\"\n",
+        )
+        .unwrap();
+        let rows = gateway_checks(
+            &pinning,
+            &list,
+            &gw_health(&[("https://a.example", false), ("https://b.example", false)]),
+        );
+        assert_eq!(rows[1].status, Status::Ok, "{}", rows[1].detail);
+    }
+
+    #[test]
+    fn a_profile_with_a_live_public_gateway_is_ok() {
+        let profiles = StorageProfiles::parse(
+            "[profiles.k]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n\
+             public_gateway = \"https://mine.example\"\n",
+        )
+        .unwrap();
+        let list = vec!["https://a.example".to_string()];
+        let rows = gateway_checks(
+            &profiles,
+            &list,
+            &gw_health(&[("https://a.example", true), ("https://mine.example", true)]),
+        );
+        assert!(rows.iter().all(|c| c.status == Status::Ok));
+    }
 
     #[test]
     fn contracts_check_reports_the_deployment_file_as_the_source() {
