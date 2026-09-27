@@ -2,12 +2,12 @@
 //! UX spec (§7.5) lists them, each row `✓`/`!`/`✗` with the fix next to it.
 //!
 //! Sections: **toolchain** (git ≥ 2.26, `git-remote-dash` on PATH and the same version),
-//! **identity** (file, keys, permissions, on-chain existence and balance), **network**
-//! (target, DAPI reachable, forge-v2 / protocol-14 contracts present), **contracts** (where
-//! each id comes from), **storage** (every profile: valid, secrets resolvable, web CORS
-//! preflight on its public URL), **read gateways** (every IPFS read gateway and each IPFS
-//! profile's public gateway answer; an IPFS profile nobody else can read through is
-//! flagged), **git config** (`dash.*` for this repository: storage
+//! **identity** (config.toml parses, file, keys, permissions, on-chain existence and
+//! balance), **network** (target, DAPI reachable, forge-v2 / protocol-14 contracts
+//! present), **contracts** (where each id comes from), **storage** (every profile: valid,
+//! secrets resolvable, web CORS preflight on its public URL), **read gateways** (every IPFS
+//! read gateway and each IPFS profile's public gateway answer; an IPFS profile nobody else
+//! can read through is flagged), **git config** (`dash.*` for this repository: storage
 //! policy, cost guard, network agreement with `dg`).
 //!
 //! `--fix` applies only local, reversible, free fixes: create the config directories with
@@ -460,6 +460,7 @@ fn parse_version_line(line: &str) -> Option<(&str, &str)> {
 
 async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     let mut out = vec![check_config_dir()];
+    out.extend(check_config_file());
     let Some(path) = ctx.identity_path.clone() else {
         out.push(Check::warn(
             "identity",
@@ -575,6 +576,31 @@ fn check_config_dir() -> Check {
         .auto(AutoFix::PrivateDir(dir)),
         Some(_) => Check::ok("config dir", format!("{} (config: {cfg})", dir.display())),
     }
+}
+
+/// A failing `config.toml` row when the file cannot be read or does not parse (every other
+/// command stops on it with E204; doctor ran on the defaults instead). `None` when it loads.
+fn check_config_file() -> Option<Check> {
+    config_file_check(&config_path().ok()?)
+}
+
+fn config_file_check(path: &Path) -> Option<Check> {
+    let err = Config::load_from(path).err()?;
+    let u = forge_core::user_error::classify(
+        err.chain(),
+        &forge_core::user_error::ErrorContext::default(),
+    );
+    Some(Check::fail(
+        "config.toml",
+        format!(
+            "{}; dg ignored it for this report (network and identity below are the defaults)",
+            u.cause.unwrap_or(u.message)
+        ),
+        u.fix
+            .first()
+            .cloned()
+            .unwrap_or_else(|| format!("fix {}", path.display())),
+    ))
 }
 
 fn file_mode_check(path: &Path) -> Check {
@@ -1130,6 +1156,31 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_toml_that_does_not_parse_is_a_failing_row() {
+        // D-405: doctor used to show "✓ config dir" and run on testnet defaults.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(
+            config_file_check(&path).is_none(),
+            "absent: nothing to report"
+        );
+        std::fs::write(&path, "network = \"devnet\"\n").unwrap();
+        assert!(
+            config_file_check(&path).is_none(),
+            "valid: nothing to report"
+        );
+        std::fs::write(&path, "network = \"devnet\"\ndefault_identity = \n").unwrap();
+        let c = config_file_check(&path).expect("a failing row");
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("line 2, column 20"), "{}", c.detail);
+        assert!(c.detail.contains("defaults"), "{}", c.detail);
+        assert_eq!(
+            c.fix.as_deref(),
+            Some(format!("fix line 2 of {}", path.display()).as_str())
+        );
+    }
 
     fn gw_health(list: &[(&str, bool)]) -> Vec<(String, forge_core::storage::read::GatewayHealth)> {
         use forge_core::storage::read::GatewayHealth;

@@ -65,14 +65,17 @@ impl Config {
         Self::load_from(&path)
     }
 
-    /// Load the config from an explicit path (returns default when the file is absent).
+    /// Load the config from an explicit path (returns default when the file is absent). A
+    /// file that does not parse is E204 naming its line and column, never the defaults: those
+    /// would quietly switch to testnet and forget the signed-in identity.
     pub fn load_from(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("parsing config {}", path.display()))
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(forge_core::config_file::config_read_error(path, &e).into()),
+        };
+        toml::from_str(&raw)
+            .map_err(|e| forge_core::config_file::config_toml_error(path, &raw, &e).into())
     }
 
     /// Persist the config to `config.toml`, creating the directory if needed.
@@ -102,6 +105,30 @@ mod tests {
         .unwrap();
         assert!(cfg.network.is_none());
         assert!(cfg.default_identity.is_none());
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_e204_naming_the_line() {
+        // D-405: this used to fall back to the defaults (testnet, no identity) silently.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "network = \"devnet\"\ndevnet_name = \"moutai\"\ndefault_identity = \n",
+        )
+        .unwrap();
+        let err = Config::load_from(&path).unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E204");
+        let cause = u.cause.unwrap_or_default();
+        assert!(
+            cause.starts_with(&format!("{}: line 3, column 20: ", path.display())),
+            "{cause}"
+        );
+        assert!(u.fix[0].contains("fix line 3 of"), "{:?}", u.fix);
     }
 
     #[test]

@@ -51,6 +51,7 @@ SCENARIOS=(
   "17-ref-force-back-and-pr-base"
   "18-repo-settings"
   "19-private-collab"
+  "20-config-storage-ux"
 )
 
 # Optional subset filter (match by leading number or substring).

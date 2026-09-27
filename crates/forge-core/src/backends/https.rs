@@ -42,7 +42,36 @@ impl HttpsBackend {
 /// Map a transport-level reqwest error onto the crate error taxonomy (there is no
 /// dedicated network variant; a failed request is an I/O failure).
 pub(crate) fn transport_err(context: &str, e: &reqwest::Error) -> Error {
-    Error::Io(format!("{context}: {e}"))
+    Error::Io(format!("{context}: {}", describe_transport(e)))
+}
+
+/// A reqwest failure in a few words plus its root cause (`Connection refused`, `dns error:
+/// …`), which reqwest's own message ("error sending request for url (…)") leaves out. The
+/// URL is not repeated: callers name the candidate already.
+fn describe_transport(e: &reqwest::Error) -> String {
+    let kind = if e.is_connect() {
+        "could not connect"
+    } else if e.is_timeout() {
+        "timed out"
+    } else if e.is_body() || e.is_decode() {
+        "the response broke off"
+    } else {
+        "request failed"
+    };
+    // The innermost cause: the OS or resolver error.
+    let root = std::iter::successors(std::error::Error::source(e), |c| c.source()).last();
+    // No source (a builder, redirect or status error): reqwest's own text, minus the URL.
+    let detail = root.map_or_else(
+        || {
+            let mut e = e.to_string();
+            if let Some(url) = e.find(" for url (") {
+                e.truncate(url);
+            }
+            e
+        },
+        ToString::to_string,
+    );
+    format!("{kind}: {detail}")
 }
 
 #[async_trait::async_trait]
