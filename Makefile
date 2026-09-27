@@ -105,13 +105,15 @@ devnet-identities-verify: tools/mint-identity/node_modules
 ## anonymous writes, kubo CID == local CIDv1 derivation, N-of-M replication + gateway
 ## read-back. FORGE_IT_S3/FORGE_IT_IPFS turn an unreachable fixture into a FAILURE
 ## instead of a silent skip. No network beyond localhost; no Platform spend.
-## The wait includes s3-init having exited: the buckets exist only after it ran.
+## The buckets, their policies and CORS exist only once s3-init has exited 0; `docker wait`
+## by container name also works when kubo belongs to another compose project.
 storage-it: infra-up
+	@rc=$$(docker wait forge-e2e-s3-init) && [ "$$rc" = 0 ] || \
+		{ echo "s3-init did not set up the buckets (exit $$rc): docker logs forge-e2e-s3-init" >&2; exit 1; }
 	@for i in $$(seq 1 60); do \
 		curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && \
 		curl -fsS -o /dev/null -X POST http://127.0.0.1:5001/api/v0/version && \
-		curl -fsS -o /dev/null http://127.0.0.1:8082/README.txt && \
-		curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/forge-byo/.probe | grep -q 404 && break; \
+		curl -fsS -o /dev/null http://127.0.0.1:8082/README.txt && break; \
 		[ "$$i" = 60 ] && { echo "storage fixture not ready after 120 s (docker compose -f $(COMPOSE_FILE) ps)" >&2; exit 1; }; \
 		sleep 2; \
 	done
