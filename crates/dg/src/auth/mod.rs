@@ -500,7 +500,7 @@ struct KeySlots<S, P> {
 fn promote_failed(e: anyhow::Error, id: u32, pending_at: &store::Stored) -> anyhow::Error {
     e.context(format!(
         "key #{id} is registered on chain but could not be made this computer's key; it is kept \
-         in {} — run the same command again to finish, or sign in with it: `dg auth login {}`",
+         in {} — make it this computer's key with `dg auth login {}`",
         pending_at.describe(),
         pending_at.source()
     ))
