@@ -79,7 +79,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | `git-remote-dash` | The same | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` if that file exists, else the default `dg auth` recorded |
 | `forge-import` | The same | `--identity <source>` > `DASH_FORGE_KEY` |
 | Mirror Action | A CI secret: an inline runner key, or a CI-only identity file | the `DASH_FORGE_KEY` secret ([mirror guide](mirror-a-github-repo.md#the-ci-secret)) |
-| Web app | A **limited key** only, encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
+| Web app | A **limited key** (or a wallet-granted key with no limits, see below), encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
@@ -105,7 +105,7 @@ A web page is whoever served it. If the page, or a script it loads, is compromis
 - For CI, give a pipeline its own limited key: `dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1` makes one, and the file's one line is the `DASH_FORGE_KEY` secret.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
-With limited keys (below) the web app keeps nothing but a limited key. The master key is used only in one-time steps: registering, topping up, renewing or revoking a limited key.
+With limited keys (below) the web app keeps nothing but a limited key (or, after a wallet sign-in, the key the wallet granted). The master key is used only in one-time steps: registering, topping up, renewing or revoking a limited key.
 
 ---
 
@@ -168,7 +168,7 @@ Ways to get one in the web app (**Sign in**):
 |---|---|
 | Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. |
 | Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. |
-| Use my Dash wallet | Scan the QR code with Dash Wallet (or tap **Open in Dash Wallet** on the phone) and approve; the first time, approve a second code that adds Forge's key to your identity. Your wallet hands the key over encrypted. **Check that the identity shown is yours**: a response does not prove who answered, and anyone who saw the QR code could answer. On the App Connect contract the app refuses if more than one identity answers; on the key-exchange contract today's wallets use, the first answer wins, so check the id ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). Today's Dash Wallet grants a key with **no spending limit or expiry** (on iOS, for one contract per approval, so issues and pull requests take one more approval), and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
+| Use my Dash wallet | **Not a limited key**, and **testnet only**: Dash Wallet's sign-in feature (DashConnect, More → Tools → Connections in the DashPay app) answers on testnet, is not in a released version yet, and Forge is not on testnet yet. On moutai only an internal iOS build with the login contract entered by hand can answer ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). Scan the QR code with the wallet (or tap **Open in DashPay (Dash Wallet)** on the phone) and approve; the first time, scan (or open) a second code, and the wallet adds Forge's key to your identity (iOS asks for your PIN). Your wallet hands the key over encrypted. **Check that the username and identity shown match what your wallet showed**: a response does not prove who answered, and anyone who saw the QR code could answer. On the App Connect contract the app refuses if more than one identity answers; on the key-exchange contract today's wallets use, the first answer wins. Today's Dash Wallet grants a key with **no spending limit or expiry** (on iOS, for one contract per approval, so issues and pull requests take one more approval), and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
 | Advanced: paste a key | A HIGH or CRITICAL key, for this tab only, lost on reload. It has no limits Forge set. Never paste a master key. |
 
 The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. A write that would overrun either is refused before it is signed, and the sheet that opens says which one blocks. **Settings → This browser's key** shows the budget and expiry and has these actions:
@@ -185,13 +185,14 @@ Losing a device costs nothing beyond that key's remaining budget. Register a new
 
 ### Signing in with the Dash Wallet app: what works today
 
-The **Use my Dash wallet** tile speaks the key exchange that today's Dash Wallet for Android and iOS already implement, and reads answers both from their key-exchange contract and from the protocol-14 App Connect contract. The shipped wallets set real limits on what it can do ([wallet-login.md](../design/wallet-login.md) has the full analysis):
+The **Use my Dash wallet** tile speaks the key exchange (DashConnect) that Dash Wallet for Android and iOS implement on their development branches: it is not in a released version yet (dash-wallet v11.9.0, dashwallet-ios v9.0.2). Forge reads answers both from their key-exchange contract and from the protocol-14 App Connect contract. What they grant is limited too: neither wallet registers a spending limit or an expiry, and Android also drops the contract bound ([wallet-login.md](../design/wallet-login.md) has the full analysis). Where it works:
 
 | Wallet | Network | Works today |
 |---|---|---|
-| Dash Wallet iOS | devnet moutai | **Yes**, after pointing the wallet at Forge's key-exchange contract (Settings → Devnet → DashConnect login contract `E2ykCqF8mysgjVWNMRFdMzT6X7wgnFdaV5UdohpzUkDK`) with a DashPay identity on moutai. Not yet run on a real device. |
-| Dash Wallet iOS and Android | testnet | Once forge-v2 is on testnet (protocol 14). |
-| Dash Wallet Android | devnets | No: it pins the testnet contract. |
+| Dash Wallet iOS, internal build | devnet moutai | **Only with a manual override**: devnets exist only in internal builds; point the wallet at Forge's key-exchange contract (Settings → Devnet Settings → DashConnect Contract ID `E2ykCqF8mysgjVWNMRFdMzT6X7wgnFdaV5UdohpzUkDK`) with a DashPay identity on moutai. Not yet run on a real device. |
+| Dash Wallet iOS and Android (testnet builds) | testnet | Once forge-v2 is on testnet (protocol 14), in a wallet built with DashConnect. |
+| Dash Wallet Android | devnets | No: it refuses every request off testnet, and pins the testnet contract. |
+| Dash Wallet iOS | mainnet | No: Connections is off on mainnet. |
 | Dash Wallet Android | mainnet | No: the feature is off on mainnet builds. |
 | A wallet that grants group-bound, limited keys through App Connect | moutai, and every network at protocol 14 | Yes: one approval, and no warning. None ships yet; unit-tested. |
 
@@ -199,8 +200,8 @@ What to expect with today's wallets:
 
 - **Two approvals (iOS).** The iOS wallet grants a key for one contract per approval. The first covers repositories and pushes (forge-core); the first sign-in also asks you to approve a second code that adds that key to your identity. The first issue, PR, review or star asks for one more approval (**Approve issues and pull requests**), for forge-collab, plus, the first time, a second code that registers that key. Android's key is not bound to any contract, so it covers both at once (see the next point).
 - **No spending limit or expiry.** The wallets register the key without a budget or an expiry (Android's is not even bound to a contract), and Platform cannot add limits to such a key later. The app warns about it on the confirmation step and in Settings, and prefers a passkey to protect it. **Replace with a limited key** (your identity file or 12 words, once) swaps it for a normal budgeted key and disables the wallet's keys in the same update.
-- **A disabled wallet key can come back.** The wallet derives the same key every time, so after you disable it, signing in with that wallet again would re-register the same key. Forge refuses that sign-in; use Import instead.
-- **Check the identity yourself.** The answer does not prove who sent it: on the wallets' contract, whoever answers the QR code first is the identity Forge shows. Compare the full identity id with what your wallet shows, character for character. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 5 minutes; keep the QR code private.
+- **A disabled wallet key cannot be replaced by the wallet.** The wallet derives the same key every time, so after you disable it the wallet cannot give Forge a fresh one. Forge refuses that sign-in; use Import instead.
+- **Check the identity yourself.** The answer does not prove who sent it: on the wallets' contract, whoever answers the QR code first is the identity Forge shows. Compare the username and identity id with the wallet's approval screen, which shows the username and the first 7 and last 5 characters of the id. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 5 minutes; keep the QR code private.
 
 Drafts of the wallet-side fixes (group-scoped, limited grants; a signature that proves which identity answered) are in [`docs/upstream/`](../upstream/app-connect-responder-auth.md), for the owner to file with dashpay.
 

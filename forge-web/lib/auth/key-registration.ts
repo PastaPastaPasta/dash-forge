@@ -92,14 +92,16 @@ export class UnusableWalletKey extends Error {
 
 /**
  * The wallet's key for Forge is on the identity but disabled, and the wallet derives the same
- * key every time: registering it again would bring back a key that was revoked (and any copy
- * of it). Refused; the user needs a new wallet chain key, or another sign-in method.
+ * key every time, so it cannot give Forge a fresh one, and Forge will not use a key that was
+ * revoked (iOS would even try to register it again: `missingKeyRegistrationKeys` ignores disabled
+ * keys; Android treats it as already registered). Refused; the user signs in another way. (Neither wallet can change the key it derives
+ * from: both use identity auth-chain key index 0, `LoginKeyDerivation.DEFAULT_KEY_INDEX`.)
  */
 export class RevokedWalletKey extends UnusableWalletKey {
   constructor(readonly keyId: number) {
     super(
-      `Your wallet's key for Dash Forge (key ${keyId}) was disabled on this identity, and the wallet would add the very same key again, bringing back a key you revoked. ` +
-        'Sign in with your identity file or recovery phrase instead (Import), or rotate your wallet\'s identity key first.',
+      `Your wallet's key for Dash Forge (key ${keyId}) was disabled on this identity, and the wallet derives that same key every time, so it cannot give Forge a new one. ` +
+        'Sign in with your identity file or recovery phrase instead (Import).',
     )
     this.name = 'RevokedWalletKey'
   }
