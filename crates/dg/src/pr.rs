@@ -129,9 +129,7 @@ fn state_label(v: &PatchView) -> &'static str {
 // ---------------------------------------------------------------------------
 
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
-    let s = Session::open(ctx, &args.repo).await?;
-    s.refuse_if_archived(ctx, "pull request not created")
-        .await?;
+    let s = Session::open_for_write(ctx, &args.repo, "pull request not created").await?;
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -585,8 +583,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    s.refuse_if_archived(ctx, "review not posted").await?;
+    let s = Session::open_for_write(ctx, repo, "review not posted").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     // Review the PR's current head (the newest headUpdate), which is what approvals count on.
@@ -623,8 +620,7 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
 }
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    s.refuse_if_archived(ctx, "state not changed").await?;
+    let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
@@ -677,8 +673,7 @@ async fn merge(
     merge_oid: Option<&str>,
     override_policy: bool,
 ) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    s.refuse_if_archived(ctx, "merge").await?;
+    let s = Session::open_for_write(ctx, repo, "merge").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;

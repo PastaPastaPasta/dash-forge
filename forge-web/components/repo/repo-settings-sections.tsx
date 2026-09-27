@@ -299,7 +299,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
       <Field label="Topics" htmlFor="repo-topics" hint="Comma-separated, up to 10: lowercase letters, digits and dashes.">
         <Input id="repo-topics" value={topicsText} disabled={!owner} onChange={(e) => setTopicsText(e.target.value)} placeholder="rust, dash-platform" />
       </Field>
-      {problem ? <p className="text-[12px] text-danger">{problem}</p> : null}
+      {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
       {home.repo.visibility === 'private' ? (
         <Note>The description and topics are public even for a private repo: they live on its repo document, which is not encrypted.</Note>
       ) : null}
@@ -424,7 +424,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                 Protect
               </Button>
             </div>
-            {problem ? <p className="mt-1 text-[12px] text-danger">{problem}</p> : null}
+            {problem ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
             {candidate !== '' && problem === null ? (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="pattern-preview">
@@ -494,7 +494,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
       <h3 className="flex items-center gap-2 text-dense font-medium">
         <Scale className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Branch policy
       </h3>
-      <p role="note" className="mt-1 rounded-md bg-caution/5 px-2 py-1.5 text-dense text-caution-700 dark:text-caution">
+      <p role="note" className="mt-1 rounded-md bg-caution/5 px-2 py-1.5 text-dense text-caution-700 dark:text-caution-400">
         A client rule, not consensus: Forge clients disable a writer&apos;s merge until it is met, and a maintainer can override it.
         Nothing on Platform requires approvals.
       </p>

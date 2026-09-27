@@ -138,6 +138,18 @@ impl Session {
         })
     }
 
+    /// [`Self::open`] for a write to the repository: refused with E606 when it is archived
+    /// ([`Self::refuse_if_archived`]; `action` names what was not done).
+    pub async fn open_for_write(
+        ctx: &crate::context::Ctx,
+        repo: &str,
+        action: &str,
+    ) -> Result<Self> {
+        let s = Self::open(ctx, repo).await?;
+        s.refuse_if_archived(ctx, action).await?;
+        Ok(s)
+    }
+
     /// E606 before anything is signed when the repository is archived, unless
     /// `--allow-archived`. Archiving is a client rule (`config.archived`): consensus still admits
     /// a member's writes, so every Forge client refuses them instead. An unreadable config

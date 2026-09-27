@@ -2869,6 +2869,7 @@ mod tests {
                 owner_id: "o".into(),
                 created_at: Some(at),
                 created_at_block_height: Some(1),
+                updated_at_block_height: None,
                 fields: fields
                     .iter()
                     .map(|(k, v)| ((*k).to_string(), v.clone()))
