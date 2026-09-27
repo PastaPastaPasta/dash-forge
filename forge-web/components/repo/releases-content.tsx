@@ -17,7 +17,15 @@ import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCirc
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, timeAgo } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
-import { AssetHashMismatchError, downloadVerifiedAsset, saveBytes, type DownloadProgress } from '@/lib/view/release-download'
+import {
+  AssetHashMismatchError,
+  checkDownloadedFile,
+  directDownloadUrls,
+  downloadVerifiedAsset,
+  saveBytes,
+  type DownloadProgress,
+} from '@/lib/view/release-download'
+import { urlHost } from '@/lib/view/format'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -185,7 +193,7 @@ function ReleaseCard({
       </p>
       {r.notes && (full || !previous) ? (
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>
-          <MarkdownView source={r.notes} />
+          <MarkdownView source={r.notes} images="auto" />
         </div>
       ) : null}
       {r.assets.length > 0 ? (
@@ -260,10 +268,57 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
           </span>
         ) : state.kind === 'error' ? (
           <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution-400">
-            <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download: {state.message}
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download in the browser: {state.message}
           </span>
         ) : null}
       </p>
+      {state.kind === 'error' ? <DirectDownload asset={asset} /> : null}
     </li>
+  )
+}
+
+/**
+ * The fallback when this page cannot read an asset itself (D-056): many hosts, GitHub's release
+ * downloads among them, send no CORS header, so the page may link to the file but not fetch
+ * it. The browser downloads it from the origin directly, and the person can then check the
+ * downloaded file against the published SHA-256 here, locally.
+ */
+function DirectDownload({ asset }: { asset: ReleaseAssetView }): JSX.Element | null {
+  const urls = directDownloadUrls(asset)
+  const [check, setCheck] = useState<{ ok: boolean; sha256: string; sizeMatches: boolean } | 'checking' | null>(null)
+  if (urls.length === 0) return null
+  const pick = async (file: File | undefined): Promise<void> => {
+    if (file === undefined) return
+    setCheck('checking')
+    setCheck(await checkDownloadedFile(file, asset))
+  }
+  return (
+    <div className="basis-full space-y-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="direct-download">
+      <p className="flex flex-wrap items-center gap-x-2">
+        Download from the origin instead:
+        {urls.map((u) => (
+          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-mono text-forge-700 underline dark:text-forge-400">
+            {urlHost(u)}
+          </a>
+        ))}
+      </p>
+      <label className="inline-flex cursor-pointer items-center gap-1.5">
+        <span className="underline">Check a downloaded file</span>
+        <span>against the published SHA-256 (read in this tab, not uploaded)</span>
+        <input type="file" className="sr-only" onChange={(e) => void pick(e.target.files?.[0])} />
+      </label>
+      {check === 'checking' ? (
+        <p>Checking…</p>
+      ) : check?.ok ? (
+        <p className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
+          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the file matches the published SHA-256.
+        </p>
+      ) : check ? (
+        <p className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
+          <XCircle className="h-3.5 w-3.5" aria-hidden />
+          {check.sizeMatches ? 'Does not match' : 'Wrong size, does not match'}: its SHA-256 is {check.sha256.slice(0, 12)}…, not {asset.sha256.slice(0, 12)}…. Do not use it.
+        </p>
+      ) : null}
+    </div>
   )
 }

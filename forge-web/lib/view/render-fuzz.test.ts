@@ -54,6 +54,21 @@ function corpus(seed: number, count: number, maxLen = MAX_LEN): string[] {
 
 /** Hand-picked worst cases for each class of bug the audit found. */
 const ADVERSARIAL: readonly string[] = [
+  '<'.repeat(MAX_LEN),
+  '<kbd>'.repeat(MAX_LEN / 5),
+  '<a href="x">'.repeat(MAX_LEN / 12),
+  '<details>\n'.repeat(MAX_LEN / 10),
+  '<div>'.repeat(MAX_LEN / 5) + '\n' + '</div>'.repeat(MAX_LEN / 6),
+  '[!['.repeat(MAX_LEN / 3),
+  '[![a](b)]('.repeat(MAX_LEN / 10),
+  '[a]: b\n'.repeat(MAX_LEN / 7) + '[a] '.repeat(MAX_LEN / 4),
+  '[x]['.repeat(MAX_LEN / 4),
+  '\\'.repeat(MAX_LEN),
+  '&#'.repeat(MAX_LEN / 2),
+  '  \n'.repeat(MAX_LEN / 3),
+  'https://x.io/' + ')'.repeat(MAX_LEN),
+  'https://x.io/' + '.'.repeat(MAX_LEN),
+  '`['.repeat(MAX_LEN / 2),
   '# a\u2028',
   '# a\u2029',
   '## Feature\u2028\u2028- item',
@@ -98,6 +113,11 @@ const MIB_UNITS: readonly string[] = [
   '[a](b', '![a](b', '[a](b) ', '[', '![', '`x', '*x', '*x* ', '**x', '__*_a_*__ ', '~~x', 'http://',
   '- ', '>', '> ', '>\n', 'a|b\n', 'c|d\n', '- a\n', '1. a\n', '```\n', '# a\n', 'a\n\n', '\u2028', '\r', 'a|',
   '# a\u2028[b](c *d* `e` ~~f~~ | g\n> h\n- i\n',
+  // D-051 / D-052: HTML, badges, references, escapes, entities, hard breaks, autolinks.
+  '<kbd>', '<kbd>x', '</kbd>', '<a href="x">', '<', '<a ', '<img src="x" ', '<details>\n', '<p align="center">\n',
+  '<div>\n\n', '<script>', '<!--', '[![a](b)](c) ', '[![', '[a][b] ', '[a]: x\n', '[a]\n', '\\*', '\\',
+  '&amp;', '&#x', '&', 'a  \n', 'a\\\n', 'https://x.io/a." ', '<https://x.io>', '- [ ] a\n', '- [x] ',
+  '<td>\n', '<table>\n<tr>\n<td>\n\n', '<pre>\n',
 ]
 
 describe('renderers terminate quickly on hostile input', () => {
