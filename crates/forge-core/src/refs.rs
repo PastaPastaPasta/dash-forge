@@ -602,6 +602,7 @@ mod tests {
             created_at: None,
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields,
         }
     }
@@ -885,6 +886,7 @@ mod tests {
                 created_at: Some(1),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                revision: None,
                 fields,
             }
         };

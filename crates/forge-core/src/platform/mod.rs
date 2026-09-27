@@ -900,6 +900,9 @@ pub struct FetchedDocument {
     pub updated_at_block_height: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
+    /// `$revision` of a mutable document (what a guarded replace compares, see
+    /// [`DocumentEngine::replace_document_guarded`]); `None` when the type records none.
+    pub revision: Option<u64>,
 }
 
 impl FetchedDocument {
@@ -921,6 +924,7 @@ impl FetchedDocument {
             created_at_block_height,
             updated_at_block_height,
             fields,
+            revision: doc.revision(),
         }
     }
 
@@ -1570,6 +1574,22 @@ impl<'a> WriteEngine<'a> {
         document_id: &str,
         changes: &BTreeMap<String, Option<FieldValue>>,
     ) -> Result<bool> {
+        self.replace_document_guarded(contract, document_type, document_id, changes, None)
+            .await
+    }
+
+    /// [`Self::replace_document`], refused (E607, nothing signed) when the stored document is
+    /// no longer at `expected_revision`, the revision the caller read and built `changes`
+    /// from: another edit landed since, and replacing it would silently drop that edit. A
+    /// private edit needs this: it re-seals the whole content it read.
+    pub async fn replace_document_guarded(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+        expected_revision: Option<u64>,
+    ) -> Result<bool> {
         let doc_id = parse_id(document_id, "document id")?;
         let data_contract = &contract.0;
         let doc_type_ref = data_contract
@@ -1591,6 +1611,7 @@ impl<'a> WriteEngine<'a> {
                 same_field(stored.as_ref(), v.as_ref())
             })
         };
+        let mut broadcast = false;
         for _ in 0..3 {
             let Some(mut doc) = fetch().await? else {
                 return Err(Error::NotFound);
@@ -1601,8 +1622,16 @@ impl<'a> WriteEngine<'a> {
                 )));
             }
             if holds(&doc) {
-                return Ok(false);
+                // ours landed (after a spent nonce), or it already read that way
+                return Ok(broadcast);
             }
+            check_revision(
+                document_type,
+                document_id,
+                expected_revision,
+                doc.revision(),
+                broadcast,
+            )?;
             let next = doc
                 .revision()
                 .unwrap_or(INITIAL_REVISION)
@@ -1642,6 +1671,7 @@ impl<'a> WriteEngine<'a> {
                 op: WriteOp::Replace,
                 signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
             };
+            broadcast = true;
             match self.execute(&prepared).await? {
                 BroadcastOutcome::NonceConsumed => {
                     // Ours landed (its answer lost), or another write took the nonce: the
@@ -1677,6 +1707,35 @@ impl<'a> WriteEngine<'a> {
             .prepare_delete_with_values(contract, document_type, document_id, values, created_at)
             .await?;
         self.execute(&prepared).await
+    }
+}
+
+/// Refuse a replace built from `expected` when the stored document is at `stored` (another
+/// edit landed in between): E607. `None` expected: no guard. `broadcast`: an earlier attempt of
+/// this replace was broadcast and its nonce spent, so whether it landed is not known here.
+fn check_revision(
+    document_type: &str,
+    document_id: &str,
+    expected: Option<u64>,
+    stored: Option<u64>,
+    broadcast: bool,
+) -> Result<()> {
+    match expected {
+        Some(e) if stored != Some(e) => Err(crate::user_error::UserError::new(
+            crate::user_error::codes::EDIT_CONFLICT,
+            if broadcast {
+                format!("this {document_type} changed while your edit was being sent; it now holds another edit")
+            } else {
+                format!("this {document_type} changed since you read it; nothing was written")
+            },
+        )
+        .cause(format!(
+            "{document_type} {document_id} is at revision {}, the edit was made against revision {e}",
+            stored.map_or_else(|| "?".into(), |s| s.to_string())
+        ))
+        .fix("read it again and redo the edit on the current text")
+        .into()),
+        _ => Ok(()),
     }
 }
 
@@ -2665,6 +2724,28 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn a_replace_against_a_newer_revision_is_refused() {
+        use super::check_revision;
+        assert!(
+            check_revision("comment", "c1", None, Some(3), false).is_ok(),
+            "no guard"
+        );
+        assert!(check_revision("comment", "c1", Some(3), Some(3), false).is_ok());
+        let err = check_revision("comment", "c1", Some(2), Some(3), false).unwrap_err();
+        let Error::User(u) = &err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(u.code, crate::user_error::codes::EDIT_CONFLICT);
+        assert!(u.message.contains("nothing was written"), "{}", u.message);
+        // after a broadcast whose nonce was spent, it cannot claim nothing was written
+        let err = check_revision("comment", "c1", Some(2), Some(3), true).unwrap_err();
+        let Error::User(u) = &err else {
+            panic!("{err:?}")
+        };
+        assert!(!u.message.contains("nothing was written"), "{}", u.message);
+    }
+
+    #[test]
     fn a_replace_holds_by_value_not_wire_form() {
         use super::same_field;
         let s = |v: FieldValue| Some(v);
@@ -2740,6 +2821,7 @@ mod tests {
             created_at_block_height: None,
             updated_at_block_height: None,
             fields: BTreeMap::new(),
+            revision: None,
         }
     }
 

@@ -38,6 +38,19 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             edit(ctx, repo, *number, title.as_deref(), body.as_deref()).await
         }
         IssueCommand::Comment { repo, number, body } => comment(ctx, repo, *number, body).await,
+        IssueCommand::EditComment {
+            repo,
+            comment_id,
+            body,
+            body_file,
+        } => {
+            // clap requires exactly one of --body and --body-file
+            let body = match body {
+                Some(b) => b.clone(),
+                None => read_body_file(body_file.as_deref().unwrap_or(std::path::Path::new("-")))?,
+            };
+            edit_comment(ctx, repo, comment_id, &body).await
+        }
         IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         IssueCommand::Label {
@@ -244,14 +257,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .issue_view(&s.repo, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
-    // [(author, body)]
     let (comments, hidden) = collab
         .comments_counted(&s.repo, &view.issue.document_id)
         .await?;
-    let comments = comments
-        .into_iter()
-        .map(|c| (c.author, c.body))
-        .collect::<Vec<_>>();
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
     let state = view.state;
@@ -266,7 +274,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "author": author,
             "documentId": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
-            "comments": comments.iter().map(|(a, b)| json!({"author": a, "body": b})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
             "hiddenComments": hidden,
             "hiddenEventValues": hidden_values,
             "plaintextEventValues": plaintext_values,
@@ -281,14 +289,44 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
             }
-            for (a, b) in &comments {
-                println!("\n— {a}:\n{}", safe(b));
+            for c in &comments {
+                println!("\n— {} ({}):\n{}", c.author, c.document_id, safe(&c.body));
             }
             if hidden > 0 {
                 println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
             }
             if let Some(n) = &values_note {
                 println!("\n{n}");
+            }
+        },
+    );
+    Ok(())
+}
+
+/// Edit one of the signer's comments (issue or PR): its body, re-sealed in a private repo.
+async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "comment not edited").await?;
+    ctx.confirm_or_cancel(&format!(
+        "Edit comment {comment_id}? (one document replace)"
+    ))?;
+    let before = s.balance().await;
+    let edited = s.collab().update_comment(&s.repo, comment_id, body).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": if edited { "edited" } else { "unchanged" },
+            "comment": comment_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            if edited {
+                println!(
+                    "✓ edited comment {comment_id} · {}",
+                    cost_line(spent, price)
+                );
+            } else {
+                println!("comment {comment_id} already reads that way; nothing was written");
             }
         },
     );
@@ -370,9 +408,7 @@ async fn edit(
     }
     let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
-    ctx.confirm_or_cancel(&format!(
-        "Edit issue #{number}? (replaces your issue document; you pay only for the changed bytes)"
-    ))?;
+    ctx.confirm_or_cancel(&format!("Edit issue #{number}? (one document replace)"))?;
     let before = s.balance().await;
     let edited = s
         .collab()

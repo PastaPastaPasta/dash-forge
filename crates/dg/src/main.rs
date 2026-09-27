@@ -481,6 +481,24 @@ pub enum IssueCommand {
         #[arg(long)]
         body: String,
     },
+    /// Edit one of your comments (on an issue or a PR): its body only. In a private repo the
+    /// text is re-sealed; an edit made while someone else's landed is refused (E607).
+    EditComment {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The comment's document id (`id` in `dg issue view --json` / `dg pr view --comments --json`).
+        comment_id: String,
+        /// The new body.
+        #[arg(
+            long,
+            conflicts_with = "body_file",
+            required_unless_present = "body_file"
+        )]
+        body: Option<String>,
+        /// Read the new body from a file (`-` for stdin).
+        #[arg(long, value_name = "FILE")]
+        body_file: Option<PathBuf>,
+    },
     /// Close an issue.
     Close {
         /// The repository (`owner/name`).

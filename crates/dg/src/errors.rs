@@ -154,6 +154,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Issue(I::Close { repo, .. }) => ("issue not closed", Some(repo)),
         Command::Issue(I::Reopen { repo, .. }) => ("issue not reopened", Some(repo)),
         Command::Issue(I::Edit { repo, .. }) => ("issue not edited", Some(repo)),
+        Command::Issue(I::EditComment { repo, .. }) => ("comment not edited", Some(repo)),
         Command::Pr(P::Create(args)) => ("pull request not created", Some(&args.repo)),
         Command::Pr(P::Close { repo, .. }) => ("pull request not closed", Some(repo)),
         Command::Pr(P::Reopen { repo, .. }) => ("pull request not reopened", Some(repo)),

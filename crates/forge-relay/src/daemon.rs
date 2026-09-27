@@ -1522,6 +1522,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([4; 32])),
                 ("kind".into(), FieldValue::integer(3)),

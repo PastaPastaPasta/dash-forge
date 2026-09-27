@@ -73,6 +73,65 @@ pub fn seal_props(
     })
 }
 
+/// The `enc` / `epoch` a replace of a private issue, PR or comment sets (the web's
+/// `sealEdit`): `opened` is the stored document as [`open_doc`] gave it (its content in
+/// place), `changes` the text fields the edit sets (`None` clears one). The whole content is
+/// re-sealed under `keys` through [`seal_props`], the transform the `private_collab_seal`
+/// vectors pin, so every field the edit does not name (the other text, a comment's `path`,
+/// an importer's author and URL) is carried over. A replace never carries plaintext content.
+pub fn reseal_edit(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let props = edited_props(opened, changes);
+    let sealed = seal_props(keys, kind, owner, props)?;
+    Ok(enc_and_epoch(&sealed))
+}
+
+/// [`reseal_edit`] with a caller-chosen nonce: the conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn reseal_edit_with_nonce(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+    nonce: [u8; 12],
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let props = edited_props(opened, changes);
+    let sealed = seal_props_with_nonce(keys, kind, owner, props, nonce)?;
+    Ok(enc_and_epoch(&sealed))
+}
+
+/// The opened document's properties with `changes` applied, ready to seal again.
+fn edited_props(
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+) -> BTreeMap<String, FieldValue> {
+    let mut props = opened.fields.clone();
+    for k in ["enc", "epoch"] {
+        props.remove(k);
+    }
+    for (k, v) in changes {
+        match v.as_deref().filter(|v| !v.is_empty()) {
+            Some(v) => props.insert(k.clone(), FieldValue::text(v)),
+            None => props.remove(k),
+        };
+    }
+    props
+}
+
+/// A private replace's changes: `enc` and `epoch` of `sealed`, nothing else.
+fn enc_and_epoch(sealed: &BTreeMap<String, FieldValue>) -> BTreeMap<String, Option<FieldValue>> {
+    ["enc", "epoch"]
+        .into_iter()
+        .map(|k| (k.to_string(), sealed.get(k).cloned()))
+        .collect()
+}
+
 /// [`seal_props`] with a caller-chosen nonce: the conformance vectors only.
 #[cfg(any(test, feature = "vectors"))]
 pub fn seal_props_with_nonce(
@@ -306,6 +365,7 @@ mod tests {
             created_at_block_height: Some(10),
             updated_at_block_height: None,
             fields: props,
+            revision: None,
         }
     }
 
@@ -350,6 +410,75 @@ mod tests {
             assert_eq!(back.fields.get(f), public.get(f), "{f}");
         }
         assert!(back.field_bool("draft"), "plaintext fields are untouched");
+    }
+
+    #[test]
+    fn an_edit_reseals_the_whole_content_and_replaces_only_enc_and_epoch() {
+        let public: BTreeMap<String, FieldValue> = [
+            ("number".to_string(), FieldValue::integer(7)),
+            ("title".to_string(), FieldValue::text("Old title")),
+            ("body".to_string(), FieldValue::text("Old body")),
+            (
+                "imported".to_string(),
+                FieldValue::Object(
+                    [
+                        ("author".to_string(), FieldValue::text("octocat")),
+                        ("createdAt".to_string(), FieldValue::uint64(1)),
+                    ]
+                    .into(),
+                ),
+            ),
+        ]
+        .into();
+        let sealed = seal_props(&keys(), DocKind::Issue, OWNER, public).unwrap();
+        let d = fetched(sealed);
+        let header = header_of(DocKind::Issue, &d).unwrap();
+        let opened = open_doc(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            d.clone(),
+        )
+        .unwrap();
+        // change the title only: the body and the importer's author are carried over
+        let changes = BTreeMap::from([("title".to_string(), Some("New title".to_string()))]);
+        let replace = reseal_edit(&keys(), DocKind::Issue, OWNER, &opened, &changes).unwrap();
+        assert_eq!(
+            replace.keys().collect::<Vec<_>>(),
+            ["enc", "epoch"],
+            "a private replace sets only enc and epoch: nothing in plaintext"
+        );
+        let mut after = d;
+        for (k, v) in replace {
+            match v {
+                Some(v) => after.fields.insert(k, v),
+                None => after.fields.remove(&k),
+            };
+        }
+        let back = open_doc(
+            open_content(&ctx(), &header, &after.field_bytes("enc").unwrap()),
+            after,
+        )
+        .unwrap();
+        assert_eq!(back.field_str("title").as_deref(), Some("New title"));
+        assert_eq!(back.field_str("body").as_deref(), Some("Old body"));
+        let Some(FieldValue::Object(imp)) = back.fields.get("imported") else {
+            panic!("imported kept")
+        };
+        assert_eq!(imp.get("author"), Some(&FieldValue::text("octocat")));
+        // an empty body clears it
+        let clear = BTreeMap::from([("body".to_string(), None)]);
+        let replace = reseal_edit(&keys(), DocKind::Issue, OWNER, &opened, &clear).unwrap();
+        let enc = replace["enc"]
+            .as_ref()
+            .and_then(FieldValue::as_bytes)
+            .unwrap();
+        let fields = match open_content(&ctx(), &header, &enc) {
+            Opened::Readable(f) => f,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (fields.title.as_deref(), fields.body),
+            (Some("Old title"), None)
+        );
     }
 
     #[test]
