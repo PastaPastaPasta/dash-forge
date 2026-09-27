@@ -185,7 +185,7 @@ Losing a device costs nothing beyond that key's remaining budget. Register a new
 
 ### Signing in with the Dash Wallet app: what works today
 
-The **Use my Dash wallet** tile speaks the key exchange (DashConnect) that Dash Wallet for Android and iOS implement on their development branches: it is not in a released version yet (dash-wallet v11.9.0, dashwallet-ios v9.0.2). Forge reads answers both from their key-exchange contract and from the protocol-14 App Connect contract. The wallets set real limits on what it can do ([wallet-login.md](../design/wallet-login.md) has the full analysis):
+The **Use my Dash wallet** tile speaks the key exchange (DashConnect) that Dash Wallet for Android and iOS implement on their development branches: it is not in a released version yet (dash-wallet v11.9.0, dashwallet-ios v9.0.2). Forge reads answers both from their key-exchange contract and from the protocol-14 App Connect contract. What they grant is limited too: neither wallet registers a spending limit or an expiry, and Android also drops the contract bound ([wallet-login.md](../design/wallet-login.md) has the full analysis). Where it works:
 
 | Wallet | Network | Works today |
 |---|---|---|
