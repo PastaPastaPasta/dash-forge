@@ -121,12 +121,11 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
         // After the removal: everyone else (the rotator included) gets a wrap, plus an anchor.
-        let remaining = members
+        let keeps_other_role = members
             .iter()
-            .filter(|m| m.identity_id != member)
-            .map(|m| m.identity_id.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
+            .any(|m| m.identity_id == member && m.role != role);
+        let remaining = crate::keys::distinct_members(&members)
+            - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
         let (est, what) = crate::keys::rotation_estimate(remaining);
         format!(
             "Removing {member} rotates the repo key. New pushes, issues and comments will be \
@@ -149,10 +148,39 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         .revoke(handle, member, role)
         .await
         .context("removing the member")?;
-    // Nothing was deleted (not a member): nothing to rotate. A leftover wrap to a non-member
-    // is what `dg repo keys repair` finds and rotates away.
-    let rotation = if private && removed {
-        Some(rotate_after_removal(&crate::keys::signer(&s), handle, member, role).await?)
+    // A private removal rotates. Also when the member was already gone but the repair check
+    // still names them (an earlier removal whose rotation did not finish): re-running
+    // `dg collab remove` finishes it.
+    let signer = crate::keys::signer(&s);
+    let needs_rotation = private
+        && (removed
+            || still_holds_current_key(&signer, handle, member)
+                .await
+                .unwrap_or(false));
+    let rotation = if needs_rotation {
+        match rotate_after_removal(&signer, handle, member, role).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                let why = forge_core::user_error::classify(
+                    e.chain(),
+                    &forge_core::user_error::ErrorContext::default(),
+                );
+                return Err(UserError::new(
+                    codes::ROTATION_PENDING,
+                    format!(
+                        "{member} was removed from {}, but the key was not rotated",
+                        handle.display()
+                    ),
+                )
+                .cause(format!("{}: {}", why.code, why))
+                .fix(format!("dg repo keys repair {repo}"))
+                .fix(format!("or run `dg collab remove {repo} {member}` again"))
+                .note(format!(
+                    "until the key rotates, {member} can still read new content"
+                ))
+                .into());
+            }
+        }
     } else {
         None
     };
@@ -184,6 +212,22 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         },
     );
     Ok(())
+}
+
+/// Whether `member` (not a member now) still holds the current epoch's key: an earlier
+/// removal's rotation did not finish, and the repair check names them.
+async fn still_holds_current_key(
+    signer: &PrivateSigner<'_>,
+    repo: &forge_core::scope::RepoRef,
+    member: &str,
+) -> Result<bool> {
+    let member = forge_core::platform::decode_identifier(member)?;
+    let kr = signer.keyring(repo).await?;
+    Ok(kr
+        .resolution()
+        .repair
+        .as_ref()
+        .is_some_and(|r| r.rotate && r.non_members.contains(&member)))
 }
 
 /// The rotation a removal from a private repository runs (§5.5). The member's deletion must

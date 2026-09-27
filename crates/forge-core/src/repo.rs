@@ -369,9 +369,10 @@ pub struct RepoService<'a> {
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,
     bridge: &'a BridgeIdentity,
-    /// A private repository's keys, loaded once per service for reads. Every write reloads
-    /// them first ([`Self::private_writer`]): a rotation that landed since must be picked up.
-    keyring: tokio::sync::OnceCell<std::sync::Arc<Keyring>>,
+    /// A private repository's keys, loaded once per service for reads and replaced by every
+    /// write-time reload ([`Self::private_writer`], §5.3), so a rotation a write picked up is
+    /// also what later reads (the push's convergence re-read, a locator fold) open with.
+    keyring: std::sync::Mutex<Option<std::sync::Arc<Keyring>>>,
 }
 
 impl<'a> RepoService<'a> {
@@ -385,7 +386,7 @@ impl<'a> RepoService<'a> {
             client,
             identity,
             bridge,
-            keyring: tokio::sync::OnceCell::new(),
+            keyring: std::sync::Mutex::new(None),
         }
     }
 
@@ -398,9 +399,7 @@ impl<'a> RepoService<'a> {
         keyring: Option<std::sync::Arc<Keyring>>,
     ) -> Self {
         let svc = Self::new(client, identity, bridge);
-        if let Some(k) = keyring {
-            let _ = svc.keyring.set(k);
-        }
+        *svc.cache() = keyring;
         svc
     }
 
@@ -413,20 +412,33 @@ impl<'a> RepoService<'a> {
         }
     }
 
-    /// The keys of private `repo` as this identity holds them (loaded once per service).
-    pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
+    fn cache(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<Keyring>>> {
         self.keyring
-            .get_or_try_init(|| async {
-                Ok::<_, Error>(std::sync::Arc::new(self.signer().keyring(repo).await?))
-            })
-            .await
-            .cloned()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The keys of private `repo` as this identity holds them: loaded once per service (and
+    /// per repository), refreshed by every write.
+    pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
+        let repo_id = repo.scope()?.repo_id;
+        if let Some(k) = self.cache().as_ref().filter(|k| *k.repo_id() == repo_id) {
+            return Ok(std::sync::Arc::clone(k));
+        }
+        let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        *self.cache() = Some(std::sync::Arc::clone(&fresh));
+        Ok(fresh)
     }
 
     /// The seams to write private `repo` with, from a keyring read NOW (§5.3: re-read the
-    /// anchors before every write, so nothing is written under a superseded epoch).
-    pub async fn private_writer(&self, repo: &RepoRef) -> Result<(Private, Keyring)> {
-        let kr = self.signer().keyring(repo).await?;
+    /// anchors before every write, so nothing is written under a superseded epoch). The
+    /// reload also replaces the cached keyring.
+    pub async fn private_writer(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<(Private, std::sync::Arc<Keyring>)> {
+        let kr = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        *self.cache() = Some(std::sync::Arc::clone(&kr));
         let w = kr.writer(repo)?;
         Ok((w, kr))
     }
@@ -1151,7 +1163,7 @@ impl<'a> RepoService<'a> {
         // Already a single optimal pack: nothing to gain, and nothing to write. Compared on
         // the plaintext: a private repo's stored hash is of the sealed bytes, which differ on
         // every seal.
-        if pack_blobs.len() == 1 && pack_blobs[0] == consolidated.bytes {
+        if pack_blobs.contains(&consolidated.bytes) {
             return Err(Error::Config(
                 "repack: the repo is already a single consolidated pack (nothing to do)".into(),
             ));
@@ -1379,7 +1391,13 @@ impl<'a> RepoService<'a> {
                 report.healthy.push(m.pack_hash);
                 continue;
             }
-            let Some(bytes) = crate::storage::local::find_local_pack(git_dir, m.pack_hash)? else {
+            // A private repo's recorded bytes are sealed; a fetched clone holds plaintext, so
+            // only the pusher's kept copy can restore them.
+            let local = match repo.visibility {
+                Visibility::Public => crate::storage::local::find_local_pack(git_dir, m.pack_hash)?,
+                Visibility::Private => crate::storage::local::find_kept_pack(git_dir, m.pack_hash)?,
+            };
+            let Some(bytes) = local else {
                 report.missing.push(m.pack_hash);
                 continue;
             };

@@ -151,7 +151,8 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     for alert in &res.alerts {
         println!("  alert: {}", alert_text(alert));
     }
-    if let Some(repair) = &res.repair {
+    let maintainer = kr.reader_role() == Some(forge_core::rules::v2::Role::Maintainer);
+    if let (true, Some(repair)) = (maintainer, &res.repair) {
         if repair.rotate {
             println!("  repair: rotate (a non-member holds the current key): `dg repo keys repair {arg}`");
         } else if !repair.missing_wraps.is_empty() {
@@ -175,9 +176,32 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
 
 /// The estimate of a repair from the loaded keyring: a rotation's `members + 1` writes, or one
 /// wrap per member missing one.
+/// How many distinct identities hold a role (a member with both roles is one wrap).
+pub fn distinct_members(members: &[forge_core::members::Member]) -> usize {
+    members
+        .iter()
+        .map(|m| m.identity_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// Refuse a key operation by a non-maintainer before any prompt (the rotation and wraps are
+/// maintainer-gated at consensus).
+fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> {
+    if kr.reader_role() == Some(forge_core::rules::v2::Role::Maintainer) {
+        return Ok(());
+    }
+    Err(forge_core::Error::NotPermitted {
+        action: format!("{action} of {}", repo.display()),
+        reason: "only a current maintainer can wrap or rotate a private repository's key".into(),
+        needs: "maintainer".into(),
+    }
+    .into())
+}
+
 fn repair_estimate(kr: &Keyring) -> (u64, String) {
     match kr.resolution().repair.as_ref() {
-        Some(p) if p.rotate => rotation_estimate(kr.members().len()),
+        Some(p) if p.rotate => rotation_estimate(distinct_members(kr.members())),
         Some(p) if !p.missing_wraps.is_empty() => (
             WRAP_ESTIMATE_CREDITS * p.missing_wraps.len() as u64,
             format!("{} wrap(s)", p.missing_wraps.len()),
@@ -198,6 +222,7 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     require_private(&s.repo)?;
     let kr = signer(&s).keyring(&s.repo).await?;
+    require_maintainer(&kr, &s.repo, "repair the key")?;
     let (est, what) = repair_estimate(&kr);
     if est == 0 {
         ctx.emit(json!({ "status": "nothing_to_do" }), || {
@@ -227,6 +252,7 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
             "rotated": report.rotated.as_ref().map(rotation_json),
             "nonMembers": report.non_members,
             "wrapped": report.wrapped,
+            "skipped": report.skipped,
             "cost": cost_json(spent, price),
         }),
         || {
@@ -240,6 +266,9 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
             for m in &report.wrapped {
                 println!("wrapped the current key to {m}");
             }
+            for m in &report.skipped {
+                println!("not wrapped to {m}: they have no encryption key yet (`dg auth keys add --encryption`); run repair again once they do");
+            }
             println!("  cost: {}", cost_line(spent, price));
         },
     );
@@ -248,11 +277,9 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
 async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     require_private(&s.repo)?;
-    let members = forge_core::members::MemberReader::new(&s.client)
-        .list(&s.repo)
-        .await?
-        .len();
-    let (est, what) = rotation_estimate(members);
+    let kr = signer(&s).keyring(&s.repo).await?;
+    require_maintainer(&kr, &s.repo, "rotate the key")?;
+    let (est, what) = rotation_estimate(distinct_members(kr.members()));
     let price = dash_usd_price();
     if !ctx.confirm(&format!(
         "Rotate the key of {}: {what}, {}?",
@@ -276,7 +303,7 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
 
 /// A rotation as JSON.
 pub fn rotation_json(r: &Rotation) -> Value {
-    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "won": r.won })
+    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "skipped": r.skipped, "won": r.won })
 }
 
 /// The lines a rotation prints.
@@ -288,6 +315,12 @@ pub fn print_rotation(repo: &RepoRef, r: &Rotation) {
             r.epoch,
             r.wrapped.len()
         );
+        for m in &r.skipped {
+            println!(
+                "  not wrapped to {m}: they have no encryption key yet; `dg repo keys repair {}` wraps them once they add one",
+                repo.display()
+            );
+        }
     } else {
         println!(
             "{}: another maintainer rotated to epoch {} first; theirs stands and yours is superseded (nothing to do)",

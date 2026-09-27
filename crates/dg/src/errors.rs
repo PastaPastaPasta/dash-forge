@@ -123,9 +123,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Keys(crate::RepoKeysCommand::Status { repo })) => {
             ("could not read the repository's keys", Some(repo))
         }
-        Command::Repo(Rp::Keys(
-            crate::RepoKeysCommand::Repair { repo } | crate::RepoKeysCommand::Rotate { repo },
-        )) => ("keys not repaired", Some(repo)),
+        Command::Repo(Rp::Keys(crate::RepoKeysCommand::Repair { repo })) => {
+            ("key not repaired", Some(repo))
+        }
+        Command::Repo(Rp::Keys(crate::RepoKeysCommand::Rotate { repo })) => {
+            ("key not rotated", Some(repo))
+        }
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }

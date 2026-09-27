@@ -27,7 +27,7 @@ use crate::members::{Member, MemberReader};
 use crate::platform::wrap::{open_wrap, seal_wrap, WrapParties, WrapSecret};
 use crate::platform::{
     self, FetchedDocument, FieldValue, IdentityKeyInfo, LoadedContract, LoadedIdentity,
-    PlatformClient, QueryOrder, WriteEngine,
+    PlatformClient, QueryFilter, QueryOrder, WriteEngine,
 };
 use crate::private::epoch::{ConfigRow, MemberRow, WrapRow};
 use crate::private::{
@@ -365,6 +365,11 @@ impl Keyring {
         Ok(())
     }
 
+    /// The repository these keys belong to.
+    pub fn repo_id(&self) -> &[u8; 32] {
+        &self.repo_id
+    }
+
     /// The resolution: epochs, anchors, alerts, the repair check.
     pub fn resolution(&self) -> &EpochResolution {
         &self.resolution
@@ -692,7 +697,7 @@ impl<'a> PrivateSigner<'a> {
         epoch: u32,
         key: &EpochKey,
         member: [u8; 32],
-    ) -> Result<String> {
+    ) -> Result<WrapOutcome> {
         let (core, scope) = (&w.core, &w.scope);
         let (sender_id, sender) = w
             .enc
@@ -700,8 +705,9 @@ impl<'a> PrivateSigner<'a> {
             .ok_or_else(|| no_encryption_key("your identity", "cannot wrap the repo key"))?;
         let member_b58 = platform::encode_identifier(member);
         let recipient_keys = self.client.fetch_identity(&member_b58).await?.public_keys();
-        let recipient = recipient_key(&recipient_keys, &scope.contract_id)
-            .ok_or_else(|| no_encryption_key(&member_b58, "cannot wrap the repo key"))?;
+        let Some(recipient) = recipient_key(&recipient_keys, &scope.contract_id) else {
+            return Ok(WrapOutcome::NoRecipientKey);
+        };
         let secret = secret_of(sender)?;
         let props = seal_wrap(
             core,
@@ -733,12 +739,71 @@ impl<'a> PrivateSigner<'a> {
             .create_document(core, DOC_REPO_KEY, doc)
             .await
         {
-            Ok(id) => Ok(id),
+            Ok(_) => Ok(WrapOutcome::Posted),
             // (repoId, memberId, epoch, $ownerId) is unique: this signer already wrapped this
-            // epoch to them (a resumed rotation). Theirs stands.
-            Err(Error::DuplicateUniqueIndex(_)) => Ok(String::new()),
+            // epoch to them, and that wrap stands. It counts only if it holds the same key to
+            // the member's current key; read it back and say which.
+            Err(Error::DuplicateUniqueIndex(_)) => {
+                let existing = self
+                    .read_own_wrap(w, epoch, member, &recipient_keys)
+                    .await?;
+                Ok(match existing {
+                    Some((k, kid)) if &k == key && kid == recipient.id => WrapOutcome::Same,
+                    other => WrapOutcome::Different(other.map(|(k, _)| k)),
+                })
+            }
             Err(e) => Err(e),
         }
+    }
+
+    /// This signer's standing wrap of `epoch` to `member`, opened with the signer's own key
+    /// (ECDH is symmetric: a sender reads its own wraps with the recipient's public key):
+    /// the key it holds and the recipient key id it names. `None` when it cannot be read.
+    async fn read_own_wrap(
+        &self,
+        w: &WriteCtx,
+        epoch: u32,
+        member: [u8; 32],
+        recipient_keys: &[IdentityKeyInfo],
+    ) -> Result<Option<(EpochKey, u32)>> {
+        let docs = self
+            .client
+            .query_documents(
+                &w.core,
+                DOC_REPO_KEY,
+                &w.scope.filters([
+                    QueryFilter::eq("memberId", FieldValue::identifier(member)),
+                    QueryFilter::eq("epoch", FieldValue::integer(u64::from(epoch))),
+                    QueryFilter::eq("$ownerId", FieldValue::identifier(w.me)),
+                ]),
+                &[],
+                1,
+                None,
+            )
+            .await?;
+        let Some(d) = docs.first().and_then(WrapDoc::from_doc) else {
+            return Ok(None);
+        };
+        let Some(mine) = w.enc.get(d.sender_key_id) else {
+            return Ok(None);
+        };
+        let Some(pubkey) = recipient_keys
+            .iter()
+            .find(|k| k.id == d.recipient_key_id && k.purpose == "ENCRYPTION")
+        else {
+            return Ok(None);
+        };
+        let secret = secret_of(mine)?;
+        Ok(open_wrap(
+            &w.core,
+            &w.scope.repo_id,
+            epoch,
+            &d.wrapped,
+            &secret,
+            &pubkey.public_key,
+        )
+        .ok()
+        .map(|k| (k, d.recipient_key_id)))
     }
 
     /// Post the anchor `config` of `epoch` sealed under `key`: the current config's fields,
@@ -768,6 +833,22 @@ impl<'a> PrivateSigner<'a> {
             .create_document(core, DOC_CONFIG, props)
             .await
     }
+}
+
+/// How posting one wrap ended.
+#[derive(Debug)]
+enum WrapOutcome {
+    /// A new `repoKey` landed.
+    Posted,
+    /// This signer's wrap for (member, epoch) already stands, with the same key to the
+    /// member's current key: nothing to do.
+    Same,
+    /// This signer's wrap for (member, epoch) already stands with another key, or to a key the
+    /// member no longer uses (the unique index keeps it; it cannot be replaced). The key it
+    /// holds, when the signer can read it back.
+    Different(Option<EpochKey>),
+    /// The member has no usable `ENCRYPTION` key: nothing was written.
+    NoRecipientKey,
 }
 
 /// Everything a keyring write needs: the contract, the scope, the signer's keys and the
@@ -850,8 +931,7 @@ pub async fn create_private_state(
         k
     } else {
         let k = EpochKey::generate()?;
-        signer.post_wrap(&w, 0, &k, w.me).await?;
-        k
+        self_wrap(signer, &w, 0, k).await?
     };
     signer
         .post_anchor(
@@ -870,8 +950,28 @@ pub async fn create_private_state(
     Ok(true)
 }
 
+/// Post the signer's own wrap of `key` for `epoch` and return the key the epoch must use: a
+/// self-wrap that already stands (a resumed run whose read lagged the landed wrap) wins, since
+/// the unique index keeps it and the signer would otherwise anchor a key it cannot read.
+async fn self_wrap(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    epoch: u32,
+    key: EpochKey,
+) -> Result<EpochKey> {
+    match signer.post_wrap(w, epoch, &key, w.me).await? {
+        WrapOutcome::Posted | WrapOutcome::Same => Ok(key),
+        WrapOutcome::Different(Some(standing)) => Ok(standing),
+        WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey => Err(no_encryption_key(
+            "your identity",
+            "cannot read back its own standing key wrap",
+        )),
+    }
+}
+
 /// Wrap the current epoch's key to `member` (§5.5 "add member"): the second of the two
-/// transitions of an add. Idempotent (an existing wrap from this signer stands).
+/// transitions of an add. Idempotent: the signer's own standing wrap with the same key counts.
+/// A standing wrap that cannot be replaced (the member changed keys since) needs a rotation.
 pub async fn add_member_wrap(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
@@ -883,10 +983,23 @@ pub async fn add_member_wrap(
         w.kr.epoch_key(epoch)
             .expect("the write epoch's key is held")
             .clone();
-    signer
+    match signer
         .post_wrap(&w, epoch, &key, platform::decode_identifier(member)?)
-        .await?;
-    Ok(())
+        .await?
+    {
+        WrapOutcome::Posted | WrapOutcome::Same => Ok(()),
+        WrapOutcome::NoRecipientKey => Err(no_encryption_key(member, "cannot wrap the repo key")),
+        WrapOutcome::Different(_) => Err(UserError::new(
+            codes::ROTATION_PENDING,
+            format!("{member} already has a wrap of epoch {epoch} from you that it cannot use"),
+        )
+        .cause("they changed their encryption key since; a wrap cannot be replaced within an epoch")
+        .fix(format!(
+            "rotate the key: `dg repo keys rotate {}`",
+            repo.display()
+        ))
+        .into()),
+    }
 }
 
 /// Whether `member` has a usable `ENCRYPTION` key to wrap to (§5.5: add is refused without).
@@ -906,6 +1019,9 @@ pub struct Rotation {
     pub epoch: u32,
     /// Members wrapped (self first).
     pub wrapped: Vec<String>,
+    /// Members skipped: no usable `ENCRYPTION` key (the repair check wraps them once they add
+    /// one).
+    pub skipped: Vec<String>,
     /// Whether this signer's anchor is the epoch's anchor (false: another current
     /// maintainer's won a concurrent rotation, and theirs stands).
     pub won: bool,
@@ -939,20 +1055,28 @@ pub async fn rotate(
         .epoch_key(n)
         .expect("the write epoch's key is held")
         .clone();
-    let (epoch, key) = next_epoch(kr, me, n)?;
+    let (epoch, key) = next_epoch(kr, me, n, exclude)?;
 
-    // Step 2: wraps, self first, to every remaining member.
+    // Step 2: wraps, self first (its standing key wins, see `self_wrap`), to every remaining
+    // member. A member with no usable key is skipped rather than blocking the rotation: the
+    // removed member must lose the key now; the skipped one is wrapped by a repair later.
     let targets = rotation_targets(kr, &me_b58, exclude);
-    let already: BTreeSet<[u8; 32]> = kr
-        .wraps
-        .iter()
-        .filter(|w| w.epoch == epoch && w.owner == me)
-        .map(|w| w.member)
-        .collect();
-    for t in &targets {
-        let tb = platform::decode_identifier(t)?;
-        if !already.contains(&tb) {
-            signer.post_wrap(&w, epoch, &key, tb).await?;
+    let key = self_wrap(signer, &w, epoch, key).await?;
+    let (mut wrapped, mut skipped) = (vec![me_b58.clone()], Vec::new());
+    for t in targets.iter().skip(1) {
+        match signer
+            .post_wrap(&w, epoch, &key, platform::decode_identifier(t)?)
+            .await?
+        {
+            WrapOutcome::Posted | WrapOutcome::Same => wrapped.push(t.clone()),
+            WrapOutcome::NoRecipientKey => skipped.push(t.clone()),
+            WrapOutcome::Different(_) => {
+                return Err(Error::Config(format!(
+                    "epoch {epoch} already holds another key of yours for {t}; run `dg repo keys \
+                     rotate {}` to move to a fresh epoch",
+                    repo.display()
+                )))
+            }
         }
     }
 
@@ -973,7 +1097,7 @@ pub async fn rotate(
             },
         )
         .await?;
-    let anchor_bytes = platform::decode_identifier(&anchor_id)?;
+    let _ = anchor_id;
 
     // Step 4: a proved read that lists the epoch's configs; confirm ours is first among current
     // maintainers' (select_anchors orders by ($createdAtBlockHeight, raw $id)).
@@ -985,10 +1109,12 @@ pub async fn rotate(
     for attempt in 0..ANCHOR_POLLS {
         let now = Keyring::load_with(&io, repo, &me_b58, &w.enc).await?;
         if let Some(a) = now.resolution.anchors.get(&epoch) {
+            // A resumed run may post a second anchor with the same key; the first is still ours.
             return Ok(Rotation {
                 epoch,
-                wrapped: targets,
-                won: a.id == anchor_bytes,
+                wrapped,
+                skipped,
+                won: a.owner == me,
             });
         }
         if attempt + 1 < ANCHOR_POLLS {
@@ -1002,7 +1128,22 @@ pub async fn rotate(
 /// this signer's own self-wrap for an unanchored epoch above `n` (a rotation that died before
 /// its anchor), else a fresh key for the next epoch number with no wrap by this signer and no
 /// anchor.
-fn next_epoch(kr: &Keyring, me: [u8; 32], n: u32) -> Result<(u32, EpochKey)> {
+fn next_epoch(kr: &Keyring, me: [u8; 32], n: u32, exclude: &[String]) -> Result<(u32, EpochKey)> {
+    // A pending epoch is resumed only while its key reached nobody who must not have it: a
+    // crashed rotation's wrap to the member being removed now would hand them the new key.
+    let members: BTreeSet<[u8; 32]> = kr
+        .members()
+        .iter()
+        .filter(|m| !exclude.contains(&m.identity_id))
+        .filter_map(|m| platform::decode_identifier(&m.identity_id).ok())
+        .chain(std::iter::once(me))
+        .collect();
+    let clean = |epoch: u32| {
+        kr.wraps
+            .iter()
+            .filter(|w| w.epoch == epoch && w.owner == me)
+            .all(|w| members.contains(&w.member))
+    };
     let pending = kr
         .wraps
         .iter()
@@ -1011,6 +1152,7 @@ fn next_epoch(kr: &Keyring, me: [u8; 32], n: u32) -> Result<(u32, EpochKey)> {
                 && w.member == me
                 && w.owner == me
                 && !kr.resolution.anchors.contains_key(&w.epoch)
+                && clean(w.epoch)
         })
         .max_by_key(|w| (w.epoch, w.height))
         .and_then(|w| w.key.clone().map(|k| (w.epoch, k)));
@@ -1062,6 +1204,8 @@ pub struct RepairReport {
     pub non_members: Vec<String>,
     /// Members wrapped for the current epoch (no rotation needed).
     pub wrapped: Vec<String>,
+    /// Members still without a wrap: no usable `ENCRYPTION` key yet.
+    pub skipped: Vec<String>,
 }
 
 /// The repair check of §5.6, applied: rotate when the current epoch is wrapped to a
@@ -1083,10 +1227,24 @@ pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Repair
         report.rotated = Some(rotate(signer, repo, &report.non_members).await?);
         return Ok(report);
     }
+    let w = signer.open(repo).await?;
+    let epoch = w.kr.writer(repo)?.write_epoch();
+    let key =
+        w.kr.epoch_key(epoch)
+            .expect("the write epoch's key is held")
+            .clone();
     for m in &r.missing_wraps {
         let id = platform::encode_identifier(*m);
-        add_member_wrap(signer, repo, &id).await?;
-        report.wrapped.push(id);
+        match signer.post_wrap(&w, epoch, &key, *m).await? {
+            WrapOutcome::Posted | WrapOutcome::Same => report.wrapped.push(id),
+            WrapOutcome::NoRecipientKey => report.skipped.push(id),
+            // A standing wrap of ours to a key they no longer use cannot be replaced within
+            // the epoch: a new epoch wraps everyone to their current key.
+            WrapOutcome::Different(_) => {
+                report.rotated = Some(rotate(signer, repo, &[]).await?);
+                return Ok(report);
+            }
+        }
     }
     Ok(report)
 }
@@ -1107,6 +1265,93 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
         }
+    }
+
+    fn member(id: [u8; 32], role: Role) -> Member {
+        Member {
+            identity_id: platform::encode_identifier(id),
+            role,
+            document_id: format!("d{}", id[0]),
+            created_at: 1,
+        }
+    }
+
+    fn wrap(owner: [u8; 32], member: [u8; 32], epoch: u32, key: Option<u8>) -> WrapDoc {
+        WrapDoc {
+            id: [u8::try_from(epoch).unwrap_or(0xff); 32],
+            owner,
+            member,
+            epoch,
+            recipient_key_id: 4,
+            sender_key_id: 4,
+            wrapped: vec![0; 64],
+            height: u64::from(epoch),
+            key: key.map(|b| EpochKey::from_bytes([b; 32])),
+        }
+    }
+
+    /// A keyring with members and wraps and no anchors above epoch 0.
+    fn keyring(members: Vec<Member>, wraps: Vec<WrapDoc>) -> Keyring {
+        let mut resolution = EpochResolution::default();
+        resolution.anchors.insert(
+            0,
+            crate::private::epoch::Anchor {
+                id: [0xa0; 32],
+                owner: [1; 32],
+                height: 1,
+                commit: None,
+            },
+        );
+        Keyring {
+            repo_id: [0x11; 32],
+            reader: [1; 32],
+            members,
+            configs: Vec::new(),
+            wraps,
+            resolution,
+            ctx: OpenContext::default(),
+            config: PrivateConfig::default(),
+            unreadable_wraps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_pending_epoch_is_resumed_only_if_its_key_reached_no_excluded_member() {
+        let (alice, bob, carol) = ([1; 32], [2; 32], [3; 32]);
+        let members = vec![
+            member(alice, Role::Maintainer),
+            member(bob, Role::Writer),
+            member(carol, Role::Writer),
+        ];
+        // a crashed `dg repo keys rotate`: epoch 1 wrapped to alice (self) and bob, no anchor
+        let wraps = vec![
+            wrap(alice, alice, 1, Some(9)),
+            wrap(alice, bob, 1, None),
+            wrap(alice, carol, 1, None),
+        ];
+        let kr = keyring(members, wraps);
+        // resumed by a plain rotation: nobody excluded
+        let (e, k) = next_epoch(&kr, alice, 0, &[]).unwrap();
+        assert_eq!((e, k), (1, EpochKey::from_bytes([9; 32])));
+        // removing bob must not reuse the key bob already holds: a fresh epoch past 1
+        let bob_b58 = platform::encode_identifier(bob);
+        let (e, k) = next_epoch(&kr, alice, 0, &[bob_b58]).unwrap();
+        assert_eq!(e, 2);
+        assert_ne!(k, EpochKey::from_bytes([9; 32]));
+    }
+
+    #[test]
+    fn a_pending_epoch_wrapped_to_a_non_member_is_not_resumed() {
+        let (alice, mallory) = ([1; 32], [7; 32]);
+        let kr = keyring(
+            vec![member(alice, Role::Maintainer)],
+            vec![
+                wrap(alice, alice, 3, Some(9)),
+                wrap(alice, mallory, 3, None),
+            ],
+        );
+        let (e, _) = next_epoch(&kr, alice, 0, &[]).unwrap();
+        assert_eq!(e, 1, "3 is used by our own wraps, but 1 is free");
     }
 
     #[test]

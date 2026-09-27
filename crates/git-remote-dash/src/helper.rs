@@ -297,12 +297,26 @@ impl Helper {
             let hash = hex::encode(h);
             let got = match svc.fetch_best_copy(repo, contract, copies, roles, reader).await {
                 // A private repository's copy verified by its (ciphertext) hash; open it.
+                // A key error is not a dead mirror: the bytes are here and verified, and no
+                // other copy of the same hash would open differently. It fails the fetch with
+                // its own code (E306/E308/E509). Only content hidden by the late-content rule
+                // (E510, a removed member's upload) is skipped like an unreachable pack.
                 Ok((sealed, m)) => {
                     let got = PackMeta::for_bytes(&sealed).pack_hash;
                     if !got.eq_ignore_ascii_case(&hash) {
                         bail!("pack integrity check failed: expected {hash}, got {got}");
                     }
-                    svc.open_artifact(repo, m, sealed).await.map(|b| (b, m))
+                    match svc.open_artifact(repo, m, sealed).await {
+                        Ok(b) => Ok((b, m)),
+                        Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
+                            tracing::warn!(pack = %hash, "{u}; skipping it");
+                            return Ok(None);
+                        }
+                        Err(e) => {
+                            return Err(anyhow::Error::from(e)
+                                .context(format!("opening pack {hash}")));
+                        }
+                    }
                 }
                 Err(e) => Err(e),
             };
@@ -757,6 +771,7 @@ async fn upload_push_pack(
     if already_recorded(ctx, &job).await? {
         // The browse index is left alone: the earlier push published (or tried to) the
         // fragment for this pack, and a missing one is rebuilt by the next repack.
+        let _ = std::fs::remove_file(sealed_cache_path(ctx, &pack.bytes));
         return Ok(Some(policy::estimate_ref_updates(ctx.refs.len())));
     }
 
@@ -813,6 +828,11 @@ async fn upload_push_pack(
 /// So the sealed bytes (ciphertext only) are kept at `.git/dash/sealed/<repo>-<sha256 of the
 /// plaintext>.pack` and reused while their header still names the current write epoch.
 async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
+    // A dry run stores nothing, so it seals nothing (and needs no write epoch): it prices the
+    // plaintext pack, which differs from the sealed one by 36 + 16 bytes per 16 KiB.
+    if ctx.dry_run {
+        return Ok(plain.to_vec());
+    }
     let codec = ctx
         .svc
         .pack_codec(ctx.repo)
@@ -823,16 +843,10 @@ async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
     };
     let path = sealed_cache_path(ctx, plain);
     if let Ok(cached) = std::fs::read(&path) {
-        let epoch = forge_core::private::PackHeader::parse(
-            cached
-                .get(..forge_core::private::pack::HEADER_LEN)
-                .unwrap_or_default(),
-            cached.len() as u64,
-        )
-        .map(|h| h.epoch());
-        if epoch == Ok(private.write_epoch()) {
+        if cached_seal_is_current(private, &cached, plain) {
             return Ok(cached);
         }
+        tracing::info!("the kept sealed pack is not under the current key; sealing afresh");
     }
     let sealed = codec.seal(plain.to_vec())?;
     let tmp = path.with_extension("pack.tmp");
@@ -844,6 +858,29 @@ async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
         tracing::warn!("could not keep the sealed pack; an interrupted push would re-seal it");
     }
     Ok(sealed)
+}
+
+/// Whether kept sealed bytes can be stored for `plain` now: they must open, tags and all,
+/// under the CURRENT write epoch's key (a number alone is not enough: the key behind an epoch
+/// number changes if its anchor's author stops being a maintainer) and hash back to `plain`
+/// (a bit-flipped file would otherwise be stored under a self-consistent hash, unreadable
+/// for good).
+fn cached_seal_is_current(
+    private: &forge_core::private::Private,
+    cached: &[u8],
+    plain: &[u8],
+) -> bool {
+    let header_epoch = forge_core::private::PackHeader::parse(
+        cached
+            .get(..forge_core::private::pack::HEADER_LEN)
+            .unwrap_or_default(),
+        cached.len() as u64,
+    )
+    .map(|h| h.epoch());
+    header_epoch == Ok(private.write_epoch())
+        && private
+            .open_pack(cached, cached.len() as u64)
+            .is_ok_and(|opened| opened == plain)
 }
 
 /// Where [`seal_for_push`] keeps the sealed bytes of `plain` for this repository.
@@ -1160,7 +1197,7 @@ async fn confirm_existing_manifest(
             )
             .cause(format!("pack {} already recorded at {recorded}: {why}", job.meta.pack_hash))
             .fix(format!(
-                "re-upload it from this clone: `dg reseed {} --from-local` (run inside this repository), then push again",
+                "re-upload it from this clone: `dg reseed {} --from-local` (run inside this repository; a private repo's sealed copy is only kept by the clone that pushed it), then push again",
                 ctx.repo_label
             ))
             .fix("or restore that storage, then push again")

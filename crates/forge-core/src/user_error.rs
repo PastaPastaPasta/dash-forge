@@ -539,6 +539,27 @@ pub fn classify<'e>(
     if let Some(u) = layers.iter().find_map(|l| l.downcast_ref::<UserError>()) {
         return u.clone();
     }
+    // A phrased error raised inside forge-core (`Error::User`): kept as raised, but the
+    // context layers wrapped around it (what had already happened, what to do next) are
+    // carried as its note rather than dropped.
+    if let Some(i) = layers
+        .iter()
+        .position(|l| matches!(l.downcast_ref::<CoreError>(), Some(CoreError::User(_))))
+    {
+        let Some(CoreError::User(u)) = layers[i].downcast_ref::<CoreError>() else {
+            unreachable!("matched above")
+        };
+        let mut u = (**u).clone();
+        let outer: Vec<String> = layers[..i].iter().map(ToString::to_string).collect();
+        if !outer.is_empty() {
+            let mut note = outer.join(": ");
+            if let Some(n) = &u.note {
+                note = format!("{n}; {note}");
+            }
+            u = u.note(note);
+        }
+        return u;
+    }
     let text = layers
         .iter()
         .map(ToString::to_string)
@@ -1324,6 +1345,34 @@ mod tests {
             o
         };
         assert_eq!(strip(&colored), u.render("", false));
+    }
+
+    #[test]
+    fn a_phrased_core_error_keeps_the_context_around_it() {
+        #[derive(Debug)]
+        struct Ctx(String, CoreError);
+        impl fmt::Display for Ctx {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl StdError for Ctx {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.1)
+            }
+        }
+        let inner: CoreError =
+            UserError::new(codes::NO_ENCRYPTION_KEY, "bob has no encryption key")
+                .fix("dg auth keys add --encryption")
+                .into();
+        let outer = Ctx("the membership stands; re-run dg collab add".into(), inner);
+        let chain: Vec<&(dyn StdError + 'static)> = vec![&outer, &outer.1];
+        let u = classify(chain, &ErrorContext::default());
+        assert_eq!(u.code, codes::NO_ENCRYPTION_KEY);
+        assert_eq!(
+            u.note.as_deref(),
+            Some("the membership stands; re-run dg collab add")
+        );
     }
 
     #[test]
