@@ -1,6 +1,6 @@
 {
-  "name": "tlv_reserved_tag",
-  "description": "reserved tag 12 is malformed.",
+  "name": "tlv_burned_in_issue",
+  "description": "tag 11 (burned) is a config field: in an issue it is malformed.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -22,7 +22,7 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c40d6ac06bcff8570493fe9bc225c3af123f276b79",
+      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c40a6ac012b233df28c8ffbe95593a917d2c1721a0",
       "createdAtBlockHeight": 50
     }
   },

@@ -61,6 +61,13 @@ fn alert_text(a: &Alert) -> String {
             "the key chain is broken at epoch {epoch} (anchor by {})",
             encode_identifier(*author)
         ),
+        Alert::EpochGap { epoch, author } => format!(
+            "{} posted a config for epoch {epoch}, above a missing epoch number: it is not an epoch",
+            encode_identifier(*author)
+        ),
+        Alert::RotationRequired { epoch, members } if members.is_empty() => {
+            format!("rotation required: epoch {epoch} is burned")
+        }
         Alert::RotationRequired { epoch, members } => format!(
             "rotation required: epoch {epoch} is still wrapped to {} (not a member)",
             members
@@ -98,6 +105,8 @@ fn status_json(kr: &Keyring) -> Value {
         "currentEpoch": r.current_epoch,
         "writeEpoch": r.write_epoch,
         "readableEpochs": kr.readable_epochs(),
+        "burnedEpochs": r.burned,
+        "burnedBy": kr.burned_by().map(encode_identifier),
         "unanchoredEpochs": r.unanchored,
         "anchors": anchors,
         "alerts": r.alerts.iter().map(alert_text).collect::<Vec<_>>(),
@@ -136,6 +145,12 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
         }
         None => println!("  no key epoch exists yet (the repository was not finished)"),
     }
+    if let (Some(epoch), Some(by)) = (res.current_epoch, kr.burned_by()) {
+        println!(
+            "  key epoch {epoch} is burned: {} closed it (its key may have reached someone it must not); nothing is written under it until a maintainer rotates",
+            encode_identifier(by)
+        );
+    }
     println!(
         "  you can read epochs {:?}; you write under {}",
         kr.readable_epochs(),
@@ -153,7 +168,9 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     }
     let maintainer = kr.reader_role() == Some(forge_core::rules::v2::Role::Maintainer);
     if let (true, Some(repair)) = (maintainer, &res.repair) {
-        if repair.rotate {
+        if repair.rotate && repair.non_members.is_empty() {
+            println!("  repair: rotate past the burned epoch: `dg repo keys repair {arg}`");
+        } else if repair.rotate {
             println!("  repair: rotate (a non-member holds the current key): `dg repo keys repair {arg}`");
         } else if !repair.missing_wraps.is_empty() {
             println!(
@@ -257,10 +274,14 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
         }),
         || {
             if let Some(r) = &report.rotated {
-                println!(
-                    "rotating the repo key: {} still had the current key",
-                    report.non_members.join(", ")
-                );
+                if report.non_members.is_empty() {
+                    println!("rotating the repo key past the burned epoch");
+                } else {
+                    println!(
+                        "rotating the repo key: {} still had the current key",
+                        report.non_members.join(", ")
+                    );
+                }
                 print_rotation(repo, r);
             }
             for m in &report.wrapped {
@@ -303,11 +324,17 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
 
 /// A rotation as JSON.
 pub fn rotation_json(r: &Rotation) -> Value {
-    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "skipped": r.skipped, "won": r.won })
+    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "skipped": r.skipped, "won": r.won, "burned": r.burned })
 }
 
 /// The lines a rotation prints.
 pub fn print_rotation(repo: &RepoRef, r: &Rotation) {
+    if let Some(b) = r.burned {
+        println!(
+            "{}: closed key epoch {b} as burned (an earlier run's key for it may have reached someone outside the members)",
+            repo.display()
+        );
+    }
     if r.won {
         println!(
             "{}: key rotated to epoch {} (wrapped to {} member(s), you first)",

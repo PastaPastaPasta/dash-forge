@@ -64,8 +64,25 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
             .note("nothing was written")
             .into());
         }
-        // The key must be wrappable by us now (our own key, and an epoch we can write).
-        signer.keyring(handle).await?.writer(handle)?;
+        // The key must be wrappable by us now (our own key, and an epoch we can write: not a
+        // burned or unreadable one).
+        let kr = signer.keyring(handle).await?;
+        kr.writer(handle)?;
+        // §5.3: anchors count only from current maintainers, so a new maintainer's earlier
+        // configs (from a past maintainer role) would count again and could replace an anchor.
+        if role == forge_core::rules::v2::Role::Maintainer {
+            let id = forge_core::platform::decode_identifier(member)?;
+            if let Some(epoch) = kr.maintainer_would_move_anchors(id) {
+                return Err(UserError::new(
+                    codes::ROTATION_PENDING,
+                    format!("making {member} a maintainer of {repo} would change key epoch {epoch}"),
+                )
+                .cause("their key statements from an earlier maintainer role would count again and come first")
+                .fix(format!("rotate first: `dg repo keys rotate {repo}`, then add them"))
+                .note("nothing was written")
+                .into());
+            }
+        }
     }
     let what = if private {
         format!(
@@ -133,9 +150,11 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
     // same keys first, or the repo would fall back to an older key.
-    if private && role == forge_core::rules::v2::Role::Maintainer {
-        reanchor(&signer, handle, repo, member).await?;
-    }
+    let dropped = if private && role == forge_core::rules::v2::Role::Maintainer {
+        reanchor(&signer, handle, member).await?
+    } else {
+        Vec::new()
+    };
     let removed = MemberService::new(client, &s.identity, &s.bridge)
         .revoke(handle, member, role)
         .await
@@ -173,8 +192,14 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             "role": role_name(role),
             "repo": handle.display(),
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
+            "droppedEpochs": dropped,
         }),
         || {
+            if !dropped.is_empty() {
+                println!(
+                    "key epochs {dropped:?} were anchored by {member} and readable only by them: they stop existing (content under them stays unreadable)"
+                );
+            }
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
             }
@@ -221,30 +246,19 @@ fn private_remove_prompt(
 }
 
 /// Re-anchor every epoch `member` anchored before their maintainer role goes, or refuse.
+/// Returns the epochs that stop existing with the removal (§5.3: `member` anchored them, only
+/// they can read them, and nothing readable sits above).
 async fn reanchor(
     signer: &PrivateSigner<'_>,
     handle: &forge_core::scope::RepoRef,
-    repo: &str,
     member: &str,
-) -> Result<()> {
-    let (_, unreadable) = forge_core::keyring::reanchor_before_removal(signer, handle, member)
+) -> Result<Vec<u32>> {
+    let r = forge_core::keyring::reanchor_before_removal(signer, handle, member)
         .await
         .context(
             "re-anchoring the maintainer's key epochs before the removal (nothing was removed)",
         )?;
-    if unreadable.is_empty() {
-        return Ok(());
-    }
-    Err(UserError::new(
-        codes::ROTATION_PENDING,
-        format!("{member} anchored key epochs {unreadable:?} of {repo}, which you cannot read"),
-    )
-    .cause("removing them would make those epochs unreadable to every member")
-    .fix(format!(
-        "ask a maintainer who holds those epochs to run `dg collab remove {repo} {member} --role maintainer`"
-    ))
-    .note("nothing was removed")
-    .into())
+    Ok(r.dropped)
 }
 
 /// The error of a removal whose rotation failed after the delete landed.
@@ -314,7 +328,18 @@ async fn rotate_after_removal(
         .context("rotating the repository key after the removal")?;
     // §5.6: a concurrent rotation that won from a stale member list may still have wrapped the
     // removed member; the repair check then says rotate again. Once more settles what this
-    // removal changed; anything later is `dg repo keys repair`.
+    // removal changed. Anything else (another maintainer's burned epoch, a missing wrap) is
+    // theirs or `dg repo keys repair`'s to pay for, with a confirmation: not spent silently here.
+    let member_id = forge_core::platform::decode_identifier(member)?;
+    let kr = signer.keyring(repo).await?;
+    let still_holds = kr
+        .resolution()
+        .repair
+        .as_ref()
+        .is_some_and(|r| r.rotate && r.non_members.contains(&member_id));
+    if !still_holds {
+        return Ok(first);
+    }
     let report = forge_core::keyring::repair(signer, repo)
         .await
         .context("re-checking the key after the rotation")?;

@@ -283,27 +283,41 @@ pub struct OpenContext {
     pub anchors: BTreeMap<u32, AnchorRef>,
     /// Identities with a current `maintainer` or `writer` document.
     pub members: BTreeSet<[u8; 32]>,
+    /// Readable epochs whose anchor is burned (§5.3): nothing is written under them.
+    pub burned: BTreeSet<u32>,
 }
 
 impl OpenContext {
     /// Whether content under `epoch` at block height `height` by `owner` is late (§8.2): after
-    /// the next existing epoch's anchor plus [`GRACE_BLOCKS`], by someone who is not a current
-    /// member.
+    /// the next existing epoch's anchor plus [`GRACE_BLOCKS`], or under a burned epoch at any
+    /// height, by someone who is not a current member.
     #[must_use]
     pub fn is_late(&self, epoch: u32, height: u64, owner: &[u8; 32]) -> bool {
-        is_late(&self.anchors, epoch, height, self.members.contains(owner))
+        is_late(
+            &self.anchors,
+            &self.burned,
+            epoch,
+            height,
+            self.members.contains(owner),
+        )
     }
 }
 
-/// The late-content rule over anchor heights (§8.2).
+/// The late-content rule over anchor heights (§8.2), and burned epochs (§5.3).
 pub(crate) fn is_late(
     anchors: &BTreeMap<u32, AnchorRef>,
+    burned: &BTreeSet<u32>,
     epoch: u32,
     height: u64,
     current_member: bool,
 ) -> bool {
     if current_member {
         return false;
+    }
+    // nothing is ever sealed under a burned epoch: whatever is, whenever, came from someone the
+    // key leaked to
+    if burned.contains(&epoch) {
+        return true;
     }
     let next = epoch
         .checked_add(1)

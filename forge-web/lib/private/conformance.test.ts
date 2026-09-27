@@ -78,7 +78,7 @@ const DOC_KEYS = [
 ]
 const FIELDS = leaves(
   'title', 'body', 'refName', 'baseRefName', 'sourceRefName', 'defaultBranch', 'protectedPatterns',
-  'prevEpoch', 'prevEpochKey', 'path',
+  'prevEpoch', 'prevEpochKey', 'path', 'burned',
 )
 const KEY_INPUT = ['repoId', 'key', 'epoch']
 const SEAL_PACK = leaves(...KEY_INPUT, 'fileId', 'plaintextMod251', 'plaintextHex')
@@ -89,7 +89,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   private_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce', 'anchor'), doc: leaves(...DOC_KEYS), fields: FIELDS }),
   private_doc_open: object({
     repoId: LEAF,
-    context: object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF }),
+    context: object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF, burned: LEAF }),
     doc: leaves(...DOC_KEYS, 'id', 'createdAtBlockHeight', 'enc'),
   }),
   private_pack_seal: SEAL_PACK,
@@ -204,6 +204,7 @@ function toFields(f: Obj): DocFields {
   if (Array.isArray(patterns)) out.protectedPatterns = patterns.map(String)
   if ('prevEpoch' in f) out.prevEpoch = num(f, 'prevEpoch')
   if ('prevEpochKey' in f) out.prevEpochKey = hex(f, 'prevEpochKey')
+  if (f['burned'] === true) out.burned = true
   return out
 }
 
@@ -358,6 +359,7 @@ async function run(v: Vector): Promise<Json> {
       const c = obj(inp, 'context')
       const d = obj(inp, 'doc')
       const members = c['members']
+      const burned = c['burned']
       const ctx: OpenContext = {
         keys: await keyring(repoId, obj(c, 'keys')),
         anchors: new Map(
@@ -367,6 +369,7 @@ async function run(v: Vector): Promise<Json> {
           ]),
         ),
         members: new IdSet(Array.isArray(members) ? members.map((m) => privateId(String(m))) : []),
+        burned: new Set(Array.isArray(burned) ? burned.map(Number) : []),
       }
       const doc: StoredPrivateDoc = {
         ...toDoc(d),
@@ -588,7 +591,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(146)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(163)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })
