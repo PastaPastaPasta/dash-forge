@@ -4,14 +4,14 @@
  * RepoHomeContent — the Code tab landing (`ux-dx-spec.md` §5.3): the ref bar (branch switcher,
  * `n commits`, Go to file), the root file list with a lazily loaded commit column, and the
  * README. Reads are size-independent (locator ranged object reads); `flatIndex` is never
- * loaded here. A repo with no refs shows the empty state (§5.5); a private repo the viewer is
- * not a member of shows only what is public (§6.3); unreadable storage degrades via
+ * loaded here. A repo with no refs shows the empty state (§5.5); a private repo the viewer
+ * cannot decrypt never reaches here (the scaffold shows `PrivateRepoState`); unreadable storage degrades via
  * {@link BrowseBoundary}.
  */
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, FileText, GitCommit, Lock, Rocket, Search } from 'lucide-react'
+import { AlertTriangle, FileText, GitCommit, Rocket, Search } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import type { BrowseReader } from '@/lib/browse'
 import { walkFiles } from '@/lib/view/zip'
@@ -19,7 +19,6 @@ import type { RepoHome, SelectedRef } from '@/lib/view'
 import {
   commitRootTree,
   decodeTextBlob,
-  formatBytes,
   pickReadme,
   readBlob,
   readTree,
@@ -29,17 +28,13 @@ import {
   type TreeEntry,
 } from '@/lib/view'
 import { countCommits, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
-import { readPublicRepoFacts, repoContractIds, type RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
-import { useSdk } from '@/hooks/use-sdk'
-import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView } from '@/components/markdown-view'
-import { Author } from '@/components/author'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
@@ -81,13 +76,6 @@ export function RepoHomeContent({
   addr: RepoAddress
   refParam?: string
 }): JSX.Element {
-  const { role, known, failed, retry } = useViewerRole(home.repo)
-  if (home.repo.visibility === 'private') {
-    // Nothing of a private repo's contents is read until membership is known.
-    if (failed) return <ErrorState title="Couldn't check membership" message="This repo is private, and its member list could not be read." onRetry={retry} />
-    if (!known) return <LoadingBlock label="Checking membership" />
-    if (role === null) return <PrivateRepoState repo={home.repo} addr={addr} />
-  }
 
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   if (refParam && !selected.ref) {
@@ -325,43 +313,6 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
           </span>
         </p>
       ) : null}
-    </section>
-  )
-}
-
-/**
- * A private repo seen by a non-member (`ux-dx-spec.md` §6.3): only what is public by design
- * (name, owner, member count, size, last activity). Nothing is decrypted or rendered from
- * encrypted fields, titles included.
- */
-function PrivateRepoState({ repo, addr }: { repo: RepoRef; addr: RepoAddress }): JSX.Element {
-  const { sdk, ready } = useSdk(repoContractIds(repo))
-  const facts = useAsync(() => readPublicRepoFacts(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null })
-  return (
-    <section
-      aria-label="Private repository"
-      data-testid="private-repo"
-      className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
-    >
-      <div className="mb-3 flex items-center gap-2">
-        <Lock className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-        <h2 className="text-prose font-mono">{repo.name || addr.name}</h2>
-      </div>
-      <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        Private: contents are encrypted for members. You&apos;re not one.
-      </p>
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-dense">
-        <dt className="text-anvil-500 dark:text-anvil-400">Owner</dt>
-        <dd>
-          <Author identityId={repo.ownerId} />
-        </dd>
-        <dt className="text-anvil-500 dark:text-anvil-400">Members</dt>
-        <dd>{facts.data ? facts.data.members : facts.error ? '–' : '…'}</dd>
-        <dt className="text-anvil-500 dark:text-anvil-400">Size</dt>
-        <dd>{facts.data ? formatBytes(facts.data.storedBytes) : facts.error ? '–' : '…'}</dd>
-        <dt className="text-anvil-500 dark:text-anvil-400">Last activity</dt>
-        <dd>{facts.data ? (facts.data.lastActivity ? timeAgo(facts.data.lastActivity) : 'none yet') : facts.error ? '–' : '…'}</dd>
-      </dl>
     </section>
   )
 }

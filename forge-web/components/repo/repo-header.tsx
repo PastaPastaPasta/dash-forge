@@ -82,11 +82,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
             {home.repo.name || addr.name}
           </Link>
-          {home.repo.visibility === 'private' ? (
-            <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">
-              <Lock className="h-3 w-3" aria-hidden /> private
-            </span>
-          ) : null}
+          {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -137,5 +133,24 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         })}
       </nav>
     </div>
+  )
+}
+
+/**
+ * The lock chip (`ux-dx-spec.md` §9): a member reading with their key sees which epoch the view
+ * decrypted with; everyone else sees that the repo is private.
+ */
+function PrivateChip({ home }: { home: RepoHome }): JSX.Element {
+  // The newest epoch the reader holds a key for (the current one, unless it is not readable yet).
+  const keys = home.private?.access === 'member' ? [...home.private.session.resolution.keys.keys()] : []
+  const epoch = keys.length > 0 ? Math.max(...keys) : null
+  return (
+    <span
+      data-testid="private-chip"
+      className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300"
+    >
+      <Lock className="h-3 w-3" aria-hidden />
+      {epoch !== null ? `Private · decrypted with your key (epoch ${epoch})` : 'private'}
+    </span>
   )
 }

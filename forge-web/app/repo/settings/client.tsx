@@ -7,7 +7,7 @@ import { useRepoAddress } from '@/hooks/use-query-param'
 export function SettingsClient(): JSX.Element {
   const addr = useRepoAddress()
   return (
-    <RepoScaffold addr={addr} rail={false}>
+    <RepoScaffold addr={addr} rail={false} sealedOk>
       {(home) => <SettingsContent home={home} />}
     </RepoScaffold>
   )

@@ -111,8 +111,10 @@ export {
 export { ACL_NAME, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,
+  loadPrivateHome,
   loadRepoHome,
   type BackendInfo,
+  type PrivateAccess,
   type RepoHome,
 } from './repo-view'
 export { resolveDpnsName, resolveDpnsNames } from './dpns'

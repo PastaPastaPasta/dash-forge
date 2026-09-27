@@ -14,6 +14,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
 import { KeysPanel } from '@/components/keys-panel'
+import { EncryptionKeyPanel } from '@/components/encryption-key-panel'
 import { GatewaysField } from '@/components/gateways-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { creditsToDash } from '@/lib/sdk'
@@ -103,6 +104,8 @@ export default function SettingsPage(): JSX.Element {
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
           <KeysPanel />
         </section>
+
+        <EncryptionKeyPanel />
 
         {gateways}
 

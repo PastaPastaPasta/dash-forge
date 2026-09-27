@@ -190,7 +190,7 @@ export interface ComparisonSides {
 export function useComparisonSides(baseRepo: RepoRef, sourceId: string): ComparisonSides {
   // An empty source pointer only comes from a malformed document; the base repo is then the
   // only place the head could be.
-  const baseKey = repoKey(baseRepo)
+  const baseKey = baseRepo.repoId
   const sourceKey = sourceId || baseKey
   const crossRepo = sourceKey !== baseKey
   const source = useSourceRepo(baseRepo, crossRepo ? sourceKey : null)
@@ -300,7 +300,7 @@ export function ComparisonDiff({
         merged: spec.merged,
         imported: spec.imported,
       }),
-    [repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
+    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
 

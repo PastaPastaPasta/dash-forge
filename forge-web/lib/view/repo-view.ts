@@ -25,6 +25,7 @@ import {
   type RepoDoc,
 } from '../repo'
 import { noteRepoGateways } from './storage-status'
+import type { PrivateSession } from '../repo/private-session'
 
 /** Backend descriptor for the repo header badge / clone box. */
 export interface BackendInfo {
@@ -68,6 +69,37 @@ export interface RepoHome {
   /** `null` when the count read failed — rendered as unknown, never as a false 0. */
   readonly starCount: number | null
   readonly backend: BackendInfo
+  /** A private repo: how this viewer reads it (set by the repo scaffold). */
+  readonly private?: PrivateAccess
+}
+
+/**
+ * How the viewer reads a private repo: `signed-out` and `outsider` see only what is public
+ * (`ux-dx-spec.md` §6.3), `no-key` is a member whose browser holds no encryption key yet, and
+ * `member` reads through its decryption session (`repo.session`).
+ */
+export type PrivateAccess =
+  | { readonly access: 'signed-out' | 'outsider' | 'no-key' }
+  | { readonly access: 'member'; readonly session: PrivateSession }
+
+/**
+ * A member's view of a private repo: the plain {@link RepoHome} re-read through `session` (the
+ * decrypted config timeline, refs grouped by their decrypted names). Lives in memory only.
+ */
+export async function loadPrivateHome(sdk: EvoSDK, home: RepoHome, session: PrivateSession): Promise<RepoHome> {
+  const repo: RepoRef = { ...home.repo, session }
+  const refs = await readRefs(sdk, repo, undefined, Promise.resolve(session.configHistory))
+  const config = session.config ?? home.config
+  return {
+    ...home,
+    repo,
+    config,
+    defaultBranch: session.config?.defaultBranch ?? 'main',
+    branches: branchesOf(refs),
+    tags: tagsOf(refs),
+    backend: backendInfo(config),
+    private: { access: 'member', session },
+  }
 }
 
 /**
