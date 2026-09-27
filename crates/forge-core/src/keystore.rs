@@ -557,14 +557,29 @@ fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// The key source `dg` recorded as the default (`default_identity` in `config.toml`), for
-/// tools without an `--identity` of their own (the remote helper). `None` when there is none.
-pub fn configured_default_source() -> Option<String> {
-    let raw = std::fs::read_to_string(forge_config_dir()?.join("config.toml")).ok()?;
-    let v: toml::Value = toml::from_str(&raw).ok()?;
-    v.get("default_identity")?
-        .as_str()
+/// tools without an `--identity` of their own (the remote helper). `Ok(None)` when there is
+/// no config file or it records none. A `config.toml` that cannot be read or does not parse
+/// is an error (E204 naming the line and column), not "no default": `dg` refuses the same
+/// file, and signing as nobody would hide the typo behind an E301.
+pub fn configured_default_source() -> Result<Option<String>> {
+    let Some(dir) = forge_config_dir() else {
+        return Ok(None);
+    };
+    configured_default_source_in(&dir.join("config.toml"))
+}
+
+fn configured_default_source_in(path: &Path) -> Result<Option<String>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::Io(format!("reading {}: {e}", path.display()))),
+    };
+    let v: toml::Value =
+        toml::from_str(&raw).map_err(|e| crate::config_file::config_toml_error(path, &raw, &e))?;
+    Ok(v.get("default_identity")
+        .and_then(toml::Value::as_str)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(str::to_string))
 }
 
 /// Write `bytes` to `path` readable by the owner only, replacing it atomically: the data goes
@@ -854,6 +869,31 @@ impl BridgeIdentity {
 #[cfg(test)]
 mod tests {
     use super::{BridgeIdentity, Secret};
+
+    #[test]
+    fn the_recorded_default_source_refuses_a_config_that_does_not_parse() {
+        use super::configured_default_source_in as read;
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("config.toml");
+        assert_eq!(read(&path).unwrap(), None, "no file: no default");
+        std::fs::write(
+            &path,
+            "network = \"devnet\"\ndefault_identity = \"/k.json\"\n",
+        )
+        .unwrap();
+        assert_eq!(read(&path).unwrap().as_deref(), Some("/k.json"));
+        std::fs::write(&path, "network = \"devnet\"\n").unwrap();
+        assert_eq!(read(&path).unwrap(), None, "none recorded");
+        // D-405: a syntax error used to read as "no default" (the helper then said E301).
+        std::fs::write(&path, "network = \"devnet\"\ndefault_identity = \n").unwrap();
+        let err = read(&path).unwrap_err();
+        let crate::Error::User(u) = &err else {
+            panic!("expected a phrased error, got {err}")
+        };
+        assert_eq!(u.code, crate::user_error::codes::INVALID_CONFIG);
+        let cause = u.cause.clone().unwrap_or_default();
+        assert!(cause.contains("config.toml: line 2, column 20"), "{cause}");
+    }
 
     // All key material below is FAKE — non-functional placeholder strings only.
     const FIXTURE: &str = r#"{

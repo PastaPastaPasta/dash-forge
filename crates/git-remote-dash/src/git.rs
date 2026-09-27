@@ -85,6 +85,49 @@ pub fn config_get(key: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Whether every object reachable from `oids` is in the object store, not counting history
+/// the repository's refs already reach: git's own post-fetch connectivity check
+/// (`rev-list --objects --stdin --not --all`), which exits non-zero on a missing object.
+/// `repo`: that repository's directory (tests), else the one git spawned the helper for.
+/// A missing object is never fetched: a lazy fetch here would re-enter this helper.
+fn objects_complete(oids: &[String], repo: Option<&Path>) -> bool {
+    if oids.iter().any(|oid| ensure_safe_rev(oid).is_err()) {
+        return false;
+    }
+    let input = oids.iter().fold(String::new(), |mut s, oid| {
+        s.push_str(oid);
+        s.push('\n');
+        s
+    });
+    let mut cmd = Command::new("git");
+    if let Some(dir) = repo {
+        cmd.current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE");
+    }
+    let child = cmd
+        .args([
+            "rev-list",
+            "--objects",
+            "--quiet",
+            "--stdin",
+            "--not",
+            "--all",
+        ])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else { return false };
+    // rev-list reads all of stdin before it walks, so writing first cannot deadlock.
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut s| s.write_all(input.as_bytes()).is_ok());
+    child.wait().is_ok_and(|s| s.success()) && wrote
+}
+
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
 /// never an error. Used for the boolean predicates `cat-file -e` / `merge-base
 /// --is-ancestor`.
@@ -136,6 +179,14 @@ impl LocalRepo {
             return false;
         }
         run_git_status(&["cat-file", "-e", oid])
+    }
+
+    /// Whether the local odb now holds everything reachable from `oids`: git's own
+    /// post-fetch connectivity check, run first so a gap can be explained. `true` in a
+    /// partial clone, whose filtered-out objects are missing by design (git's own check
+    /// knows which are promised; this one cannot tell).
+    pub fn has_complete_history(oids: &[String]) -> bool {
+        config_get("extensions.partialclone").is_some() || objects_complete(oids, None)
     }
 
     /// Whether commit `ancestor` is an ancestor of (or equal to) commit `descendant`.
@@ -245,7 +296,7 @@ impl Drop for ScratchRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_git, ScratchRepo};
+    use super::{objects_complete, run_git, ScratchRepo};
     use std::path::Path;
 
     /// Write `body` into `repo` as a loose object of `kind`, without git's checks.
@@ -344,5 +395,54 @@ mod tests {
         let scratch = ScratchRepo::init().unwrap();
         scratch.index_pack(&second).unwrap();
         scratch.index_pack(&first).unwrap();
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn a_missing_object_in_the_wanted_history_is_detected() {
+        // The check the helper runs before git's own, so a gap is reported as E503 (D-403).
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        git(d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("a.txt"), "alpha\n").unwrap();
+        git(d, &["add", "a.txt"]);
+        git(
+            d,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "one",
+            ],
+        );
+        let tip = git(d, &["rev-parse", "HEAD"]);
+        let blob = git(d, &["rev-parse", "HEAD:a.txt"]);
+        // Unreferenced, as a fetched commit is before git writes the ref.
+        git(d, &["update-ref", "-d", "refs/heads/main"]);
+        assert!(objects_complete(std::slice::from_ref(&tip), Some(d)));
+        let obj = d.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
+        std::fs::remove_file(obj).unwrap();
+        assert!(!objects_complete(&[tip], Some(d)), "the blob is gone");
+        assert!(
+            !objects_complete(&["-bad".to_string()], Some(d)),
+            "unsafe revs are refused"
+        );
     }
 }

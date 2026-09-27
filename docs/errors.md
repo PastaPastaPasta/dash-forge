@@ -91,6 +91,8 @@ Fix: use the owner's identity id, e.g. `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDA
 
 Fix: correct the value (`git config --show-origin --get-regexp '^dash\.'` shows where each git setting comes from). `dg doctor` checks the rest.
 
+A `config.toml` that does not parse is E204 too, from every `dg` command and from `git push` when it needs the default identity recorded there. The cause names the file, the line and the column, never the text there. `dg` does not fall back to the defaults, which would mean testnet and no identity. `dg doctor` still runs: it shows the error as a failing `config.toml` row and runs its other checks on the defaults. Fix the line, or move the file aside and sign in again with `dg auth login`, which writes a new one.
+
 `refusing to bind a key to the forge contract group` is also E204: the contract group on chain failed the trust check made before a limited key is bound to it ([forge-v2 § Contract group trust](contracts/forge-v2.md#contract-group-trust)). Its owner differs from the one `dg` pins, or it has admins. Or a member contract has another owner (proof-verified), or the group lacks forge-core and forge-collab. Do not bind a key to it. With `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), any member `dg` does not know causes it too: update `dg`, or drop strict mode to accept members the Forge deployer owns.
 
 ## E205
@@ -198,7 +200,7 @@ Fix, in order:
 
 ## E503
 
-**Packs unreadable.** A clone or fetch needed a pack whose recorded copies all failed: storage down, object deleted, or a gateway that does not have the CID.
+**Packs unreadable.** A clone or fetch needed a pack whose recorded copies all failed: storage down, object deleted, or a gateway that does not have the CID. The helper reads every other pack first and reports this only when the wanted history really is incomplete, so a dead copy of a pack nothing needs (a deleted branch, or one a repack superseded) does not fail the clone. The `cause:` line names each unreadable pack and why each of its copies failed. A host that refuses the connection or does not resolve fails in milliseconds.
 
 Fix: anyone whose clone still has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`, run inside that clone. If you know another IPFS gateway that has the pack, add it to `[read] ipfs_gateways` in `storage.toml` and try again.
 

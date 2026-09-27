@@ -367,17 +367,127 @@ fn list(ctx: &Ctx) -> Result<()> {
 fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let mut profiles = StorageProfiles::load_from(&path)?;
-    if profiles.profiles.remove(name).is_none() {
+    let Some(removed) = profiles.profiles.remove(name) else {
         return Err(crate::errors::not_found(
             format!("no storage profile {name:?} in {}", path.display()),
             "`dg storage list` lists the profiles",
         ));
-    }
+    };
     profiles.save_to(&path)?;
-    ctx.emit(json!({ "status": "removed", "profile": name }), || {
-        println!("Removed storage profile {name:?}. Repos whose dash.storage names it will refuse to push until it is re-added or dropped from dash.storage.");
-    });
+    // The profile is gone first: a keychain that cannot be reached must not keep it.
+    let secrets = remove_owned_secrets(&removed, &profiles, forge_core::keychain::delete);
+    ctx.emit(
+        json!({ "status": "removed", "profile": name, "keychain": secrets.to_json() }),
+        || {
+            println!("Removed storage profile {name:?}. Repos whose dash.storage names it will refuse to push until it is re-added or dropped from dash.storage.");
+            secrets.print();
+        },
+    );
     Ok(())
+}
+
+/// What `dg storage remove` did with the keychain entries the removed profile referenced.
+#[derive(Debug, Default, PartialEq)]
+struct SecretCleanup {
+    /// Storage-secret entries (`dash-forge/<profile>`) deleted.
+    deleted: Vec<String>,
+    /// Storage-secret entries referenced but not in the keychain (nothing to delete).
+    absent: Vec<String>,
+    /// Storage-secret entries kept because another profile still names them:
+    /// `(reference, profile)`.
+    shared: Vec<(String, String)>,
+    /// Storage-secret entries that could not be deleted: `(reference, why)`.
+    failed: Vec<(String, String)>,
+    /// Entries dg does not own (another service, or a `dg auth` key): never touched.
+    foreign: Vec<String>,
+}
+
+/// Delete the storage-secret keychain entries the removed profile referenced once no profile
+/// in `remaining` names them: `keychain:dash-forge/<profile name>`, where `dg storage add`
+/// stores a pasted secret (for this profile, or for one removed earlier whose entry was kept
+/// while this one shared it). Entries under another service are the user's own, and
+/// `dash-forge/<network>/<identity>` holds `dg auth` keys: both are left alone. `delete` is
+/// [`forge_core::keychain::delete`] (`Ok(false)`: no such entry).
+fn remove_owned_secrets(
+    removed: &Profile,
+    remaining: &StorageProfiles,
+    mut delete: impl FnMut(&str, &str) -> forge_core::Result<bool>,
+) -> SecretCleanup {
+    use forge_core::keychain::SERVICE;
+    let mut out = SecretCleanup::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for (_, r) in removed.secret_refs() {
+        let SecretRef::Keychain { service, account } = r else {
+            continue;
+        };
+        let reference = r.to_string();
+        if !seen.insert(reference.clone()) {
+            continue;
+        }
+        if service != SERVICE || !valid_profile_name(account) {
+            out.foreign.push(reference);
+            continue;
+        }
+        let user = remaining
+            .profiles
+            .iter()
+            .find(|(_, p)| p.secret_refs().iter().any(|(_, o)| *o == r))
+            .map(|(other, _)| other.clone());
+        if let Some(other) = user {
+            out.shared.push((reference, other));
+            continue;
+        }
+        match delete(service, account) {
+            Ok(true) => out.deleted.push(reference),
+            Ok(false) => out.absent.push(reference),
+            Err(e) => out.failed.push((reference, e.to_string())),
+        }
+    }
+    out
+}
+
+impl SecretCleanup {
+    fn to_json(&self) -> serde_json::Value {
+        let pairs = |v: &[(String, String)], k: &str| -> Vec<serde_json::Value> {
+            v.iter().map(|(r, x)| json!({ "ref": r, k: x })).collect()
+        };
+        json!({
+            "deleted": self.deleted,
+            "notFound": self.absent,
+            "keptSharedWith": pairs(&self.shared, "profile"),
+            "failed": pairs(&self.failed, "error"),
+            "notOwned": self.foreign,
+        })
+    }
+
+    fn print(&self) {
+        let store = forge_core::keychain::store_name();
+        for r in &self.deleted {
+            println!("Deleted its secret {r} from the {store}.");
+        }
+        for r in &self.absent {
+            println!("{r} was not in the {store}; nothing to delete.");
+        }
+        for (r, other) in &self.shared {
+            println!("Kept {r}: profile {other:?} still uses it.");
+        }
+        for (r, why) in &self.failed {
+            // Only `keychain:dash-forge/<profile>` entries are ever deleted (or fail to be).
+            let service = forge_core::keychain::SERVICE;
+            let account = r
+                .strip_prefix(&format!("keychain:{service}/"))
+                .unwrap_or_default();
+            let by_hand = if cfg!(target_os = "macos") {
+                format!("`security delete-generic-password -s {service} -a {account}`")
+            } else {
+                format!("the {store}")
+            };
+            eprintln!("warning: could not delete {r} ({why}); remove it with {by_hand}");
+        }
+        for r in &self.foreign {
+            println!("Left {r} in place: it is not a dash-forge storage secret.");
+        }
+    }
 }
 
 /// One storage check.
@@ -1289,6 +1399,103 @@ pub(crate) mod tests {
             crate::Command::Storage(StorageCommand::Add(a)) => *a,
             _ => panic!("expected storage add"),
         }
+    }
+
+    fn profiles(toml: &str) -> StorageProfiles {
+        StorageProfiles::parse(toml).unwrap()
+    }
+
+    const KC_S3: &str = "[profiles.kc-s3]\nkind = \"s3\"\nendpoint = \"https://s3.example\"\n\
+        bucket = \"b\"\naccess_key_id = \"AK\"\nsecret_access_key = \"keychain:dash-forge/kc-s3\"\n";
+
+    /// Run the cleanup for profile `name` of `all` (removed from it first) against a fake
+    /// keychain holding `present`; returns the report and the deletes attempted.
+    fn cleanup(
+        all: &str,
+        name: &str,
+        present: &[&str],
+        fail: bool,
+    ) -> (SecretCleanup, Vec<String>) {
+        let mut all = profiles(all);
+        let removed = all.profiles.remove(name).unwrap();
+        let mut calls = Vec::new();
+        let report = remove_owned_secrets(&removed, &all, |svc, acct| {
+            calls.push(format!("{svc}/{acct}"));
+            if fail {
+                return Err(forge_core::Error::Config("the keychain is locked".into()));
+            }
+            Ok(present.contains(&acct))
+        });
+        (report, calls)
+    }
+
+    #[test]
+    fn removing_a_profile_deletes_the_secret_the_wizard_stored_for_it() {
+        // D-402: the pasted secret stayed in the keychain after `dg storage remove`.
+        let (r, calls) = cleanup(KC_S3, "kc-s3", &["kc-s3"], false);
+        assert_eq!(calls, ["dash-forge/kc-s3"]);
+        assert_eq!(r.deleted, ["keychain:dash-forge/kc-s3"]);
+        assert_eq!(r.to_json()["deleted"][0], "keychain:dash-forge/kc-s3");
+    }
+
+    #[test]
+    fn a_missing_entry_or_an_unavailable_keychain_does_not_fail_the_remove() {
+        let (r, _) = cleanup(KC_S3, "kc-s3", &[], false);
+        assert_eq!(r.absent, ["keychain:dash-forge/kc-s3"]);
+        assert!(r.deleted.is_empty());
+        let (r, _) = cleanup(KC_S3, "kc-s3", &["kc-s3"], true);
+        assert_eq!(r.failed.len(), 1);
+        assert!(r.failed[0].1.contains("locked"), "{:?}", r.failed);
+    }
+
+    #[test]
+    fn an_entry_another_profile_still_names_is_kept() {
+        let both = format!(
+            "{KC_S3}[profiles.copy]\nkind = \"s3\"\nendpoint = \"https://other.example\"\n\
+             bucket = \"c\"\naccess_key_id = \"AK\"\nsecret_access_key = \"keychain:dash-forge/kc-s3\"\n"
+        );
+        let (r, calls) = cleanup(&both, "kc-s3", &["kc-s3"], false);
+        assert!(calls.is_empty(), "nothing deleted: {calls:?}");
+        assert_eq!(
+            r.shared,
+            [("keychain:dash-forge/kc-s3".to_string(), "copy".to_string())]
+        );
+        // Removing the last profile that names it deletes it, whichever profile that is.
+        let (r, calls) = cleanup(&both, "copy", &["kc-s3"], false);
+        assert!(r.shared.len() == 1, "kc-s3 still names it: {r:?}");
+        assert!(calls.is_empty());
+        let only_copy = both.replace(KC_S3, "");
+        let (r, calls) = cleanup(&only_copy, "copy", &["kc-s3"], false);
+        assert_eq!(calls, ["dash-forge/kc-s3"]);
+        assert_eq!(r.deleted, ["keychain:dash-forge/kc-s3"]);
+    }
+
+    #[test]
+    fn entries_that_are_not_storage_secrets_are_never_deleted() {
+        // The user's own entry (another service), and a `dg auth` identity key
+        // (`dash-forge/<network>/<id>`) someone pointed a profile at.
+        let own = "[profiles.p]\nkind = \"ipfs-pinning-service\"\napi = \"http://127.0.0.1:5001\"\n\
+            pinning_endpoint = \"https://pins.example\"\npinning_token = \"keychain:my-vault/pin\"\n\
+            api_auth = \"keychain:dash-forge/devnet-moutai/9Skb\"\n";
+        let (r, calls) = cleanup(own, "p", &["pin", "devnet-moutai/9Skb"], false);
+        assert!(calls.is_empty(), "nothing deleted: {calls:?}");
+        assert_eq!(r.foreign.len(), 2, "{r:?}");
+        // env: references have no keychain entry at all.
+        let env = KC_S3.replace("keychain:dash-forge/kc-s3", "env:S3_SECRET");
+        let (r, calls) = cleanup(&env, "kc-s3", &[], false);
+        assert!(calls.is_empty());
+        assert_eq!(r, SecretCleanup::default());
+    }
+
+    #[test]
+    fn a_secret_named_twice_by_the_profile_is_deleted_once() {
+        let twice = KC_S3.replace(
+            "access_key_id = \"AK\"",
+            "access_key_id = \"keychain:dash-forge/kc-s3\"",
+        );
+        let (r, calls) = cleanup(&twice, "kc-s3", &["kc-s3"], false);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(r.deleted.len(), 1);
     }
 
     /// A gateway stub: `/ipfs/bafkqaaa` answers 200 (it is alive), everything else 504 (it

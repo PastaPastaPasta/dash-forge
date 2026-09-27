@@ -849,7 +849,7 @@ async fn key_report(
 }
 
 async fn status(ctx: &Ctx) -> Result<()> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load()?;
     let network = ctx.network_label();
     let Some(source) = ctx.identity_path.clone() else {
         ctx.emit(
@@ -1188,7 +1188,9 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
 
 async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> Result<()> {
     let network = ctx.network_label();
-    let mut config = Config::load().unwrap_or_default();
+    // Never `unwrap_or_default`: this config is saved back, which would replace a file that
+    // does not parse with the defaults.
+    let mut config = Config::load()?;
     // Without --disable the key is not needed: a missing or locked keychain entry, or a sealed
     // file whose passphrase is lost, must not stop a sign-out.
     let identity_id = match (disable, ctx.load_bridge()) {
