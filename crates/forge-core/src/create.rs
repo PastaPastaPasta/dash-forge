@@ -328,7 +328,7 @@ pub async fn create_repo(
     })?;
     let opts = validated(opts)?;
     let owner = identity.id();
-    require_encryption_key(&opts, identity, bridge, &forge.core)?;
+    require_encryption_key(&opts, identity, bridge, &forge.core, client.network())?;
     let owner_bytes = platform::decode_identifier(&owner)?;
     let core = client.fetch_contract(&forge.core).await?;
     let engine = WriteEngine::new(client, identity, bridge.doc_op_key()?)?;
@@ -424,11 +424,12 @@ fn require_encryption_key(
     identity: &LoadedIdentity,
     bridge: &BridgeIdentity,
     core: &str,
+    network: &platform::Network,
 ) -> Result<()> {
     if opts.visibility == Visibility::Public {
         return Ok(());
     }
-    let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core);
+    let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core, network);
     if held.sender().is_none() {
         return Err(crate::keyring::no_encryption_key(
             "your identity",

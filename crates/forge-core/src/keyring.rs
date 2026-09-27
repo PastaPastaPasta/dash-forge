@@ -73,9 +73,35 @@ impl std::fmt::Debug for EncryptionKeys {
 
 impl EncryptionKeys {
     /// The identity file's `ENCRYPTION` keys that match one of `on_chain`'s `ENCRYPTION` keys
-    /// (bound to `core` or unbound).
-    pub fn held(bridge: &BridgeIdentity, on_chain: &[IdentityKeyInfo], core: &str) -> Self {
-        let keys = envelope::encryption_keys(bridge)
+    /// (bound to `core` or unbound). An on-chain `ENCRYPTION` key whose private half the file
+    /// does not hold (one `dg auth keys add --encryption` added later, which stores nothing) is
+    /// derived from the file's recovery words at the identity's DIP-13 key path, when the words
+    /// reproduce the identity's keys.
+    pub fn held(
+        bridge: &BridgeIdentity,
+        on_chain: &[IdentityKeyInfo],
+        core: &str,
+        network: &platform::Network,
+    ) -> Self {
+        let mut candidates = envelope::encryption_keys(bridge);
+        let in_file: BTreeSet<u32> = candidates.iter().map(|(id, _)| *id).collect();
+        let words_match = || platform::identity_keys::recorded_keys_match(bridge, on_chain);
+        for k in on_chain
+            .iter()
+            .filter(|k| k.purpose == "ENCRYPTION" && !in_file.contains(&k.id))
+        {
+            if !words_match() {
+                break;
+            }
+            if let Some(secret) =
+                platform::identity_keys::derive_encryption_secret(bridge, k.id, network)
+            {
+                if let Ok(private) = PrivateKey::from_slice(secret.as_slice()) {
+                    candidates.push((k.id, private));
+                }
+            }
+        }
+        let keys = candidates
             .into_iter()
             .filter_map(|(id, private)| {
                 let k = on_chain.iter().find(|k| {
@@ -721,6 +747,7 @@ impl<'a> PrivateSigner<'a> {
             self.bridge,
             &self.identity.public_keys(),
             &repo.forge().core,
+            self.client.network(),
         )
     }
 
@@ -981,7 +1008,7 @@ pub async fn create_private_state(
         k
     } else {
         let k = EpochKey::generate()?;
-        self_wrap(signer, &w, 0, k).await?
+        self_wrap(signer, &w, 0, k, true).await?
     };
     signer
         .post_anchor(
@@ -1008,10 +1035,18 @@ async fn self_wrap(
     w: &WriteCtx,
     epoch: u32,
     key: EpochKey,
+    may_adopt: bool,
 ) -> Result<EpochKey> {
     match signer.post_wrap(w, epoch, &key, w.me).await? {
         WrapOutcome::Posted | WrapOutcome::Same => Ok(key),
-        WrapOutcome::Different(Some(standing)) => Ok(standing),
+        WrapOutcome::Different(Some(standing)) if may_adopt => Ok(standing),
+        WrapOutcome::Different(Some(_)) => Err(UserError::new(
+            codes::ROTATION_PENDING,
+            format!("key epoch {epoch} already holds another key of yours; nothing was anchored"),
+        )
+        .cause("an earlier run's key for this epoch stands, and a removal never reuses one (it may have reached the member being removed)")
+        .fix("run the command again: it picks a fresh epoch")
+        .into()),
         WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("your own key wrap for epoch {epoch} stands and cannot be read back"),
@@ -1114,10 +1149,21 @@ pub async fn rotate(
     // resumed epoch whose earlier wrap to a member cannot be replaced (they changed keys since)
     // is abandoned for a fresh one, once.
     let targets = rotation_targets(kr, &me_b58, exclude);
-    let (mut epoch, mut key) = next_epoch(kr, me, n, exclude, None)?;
+    // A rotation that removes someone never resumes an earlier run: a lagging read can hide
+    // that run's wrap to the member being removed, so only a fresh epoch is safe. (A plain
+    // rotation may resume; nobody it wrapped has lost access.)
+    let removing = !exclude.is_empty();
+    if removing {
+        member_list_is_stable(signer, repo, &me_b58, exclude, &targets).await?;
+    }
+    let (mut epoch, mut key) = if removing {
+        next_epoch(kr, me, n, exclude, Some(u32::MAX))?
+    } else {
+        next_epoch(kr, me, n, exclude, None)?
+    };
     let mut abandoned = None;
     let (key, wrapped, skipped) = loop {
-        let key_now = self_wrap(signer, &w, epoch, key).await?;
+        let key_now = self_wrap(signer, &w, epoch, key, !removing).await?;
         match wrap_all(signer, &w, epoch, &key_now, &targets).await? {
             Ok((wrapped, skipped)) => break (key_now, wrapped, skipped),
             Err(member) if abandoned.is_none() => {
@@ -1134,6 +1180,8 @@ pub async fn rotate(
             }
         }
     };
+
+    no_stray_wraps(signer, &w, repo, epoch, &targets).await?;
 
     // Step 3: the anchor (the commit point), with the current config's fields.
     let cfg = kr.config();
@@ -1254,10 +1302,40 @@ fn next_epoch(
         .chain(kr.configs.iter().filter_map(config_row).map(|c| c.epoch))
         .chain(kr.resolution.anchors.keys().copied())
         .chain(kr.resolution.unanchored.iter().copied())
-        .chain(abandoned)
+        .chain(abandoned.filter(|a| *a != u32::MAX))
         .collect();
-    let floor = used.iter().next_back().copied().unwrap_or(n).max(n);
-    Ok((fresh_epoch(floor, &used)?, EpochKey::generate()?))
+    // Numbers are skipped when seen anywhere, but the starting point comes only from epochs a
+    // current maintainer stands behind (anchors, and current maintainers' own configs and
+    // wraps): otherwise a maintainer who posts one config at u32::MAX before being removed
+    // would exhaust the space and block every later rotation.
+    let maintainers: BTreeSet<[u8; 32]> = kr
+        .members()
+        .iter()
+        .filter(|m| m.role == Role::Maintainer)
+        .filter_map(|m| platform::decode_identifier(&m.identity_id).ok())
+        .collect();
+    let trusted = kr
+        .resolution
+        .anchors
+        .keys()
+        .copied()
+        .chain(
+            kr.configs
+                .iter()
+                .filter_map(config_row)
+                .filter(|c| maintainers.contains(&c.owner))
+                .map(|c| c.epoch),
+        )
+        .chain(
+            kr.wraps
+                .iter()
+                .filter(|w| maintainers.contains(&w.owner))
+                .map(|w| w.epoch),
+        )
+        .max()
+        .unwrap_or(n)
+        .max(n);
+    Ok((fresh_epoch(trusted, &used)?, EpochKey::generate()?))
 }
 
 /// Before `leaving` loses the maintainer role: re-anchor every existing epoch whose anchor
@@ -1317,7 +1395,7 @@ pub async fn reanchor_before_removal(
                 .iter()
                 .any(|x| x.epoch == n && x.member == w.me && x.owner != leaving && x.key.is_some());
         if let (false, Some(key)) = (held_otherwise, w.kr.epoch_key(n).cloned()) {
-            self_wrap(signer, &w, n, key).await?;
+            self_wrap(signer, &w, n, key, true).await?;
         }
     }
     Ok((done, unreadable))
@@ -1332,6 +1410,65 @@ fn fresh_epoch(n: u32, used: &BTreeSet<u32>) -> Result<u32> {
         e = e.checked_add(1).ok_or_else(overflow)?;
     }
     Ok(e)
+}
+
+/// (Removal) Two reads of the member list that disagree mean a node is behind: nothing is
+/// wrapped from a list that may still name the member being removed.
+async fn member_list_is_stable(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    me: &str,
+    exclude: &[String],
+    targets: &[String],
+) -> Result<()> {
+    let again = MemberReader::new(signer.client).list(repo).await?;
+    if targets_of(&again, me, exclude) == targets {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::ROTATION_PENDING,
+        "the member list changed between two reads; nothing was rotated",
+    )
+    .fix("run the command again in a moment")
+    .into())
+}
+
+/// Before the commit point, re-read every wrap this signer posted at `epoch`: one that went
+/// outside `targets` (an earlier run's, hidden from the first read) would hand them the key.
+async fn no_stray_wraps(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    repo: &RepoRef,
+    epoch: u32,
+    targets: &[String],
+) -> Result<()> {
+    let allowed: BTreeSet<[u8; 32]> = targets
+        .iter()
+        .filter_map(|t| platform::decode_identifier(t).ok())
+        .collect();
+    let io = KeyringIo {
+        client: signer.client,
+        core: &w.core,
+        scope: &w.scope,
+    };
+    let now = Keyring::load_with(&io, repo, &signer.identity.id(), &w.enc).await?;
+    let Some(stray) = now
+        .wraps
+        .iter()
+        .find(|x| x.epoch == epoch && x.owner == w.me && !allowed.contains(&x.member))
+    else {
+        return Ok(());
+    };
+    Err(UserError::new(
+        codes::ROTATION_PENDING,
+        format!(
+            "key epoch {epoch} was also wrapped to {}; nothing was anchored",
+            platform::encode_identifier(stray.member)
+        ),
+    )
+    .cause("an earlier run's wrap to someone outside the remaining members stands at this epoch")
+    .fix("run the command again: it picks a fresh epoch")
+    .into())
 }
 
 /// Who a rotation wraps to: this signer first, then every current member not in `exclude`.
@@ -1518,6 +1655,18 @@ mod tests {
         );
         let (e, _) = next_epoch(&kr, alice, 0, &[], None).unwrap();
         assert_eq!(e, 2);
+    }
+
+    #[test]
+    fn a_stray_epoch_at_the_top_of_the_space_does_not_block_rotation() {
+        let (alice, mallory) = ([1; 32], [7; 32]);
+        // mallory (no longer a maintainer) left a wrap at u32::MAX
+        let kr = keyring(
+            vec![member(alice, Role::Maintainer)],
+            vec![wrap(mallory, alice, u32::MAX, None)],
+        );
+        let (e, _) = next_epoch(&kr, alice, 0, &[], None).unwrap();
+        assert_eq!(e, 1);
     }
 
     #[test]

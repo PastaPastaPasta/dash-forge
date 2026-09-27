@@ -12,10 +12,14 @@
 #      OWNER pushes a second branch under epoch 1
 #   6. COLLAB (removed) clones                                    -> refused with E307 (no key for epoch 1)
 #      but COLLAB's earlier clone still holds the old content (encryption can't take it back)
-#   7. `dg repo keys status` shows epoch 1, no alerts, nothing to repair
+#   7. COLLAB rejoins as a maintainer and anchors epoch 2 (`dg repo keys rotate`); OWNER removes
+#      them: their epoch is re-anchored first, then rotated to epoch 3 (no number reused), and
+#      OWNER still reads every epoch
+#   8. `dg repo keys status` shows the current epoch, no alerts, nothing to repair
 #
-# Each run makes a new repo (`e2e-private-<run-id>`, ~0.003 DASH + pushes): a private repo's
-# rotation history is part of what is tested, so it is not shared between runs.
+# Each run makes a new repo (`e2e-private-<run-id>`, about 0.015 DASH with its pushes, two
+# rotations and a re-anchor): a private repo's rotation history is part of what is tested, so it
+# is not shared between runs.
 SCENARIO_NAME="15 private repository: create, push, member clone, remove + rotate"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
@@ -27,6 +31,9 @@ REMOTE="dash://${REPO}"
 SRC="${WORKROOT}/s15-src"
 LOG="${WORKROOT}/s15"
 
+_dump_as_owner() { # _dump_as_owner <verb> <out>: a raw read with the helper's admin verbs
+  DASH_FORGE_KEY="$ID_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remote-dash" "$1" "$E2E_OWNER_ID" "$NAME" >"$2" 2>>"${2%.txt}.err"
+}
 balance_of() { # balance_of <identity_file> -> credits
   dg_as "$1" --json auth balance 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["balanceCredits"])' 2>/dev/null || echo 0
 }
@@ -52,14 +59,29 @@ if ! git_dash_retry "$ID_OWNER" "$LOG-push1" -C "$SRC" push "$REMOTE" "refs/head
 fi
 ok "pushed main @ ${TIP:0:12}"
 
-step "the chain holds no plaintext ref name"
-DASH_FORGE_KEY="$ID_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remote-dash" --dump-refs "$E2E_OWNER_ID" "$NAME" >"$LOG-dump.txt" 2>"$LOG-dump.err" || true
-if grep -q 'ref="refs/heads/main"' "$LOG-dump.txt"; then
-  bad "a private refUpdate carries a plaintext refName"
-elif grep -q 'ref=""' "$LOG-dump.txt"; then
-  ok "refUpdate has no plaintext refName"
+step "the chain holds no plaintext: no ref name, a keyed ref hash, sealed packs"
+PLAIN_HASH="$(printf 'refs/heads/main' | shasum -a 256 | cut -d' ' -f1)"
+if ! _retry "$LOG-dump.err" _dump_as_owner --dump-refs "$LOG-dump.txt"; then
+  cat "$LOG-dump.err" >&2
+  is_flake "$LOG-dump.err" && skip_scenario "the raw ref dump failed on a flake"
+  bad "could not read the raw ref documents"
+elif ! grep -q 'ref=""' "$LOG-dump.txt"; then
+  bad "a private ref update carries a plaintext refName (or the dump format changed)"
+elif grep -q "hash=${PLAIN_HASH}" "$LOG-dump.txt"; then
+  bad "a private ref update is indexed under sha256(refName), not a keyed hash"
+elif ! grep -qE 'enc=[1-9]' "$LOG-dump.txt"; then
+  bad "a private ref update has no enc"
 else
-  info "raw ref dump unavailable: $(head -c 300 "$LOG-dump.err")"
+  ok "ref updates: no plaintext refName, a keyed refNameHash, the name inside enc"
+fi
+if ! _retry "$LOG-heads.err" _dump_as_owner --dump-pack-heads "$LOG-heads.txt"; then
+  cat "$LOG-heads.err" >&2
+  is_flake "$LOG-heads.err" && skip_scenario "the stored-pack dump failed on a flake"
+  bad "could not read the stored packs"
+elif grep -q 'head="PACK"' "$LOG-heads.txt" || ! grep -q 'head="DFPK"' "$LOG-heads.txt"; then
+  bad "a stored pack is not sealed: $(cat "$LOG-heads.txt")"
+else
+  ok "every stored artifact is sealed (DFPK)"
 fi
 
 step "CONTRIB (never a member) clones -> refused (E307)"
