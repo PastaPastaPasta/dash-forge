@@ -75,8 +75,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [stage, setStage] = useState<string | null>(null)
   const [seen, setSeen] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  // The last run's IdentityCreate did not land and its lock is unused: "Try again" reuses it.
-  const [sameDeposit, setSameDeposit] = useState(false)
+  // The last run's IdentityCreate did not land (L-06): its message says what the deposit allows,
+  // and "Try again" reuses the lock when enough of it is left ('retry').
+  const [notCreated, setNotCreated] = useState<'retry' | 'final' | null>(null)
   // The words of the last run, for "Try again" (a resumed creation's words are typed, not shown).
   const runWords = useRef<string | null>(null)
   const [running, setRunning] = useState(false)
@@ -175,7 +176,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const start = async (phrase: string): Promise<void> => {
     if (!protection || running || preparing) return
     setError(null)
-    setSameDeposit(false)
+    setNotCreated(null)
     const m = normalizeMnemonic(phrase)
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
@@ -217,7 +218,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       controller.logout()
       if (!isAbort(e)) {
         setError(errorMessage(e))
-        setSameDeposit(e instanceof IdentityNotCreatedError)
+        setNotCreated(e instanceof IdentityNotCreatedError ? (e.retryable ? 'retry' : 'final') : null)
       }
       reloadVaults()
     } finally {
@@ -229,6 +230,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const discard = async (): Promise<void> => {
     if (!journal) return
     setError(null)
+    setNotCreated(null)
+    runWords.current = null
     try {
       if (discardWarning === null) {
         const held = await withTimeout(depositBalance(network, journal), STEP_MS, 'Checking the deposit address').catch(() => -1)
@@ -395,9 +398,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       </p>
       {error && !running ? (
         <StepFailed
-          {...(sameDeposit
+          {...(notCreated === 'retry'
             ? { error, retryLabel: 'Try again with the same deposit' }
-            : { error: `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).` })}
+            : notCreated === 'final'
+              ? { error }
+              : { error: `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).` })}
           onRetry={() => {
             const words = runWords.current ?? mnemonic
             if (words) void start(words)

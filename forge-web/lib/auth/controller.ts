@@ -339,8 +339,8 @@ export class AuthController {
     return { identityId, network, getSigningKeyWif: pick }
   }
 
-  /** Times the named sign-in steps (`lib/step-timing.ts`, L-20). */
-  private readonly stepTimer = stepClock('sign-in')
+  /** Times the named steps of the running sign-in (`lib/step-timing.ts`, L-20); one clock per run. */
+  private stepTimer = stepClock('sign-in')
 
   /** The verified scopes of the open session's keys (main, and extra grants by key id). */
   private scopes: { main: KeyScope | null; extra: Map<number, KeyScope> } = { main: null, extra: new Map() }
@@ -351,6 +351,7 @@ export class AuthController {
   }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {
+    this.stepTimer = stepClock('sign-in')
     this.setState({ isLoading: true, error: null, step: null })
     try {
       const v = await fn()
