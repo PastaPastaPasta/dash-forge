@@ -54,7 +54,15 @@ impl GlApi for Recorded {
         }
         let rest = url.strip_prefix(BASE).unwrap();
         let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
-        if let Some((_, r)) = self.overrides.iter().find(|(p, _)| *p == route) {
+        // An override is a route, or a route and query prefix (`/merge_requests?state=opened`).
+        let hit = self
+            .overrides
+            .iter()
+            .find(|(p, _)| match p.split_once('?') {
+                Some((r, q)) => r == route && query.starts_with(q),
+                None => *p == route,
+            });
+        if let Some((_, r)) = hit {
             return Ok(r.clone());
         }
         let denied = GlResponse::status(401, br#"{"message":"401 Unauthorized"}"#.to_vec(), None);
@@ -153,7 +161,7 @@ fn issues_and_merge_requests_keep_their_numbers_keys_and_state() {
     let labels = out.labels.as_ref().unwrap();
     assert_eq!(labels.len(), 1, "blank names are dropped");
     assert_eq!(labels[0].color, "#d9534f");
-    assert_eq!(out.open_pulls, [5]);
+    assert_eq!(out.open_pulls.as_deref(), Some(&[5][..]));
 }
 
 #[test]
@@ -339,6 +347,59 @@ fn a_refused_listing_is_partial_not_fatal() {
         ..Default::default()
     });
     assert!(collect(&gl, all(), None, 0).is_err());
+}
+
+/// A 403 on one item's thread (a members-only merge request) does not stop the others'.
+#[test]
+fn a_forbidden_thread_does_not_stop_the_others() {
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/issues/1/notes",
+            GlResponse::status(403, b"{}".to_vec(), None),
+        )],
+        ..Default::default()
+    });
+    let out = collect(&gl, all(), None, 0).unwrap();
+    assert!(out.incomplete);
+    assert_eq!(by_number(&out, TargetKind::Issue, 2).comments.len(), 2);
+    assert!(!by_number(&out, TargetKind::Patch, 5).comments.is_empty());
+    let forbidden = out.warnings.iter().filter(|w| w.contains("403")).count();
+    assert_eq!(
+        forbidden, 1,
+        "one warning, not one per item: {:?}",
+        out.warnings
+    );
+}
+
+/// A refused open-MR listing must not become "no MR is open": the heads push (with
+/// `--prune`) would then delete every MR head already on Dash. It is not planned at all.
+#[test]
+fn a_refused_open_mr_listing_plans_no_heads_push() {
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/merge_requests?state=opened",
+            GlResponse::status(403, b"{}".to_vec(), None),
+        )],
+        ..Default::default()
+    });
+    let classes = all();
+    let out = collect(&gl, classes, None, 0).unwrap();
+    assert!(out.open_pulls.is_none());
+    assert!(out.incomplete);
+    assert_eq!(
+        crate::importer::planned_pushes(classes, out.open_pulls.as_deref()),
+        [crate::gitsync::Refs::Code]
+    );
+    // The listing read: the heads push is planned, with the open MR.
+    let (gl, _) = client(false);
+    let out = collect(&gl, classes, None, 0).unwrap();
+    assert_eq!(
+        crate::importer::planned_pushes(classes, out.open_pulls.as_deref()),
+        [
+            crate::gitsync::Refs::Code,
+            crate::gitsync::Refs::PullHeads(vec![5])
+        ]
+    );
 }
 
 /// M2: a next page on another origin is not followed (the token would go there), and the

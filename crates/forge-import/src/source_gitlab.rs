@@ -105,7 +105,10 @@ impl Outcome for SrcCollab {
             Ok(v) => Some(v),
             Err(d) => {
                 self.incomplete = true;
-                self.warnings.push(d.explain(what, repo));
+                let w = d.explain(what, repo);
+                if !self.warnings.contains(&w) {
+                    self.warnings.push(w);
+                }
                 None
             }
         }
@@ -170,9 +173,8 @@ fn project_level(
     }
     if classes.code && classes.prs {
         let open = gl.open_merge_requests(limit)?;
-        out.open_pulls = out
-            .readable(open, "the open merge requests", repo)
-            .unwrap_or_default();
+        // Refused: `None`, so the heads push is skipped (never pruned to nothing).
+        out.open_pulls = out.readable(open, "the open merge requests", repo);
     }
     Ok(())
 }
@@ -222,8 +224,8 @@ pub fn collect(
         None
     };
     let mut skipped_confidential = 0;
-    // After the first refusal no more threads are asked for: the token will not read the
-    // others either (the warning says so once).
+    // After a 401 no more threads are asked for: the token reads none (the warning says so
+    // once).
     let mut threads_readable = true;
     for item in &items {
         let Ok(number) = u32::try_from(item.gl.iid) else {
@@ -244,16 +246,20 @@ pub fn collect(
                     .mr_discussions(item.gl.iid)?
                     .map(|ds| ds.into_iter().flat_map(|d| d.notes).collect()),
             };
-            match out.readable(notes, "the comments on issues and merge requests", repo) {
-                Some(mut notes) => {
-                    notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-                    t.comments = notes
-                        .iter()
-                        .filter(|n| n.is_public_comment())
-                        .map(|n| comment(&canonical, item, number, &url, n))
-                        .collect();
-                }
-                None => threads_readable = false,
+            // A 401 means this token reads no thread at all: stop asking. A 403 may concern
+            // one item only (a members-only merge request), so the others are still read.
+            if matches!(notes, Err(crate::gitlab::Denied::Unauthorized)) {
+                threads_readable = false;
+            }
+            if let Some(mut notes) =
+                out.readable(notes, "the comments on issues and merge requests", repo)
+            {
+                notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+                t.comments = notes
+                    .iter()
+                    .filter(|n| n.is_public_comment())
+                    .map(|n| comment(&canonical, item, number, &url, n))
+                    .collect();
             }
         }
         if item.kind == TargetKind::Patch {

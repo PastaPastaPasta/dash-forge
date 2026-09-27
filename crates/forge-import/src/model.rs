@@ -116,8 +116,10 @@ pub struct SrcCollab {
     /// labels): the incremental state must not advance, so a run that can read them sees
     /// these items again.
     pub incomplete: bool,
-    /// Open PRs/MRs (source numbers) whose heads the git push mirrors.
-    pub open_pulls: Vec<u64>,
+    /// Open PRs/MRs (source numbers) whose heads the git push mirrors. `None`: not read
+    /// (not asked for, or the source refused the listing); the heads push is then skipped
+    /// entirely, since its `--prune` would delete every head already mirrored.
+    pub open_pulls: Option<Vec<u64>>,
     /// Things the user should know about what was read.
     pub warnings: Vec<String>,
 }

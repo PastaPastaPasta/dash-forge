@@ -124,23 +124,19 @@ async fn run_inner<'a>(
         ))
     });
     let _cleanup = cfg.work_dir.is_none().then(|| TempDir(work.clone()));
+    let pushes = planned_pushes(cfg.classes, collab_src.open_pulls.as_deref());
     if cfg.classes.code {
         src.sync_mirror(&work).context("mirroring the git data")?;
-        crate::gitsync::sync_pull_heads(&work, &collab_src.open_pulls, src.pull_head_prefix())
-            .context("preparing the open pull requests' heads")?;
+        if let Some(open) = &collab_src.open_pulls {
+            crate::gitsync::sync_pull_heads(&work, open, src.pull_head_prefix())
+                .context("preparing the open pull requests' heads")?;
+        }
     }
 
     // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
     // heads, are separate pushes (see gitsync); the second is optional, so it is priced for
     // the report but kept out of the hard up-front check, and re-priced after the first.
     let create = dest.existing.is_none();
-    // The PR-heads push runs whenever PRs were collected, even with none open: its
-    // wildcard refspec with --prune then deletes the heads of PRs that closed.
-    let pushes: Vec<Refs> = match (cfg.classes.code, cfg.classes.prs) {
-        (true, true) => vec![Refs::Code, Refs::PullHeads(collab_src.open_pulls.clone())],
-        (true, false) => vec![Refs::Code],
-        _ => Vec::new(),
-    };
     // Where the helper will put the packs: the same git config it reads.
     let (storage, fallback) = if pushes.is_empty() {
         (PackStorage::Platform, false)
@@ -371,11 +367,50 @@ async fn push_one(
     Ok(())
 }
 
+/// The git pushes of a run: branches and tags with `code`, then the open PRs'/MRs' heads
+/// with `code` and `prs`. The heads push runs whenever the open list was read, even empty:
+/// its wildcard refspec with `--prune` then deletes the heads of PRs that closed. When the
+/// list was not read (`None`: the source refused it) that push is left out, since pruning
+/// against an unknown list would delete every head already mirrored.
+pub(crate) fn planned_pushes(classes: Classes, open: Option<&[u64]>) -> Vec<Refs> {
+    match (classes.code, classes.prs, open) {
+        (true, true, Some(open)) => vec![Refs::Code, Refs::PullHeads(open.to_vec())],
+        (true, _, _) => vec![Refs::Code],
+        _ => Vec::new(),
+    }
+}
+
 /// Removes a temporary directory on drop.
 struct TempDir(PathBuf);
 
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heads_are_pushed_only_when_the_open_list_was_read() {
+        let all = Classes::parse("all").unwrap();
+        assert_eq!(
+            planned_pushes(all, Some(&[3])),
+            [Refs::Code, Refs::PullHeads(vec![3])]
+        );
+        // Read and empty: still pushed, so the closed PRs' heads are pruned.
+        assert_eq!(
+            planned_pushes(all, Some(&[])),
+            [Refs::Code, Refs::PullHeads(vec![])]
+        );
+        // Not read (refused): never a prune against an unknown list.
+        assert_eq!(planned_pushes(all, None), [Refs::Code]);
+        assert_eq!(
+            planned_pushes(Classes::parse("code").unwrap(), None),
+            [Refs::Code]
+        );
+        assert!(planned_pushes(Classes::parse("issues,prs").unwrap(), Some(&[1])).is_empty());
     }
 }

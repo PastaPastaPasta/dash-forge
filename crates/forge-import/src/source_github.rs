@@ -107,7 +107,8 @@ pub fn collect(
         );
     }
     if classes.code && classes.prs {
-        out.open_pulls = gh.open_pulls()?;
+        // A failed listing fails the run (`?`): an empty list here always means "none open".
+        out.open_pulls = Some(gh.open_pulls()?);
     }
     if !(classes.issues || classes.prs) {
         return Ok(out);
@@ -501,6 +502,29 @@ mod tests {
         assert!(out.targets.iter().all(|t| t.kind == TargetKind::Patch));
         let log = log.borrow();
         assert!(!log.iter().any(|p| p.contains("issues?")), "{log:#?}");
+    }
+
+    #[test]
+    fn a_failed_open_pr_listing_fails_the_run() {
+        // The GitHub path has no partial read of the open PRs: a failed listing fails the
+        // run, so an empty `open_pulls` never means "unknown" and a heads push never prunes
+        // against a list that was not read. (Pinned: see the GitLab counterpart.)
+        struct Refusing;
+        impl crate::github::GhApi for Refusing {
+            fn json(&self, _: &str) -> Result<Vec<u8>> {
+                anyhow::bail!("HTTP 403")
+            }
+            fn list(&self, path: &str) -> Result<Vec<String>> {
+                anyhow::bail!("`gh api {path}` failed: HTTP 403")
+            }
+        }
+        let gh = GithubClient::with_api(src(), Box::new(Refusing));
+        let code_and_prs = Classes::parse("code,prs").unwrap();
+        assert!(collect(&gh, &src(), code_and_prs, None, 0).is_err());
+        // Read (even empty): `Some`, so closed heads are pruned.
+        let (gh, _) = big_repo();
+        let out = collect(&gh, &src(), Classes::parse("code,prs").unwrap(), None, 0).unwrap();
+        assert!(out.open_pulls.is_some());
     }
 
     /// Without `--limit`, the repository-wide listings stay: one paged read per kind beats

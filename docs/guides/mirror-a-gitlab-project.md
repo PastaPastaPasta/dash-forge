@@ -46,6 +46,8 @@ forge-import team/app --gitlab-url https://git.example.org --dry-run
 forge-import team/app --gitlab-url https://example.org/gitlab --dry-run   # a relative URL root
 ```
 
+A GitLab installed under a relative URL root (`https://example.org/gitlab`) needs `--gitlab-url` with that root. A bare project URL such as `https://example.org/gitlab/team/app` cannot tell the root from the group path.
+
 The token is sent as `Authorization: Bearer`, only to that instance: the importer follows no redirect. A project that moved answers with a redirect, and the importer reports the new path instead of following it. An `http://` instance is refused unless you pass `--allow-http`, because the token would travel unencrypted.
 
 **Members-only content is refused by default.** When a project's issues or merge requests are visible only to its members on GitLab, the importer stops and names the flag `--include-members-only`. A Forge mirror is public and permanent, so members-only discussions must never be published by accident. Pass the flag only if you mean to publish them, or leave that class out with `--sync`. Internal comments and confidential issues are never mirrored, flag or not.

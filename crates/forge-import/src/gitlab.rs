@@ -113,16 +113,6 @@ impl GitlabRepoRef {
         format!("{bare}/{}", self.path)
     }
 
-    /// The instance origin (`scheme://host[:port]`, no relative root): what a `Link` header
-    /// or a git auth header is scoped to.
-    pub fn origin(&self) -> &str {
-        let after = self.base.find("://").map_or(0, |i| i + 3);
-        match self.base[after..].find('/') {
-            Some(i) => &self.base[..after + i],
-            None => &self.base,
-        }
-    }
-
     /// The project's last path segment (the default destination name).
     pub fn name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
@@ -499,7 +489,7 @@ impl GlResponse {
 }
 
 /// A request that got no HTTP answer: DNS, connect, timeout or a dropped connection
-/// (curl exits 6, 7, 28, 56), worth another try.
+/// (curl exits 6, 7, 16, 28, 52, 55, 56, 92), worth another try.
 #[derive(Debug)]
 pub struct Transient(pub String);
 
@@ -524,28 +514,29 @@ pub trait GlApi {
 /// is followed, so it never reaches another URL.
 pub struct Curl {
     token: Option<String>,
-    origin: String,
+    base: String,
 }
 
 impl Curl {
-    /// For the instance at `origin`, with `GITLAB_TOKEN` when it is set.
-    pub fn from_env(origin: &str) -> Self {
+    /// For the instance at `base`, with `GITLAB_TOKEN` when it is set.
+    pub fn from_env(base: &str) -> Self {
         Self {
             token: gitlab_token(),
-            origin: origin.to_string(),
+            base: base.to_string(),
         }
     }
 }
 
-/// The git config entry that sends `token` to `origin` as HTTP basic auth: an access token
-/// is the password, with any non-empty user name
+/// The git config entry that sends `token` to URLs under `base` as HTTP basic auth: an
+/// access token is the password, with any non-empty user name
 /// (<https://docs.gitlab.com/user/profile/personal_access_tokens/>). Passed through
 /// `GIT_CONFIG_*`, so it is never in a URL, argv or a config file; `http.<url>.*` matches
-/// only that origin, so a redirect elsewhere does not carry it.
-fn git_auth(origin: &str, token: Option<&str>) -> Option<(String, String)> {
+/// only URLs under that prefix, so neither a redirect elsewhere nor another application on
+/// the same host (beside a GitLab under a relative root) receives it.
+fn git_auth(base: &str, token: Option<&str>) -> Option<(String, String)> {
     token.map(|t| {
         (
-            format!("http.{origin}/.extraheader"),
+            format!("http.{base}/.extraheader"),
             format!(
                 "Authorization: Basic {}",
                 crate::github::base64(format!("oauth2:{t}").as_bytes())
@@ -599,9 +590,10 @@ impl GlApi for Curl {
         let out = child.wait_with_output().context("running curl")?;
         if !out.status.success() {
             let why = format!("GET {url}: {}", String::from_utf8_lossy(&out.stderr).trim());
-            // 6 no DNS, 7 no connection, 28 timeout, 56 connection dropped: no answer came.
+            // No answer came: 6 no DNS, 7 no connection, 16 HTTP/2 framing, 28 timeout,
+            // 52 empty reply, 55 send failed, 56 connection dropped, 92 HTTP/2 stream reset.
             return Err(match out.status.code() {
-                Some(6 | 7 | 28 | 56) => Transient(why).into(),
+                Some(6 | 7 | 16 | 28 | 52 | 55 | 56 | 92) => Transient(why).into(),
                 _ => anyhow!(why),
             });
         }
@@ -611,7 +603,7 @@ impl GlApi for Curl {
     fn ls_remote(&self, url: &str, pattern: &str) -> Result<String> {
         let mut cmd = git_cmd(
             &["ls-remote", "--", url, pattern],
-            git_auth(&self.origin, self.token.as_deref()),
+            git_auth(&self.base, self.token.as_deref()),
         );
         let out = cmd.output().context("running git ls-remote")?;
         if !out.status.success() {
@@ -701,7 +693,7 @@ pub enum Denied {
     Unauthorized,
     /// `403`: the feature is disabled, or shown only to project members.
     Forbidden,
-    /// The listing's next page was on another origin; it was not followed (the token must
+    /// The listing's next page was outside this instance's API; it was not followed (the token must
     /// never go there), so the listing stopped short.
     OffOrigin(String),
 }
@@ -720,7 +712,7 @@ impl Denied {
                  to project members); not mirrored this run, and the run is partial"
             ),
             Denied::OffOrigin(url) => format!(
-                "GitLab's next page of {what} of {repo} is on another origin ({url}); it was not \
+                "GitLab's next page of {what} of {repo} is outside its API ({url}); it was not \
                  followed, so the listing is incomplete and the run is partial"
             ),
         }
@@ -743,7 +735,7 @@ pub struct GitlabClient {
 impl GitlabClient {
     /// Bind to a project, reading over HTTPS with `GITLAB_TOKEN` when set.
     pub fn new(repo: GitlabRepoRef) -> Self {
-        let api = Box::new(Curl::from_env(repo.origin()));
+        let api = Box::new(Curl::from_env(&repo.base));
         Self {
             pace: true,
             ..Self::with_api(repo, api)
@@ -863,9 +855,9 @@ impl GitlabClient {
         }
     }
 
-    /// A paginated listing, following `Link: rel="next"` on this origin only. With `want`,
+    /// A paginated listing, following `Link: rel="next"` under this `base/api/v4/` only. With `want`,
     /// pages are read only until `want` elements are found, at most `want` are kept, and the
-    /// flag says whether the listing had more. A next page on another origin is not followed
+    /// flag says whether the listing had more. A next page anywhere else is not followed
     /// (the token must never go there): the elements read so far are dropped and the listing
     /// is `Denied::OffOrigin`, so the run is partial rather than silently short.
     fn pages<T: for<'de> Deserialize<'de>>(
@@ -876,7 +868,8 @@ impl GitlabClient {
     ) -> Result<Readable<(Vec<T>, bool)>> {
         let mut url = self.url(rest);
         let mut out = Vec::new();
-        let origin = format!("{}/", self.repo.origin());
+        // Only pages of this instance's API (under a relative root, only that root's).
+        let api_root = format!("{}/api/v4/", self.repo.base);
         loop {
             let r = match self.get(&url, what)? {
                 Ok(r) => r,
@@ -892,7 +885,7 @@ impl GitlabClient {
             match r.next {
                 None => return Ok(Ok((out, false))),
                 Some(_) if want == Some(out.len()) => return Ok(Ok((out, true))),
-                Some(next) if next.starts_with(&origin) => url = next,
+                Some(next) if next.starts_with(&api_root) => url = next,
                 Some(next) => return Ok(Err(Denied::OffOrigin(next))),
             }
         }
@@ -1052,7 +1045,7 @@ impl GitlabClient {
                 "+refs/tags/*:refs/tags/*",
                 "+refs/merge-requests/*/head:refs/merge-requests/*/head",
             ],
-            git_auth(self.repo.origin(), gitlab_token().as_deref()),
+            git_auth(&self.repo.base, gitlab_token().as_deref()),
         ))
         .with_context(|| {
             format!(
@@ -1146,7 +1139,6 @@ mod tests {
     fn gitlab_url_takes_a_relative_root_and_http_only_when_allowed() {
         let rooted = parse("team/app", Some("https://example.org/gitlab")).unwrap();
         assert_eq!(rooted.base, "https://example.org/gitlab");
-        assert_eq!(rooted.origin(), "https://example.org");
         assert_eq!(rooted.web_url(), "https://example.org/gitlab/team/app");
         assert_eq!(rooted.display(), "example.org/gitlab/team/app");
         assert_eq!(
