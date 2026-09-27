@@ -92,6 +92,27 @@ mod tests {
     }
 
     #[test]
+    fn defaults_come_from_independent_operators() {
+        // One gateway per operator (registrable domain): one outage, one blocklist entry or
+        // one rate limit must not take every default down at once.
+        let g = default_ipfs_gateways();
+        let operators: std::collections::BTreeSet<String> = g
+            .iter()
+            .map(|u| {
+                let host = reqwest::Url::parse(u)
+                    .unwrap()
+                    .host_str()
+                    .unwrap()
+                    .to_string();
+                let labels: Vec<&str> = host.rsplitn(3, '.').collect();
+                format!("{}.{}", labels[1], labels[0])
+            })
+            .collect();
+        assert!(g.len() >= 3, "at least three defaults: {g:?}");
+        assert_eq!(operators.len(), g.len(), "one default per operator: {g:?}");
+    }
+
+    #[test]
     fn retired_gateways_are_not_defaults() {
         // ipfs.io and dweb.link answer 429 with `Sunset: Mon, 21 Sep 2026`; w3s.link and
         // nftstorage.link redirect to them (B-1). A default list of dead hosts makes every

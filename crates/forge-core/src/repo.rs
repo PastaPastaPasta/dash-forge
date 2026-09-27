@@ -1079,20 +1079,27 @@ impl<'a> RepoService<'a> {
             .await
     }
 
-    /// A reader over the user's gateway list with this repo's OWN public gateways first
-    /// (the `…/ipfs/` bases it recorded on chain in `manifests` and `config.backend.uris`):
+    /// A reader over the user's gateway list with this repo's OWN public gateways first:
     /// they reach the node that holds the content, which a shared default gateway may not.
-    /// A config that cannot be read only costs the preference, never the read.
-    pub async fn repo_reader(&self, repo: &RepoRef, manifests: &[PackManifestInfo]) -> PackReader {
+    /// Only trusted records count: the `…/ipfs/` bases `config.backend.uris` advertises
+    /// (maintainer-written), then those in manifests uploaded by a CURRENT member (`roles`),
+    /// at most [`crate::storage::read::MAX_REPO_GATEWAYS`]. A past writer or a stranger
+    /// cannot put a stalling gateway ahead of every pack. A config that cannot be read only
+    /// costs the preference, never the read.
+    pub async fn repo_reader(
+        &self,
+        repo: &RepoRef,
+        manifests: &[PackManifestInfo],
+        roles: &RoleMap,
+    ) -> PackReader {
         let mut backend = Vec::new();
         if let Ok((scope, contract)) = self.readable(repo).await {
             if let Ok(Some(config)) = self.newest_config(&scope, &contract).await {
                 backend = scope::backend_uris(&config);
             }
         }
-        let recorded = backend.iter().chain(manifests.iter().flat_map(|m| &m.uris));
         PackReader::from_user_config()
-            .prefer_gateways(crate::storage::read::repo_gateways(recorded))
+            .prefer_gateways(trusted_repo_gateways(&backend, manifests, roles))
     }
 
     /// Fetch one manifest's artifact, SHA-256-verified against it.
@@ -1238,7 +1245,7 @@ impl<'a> RepoService<'a> {
         }
 
         let roles = self.copy_roles(repo).await?;
-        let reader = self.repo_reader(repo, &manifests).await;
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut pack_blobs = Vec::new();
         for (hash, copies) in group_by_hash(&git) {
             let (sealed, m) = self
@@ -1405,7 +1412,7 @@ impl<'a> RepoService<'a> {
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
         let roles = self.copy_roles(repo).await?;
-        let reader = self.repo_reader(repo, &manifests).await;
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
             let (bytes, best) = match self
@@ -1485,7 +1492,8 @@ impl<'a> RepoService<'a> {
             )));
         }
         let contract = self.repo_contract(repo).await?;
-        let reader = self.repo_reader(repo, &manifests).await;
+        let roles = self.copy_roles(repo).await.unwrap_or_default();
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = LocalReseedReport::default();
         for m in &live {
             if !force
@@ -1630,7 +1638,7 @@ impl<'a> RepoService<'a> {
 
         // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`.
         let contract = self.repo_contract(repo).await?;
-        let reader = self.repo_reader(repo, &manifests).await;
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut parts = Vec::with_capacity(live_locators.len() + 1);
         for m in live_locators.iter().rev() {
             let sealed = self
@@ -1744,6 +1752,21 @@ pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
 /// The `String`s of a list of [`Uri`]s.
 fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()
+}
+
+/// The repo's own public gateways a reader should try first: `config.backend.uris`'s
+/// (`backend`, maintainer-written), then those recorded in manifests whose uploader is a
+/// current member (`roles`), capped ([`crate::storage::read::repo_gateways`]).
+pub fn trusted_repo_gateways(
+    backend: &[String],
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<String> {
+    let members = manifests
+        .iter()
+        .filter(|m| roles.contains_key(&m.owner_id))
+        .flat_map(|m| &m.uris);
+    crate::storage::read::repo_gateways(backend.iter().chain(members))
 }
 
 /// Group manifests by pack hash (every copy of one pack together), in hash order.
@@ -2058,8 +2081,8 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
 mod tests {
     use super::{
         current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
-        order_copies, plan_push_index, repack_supersedes, PackManifestInfo, PushIndexPlan, RoleMap,
-        MAX_LOCATOR_FRAGMENTS,
+        order_copies, plan_push_index, repack_supersedes, trusted_repo_gateways, PackManifestInfo,
+        PushIndexPlan, RoleMap, MAX_LOCATOR_FRAGMENTS,
     };
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
@@ -2081,6 +2104,28 @@ mod tests {
             supersedes: Vec::new(),
             created_at_block_height: 0,
         }
+    }
+
+    #[test]
+    fn only_trusted_records_name_the_repos_own_gateways() {
+        let mut member = manifest("m", 1, 0, 1);
+        member.owner_id = "writer".into();
+        member.uris = vec!["https://member-gw.example/ipfs/bafym".into()];
+        let mut stranger = manifest("s", 2, 0, 2);
+        stranger.owner_id = "former-writer".into();
+        stranger.uris = vec!["https://stall.example/ipfs/bafys".into()];
+        let mut roles = RoleMap::new();
+        roles.insert("writer".into(), Role::Writer);
+        let backend = vec!["https://config-gw.example/ipfs/".to_string()];
+        assert_eq!(
+            trusted_repo_gateways(&backend, &[stranger.clone(), member.clone()], &roles),
+            vec!["https://config-gw.example", "https://member-gw.example"]
+        );
+        // With no member list, only the maintainer-written config counts.
+        assert_eq!(
+            trusted_repo_gateways(&backend, &[stranger, member], &RoleMap::new()),
+            vec!["https://config-gw.example"]
+        );
     }
 
     fn hashes(ms: &[PackManifestInfo]) -> Vec<u8> {

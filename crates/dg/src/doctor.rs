@@ -924,15 +924,19 @@ fn gateway_checks(
                 format!("{name}: its public gateway {g} does not answer ({})", why(g)),
                 "readers fall back to the shared gateways, which may not reach your node: fix the gateway, or keep a second, non-IPFS copy (`dg storage use <this>,<another>`)",
             ),
+            // A pinning service holds the content on its own well-connected nodes.
+            None if matches!(p, Profile::IpfsPinningService(_)) => Check::ok(
+                "ipfs reach",
+                format!("{name}: no public_gateway; the pinning service serves the content to the shared gateways"),
+            ),
             None if live == 0 => Check::warn(
                 "ipfs reach",
                 format!("{name}: no public_gateway, and no shared gateway is up: nobody else can read what it stores"),
                 format!("set one: `dg storage add {name} --kind {} … --public-gateway https://<a gateway that reaches your node>`, add a working gateway to [read] ipfs_gateways, or pair it with a non-IPFS profile", p.kind()),
             ),
-            None => Check::warn(
+            None => Check::ok(
                 "ipfs reach",
-                format!("{name}: no public_gateway: readers rely on the shared gateways finding your node on the IPFS network (a node behind NAT often cannot be found)"),
-                format!("`dg storage test {name}` checks whether they can; a public gateway (`--public-gateway`) or a second, non-IPFS profile is the safe setup"),
+                format!("{name}: no public_gateway: readers use the shared gateways, which must find your node on the IPFS network (`dg storage test {name}` checks; a node behind NAT often cannot be found)"),
             ),
         };
         out.push(row);
@@ -1130,6 +1134,24 @@ mod tests {
             "{}",
             rows[1].detail
         );
+        assert_eq!(
+            rows[1].status,
+            Status::Ok,
+            "a shared gateway is up: only a note"
+        );
+
+        // A pinning service needs no public gateway of its own, even with none up.
+        let pinning = StorageProfiles::parse(
+            "[profiles.p]\nkind = \"ipfs-pinning-service\"\napi = \"http://127.0.0.1:5001\"\n\
+             pinning_endpoint = \"https://pins.example/psa\"\npinning_token = \"env:T\"\n",
+        )
+        .unwrap();
+        let rows = gateway_checks(
+            &pinning,
+            &list,
+            &gw_health(&[("https://a.example", false), ("https://b.example", false)]),
+        );
+        assert_eq!(rows[1].status, Status::Ok, "{}", rows[1].detail);
     }
 
     #[test]

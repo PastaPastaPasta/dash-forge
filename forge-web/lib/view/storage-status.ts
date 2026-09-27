@@ -87,19 +87,37 @@ export function gatewaysIn(uris: readonly string[]): string[] {
   for (const uri of uris) {
     const at = uri.indexOf('/ipfs/')
     if (at < 0) continue
-    const base = uri.slice(0, at).replace(/\/+$/, '')
+    let base: string
+    try {
+      // Scheme, host, port and path only: a query or fragment is not part of a gateway.
+      const u = new URL(uri.slice(0, at))
+      base = `${u.protocol}//${u.host}${u.pathname}`.replace(/\/+$/, '')
+    } catch {
+      continue
+    }
     if (isPublicHttpsUrl(base) && !out.includes(base)) out.push(base)
   }
   return out
 }
 
-/** Per repo (`repoKey`): the gateways its owner recorded on chain, in first-seen order. */
+/**
+ * At most this many of a repo's own gateways go ahead of the shared list (parity with
+ * forge-core `MAX_REPO_GATEWAYS`): each is tried before any default.
+ */
+export const MAX_REPO_GATEWAYS = 3
+
+/** Per repo (`repoKey`): the gateways its trusted records name, in first-seen order. */
 const repoGatewayMap = new Map<string, string[]>()
 
-/** Remember the gateways `uris` (a repo's manifests, its `config.backend.uris`) name. */
+/**
+ * Remember the gateways `uris` name for repo `key`. Callers pass only trusted records: the
+ * repo config's `backend.uris` (maintainer-written) and the uris of manifests uploaded by a
+ * CURRENT member — a past writer or a stranger must not put a stalling gateway ahead of
+ * every pack. At most {@link MAX_REPO_GATEWAYS}.
+ */
 export function noteRepoGateways(key: string, uris: readonly string[]): void {
   const known = repoGatewayMap.get(key) ?? []
-  const merged = [...new Set([...known, ...gatewaysIn(uris)])]
+  const merged = [...new Set([...known, ...gatewaysIn(uris)])].slice(0, MAX_REPO_GATEWAYS)
   if (merged.length > 0) repoGatewayMap.set(key, merged)
 }
 
@@ -130,8 +148,11 @@ const IDENTITY_CID = 'bafkqaaa'
 /** How long a gateway gets to answer the liveness probe. */
 const GATEWAY_PROBE_TIMEOUT_MS = 8_000
 
-/** A gateway's liveness: `null` when it answered, else why not (`HTTP 429`, `no answer in 8s`). */
+/** A gateway's liveness: `null` unless it answered 429/410/5xx, else why (`HTTP 429`). */
 type GatewayDown = string | null
+
+/** How long a "down" verdict stands before the gateway is probed again. */
+const GATEWAY_DOWN_TTL_MS = 60_000
 
 /** The failure line for a URL skipped because its gateway is down (read back by {@link describePack}). */
 export function gatewayDownReason(host: string, why: string): string {
@@ -147,35 +168,43 @@ function gatewayDownWhy(message: string): string | null {
 /** How {@link describePack} names a failed IPFS gateway (and how {@link onlyGatewaysFailed} spots one). */
 const GATEWAY_PLACE = 'ipfs gateway '
 
-const gatewayHealthCache = new Map<string, Promise<GatewayDown>>()
+const gatewayHealthCache = new Map<string, { readonly at: number; readonly verdict: Promise<GatewayDown> }>()
 
 /**
- * Whether `gateway` answers at all (cached for the session). A retired gateway (ipfs.io and
- * dweb.link answer 429 since 2026-09-21) or an unreachable one is then skipped at once, rather
- * than costing every pack a timeout, and the storage card can name it.
+ * Whether `gateway` is known to be down: it answered the identity-CID probe with 429/410
+ * (rate-limited or retired: ipfs.io and dweb.link since 2026-09-21) or 5xx. Anything else is
+ * NOT a down verdict: a thrown error (a network failure, or a 403/404 that came back without
+ * CORS headers, which a dedicated gateway sends for CIDs it does not pin) or a timeout is
+ * unknown, and the gateway stays in the race. A down verdict expires after
+ * {@link GATEWAY_DOWN_TTL_MS}; an "up" one is kept for the session.
  */
-export function gatewayHealth(gateway: string): Promise<GatewayDown> {
+export function gatewayHealth(gateway: string, now = Date.now()): Promise<GatewayDown> {
   const key = gateway.replace(/\/+$/, '')
   const hit = gatewayHealthCache.get(key)
-  if (hit !== undefined) return hit
-  const probe = (async (): Promise<GatewayDown> => {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), GATEWAY_PROBE_TIMEOUT_MS)
+  if (hit !== undefined) {
+    const stale = now - hit.at > GATEWAY_DOWN_TTL_MS
+    // A settled "down" past its TTL is probed again; everything else is reused.
+    if (!stale) return hit.verdict
+    const expired = hit.verdict.then((down) => down !== null)
+    return expired.then((wasDown) => (wasDown ? probeGateway(key, now) : hit.verdict))
+  }
+  return probeGateway(key, now)
+}
+
+function probeGateway(key: string, now: number): Promise<GatewayDown> {
+  const verdict = (async (): Promise<GatewayDown> => {
     try {
-      const resp = await fetch(`${key}/ipfs/${IDENTITY_CID}`, { signal: controller.signal })
-      // Down: rate-limited or retired (429, 410) or broken (5xx). Any other answer means the
-      // gateway is there; a 403/404 is a restricted gateway serving only its own pins.
+      const resp = await fetch(`${key}/ipfs/${IDENTITY_CID}`, {
+        signal: AbortSignal.timeout(GATEWAY_PROBE_TIMEOUT_MS),
+        cache: 'no-store',
+      })
       return resp.status === 429 || resp.status === 410 || resp.status >= 500 ? `HTTP ${resp.status}` : null
     } catch {
-      return controller.signal.aborted
-        ? `no answer in ${GATEWAY_PROBE_TIMEOUT_MS / 1000}s`
-        : "didn't answer (down, or refused this site)"
-    } finally {
-      clearTimeout(timer)
+      return null
     }
   })()
-  gatewayHealthCache.set(key, probe)
-  return probe
+  gatewayHealthCache.set(key, { at: now, verdict })
+  return verdict
 }
 
 /** "Try again" / tests: probe every gateway afresh. */
@@ -222,7 +251,7 @@ function reasonsByHost(pack: UnavailablePack): Map<string, string> {
  * mirrors, then each IPFS gateway by name (`ipfs gateway ipfs.io (down: HTTP 429)`), so a
  * reader can tell a retired gateway from content no gateway can find.
  */
-export function describePack(pack: UnavailablePack, gateways: readonly string[] = readGateways()): string[] {
+export function describePack(pack: UnavailablePack, gateways: readonly string[]): string[] {
   const gatewayHosts = new Set(gateways.map(urlHost))
   const places: string[] = []
   const ipfs: string[] = []
@@ -246,7 +275,7 @@ export function onlyGatewaysFailed(places: readonly string[]): boolean {
   return places.length > 0 && places.every((p) => p.startsWith(GATEWAY_PLACE))
 }
 
-/** Every distinct place, over a set of unreadable packs. */
-export function describeUnavailable(packs: readonly UnavailablePack[], gateways?: readonly string[]): string[] {
+/** Every distinct place, over a set of unreadable packs (`gateways`: the repo's, {@link readGatewaysFor}). */
+export function describeUnavailable(packs: readonly UnavailablePack[], gateways: readonly string[]): string[] {
   return [...new Set(packs.flatMap((p) => describePack(p, gateways)))]
 }

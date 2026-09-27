@@ -13,6 +13,7 @@ use crate::network::ForgeIds;
 use crate::platform::{self, FetchedDocument, FieldValue, PlatformClient, QueryFilter, QueryOrder};
 use crate::rules::v2::normalize_repo_name;
 use crate::scope::{visibility_of, RepoRef};
+use crate::user_error::{codes, UserError};
 
 /// The forge-core document type of a repository.
 pub const DOC_REPO: &str = "repo";
@@ -51,28 +52,52 @@ pub fn looks_like_identity_id(s: &str) -> bool {
         && platform::decode_identifier(s).is_ok()
 }
 
+/// The DPNS label `owner` names (`alice` for `alice` or `alice.dash`, the suffix matched
+/// case-insensitively as DPNS does), or `None` when it cannot be a DPNS name.
+pub fn dpns_label(owner: &str) -> Option<&str> {
+    let label = match owner.len().checked_sub(5) {
+        Some(at) if owner.is_char_boundary(at) && owner[at..].eq_ignore_ascii_case(".dash") => {
+            &owner[..at]
+        }
+        _ => owner,
+    };
+    (!label.is_empty()
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then_some(label)
+}
+
 /// The identity id `owner` names: `owner` itself when it is a base58 identity id, else a
 /// DPNS name (`alice`, `alice.dash`) resolved to the identity its `domain` record points at
-/// (proof-verified; an unregistered name is a [`Error::NotFound`] naming it).
+/// (proof-verified). An unregistered name is E102 naming it; a string that is neither is
+/// E203.
 pub async fn resolve_owner(client: &PlatformClient, owner: &str) -> Result<String> {
     if looks_like_identity_id(owner) {
         return Ok(owner.to_string());
     }
-    let label = owner.strip_suffix(".dash").unwrap_or(owner);
-    if label.is_empty()
-        || !label
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
-        return Err(Error::Config(format!(
-            "owner {owner:?} is neither a base58 identity id nor a DPNS name (a DPNS name is \
-             letters, digits and '-', optionally ending in .dash)"
-        )));
-    }
-    client
-        .resolve_dpns_name(label)
-        .await?
-        .ok_or_else(|| Error::Config(format!("no DPNS name {label}.dash is registered")))
+    let Some(label) = dpns_label(owner) else {
+        return Err(UserError::new(
+            codes::INVALID_REPO_REF,
+            format!("owner {owner:?} is neither an identity id nor a DPNS name"),
+        )
+        .cause("a DPNS name is letters, digits and '-', optionally ending in .dash")
+        .fix("use the owner's base58 identity id or DPNS username, e.g. `alice/project`")
+        .into());
+    };
+    client.resolve_dpns_name(label).await?.ok_or_else(|| {
+        let id_shaped = owner.len() >= 40;
+        UserError::new(
+            codes::NOT_FOUND,
+            if id_shaped {
+                format!("owner {owner:?} is neither a valid identity id nor a registered DPNS name")
+            } else {
+                format!("no DPNS name {label}.dash is registered")
+            },
+        )
+        .fix("check the spelling, or use the owner's base58 identity id")
+        .into()
+    })
 }
 
 /// Resolve `owner/name`; `owner` is a base58 identity id or a DPNS name ([`resolve_owner`]).
@@ -202,7 +227,17 @@ pub struct RepoSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_identity_id, repo_slug};
+    use super::{dpns_label, looks_like_identity_id, repo_slug};
+
+    #[test]
+    fn dpns_labels_strip_the_suffix_case_insensitively() {
+        assert_eq!(dpns_label("alice"), Some("alice"));
+        assert_eq!(dpns_label("alice.dash"), Some("alice"));
+        assert_eq!(dpns_label("alice.DASH"), Some("alice"));
+        assert_eq!(dpns_label(".dash"), None);
+        assert_eq!(dpns_label("al ice"), None);
+        assert_eq!(dpns_label("a_b"), None);
+    }
 
     #[test]
     fn identity_ids_and_dpns_names_are_told_apart() {

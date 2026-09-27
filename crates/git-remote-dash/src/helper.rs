@@ -306,14 +306,16 @@ impl Helper {
         // first copy that verifies, maintainers' copies first (FORGE_RULES_V2 reader rule).
         let svc = &svc;
         let repo = &conn.repo;
-        let contract = &svc.repo_contract(repo).await?;
-        let reader = &svc.repo_reader(repo, &git_packs).await;
-        // Membership only ranks copies; if it cannot be read, fall back to time order
-        // rather than failing the clone (every copy is still hash-verified).
-        let roles = &svc.copy_roles(repo).await.unwrap_or_else(|e| {
+        // Membership only ranks copies (and picks whose recorded gateways are trusted); if it
+        // cannot be read, fall back to time order rather than failing the clone (every copy
+        // is still hash-verified).
+        let (contract, roles) = futures::join!(svc.repo_contract(repo), svc.copy_roles(repo));
+        let contract = &contract?;
+        let roles = &roles.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not read the member list; trying pack copies in time order");
             forge_core::repo::RoleMap::new()
         });
+        let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
         let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
@@ -1621,16 +1623,23 @@ mod tests {
     use super::{oid_to_bytes, protected_denied, resolve_network, write_denied, PushOutcome};
     use forge_core::network::NetworkSettings;
 
+    /// Serializes tests that change process environment variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// F-2: building the helper (what `git clone dash://…` does first) reads no identity, so
     /// `list` and `fetch` of a public repo work with no key source at all. It used to resolve
     /// the key path up front (E301 with no HOME) and then load the identity file before
-    /// connecting (E301 with no file). Only this crate reads HOME, and only here.
+    /// connecting (E301 with no file). No other test in this binary reads these variables;
+    /// ENV_LOCK serializes any that ever does.
     #[test]
     fn the_helper_starts_without_any_identity() {
         let url = crate::url::DashUrl::parse(
             "dash://9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F/sqa-anon",
         )
         .unwrap();
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let saved: Vec<_> = ["DASH_FORGE_KEY", "HOME", "XDG_CONFIG_HOME"]
             .iter()
             .map(|k| (*k, std::env::var_os(k)))

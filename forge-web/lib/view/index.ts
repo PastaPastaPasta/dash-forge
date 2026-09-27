@@ -104,6 +104,7 @@ export {
   onlyGatewaysFailed,
   normalizeGateway,
   readGateways,
+  readGatewaysFor,
   setUserGateways,
   userGateways,
 } from './storage-status'

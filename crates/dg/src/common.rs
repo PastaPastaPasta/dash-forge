@@ -34,12 +34,7 @@ impl RepoRef {
         if owner.is_empty() || name.is_empty() {
             return Err(invalid_ref(s, "expected `owner/name`"));
         }
-        let label = owner.strip_suffix(".dash").unwrap_or(owner);
-        let dpns_like = !label.is_empty()
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-        if !looks_like_identity_id(owner) && !dpns_like {
+        if !looks_like_identity_id(owner) && forge_core::resolve::dpns_label(owner).is_none() {
             return Err(invalid_ref(
                 s,
                 &format!("owner {owner:?} is neither a base58 identity id nor a DPNS name"),
@@ -81,9 +76,7 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
 /// Whether `s` is plausibly a base58 identity id (32-byte id ≈ 42-44 base58 chars, no
 /// `0OIl` and no `/`). Used to distinguish an identity owner from a DPNS label.
 fn looks_like_identity_id(s: &str) -> bool {
-    (40..=44).contains(&s.len())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
+    forge_core::resolve::looks_like_identity_id(s)
 }
 
 /// Resolve a [`RepoRef`]: a bare id as a repo document id; otherwise `owner/name`.

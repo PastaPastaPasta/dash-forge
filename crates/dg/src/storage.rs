@@ -701,6 +701,14 @@ async fn check_shared_gateways(
     cid: &str,
     body: &[u8],
 ) {
+    if r.live {
+        println!(
+            "  ....   {:<14} asking {} shared gateway(s) for the probe (up to {} s)…",
+            "shared gateway",
+            gateways.len(),
+            SHARED_GATEWAY_FETCH.as_secs()
+        );
+    }
     let results = forge_core::storage::read::fetch_from_gateways(
         http,
         &gateways,
@@ -875,7 +883,8 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let scope = handle.scope()?;
-    let reader = svc.repo_reader(&handle, &manifests).await;
+    let roles = svc.copy_roles(&handle).await.unwrap_or_default();
+    let reader = svc.repo_reader(&handle, &manifests, &roles).await;
     let https = forge_core::backends::HttpsBackend::with_client(forge_core::storage::http_client());
 
     let mut packs = Vec::new();

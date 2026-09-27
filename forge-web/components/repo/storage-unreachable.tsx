@@ -15,7 +15,7 @@ import { GatewaysField } from '@/components/gateways-field'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoKey, type RepoRef } from '@/lib/repo'
-import { describeUnavailable, forgetDeadMirrors, onlyGatewaysFailed, type UnavailablePack } from '@/lib/view'
+import { describeUnavailable, forgetDeadMirrors, onlyGatewaysFailed, readGatewaysFor, type UnavailablePack } from '@/lib/view'
 import { clearUnreachable } from '@/lib/view/content-checks'
 
 export function StorageUnreachableCard({
@@ -29,7 +29,7 @@ export function StorageUnreachableCard({
   packs: readonly UnavailablePack[]
   retry: () => void
 }): JSX.Element {
-  const places = describeUnavailable(packs)
+  const places = describeUnavailable(packs, readGatewaysFor(repoKey(repo)))
   // Every place that failed is an IPFS gateway: a working gateway is the fix, so the form is
   // open from the start instead of hidden behind a button.
   const gatewaysOnly = onlyGatewaysFailed(places)

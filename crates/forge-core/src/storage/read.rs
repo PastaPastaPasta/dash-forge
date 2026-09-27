@@ -80,6 +80,9 @@ pub struct PackReader {
     s3_profiles: Vec<(String, String, S3Profile)>,
     /// Fixed per-candidate deadline override (tests); `None` = [`transfer_deadline`].
     candidate_timeout: Option<Duration>,
+    /// Origins the user configured (read gateways, profiles' public URLs and gateways): a
+    /// recorded URL on one of these is followed even when it is http or private.
+    trusted_origins: Vec<String>,
 }
 
 impl PackReader {
@@ -98,15 +101,38 @@ impl PackReader {
                 _ => None,
             })
             .collect();
+        let gateways: Vec<String> = gateways
+            .into_iter()
+            .map(|g| g.trim_end_matches('/').to_string())
+            .collect();
+        let mut configured: Vec<&str> = gateways.iter().map(String::as_str).collect();
+        for p in profiles.profiles.values() {
+            match p {
+                Profile::S3(s3) => configured.extend(s3.public_url.as_deref()),
+                Profile::IpfsKubo(k) => {
+                    configured.extend(k.gateway.as_deref());
+                    configured.extend(k.public_gateway.as_deref());
+                }
+                Profile::IpfsPinningService(k) => {
+                    configured.extend(k.gateway.as_deref());
+                    configured.extend(k.public_gateway.as_deref());
+                }
+                Profile::Platform(_) => {}
+            }
+        }
+        let trusted_origins = configured.into_iter().filter_map(origin_of).collect();
         Self {
             client: super::http_client(),
-            gateways: gateways
-                .into_iter()
-                .map(|g| g.trim_end_matches('/').to_string())
-                .collect(),
+            gateways,
             s3_profiles,
             candidate_timeout: None,
+            trusted_origins,
         }
+    }
+
+    /// Whether `url` is on an origin this user configured.
+    fn is_trusted_origin(&self, url: &str) -> bool {
+        origin_of(url).is_some_and(|o| self.trusted_origins.contains(&o))
     }
 
     /// A reader configured from the user's `storage.toml` (defaults when it is absent or
@@ -163,7 +189,13 @@ impl PackReader {
                     if let Some(cid) = gateway_cid(raw) {
                         cids.push(cid);
                     }
-                    http.push(Candidate::Http(raw.clone()));
+                    // A manifest is written by whoever pushed: never follow it to plain
+                    // http, this machine or a private network (parity with forge-web
+                    // `externalFetchUrls`), unless it is on an origin this user configured
+                    // (a profile's public URL or gateway, a read gateway: their own NAS).
+                    if is_public_https(raw) || self.is_trusted_origin(raw) {
+                        http.push(Candidate::Http(raw.clone()));
+                    }
                 }
                 Some("s3") => {
                     let Some((bucket, key)) = uri.rest().and_then(|r| r.split_once('/')) else {
@@ -472,17 +504,34 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
             continue;
         };
         let base = base.trim_end_matches('/');
-        let public = reqwest::Url::parse(base).is_ok_and(|url| {
-            url.scheme() == "https"
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.host_str().is_some_and(|h| !is_private_host(h))
-        });
-        if public && !out.iter().any(|g| g == base) {
+        if is_public_https(base) && !out.iter().any(|g| g == base) {
             out.push(base.to_string());
+            if out.len() == MAX_REPO_GATEWAYS {
+                break;
+            }
         }
     }
     out
+}
+
+/// At most this many of a repo's own gateways go ahead of the shared list: each is raced
+/// before any default, so a long list (even of honest gateways) would delay every read.
+pub const MAX_REPO_GATEWAYS: usize = 3;
+
+/// `scheme://host[:port]` of `url`, or `None`.
+fn origin_of(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    Some(u.origin().ascii_serialization()).filter(|o| o != "null")
+}
+
+/// Whether `url` is a public https URL: https, no userinfo, not a private host.
+fn is_public_https(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.host_str().is_some_and(|h| !is_private_host(h))
+    })
 }
 
 /// Whether `host` names this machine or a private / link-local network (literal addresses
@@ -492,6 +541,8 @@ fn is_private_host(host: &str) -> bool {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_ascii_lowercase();
+    // A fully qualified name (`nas.local.`) is the same host.
+    let h = h.strip_suffix('.').unwrap_or(&h);
     if h == "localhost"
         || [".localhost", ".local", ".internal"]
             .iter()
@@ -617,6 +668,38 @@ mod tests {
     }
 
     #[test]
+    fn recorded_urls_on_private_hosts_are_not_followed_unless_configured() {
+        let r = reader();
+        let c = r.candidates(&[
+            "http://127.0.0.1:9000/b/p".into(),
+            "https://192.168.1.5/b/p".into(),
+            "https://nas.local./b/p".into(),
+            "http://pub.example/b/p".into(),
+            "https://pub.example/b/p".into(),
+        ]);
+        assert_eq!(c, vec![Candidate::Http("https://pub.example/b/p".into())]);
+        // The user's own profile's public URL (their NAS) is followed.
+        let profiles = StorageProfiles::parse(
+            "[profiles.nas]\nkind = \"s3\"\nendpoint = \"http://127.0.0.1:9000\"\nbucket = \"b\"\n\
+             public_url = \"http://127.0.0.1:9000/b\"\n",
+        )
+        .unwrap();
+        let r = PackReader::new(vec![], &profiles);
+        assert_eq!(
+            r.candidates(&["http://127.0.0.1:9000/b/p".into()]),
+            vec![Candidate::Http("http://127.0.0.1:9000/b/p".into())]
+        );
+    }
+
+    #[test]
+    fn repo_gateways_are_capped() {
+        let many: Vec<String> = (0..10)
+            .map(|i| format!("https://gw{i}.example/ipfs/bafy"))
+            .collect();
+        assert_eq!(repo_gateways(&many).len(), MAX_REPO_GATEWAYS);
+    }
+
+    #[test]
     fn private_hosts_match_the_web_rules() {
         for h in [
             "localhost",
@@ -634,6 +717,8 @@ mod tests {
             "fd00::1",
             "fe80::1",
             "::ffff:1.2.3.4",
+            "nas.local.",
+            "localhost.",
         ] {
             assert!(is_private_host(h), "{h}");
         }
@@ -801,7 +886,8 @@ mod tests {
         let good = b"the real pack".to_vec();
         let hash = hex::encode(sha256(&good));
         let base = serve(vec![("/huge", vec![7u8; 1 << 20]), ("/good", good.clone())]);
-        let r = PackReader::new(vec![], &StorageProfiles::default());
+        // The stub is on loopback: listing it as a gateway makes it a configured origin.
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
         // The 1 MiB body is refused against the 13-byte manifest size, then /good wins.
         let got = r
             .fetch_verified(
@@ -827,7 +913,7 @@ mod tests {
             let _held: Vec<_> = silent.incoming().take(4).collect();
             std::thread::sleep(std::time::Duration::from_secs(30));
         });
-        let r = PackReader::new(vec![], &StorageProfiles::default())
+        let r = PackReader::new(vec![format!("http://{addr}")], &StorageProfiles::default())
             .with_candidate_timeout(std::time::Duration::from_millis(300));
         let started = std::time::Instant::now();
         let err = r
@@ -890,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn reports_every_failure_when_nothing_verifies() {
         let base = serve(vec![("/tampered", b"evil".to_vec())]);
-        let r = PackReader::new(vec![], &StorageProfiles::default());
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
         let err = r
             .fetch_verified(
                 &[format!("{base}/tampered"), format!("{base}/gone")],

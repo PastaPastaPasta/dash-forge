@@ -444,17 +444,20 @@ function hostsOf(urls: readonly string[]): string[] {
 }
 
 /**
- * Drop the URLs on an IPFS gateway that does not answer at all ({@link gatewayHealth}, one
- * probe per gateway per session), with a `host: reason` line each: a retired or unreachable
- * gateway then costs nothing instead of a timeout per pack, and the storage card can say
- * which gateway failed and why. Non-gateway URLs pass through untouched.
+ * Drop the URLs that `ipfs://` fanned out to on an IPFS gateway known to be down
+ * ({@link gatewayHealth}: probed in parallel, once per gateway), with a `host: reason` line
+ * each, so a retired gateway costs nothing instead of a timeout per pack and the storage card
+ * can name it. URLs the manifest itself recorded (`recorded`: an R2/S3 URL, the repo's own
+ * `https://gw/ipfs/<cid>`) are never dropped. If every URL would be dropped, all are kept:
+ * a stale verdict must not make a pack unreadable without one real attempt.
  */
 async function skipDeadGateways(
   urls: readonly string[],
+  recorded: ReadonlySet<string>,
 ): Promise<{ readonly live: string[]; readonly reasons: string[] }> {
   const verdicts = await Promise.all(
     urls.map(async (url) => {
-      const gw = gatewayOf(url)
+      const gw = recorded.has(url) ? null : gatewayOf(url)
       return { url, down: gw === null ? null : await gatewayHealth(gw) }
     }),
   )
@@ -464,6 +467,7 @@ async function skipDeadGateways(
     if (down === null) live.push(url)
     else reasons.add(gatewayDownReason(externalSourceName(url), down))
   }
+  if (live.length === 0) return { live: [...urls], reasons: [] }
   return { live, reasons: [...reasons] }
 }
 
@@ -473,7 +477,10 @@ async function mirrorUrls(
   gateways: readonly string[],
 ): Promise<{ readonly urls: string[]; readonly live: string[]; readonly downReasons: string[] }> {
   const urls = externalFetchUrls(manifest.uris, gateways)
-  const { live, reasons } = await skipDeadGateways(urls.filter((u) => !deadUrls.has(u)))
+  const { live, reasons } = await skipDeadGateways(
+    urls.filter((u) => !deadUrls.has(u)),
+    new Set(manifest.uris),
+  )
   return { urls, live, downReasons: reasons }
 }
 
@@ -752,7 +759,9 @@ export function artifactRangeFetch(
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
-      noteContentCheck(repoKey(repo), { unreachable: describePack(unavailableOf(lastErr)) })
+      noteContentCheck(repoKey(repo), {
+        unreachable: describePack(unavailableOf(lastErr), readGatewaysFor(repoKey(repo))),
+      })
     }
     throw lastErr
   }
@@ -1053,8 +1062,12 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door.
   const manifests = await readRepoPackManifests(sdk, repo)
-  // The gateways this repo's pushes recorded reach its IPFS node: try them first.
-  noteRepoGateways(repoKey(repo), manifests.flatMap((m) => m.uris))
+  // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
+  // first. A past writer's or a stranger's manifest cannot steer every read.
+  noteRepoGateways(
+    repoKey(repo),
+    manifests.filter((m) => m.ownerRole !== null && m.ownerRole !== undefined).flatMap((m) => m.uris),
+  )
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
