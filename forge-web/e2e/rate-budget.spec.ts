@@ -14,7 +14,30 @@ import { collectPageErrors, repoUrl as url, shot, waitForRepoResolved } from './
  *    from the bundled snapshot.
  */
 
-const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
+/**
+ * The gateway's over-limit reply to a grpc-web client, as dashmate's envoy sends it
+ * (`local_reply_config`: HTTP 200, `grpc-status: 8`, `grpc-message: rate limited`, the
+ * ratelimit headers with `remaining: 0`, no body, CORS exposing them).
+ */
+function overLimitReply(resetS: number) {
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'application/grpc-web+proto',
+      'grpc-status': '8',
+      'grpc-message': 'rate limited',
+      'ratelimit-limit': '150',
+      'ratelimit-remaining': '0',
+      'ratelimit-reset': String(resetS),
+      'x-envoy-ratelimited': 'true',
+      'access-control-allow-origin': '*',
+      'access-control-expose-headers': 'grpc-status,grpc-message,ratelimit-reset,ratelimit-limit,ratelimit-remaining',
+    },
+    body: '',
+  }
+}
+
+const DAPI_METHOD =/\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
 
 /** Count the DAPI requests of `page` by gRPC method. */
 function countDapi(page: Page): Map<string, number> {
@@ -27,28 +50,38 @@ function countDapi(page: Page): Map<string, number> {
 }
 
 test.describe('DAPI request budget', () => {
-  test('rb-1. a rate-limited node makes the page wait, then it finishes', async ({ page }) => {
+  test('rb-1a. a rate-limited node: the read fails over to another node at once', async ({ page }) => {
     const { errors } = collectPageErrors(page)
-    // The first two document reads get the gateway's over-limit reply: HTTP 200 +
-    // grpc-status 8 + ratelimit-reset, no body (dashmate envoy `local_reply_config`).
+    // One node answers every document read with the gateway's over-limit reply and a 30 s
+    // reset. The page must not wait 30 s for it, nor fail: the next attempt goes elsewhere.
+    let limited: string | null = null
     let refused = 0
     await page.route(/\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/, async (route) => {
-      if (refused >= 2) return route.continue()
+      const node = new URL(route.request().url()).origin
+      limited ??= node
+      if (node !== limited) return route.continue()
       refused++
-      await route.fulfill({
-        status: 200,
-        headers: {
-          'content-type': 'application/grpc-web+proto',
-          'grpc-status': '8',
-          'grpc-message': 'Some resource has been exhausted',
-          'ratelimit-limit': '150',
-          'ratelimit-remaining': '0',
-          'ratelimit-reset': '4',
-          'access-control-allow-origin': '*',
-          'access-control-expose-headers': 'grpc-status,grpc-message,ratelimit-reset,ratelimit-limit,ratelimit-remaining',
-        },
-        body: '',
-      })
+      await route.fulfill(overLimitReply(30))
+    })
+    const t0 = Date.now()
+    await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('main a[href*="/repo/issue"]').first()).toBeVisible({ timeout: 25_000 })
+    expect(Date.now() - t0).toBeLessThan(25_000)
+    expect(refused).toBeGreaterThan(0)
+    await expect(page.getByText(/no available addresses|did not land/i)).toHaveCount(0)
+    expect(errors, errors.join('\n')).toEqual([])
+  })
+
+  test('rb-1b. every node rate-limited: "Platform is busy — waiting Ns", then the page finishes', async ({ page }) => {
+    const { errors } = collectPageErrors(page)
+    // The IP is over the limit on every node for a few seconds (a CLI import next to the tab):
+    // the first document read to each node is refused with a 4 s reset.
+    const refusedNodes = new Set<string>()
+    await page.route(/\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/, async (route) => {
+      const node = new URL(route.request().url()).origin
+      if (refusedNodes.has(node)) return route.continue()
+      refusedNodes.add(node)
+      await route.fulfill(overLimitReply(4))
     })
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     const busy = page.getByTestId('platform-busy')
@@ -58,9 +91,7 @@ test.describe('DAPI request budget', () => {
     // Then the list lands, the status goes away, and nothing reads as an error.
     await expect(page.locator('main a[href*="/repo/issue"]').first()).toBeVisible({ timeout: 60_000 })
     await expect(busy).toBeHidden({ timeout: 30_000 })
-    await expect(page.getByText(/no available addresses/i)).toHaveCount(0)
-    await expect(page.getByText(/did not land/i)).toHaveCount(0)
-    expect(refused).toBe(2)
+    await expect(page.getByText(/no available addresses|did not land/i)).toHaveCount(0)
     await shot(page, 'rb-02-after-wait')
     expect(errors, errors.join('\n')).toEqual([])
   })

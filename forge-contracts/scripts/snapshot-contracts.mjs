@@ -16,7 +16,7 @@
 //   node scripts/snapshot-contracts.mjs [--network devnet --devnet-name moutai]
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadEvoSdk, writeDep } from './deploy-v2.mjs';
 
@@ -50,10 +50,10 @@ async function main() {
   if (!existsSync(depFile)) throw new Error(`no deployment file ${depFile}`);
   const dep = JSON.parse(readFileSync(depFile, 'utf8'));
   const ids = snapshotIds(dep);
-  const addresses = dep.dapiAddresses ?? dep.v2?.devnet?.addresses ?? undefined;
+  const addresses = dep.dapiAddresses ?? dep.v2?.devnet?.addresses;
 
   const { EvoSDK } = await loadEvoSdk();
-  const sdk = new EvoSDK({ network, trusted: true, ...(devnetName ? { devnetName } : {}), ...(addresses ? { addresses } : {}) });
+  const sdk = new EvoSDK({ network, trusted: true, devnetName, addresses });
   await sdk.connect();
   const platformVersion = sdk.version();
   const contracts = await sdk.contracts.getMany(ids);
@@ -73,7 +73,9 @@ async function main() {
   console.error(`wrote ${ids.length} contracts (platform version ${platformVersion}) to ${out}`);
 }
 
-main().catch((e) => {
-  console.error(`ERROR: ${e?.message || e}`);
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  main().catch((e) => {
+    console.error(`ERROR: ${e?.message || e}`);
+    process.exit(1);
+  });
+}
