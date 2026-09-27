@@ -190,6 +190,26 @@ export async function sealForRepo(
     throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
   }
   const keys = (writer ?? (await privateWriter(sdk, auth, repo))).keys
+  try {
+    return await sealContent(keys, type, decodeIdentifier(auth.identityId), data)
+  } catch (e) {
+    if (e instanceof TooLargeError) throw new PrivateWriteError(`the text is too long for a private repo's encrypted ${type}`)
+    if (e instanceof MalformedError) throw new PrivateWriteError(`this ${type} can't be written to a private repo: ${e.message}`)
+    throw e
+  }
+}
+
+/** Seals a document's TLV under `keys` (`sealDoc`; the conformance runner passes a fixed-nonce one). */
+export type DocSealer = (keys: EpochKeys, doc: PrivateDoc, fields: DocFields) => Promise<Uint8Array>
+
+/**
+ * The sealed document of `data` under `keys`, signed by `ownerId` (pure: the transform the CLI's
+ * `collab::private::seal_props` makes, pinned by the shared `private_collab_seal` vectors): the
+ * sealed fields leave the plaintext for `enc`, an importer's `imported.author` / `imported.url`
+ * become TLV 13 / 14 (`createdAt` stays), ref names become keyed hashes, `epoch` is set. Throws
+ * `TooLargeError` / `MalformedError` from the seal.
+ */
+export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId: Uint8Array, data: Data, seal: DocSealer = sealDoc): Promise<Data> {
   const out: Data = { ...data }
   const fields: Record<string, unknown> = {}
   for (const f of SEALED_FIELDS[type]) {
@@ -198,7 +218,18 @@ export async function sealForRepo(
     if (v === undefined || v === null || v === '') continue
     fields[f] = v
   }
-  const doc: { -readonly [K in keyof PrivateDoc]: PrivateDoc[K] } = { type, ownerId: decodeIdentifier(auth.identityId), epoch: keys.epoch }
+  // An importer's provenance names the source org, repo and people: sealed, but for createdAt.
+  const imported = out['imported']
+  if (imported !== null && typeof imported === 'object' && !(imported instanceof Uint8Array) && !Array.isArray(imported)) {
+    const kept: Data = {}
+    for (const [k, v] of Object.entries(imported as Data)) {
+      if (k === 'author') fields['importedAuthor'] = String(v)
+      else if (k === 'url') fields['importedUrl'] = String(v)
+      else kept[k] = v
+    }
+    out['imported'] = kept
+  }
+  const doc: { -readonly [K in keyof PrivateDoc]: PrivateDoc[K] } = { type, ownerId, epoch: keys.epoch }
   switch (type) {
     case 'issue':
     case 'patch':
@@ -233,13 +264,7 @@ export async function sealForRepo(
     case 'config':
       throw new PrivateWriteError('a private config is written by the key rotation, not here')
   }
-  try {
-    out['enc'] = await sealDoc(keys, doc, fields as DocFields)
-  } catch (e) {
-    if (e instanceof TooLargeError) throw new PrivateWriteError(`the text is too long for a private repo's encrypted ${type}`)
-    if (e instanceof MalformedError) throw new PrivateWriteError(`this ${type} can't be written to a private repo: ${e.message}`)
-    throw e
-  }
+  out['enc'] = await seal(keys, doc, fields as DocFields)
   out['epoch'] = keys.epoch
   return out
 }

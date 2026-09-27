@@ -602,6 +602,28 @@ describe('no plaintext reaches a private repo', () => {
     expect(privateId(b58(BOB))).toEqual(BOB)
   })
 
+  it('an imported document’s sealed provenance comes back as its `imported` object', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    const k0 = w.keys.get(0) as EpochKeys
+    const issue = await sealed(
+      'issue',
+      k0,
+      ALICE,
+      { number: 9 },
+      { title: 'from GitHub', importedAuthor: 'octocat', importedUrl: 'https://github.com/acme/secret/issues/9' },
+      { number: 9, imported: { createdAt: 1700000000 } },
+      20,
+    )
+    const a = await privateGate(REPO_REF, s.ctx).admit('issue', issue)
+    expect(a.ok).toBe(true)
+    if (a.ok) {
+      expect(a.doc['imported']).toEqual({ createdAt: 1700000000, author: 'octocat', url: 'https://github.com/acme/secret/issues/9' })
+      expect(a.doc['importedAuthor']).toBeUndefined()
+      expect(a.doc['importedUrl']).toBeUndefined()
+    }
+  })
+
   it('an opened config never carries a raw key of another epoch into the plaintext view', async () => {
     const w = await world()
     await rotate(w)

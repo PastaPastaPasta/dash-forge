@@ -195,7 +195,17 @@ function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
   for (const [k, v] of Object.entries(fields) as [string, unknown][]) {
     // A config's chain link carries raw keys of other epochs: never part of the plaintext view.
     if (v === undefined || k === 'prevEpochKey' || k === 'skipEpochKey' || k === 'prevEpoch') continue
+    // An importer's sealed provenance (TLV 13, 14) goes back into its `imported` object.
+    if (k === 'importedAuthor' || k === 'importedUrl') continue
     out[k] = v
+  }
+  if (fields.importedAuthor !== undefined || fields.importedUrl !== undefined) {
+    const kept = typeof out['imported'] === 'object' && out['imported'] !== null ? (out['imported'] as PlainDocument) : {}
+    out['imported'] = {
+      ...kept,
+      ...(fields.importedAuthor !== undefined ? { author: fields.importedAuthor } : {}),
+      ...(fields.importedUrl !== undefined ? { url: fields.importedUrl } : {}),
+    }
   }
   return out
 }
