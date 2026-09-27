@@ -291,7 +291,7 @@ impl Helper {
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
-        let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
+        let fetched: Vec<Got> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
             let got = match svc.fetch_best_copy(repo, contract, copies, roles, reader).await {
                 // A private repository's copy verified by its (ciphertext) hash; open it.
@@ -308,7 +308,7 @@ impl Helper {
                         Ok(b) => Ok((b, m)),
                         Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
                             tracing::warn!(pack = %hash, "{u}; skipping it");
-                            return Ok(None);
+                            return Ok(Got::Hidden);
                         }
                         Err(e) => {
                             return Err(anyhow::Error::from(e)
@@ -320,8 +320,8 @@ impl Helper {
             };
             // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
             // anyone who was a writer can post a manifest, so a stranger's chunkless
-            // `storage = 0` copy must not turn an unreadable pack into a failed clone (git's
-            // connectivity check still fails the fetch if a wanted object was in it).
+            // `storage = 0` copy must not turn an unreadable pack into a failed clone (it is
+            // set aside below, and fails the fetch with E503 only if the history needs it).
             let on_chain = copies.iter().any(|m| {
                 m.storage == 0 && roles.contains_key(&m.owner_id)
             });
@@ -330,47 +330,29 @@ impl Helper {
                 Err(e) if on_chain => {
                     return Err(anyhow::Error::from(e).context(format!("downloading pack {hash}")));
                 }
-                // An external-only pack whose copies are down, rate-limited or absent is
-                // skipped rather than failing the fetch: git verifies after the fetch that
-                // every wanted object arrived, so if this pack was actually needed the
-                // fetch still fails, and if it was not (e.g. it only holds a deleted
-                // branch) the clone is not held hostage by one dead mirror. Every
-                // candidate is bounded (size-scaled deadline + idle timeout), so this
-                // cannot hang.
+                // An external-only pack whose copies are down, rate-limited or absent is set
+                // aside rather than failing the fetch at once: it may not be needed (it only
+                // holds a deleted branch, or a repack superseded it and the consolidated
+                // pack arrived, forge-v2 §4). Once the rest is indexed the wanted history is
+                // checked, and a gap fails the fetch with E503 naming these packs
+                // ([`packs_unreadable`]) instead of git's "did not send all necessary
+                // objects". Every candidate is bounded (size-scaled deadline + idle
+                // timeout), so this cannot hang.
                 Err(e) => {
-                    tracing::warn!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; skipping it");
-                    return Ok(None);
+                    tracing::info!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; continuing without it");
+                    return Ok(Got::Unreadable(Unreadable {
+                        hash,
+                        error: e.to_string(),
+                    }));
                 }
             };
-            Ok(Some(bytes))
+            Ok(Got::Bytes(bytes))
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect()
         .await?;
-        let downloaded: Vec<Vec<u8>> = fetched.into_iter().flatten().collect();
-
-        if let Some(filter) = options.filter.as_deref() {
-            // Partial clone: re-pack the downloaded objects through a scratch repo applying
-            // the filter, then index the filtered pack and mark it promisor.
-            let scratch = ScratchRepo::init()?;
-            for bytes in &downloaded {
-                scratch.index_pack(bytes)?;
-            }
-            let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
-            if want_oids.is_empty() {
-                return Ok(());
-            }
-            let filtered = scratch.pack_filtered(&want_oids, Some(filter))?;
-            let sha = LocalRepo::index_pack(&filtered)?;
-            LocalRepo::write_promisor_marker(&sha)?;
-            tracing::info!(filter, pack = %sha, "indexed filtered promisor pack");
-        } else {
-            for bytes in &downloaded {
-                let sha = LocalRepo::index_pack(bytes)?;
-                tracing::info!(pack = %sha, "indexed pack into local odb");
-            }
-        }
-        Ok(())
+        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
+        index_fetched(fetched, &want_oids, options, &repo.display(), packs.len())
     }
 
     /// Serve a `push` batch: fast-forward-check each refspec against the current remote
@@ -588,6 +570,138 @@ impl Helper {
         }
         Ok(last)
     }
+}
+
+/// One pack's outcome in a fetch.
+enum Got {
+    /// Downloaded, verified and (for a private repo) opened.
+    Bytes(Vec<u8>),
+    /// No copy could be read.
+    Unreadable(Unreadable),
+    /// Hidden by the late-content rule (E510): never part of the history.
+    Hidden,
+}
+
+/// A pack none of whose external copies could be read.
+struct Unreadable {
+    hash: String,
+    error: String,
+}
+
+/// Index a fetch's downloaded packs into the local odb (for a `--filter` partial clone:
+/// through a scratch repo that applies the filter, then as a promisor pack). When some packs
+/// were unreadable and the wanted history is incomplete without them, fail with E503
+/// ([`packs_unreadable`]) before git's own connectivity check says only "did not send all
+/// necessary objects".
+fn index_fetched(
+    fetched: Vec<Got>,
+    want_oids: &[String],
+    options: &OptionState,
+    repo: &str,
+    total: usize,
+) -> Result<()> {
+    let mut downloaded = Vec::new();
+    let mut unreadable = Vec::new();
+    for got in fetched {
+        match got {
+            Got::Bytes(b) => downloaded.push(b),
+            Got::Unreadable(u) => unreadable.push(u),
+            Got::Hidden => {}
+        }
+    }
+    let incomplete = || packs_unreadable(repo, options.cloning, &unreadable, total).into();
+    if let Some(filter) = options.filter.as_deref() {
+        let scratch = ScratchRepo::init()?;
+        for bytes in &downloaded {
+            scratch.index_pack(bytes)?;
+        }
+        if want_oids.is_empty() {
+            return Ok(());
+        }
+        // The walk fails on a commit or tree an unreadable pack held.
+        let filtered = match scratch.pack_filtered(want_oids, Some(filter)) {
+            Ok(f) => f,
+            Err(e) if !unreadable.is_empty() => {
+                tracing::debug!(error = %e, "filtered repack failed");
+                return Err(incomplete());
+            }
+            Err(e) => return Err(e),
+        };
+        let sha = LocalRepo::index_pack(&filtered)?;
+        LocalRepo::write_promisor_marker(&sha)?;
+        tracing::info!(filter, pack = %sha, "indexed filtered promisor pack");
+        return Ok(());
+    }
+    for bytes in &downloaded {
+        let sha = LocalRepo::index_pack(bytes)?;
+        tracing::info!(pack = %sha, "indexed pack into local odb");
+    }
+    if !unreadable.is_empty() && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
+        return Err(incomplete());
+    }
+    Ok(())
+}
+
+/// E503: the wanted history needs objects from `unreadable` packs (of `total`), which a clone
+/// or fetch could not read from any copy.
+fn packs_unreadable(
+    repo: &str,
+    cloning: bool,
+    unreadable: &[Unreadable],
+    total: usize,
+) -> UserError {
+    const SHOWN: usize = 3;
+    let what = if cloning { "clone" } else { "fetch" };
+    let mut cause: Vec<String> = unreadable
+        .iter()
+        .take(SHOWN)
+        .map(|u| {
+            format!(
+                "pack {}…: {}",
+                &u.hash[..u.hash.len().min(12)],
+                brief(&u.error)
+            )
+        })
+        .collect();
+    if unreadable.len() > SHOWN {
+        cause.push(format!("and {} more", unreadable.len() - SHOWN));
+    }
+    UserError::new(
+        codes::PACKS_UNREADABLE,
+        format!(
+            "{what} incomplete: {} of {total} pack(s) unreadable",
+            unreadable.len()
+        ),
+    )
+    .cause(cause.join("; "))
+    .fix(format!(
+        "ask a member who has the objects to run `dg reseed {repo} --from-local` inside their clone"
+    ))
+    .fix("if you know another IPFS gateway with the pack, add it to `[read] ipfs_gateways` in storage.toml and retry")
+    .fix(format!("`dg storage status {repo}` shows which recorded copies answer"))
+}
+
+/// The reader's "no external copy verified" text, short enough for one cause line: each
+/// copy's URL cut to its host (the full URLs are in `dg storage status`), without the
+/// generic `io error:` / `GET request failed:` layers or the gateway hint (a fix line says
+/// it).
+fn brief(error: &str) -> String {
+    let text = error.split(" — ").next().unwrap_or(error);
+    let text = text
+        .replace("io error: ", "")
+        .replace("GET request failed: ", "");
+    text.split(' ')
+        .map(|word| match word.split_once("://") {
+            // `https://host/path…:` → `host:`
+            Some((_, rest)) => {
+                let colon = if word.ends_with(':') { ":" } else { "" };
+                let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+                format!("{}{colon}", host.trim_end_matches(':'))
+            }
+            None => word.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The provisional tip oid of a resolved (or diverged, newest-head) ref; `None` for an
@@ -1691,8 +1805,9 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
         .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor HOME is set"))?;
     // The per-owner default only makes sense for the named form. A repo-id URL is reached
     // from `dg` (a pull request's head), not typed by hand, so it uses the recorded default.
+    // A config.toml that does not parse fails here (E204 naming its line), as it does in `dg`.
     if let DashUrl::Id { .. } = url {
-        return forge_core::keystore::configured_default_source()
+        return forge_core::keystore::configured_default_source()?
             .map(PathBuf::from)
             .ok_or_else(|| {
                 no_identity("an id-addressed dash:// URL has no owner to pick a default key for")
@@ -1705,16 +1820,63 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
     if per_owner.exists() {
         return Ok(per_owner);
     }
-    Ok(forge_core::keystore::configured_default_source().map_or(per_owner, PathBuf::from))
+    Ok(forge_core::keystore::configured_default_source()?.map_or(per_owner, PathBuf::from))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, head_outcome, is_head, list_lines, oid_to_bytes, protected_denied,
-        resolve_network, write_denied, PushOutcome, PushSpec,
+        archived_refusal, head_outcome, is_head, list_lines, oid_to_bytes, packs_unreadable,
+        protected_denied, resolve_network, write_denied, PushOutcome, PushSpec, Unreadable,
     };
     use forge_core::network::NetworkSettings;
+
+    #[test]
+    fn unreadable_packs_the_history_needs_are_e503_with_the_reseed_fix() {
+        // D-403: git's "remote did not send all necessary objects" was all a user saw.
+        let gone = |h: &str| Unreadable {
+            hash: h.repeat(64),
+            error:
+                "io error: no external copy verified (1 candidate(s)): https://m.example/p.pack: \
+                    could not connect: Connection refused — every candidate was an IPFS gateway: …"
+                    .into(),
+        };
+        let u = packs_unreadable("OWNER/repo", true, &[gone("a"), gone("b")], 6);
+        assert_eq!(u.code, "E503");
+        assert_eq!(u.exit_code(), 5);
+        assert_eq!(u.message, "clone incomplete: 2 of 6 pack(s) unreadable");
+        let cause = u.cause.clone().unwrap();
+        assert!(
+            cause.starts_with("pack aaaaaaaaaaaa…: no external copy verified"),
+            "{cause}"
+        );
+        assert!(
+            cause.contains("m.example: could not connect: Connection refused"),
+            "{cause}"
+        );
+        assert!(
+            !cause.contains("/p.pack") && !cause.contains("io error"),
+            "{cause}"
+        );
+        assert!(
+            !cause.contains("every candidate"),
+            "hint moved to the fix: {cause}"
+        );
+        assert!(
+            u.fix[0].contains("dg reseed OWNER/repo --from-local"),
+            "{:?}",
+            u.fix
+        );
+        assert!(u.fix[1].contains("[read] ipfs_gateways"), "{:?}", u.fix);
+        let many: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|h| gone(h)).collect();
+        let u = packs_unreadable("OWNER/repo", false, &many, 5);
+        assert!(
+            u.message.starts_with("fetch incomplete: 5 of 5"),
+            "{}",
+            u.message
+        );
+        assert!(u.cause.unwrap().ends_with("; and 2 more"));
+    }
     use forge_core::rules::RefState;
 
     fn resolved(oid: &str) -> RefState {

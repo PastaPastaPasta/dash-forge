@@ -12,8 +12,23 @@
 import { diffTrees, type DiffSides, type TreeDiff } from './commit-log'
 import { readCommit, type ObjectReader } from './tree-nav'
 
-/** Commits read while looking for a merge base before giving up. */
-export const MERGE_BASE_COMMIT_CAP = 2000
+/**
+ * Commits read while looking for a merge base before giving up. The walk reads commits through
+ * {@link historyReader}'s block read-ahead, a few hundred commits per ranged read, so this is a
+ * runaway guard rather than a cost limit: 50,000 commits is about 150 reads (D-040).
+ */
+export const MERGE_BASE_COMMIT_CAP = 50_000
+
+/** Progress and cancellation for a merge-base search. */
+export interface MergeBaseOptions {
+  readonly cap?: number
+  /** Aborting stops the search with {@link MergeBaseCancelledError}. */
+  readonly signal?: AbortSignal
+  /** Told how many commits have been read so far (at most every {@link PROGRESS_EVERY}). */
+  readonly onProgress?: (commitsRead: number) => void
+}
+
+const PROGRESS_EVERY = 100
 
 export interface PullComparisonInput {
   /** The base ref's current tip (`''` when it has none). */
@@ -34,6 +49,25 @@ export interface PullComparison extends TreeDiff {
   readonly comparisonNote: string | null
   /** The readers the comparison used — per-file patches must read through the same ones. */
   readonly sides: DiffSides
+  /** The user stopped the merge-base search; the view offers to search again. */
+  readonly searchStopped?: true
+}
+
+/**
+ * A reader for one walk over many commits: each side's read-ahead view where it has one,
+ * preferring `primary` as {@link preferring} does. `done` frees nothing by itself (the walker
+ * is dropped with the caller's reference) but passes on the walk's batched verdicts.
+ */
+export function historyWalker(primary: ObjectReader, fallback: ObjectReader): { reader: ObjectReader; done: () => void } {
+  const a = primary.forHistoryWalk?.()
+  const b = primary === fallback ? a : fallback.forHistoryWalk?.()
+  return {
+    reader: preferring(a ?? primary, b ?? fallback),
+    done: () => {
+      a?.flush()
+      if (b !== a) b?.flush()
+    },
+  }
 }
 
 /** Read from `primary`, falling back to `fallback` when it does not hold the object. */
@@ -78,6 +112,7 @@ type Baseline = 'current tip' | 'tip when opened'
 export async function loadPullComparison(
   raw: DiffSides,
   input: PullComparisonInput,
+  search: MergeBaseOptions = {},
 ): Promise<PullComparison> {
   const sides: DiffSides = { base: preferring(raw.base, raw.head), head: preferring(raw.head, raw.base) }
   const { headOid } = input
@@ -102,26 +137,42 @@ export async function loadPullComparison(
     (c, i, all) => c.oid !== '' && all.findIndex((d) => d.oid === c.oid) === i,
   )
   const failed: string[] = []
-  for (const { oid, which } of candidates) {
-    let mergeBase: string | null
-    try {
-      mergeBase = await findMergeBase(sides.head, oid, headOid)
-    } catch (e) {
-      failed.push(
-        e instanceof MergeBaseSearchLimitError
-          ? `${which}: ${e.message}`
-          : `${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`,
-      )
-      continue
+  let cancelled: MergeBaseCancelledError | null = null
+  // The merge-base walk reads commits only, often thousands of them, through read-ahead. The
+  // walker (and its block cache) lives for this comparison only.
+  const walk = historyWalker(raw.head, raw.base)
+  let found: { oid: string; which: Baseline; mergeBase: string } | null = null
+  try {
+    for (const { oid, which } of candidates) {
+      let mergeBase: string | null
+      try {
+        mergeBase = await findMergeBase(walk.reader, oid, headOid, search)
+      } catch (e) {
+        if (e instanceof MergeBaseCancelledError) {
+          cancelled = e
+          failed.push(`${which}: ${e.message}`)
+          break
+        }
+        failed.push(
+          e instanceof MergeBaseSearchLimitError
+            ? `${which}: ${e.message}`
+            : `${which}: its history could not be read (${e instanceof Error ? e.message : String(e)})`,
+        )
+        continue
+      }
+      if (mergeBase === null) failed.push(`${which}: no common ancestor`)
+      else if (mergeBase === headOid) failed.push(`${which}: it already contains this head`)
+      else {
+        found = { oid, which, mergeBase }
+        break
+      }
     }
-    if (mergeBase === null) {
-      failed.push(`${which}: no common ancestor`)
-      continue
-    }
-    if (mergeBase === headOid) {
-      failed.push(`${which}: it already contains this head`)
-      continue
-    }
+  } finally {
+    walk.done()
+  }
+
+  if (found !== null) {
+    const { oid, which, mergeBase } = found
     const why = failed.length > 0 ? ` (${failed.join('; ')})` : ''
     const note =
       which === 'tip when opened'
@@ -132,17 +183,27 @@ export async function loadPullComparison(
     return compare(mergeBase, note)
   }
 
-  if (input.imported) throw new Error(IMPORTED_BASE_ERROR)
+  // A stopped search is the user's choice, not missing history: say so.
+  if (input.imported) throw cancelled ?? new Error(IMPORTED_BASE_ERROR)
   const why =
     failed.length > 0
       ? `Could not find where this PR branched from its base (${failed.join('; ')}).`
       : 'The base branch has no recorded tip.'
   const parent = headCommit.parents[0] ?? ''
   const fallback = parent === '' ? 'Showing the root head commit in full.' : 'Showing the head commit against its first parent.'
-  return compare(parent, `${why} ${fallback}`)
+  const result = await compare(parent, `${why} ${fallback}`)
+  return cancelled === null ? result : { ...result, searchStopped: true }
 }
 
 class CapReached extends Error {}
+
+/** The caller aborted the merge-base search (the "Stop" button). */
+export class MergeBaseCancelledError extends Error {
+  constructor(readonly commitsRead: number) {
+    super(`the search for a common ancestor was stopped after ${commitsRead.toLocaleString('en-US')} commits`)
+    this.name = 'MergeBaseCancelledError'
+  }
+}
 
 /**
  * The merge-base search stopped at its commit cap. Distinct from "no common ancestor": the
@@ -169,8 +230,13 @@ export class MergeBaseSearchLimitError extends Error {
  * cannot run away) — even if a candidate was already seen, since a later one could be better —
  * and with the read error when a commit cannot be read.
  */
-export async function findMergeBase(reader: ObjectReader, baseOid: string, headOid: string, cap = MERGE_BASE_COMMIT_CAP): Promise<string | null> {
-  return (await findMergeBases(reader, baseOid, headOid, cap))[0] ?? null
+export async function findMergeBase(
+  reader: ObjectReader,
+  baseOid: string,
+  headOid: string,
+  options: MergeBaseOptions | number = {},
+): Promise<string | null> {
+  return (await findMergeBases(reader, baseOid, headOid, options))[0] ?? null
 }
 
 /**
@@ -178,7 +244,13 @@ export async function findMergeBase(reader: ObjectReader, baseOid: string, headO
  * more than one for a criss-cross history. Empty when they share no commit; rejects as
  * {@link findMergeBase} does.
  */
-export async function findMergeBases(reader: ObjectReader, baseOid: string, headOid: string, cap = MERGE_BASE_COMMIT_CAP): Promise<string[]> {
+export async function findMergeBases(
+  reader: ObjectReader,
+  baseOid: string,
+  headOid: string,
+  options: MergeBaseOptions | number = {},
+): Promise<string[]> {
+  const { cap = MERGE_BASE_COMMIT_CAP, signal, onProgress } = typeof options === 'number' ? { cap: options } : options
   if (baseOid === headOid) return [headOid]
   const BASE = 1
   const HEAD = 2
@@ -188,10 +260,12 @@ export async function findMergeBases(reader: ObjectReader, baseOid: string, head
   const load = async (oid: string): Promise<{ when: number; parents: readonly string[] }> => {
     const known = commits.get(oid)
     if (known !== undefined) return known
+    if (signal?.aborted) throw new MergeBaseCancelledError(commits.size)
     if (commits.size >= cap) throw new CapReached()
     const commit = await readCommit(reader, oid)
     const value = { when: commit.committer.when, parents: commit.parents }
     commits.set(oid, value)
+    if (commits.size % PROGRESS_EVERY === 0) onProgress?.(commits.size)
     return value
   }
 

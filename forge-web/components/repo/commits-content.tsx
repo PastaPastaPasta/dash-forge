@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { selectRef, tipOidOf, timeAgo, walkLog, type LogEntry } from '@/lib/view'
+import { selectedTip, selectRef, timeAgo, walkLog, type LogEntry } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
@@ -24,10 +24,10 @@ export function CommitsContent({
   refParam?: string
 }): JSX.Element {
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
-  if (refParam && !selected.ref) {
+  if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
-  const tipOid = tipOidOf(selected.ref)
+  const tipOid = selectedTip(selected)
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
   if (!tipOid && selected.ref) {
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />

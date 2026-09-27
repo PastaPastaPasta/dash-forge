@@ -27,6 +27,7 @@ import {
   PackUnavailableError,
   resetExternalFetchState,
 } from './browse-source'
+import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
 // impossible in production (packHash = sha256 of the bytes), so the session chunk cache
@@ -391,6 +392,38 @@ describe('loadBrowseContext', () => {
     // Objects from BOTH pushes resolve, each against its own pack.
     expect(state.context.locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 0 })
     expect(state.context.locator.lookup(oidBytes(0x24))).toMatchObject({ packRef: 1 })
+  })
+
+  it('reuses verified index fragments from browser storage on the next page load (D-023)', async () => {
+    const store = memoryArtifactStore()
+    setIndexArtifactStore(store)
+    try {
+      const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), artifacts)
+      const chunkQueries = (): number =>
+        vi.mocked(sdk.documents.query).mock.calls.filter(([q]) => (q as { documentTypeName: string }).documentTypeName === DOC.chunk).length
+      vi.spyOn(sdk.documents, 'query')
+      expect((await loadBrowseContext(sdk, REPO)).kind).toBe('ready')
+      expect(chunkQueries()).toBe(2)
+      expect(store.entries.size).toBe(2)
+
+      // A new page load: the session chunk cache is gone, IndexedDB is not.
+      clearChunkCache()
+      vi.mocked(sdk.documents.query).mockClear()
+      const again = await loadBrowseContext(sdk, REPO)
+      expect(again.kind).toBe('ready')
+      expect(chunkQueries()).toBe(0)
+      if (again.kind === 'ready') expect(again.context.locator.lookup(oidBytes(0x24))).toMatchObject({ packRef: 1 })
+
+      // A stored copy that no longer hashes to its manifest is a miss, re-downloaded.
+      const [key] = [...store.entries.keys()]
+      store.entries.set(key as string, new Uint8Array([1, 2, 3]))
+      clearChunkCache()
+      vi.mocked(sdk.documents.query).mockClear()
+      expect((await loadBrowseContext(sdk, REPO)).kind).toBe('ready')
+      expect(chunkQueries()).toBe(1)
+    } finally {
+      setIndexArtifactStore(null)
+    }
   })
 
   it('reports index-behind when a live pack has no fragment covering it', async () => {

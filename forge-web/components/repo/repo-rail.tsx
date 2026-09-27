@@ -63,7 +63,7 @@ export function RepoRail({
     connection: connectionTrust(ready, trusted),
     quorum,
     refName: selected.name,
-    tip: selected.ref?.state ?? 'missing',
+    tip: selected.pinned ? { pinned: selected.pinned } : selected.ref?.state ?? 'missing',
     checks,
     configuredBackend: home.backend.label,
     configuredUris: home.backend.uris,

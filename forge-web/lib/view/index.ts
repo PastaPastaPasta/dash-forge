@@ -46,6 +46,8 @@ export {
 export {
   findMergeBase,
   loadPullComparison,
+  MergeBaseCancelledError,
+  type MergeBaseOptions,
   type PullComparison,
   type PullComparisonInput,
 } from './pull-diff'
@@ -133,13 +135,16 @@ export {
   isDiverged,
   isLive,
   refParamFor,
+  selectedTip,
   selectRef,
   tipOidOf,
   type SelectedRef,
 } from './refs'
 export {
+  CommitIdError,
   diffTrees,
   loadCommitChanges,
+  resolveCommitOid,
   walkLog,
   type CommitChanges,
   type DiffSides,
@@ -148,6 +153,16 @@ export {
   type TreeDiff,
 } from './commit-log'
 export { mapPooled } from './pool'
+export {
+  blobDisplay,
+  lineHash,
+  parseLineHash,
+  selectLine,
+  visibleRows,
+  VIRTUALIZE_LINES,
+  type BlobDisplay,
+  type LineRange,
+} from './blob-view'
 export {
   loadIssueThread,
   loadPullThread,

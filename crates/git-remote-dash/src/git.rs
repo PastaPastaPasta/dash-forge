@@ -85,6 +85,58 @@ pub fn config_get(key: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Whether the history reachable from `oids` provably lacks an object, not counting history
+/// the repository's refs already reach: git's own post-fetch connectivity check
+/// (`rev-list --objects --stdin --not --all`) failing on a missing or bad object. Anything
+/// else (git not runnable, an unsafe rev, another error) is `false`: git's own check after
+/// the fetch then decides, rather than a pack being blamed for it. Like git's own check, it
+/// takes the history local refs already reach as complete. `partial`: allow objects a
+/// promisor remote promised (`--missing=allow-promisor`). `repo`: that repository's
+/// directory (tests), else the one git spawned the helper for. A missing object is never
+/// fetched: a lazy fetch here would re-enter this helper.
+fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool {
+    if oids.iter().any(|oid| ensure_safe_rev(oid).is_err()) {
+        return false;
+    }
+    let input = oids.iter().fold(String::new(), |mut s, oid| {
+        s.push_str(oid);
+        s.push('\n');
+        s
+    });
+    let mut cmd = Command::new("git");
+    if let Some(dir) = repo {
+        cmd.current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE");
+    }
+    cmd.args(["rev-list", "--objects", "--quiet"]);
+    if partial {
+        cmd.arg("--missing=allow-promisor");
+    }
+    let child = cmd
+        .args(["--stdin", "--not", "--all"])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else { return false };
+    // rev-list reads all of stdin before it walks, so writing first cannot deadlock.
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(input.as_bytes()).is_err() {
+            let _ = child.wait();
+            return false;
+        }
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return false;
+    };
+    // `fatal: missing blob object …`, `fatal: bad tree object …`, `fatal: bad object …`.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    !out.status.success()
+        && (stderr.contains("missing ") || stderr.contains("bad ") && stderr.contains("object"))
+}
+
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
 /// never an error. Used for the boolean predicates `cat-file -e` / `merge-base
 /// --is-ancestor`.
@@ -136,6 +188,15 @@ impl LocalRepo {
             return false;
         }
         run_git_status(&["cat-file", "-e", oid])
+    }
+
+    /// Whether the local odb provably lacks an object reachable from `oids`: git's own
+    /// post-fetch connectivity check, run first so a gap can be explained
+    /// ([`objects_missing`]). In a partial clone, objects its filter left out are missing by
+    /// design, so only an object nothing promised counts (`--missing=allow-promisor`).
+    pub fn history_has_gaps(oids: &[String]) -> bool {
+        let partial = config_get("extensions.partialclone").is_some();
+        objects_missing(oids, None, partial)
     }
 
     /// Whether commit `ancestor` is an ancestor of (or equal to) commit `descendant`.
@@ -245,7 +306,7 @@ impl Drop for ScratchRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_git, ScratchRepo};
+    use super::{objects_missing, run_git, ScratchRepo};
     use std::path::Path;
 
     /// Write `body` into `repo` as a loose object of `kind`, without git's checks.
@@ -344,5 +405,67 @@ mod tests {
         let scratch = ScratchRepo::init().unwrap();
         scratch.index_pack(&second).unwrap();
         scratch.index_pack(&first).unwrap();
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn a_missing_object_in_the_wanted_history_is_detected() {
+        // The check the helper runs before git's own, so a gap is reported as E503 (D-403).
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        git(d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("a.txt"), "alpha\n").unwrap();
+        git(d, &["add", "a.txt"]);
+        git(
+            d,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "one",
+            ],
+        );
+        let tip = git(d, &["rev-parse", "HEAD"]);
+        let blob = git(d, &["rev-parse", "HEAD:a.txt"]);
+        // Unreferenced, as a fetched commit is before git writes the ref.
+        git(d, &["update-ref", "-d", "refs/heads/main"]);
+        assert!(!objects_missing(std::slice::from_ref(&tip), Some(d), false));
+        let obj = d.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
+        std::fs::remove_file(obj).unwrap();
+        assert!(
+            objects_missing(std::slice::from_ref(&tip), Some(d), false),
+            "the blob is gone"
+        );
+        // In partial-clone mode an object no promisor promised is still a gap.
+        assert!(
+            objects_missing(std::slice::from_ref(&tip), Some(d), true),
+            "not promised"
+        );
+        assert!(
+            !objects_missing(&["-bad".to_string()], Some(d), false),
+            "an unsafe rev is not reported as a missing object"
+        );
+        let not_a_repo = tempfile::tempdir().unwrap();
+        assert!(
+            !objects_missing(&[blob], Some(not_a_repo.path()), false),
+            "a git failure that is not a missing object is left to git's own check"
+        );
     }
 }

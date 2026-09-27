@@ -144,8 +144,8 @@ const VERDICT_COUNTER: Readonly<Record<ObjectVerdict, Counter>> = {
 }
 
 /** A {@link BrowseReader} `onObject` callback that records into this repo's ledger. */
-export function objectObserver(key: string): (verdict: ObjectVerdict) => void {
-  return (verdict) => noteContentCheck(key, { [VERDICT_COUNTER[verdict]]: 1 })
+export function objectObserver(key: string): (verdict: ObjectVerdict, count?: number) => void {
+  return (verdict, count = 1) => noteContentCheck(key, { [VERDICT_COUNTER[verdict]]: count })
 }
 
 /** Test hook: forget every repo's ledger. */
