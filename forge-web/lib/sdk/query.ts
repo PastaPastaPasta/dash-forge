@@ -98,6 +98,19 @@ export function setPlatformVersion(version: number): void {
   if (Number.isInteger(version) && version > 0) platformVersion = version
 }
 
+/**
+ * Follow the version the SDK learned from its latest proved response. The service seeds its
+ * contracts without a request, so the first page query, not the connect, is where evo-sdk
+ * learns the network's version.
+ */
+function followSdkVersion(sdk: EvoSDK): void {
+  try {
+    setPlatformVersion(sdk.version())
+  } catch {
+    // Keep the pinned version if the SDK cannot report one.
+  }
+}
+
 interface DocumentLike {
   toJSON?: (platformVersion: number) => unknown
   toObject?: () => unknown
@@ -146,6 +159,7 @@ export interface ProofedDocuments {
 /** Raw query (no proof). Prefer {@link queryDocumentsWithProof} for trust-minimized reads. */
 export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
   const response = await documentsOf(sdk).query(query)
+  followSdkVersion(sdk)
   return mapToDocuments(response)
 }
 
@@ -166,6 +180,7 @@ export async function queryDocumentsWithProof(
   query: DocumentQuery,
 ): Promise<ProofedDocuments> {
   const response = await documentsOf(sdk).query(query)
+  followSdkVersion(sdk)
   return { documents: mapToDocuments(response), proofMetadata: null }
 }
 

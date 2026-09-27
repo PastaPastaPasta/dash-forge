@@ -13,6 +13,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
+import { installDapiFetchGate } from './budget'
+import { loadContractSnapshots } from './contract-seed'
 import { setPlatformVersion } from './query'
 
 export interface EvoSdkConfig {
@@ -25,6 +27,7 @@ export interface EvoSdkConfig {
 
 interface ContractsFacadeLike {
   fetch: (contractId: string) => Promise<unknown>
+  addKnown: (contract: unknown) => Promise<boolean>
 }
 interface SdkContractsLike {
   contracts: ContractsFacadeLike
@@ -36,6 +39,8 @@ class EvoSdkService {
   private config: EvoSdkConfig | null = null
   private ready = false
   private trusted = false
+  /** Contract ids seeded from the bundled snapshots: in the SDK's cache without a fetch. */
+  private readonly seeded = new Set<string>()
 
   /** Whether the SDK is connected and its contracts are preloaded. */
   get isReady(): boolean {
@@ -83,7 +88,13 @@ class EvoSdkService {
   }
 
   private async perform(config: EvoSdkConfig): Promise<void> {
-    const options = { settings: { timeoutMs: config.timeoutMs ?? 8000 } }
+    // Every DAPI request this page makes goes through the shared request budget (`budget.ts`),
+    // which waits out a node's rate limit and retries on the same node. `banFailedAddress: false`
+    // keeps any failure that still reaches the SDK from banning a node: the SDK then only moves
+    // the next request to another node (rs-dapi-client `update_address_ban_status`), so a burst
+    // of refusals can no longer leave it with "no available addresses" (D-102, D-902).
+    installDapiFetchGate()
+    const options = { settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false } }
     // Dynamic import so the ~9.4 MB evo-sdk WASM chunk loads on first data need (post-paint),
     // never in the initial bundle — the whole app is a static-export SPA (yappr lazy-init pattern).
     const { EvoSDK } = await import('@dashevo/evo-sdk')
@@ -113,12 +124,14 @@ class EvoSdkService {
     // Both constructors above are the *Trusted variants — record it so the UI reports what
     // this connection does rather than what the app intends.
     this.trusted = true
-    // Preload BEFORE marking ready so getSdk() callers never see an unwarmed SDK.
+    // Seed the bundled contract snapshots, then preload what is still missing, BEFORE marking
+    // ready so getSdk() callers never see an unwarmed SDK.
+    await this.seed(NETWORKS[config.network].key)
     await this.preload(config.contractIds)
-    // Read the protocol version only now. evo-sdk 4.2 starts at a per-network floor (13 on
-    // testnet/mainnet, 14 on a devnet) and learns the network's real version from the first
-    // proof-verified response — the preload above is that response. Read before it,
-    // `version()` reports the floor, not the network.
+    // evo-sdk 4.2 starts at a per-network floor (13 on testnet/mainnet, 14 on a devnet) and
+    // learns the network's real version from the first proof-verified response. With seeded
+    // contracts that response may be the page's first query, so this is the floor or better;
+    // `queryDocuments` follows the SDK's version after every response.
     try {
       setPlatformVersion(this.sdk.version())
     } catch {
@@ -127,11 +140,33 @@ class EvoSdkService {
     this.ready = true
   }
 
+  /**
+   * Add the deployment's contract snapshots (`contract-seed.ts`) to the SDK's contract cache,
+   * so no page spends a `getDataContract` request on them. A snapshot that fails to decode is
+   * skipped: {@link preload} then fetches that contract as before.
+   */
+  private async seed(deploymentKey: string): Promise<void> {
+    if (!this.sdk) return
+    const snapshots = await loadContractSnapshots(deploymentKey).catch(() => ({}))
+    const entries = Object.entries(snapshots)
+    if (entries.length === 0) return
+    const { DataContract } = await import('@dashevo/evo-sdk')
+    const contracts = (this.sdk as unknown as SdkContractsLike).contracts
+    for (const [id, snapshot] of entries) {
+      try {
+        const contract = DataContract.fromBase64(snapshot.bytes, false, snapshot.platformVersion)
+        if (await contracts.addKnown(contract)) this.seeded.add(id)
+      } catch {
+        // Fall back to fetching this one.
+      }
+    }
+  }
+
   private async preload(contractIds: readonly string[]): Promise<void> {
     if (!this.sdk) return
     const contracts = (this.sdk as unknown as SdkContractsLike).contracts
     await Promise.all(
-      contractIds.map((id) =>
+      contractIds.filter((id) => !this.seeded.has(id)).map((id) =>
         contracts.fetch(id).catch(() => {
           // A missing/unreachable contract must not abort the whole warm-up; the caller's
           // first query against it will surface the real error with context.
@@ -166,6 +201,7 @@ class EvoSdkService {
   /** Drop the connection and reset state. */
   cleanup(): void {
     this.sdk = null
+    this.seeded.clear()
     this.ready = false
     this.trusted = false
     this.config = null
