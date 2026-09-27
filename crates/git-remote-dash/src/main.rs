@@ -51,6 +51,8 @@ use url::DashUrl;
 const CAPABILITIES: &str = "fetch\npush\noption\n\n";
 
 fn main() {
+    // git owns the terminal; a sealed key file needs DASH_FORGE_PASSPHRASE here.
+    forge_core::sealed::forbid_prompts();
     let mut goal = Goal::default();
     if let Err(err) = run(&mut goal) {
         let ctx = ErrorContext {

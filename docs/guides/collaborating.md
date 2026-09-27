@@ -7,8 +7,9 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 3. [Pull requests](#pull-requests)
 4. [Releases](#releases)
 5. [From the web app](#from-the-web-app)
+6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. DPNS usernames are not resolved yet.
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. `dg` does not resolve DPNS usernames yet; the web app does (`forge.dashhq.org/alice/project`).
 
 ---
 
@@ -72,13 +73,13 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 
 Leave the description empty if the project's purpose is itself sensitive.
 
-**Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E305`](../errors.md#e305)); they add one with `dg auth keys add --encryption`, or Settings → Keys → **Enable private repos** in the web app.
+**Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or Settings → Keys → **Enable private repos** in the web app.
 
 **Removing a member rotates the key.** New pushes, issues and comments will be unreadable to the removed member. Everything they could already read stays readable to them: encryption can't take back what was shared. The rotation is one key wrap per remaining member plus one anchor document, so `dg collab remove` shows the cost first. You are wrapped first, so an interruption never locks you out; running `dg repo keys repair` finishes an interrupted rotation (the key is recovered from your own wrap on chain, never from a local file).
 
 **Repairs.** A maintainer's `dg` and `git push` check the key on every visit: if a non-member still holds the current key (two maintainers removed members at the same time), or a member has no wrap to their current encryption key (they replaced it, or an add was interrupted), `dg repo keys repair` fixes it. The key is re-read before every write, so nothing is ever written under a key that was rotated away.
 
-**Cloning.** `git clone dash://<owner>/<repo>` works as for a public repository when your identity file holds your encryption key. A non-member gets [`E306`](../errors.md#e306); an identity without an encryption key gets [`E305`](../errors.md#e305).
+**Cloning.** `git clone dash://<owner>/<repo>` works as for a public repository when your key source holds your encryption key: the identity file (`DASH_FORGE_KEY`) or `dg auth login --full-key`, not the limited key a plain `dg auth login` stores ([identity and keys](identity-and-keys.md#encryption-key-private-repositories)). A non-member gets [`E307`](../errors.md#e307); an identity without an encryption key gets [`E306`](../errors.md#e306).
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
@@ -253,17 +254,42 @@ dg repo unstar <owner>/<repo>
 
 ## From the web app
 
-On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app)):
+On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-and-keys.md#limited-keys)):
 
-| You can | Not yet |
+| You can | Not yet (coming soon) |
 |---|---|
-| Browse code, commits, branches, tags and PR diffs | Open a PR |
-| File issues, comment, close and reopen | Merge code (see below) |
+| Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Open a PR |
+| File issues, comment, close and reopen; label them (members) | Merge code (see below) |
 | Review a PR: approve, request changes or comment | Inline review comments |
-| Create a repository, with a cost preview | Web editing |
-| Add and remove collaborators (owner) | |
-| Star repositories | |
+| Create a repository, with a cost preview | Fork a repository |
+| Add and remove members (owner) | Web editing |
+| Publish a release with assets (maintainers) | Private repositories (use `dg`; web views follow) |
+| Star repositories and follow people | |
+| See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
 
-The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch.
+Every write shows its price before you sign, and a toast shows what it actually cost. **Settings → Spend** keeps a local ledger of what this browser spent, by repository and month.
 
-**Coming soon:** open a PR from a branch or fork, inline review comments, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+**Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value.
+
+**Merging.** The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch. Use `dg pr merge` to merge code.
+
+**Notifications** are computed in your browser from the chain: new issues and PRs in your repositories, state changes, comments and reviews on your threads, and optionally pushes and starred repositories. There is no email, no push notification and no sync across devices, because there is no server to send them.
+
+**Coming soon:** open a PR from a branch or fork, inline review comments, forks, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+
+---
+
+## Webhooks and CI
+
+A maintainer can have on-chain activity delivered as GitHub-shaped webhooks (`push`, `issues`, `pull_request`, `issue_comment`, `pull_request_review`, `release`, `check_run`), signed with `X-Hub-Signature-256`. Forge runs no webhook service: deliveries come from a **relay** that you, or someone you choose, runs.
+
+```sh
+dg webhook add <owner>/<repo> --url https://ci.example/hook \
+  --relay <relay identity id> --events push,pull_request --name ci
+dg webhook list   <owner>/<repo>
+dg webhook remove <owner>/<repo> ci      # by the name it was added with, or its hook id
+```
+
+The URL and event list are public on chain. The HMAC secret is encrypted to the relay identity's encryption key, so only that relay can read it; without `--secret-env <VAR>`, `dg` generates one and prints it once. The relay (`forge-relay run`, or its Docker image) needs only that encryption key, never signs and never spends. A delivery that fails is kept in a durable retry queue on the relay's disk and retried for up to 48 hours, across restarts (given a writable state dir; without one the relay warns and keeps the queue in memory); `forge-relay deliveries` lists the queue. Every delivery carries a stable `X-GitHub-Delivery` id, so receivers can drop duplicates.
+
+A relay is trusted for availability only: a receiver that must not be fooled checks what a webhook says against Platform. [`crates/forge-relay/README.md`](../../crates/forge-relay/README.md) covers running one, the delivery guarantees, and a CI consumer that verifies the pushed ref.

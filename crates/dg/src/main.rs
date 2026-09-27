@@ -35,6 +35,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
+pub use auth::AuthCommand;
 use config::Config;
 use context::Ctx;
 use forge_core::user_error::{codes, ErrorContext, UserError};
@@ -100,7 +101,7 @@ impl NetworkArg {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Authentication and identity import.
+    /// Identities and keys: create, sign in, limited keys, DPNS names, export.
     #[command(subcommand)]
     Auth(AuthCommand),
     /// Repository lifecycle and configuration.
@@ -249,34 +250,6 @@ pub struct InitArgs {
     pub name: Option<String>,
     #[command(flatten)]
     pub opts: CreateOptions,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum AuthCommand {
-    /// Import a bridge-format identity (via `--identity <file>`) and set it as default.
-    Login,
-    /// Show the current identity and auth status.
-    Status,
-    /// Show the identity's credit balance (credits + ~DASH).
-    Balance,
-    /// The identity's on-chain keys.
-    #[command(subcommand)]
-    Keys(AuthKeysCommand),
-}
-
-#[derive(Debug, Subcommand)]
-pub enum AuthKeysCommand {
-    /// List the identity's on-chain keys, and which of them the identity file holds.
-    List,
-    /// Add a key to the identity (one identity update, signed by the MASTER key).
-    Add {
-        /// Add an ENCRYPTION key, for private repositories (the only kind supported).
-        #[arg(long, required = true)]
-        encryption: bool,
-        /// Add one even when the identity already has a usable encryption key.
-        #[arg(long)]
-        force: bool,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -968,6 +941,10 @@ fn exit_on_parse_error(e: &clap::Error) -> ! {
 
 /// Build the tokio runtime and dispatch the parsed command.
 fn run(cli: &Cli) -> Result<()> {
+    if cli.json {
+        // `--json` is for scripts: no hidden prompt may wait on a terminal.
+        forge_core::sealed::forbid_prompts();
+    }
     let config = Config::load().unwrap_or_default();
     let ctx = Ctx::resolve(cli, &config)?;
     let rt = Runtime::new()?;
@@ -1030,26 +1007,6 @@ mod tests {
         let cli = Cli::parse_from(["dg", "--json", "auth", "balance"]);
         assert!(cli.json);
         assert!(matches!(cli.command, Command::Auth(AuthCommand::Balance)));
-    }
-
-    #[test]
-    fn parses_auth_keys_commands() {
-        let cli = Cli::parse_from(["dg", "auth", "keys", "add", "--encryption", "--yes"]);
-        assert!(cli.yes);
-        assert!(matches!(
-            cli.command,
-            Command::Auth(AuthCommand::Keys(AuthKeysCommand::Add {
-                encryption: true,
-                force: false
-            }))
-        ));
-        let cli = Cli::parse_from(["dg", "--json", "auth", "keys", "list"]);
-        assert!(matches!(
-            cli.command,
-            Command::Auth(AuthCommand::Keys(AuthKeysCommand::List))
-        ));
-        // Only an encryption key can be added today.
-        assert!(Cli::try_parse_from(["dg", "auth", "keys", "add"]).is_err());
     }
 
     #[test]

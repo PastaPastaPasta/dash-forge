@@ -613,7 +613,10 @@ mod tests {
     }
 
     fn bridge(mnemonic: &str, keys: Vec<IdentityKey>) -> BridgeIdentity {
-        let mut b = BridgeIdentity::from_dfk1("dfk1:testnet:ID:1:x").unwrap();
+        let mut b = BridgeIdentity::from_dfk1(
+            "dfk1:testnet:9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD:1:x",
+        )
+        .unwrap();
         b.mnemonic = Secret::new(mnemonic);
         b.identity_keys = keys;
         b

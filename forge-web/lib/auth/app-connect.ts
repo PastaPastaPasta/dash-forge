@@ -25,7 +25,6 @@
  * who saw the QR and answers first is the one shown. The defence there is the confirmation
  * step (full id, DPNS name, identity age, a mismatch with this device's stored identity, and
  * "compare with your wallet"), and never settling on a round that could not read every source.
- * The pairing code is shown for wallets that display one (the shipped ones do not yet).
  */
 
 import * as secp from '@noble/secp256k1'
@@ -39,7 +38,7 @@ import { hash160 } from './asset-lock'
 import { base58Decode } from './base58'
 import { findWalletKey, loginKeys, scopeCovers, UnusableWalletKey, type LoginKeys, type WalletKey } from './key-registration'
 import { encodeWif } from './wif'
-import { authKeyFromLogin, encodeKeyRequest, openEnvelope, pairingCode, protocolUri } from './wallet-protocol'
+import { authKeyFromLogin, encodeKeyRequest, openEnvelope, protocolUri } from './wallet-protocol'
 
 /** The App Connect system contract (the same id on every network, protocol 14). */
 export const APP_CONNECT_CONTRACT_ID = 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ'
@@ -83,8 +82,6 @@ export interface LoginRequest {
   readonly uri: string
   /** The contract the wallet is asked to bind its key to (forge-core or forge-collab). */
   readonly contractId: string
-  /** Six digits a wallet that shows a pairing code must show too. */
-  readonly pairingCode: string
   readonly appEphemeralPubKeyHash: Uint8Array
   /** When the request stops being polled (ms). */
   readonly expiresAt: number
@@ -99,7 +96,6 @@ export function newLoginRequest(network: Network, contractId: string, label = 'D
   return {
     uri: protocolUri('dash-key', encodeKeyRequest(pub, base58Decode(contractId), label), network),
     contractId,
-    pairingCode: pairingCode(pub),
     appEphemeralPubKeyHash: hash160(pub),
     expiresAt: now + REQUEST_TTL_MS,
     appEphemeralPriv: priv,
@@ -425,6 +421,19 @@ export async function awaitRegisteredKey(
     if (Date.now() >= p.until) throw new RequestExpired()
     await sleep(p.intervalMs ?? 3000, p.signal)
   }
+}
+
+/**
+ * Whether Dash Wallet's Connections feature (DashConnect) answers requests on this network, per
+ * the wallets' sources (docs/design/wallet-login.md, "Compatibility matrix"): testnet only.
+ * Android refuses every other network (`PlatformDashConnectRepository.checkTestnet`,
+ * `Constants.IS_TESTNET_BUILD`). iOS turns the feature off on mainnet (`ConnectionsViewModel`,
+ * `WalletEnvironment.isTestNetwork`) and offers devnets only in internal builds
+ * (`WalletEnvironment.isDevnetAvailable`), with the login contract typed in by hand. Where this is
+ * false, the wallet tile is not the first option.
+ */
+export function walletSignInSupported(network: Network): boolean {
+  return network === 'testnet'
 }
 
 /** Whether any response source exists here (hide the wallet tile otherwise). */

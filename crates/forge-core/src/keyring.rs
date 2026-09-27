@@ -112,15 +112,15 @@ impl EncryptionKeys {
     }
 }
 
-/// E305: the identity has no usable `ENCRYPTION` key in its file.
+/// E306: the identity has no usable `ENCRYPTION` key in its file.
 pub fn no_encryption_key(who: &str, action: &str) -> Error {
     UserError::new(
         codes::NO_ENCRYPTION_KEY,
         format!("{action}: {who} has no encryption key"),
     )
-    .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and the identity file in use holds none that matches an enabled key on the identity")
-    .fix(FIX_ADD_ENCRYPTION_KEY)
-    .note("adding one is a single identity update signed by the master key")
+    .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and the key source in use holds none that matches an enabled key on the identity (a limited key from `dg auth login` holds only a signing key)")
+    .fix("if the identity has an ENCRYPTION key (`dg auth keys list`), use a source that holds it: `DASH_FORGE_KEY=<identity file>`, or `dg auth login --full-key <identity file>`")
+    .fix(format!("if it has none: {FIX_ADD_ENCRYPTION_KEY}"))
     .into()
 }
 
@@ -422,12 +422,12 @@ impl Keyring {
     }
 
     /// The seams to write with: [`Private`] over the write epoch, or the reason there is none
-    /// (E306 no key at all, E307/E308 an alert, E309 a current epoch this reader cannot use).
+    /// (E307 no key at all, E308/E309 an alert, E310 a current epoch this reader cannot use).
     pub fn writer(&self, repo: &RepoRef) -> Result<Private> {
         Private::from_resolution(&self.repo_id, &self.resolution).ok_or_else(|| self.no_write(repo))
     }
 
-    /// Refuse a reader that holds no key at all (E306, or the alert that explains why).
+    /// Refuse a reader that holds no key at all (E307, or the alert that explains why).
     /// Reading needs no write epoch, so a member of a repo mid-rotation can still read history.
     pub fn require_key(&self, repo: &RepoRef) -> Result<()> {
         if self.resolution.keys.is_empty() {

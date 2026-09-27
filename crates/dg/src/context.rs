@@ -25,6 +25,8 @@ pub struct Ctx {
     pub target: NetworkTarget,
     /// The resolved identity file path (from `--identity` / `DASH_FORGE_KEY` / config), if any.
     pub identity_path: Option<PathBuf>,
+    /// `--identity` as given on the command line (not the environment or the default).
+    pub cli_identity: Option<PathBuf>,
 }
 
 /// Stack the network layers in `dg`'s precedence order and resolve them.
@@ -77,6 +79,7 @@ impl Ctx {
             yes: cli.yes,
             target,
             identity_path,
+            cli_identity: cli.identity.clone(),
         })
     }
 
@@ -95,7 +98,7 @@ impl Ctx {
         self.identity_path.as_ref().ok_or_else(|| {
             UserError::new(codes::NO_IDENTITY, "no identity configured")
                 .cause("this command signs with an identity, and none was given or set as the default")
-                .fix("`dg auth login --identity <file>` (the bridge identity export) to set a default")
+                .fix("`dg auth new` creates an identity; `dg auth login <file>` (or `--mnemonic`) signs in with one")
                 .fix("or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
                 .into()
         })

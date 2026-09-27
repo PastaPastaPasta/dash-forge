@@ -3,7 +3,7 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab] [--force-new]
+//        [--only collab] [--force-new [--same-group]]
 //
 // --only collab registers forge-collab alone, against the forge-core and contract group already
 // recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
@@ -11,7 +11,8 @@
 // every record carries `schemaHash` (sha256 of the schema JSON after placeholder substitution),
 // and only a registered record whose hash differs from the current schema's is superseded. The
 // old record moves to v2.forgeCollabSuperseded and the new one takes the next identity nonce, so
-// it gets a new id. Rerunning the same command after it succeeded, or after a crash, therefore
+// it gets a new id. The new contract joins the EXISTING contract group (keys bound to it can then
+// sign for it too), so this needs --same-group as well. Rerunning the same command after it succeeded, or after a crash, therefore
 // registers nothing new. That is how a schema change the update rules refuse (e.g. narrowing an
 // ownerRefersTo) ships; documents under the old contract stay where they are, under its id.
 //
@@ -173,6 +174,17 @@ async function main() {
   const only = args.only === undefined ? null : String(args.only);
   if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
   const forceNew = Boolean(args['force-new']);
+  // A new forge-collab registered into the EXISTING group adds a member that every key already
+  // bound to the group can sign for, and a group never drops members. dg accepts superseded
+  // contracts the deployment file lists in the same group, but the default for a schema change
+  // is a new pair in a new group (--force-new without --only). Adding to the old group needs an
+  // explicit --same-group.
+  if (only === 'collab' && forceNew && !args['same-group']) {
+    throw new Error(
+      '--only collab --force-new adds a new forge-collab to the existing contract group, widening every key bound to it; ' +
+        're-run with --same-group to confirm, or use --force-new without --only for a new pair in a new group'
+    );
+  }
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
     : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;

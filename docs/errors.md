@@ -105,21 +105,21 @@ Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name
 
 ## E301
 
-**No identity configured.** The command needs to sign, and no identity file was found.
+**No identity configured.** The command needs to sign, and no identity or key was found.
 
-Fix: `dg auth login --identity <file>` records a default identity (use the bridge identity export). Alternatively, pass `--identity <file>` for one command, or set `DASH_FORGE_KEY=<file>` (this is also how `git-remote-dash` finds the key; its fallback is `~/.config/dash-forge/identities/<owner>.identity.json`).
+Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
 ## E302
 
-**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key.
+**This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either.
 
-Fix: use the identity export that includes that key.
+Fix: pass the identity file with `--master <file>`, or type the recovery words when asked. The master key is used for that one signature and not stored.
 
 ## E303
 
-**Identity file unreadable.** The identity file is missing, unreadable or not a bridge-format identity export.
+**Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed key file could not be opened (wrong passphrase).
 
-Fix: check the path (`dg auth status` shows which file is in use), or export the identity again from the bridge.
+Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked.
 
 ## E304
 
@@ -129,29 +129,35 @@ Fix: select the network the identity was created on: `--network testnet|mainnet`
 
 ## E305
 
-**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key, and the identity file in use holds none that matches an enabled key on the identity (or, for `dg collab add`, the member you named has none).
+**This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled on chain. Limited keys are disposable: nothing is lost.
 
-Fix: `dg auth keys add --encryption` adds one (one identity update signed by the master key, a fraction of a cent). A member you are adding runs it themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+Fix: register a fresh one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
 
 ## E306
+
+**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key, and the identity file in use holds none that matches an enabled key on the identity (or, for `dg collab add`, the member you named has none).
+
+Fix: if the identity has an ENCRYPTION key (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), use a key source that holds its private half: the limited key `dg auth login` stores holds only a signing key, so point `DASH_FORGE_KEY` at the identity file, or sign in with `dg auth login --full-key <identity file>` (a passphrase-sealed file). If it has none, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+
+## E307
 
 **No key for this private repository.** No `repoKey` wrap from a current maintainer opens this repository for your identity: you are not a member, you were removed, or a maintainer added you and has not wrapped the key to you yet.
 
 Fix: ask a maintainer to add you (`dg collab add <owner>/<repo> <your identity id>`). If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none.
 
-## E307
+## E308
 
 **A maintainer gave you the wrong key.** A current maintainer's `repoKey` for you holds a key that is not the one the epoch's anchor commits to (a split view, or the leftover wrap of a maintainer who lost a concurrent rotation). The client never falls back to another key; the alert names the wrap's author.
 
 Fix: ask a maintainer to run `dg repo keys status <owner>/<repo>` and `dg repo keys repair`; the wrap's author is named in the cause.
 
-## E308
+## E309
 
 **The repository's key chain is broken.** The anchor of an epoch does not carry a previous-epoch key that opens the epoch before it, so older content cannot be reached from the keys you hold.
 
 Fix: ask the maintainer named in the cause to re-wrap the older epoch to you; `dg repo keys status` lists the epochs you can read.
 
-## E309
+## E310
 
 **Key rotation or repair pending.** The repository's current key epoch is one your identity cannot write under yet (a rotation landed and no current maintainer has wrapped its key to you), or a repair is needed before new content is written.
 
@@ -162,6 +168,12 @@ Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Not
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
 
 Fix: top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
+
+## E402
+
+**This key's budget is used up.** The limited key signing for you has spent its whole budget (the identity's balance is untouched). Budgets bound what a leaked key could spend.
+
+Fix: register a fresh limited key (uses the master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`, with a larger `--budget` if you need one.
 
 ## E501
 

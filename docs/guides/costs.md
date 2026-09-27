@@ -25,7 +25,7 @@ dg auth balance
 
 ```
 Identity: 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB
-Balance:  48210000000 credits  (~0.482100 DASH)
+Balance:  0.4821 DASH (48210000000 credits)
 ```
 
 When the balance runs out, writes fail with [`E401`](../errors.md#e401). Reads keep working, and nothing you stored is lost.
@@ -61,18 +61,28 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
+Measured on devnet moutai (Platform protocol 14) as the signing identity's balance change. Mainnet uses the same fee formula.
+
 | Action | Cost |
 |---|---|
-| Create a repository | **~0.001 DASH**: three small documents (`repo`, your `maintainer` membership, the first `config`) |
-| Fork a repository | ~0.001 DASH plus one small manifest per pack and one ref update per branch (measured on moutai: 0.03 DASH for a 36-pack repo); the parent's packs are referenced, never re-uploaded |
-| Push to **your own bucket** | ~0.0002–0.0004 DASH: manifest + ref update |
-| Push with packs **on Platform** | ~0.28 DASH per MiB of packed data, plus the above; the storage is permanent |
-| Issue or comment (~500 bytes) | ~0.00014 DASH |
-| Ref update (~200 bytes) | ~0.000055 DASH |
-| Add or remove a collaborator | one small document (created, or deleted) |
-| Clone, fetch, browse, read issues | **free** |
+| Create a repository | **~0.0013 DASH**: three small documents (`repo`, your `maintainer` membership, the first `config`) |
+| Push to **your own bucket** | **~0.0003–0.004 DASH**: the pack manifest, the ref updates and the browse index. A one-commit push is at the low end (the helper quotes ~0.0003–0.0004 DASH for one manifest and one ref update); the measured first push of a small project to a bucket by `dg init` came to 0.0028 DASH |
+| Push with packs **on Platform** | **~0.28–0.30 DASH per MiB** of packed data, plus the above; the storage is permanent. A tiny push stored on Platform measured 0.0034 DASH |
+| Issue | ~0.0006 DASH with a short body, ~0.0017 DASH with a 4 KB body |
+| Comment | ~0.0005 DASH short, ~0.0016 DASH at 4 KB |
+| Pull request | ~0.0007–0.001 DASH |
+| Close, reopen, label, merge event | ~0.0004–0.0006 DASH |
+| Review | ~0.00035 DASH |
+| Release (the document; assets go to your storage) | ~0.0007 DASH |
+| Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
+| Star / unstar | ~0.0003 DASH / refunds ~0.0002 DASH |
+| Webhook | ~0.0008 DASH; removing it refunds all but ~0.00008 DASH |
+| Fork a repository | **~0.01 DASH** for a small repository (8 packs, 5 branches: 0.0095 DASH), 0.03 DASH for 36 packs: one small manifest per pack and one ref update per branch. The parent's packs are referenced, never re-uploaded |
+| Mirror a GitHub repository, first run | depends on its size; the Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost **~0.078 DASH**, and a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. A re-run with nothing new costs **0** |
+| Top up a browser key's budget | ~0.00002 DASH |
+| Clone, fetch, browse, read issues, download a zip | **free** |
 
-Where the numbers come from: `dg cost audit` (the per-operation reference below), [economics.md](../economics.md), and the measured contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
+Where the numbers come from: the live measurements recorded in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), `dg cost audit` (the per-operation reference below), [economics.md](../economics.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 
 ```sh
 dg cost audit
@@ -86,7 +96,7 @@ Per-operation cost reference (no live spend tracking yet):
   issue / comment (~500 B)   ~0.00013724 DASH ≈ $0.00
 ```
 
-The `repo create` line is the upper bound `dg` quotes before it signs; the measured cost is about half that.
+These are static references, not measurements: the `repo create` line is the upper bound `dg` quotes before it signs (the measured cost is ~0.0013 DASH), and the issue line counts storage only, so a real issue costs more (see the table above).
 
 **Why a repository is cheap.** Every repository lives in one shared pair of contracts, forge-core and forge-collab, registered once per network (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
 
@@ -100,7 +110,7 @@ Pack bytes are almost all of a repository's size, so where you keep them decides
 
 | Where packs live | You pay | For a 50 MiB repository with 10 pushes a month |
 |---|---|---|
-| **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifest + refs per push. Provider: storage and egress, at their prices. | ~0.003 DASH a month on Platform, plus cents to your provider (R2 has no egress fees) |
+| **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifest + refs per push. Provider: storage and egress, at their prices. | ~0.003–0.04 DASH a month on Platform, plus cents to your provider (R2 has no egress fees) |
 | **Dash Platform** | ~0.28 DASH per MiB pushed | ~14 DASH for the first upload, then ~0.28 DASH per MiB pushed |
 
 Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
@@ -132,7 +142,7 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
 
 ## Seeing costs before you pay
 
-- **`dg` asks first.** Every command that writes asks `[y/N]` unless you pass `--yes`. `dg repo create` and `dg repack` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
+- **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create` and `dg repack` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
@@ -140,6 +150,9 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
   ```
   Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending.
 - **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it.
-- **The web app** shows a cost preview before it creates a repository, files an issue or comment, changes an issue or PR's state, or changes collaborators. Starring and following do not show one yet.
+- **`dg init` and `dg repo create`** stop before creating anything when no storage is chosen, and quote what Platform storage would cost for this repository ([E508](../errors.md#e508)).
+- **The web app** shows the price on every button that signs (repository, issue, comment, state change, review, member, star, release, key top-up), with refunds for deletes. After each write a toast shows the actual balance change. **Settings → Spend** keeps a local ledger in this browser: month and all-time totals by repository, and estimates that missed by more than 25 %.
+- **Limited keys cap spending.** A browser key can spend at most its budget (0.05 DASH by default), and a CI runner key its own (0.5 DASH). Platform enforces the budget at consensus, whatever the software does. See [Identity and keys](identity-and-keys.md#limited-keys).
+- **The Mirror Action** has a per-run `cost-cap` (0.05 DASH by default) and reports what each run spent in the job summary.
 
-**Coming soon:** a local spend ledger with `dg cost audit` month and all-time totals by repository, actual-versus-estimate in the web app's toasts, and a budget on each key (with protocol 14's limited keys).
+**Coming soon:** `dg cost audit` month and all-time totals from a local ledger on the CLI side.

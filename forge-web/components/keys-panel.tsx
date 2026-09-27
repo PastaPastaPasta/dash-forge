@@ -22,7 +22,7 @@ import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM =
-  "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires (use \"Revoke on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
+  "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
 
 export function KeysPanel(): JSX.Element {
   const { identity, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
@@ -127,10 +127,12 @@ export function KeysPanel(): JSX.Element {
           </>
         ) : null}
       </div>
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Top-up keeps this key and adds budget (or a later expiry). Renew replaces it with a new key and disables this one.
-        Both use your master key once and do not store it.
-      </p>
+      {unlimitedKey ? null : (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          Top-up keeps this key and adds budget (or a later expiry). Renew replaces it with a new key and disables this one.
+          Both use your master key once and do not store it.
+        </p>
+      )}
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).

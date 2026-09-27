@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Scenario 14: a private repository end to end (docs/security/private-repos.md).
+# Scenario 15: a private repository end to end (docs/security/private-repos.md).
 #
 #   1. OWNER `dg repo create --private` a fresh repo              -> repo + maintainer + self-wrap + anchor
 #   2. OWNER pushes a branch (the pack is sealed, the ref name is inside `enc`)
 #      and the stored manifest/ref documents hold no plaintext: no `refName`, a keyed
 #      `refNameHash` that is not sha256(refName), and a pack whose bytes start "DFPK"
-#   3. CONTRIB (never a member) clones                            -> refused with E306
+#   3. CONTRIB (never a member) clones                            -> refused with E307
 #   4. OWNER `dg collab add` COLLAB (writer)                       -> membership + wrap
 #      COLLAB clones                                              -> the pushed tree, byte-identical
 #   5. OWNER `dg collab remove` COLLAB                             -> delete + rotation to epoch 1
 #      OWNER pushes a second branch under epoch 1
-#   6. COLLAB (removed) clones                                    -> refused with E306 (no key for epoch 1)
+#   6. COLLAB (removed) clones                                    -> refused with E307 (no key for epoch 1)
 #      but COLLAB's earlier clone still holds the old content (encryption can't take it back)
 #   7. `dg repo keys status` shows epoch 1, no alerts, nothing to repair
 #
 # Each run makes a new repo (`e2e-private-<run-id>`, ~0.003 DASH + pushes): a private repo's
 # rotation history is part of what is tested, so it is not shared between runs.
-SCENARIO_NAME="14 private repository: create, push, member clone, remove + rotate"
+SCENARIO_NAME="15 private repository: create, push, member clone, remove + rotate"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
@@ -24,8 +24,8 @@ NAME="e2e-private-${RUN_ID}"
 NAME="${NAME:0:63}"
 REPO="${E2E_OWNER_ID}/${NAME}"
 REMOTE="dash://${REPO}"
-SRC="${WORKROOT}/s14-src"
-LOG="${WORKROOT}/s14"
+SRC="${WORKROOT}/s15-src"
+LOG="${WORKROOT}/s15"
 
 balance_of() { # balance_of <identity_file> -> credits
   dg_as "$1" --json auth balance 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["balanceCredits"])' 2>/dev/null || echo 0
@@ -62,15 +62,15 @@ else
   info "raw ref dump unavailable: $(head -c 300 "$LOG-dump.err")"
 fi
 
-step "CONTRIB (never a member) clones -> refused (E306)"
-if git_dash "$ID_CONTRIB" "$LOG-contrib" clone "$REMOTE" "${WORKROOT}/s14-contrib"; then
+step "CONTRIB (never a member) clones -> refused (E307)"
+if git_dash "$ID_CONTRIB" "$LOG-contrib" clone "$REMOTE" "${WORKROOT}/s15-contrib"; then
   bad "a non-member cloned a private repo"
-elif grep -q 'E306' "$LOG-contrib.err"; then
-  ok "non-member refused with E306"
+elif grep -q 'E307' "$LOG-contrib.err"; then
+  ok "non-member refused with E307"
 else
   cat "$LOG-contrib.err" >&2
   is_flake "$LOG-contrib.err" && skip_scenario "non-member clone failed on a flake"
-  bad "non-member clone failed without E306"
+  bad "non-member clone failed without E307"
 fi
 
 step "OWNER adds COLLAB (writer): membership + key wrap"
@@ -82,7 +82,7 @@ fi
 ok "COLLAB added"
 
 step "COLLAB clones -> the pushed tree"
-CLONE1="${WORKROOT}/s14-collab"
+CLONE1="${WORKROOT}/s15-collab"
 if _retry "$LOG-c1.err" git_dash "$ID_COLLAB" "$LOG-c1" clone "$REMOTE" "$CLONE1"; then
   got="$(git -C "$CLONE1" rev-parse HEAD 2>/dev/null)"
   assert_eq "$TIP" "$got" "member clone HEAD" && ok "member clone HEAD ${got:0:12}" || bad "member clone HEAD"
@@ -114,7 +114,7 @@ else
 fi
 
 step "OWNER re-clones: reads both epochs (chain walk)"
-CLONE_O="${WORKROOT}/s14-owner"
+CLONE_O="${WORKROOT}/s15-owner"
 if _retry "$LOG-co.err" git_dash "$ID_OWNER" "$LOG-co" clone "$REMOTE" "$CLONE_O"; then
   if assert_eq "$TIP2" "$(git -C "$CLONE_O" rev-parse HEAD)" "owner clone HEAD after rotation" \
       && git -C "$CLONE_O" cat-file -e "${TIP}^{commit}"; then
@@ -127,14 +127,14 @@ else
 fi
 
 step "COLLAB (removed) clones again -> refused; the old clone still has the old content"
-if git_dash "$ID_COLLAB" "$LOG-c2" clone "$REMOTE" "${WORKROOT}/s14-collab2"; then
+if git_dash "$ID_COLLAB" "$LOG-c2" clone "$REMOTE" "${WORKROOT}/s15-collab2"; then
   bad "a removed member cloned after the rotation"
-elif grep -qE 'E306|E309' "$LOG-c2.err"; then
+elif grep -qE 'E307|E310' "$LOG-c2.err"; then
   ok "removed member refused ($(grep -oE 'E30[69]' "$LOG-c2.err" | head -1))"
 else
   cat "$LOG-c2.err" >&2
   is_flake "$LOG-c2.err" && skip_scenario "removed-member clone failed on a flake"
-  bad "removed-member clone failed without E306/E309"
+  bad "removed-member clone failed without E307/E310"
 fi
 if git -C "$CLONE1" cat-file -e "${TIP}^{commit}" 2>/dev/null && ! git -C "$CLONE1" cat-file -e "${TIP2}^{commit}" 2>/dev/null; then
   ok "the removed member keeps the old commit and never got the new one"
@@ -151,7 +151,7 @@ if dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role maintain
   if dg_as "$ID_OWNER" -y --json collab remove "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-rmm.json" 2>"$LOG-rmm.err"; then
     EPOCH="$(json_field "$LOG-rmm.json" 'd["rotation"]["epoch"]')"
     [[ "$EPOCH" -gt "$EPOCH_M" ]] && ok "rotated to epoch ${EPOCH} (above ${EPOCH_M}; no number reused)" || bad "epoch after maintainer removal: ${EPOCH}"
-    CLONE_O2="${WORKROOT}/s14-owner2"
+    CLONE_O2="${WORKROOT}/s15-owner2"
     if _retry "$LOG-co2.err" git_dash "$ID_OWNER" "$LOG-co2" clone "$REMOTE" "$CLONE_O2" \
         && [[ "$(git -C "$CLONE_O2" rev-parse HEAD)" == "$TIP2" ]]; then
       ok "owner still reads every epoch after the anchoring maintainer's removal"

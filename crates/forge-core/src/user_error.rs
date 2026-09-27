@@ -90,6 +90,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         codes::IDENTITY_NOT_FOUND,
         "identity not found on this network",
     ),
+    (codes::KEY_EXPIRED, "this key expired or was disabled"),
     (
         codes::NO_ENCRYPTION_KEY,
         "no encryption key for private repositories",
@@ -105,6 +106,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     ),
     (codes::ROTATION_PENDING, "key rotation or repair pending"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
+    (codes::KEY_BUDGET_SPENT, "this key's budget is used up"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),
     (codes::STORAGE_POLICY, "storage policy not met"),
     (codes::PACKS_UNREADABLE, "packs unreadable"),
@@ -165,18 +167,22 @@ pub mod codes {
     pub const IDENTITY_UNREADABLE: &str = "E303";
     /// The identity does not exist on the selected network.
     pub const IDENTITY_NOT_FOUND: &str = "E304";
+    /// The signing key is past its expiry or disabled (protocol-14 limited keys).
+    pub const KEY_EXPIRED: &str = "E305";
     /// A private repository needs an `ENCRYPTION` key the identity file holds.
-    pub const NO_ENCRYPTION_KEY: &str = "E305";
+    pub const NO_ENCRYPTION_KEY: &str = "E306";
     /// No accepted `repoKey` wrap opens this private repository for the identity.
-    pub const NOT_A_KEY_HOLDER: &str = "E306";
+    pub const NOT_A_KEY_HOLDER: &str = "E307";
     /// A current maintainer's wrap holds a key that is not the epoch's (§5.4 KeyMismatch).
-    pub const KEY_MISMATCH: &str = "E307";
+    pub const KEY_MISMATCH: &str = "E308";
     /// The `prevEpochKey` chain stops before an epoch the content needs (ChainBroken).
-    pub const KEY_CHAIN_BROKEN: &str = "E308";
+    pub const KEY_CHAIN_BROKEN: &str = "E309";
     /// The current epoch cannot be written under yet: a rotation or a repair is pending.
-    pub const ROTATION_PENDING: &str = "E309";
+    pub const ROTATION_PENDING: &str = "E310";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
+    /// The signing key has spent its whole budget (protocol-14 limited keys).
+    pub const KEY_BUDGET_SPENT: &str = "E402";
     /// `dash.storage` names an unknown profile, or storage.toml is invalid.
     pub const STORAGE_CONFIG: &str = "E501";
     /// Fewer than `dash.replicas` targets confirmed the pack.
@@ -736,6 +742,34 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
 /// as their messages at this boundary.
 fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     let m = msg.to_ascii_lowercase();
+    // Protocol-14 key limits (PublicKeyBudgetExhaustedError / PublicKeyExpiredError), before
+    // the balance rule: a spent key is not an empty identity.
+    // … or IdentityPublicKeyBudgetExceededError: some budget left, but less than this costs.
+    if m.contains("has spent its whole budget") || m.contains("credits of budget left") {
+        return Some(
+            UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
+                .cause(one_line(msg))
+                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`")
+                .note("the identity's balance is untouched; only this key can no longer sign"),
+        );
+    }
+    if m.contains("can no longer sign") && m.contains("expired") {
+        return Some(
+            UserError::new(codes::KEY_EXPIRED, ctx.headline("this key has expired"))
+                .cause(one_line(msg))
+                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
+        );
+    }
+    // PublicKeyIsDisabledError ("Identity key N is disabled"), or the same caught before signing.
+    if m.contains("is disabled")
+        && (m.contains("identity key") || m.contains("identity public key"))
+    {
+        return Some(
+            UserError::new(codes::KEY_EXPIRED, ctx.headline("this key was disabled"))
+                .cause(one_line(msg))
+                .fix("sign in again with a live key: `dg auth login <identity file>` registers a new one; `dg auth keys list` shows which are live"),
+        );
+    }
     // 40210 IdentityInsufficientBalance / 30000 BalanceIsNotEnough.
     if m.contains("insufficient identity") || m.contains("is not enough to pay") {
         let detail = balance_numbers(&m).map_or_else(
@@ -790,7 +824,7 @@ fn not_found(chain: &str, ctx: &ErrorContext<'_>) -> UserError {
             ctx.headline("your identity does not exist on this network"),
         )
         .cause("Platform has no identity with the id in your identity file")
-        .fix("select the network the identity was created on (`--network`, or `dg auth login --identity <file> --network <net>`); `dg auth status` shows both");
+        .fix("select the network the identity was created on (`--network`, or sign in there: `dg auth login <file> --network <net>`); `dg auth status` shows both");
     }
     let repo = ctx.repo_or("the repository");
     if chain.contains("resolving") || chain.contains("fetching contract") {
@@ -911,7 +945,8 @@ fn identity_unreadable(msg: &str) -> UserError {
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("pass the bridge identity export with `--identity <file>` (the helper reads DASH_FORGE_KEY); `dg auth status` shows which file is in use")
+    .fix("`dg auth login <file>` stores a key again (from the identity file or --mnemonic); `dg auth status` shows which key source is in use")
+    .fix("or pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 
 /// E302 — the identity file has no key at the level an operation needs.
@@ -1373,6 +1408,37 @@ mod tests {
             u.note.as_deref(),
             Some("the membership stands; re-run dg collab add")
         );
+    }
+
+    #[test]
+    fn key_limit_rejections_have_their_own_codes() {
+        let ctx = ErrorContext {
+            goal: Some("push rejected"),
+            ..ErrorContext::default()
+        };
+        for (text, code) in [
+            (
+                "Identity public key 7 has spent its whole budget and can no longer sign",
+                codes::KEY_BUDGET_SPENT,
+            ),
+            (
+                "Identity public key 7 expired at 1700000000000 ms and can no longer sign (block time 1800000000000 ms)",
+                codes::KEY_EXPIRED,
+            ),
+            ("Identity key 7 is disabled", codes::KEY_EXPIRED),
+            (
+                "Identity 5Dtb public key 7 has 1000 credits of budget left, the state transition requires 5000",
+                codes::KEY_BUDGET_SPENT,
+            ),
+            (
+                "Identity public key 7 is disabled and can no longer sign",
+                codes::KEY_EXPIRED,
+            ),
+        ] {
+            let u = from_platform_text(text, &ctx).expect(text);
+            assert_eq!(u.code, code, "{text}");
+            assert!(u.fix.iter().any(|f| f.contains("dg auth login")), "{text}");
+        }
     }
 
     #[test]

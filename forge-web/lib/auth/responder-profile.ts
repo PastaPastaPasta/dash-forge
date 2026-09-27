@@ -71,7 +71,9 @@ export function responderWarnings(
       `This is NOT the identity this device already holds a key for (${others.map((id) => `${id.slice(0, 10)}…`).join(', ')}). If you meant to sign in as that one, someone else answered your QR code: close this and start again.`,
     )
   }
-  if (p.name === null) out.push('This identity has no DPNS username. Make sure the id above is exactly the one your wallet shows.')
+  if (p.name === null) {
+    out.push('This identity has no DPNS username. Make sure the start and end of the id above match what your wallet showed when you approved.')
+  }
   else if (p.namedAt !== null && now - p.namedAt < NEW_IDENTITY_MS) {
     out.push(`The username ${p.name} was registered less than a day ago. If your identity is older, someone else answered your QR code.`)
   }
