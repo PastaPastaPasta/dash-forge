@@ -585,7 +585,9 @@ export async function recoverStaged(
   assertDedicatedOrigin()
   const at = stagedKey(network, identityId)
   const record = await idbGet<VaultRecord>('vault', at)
-  if (record === undefined) return { status: 'discarded' }
+  // Gone since the caller checked: another tab finished or discarded it. Not proof it never
+  // landed; unlocking again opens whatever that tab left.
+  if (record === undefined) return { status: 'pending' }
   const opened = await openRecord(network, record, method, false)
   if (opened === null) return { status: 'locked' }
   const s = await state(opened.secret)
