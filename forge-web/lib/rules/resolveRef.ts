@@ -149,6 +149,9 @@ function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
   return out
 }
 
+/** {@link causalOrder}, exported for its property test only. */
+export const causalOrderForTest = causalOrder
+
 /**
  * The base-ref history a PR merge is verified against (§4 routing, §6 merge reachability);
  * ports `merge_base_tips` in `crates/forge-core/src/rules.rs` (vectors `merge_base_tips__*`).

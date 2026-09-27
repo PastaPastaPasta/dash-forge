@@ -85,9 +85,9 @@ export interface MergeRunDeps {
   readonly repo: RepoRef
   /**
    * `baseRefName`: the base the merge moves (the PR's current one); `openedBaseRefName`: the
-   * base it was opened against, which the fold checks the merge against (absent: the same).
+   * base it was opened against, which the fold checks the merge against.
    */
-  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'> & { readonly openedBaseRefName?: string }
+  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'> & { readonly openedBaseRefName: string }
   readonly input: MergeInput
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>

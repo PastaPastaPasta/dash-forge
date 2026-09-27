@@ -181,7 +181,7 @@ describe('mergeBaseTip — the browser merge builds only on a base it may merge 
   it('refuses a retargeted PR: a merge into the new base would move it and never count', () => {
     expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, 'refs/heads/next', NOW)).toBe('')
     expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, 'refs/heads/next', NOW)).toBe('')
-    expect(mergeRefProblem('refs/heads/next', NOW, HEAD, MAIN)).toMatch(/retargeted.*dg pr merge --event-only --merge-oid/)
+    expect(mergeRefProblem('refs/heads/next', NOW, HEAD, MAIN)).toMatch(/retargeted.*open a new PR against the new base/)
     expect(mergeRefProblem(MAIN, NOW, HEAD, MAIN)).toBeNull()
   })
 })
