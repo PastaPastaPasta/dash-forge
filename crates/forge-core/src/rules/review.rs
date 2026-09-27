@@ -645,3 +645,147 @@ pub fn linked_issues(text: &str) -> Vec<u32> {
     }
     out.into_iter().collect()
 }
+
+#[cfg(test)]
+mod bounded_time {
+    //! Hang / blow-up guards for the suggestion parser and the replacement, which read
+    //! untrusted, permanent comment bodies (the Rust side of forge-web's `render-fuzz`). Each
+    //! batch runs on its own thread with a wall-clock deadline, so a regression to quadratic
+    //! time fails here instead of hanging CI. The budgets are forge-web's: ≤ 250 ms per input
+    //! up to 20 KB, ≤ 3 s at 1 MiB (debug build; release is ~10× faster).
+
+    use super::{apply_suggestion, parse_suggestions};
+    use std::time::{Duration, Instant};
+
+    const KB20: usize = 20_000;
+    const MIB: usize = 1 << 20;
+
+    /// Run `f` over `inputs` on a thread; fail on a hang (`deadline`) or a slow input.
+    fn expect_fast<T: Send + 'static>(
+        label: &str,
+        inputs: Vec<T>,
+        budget: Duration,
+        f: fn(&T),
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut slowest = (Duration::ZERO, 0usize);
+            for (i, x) in inputs.iter().enumerate() {
+                let t = Instant::now();
+                f(x);
+                let took = t.elapsed();
+                if took > slowest.0 {
+                    slowest = (took, i);
+                }
+            }
+            let _ = tx.send(slowest);
+        });
+        let (took, i) = rx
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("{label}: batch did not finish in 60 s (hang)"));
+        assert!(took < budget, "{label}: input #{i} took {took:?} (budget {budget:?})");
+    }
+
+    /// `unit` repeated to `size` bytes (then `tail`).
+    fn fill(size: usize, unit: &str, tail: &str) -> String {
+        unit.repeat((size - tail.len()) / unit.len()) + tail
+    }
+
+    /// A small deterministic PRNG (xorshift), so a failure reproduces.
+    fn nasty(seed: u64, count: usize, max_len: usize) -> Vec<String> {
+        const ALPHABET: [&str; 14] = [
+            "```", "~~~", "`", "~", "suggestion", " ", "\t", "\r", "\n", "\r\n", "x", "   ", "````", "\u{2028}",
+        ];
+        let mut state = seed | 1;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        (0..count)
+            .map(|_| {
+                let target = usize::try_from(next() % max_len as u64).unwrap_or(0);
+                let mut s = String::new();
+                while s.len() < target {
+                    let tok = ALPHABET[usize::try_from(next() % 14).unwrap_or(0)];
+                    let run = if next() % 10 == 0 {
+                        1 + usize::try_from(next() % 2000).unwrap_or(0)
+                    } else {
+                        1
+                    };
+                    s.push_str(&tok.repeat(run.min((target - s.len()) / tok.len() + 1)));
+                }
+                s
+            })
+            .collect()
+    }
+
+    fn parse(s: &String) {
+        std::hint::black_box(parse_suggestions(s));
+    }
+
+    #[test]
+    fn parse_suggestions_adversarial_20kb() {
+        let inputs = vec![
+            format!("```x{}y", " ".repeat(KB20)),
+            format!("```suggestion{}y", " ".repeat(KB20)),
+            format!("```{}", " ".repeat(KB20)),
+            format!("```suggestion{}", "\t".repeat(KB20)),
+            format!("```suggestion\n```{}x", " ".repeat(KB20)),
+            "`".repeat(KB20),
+            "~".repeat(KB20),
+            "```\n".repeat(KB20 / 4),
+            "```suggestion\n".repeat(KB20 / 14),
+            "```suggestion\nx\n```\n".repeat(KB20 / 20),
+            format!("   ```suggestion\n{}", "   x\n".repeat(KB20 / 5)),
+            "\r".repeat(KB20),
+            "\r\n".repeat(KB20 / 2),
+        ];
+        expect_fast("parse_suggestions", inputs, Duration::from_millis(250), parse);
+    }
+
+    #[test]
+    fn parse_suggestions_random_20kb() {
+        expect_fast(
+            "parse_suggestions random",
+            nasty(0x5ec0, 300, KB20),
+            Duration::from_millis(250),
+            parse,
+        );
+    }
+
+    #[test]
+    fn parse_suggestions_one_mib() {
+        let mut inputs: Vec<String> = [
+            " ", "`", "~", "```\n", "```suggestion\n", "```suggestion\nx\n```\n", "\r", "\r\n", "\t",
+        ]
+        .iter()
+        .map(|u| fill(MIB, u, ""))
+        .collect();
+        inputs.push(format!("```x{}", fill(MIB - 4, " ", "y")));
+        inputs.push(format!("```suggestion\n```{}", fill(MIB - 20, " ", "x")));
+        expect_fast("parse_suggestions 1 MiB", inputs, Duration::from_secs(3), parse);
+    }
+
+    #[test]
+    fn apply_suggestion_one_mib() {
+        let big = fill(MIB, "line\n", "");
+        let lines = (MIB / 5) as u64;
+        let inputs: Vec<(String, u64, u64, String)> = vec![
+            (big.clone(), 1, lines, String::new()),
+            (big.clone(), 1, 1, fill(MIB, "\n", "")),
+            (big, lines, lines, fill(MIB, "x\r\n", "")),
+            (fill(MIB, "a\r\n", ""), 2, 3, "b".into()),
+            (fill(MIB, "\n", ""), 1, 1, "x".into()),
+        ];
+        expect_fast(
+            "apply_suggestion 1 MiB",
+            inputs,
+            Duration::from_secs(3),
+            |(f, a, b, t)| {
+                std::hint::black_box(apply_suggestion(f, *a, *b, t).ok());
+            },
+        );
+    }
+}

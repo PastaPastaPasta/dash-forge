@@ -438,12 +438,16 @@ pub enum PrCommand {
         #[arg(long, value_enum, default_value = "open")]
         state: StateArg,
     },
-    /// View a pull request: state, approvals, reviews, comments.
+    /// View a pull request: state, reviewers, approvals, reviews, threads.
     View {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
+        /// Show every conversation: inline threads under their file and line (outdated and
+        /// resolved marked), replies, suggestions, and general comments.
+        #[arg(long)]
+        comments: bool,
     },
     /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo.
     Checkout {
@@ -452,42 +456,140 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
-    /// Review a pull request (on its current head).
-    Review {
+    /// Review a pull request on its current head: a verdict, a summary and inline comments,
+    /// written as one review plus one comment per `--file`. `--pending` keeps the inline
+    /// comments in a local draft until a later run submits them with a verdict. An
+    /// interrupted submit resumes when run again, and writes nothing twice.
+    Review(Box<PrReviewArgs>),
+    /// Post one comment: general, inline (`--file --line`), or a reply (`--reply-to`).
+    Comment(Box<PrCommentArgs>),
+    /// Edit the title and/or description of your pull request.
+    Edit {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
-        /// Approve.
+        /// The new title.
         #[arg(long)]
-        approve: bool,
-        /// Request changes.
+        title: Option<String>,
+        /// The new description (an empty string removes it).
+        #[arg(long, conflicts_with = "body_file")]
+        body: Option<String>,
+        /// Read the new description from a file (`-` for stdin).
+        #[arg(long = "body-file")]
+        body_file: Option<PathBuf>,
+    },
+    /// Move the PR head to where its source branch points now (a `headUpdate`). `git push`
+    /// does this for you when you push the branch of your own PR (unless
+    /// `git config dash.prAutoSync false`).
+    Sync {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// Move the head to this commit instead of the branch tip.
         #[arg(long)]
-        request_changes: bool,
-        /// Comment without a verdict.
+        head: Option<String>,
+    },
+    /// Mark a draft pull request ready for review.
+    Ready {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
+    /// Convert a pull request to a draft.
+    Draft {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
+    /// Resolve a conversation (the thread of `comment_id`).
+    Resolve {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// A comment of the thread (its root or any reply).
+        comment_id: String,
+    },
+    /// Unresolve a conversation.
+    Unresolve {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// A comment of the thread (its root or any reply).
+        comment_id: String,
+    },
+    /// Request a review from identities (an identity id, or a DPNS name like `@alice`).
+    /// Requesting again someone who has reviewed since re-requests.
+    RequestReview {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The reviewers.
+        #[arg(required = true)]
+        reviewers: Vec<String>,
+        /// Remove the requests instead.
         #[arg(long)]
-        comment: bool,
-        /// The verdict (alternative to the flags above).
-        #[arg(long, value_enum)]
-        verdict: Option<VerdictArg>,
-        /// Review body.
+        remove: bool,
+    },
+    /// Remove review requests (`request-review --remove`).
+    UnrequestReview {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The reviewers.
+        #[arg(required = true)]
+        reviewers: Vec<String>,
+    },
+    /// Dismiss a review (maintainers and writers): it no longer counts for or against.
+    DismissReview {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The review's id (`dg pr view --json` lists them).
+        review_id: String,
+        /// Why (at most 120 characters; public, even in a private repository).
         #[arg(long, default_value = "")]
-        body: String,
+        reason: String,
     },
-    /// Merge a pull request: fast-forward or merge commit, push to the base, post the event.
-    Merge {
+    /// The check runs reported on the PR's current head.
+    Checks {
         /// The repository (`owner/name`).
         repo: String,
         /// The PR number.
         number: u64,
-        /// Only post the merge event (the merge was pushed some other way).
-        #[arg(long)]
-        event_only: bool,
-        /// With --event-only: the commit the event names (default: the PR head, or the base
-        /// tip when the head is already in it).
-        #[arg(long = "merge-oid", requires = "event_only")]
-        merge_oid: Option<String>,
     },
+    /// The commits the PR adds to its base (fetched over dash://).
+    Commits {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// At most this many (newest first).
+        #[arg(long, default_value_t = 250)]
+        limit: usize,
+    },
+    /// Merge a pull request: fast-forward, merge commit or squash, push to the base, post the
+    /// event.
+    Merge(Box<PrMergeArgs>),
+    /// Merge the base branch into the PR's source branch (a merge commit pushed to the source
+    /// repository, then a head update). Needs write access to the source repository.
+    UpdateBranch {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
+    /// Review suggestions.
+    #[command(subcommand)]
+    Suggestion(PrSuggestionCommand),
     /// Close a pull request without merging.
     Close {
         /// The repository (`owner/name`).
@@ -509,6 +611,117 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
+}
+
+/// `dg pr suggestion`.
+#[derive(Debug, Subcommand)]
+pub enum PrSuggestionCommand {
+    /// Apply ```` ```suggestion ```` blocks from review comments as one commit on the PR's
+    /// source branch, then move the PR head to it. Needs write access to the source repo.
+    Apply {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The comments whose suggestions to apply.
+        comment_ids: Vec<String>,
+        /// Every suggestion on the current head that is not applied yet and whose thread is
+        /// not resolved.
+        #[arg(long, conflicts_with = "comment_ids")]
+        all: bool,
+    },
+}
+
+/// `dg pr review` arguments.
+#[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // clap flags
+pub struct PrReviewArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// The PR number.
+    pub number: u64,
+    /// Approve.
+    #[arg(long)]
+    pub approve: bool,
+    /// Request changes.
+    #[arg(long)]
+    pub request_changes: bool,
+    /// Comment without a verdict.
+    #[arg(long)]
+    pub comment: bool,
+    /// The verdict (alternative to the flags above).
+    #[arg(long, value_enum)]
+    pub verdict: Option<VerdictArg>,
+    /// Keep the given inline comments in the local pending review; nothing is written.
+    #[arg(long, conflicts_with_all = ["approve", "request_changes", "comment", "verdict", "discard"])]
+    pub pending: bool,
+    /// Throw the local pending review away.
+    #[arg(long, conflicts_with_all = ["approve", "request_changes", "comment", "verdict"])]
+    pub discard: bool,
+    /// Finish an interrupted submit (the verdict and summary are the draft's).
+    #[arg(long, conflicts_with_all = ["approve", "request_changes", "comment", "verdict", "pending", "discard"])]
+    pub resume: bool,
+    /// The summary and the inline comments, in order.
+    #[command(flatten)]
+    pub inline: pr::inline::InlineArgs,
+}
+
+/// `dg pr comment` arguments.
+#[derive(Debug, clap::Args)]
+pub struct PrCommentArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// The PR number.
+    pub number: u64,
+    /// The comment.
+    #[arg(long, conflicts_with = "body_file")]
+    pub body: Option<String>,
+    /// Read the comment from a file (`-` for stdin).
+    #[arg(long = "body-file")]
+    pub body_file: Option<PathBuf>,
+    /// Reply to this comment (its thread).
+    #[arg(long = "reply-to", conflicts_with_all = ["file", "line", "start_line", "side"])]
+    pub reply_to: Option<String>,
+    /// Comment on this file (a file-level comment without `--line`).
+    #[arg(long)]
+    pub file: Option<String>,
+    /// The line (the last line of a range).
+    #[arg(long, requires = "file")]
+    pub line: Option<u64>,
+    /// The first line of a range.
+    #[arg(long = "start-line", requires = "line")]
+    pub start_line: Option<u64>,
+    /// The side of the diff the line is on.
+    #[arg(long, value_enum, requires = "line")]
+    pub side: Option<pr::inline::SideArg>,
+    /// Suggest this text for the lines (a ```` ```suggestion ```` block, new side).
+    #[arg(long, requires = "line")]
+    pub suggest: Option<String>,
+}
+
+/// `dg pr merge` arguments.
+#[derive(Debug, clap::Args)]
+pub struct PrMergeArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// The PR number.
+    pub number: u64,
+    /// Squash the PR's commits into one commit on the base.
+    #[arg(long, conflicts_with = "event_only")]
+    pub squash: bool,
+    /// The squash commit's message (default: the PR title, body and `Co-authored-by` lines).
+    #[arg(long, requires = "squash")]
+    pub message: Option<String>,
+    /// Delete the source branch after merging (needs write access to the source repo).
+    #[arg(long = "delete-branch", conflicts_with = "event_only")]
+    pub delete_branch: bool,
+    /// Only post the merge event (the merge was pushed some other way).
+    #[arg(long)]
+    pub event_only: bool,
+    /// With --event-only: the commit the event names (default: the PR head, or the base
+    /// tip when the head is already in it).
+    #[arg(long = "merge-oid", requires = "event_only")]
+    pub merge_oid: Option<String>,
 }
 
 /// `dg pr create` arguments.
@@ -535,6 +748,9 @@ pub struct PrCreateArgs {
     /// The head commit (default: where the branch points in the head repo).
     #[arg(long = "head-oid")]
     pub head_oid: Option<String>,
+    /// Open it as a draft (`dg pr ready` marks it ready for review).
+    #[arg(long)]
+    pub draft: bool,
 }
 
 #[derive(Debug, Subcommand)]

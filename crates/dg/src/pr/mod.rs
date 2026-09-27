@@ -6,13 +6,30 @@
 //!   exists (`forkOf`), else the target.
 //! * `list` / `view` fold the PR's `event` + `authorEvent` log (§3) and count approvals from
 //!   members' reviews on the current head (§6).
-//! * `review` posts a `review` on the current head.
+//! * `view --comments` adds the conversations: inline threads under their file and line,
+//!   outdated and resolved marked, suggestions, and general comments ([`threads`]).
+//! * `review` / `comment` ([`review`]): a verdict plus inline comments (single lines, ranges,
+//!   file-level, suggestions) as one review and N comments, resumably, or held as a pending
+//!   review; a single comment or reply.
+//! * `edit`, `sync`, `ready` / `draft`, `resolve` / `unresolve`, `request-review`,
+//!   `dismiss-review`, `checks`, `commits` ([`state`]).
 //! * `merge` does the merge locally, in a throwaway repository: fetch base and head over
-//!   `dash://`, fast-forward or build a clean merge commit (`git merge-tree`), push it to the
-//!   base branch (the helper routes a protected branch to `protectedRefUpdate`, which needs a
-//!   maintainer), then post the `merge` event. Each step is reported; a failure names what
-//!   already happened. `--event-only` just posts the event.
+//!   `dash://`, fast-forward, a clean merge commit (`git merge-tree`) or a squash, push it to
+//!   the base branch (the helper routes a protected branch to `protectedRefUpdate`, which
+//!   needs a maintainer), then post the `merge` event. The branch policy is checked first
+//!   (E804). Each step is reported; a failure names what already happened. `--event-only`
+//!   just posts the event.
+//! * `update-branch` and `suggestion apply` commit to the PR's source branch and move its
+//!   head ([`branch`]).
 //! * `checkout` / `diff` fetch the head from the source repo (`dash://<repoId>`).
+//!
+//! Review-parity spec (docs/design/review-parity-spec.md) §2.5 C1–C13.
+
+pub mod branch;
+pub mod inline;
+pub mod review;
+pub mod state;
+pub mod threads;
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +37,6 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::collab::v2::{approvals_over, Collab, Patch, PatchInput, PatchView};
-use forge_core::collab::Verdict;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::Role;
 use forge_core::rules::{EventKind, RefState};
@@ -31,60 +47,135 @@ use crate::common::{number_arg, resolve, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe, short};
 use crate::git::{self, MergePlan};
-use crate::{PrCommand, VerdictArg};
+use crate::PrCommand;
 
 /// Dispatch a `pr` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
+    use crate::PrSuggestionCommand as Sg;
     match cmd {
         PrCommand::Create(args) => create(ctx, args).await,
         PrCommand::List { repo, limit, state } => list(ctx, repo, *limit, *state).await,
-        PrCommand::View { repo, number } => view(ctx, repo, *number).await,
+        PrCommand::View {
+            repo,
+            number,
+            comments,
+        } => view(ctx, repo, *number, *comments).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
-        PrCommand::Review {
+        PrCommand::Review(a) => review::review(ctx, a).await,
+        PrCommand::Comment(a) => review::comment(ctx, a).await,
+        PrCommand::Edit {
             repo,
             number,
-            verdict,
-            approve,
-            request_changes,
-            comment,
+            title,
             body,
+            body_file,
         } => {
-            let v = pick_verdict(*verdict, *approve, *request_changes, *comment)?;
-            review(ctx, repo, *number, v, body).await
+            state::edit(
+                ctx,
+                repo,
+                *number,
+                title.as_deref(),
+                body.as_deref(),
+                body_file.as_deref(),
+            )
+            .await
         }
-        PrCommand::Merge {
+        PrCommand::Sync { repo, number, head } => {
+            state::sync(ctx, repo, *number, head.as_deref()).await
+        }
+        PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
+        PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
+        PrCommand::Resolve {
             repo,
             number,
-            event_only,
-            merge_oid,
-        } => Box::pin(merge(ctx, repo, *number, *event_only, merge_oid.as_deref())).await,
+            comment_id,
+        } => state::resolve(ctx, repo, *number, comment_id, true).await,
+        PrCommand::Unresolve {
+            repo,
+            number,
+            comment_id,
+        } => state::resolve(ctx, repo, *number, comment_id, false).await,
+        PrCommand::RequestReview {
+            repo,
+            number,
+            reviewers,
+            remove,
+        } => state::request_review(ctx, repo, *number, reviewers, !*remove).await,
+        PrCommand::UnrequestReview {
+            repo,
+            number,
+            reviewers,
+        } => state::request_review(ctx, repo, *number, reviewers, false).await,
+        PrCommand::DismissReview {
+            repo,
+            number,
+            review_id,
+            reason,
+        } => state::dismiss(ctx, repo, *number, review_id, reason).await,
+        PrCommand::Checks { repo, number } => state::checks(ctx, repo, *number).await,
+        PrCommand::Commits {
+            repo,
+            number,
+            limit,
+        } => state::commits(ctx, repo, *number, *limit).await,
+        PrCommand::Merge(a) => Box::pin(merge(ctx, a)).await,
+        PrCommand::UpdateBranch { repo, number } => {
+            Box::pin(branch::update_branch(ctx, repo, *number)).await
+        }
+        PrCommand::Suggestion(Sg::Apply {
+            repo,
+            number,
+            comment_ids,
+            all,
+        }) => {
+            Box::pin(branch::apply_suggestions(
+                ctx,
+                repo,
+                *number,
+                comment_ids,
+                *all,
+            ))
+            .await
+        }
         PrCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         PrCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         PrCommand::Diff { repo, number } => diff(ctx, repo, *number).await,
     }
 }
 
-/// `--verdict X` or exactly one of `--approve` / `--request-changes` / `--comment`.
-fn pick_verdict(
-    verdict: Option<VerdictArg>,
-    approve: bool,
-    request_changes: bool,
-    comment: bool,
-) -> Result<VerdictArg> {
-    let flags: Vec<VerdictArg> = [
-        (approve, VerdictArg::Approve),
-        (request_changes, VerdictArg::RequestChanges),
-        (comment, VerdictArg::Comment),
-    ]
-    .into_iter()
-    .filter_map(|(on, v)| on.then_some(v))
-    .chain(verdict)
-    .collect();
-    match flags.as_slice() {
-        [one] => Ok(*one),
-        _ => Err(crate::errors::usage(
-            "pass exactly one of --approve, --request-changes or --comment",
-        )),
+/// What a write is estimated from (review-parity §6, measured on moutai; steady state). A
+/// target's first comment or event also creates its index subtrees: allow 10–25M more.
+#[derive(Debug, Clone, Copy)]
+pub enum Est {
+    /// A `comment`: 47.3M + 27.5k per text byte.
+    Comment,
+    /// A `review`: 34.9M + 27.5k per text byte.
+    Review,
+    /// A member `event`, with its `refId`/`oid`/`value`: 65M + 27.5k per value byte.
+    Event,
+    /// An `authorEvent`: 72M + 27.5k per value byte.
+    AuthorEvent,
+    /// A `patch` replace: 17M + 27.5k per changed byte.
+    Replace,
+}
+
+/// Credits for one write of `kind` carrying `text_bytes` of text.
+pub fn estimate(kind: Est, text_bytes: usize) -> u64 {
+    let base: u64 = match kind {
+        Est::Comment => 47_300_000,
+        Est::Review => 34_900_000,
+        Est::Event => 65_000_000,
+        Est::AuthorEvent => 72_000_000,
+        Est::Replace => 17_000_000,
+    };
+    base + 27_500 * u64::try_from(text_bytes).unwrap_or(u64::MAX / 27_500)
+}
+
+/// The estimate for an event of `route` with a `value` of `value_bytes`.
+pub fn event_estimate(route: forge_core::collab::v2::StateRoute, value_bytes: usize) -> u64 {
+    match route {
+        forge_core::collab::v2::StateRoute::Member => estimate(Est::Event, value_bytes),
+        forge_core::collab::v2::StateRoute::Author => estimate(Est::AuthorEvent, value_bytes),
     }
 }
 
@@ -96,14 +187,19 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
 }
 
 /// The v2 PR `number` of `handle`, or E102.
-async fn patch(collab: &Collab<'_>, handle: &Repo, repo: &str, number: u64) -> Result<Patch> {
+pub(crate) async fn patch(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    repo: &str,
+    number: u64,
+) -> Result<Patch> {
     collab
         .patch(handle, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))
 }
 
-fn state_label(v: &PatchView) -> &'static str {
+pub(crate) fn state_label(v: &PatchView) -> &'static str {
     if v.state.merged {
         "merged"
     } else if v.state.open {
@@ -173,7 +269,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
         head_oid: hex::decode(&head_oid).context("head oid")?,
-        draft: false,
+        draft: args.draft,
         patch_manifest_hash: None,
     };
     if !ctx.json {
@@ -203,6 +299,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "headOid": head_oid,
             "sourceRepoId": source.id(),
             "sourceRepo": source.display(),
+            "draft": args.draft,
             "resumed": created.resumed,
             "cost": cost_json(spent, price),
         }),
@@ -213,7 +310,8 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
                 ""
             };
             println!(
-                "✓ opened PR #{} in {}{how} · {}",
+                "✓ opened {}PR #{} in {}{how} · {}",
+                if args.draft { "draft " } else { "" },
                 created.number,
                 handle.display(),
                 cost_line(spent, price)
@@ -422,15 +520,31 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
 }
 
 /// A PR's reviews for `dg pr view --json`: stale when not on the current head, dismissed when
-/// a `reviewDismiss` names it.
+/// a `reviewDismiss` names it, with how many of its announced comments have landed.
 fn reviews_json(
     reviews: &[forge_core::collab::v2::Review],
+    comments: &[forge_core::collab::v2::Comment],
     head: &str,
-    dismissed: &std::collections::BTreeSet<String>,
+    dismissed: &std::collections::BTreeMap<String, String>,
 ) -> Vec<serde_json::Value> {
+    let flat: Vec<forge_core::rules::v2::ReviewComment> = comments
+        .iter()
+        .map(|c| forge_core::rules::v2::ReviewComment {
+            id: c.document_id.clone(),
+            owner: c.author.clone(),
+            review_id: c.review_id.clone(),
+            created_at: c.created_at,
+        })
+        .collect();
     reviews
         .iter()
         .map(|r| {
+            let group = forge_core::rules::v2::group_review_comments(
+                &r.document_id,
+                &r.reviewer,
+                r.comment_count,
+                &flat,
+            );
             json!({
                 "id": r.document_id,
                 "reviewer": r.reviewer,
@@ -438,8 +552,11 @@ fn reviews_json(
                 "verdictLabel": r.verdict.label(),
                 "commitOid": r.commit_oid,
                 "stale": r.commit_oid != head,
-                "dismissed": dismissed.contains(&r.document_id),
+                "dismissed": dismissed.contains_key(&r.document_id),
+                "dismissReason": dismissed.get(&r.document_id),
                 "commentCount": r.comment_count,
+                "commentsLanded": group.landed,
+                "commentIds": group.comments,
                 "body": r.body,
                 "createdAt": r.created_at,
             })
@@ -460,35 +577,73 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
                 "replyTo": c.reply_to,
                 "reviewId": c.review_id,
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
+                "createdAt": c.created_at,
             })
         })
         .collect()
 }
 
-async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    let (client, handle) = (&s.client, &s.repo);
-    let collab = s.collab();
+/// `dg pr view`: the PR's state, reviewers, approvals, reviews and (with `--comments`, or
+/// always in `--json`) its conversations. Works signed out for a public repo; with an identity
+/// it adds "new commits since your review", and opens a private repo's sealed documents.
+#[allow(clippy::too_many_lines)]
+async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result<()> {
+    let session = if ctx.identity_path.is_some() {
+        Some(Session::open(ctx, repo).await?)
+    } else {
+        None
+    };
+    let anon;
+    let (client, handle, collab) = if let Some(s) = &session {
+        (&s.client, s.repo.clone(), s.collab())
+    } else {
+        anon = ctx.connect().await?;
+        let h = crate::common::resolve_for(&anon, None, &RepoRef::parse(repo)?).await?;
+        (&anon, h, Collab::reader(&anon))
+    };
+    let viewer = session.as_ref().map(|s| s.identity.id());
+    let handle = &handle;
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
+    let oracle = collab.member_oracle(handle).await?;
     let doc_id = &v.patch.document_id;
     let (reviews, hidden_reviews) = collab.reviews_counted(handle, doc_id).await?;
-    let approvals = approvals_over(&reviews, &v, &collab.member_oracle(handle).await?);
+    let approvals = approvals_over(&reviews, &v, &oracle);
     let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
     let review_state = v.review_with_threads(&comments);
-    let dismissed = v.dismissed();
-    let source = forge_core::resolve::resolve_id(client, &v.patch.source_repo_id)
-        .await
-        .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display());
+    let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
+    let rows = threads::reviewer_rows(&reviews, &review_state, &approvals, &oracle, &v.head);
+    let since = viewer
+        .as_deref()
+        .and_then(|me| threads::since_your_review(&reviews, &review_state, me));
+    let policy = collab.policy(handle).await?;
+    let policy_status = policy
+        .as_ref()
+        .map(|p| forge_core::rules::v2::meets_policy(&approvals, &oracle, p));
+    let dismissed: std::collections::BTreeMap<String, String> = review_state
+        .dismissed_reviews
+        .iter()
+        .map(|d| (d.review_id.clone(), d.reason.clone()))
+        .collect();
+    let source = if v.patch.source_repo_id == handle.id() {
+        handle.display()
+    } else {
+        forge_core::resolve::resolve_id(&client, &v.patch.source_repo_id)
+            .await
+            .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display())
+    };
 
-    let reviews_json = reviews_json(&reviews, &v.head, &dismissed);
+    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed);
+    let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     ctx.emit(
         json!({
             "number": v.patch.number,
+            "id": v.patch.document_id,
             "title": v.patch.title,
             "body": v.patch.body,
             "author": v.patch.author,
             "state": state_label(&v),
+            "draft": v.state.draft,
             "fold": serde_json::to_value(&v.state).unwrap_or_default(),
             "baseRef": v.patch.base_ref_name,
             "baseTip": v.base_tip,
@@ -501,16 +656,25 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "sourceRefName": v.patch.source_ref_name,
             "approvedBy": approvals.approvers,
             "changesRequestedBy": approvals.changes_requested,
+            "reviewers": rows,
+            "requestedReviewers": review_state.requested_reviewers,
+            "dismissedReviews": review_state.dismissed_reviews,
+            "sinceYourReview": since,
+            "policy": policy,
+            "policyStatus": policy_status,
             "reviews": reviews_json,
+            "threads": conv.threads,
+            "generalComments": conv.general,
             "comments": comments_json(&comments),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
         }),
         || {
             println!(
-                "#{} [{}] {}",
+                "#{} [{}{}] {}",
                 v.patch.number,
                 state_label(&v),
+                if v.state.draft && v.state.open { ", draft" } else { "" },
                 safe(&v.patch.title)
             );
             println!("author: {}", v.patch.author);
@@ -521,8 +685,14 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 short(&v.head),
                 safe(&v.patch.base_ref_name)
             );
-            if v.state.draft {
-                println!("draft");
+            if let Some(m) = &since {
+                println!(
+                    "! new commits since your review: you reviewed {}, the PR is at {} ({} head update{} since) — re-review with `dg pr review {repo} {number}`",
+                    short(&m.reviewed_oid),
+                    short(&m.head_oid),
+                    m.head_updates,
+                    if m.head_updates == 1 { "" } else { "s" }
+                );
             }
             if !approvals.approvers.is_empty() {
                 let who: Vec<_> = approvals.approvers.iter().cloned().collect();
@@ -537,24 +707,60 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 let who: Vec<_> = approvals.changes_requested.iter().cloned().collect();
                 println!("changes requested by {}", who.join(", "));
             }
+            if let (Some(p), Some(st)) = (&policy, &policy_status) {
+                println!(
+                    "policy: {} of {} required approval{}{} — {}",
+                    st.have,
+                    st.need,
+                    if st.need == 1 { "" } else { "s" },
+                    if p.approver_role == 1 { " (maintainers)" } else { "" },
+                    if st.met { "met" } else { "not met" }
+                );
+            }
+            if !rows.is_empty() {
+                println!("\nReviewers");
+                for r in &rows {
+                    let extra = match (&r.dismiss_reason, r.re_requested, &r.reviewed_oid) {
+                        (Some(reason), _, _) if !reason.is_empty() => format!(": {}", safe(reason)),
+                        (_, true, _) => " (re-requested)".into(),
+                        (_, _, Some(oid)) if r.state == threads::Standing::Stale => {
+                            format!(" (reviewed {})", short(oid))
+                        }
+                        _ => String::new(),
+                    };
+                    println!("  {}  {}{extra}", r.identity, r.state.label());
+                }
+            }
             if !v.patch.body.is_empty() {
                 println!("\n{}", safe(&v.patch.body));
             }
             for r in &reviews {
-                let stale = if dismissed.contains(&r.document_id) {
+                let tag = if dismissed.contains_key(&r.document_id) {
                     " (dismissed)"
                 } else if r.commit_oid == v.head {
                     ""
                 } else {
                     " (stale — new commits since)"
                 };
-                println!("\n{} — {}{stale}", r.verdict.label(), r.reviewer);
+                println!(
+                    "\n{} — {} on {}{tag}  [{}]",
+                    r.verdict.label(),
+                    r.reviewer,
+                    short(&r.commit_oid),
+                    short(&r.document_id)
+                );
                 if !r.body.is_empty() {
                     println!("  {}", safe(&r.body));
                 }
             }
-            for c in &comments {
-                println!("\n— {}:\n{}", c.author, safe(&c.body));
+            if show_comments {
+                print_conversations(&conv);
+            } else if !comments.is_empty() {
+                println!(
+                    "\n{} comment(s) in {} thread(s) ({unresolved} unresolved) — `--comments` shows them",
+                    comments.len(),
+                    conv.threads.len() + conv.general.len()
+                );
             }
             if hidden_comments + hidden_reviews > 0 {
                 println!(
@@ -567,46 +773,54 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// review / close / reopen
-// ---------------------------------------------------------------------------
-
-async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    let (handle, collab) = (&s.repo, s.collab());
-    let p = patch(&collab, handle, repo, number).await?;
-    // Review the PR's current head (the newest headUpdate), which is what approvals count on.
-    let view = collab.patch_view(handle, p).await?;
-    let (p, head_hex) = (&view.patch, view.head.clone());
-    let v = Verdict::from_code(verdict.code());
-    ctx.confirm_or_cancel(&format!(
-        "Post a {} review on PR #{number} at {}? (one small document)",
-        v.label(),
-        short(&head_hex)
-    ))?;
-    let head = hex::decode(&head_hex).context("PR head oid")?;
-    let id = collab
-        .review(handle, &p.document_id, v, &head, body, None, None)
-        .await?;
-    let counts = collab.signer_role(handle).await?.is_some();
-    ctx.emit(
-        json!({
-            "status": "reviewed",
-            "pr": number,
-            "verdict": verdict.code(),
-            "commitOid": head_hex,
-            "reviewId": id,
-            "counts": counts,
-        }),
-        || {
-            println!("✓ {} PR #{number} at {}", v.label(), short(&head_hex));
-            if !counts && verdict != VerdictArg::Comment {
-                println!("  note: you are not a member of {}, so this review does not count toward approvals", handle.display());
+/// The threads under their file and line, then the general comments.
+fn print_conversations(conv: &threads::Conversations) {
+    let mut last_path = "";
+    for t in &conv.threads {
+        if t.anchor.path != last_path {
+            println!("\n{}", safe(&t.anchor.path));
+            last_path = &t.anchor.path;
+        }
+        let mut tags = Vec::new();
+        if t.outdated {
+            tags.push(format!("outdated, on {}", short(&t.anchor.commit_oid)));
+        }
+        if t.resolved {
+            tags.push("resolved".to_string());
+        }
+        let tags = if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", tags.join(", "))
+        };
+        println!("  ▸ {}{tags}  (thread {})", safe(&t.location), short(&t.id));
+        for c in &t.comments {
+            println!("    — {} [{}]:", c.author, short(&c.id));
+            for line in safe(&c.body).lines() {
+                println!("      {line}");
             }
-        },
-    );
-    Ok(())
+            for s in &c.suggestions {
+                println!("      suggested change:");
+                for line in safe(s).lines() {
+                    println!("      + {line}");
+                }
+            }
+        }
+    }
+    if !conv.general.is_empty() {
+        println!("\nConversation");
+        for c in &conv.general {
+            println!("  — {} [{}]:", c.author, short(&c.id));
+            for line in safe(&c.body).lines() {
+                println!("    {line}");
+            }
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// close / reopen
+// ---------------------------------------------------------------------------
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
@@ -637,14 +851,14 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
 // merge
 // ---------------------------------------------------------------------------
 
-/// One reported step of a merge.
-struct Steps {
-    json: bool,
-    done: Vec<serde_json::Value>,
+/// One reported step of a merge (or of a commit to the PR branch).
+pub(crate) struct Steps {
+    pub(crate) json: bool,
+    pub(crate) done: Vec<serde_json::Value>,
 }
 
 impl Steps {
-    fn ok(&mut self, step: &str, detail: impl Into<String>) {
+    pub(crate) fn ok(&mut self, step: &str, detail: impl Into<String>) {
         let detail = detail.into();
         if !self.json {
             eprintln!("  ✓ {step:<9} {detail}");
@@ -654,13 +868,23 @@ impl Steps {
     }
 }
 
-async fn merge(
-    ctx: &Ctx,
-    repo: &str,
-    number: u64,
-    event_only: bool,
-    merge_oid: Option<&str>,
-) -> Result<()> {
+/// How the head is brought into the base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Method {
+    /// Fast-forward when the base is behind the head, else a merge commit.
+    Merge,
+    /// One new commit on the base with the merged tree.
+    Squash,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
+    let (repo, number, event_only) = (a.repo.as_str(), a.number, a.event_only);
+    let method = if a.squash {
+        Method::Squash
+    } else {
+        Method::Merge
+    };
     let s = Session::open(ctx, repo).await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
@@ -675,7 +899,7 @@ async fn merge(
     refuse_retargeted(&view, number)?;
     refuse_missing_base(&view, number, event_only)?;
     let merge_oid = if event_only {
-        Some(event_only_oid(&view, merge_oid, number)?)
+        Some(event_only_oid(&view, a.merge_oid.as_deref(), number)?)
     } else {
         None
     };
@@ -688,23 +912,40 @@ async fn merge(
             &format!("merge pull request #{number}"),
         )
         .await?;
+    // `--delete-branch` needs write access to the source repo: refuse before merging rather
+    // than after.
+    let delete = if a.delete_branch {
+        Some(branch::deletable_source(&s, &view, number).await?)
+    } else {
+        None
+    };
     let mut steps = Steps {
         json: ctx.json,
         done: Vec::new(),
     };
     if !ctx.json {
         eprintln!(
-            "Merging PR #{number} of {} into {}",
+            "Merging PR #{number} of {} into {}{}",
             handle.display(),
-            view.patch.base_ref_name
+            view.patch.base_ref_name,
+            if method == Method::Squash {
+                " (squash)"
+            } else {
+                ""
+            }
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}? ({}; ~0.0003 DASH plus the pack if new objects are stored)",
+        "Merge PR #{number}? ({}{}; ~0.0003 DASH plus the pack if new objects are stored)",
         if event_only {
             "posts the merge event only"
         } else {
             "pushes to the base branch, then posts the merge event"
+        },
+        if delete.is_some() {
+            ", then deletes the source branch"
+        } else {
+            ""
         }
     ))?;
 
@@ -712,7 +953,12 @@ async fn merge(
         steps.ok("plan", format!("event only, naming {}", short(&oid)));
         oid
     } else {
-        match push_merge(ctx, handle, &view, &s.identity.id(), &mut steps) {
+        let how = MergeHow {
+            method,
+            message: a.message.as_deref(),
+            signer: &s.identity.id(),
+        };
+        match push_merge(ctx, handle, &view, &how, &mut steps) {
             Ok(oid) => oid,
             Err(e) => {
                 return Err(crate::errors::reported(
@@ -733,6 +979,25 @@ async fn merge(
         })?;
     steps.ok("event", format!("merge event {}", short(&event_id)));
 
+    let mut branch_deleted = false;
+    if let Some(d) = &delete {
+        match branch::delete_source_branch(ctx, d) {
+            Ok(()) => {
+                branch_deleted = true;
+                steps.ok("delete", format!("{} in {}", d.ref_name, d.repo_display));
+            }
+            Err(e) => {
+                // The merge stands; say what did not happen.
+                if !ctx.json {
+                    eprintln!("  ✗ delete    {e:#}");
+                }
+                steps
+                    .done
+                    .push(json!({ "step": "delete", "ok": false, "detail": format!("{e:#}") }));
+            }
+        }
+    }
+
     // Re-read the fold: "merged" is what readers will say, not what we hoped. The push above
     // moved the base branch, so the ref history is read again.
     collab.refs_changed();
@@ -747,9 +1012,11 @@ async fn merge(
         json!({
             "status": if merged { "merged" } else { "merge_event_posted" },
             "pr": number,
+            "method": if method == Method::Squash { "squash" } else { "merge" },
             "mergeOid": merge_oid,
             "eventId": event_id,
             "merged": merged,
+            "branchDeleted": branch_deleted,
             "steps": steps.done,
         }),
         || {
@@ -766,6 +1033,15 @@ async fn merge(
         },
     );
     Ok(())
+}
+
+/// What a merge builds.
+struct MergeHow<'a> {
+    method: Method,
+    /// `--message` (a squash's commit message).
+    message: Option<&'a str>,
+    /// The signing identity (the commit author when git has no `user.name`).
+    signer: &'a str,
 }
 
 /// Post the `merge` event naming `merge_oid`; on failure, the user error saying what
@@ -904,7 +1180,7 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
 }
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
-fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
+pub(crate) fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
     if let Some(u) = e.downcast_ref::<UserError>() {
         return u.clone();
     }
@@ -925,7 +1201,7 @@ fn push_merge(
     ctx: &Ctx,
     handle: &Repo,
     view: &PatchView,
-    signer: &str,
+    how: &MergeHow<'_>,
     steps: &mut Steps,
 ) -> Result<String> {
     // The base ref and head are PR document fields anyone could have written; they become a
@@ -939,21 +1215,48 @@ fn push_merge(
     let dir = scratch.path();
     git::git(dir, &["init", "-q", "--bare"], &[])?;
     let base_ref = &view.patch.base_ref_name;
-    let head = &view.head;
-
-    // Fetch base (its whole history) and head (from the source repo).
     let base_url = format!("dash://{}", handle.id());
-    let base_tip = view.base_tip.clone();
-    if base_tip.is_some() {
+    fetch_base_and_head(dir, handle, view, &env)?;
+    steps.ok(
+        "fetch",
+        format!(
+            "base {} · head {}",
+            view.base_tip.as_deref().map_or("(empty)", short),
+            short(&view.head)
+        ),
+    );
+
+    let Some(target) = build_merge(dir, handle, view, how, steps)? else {
+        return Ok(view.base_tip.clone().unwrap_or_default());
+    };
+
+    // Push to the base. The helper refuses a writer's push to a protected ref before paying
+    // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
+    push_to(dir, &push_argv(ctx, &base_url, &target, base_ref), &env)?;
+    steps.ok("push", format!("{base_ref} → {}", short(&target)));
+    Ok(target)
+}
+
+/// Fetch the base branch (its whole history) and the PR head (from its source repository)
+/// into the bare repository `dir`.
+pub(crate) fn fetch_base_and_head(
+    dir: &Path,
+    handle: &Repo,
+    view: &PatchView,
+    env: &[(String, String)],
+) -> Result<()> {
+    let base_ref = &view.patch.base_ref_name;
+    let head = &view.head;
+    if view.base_tip.is_some() {
         git::git(
             dir,
             &[
                 "fetch",
                 "-q",
-                &base_url,
+                &format!("dash://{}", handle.id()),
                 &format!("+{base_ref}:refs/remotes/base/tip"),
             ],
-            &env,
+            env,
         )
         .context("fetching the base branch")?;
     }
@@ -969,7 +1272,7 @@ fn push_merge(
                 &source_url,
                 "+refs/heads/*:refs/remotes/source/*",
             ],
-            &env,
+            env,
         )
         .context("fetching the PR head from its source repository")?;
     }
@@ -979,41 +1282,62 @@ fn push_merge(
             short(head)
         );
     }
-    steps.ok(
-        "fetch",
-        format!(
-            "base {} · head {}",
-            base_tip.as_deref().map_or("(empty)", short),
-            short(head)
-        ),
-    );
+    Ok(())
+}
 
-    let Some(target) = build_merge(dir, handle, view, signer, steps)? else {
-        return Ok(base_tip.unwrap_or_default());
-    };
-
-    // Push to the base. The helper refuses a writer's push to a protected ref before paying
-    // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
+/// `git [-c storage…] [-c dash.confirm=never] push -q <url> <oid>:<ref>`: the user's storage
+/// settings, and `--yes` passed on so the helper's cost guard does not ask again (it has no
+/// terminal here and would refuse with E801).
+pub(crate) fn push_argv(ctx: &Ctx, url: &str, oid: &str, dst: &str) -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut argv: Vec<String> = Vec::new();
     for kv in git::storage_overrides(&cwd) {
         argv.push("-c".into());
         argv.push(kv);
     }
-    // `--yes` was the confirmation: the helper's cost guard must not ask again (it has no
-    // terminal here and would refuse with E801).
     if ctx.yes {
         argv.extend(["-c".into(), "dash.confirm=never".into()]);
     }
     argv.extend([
         "push".into(),
         "-q".into(),
-        base_url.clone(),
-        format!("{target}:{base_ref}"),
+        url.to_string(),
+        format!("{oid}:{dst}"),
     ]);
-    push_to(dir, &argv, &env)?;
-    steps.ok("push", format!("{base_ref} → {}", short(&target)));
-    Ok(target)
+    argv
+}
+
+/// The E105 for a merge of `head` into `base` that has conflicts, naming the files.
+pub(crate) fn conflict_error(
+    dir: &Path,
+    handle: &Repo,
+    number: u32,
+    base_ref: &str,
+    base: &str,
+    head: &str,
+) -> anyhow::Error {
+    let files = git::conflicted_paths(dir, base, head);
+    let mut cause = format!(
+        "a three-way merge of {} into {} has conflicts",
+        short(head),
+        short(base)
+    );
+    if !files.is_empty() {
+        cause.push_str(" in ");
+        cause.push_str(&files.join(", "));
+    }
+    UserError::new(
+        codes::MERGE_CONFLICT,
+        format!("merge failed: PR #{number} conflicts with {base_ref}"),
+    )
+    .cause(cause)
+    .fix(format!(
+        "`dg pr update-branch {} {number}` merges {base_ref} into the PR branch when it is clean; otherwise `dg pr checkout {} {number}`, merge {base_ref} into it and resolve, push it to the PR's branch, then `dg pr sync`",
+        handle.display(),
+        handle.display(),
+    ))
+    .note("nothing was pushed and no merge event was posted")
+    .into()
 }
 
 /// Decide and build the merge in `dir` (holding base and head): the commit to push to the
@@ -1022,7 +1346,7 @@ fn build_merge(
     dir: &Path,
     handle: &Repo,
     view: &PatchView,
-    signer: &str,
+    how: &MergeHow<'_>,
     steps: &mut Steps,
 ) -> Result<Option<String>> {
     let base_ref = &view.patch.base_ref_name;
@@ -1034,44 +1358,68 @@ fn build_merge(
         base_tip.is_some_and(|b| git::is_ancestor(dir, head, b)),
         base_tip.is_some_and(|b| git::is_ancestor(dir, b, head)),
     );
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let author = git::merge_author(&cwd, how.signer);
+    if let MergePlan::AlreadyMerged { .. } = plan {
+        steps.ok("merge", format!("already in {base_ref}; nothing to push"));
+        return Ok(None);
+    }
+    if how.method == Method::Squash {
+        // One commit on the base tip whose tree is the merged tree (the head's own tree when
+        // the base is behind it).
+        let tree = match &plan {
+            MergePlan::MergeCommit { base, head } => match git::merge_tree(dir, base, head)? {
+                Some(t) => t,
+                None => {
+                    return Err(conflict_error(
+                        dir,
+                        handle,
+                        view.patch.number,
+                        base_ref,
+                        base,
+                        head,
+                    ))
+                }
+            },
+            _ => git::git(dir, &["rev-parse", &format!("{head}^{{tree}}")], &[])?,
+        };
+        let message = match how.message {
+            Some(m) => m.to_string(),
+            None => squash_message(
+                &view.patch.title,
+                &view.patch.body,
+                view.patch.number,
+                &git::authors(dir, base_tip, head).unwrap_or_default(),
+                &author_line(&author),
+            ),
+        };
+        let parents: Vec<&str> = base_tip.into_iter().collect();
+        let c = git::commit_tree(dir, &tree, &parents, &message, &author)?;
+        steps.ok("merge", format!("squash commit {}", short(&c)));
+        return Ok(Some(c));
+    }
     Ok(Some(match &plan {
-        MergePlan::AlreadyMerged { .. } => {
-            steps.ok("merge", format!("already in {base_ref}; nothing to push"));
-            return Ok(None);
-        }
+        MergePlan::AlreadyMerged { .. } => unreachable!("returned above"),
         MergePlan::FastForward { oid } => {
             steps.ok("merge", format!("fast-forward to {}", short(oid)));
             oid.clone()
         }
         MergePlan::MergeCommit { base, head } => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
                 view.patch.number,
                 view.patch.source_ref_name.as_deref().unwrap_or(head),
                 view.patch.title
             );
-            let author = git::merge_author(&cwd, signer);
             let Some(c) = git::merge_commit(dir, base, head, &message, &author)? else {
-                return Err(UserError::new(
-                    codes::MERGE_CONFLICT,
-                    format!(
-                        "merge failed: PR #{} conflicts with {base_ref}",
-                        view.patch.number
-                    ),
-                )
-                .cause(format!(
-                    "a three-way merge of {} into {} has conflicts",
-                    short(head),
-                    short(base)
-                ))
-                .fix(format!(
-                    "`dg pr checkout {} {}`, merge {base_ref} into it and resolve, push the result to {base_ref}, then run `dg pr merge` again (it sees the head is in {base_ref} and records the merge)",
-                    handle.display(),
-                    view.patch.number
-                ))
-                .note("nothing was pushed and no merge event was posted")
-                .into());
+                return Err(conflict_error(
+                    dir,
+                    handle,
+                    view.patch.number,
+                    base_ref,
+                    base,
+                    head,
+                ));
             };
             steps.ok("merge", format!("merge commit {}", short(&c)));
             c
@@ -1079,8 +1427,45 @@ fn build_merge(
     }))
 }
 
+/// `Name <email>` of a [`git::merge_author`] environment.
+fn author_line(env: &[(String, String)]) -> String {
+    let get = |k: &str| {
+        env.iter()
+            .find(|(key, _)| key == k)
+            .map_or("", |(_, v)| v.as_str())
+    };
+    format!("{} <{}>", get("GIT_AUTHOR_NAME"), get("GIT_AUTHOR_EMAIL"))
+}
+
+/// A squash commit's message (review-parity M1): the PR title with its number, the body, and
+/// a `Co-authored-by` trailer for each commit author other than the committer.
+pub(crate) fn squash_message(
+    title: &str,
+    body: &str,
+    number: u32,
+    authors: &[String],
+    committer: &str,
+) -> String {
+    let mut m = format!("{title} (#{number})");
+    if !body.trim().is_empty() {
+        m.push_str("\n\n");
+        m.push_str(body.trim_end());
+    }
+    let co: Vec<&String> = authors.iter().filter(|a| *a != committer).collect();
+    if !co.is_empty() {
+        m.push_str("\n\n");
+        for a in co {
+            m.push_str("Co-authored-by: ");
+            m.push_str(a);
+            m.push('\n');
+        }
+        m.truncate(m.trim_end().len());
+    }
+    m
+}
+
 /// Run the push, surfacing the helper's own E-coded error when it refused.
-fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
+pub(crate) fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
     let out = std::process::Command::new("git")
         .current_dir(dir)
         .args(argv)
@@ -1258,17 +1643,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exactly_one_verdict() {
-        assert_eq!(
-            pick_verdict(None, true, false, false).unwrap(),
-            VerdictArg::Approve
+    fn a_squash_message_credits_every_other_author() {
+        let m = squash_message(
+            "Add x",
+            "Body\n",
+            7,
+            &["A <a@x>".into(), "Me <me@x>".into(), "B <b@x>".into()],
+            "Me <me@x>",
         );
         assert_eq!(
-            pick_verdict(Some(VerdictArg::Comment), false, false, false).unwrap(),
-            VerdictArg::Comment
+            m,
+            "Add x (#7)\n\nBody\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>"
         );
-        assert!(pick_verdict(None, false, false, false).is_err());
-        assert!(pick_verdict(None, true, true, false).is_err());
-        assert!(pick_verdict(Some(VerdictArg::Approve), true, false, false).is_err());
+        assert_eq!(squash_message("T", "", 1, &[], "Me <m>"), "T (#1)");
+    }
+
+    #[test]
+    fn estimates_follow_the_measured_model() {
+        assert_eq!(estimate(Est::Comment, 0), 47_300_000);
+        assert_eq!(estimate(Est::Review, 300), 34_900_000 + 300 * 27_500);
+        // Review-parity §4.1: a 300-byte summary and 6 × 150-byte comments ≈ 0.0035 DASH.
+        let total = estimate(Est::Review, 300) + 6 * estimate(Est::Comment, 150);
+        assert!((340_000_000..360_000_000).contains(&total), "{total}");
     }
 }

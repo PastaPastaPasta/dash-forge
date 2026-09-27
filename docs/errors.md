@@ -67,6 +67,12 @@ Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base int
 
 Fix: run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
 
+## E107
+
+**Suggestion not applicable.** `dg pr suggestion apply` could not apply a review suggestion (a ```` ```suggestion ```` block) to the PR's branch. The message says which. The comment may be on an older head, or on the old side of the diff. It may name lines the file no longer has. Two suggestions may touch the same lines. Or the comment may have no suggestion block at all. Nothing was committed or pushed.
+
+Fix: apply the suggestions that still fit, one by one or with `--all`, and edit the rest by hand. Push, then `dg pr sync` moves the PR head. When two suggestions overlap, apply one, then ask the reviewer to re-suggest against the new head.
+
 ## E201
 
 **Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`.

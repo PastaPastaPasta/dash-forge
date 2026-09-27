@@ -55,6 +55,83 @@ pub fn git(dir: &Path, args: &[&str], env: &[(String, String)]) -> Result<String
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// `git <args>` in `dir`, returning stdout exactly (a file's content: not trimmed), as UTF-8.
+pub fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {}", args.first().unwrap_or(&"")))?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            last_lines(&String::from_utf8_lossy(&out.stderr), 6)
+        );
+    }
+    String::from_utf8(out.stdout).context("the file is not UTF-8 text")
+}
+
+/// The tree of `commit` with each `path → content` of `files` replaced (the paths exist; file
+/// modes are kept), written to `dir`'s object store through a temporary index.
+pub fn tree_with(
+    dir: &Path,
+    commit: &str,
+    files: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    let index = tempfile::NamedTempFile::new().context("creating a temporary index")?;
+    let env = [(
+        "GIT_INDEX_FILE".to_string(),
+        index.path().to_string_lossy().into_owned(),
+    )];
+    git(dir, &["read-tree", commit], &env)?;
+    for (path, content) in files {
+        let entry = git(dir, &["ls-files", "-s", "--", path], &env)?;
+        let mode = entry
+            .split_whitespace()
+            .next()
+            .unwrap_or("100644")
+            .to_string();
+        let blob = hash_blob(dir, content.as_bytes())?;
+        git(
+            dir,
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("{mode},{blob},{path}"),
+            ],
+            &env,
+        )?;
+    }
+    git(dir, &["write-tree"], &env)
+}
+
+/// Write `bytes` as a blob in `dir`, returning its id.
+fn hash_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
+    use std::io::Write as _;
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("running git hash-object")?;
+    child
+        .stdin
+        .take()
+        .context("git hash-object stdin")?
+        .write_all(bytes)?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "git hash-object failed: {}",
+            last_lines(&String::from_utf8_lossy(&out.stderr), 4)
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// `git <args>` in `dir`: whether it exited 0 (for predicates).
 pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
     Command::new("git")
@@ -127,18 +204,12 @@ pub fn plan_merge(
     }
 }
 
-/// Build the merge commit of `base` and `head` in `dir`: `Ok(Some(oid))`, or `Ok(None)` when
-/// the merge has conflicts (nothing is written to any ref).
-pub fn merge_commit(
-    dir: &Path,
-    base: &str,
-    head: &str,
-    message: &str,
-    author: &[(String, String)],
-) -> Result<Option<String>> {
+/// The tree of a clean three-way merge of `a` and `b` in `dir`: `Ok(Some(tree))`, or
+/// `Ok(None)` when the merge has conflicts (nothing is written to any ref).
+pub fn merge_tree(dir: &Path, a: &str, b: &str) -> Result<Option<String>> {
     let out = Command::new("git")
         .current_dir(dir)
-        .args(["merge-tree", "--write-tree", base, head])
+        .args(["merge-tree", "--write-tree", a, b])
         .output()
         .context("running git merge-tree (needs git 2.38 or newer)")?;
     match out.status.code() {
@@ -158,12 +229,80 @@ pub fn merge_commit(
     if !is_oid(&tree) {
         bail!("git merge-tree printed no tree id");
     }
-    let commit = git(
+    Ok(Some(tree))
+}
+
+/// The paths a conflicting three-way merge of `a` and `b` stops on (for the E105 message).
+pub fn conflicted_paths(dir: &Path, a: &str, b: &str) -> Vec<String> {
+    let Ok(out) = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            a,
+            b,
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A commit of `tree` with `parents` in `dir`, as `author` (the `GIT_AUTHOR_*` /
+/// `GIT_COMMITTER_*` pairs of [`merge_author`]).
+pub fn commit_tree(
+    dir: &Path,
+    tree: &str,
+    parents: &[&str],
+    message: &str,
+    author: &[(String, String)],
+) -> Result<String> {
+    let mut args = vec!["commit-tree", tree];
+    for p in parents {
+        args.extend(["-p", p]);
+    }
+    args.extend(["-m", message]);
+    git(dir, &args, author)
+}
+
+/// Build the merge commit of `base` and `head` in `dir`: `Ok(Some(oid))`, or `Ok(None)` when
+/// the merge has conflicts (nothing is written to any ref).
+pub fn merge_commit(
+    dir: &Path,
+    base: &str,
+    head: &str,
+    message: &str,
+    author: &[(String, String)],
+) -> Result<Option<String>> {
+    let Some(tree) = merge_tree(dir, base, head)? else {
+        return Ok(None);
+    };
+    commit_tree(dir, &tree, &[base, head], message, author).map(Some)
+}
+
+/// The distinct `Name <email>` authors of the commits in `base..head` (oldest first), for
+/// `Co-authored-by` trailers.
+pub fn authors(dir: &Path, base: Option<&str>, head: &str) -> Result<Vec<String>> {
+    let range = base.map_or_else(|| head.to_string(), |b| format!("{b}..{head}"));
+    let out = git(
         dir,
-        &["commit-tree", &tree, "-p", base, "-p", head, "-m", message],
-        author,
+        &["log", "--reverse", "--format=%an <%ae>", &range, "--"],
+        &[],
     )?;
-    Ok(Some(commit))
+    let mut seen = std::collections::BTreeSet::new();
+    Ok(out
+        .lines()
+        .filter(|l| !l.trim().is_empty() && seen.insert(l.to_string()))
+        .map(str::to_string)
+        .collect())
 }
 
 /// Author / committer for a merge commit: the user's git identity, else one naming the

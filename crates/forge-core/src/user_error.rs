@@ -74,6 +74,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::CHECKS_FAILED, "checks failed"),
     (codes::MERGE_CONFLICT, "merge has conflicts"),
     (codes::PARTIAL, "partially completed"),
+    (codes::SUGGESTION, "suggestion not applicable"),
     (codes::USAGE, "invalid arguments"),
     (codes::INVALID_REPO_NAME, "invalid repository name"),
     (
@@ -146,6 +147,9 @@ pub mod codes {
     pub const MERGE_CONFLICT: &str = "E105";
     /// `dg import` finished, but skipped some items; a re-run retries them.
     pub const PARTIAL: &str = "E106";
+    /// A review suggestion cannot be applied: overlapping ranges, an older head, the old side,
+    /// or lines that no longer exist.
+    pub const SUGGESTION: &str = "E107";
     /// Arguments that do not make sense together.
     pub const USAGE: &str = "E201";
     /// A repository name outside `^[a-z0-9][a-z0-9._-]{0,62}$`.
