@@ -1124,8 +1124,12 @@ export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: 
  * base64) equals a wanted one. Bytes are compared by content; an identifier's wanted bytes
  * also match its base58 form.
  */
-function sameValue(stored: unknown, wanted: unknown): boolean {
+export function sameValue(stored: unknown, wanted: unknown): boolean {
   if (wanted === undefined) return stored === undefined || stored === null
+  // A typed string array (topics, protected patterns): element-wise, order kept.
+  if (Array.isArray(wanted)) {
+    return Array.isArray(stored) && stored.length === wanted.length && wanted.every((w, i) => sameValue(stored[i], w))
+  }
   if (wanted instanceof Uint8Array) {
     if (typeof stored !== 'string') return false
     if (wanted.length === 32 && stored === base58Encode(wanted)) return true

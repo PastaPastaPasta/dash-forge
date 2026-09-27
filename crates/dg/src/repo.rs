@@ -41,6 +41,11 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
         RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
+        RepoCommand::Edit(args) => crate::repo_settings::edit(ctx, args).await,
+        RepoCommand::Protect(cmd) => crate::repo_settings::protect(ctx, cmd).await,
+        RepoCommand::Policy(cmd) => crate::repo_settings::policy(ctx, cmd).await,
+        RepoCommand::Archive { repo } => crate::repo_settings::archive(ctx, repo, true).await,
+        RepoCommand::Unarchive { repo } => crate::repo_settings::archive(ctx, repo, false).await,
     }
 }
 
@@ -351,18 +356,22 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 
     ctx.emit(
         json!({
-            "status": "backend_set",
+            "status": if doc_id.is_some() { "backend_set" } else { "unchanged" },
             "repoId": handle.id(),
             "backend": label,
             "mode": mode,
             "configDocumentId": doc_id,
             "network": ctx.network_label(),
         }),
-        || {
-            println!(
-                "Backend of {} set to {label} (config doc {doc_id}).",
+        || match &doc_id {
+            Some(id) => println!(
+                "Backend of {} set to {label} (config doc {id}).",
                 handle.display()
-            );
+            ),
+            None => println!(
+                "Backend of {} is already {label}; nothing was written.",
+                handle.display()
+            ),
         },
     );
     Ok(())

@@ -42,7 +42,9 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
+use dash_sdk::dpp::document::{
+    Document, DocumentV0, DocumentV0Getters, DocumentV0Setters, INITIAL_REVISION,
+};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
@@ -535,30 +537,16 @@ impl PlatformClient {
         document_type: &str,
         document_id: &str,
     ) -> Result<Option<FetchedDocument>> {
-        Ok(self
-            .fetch_raw_document(contract, document_type, document_id)
-            .await?
-            .as_ref()
-            .map(FetchedDocument::from_document))
-    }
-
-    /// The SDK document itself (revision and system fields included): what a replace
-    /// rebuilds. Crate-private: the SDK type does not cross this module's boundary.
-    async fn fetch_raw_document(
-        &self,
-        contract: &LoadedContract,
-        document_type: &str,
-        document_id: &str,
-    ) -> Result<Option<Document>> {
         let doc_id = parse_id(document_id, "document id")?;
         let query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
             .with_document_id(&doc_id);
-        retry_transient_read("fetch document", || {
+        let found = retry_transient_read("fetch document", || {
             Document::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
+        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
+        Ok(found.as_ref().map(FetchedDocument::from_document))
     }
 
     /// Query **one page** of `document_type` in `contract`, applying `filters` (AND-ed
@@ -989,7 +977,7 @@ pub enum WriteOp {
     Create,
     /// A document delete.
     Delete,
-    /// A document replace (an edit by the owner; the revision is bumped).
+    /// A document replace (an edit of a mutable document by its owner).
     Replace,
 }
 
@@ -1534,149 +1522,6 @@ impl<'a> WriteEngine<'a> {
         .await
     }
 
-    /// Build and sign, exactly once, a document-replace transition: the stored document `current`
-    /// with `changes` merged over its properties (`None` removes a property) and its revision
-    /// bumped. Consensus admits a replace only from the document's owner, only on a mutable
-    /// type, and only when every `immutable` property is unchanged. The replace carries the
-    /// whole property map, so the untouched fields are re-sent as they were read. See
-    /// [`Self::prepare_create`] for the sign-once rationale.
-    async fn prepare_replace(
-        &self,
-        contract: &LoadedContract,
-        document_type: &str,
-        current: &Document,
-        changes: &BTreeMap<String, Option<FieldValue>>,
-    ) -> Result<PreparedWrite> {
-        use dash_sdk::dpp::document::DocumentV0Setters;
-
-        let doc_type_ref = contract
-            .0
-            .document_type_for_name(document_type)
-            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
-        let mut document = current.clone();
-        for (k, v) in changes {
-            match v {
-                Some(v) => {
-                    document
-                        .properties_mut()
-                        .insert(k.clone(), v.clone().into_value());
-                }
-                None => {
-                    document.properties_mut().remove(k);
-                }
-            }
-        }
-        document.bump_revision();
-        let nonce = self
-            .client
-            .sdk()
-            .get_identity_contract_nonce(self.owner_id, contract.0.id(), true, None)
-            .await
-            .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
-        let state_transition = BatchTransition::new_document_replacement_transition_from_document(
-            document,
-            doc_type_ref,
-            &self.signing_key,
-            nonce,
-            0,
-            None,
-            &self.signer,
-            self.client.sdk().version(),
-            None,
-        )
-        .await
-        .map_err(|e| Error::Platform(format!("signing replace transition: {e}")))?;
-        Ok(PreparedWrite {
-            document_id: current.id().to_string(Encoding::Base58),
-            document_type: document_type.to_string(),
-            op: WriteOp::Replace,
-            signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
-        })
-    }
-
-    /// Replace one of the signer's documents: read it, merge `changes` over it (`None` removes a
-    /// property), bump the revision and broadcast. Idempotent: when the stored document already
-    /// holds every change nothing is signed and `Ok(false)` is returned; `Ok(true)` means an
-    /// edit landed. A replace is refused before signing when the document is missing
-    /// ([`Error::NotFound`]) or belongs to someone else ([`Error::NotPermitted`]). When
-    /// `expected_revision` is given and the stored revision differs, it is refused as a
-    /// concurrent edit (the caller re-reads and asks again).
-    pub async fn replace_document(
-        &self,
-        contract: &LoadedContract,
-        document_type: &str,
-        document_id: &str,
-        changes: &BTreeMap<String, Option<FieldValue>>,
-        expected_revision: Option<u64>,
-    ) -> Result<bool> {
-        let holds = |doc: &Document| {
-            changes.iter().all(|(k, v)| {
-                let stored = doc.properties().get(k).and_then(FieldValue::from_value);
-                stored == *v
-            })
-        };
-        // Set once one of our transitions may have landed unseen: a document that then reads
-        // as edited was edited by this call.
-        let mut sent = false;
-        for _ in 0..2 {
-            let Some(current) = self
-                .client
-                .fetch_raw_document(contract, document_type, document_id)
-                .await?
-            else {
-                return Err(Error::NotFound);
-            };
-            if current.owner_id() != self.owner_id {
-                return Err(Error::NotPermitted {
-                    action: format!("edit {document_type} {document_id}"),
-                    reason: "only its author can edit it (consensus admits a replace from the owner only)".into(),
-                    needs: "owner".into(),
-                });
-            }
-            if holds(&current) {
-                return Ok(sent);
-            }
-            let revision = current.revision().unwrap_or(INITIAL_REVISION);
-            if let Some(expected) = expected_revision {
-                if expected != revision {
-                    return Err(Error::Config(format!(
-                        "this {document_type} changed since it was read (revision {revision}, \
-                         expected {expected}); read it again and retry the edit"
-                    )));
-                }
-            }
-            let prepared = self
-                .prepare_replace(contract, document_type, &current, changes)
-                .await?;
-            let edited = || async {
-                Ok(self
-                    .client
-                    .fetch_raw_document(contract, document_type, document_id)
-                    .await?
-                    .is_some_and(|d| d.revision() > Some(revision) && holds(&d)))
-            };
-            match self.execute(&prepared).await {
-                // Ours landed, or another write by this identity took the nonce: re-read.
-                Ok(BroadcastOutcome::NonceConsumed) => {
-                    if poll_confirm(&edited).await? {
-                        return Ok(true);
-                    }
-                    sent = true;
-                }
-                Ok(_) => return Ok(true),
-                // A refusal after an earlier attempt of these very bytes landed unanswered (a
-                // revision already bumped): the edit is done when the stored document says so.
-                Err(e) => {
-                    if edited().await.unwrap_or(false) {
-                        return Ok(true);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        Err(Error::Nonce)
-    }
-
     /// Convenience: prepare + execute a document delete.
     pub async fn delete_document(
         &self,
@@ -1707,6 +1552,115 @@ impl<'a> WriteEngine<'a> {
         Err(Error::Nonce)
     }
 
+    /// Replace the signer's own document `document_id` of `document_type`: `changes` set (a
+    /// `None` value removes the property), everything else kept as stored. Returns `false`
+    /// when the stored document already holds every change (nothing signed or paid).
+    ///
+    /// Signed once, at revision + 1 (Drive requires exactly that,
+    /// `batch/transformer/v0` "expected_revision = previous_revision + 1"). A spent nonce is
+    /// settled by re-reading: done if the stored document holds the changes, else re-prepared
+    /// from the stored revision (up to three times). A replace refused for its revision (another
+    /// replace landed between the read and the broadcast) is returned as the Platform error, not
+    /// retried: the caller re-runs it against the new document. Consensus refuses a non-owner
+    /// and any `immutable` property change.
+    pub async fn replace_document(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<bool> {
+        let doc_id = parse_id(document_id, "document id")?;
+        let data_contract = &contract.0;
+        let doc_type_ref = data_contract
+            .document_type_for_name(document_type)
+            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let fetch = || async {
+            let query = DocumentQuery::new(Arc::clone(data_contract), document_type)
+                .map_err(|e| Error::Platform(format!("building document query: {e}")))?
+                .with_document_id(&doc_id);
+            retry_transient_read("fetch document", || {
+                Document::fetch(self.client.sdk(), query.clone())
+            })
+            .await
+            .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
+        };
+        let holds = |doc: &Document| {
+            changes.iter().all(|(k, v)| {
+                let stored = doc.properties().get(k).and_then(FieldValue::from_value);
+                same_field(stored.as_ref(), v.as_ref())
+            })
+        };
+        for _ in 0..3 {
+            let Some(mut doc) = fetch().await? else {
+                return Err(Error::NotFound);
+            };
+            if doc.owner_id() != self.owner_id {
+                return Err(Error::Config(format!(
+                    "{document_type} {document_id} belongs to another identity; only its owner can edit it"
+                )));
+            }
+            if holds(&doc) {
+                return Ok(false);
+            }
+            let next = doc
+                .revision()
+                .unwrap_or(INITIAL_REVISION)
+                .checked_add(1)
+                .ok_or_else(|| Error::Platform("document revision overflow".into()))?;
+            doc.set_revision(Some(next));
+            let props = doc.properties_mut();
+            for (k, v) in changes {
+                match v {
+                    Some(v) => props.insert(k.clone(), v.clone().into_value()),
+                    None => props.remove(k),
+                };
+            }
+            let nonce = self
+                .client
+                .sdk()
+                .get_identity_contract_nonce(self.owner_id, data_contract.id(), true, None)
+                .await
+                .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
+            let state_transition =
+                BatchTransition::new_document_replacement_transition_from_document(
+                    doc,
+                    doc_type_ref,
+                    &self.signing_key,
+                    nonce,
+                    0,
+                    None,
+                    &self.signer,
+                    self.client.sdk().version(),
+                    None,
+                )
+                .await
+                .map_err(|e| Error::Platform(format!("signing replace transition: {e}")))?;
+            let prepared = PreparedWrite {
+                document_id: document_id.to_string(),
+                document_type: document_type.to_string(),
+                op: WriteOp::Replace,
+                signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
+            };
+            match self.execute(&prepared).await? {
+                BroadcastOutcome::NonceConsumed => {
+                    // Ours landed (its answer lost), or another write took the nonce: the
+                    // stored document says which.
+                    for attempt in 0..CONFIRM_ATTEMPTS {
+                        if fetch().await?.is_some_and(|d| holds(&d)) {
+                            return Ok(true);
+                        }
+                        if attempt + 1 < CONFIRM_ATTEMPTS {
+                            tokio::time::sleep(CONFIRM_DELAY).await;
+                        }
+                    }
+                }
+                _ => return Ok(true),
+            }
+        }
+        Err(Error::Nonce)
+    }
+
     /// Prepare + execute a values-carrying delete ([`Self::prepare_delete_with_values`]): the
     /// only delete an `indexOnly` type accepts. On [`BroadcastOutcome::NonceConsumed`] the
     /// caller decides by re-reading: an `indexOnly` document has no id [`Self::landed`] could
@@ -1723,6 +1677,28 @@ impl<'a> WriteEngine<'a> {
             .prepare_delete_with_values(contract, document_type, document_id, values, created_at)
             .await?;
         self.execute(&prepared).await
+    }
+}
+
+/// Whether a stored field equals a wanted one, by value rather than by wire form: an integer of
+/// any width (`Integer`/`Uint64`), bytes of any kind (`Bytes`/`Bytes32`/`Identifier`), and a
+/// string list read back as empty bytes all compare as what they hold. `None` is absent.
+fn same_field(stored: Option<&FieldValue>, wanted: Option<&FieldValue>) -> bool {
+    match (stored, wanted) {
+        (None, None) => true,
+        (Some(s), Some(w)) => {
+            if let (Some(a), Some(b)) = (s.as_u64(), w.as_u64()) {
+                return a == b;
+            }
+            if let (Some(a), Some(b)) = (s.as_bytes(), w.as_bytes()) {
+                return a == b;
+            }
+            if let (Some(a), Some(b)) = (s.as_text_list(), w.as_text_list()) {
+                return a == b;
+            }
+            s == w
+        }
+        _ => false,
     }
 }
 
@@ -2687,6 +2663,39 @@ mod tests {
     use crate::error::{Error, Result};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_replace_holds_by_value_not_wire_form() {
+        use super::same_field;
+        let s = |v: FieldValue| Some(v);
+        // Integer widths, byte kinds, and an empty list that reads back as empty bytes.
+        assert!(same_field(
+            s(FieldValue::Uint64(3)).as_ref(),
+            s(FieldValue::Integer(3)).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::Bytes32([7; 32])).as_ref(),
+            s(FieldValue::Identifier([7; 32])).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::Bytes(vec![])).as_ref(),
+            s(FieldValue::text_list(Vec::<String>::new())).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::text_list(["a", "b"])).as_ref(),
+            s(FieldValue::text_list(["a", "b"])).as_ref()
+        ));
+        assert!(!same_field(
+            s(FieldValue::text_list(["a", "b"])).as_ref(),
+            s(FieldValue::text_list(["b", "a"])).as_ref()
+        ));
+        assert!(!same_field(
+            s(FieldValue::Integer(3)).as_ref(),
+            s(FieldValue::Integer(4)).as_ref()
+        ));
+        assert!(same_field(None, None));
+        assert!(!same_field(None, s(FieldValue::text("x")).as_ref()));
+    }
 
     fn fields(order: &[QueryOrder]) -> Vec<(String, bool)> {
         order

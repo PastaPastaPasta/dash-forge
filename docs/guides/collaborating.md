@@ -34,6 +34,31 @@ dg collab remove <owner>/<repo> <identity id> --role writer
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
+### Repository settings
+
+Maintainers change a repository's settings from the CLI or from **Settings** in the web app. Each change is a small paid write, shown with its cost before you confirm; repeating a change that already holds writes nothing.
+
+```sh
+dg repo protect add    <owner>/<repo> main              # or a glob: 'release/*', 'refs/tags/v*'
+dg repo protect remove <owner>/<repo> main
+dg repo protect list   <owner>/<repo>
+dg repo edit <owner>/<repo> --default-branch trunk       # maintainers
+dg repo edit <owner>/<repo> --description "…" --topics rust,cli   # the owner
+dg repo policy set  <owner>/<repo> --required-approvals 2 --maintainers-only true --merge-methods ff,squash
+dg repo policy show <owner>/<repo>
+dg repo archive   <owner>/<repo>
+dg repo unarchive <owner>/<repo>
+```
+
+What each one enforces:
+
+- **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. Up to 8 patterns.
+- **The default branch** is what a clone checks out and what the web opens on.
+- **The branch policy** is a client rule. Every Forge client applies it: the web disables a writer's merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). A maintainer can override it (`--override-policy`). Nothing on Platform requires approvals.
+- **Archiving** is a client rule too. Forge clients refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
+
+The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
+
 ### How access works
 
 A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
@@ -214,7 +239,7 @@ Merging PR #7 of <owner>/project into refs/heads/main
 Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event.
 
 - **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the base branch, and run `dg pr merge` again (it sees the head is already in the base and only records the merge). A PR names a fixed head commit, so pushing the resolution to your source branch does not update the PR; open a new PR from it instead.
-- **Protected base branch:** only a maintainer can push to it. A writer's merge stops at the push step with [`E601`](../errors.md#e601).
+- **Protected base branch:** only a maintainer can push to it. A writer's merge is refused with [`E601`](../errors.md#e601) before any git work.
 - **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. The commit must already have been a tip of the base branch: a merge event is permanent, so `dg` refuses to post one that would not count.
 
 A PR shows as merged only when **both** are true: the `merge` event exists (consensus admits it only from a writer or maintainer), and its commit has been **a tip of the base branch**. `dg pr merge` reads the PR back and reports what readers will see.

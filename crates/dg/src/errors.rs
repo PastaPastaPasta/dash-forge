@@ -127,6 +127,22 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }
+        Command::Repo(Rp::Edit(a)) => ("repository not edited", Some(&a.repo)),
+        Command::Repo(Rp::Protect(crate::RepoProtectCommand::List { repo })) => {
+            ("could not read the protected branches", Some(repo))
+        }
+        Command::Repo(Rp::Protect(
+            crate::RepoProtectCommand::Add { repo, .. }
+            | crate::RepoProtectCommand::Remove { repo, .. },
+        )) => ("protection not changed", Some(repo)),
+        Command::Repo(Rp::Policy(crate::RepoPolicyCommand::Show { repo })) => {
+            ("could not read the branch policy", Some(repo))
+        }
+        Command::Repo(Rp::Policy(crate::RepoPolicyCommand::Set(a))) => {
+            ("branch policy not set", Some(&a.repo))
+        }
+        Command::Repo(Rp::Archive { repo }) => ("repository not archived", Some(repo)),
+        Command::Repo(Rp::Unarchive { repo }) => ("repository not unarchived", Some(repo)),
         Command::Issue(I::List(a)) => ("could not read issues", Some(&a.repo)),
         Command::Issue(I::View { repo, .. }) => ("could not read issues", Some(repo)),
         Command::Issue(I::Assign { repo, .. } | I::Unassign { repo, .. }) => {

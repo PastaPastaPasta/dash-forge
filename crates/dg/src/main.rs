@@ -25,6 +25,7 @@ mod prompt;
 mod publish;
 mod release;
 mod repo;
+mod repo_settings;
 mod storage;
 mod storage_wizard;
 mod webhook;
@@ -72,6 +73,11 @@ pub struct Cli {
     /// Override the identity file for this invocation.
     #[arg(long, global = true, value_name = "FILE")]
     pub identity: Option<PathBuf>,
+
+    /// Write to an archived repository anyway (issues, PRs, comments, reviews, merges,
+    /// releases). Archiving is a client rule; consensus still admits a member's writes.
+    #[arg(long, global = true)]
+    pub allow_archived: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -304,6 +310,96 @@ pub enum RepoCommand {
     /// A private repository's keys: epochs, wraps, pending rotation, repair.
     #[command(subcommand)]
     Keys(RepoKeysCommand),
+    /// Edit a repo's settings: default branch (config, maintainers), description and topics
+    /// (the repo document, its owner).
+    Edit(RepoEditArgs),
+    /// Protected branches: which refs only maintainers may update.
+    #[command(subcommand)]
+    Protect(RepoProtectCommand),
+    /// The branch policy (required approvals, approver role, merge methods): a client rule
+    /// every Forge client applies to its merge controls; consensus does not enforce it.
+    #[command(subcommand)]
+    Policy(RepoPolicyCommand),
+    /// Mark a repo archived (maintainers): every Forge client refuses writes to it. A client
+    /// rule; consensus still admits a member's writes.
+    Archive {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Clear a repo's archived mark (maintainers).
+    Unarchive {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RepoEditArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// The new default branch (`main` or `refs/heads/main`): what clones check out and the
+    /// web opens. Writes a new `config` (maintainers only).
+    #[arg(long = "default-branch")]
+    pub default_branch: Option<String>,
+    /// The new description (`""` clears it). Edits the `repo` document (its owner only).
+    #[arg(long)]
+    pub description: Option<String>,
+    /// The topics, comma-separated (`""` clears them): up to 10 of `a-z`, `0-9`, `-`.
+    #[arg(long)]
+    pub topics: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RepoProtectCommand {
+    /// List the protected patterns in force.
+    List {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Protect the refs matching a pattern (a branch name like `main`, or a glob like
+    /// `refs/heads/release/*`; `*` stays within one path segment, `**` crosses them).
+    Add {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The branch or glob.
+        pattern: String,
+    },
+    /// Stop protecting a pattern.
+    Remove {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The pattern, as `dg repo protect list` prints it (a bare branch name also works).
+        pattern: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RepoPolicyCommand {
+    /// Show the branch policy in force.
+    Show {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Set the branch policy (maintainers). Unset options keep the current policy's value.
+    Set(RepoPolicySetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RepoPolicySetArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// Approvals a merge needs (0-10).
+    #[arg(long = "required-approvals")]
+    pub required_approvals: Option<u32>,
+    /// Count only maintainers' approvals (`true`), or every member's (`false`).
+    #[arg(long = "maintainers-only")]
+    pub maintainers_only: Option<bool>,
+    /// Require passing checks.
+    #[arg(long = "require-checks")]
+    pub require_checks: Option<bool>,
+    /// Allowed merge methods, comma-separated: `ff`, `merge`, `squash`, `rebase`, or `any`.
+    #[arg(long = "merge-methods")]
+    pub merge_methods: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -530,6 +626,10 @@ pub enum PrCommand {
         /// tip when the head is already in it).
         #[arg(long = "merge-oid", requires = "event_only")]
         merge_oid: Option<String>,
+        /// Merge although the branch policy is not met (maintainers only). The policy is a
+        /// client rule every Forge client applies; consensus does not enforce it.
+        #[arg(long = "override-policy")]
+        override_policy: bool,
     },
     /// Close a pull request without merging.
     Close {

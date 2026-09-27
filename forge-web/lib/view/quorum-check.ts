@@ -281,18 +281,22 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
 const sessionChecks = new Map<string, Promise<QuorumCrossCheck>>()
 
 /**
- * {@link crossCheckQuorumKeys} once per network per session. An outcome that depends on a
- * network hiccup (`unavailable`, or no DAPI node answering) is not kept, so a later view runs
- * the check again.
+ * {@link crossCheckQuorumKeys} once per network per SDK connection (`generation`, which
+ * increments each time the service reconnects and so fetches the keys again). An outcome
+ * that depends on a network hiccup (`unavailable`, or no DAPI node answering) is not kept, so
+ * a later view runs the check again.
  */
-export function crossCheckQuorumKeysCached(config: NetworkConfig): Promise<QuorumCrossCheck> {
-  const hit = sessionChecks.get(config.key)
+export function crossCheckQuorumKeysCached(config: NetworkConfig, generation = 0): Promise<QuorumCrossCheck> {
+  const key = `${config.key}#${generation}`
+  const hit = sessionChecks.get(key)
   if (hit !== undefined) return hit
+  // Only the current connection's check is worth keeping.
+  for (const k of sessionChecks.keys()) if (k.startsWith(`${config.key}#`)) sessionChecks.delete(k)
   const run = crossCheckQuorumKeys(config)
-  sessionChecks.set(config.key, run)
+  sessionChecks.set(key, run)
   void run.then((r) => {
     const transient = r.state === 'unavailable' || (r.state === 'single' && r.reason === 'second-unreachable')
-    if (transient && sessionChecks.get(config.key) === run) sessionChecks.delete(config.key)
+    if (transient && sessionChecks.get(key) === run) sessionChecks.delete(key)
   })
   return run
 }

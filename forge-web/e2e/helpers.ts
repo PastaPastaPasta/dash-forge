@@ -174,12 +174,21 @@ export async function runAxe(page: import('@playwright/test').Page, label: strin
   return seriousOrCritical
 }
 
-/** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/). */
+/**
+ * Where a spec's own identities live when it must not write as the shared fixtures
+ * (`E2E_IDENTITY_DIR`, the same variable the CLI suite honours); unset: the fixture pool.
+ */
+const IDENTITY_DIR = process.env['E2E_IDENTITY_DIR'] || ''
+
+/** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/, or E2E_IDENTITY_DIR). */
 export function idFile(name: string): string {
-  // A spec's own identities (not the shared pool) can live elsewhere: E2E_ID_DIR names it.
-  const dir = process.env['E2E_ID_DIR'] ?? join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`)
-  const own = join(dir, `${name}.identity.json`)
-  return existsSync(own) ? own : join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+  if (IDENTITY_DIR) return join(IDENTITY_DIR, `${name}.identity.json`)
+  return join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+}
+
+/** The identity id recorded in {@link idFile}. */
+export function idOf(name: string): string {
+  return (JSON.parse(readFileSync(idFile(name), 'utf8')) as { identityId: string }).identityId
 }
 
 export const PASSPHRASE = 'e2e passphrase for the vault'
@@ -191,7 +200,9 @@ export const PASSPHRASE = 'e2e passphrase for the vault'
  * accumulate keys without bound). Gitignored (e2e/.playwright/).
  */
 export function stateFile(name: string): string {
-  return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${name}.json`)
+  // A spec's own identities (E2E_IDENTITY_DIR) must not reuse a fixture's saved vault.
+  const who = IDENTITY_DIR ? `${name}-${idOf(name).slice(0, 8)}` : name
+  return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${who}.json`)
 }
 
 /** Import the identity file once: the master key registers a limited key for this browser. */

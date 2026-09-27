@@ -79,7 +79,7 @@ const MAX_NUMBER_ATTEMPTS: usize = 8;
 /// remote helper's push pre-check.
 pub const SKIP_PRECHECK_ENV: &str = "DASH_FORGE_SKIP_WRITE_PRECHECK";
 
-fn precheck_enabled() -> bool {
+pub fn precheck_enabled() -> bool {
     !std::env::var(SKIP_PRECHECK_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -2025,7 +2025,7 @@ impl<'a> Collab<'a> {
         )?;
         let collab = self.collab_contract(repo).await?;
         self.engine()?
-            .replace_document(&collab, target.kind.doc_type(), &target.id, &changes, None)
+            .replace_document(&collab, target.kind.doc_type(), &target.id, &changes)
             .await
     }
 
@@ -2046,7 +2046,7 @@ impl<'a> Collab<'a> {
         let collab = self.collab_contract(repo).await?;
         let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
         self.engine()?
-            .replace_document(&collab, DOC_COMMENT, comment_id, &changes, None)
+            .replace_document(&collab, DOC_COMMENT, comment_id, &changes)
             .await
     }
 

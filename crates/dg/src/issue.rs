@@ -288,7 +288,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 }
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "issue not created").await?;
     ctx.confirm_or_cancel(&format!(
         "Open issue {title:?} in {}? (one small document, ~0.0001 DASH)",
         s.repo.display()
@@ -392,7 +392,7 @@ async fn edit(
 }
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     let target = target(&s, repo, number).await?;
     ctx.confirm_or_cancel(&format!("Comment on issue #{number}? (one small document)"))?;
     let id = s
@@ -407,7 +407,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
 }
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (verb, prompt) = if close {
         ("close", "Close")
@@ -448,7 +448,7 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
     } else {
         EventKind::LabelRemove
     };
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "label not changed").await?;
     let target = target(&s, repo, number).await?;
     // docs/security/private-repos.md §7: label names are event values, never encrypted
     let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {

@@ -18,7 +18,7 @@ import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { resolveDpnsName } from '@/lib/view'
+import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
 import {
   DEFAULT_ISSUE_QUERY,
   ISSUE_PAGE_SIZE,
@@ -69,6 +69,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
   // holding the current key can open one, and non-members see no button (ux-dx-spec §9).
   const canCompose = privateComposeBlock(home) === null
+  const archived = home.config?.archived === true
 
   // The list query lives in the URL: parse it on every render, write it with router.replace.
   const query = useMemo(() => parseIssueQuery(params), [params])
@@ -127,7 +128,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </div>
         </form>
         {canCompose ? (
-          <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
+          <Button variant="primary" size="sm" onClick={() => setComposing(true)} disabled={archived} title={archived ? ARCHIVED_REASON : undefined}>
             <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
           </Button>
         ) : null}
@@ -206,7 +207,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             icon={CircleDot}
             title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : 'No open issues'}
             body={filtered ? 'Try fewer filters.' : query.state === 'closed' ? 'Nothing has been closed yet.' : 'Everything is quiet. Open the first issue to start the conversation.'}
-            action={filtered || !canCompose ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
+            action={filtered || !canCompose || archived ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
           />
         ) : (
           <ul aria-label="Issues" aria-busy={loading}>

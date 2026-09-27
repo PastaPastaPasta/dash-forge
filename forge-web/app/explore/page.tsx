@@ -14,6 +14,7 @@ import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { ErrorState, Spinner } from '@/components/ui/states'
+import { DownloadProgressBar, UnreachableBanner } from '@/components/ui/platform-status'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -42,7 +43,7 @@ const SCAN_REPOS_MAX = 20
 const INDEXER_DOCS = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/roadmap.md'
 
 export default function ExplorePage(): JSX.Element {
-  const { sdk, ready, network, error: sdkError } = useSdk()
+  const { sdk, ready, network, status: sdkStatus, retry: retrySdk } = useSdk()
   const { identity } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const forge = NETWORKS[network].v2
@@ -108,7 +109,11 @@ export default function ExplorePage(): JSX.Element {
           </p>
         </header>
 
-        {sdkError ? <ErrorState title="Could not reach Platform" message={sdkError} /> : null}
+        {sdkStatus.phase === 'error' ? (
+          <UnreachableBanner status={sdkStatus} onRetry={retrySdk} cached={recent.data !== null} />
+        ) : sdkStatus.phase === 'downloading' ? (
+          <DownloadProgressBar status={sdkStatus} />
+        ) : null}
 
         {signedIn ? (
           <div className="space-y-10" data-testid="explore-mine">

@@ -19,7 +19,7 @@
 import { useMemo, useState } from 'react'
 import { CheckCircle2, CircleDot, Pencil, Plus, Settings2, Tag, UserPlus, X } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { ACL_NAME, loadIssueThread, timeAgo } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadIssueThread, timeAgo } from '@/lib/view'
 import {
   createComment,
   defineLabel,
@@ -118,7 +118,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canToggle = identity !== null && (isAuthor || isMember)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
   // member holding the current key can, so everyone else sees why not instead of a composer.
-  const composeBlock = privateComposeBlock(home)
+  // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
+  const archived = home.config?.archived === true
+  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -318,7 +320,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 <Button
                   variant="outline"
                   onClick={() => setPending({ kind: 'state' })}
-                  disabled={!signer || guard.disabledReason !== null}
+                  disabled={!signer || guard.disabledReason !== null || archived}
                   title={guard.disabledReason ?? undefined}
                 >
                   {open ? 'Close issue' : 'Reopen issue'}
@@ -349,7 +351,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <AssigneePicker
             assignees={issue.state.assignees}
             members={members.map((m) => m.identity)}
-            canEdit={isMember && guard.disabledReason === null}
+            canEdit={isMember && !archived && guard.disabledReason === null}
             onToggle={(who, remove) => setPending({ kind: 'assign', who, remove })}
           />
         </SidebarSection>
@@ -358,7 +360,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             applied={issue.state.labels}
             defs={labels}
             byName={labelDefs}
-            canEdit={isMember && guard.disabledReason === null}
+            canEdit={isMember && !archived && guard.disabledReason === null}
             onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
             onDefine={(name, color, description) => setPending({ kind: 'defineLabel', name, color, description, apply: true })}
           />
