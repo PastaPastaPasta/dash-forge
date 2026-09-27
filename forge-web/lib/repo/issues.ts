@@ -37,14 +37,13 @@ import {
   num,
   str,
   toEvent,
-  wellFormed,
   type RepoRef,
 } from './contract'
 import { readConfigHistory } from './config'
-import { readRefUpdates } from './refs'
-import { readRoleOracle } from './members'
+import { publicRefKey, readRefUpdates } from './refs'
+import { HiddenTally, gateFor, type HiddenCounts } from './private-content'
 import { repoSource } from './source'
-import { base64ToHex } from '../sdk'
+import { base64ToHex, hexToBase64 } from '../sdk'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 function titleOf(doc: PlainDocument): string {
@@ -54,12 +53,12 @@ function titleOf(doc: PlainDocument): string {
 }
 
 /**
- * A list page: the rows, and how many newer documents were skipped as not well-formed (or,
- * in a private repo, as a stranger's ciphertext) — shown as "N hidden", never silently.
- * `complete` is true when the read reached the end of the list, so the rows are every
- * shown document of the repo, not just its newest page (an open count needs that).
+ * A list page: the rows, and how many newer documents were skipped as not well-formed (or, in
+ * a private repo, as unreadable: `hiddenBy` splits them by reason) — shown as "N hidden",
+ * never silently. `complete` is true when the read reached the end of the list, so the rows
+ * are every shown document of the repo, not just its newest page (an open count needs that).
  */
-export type Listed<T> = T[] & { readonly hidden: number; readonly complete: boolean }
+export type Listed<T> = T[] & { readonly hidden: number; readonly hiddenBy: HiddenCounts; readonly complete: boolean }
 
 /** An issue with its folded state. */
 export interface IssueView {
@@ -377,8 +376,13 @@ async function readRepoFeed(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, Tar
  * exactly the one that matters.
  * Parity: forge-core `PullRequestService::list_reviews`.
  */
-export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): Promise<ReviewView[]> {
-  const documents = await queryAllDocuments(
+export async function readReviews(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  patchId: string,
+  tally: HiddenTally = new HiddenTally(),
+): Promise<ReviewView[]> {
+  const raw = await queryAllDocuments(
     sdk,
     repoSource(repo).targetQuery(DOC.review, {
       where: [['patchId', '==', patchId]],
@@ -388,7 +392,16 @@ export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): 
       ],
     }),
   )
-  return documents.filter((d) => wellFormed(repo, 'review', d)).map((d) => {
+  // A private review whose `enc` does not open is left out entirely: its plaintext verdict is
+  // never counted as an approval (`private-repos.md` §8.1).
+  const gate = gateFor(repo)
+  const documents: PlainDocument[] = []
+  for (const d of raw) {
+    const a = await gate.admit('review', d)
+    if (a.ok) documents.push(a.doc)
+    else tally.add(a.reason)
+  }
+  return documents.map((d) => {
     const { verdict, code } = verdictFromCode(num(d, 'verdict'))
     return {
       id: str(d, '$id'),
@@ -435,8 +448,8 @@ const LIST_MAX_PAGES = 5
 /**
  * The newest `limit` issues or patches of a repo, `$createdAt` descending, and how many were
  * skipped on the way. It skips documents that are not well-formed for the repo's
- * visibility (`forge-v2.md` §5), and in a private repo also ciphertext from non-members: this
- * client decrypts nothing yet, and §5 shows a stranger's ciphertext to no one. Skipped rows do
+ * visibility (`forge-v2.md` §5), and in a private repo every document that does not open with
+ * the reader's keys (`docs/security/private-repos.md` §8). Skipped rows do
  * not shorten the page: the read continues (newest-first, by a `$createdAt <` bound, so no
  * cursor) until `limit` rows are found, the list ends, or {@link LIST_MAX_PAGES} pages.
  */
@@ -445,16 +458,13 @@ async function newestTargets(
   repo: RepoRef,
   type: 'issue' | 'patch',
   limit: number,
-): Promise<{ documents: PlainDocument[]; hidden: number; complete: boolean }> {
-  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
-  const shown = (d: PlainDocument): boolean => {
-    if (!wellFormed(repo, type, d)) return false
-    // Private: only members' ciphertext is shown (as encrypted); strangers' is hidden.
-    return oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null
-  }
+): Promise<{ documents: PlainDocument[]; hidden: HiddenTally; complete: boolean }> {
+  // Public: well-formed documents. Private: the ones that open with the reader's keys
+  // (`open_content`), decrypted; without a session, none.
+  const gate = gateFor(repo)
   const out: PlainDocument[] = []
   const seen = new Set<string>()
-  let hidden = 0
+  const hidden = new HiddenTally()
   let complete = false
   let before: number | null = null
   for (let page = 0; page < LIST_MAX_PAGES && out.length < limit; page++) {
@@ -476,8 +486,9 @@ async function newestTargets(
       const id = str(d, '$id')
       if (seen.has(id)) continue
       seen.add(id)
-      if (shown(d)) out.push(d)
-      else hidden++
+      const a = await gate.admit(type, d)
+      if (a.ok) out.push(a.doc)
+      else hidden.add(a.reason)
     }
     // A short page is the end of the list: complete, unless the page was cut to fit `limit`.
     if (documents.length < limit) {
@@ -535,7 +546,7 @@ export async function listIssues(
     (doc, log) => readIssue(sdk, repo, doc, log),
     incompleteIssueView,
   )
-  return Object.assign(rows, { hidden, complete })
+  return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
 }
 
 /** An issue row whose event log could not be read completely: identity only, no folded state. */
@@ -635,7 +646,15 @@ export async function readPull(
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
   const createdAt = num(patchDoc, '$createdAt')
-  const baseRefNameHashRaw = patchDoc['baseRefNameHash']
+  // A private patch indexes its base under an HMAC; once opened, its ref is keyed like every
+  // decrypted ref, by `sha256(baseRefName)` (`refs.ts`).
+  const baseKeyHex =
+    repo.visibility === 'private'
+      ? str(patchDoc, 'baseRefName') === ''
+        ? ''
+        : publicRefKey(str(patchDoc, 'baseRefName'))
+      : byteFieldToHex(patchDoc, 'baseRefNameHash')
+  const baseRefNameHashRaw = baseKeyHex === '' ? '' : hexToBase64(baseKeyHex)
   const baseHeadOidRaw = patchDoc['headOid']
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.
@@ -646,7 +665,7 @@ export async function readPull(
       refUpdates ? refUpdates(baseRefNameHashRaw) : readRefUpdates(sdk, repo, baseRefNameHashRaw),
       configHistory ? configHistory() : readConfigHistory(sdk, repo),
     ])
-    tips = baseRefTips(updates, configs, byteFieldToHex(patchDoc, 'baseRefNameHash'), createdAt)
+    tips = baseRefTips(updates, configs, baseKeyHex, createdAt)
     isAncestor = historicalTipsPredicate(tips.historical)
   }
   const baseTip = tips.tip
@@ -715,7 +734,7 @@ export async function listPulls(
     (doc, log) => readPull(sdk, repo, doc, log, configHistory, refUpdates),
     incompletePullView,
   )
-  return Object.assign(rows, { hidden, complete })
+  return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
 }
 
 /** A PR row whose event log could not be read completely: identity only, no folded state. */

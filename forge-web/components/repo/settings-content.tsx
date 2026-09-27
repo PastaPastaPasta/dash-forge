@@ -33,6 +33,7 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
+import { PrivateMembers } from '@/components/repo/private-members'
 
 export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
   return <RepoSettings home={home} repo={home.repo} />
@@ -96,6 +97,10 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
       </Section>
 
       <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-400" aria-hidden />}>
+        {home.private?.access === 'member' ? (
+          <PrivateMembers home={home} session={home.private.session} />
+        ) : (
+        <>
         {members.loading ? (
           <LoadingBlock label="Reading members" />
         ) : members.error ? (
@@ -116,7 +121,7 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
                   <RoleTag role={m.role === 'maintainer' ? 'MAINTAINER' : 'WRITER'} />
                   {m.identity === repo.ownerId ? (
                     <span className="text-[12px] text-anvil-400">owner</span>
-                  ) : isOwner ? (
+                  ) : isOwner && repo.visibility !== 'private' ? (
                     <Button
                       size="sm"
                       variant="danger"
@@ -132,7 +137,12 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
             )}
           </div>
         )}
-        {isOwner ? (
+        {isOwner && repo.visibility === 'private' ? (
+          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+            Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
+            (Settings → Keys → Enable private repos) to manage members.
+          </p>
+        ) : isOwner ? (
           <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
             <h4 className="mb-2 text-dense font-medium">Add a member</h4>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -192,6 +202,8 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : 'Sign & remove'}
           onConfirm={runAction}
         />
+        </>
+        )}
       </Section>
 
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>

@@ -32,6 +32,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
+import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
@@ -341,6 +342,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const [identityId, setIdentityId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
+  // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
+  const [enablePrivate, setEnablePrivate] = useState(false)
   const who = mode === 'file' ? fileIdentity : identityId.trim()
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
   // signed-in identity (then the old key is disabled in the same update).
@@ -370,7 +373,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     try {
       const text = fileRef.current
       if (mode === 'file' && text === null) return
-      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection)
+      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, undefined, {
+        enablePrivateRepos: enablePrivate,
+      })
       fileRef.current = null
       setMnemonic('')
       onDone()
@@ -417,6 +422,21 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         </div>
       ) : null}
       {fields}
+      <label className="flex items-start gap-2 rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={enablePrivate}
+          onChange={(e) => setEnablePrivate(e.target.checked)}
+          data-testid="enable-private-repos"
+        />
+        <span>
+          <span className="font-medium">Enable private repos</span>
+          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+            Also keep this identity&apos;s encryption key here, protected the same way. {ENCRYPTION_KEY_BLAST_RADIUS}
+          </span>
+        </span>
+      </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days (~0.0005 DASH, one master-key signature).
       </p>

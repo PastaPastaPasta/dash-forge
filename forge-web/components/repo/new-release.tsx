@@ -243,6 +243,12 @@ function NewReleaseDialog({
       }
     >
       <div className="space-y-3">
+        {repo.visibility === 'private' ? (
+          <p role="note" className="flex items-start gap-1.5 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="release-plaintext-note">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution" aria-hidden />
+            Release notes and labels are not encrypted in this release: anyone can read the tag, title, notes and asset list.
+          </p>
+        ) : null}
         <Field label="Tag" htmlFor="release-tag" hint="The git tag this release is for, e.g. v1.2.0 (push the tag with git; publishing does not create it).">
           <Input id="release-tag" value={tag} onChange={(e) => setTag(e.target.value)} onBlur={() => setTouched(true)} className="font-mono" placeholder="v1.0.0" disabled={locked} autoFocus />
         </Field>

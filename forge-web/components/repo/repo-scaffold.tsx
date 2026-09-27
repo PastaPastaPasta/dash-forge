@@ -16,6 +16,9 @@ import { Button } from '@/components/ui/button'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
 import { useRepoHome } from '@/hooks/use-repo'
+import { usePrivateHome } from '@/hooks/use-private-home'
+import { PrivateBanner } from '@/components/repo/private-banner'
+import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { selectRef, type RepoHome } from '@/lib/view'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -24,14 +27,22 @@ export function RepoScaffold({
   children,
   rail = true,
   refParam = '',
+  sealedOk = false,
 }: {
   addr: RepoAddress
   children: (home: RepoHome) => ReactNode
   rail?: boolean
   /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
   refParam?: string
+  /**
+   * The page renders for a private repo the viewer cannot decrypt (Settings: the member list is
+   * public). Every other page shows the private state instead of its content (§6.3).
+   */
+  sealedOk?: boolean
 }): JSX.Element {
   const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
+  // A private repo is re-read through the viewer's decryption session (or shown as sealed).
+  const privateHome = usePrivateHome(data ?? null)
 
   if (!addr.owner || (!addr.name && !addr.repoId)) {
     return (
@@ -95,15 +106,43 @@ export function RepoScaffold({
     )
   }
 
-  const home = data
+  if (privateHome?.error) {
+    return (
+      <AppShell wide>
+        <ErrorState title="Couldn't open this private repo" message={privateHome.error} onRetry={privateHome.retry} />
+      </AppShell>
+    )
+  }
+  if (privateHome === null || privateHome.pending) {
+    return (
+      <AppShell wide>
+        <LoadingBlock label="Checking membership and keys" />
+      </AppShell>
+    )
+  }
+  const home = privateHome.home
 
   // The rail's assay attests the ref the page shows: the `?ref=` selection, else the
   // default branch.
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
 
+  // A private repo the viewer cannot decrypt: only what is public (`ux-dx-spec.md` §6.3). No
+  // decrypted string exists to render, and no page reads content for it.
+  const sealed = home.repo.visibility === 'private' && home.private?.access !== 'member'
+  if (sealed && !sealedOk) {
+    return (
+      <AppShell wide>
+        <RepoHeader home={home} addr={addr} />
+        <PrivateBanner home={home} />
+        <PrivateRepoState repo={home.repo} addr={addr} member={home.private?.access === 'no-key'} />
+      </AppShell>
+    )
+  }
+
   return (
     <AppShell wide>
       <RepoHeader home={home} addr={addr} />
+      <PrivateBanner home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
           <div className="min-w-0">{children(home)}</div>

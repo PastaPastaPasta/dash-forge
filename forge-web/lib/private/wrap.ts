@@ -154,6 +154,34 @@ export async function unwrapKey(facade: WrapFacade, params: UnwrapParams): Promi
   return checkWrapPlaintext(params.repoId, params.epoch, plaintext)
 }
 
+/**
+ * {@link unwrapKey}, also returning the raw 32-byte epoch key. Only a maintainer needs it:
+ * to wrap the epoch for a new member (§5.5 add member), to carry it as the next anchor's
+ * `prevEpochKey`, or to resume a rotation from its own self-wrap (§5.5, no key is ever stored).
+ * The caller wipes `raw` as soon as it is done with it.
+ */
+export async function unwrapKeyRaw(facade: WrapFacade, params: UnwrapParams): Promise<{ keys: EpochKeys; raw: Bytes }> {
+  let plaintext: Uint8Array
+  try {
+    plaintext = await facade.decrypt({
+      dataContract: params.dataContract,
+      document: params.document,
+      property: WRAP_PROPERTY,
+      recipientPrivateKey: params.readerPrivateKey,
+      senderKey: params.counterpartyKey,
+    })
+  } catch {
+    throw new WrapError('wrapUnreadable')
+  }
+  const raw = plaintext.length === WRAP_PLAINTEXT_LEN ? plaintext.slice(15, 47) : new Uint8Array(32)
+  try {
+    return { keys: await checkWrapPlaintext(params.repoId, params.epoch, plaintext), raw }
+  } catch (e) {
+    raw.fill(0)
+    throw e
+  }
+}
+
 /** {@link unwrapKey}, then the anchor check (§5.4 check 5): `keyMismatch` when it fails. */
 export async function openWrap(facade: WrapFacade, params: WrapOpenParams): Promise<EpochKeys> {
   const keys = await unwrapKey(facade, params)

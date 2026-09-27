@@ -51,6 +51,7 @@ import {
   resetGatewayHealth,
   resetRepoGateways,
 } from './storage-status'
+import { openPrivateArtifact, readPrivateRange } from './private-packs'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -739,6 +740,13 @@ export function artifactRangeFetch(
     noteSource(repo)
     return bytes
   }
+  // A private repo's artifacts are sealed: the reader asks for PLAINTEXT ranges (locator rows
+  // index plaintext offsets), mapped to sealed segments through the session's header cache.
+  const session = repo.session
+  const readPlain =
+    session === undefined
+      ? readCopy
+      : (c: PackManifest, start: number, end: number) => readPrivateRange(session, c, (s, e) => readCopy(c, s, e), start, end)
   return async (start: number, end: number, copy?: number) => {
     // A range cannot be hashed on its own. The reader re-hashes every object it
     // builds from one and asks for a specific `copy` when the current one fails it; without
@@ -747,12 +755,12 @@ export function artifactRangeFetch(
     if (copy !== undefined) {
       const chosen = copies[copy]
       if (chosen === undefined) throw new Error(`pack ${manifest.packHash.slice(0, 12)}… has no copy ${copy}`)
-      return readCopy(chosen, start, end)
+      return readPlain(chosen, start, end)
     }
     let lastErr: unknown
     for (const c of copies) {
       try {
-        return await readCopy(c, start, end)
+        return await readPlain(c, start, end)
       } catch (e) {
         lastErr = e
       }
@@ -804,7 +812,18 @@ export async function loadArtifactBytesProgress(
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
-  if (manifest.copies === undefined) return loadOneCopy(sdk, repo, manifest, onProgress, cancel)
+  // A private repo: every copy's sealed bytes are checked against `packHash`, then its standing,
+  // then decrypted; the plaintext is what the caller gets.
+  const session = repo.session
+  const open = async (copy: PackManifest): Promise<Uint8Array> => {
+    const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
+    if (session === undefined) return bytes
+    const plain = await openPrivateArtifact(session, copy, bytes)
+    return plain
+  }
+  const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
+    session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
+  if (manifest.copies === undefined) return open(manifest)
   // Every writer may hold a copy of a pack. Read them in `orderPackCopies` order
   // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
   // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
@@ -812,8 +831,8 @@ export async function loadArtifactBytesProgress(
   const failures: unknown[] = []
   for (const copy of manifest.copies) {
     try {
-      const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
-      if (bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()) return bytes
+      const bytes = await open(copy)
+      if (verified(copy, bytes)) return bytes
       failures.push(new Error(`copy ${copy.documentId.slice(0, 8)}… does not hash to the pack`))
     } catch (e) {
       failures.push(e)
@@ -976,6 +995,14 @@ export function buildPackSource(
   }
 }
 
+/** A private repo read without a decryption session: its code is not readable here. */
+export class PrivateRepoLockedError extends Error {
+  constructor() {
+    super('this repo is private: its contents are encrypted for members')
+    this.name = 'PrivateRepoLockedError'
+  }
+}
+
 /** A live pack the browser could not obtain from its external storage. */
 export interface UnavailablePack {
   readonly packHash: string
@@ -1055,6 +1082,8 @@ export type UnindexedReason =
  * need when it does not.
  */
 export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
+  // A private repo's artifacts are sealed: nothing is fetched without the reader's session.
+  if (repo.visibility === 'private' && repo.session === undefined) throw new PrivateRepoLockedError()
   // ONE snapshot, deliberately. `readPackManifests` applies no `kind` filter and is now
   // complete, so every index fragment is already in this list — and reading packs and
   // fragments separately would be actively wrong: a repack committing between the two

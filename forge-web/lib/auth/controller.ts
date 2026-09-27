@@ -37,6 +37,7 @@ import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
+import { encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
   disableHeldKeys,
   isForgeBrowserKey,
@@ -372,10 +373,17 @@ export class AuthController {
     input: { fileText: string } | { mnemonic: string; identityId: string },
     protection: Protection,
     request?: LimitedKeyRequest,
+    options: { readonly enablePrivateRepos?: boolean } = {},
   ): Promise<AuthSession> {
     return this.run(async () => {
       let identityId: string
       let masterWif: string | null
+      // Opt-in (`ux-dx-spec.md` §2.3): the identity's ENCRYPTION key from the same file or
+      // phrase, checked against the identity and sealed beside the limited key.
+      let material: EncryptionMaterial | { mnemonic: string } | null = null
+      if (options.enablePrivateRepos === true) {
+        material = 'fileText' in input ? encryptionMaterialFromFile(input.fileText) : { mnemonic: input.mnemonic }
+      }
       if ('fileText' in input) {
         const m = masterMaterialFromFile(input.fileText)
         this.checkFileNetwork(m.networkKey)
@@ -405,8 +413,37 @@ export class AuthController {
         ...(request ? { request } : {}),
       })
       masterWif = null
-      return this.adopt(identityId, key, protection)
+      const session = await this.adopt(identityId, key, protection)
+      if (material !== null) {
+        try {
+          await this.enableEncryption(identityId, material)
+        } finally {
+          if ('keys' in material) wipeMaterial(material)
+        }
+      }
+      return session
     })
+  }
+
+  /**
+   * Seal the identity's encryption key into the vault from an identity file's material or a
+   * recovery phrase. Signing in never fails on it: when the identity has no usable encryption
+   * key (or the material cannot open one), the user is told how to add one.
+   */
+  private async enableEncryption(identityId: string, material: EncryptionMaterial | { mnemonic: string }): Promise<void> {
+    const core = NETWORKS[this.network].v2?.core
+    if (core === undefined) return
+    try {
+      const keyId = await importEncryptionKey(await this.getSdk(), this.network, identityId, core, material)
+      if (keyId === null) {
+        this.setState({
+          notice:
+            'This identity has no encryption key this file can open, so private repos are not enabled yet. Settings → Keys → Enable private repos registers one (one master-key signature).',
+        })
+      }
+    } catch (e) {
+      this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}` })
+    }
   }
 
   /** Refuse an identity file made for another network (a testnet key on a devnet build). */

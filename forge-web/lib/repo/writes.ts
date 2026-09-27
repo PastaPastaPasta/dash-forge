@@ -113,6 +113,33 @@ function afterWrite(repo: RepoRef, network: Network, documentType: string): void
   invalidateMembers(repo, network)
 }
 
+/** The content fields each type encrypts in a private repo (`private-repos.md` §4.3). */
+const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  issue: ['title', 'body'],
+  patch: ['title', 'body', 'baseRefName', 'sourceRefName'],
+  comment: ['body', 'path'],
+  review: ['body'],
+  refUpdate: ['refName'],
+  protectedRefUpdate: ['refName'],
+  config: ['defaultBranch', 'protectedPatterns'],
+}
+
+/**
+ * Refuse a write that would put a private repo's content in plaintext on chain (a sealed write
+ * carries `enc` and no content field). Every private write goes through here.
+ */
+export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>): void {
+  if (repo.visibility !== 'private') return
+  const fields = CONTENT_FIELDS[documentType] ?? []
+  const leaked = fields.filter((f) => data[f] !== undefined && data[f] !== null && data[f] !== '')
+  if (leaked.length > 0) {
+    throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to a private repo`)
+  }
+  if (fields.length > 0 && data['enc'] === undefined) {
+    throw new Error(`refusing to write an unencrypted ${documentType} to a private repo`)
+  }
+}
+
 /**
  * The document types whose content a private repo seals in `enc` (`docs/security/private-repos.md`
  * §4): an `issue`, `patch`, `comment` or `review` written in plaintext would publish it and be
@@ -145,6 +172,7 @@ export async function writeRepoDoc(
   intent?: string,
 ): Promise<WriteResult> {
   refusePlaintextInPrivate(repo, documentType)
+  assertNoPlaintext(repo, documentType, data)
   try {
     return await createDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),

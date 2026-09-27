@@ -16,6 +16,7 @@ import { v2PackList, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
 import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
 import { readRoleOracle } from './members'
+import { blockHeightOf } from './private-content'
 import { repoSource } from './source'
 
 /** A parsed `packManifest`. */
@@ -39,6 +40,8 @@ export interface PackManifest {
   readonly createdAt: number
   /** Document `$id` (base58) — the `($createdAt, $id)` tiebreak. */
   readonly documentId: string
+  /** `$createdAtBlockHeight` (the late-content rule of a private repo reads it). */
+  readonly createdAtBlockHeight?: number
   /**
    * The manifest's `$ownerId` — who uploaded this copy. Chunks are keyed by it
    * (`(repoId, $ownerId, packHash, seq)`), so a chunk read must name it.
@@ -103,6 +106,7 @@ function toManifest(doc: PlainDocument): PackManifest {
     createdAt: num('$createdAt'),
     documentId: str(doc, '$id'),
     uploader: str(doc, '$ownerId'),
+    ...(blockHeightOf(doc) !== undefined ? { createdAtBlockHeight: blockHeightOf(doc) } : {}),
   }
 }
 

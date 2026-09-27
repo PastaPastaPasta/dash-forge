@@ -37,6 +37,7 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'create:maintainer': 'Maintainer added',
   'create:writer': 'Writer added',
   'create:config': 'Repository config written',
+  'create:repoKey': 'Repo key handed out',
   'create:issue': 'Issue created',
   'create:comment': 'Comment posted',
   'create:event': 'State event recorded',
@@ -75,6 +76,7 @@ interface AuthContextValue {
     input: { fileText: string } | { mnemonic: string; identityId: string },
     protection: Protection,
     request?: LimitedKeyRequest,
+    options?: { readonly enablePrivateRepos?: boolean },
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
@@ -120,7 +122,8 @@ export function AuthProvider({
   const notice = state.notice ?? null
   useEffect(() => {
     if (!notice) return
-    toast({ title: 'Storage settings were not carried over', tone: 'warn', detail: notice })
+    const title = /private repos/i.test(notice) ? 'Private repos not enabled' : 'Storage settings were not carried over'
+    toast({ title, tone: 'warn', detail: notice })
     controller.clearNotice()
   }, [notice, controller])
 

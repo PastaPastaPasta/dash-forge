@@ -12,7 +12,10 @@
  *
  * One in-flight/completed context is cached per repo (`repoKey`) for the session, while completed
  * clones are persisted in IndexedDB — navigation and hard reloads neither re-download nor
- * re-index an unchanged pack set. Failed runs are evicted so a retry starts clean. When
+ * re-index an unchanged pack set. A PRIVATE repo's clone is decrypted segment by segment
+ * (`private-packs.ts`, after the sealed bytes matched `packHash`) and lives in memory only:
+ * nothing decrypted is ever written to IndexedDB, and the clone is keyed by the reader's
+ * session, so it ends with it. Failed runs are evicted so a retry starts clean. When
  * flatIndex-backed features (filename search / full listing) gain UI consumers, this context
  * can synthesize a listing by walking trees through the in-memory reader.
  */
@@ -106,6 +109,8 @@ export function restoreFallback(
   const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
+  // A private repo's decrypted clone is never persisted, so there is nothing to restore.
+  if (repo.visibility === 'private') return Promise.resolve(null)
   const restoreKey = `${repoKey(repo)}\0${manifestKey}`
   const restoring = restores.get(restoreKey)
   if (restoring !== undefined) return restoring
@@ -154,16 +159,20 @@ export function startFallback(
   return remember(repoKey(repo), manifestKey, run)
 }
 
-function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackManifest[]): void {
+/**
+ * Check each pack against its manifest. `sealed` false: `packs` are a private repo's
+ * decrypted plaintext, whose sealed bytes were already checked against `packHash` and `sizeBytes`
+ * before decryption; only the object count is left to check.
+ */
+function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackManifest[], sealed = true): void {
   if (packs.length !== livePacks.length) throw new Error('cached pack count mismatch')
   for (let i = 0; i < livePacks.length; i++) {
     const manifest = livePacks[i] as PackManifest
     const bytes = packs[i] as Uint8Array
-    if (bytes.length !== manifest.sizeBytes) {
+    if (sealed && bytes.length !== manifest.sizeBytes) {
       throw new Error(`pack size mismatch for ${manifest.packHash.slice(0, 12)}…`)
     }
-    const gotHash = bytesToHex(sha256(bytes))
-    if (gotHash !== manifest.packHash.toLowerCase()) {
+    if (sealed && bytesToHex(sha256(bytes)) !== manifest.packHash.toLowerCase()) {
       throw new Error(`pack hash mismatch for ${manifest.packHash.slice(0, 12)}…`)
     }
     // The frame's object count is consensus-committed via the manifest — a mismatch means
@@ -322,8 +331,9 @@ async function runFallback(
 
   const packs = got.map((o) => o.bytes)
   const manifests = got.map((o) => o.manifest)
+  const isPrivate = repo.visibility === 'private'
   try {
-    validatePacks(packs, manifests)
+    validatePacks(packs, manifests, !isPrivate)
   } catch (e) {
     // A downloaded pack that does not match its proof-read manifest is a content-check
     // failure the trust panel must report, not only an error on this page.
@@ -358,7 +368,8 @@ async function runFallback(
   })
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
-  if (unavailable.length === 0) {
+  // A private repo's clone is decrypted: it is never written to browser storage.
+  if (unavailable.length === 0 && !isPrivate) {
     await storeFallback(repoKey(repo), livePacks, { locator: locatorBytes, packs })
   }
   return { locator, packs: packSource, reader, unavailable }

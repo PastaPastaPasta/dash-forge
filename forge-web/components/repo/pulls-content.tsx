@@ -114,7 +114,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           })}
         </div>
       )}
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} />
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} home={home} by={data?.hiddenBy} />
     </div>
   )
 }

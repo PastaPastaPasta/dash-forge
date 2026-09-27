@@ -42,6 +42,7 @@ import { PullMerge } from '@/components/repo/pull-merge'
 import { inlineCommentIds } from '@/lib/view/inline-threads'
 import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { retryWhileMissing } from '@/lib/view/retry'
+import { HiddenNote } from '@/components/repo/hidden-note'
 
 type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
 
@@ -106,6 +107,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
   const commentCost = previewCreate('comment', { body: comment.trim() })
+  // A private repo's comments and reviews are sealed; this browser does not write them yet.
+  const isPrivate = home.repo.visibility === 'private'
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const target = { id: pull.id, number: pull.number }
 
@@ -233,12 +236,19 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       />
 
       {conversation.length > 0 ? <Timeline items={conversation} /> : null}
+      <HiddenNote hidden={0} what="comments and reviews" home={home} by={data.hidden} />
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>
-        <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+        {isPrivate ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
+            Comments and reviews on a private repo are encrypted; this browser can&apos;t write them yet. Use <code className="font-mono">dg</code>.
+          </p>
+        ) : (
+          <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+        )}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <CostPreview cost={commentCost} />
+          {isPrivate ? <span /> : <CostPreview cost={commentCost} />}
           <div className="flex flex-wrap items-center gap-2">
             {actions.canCloseReopen ? (
               <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null}>
@@ -250,18 +260,20 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged
               </Button>
             ) : null}
-            <Button
-              variant="primary"
-              onClick={postComment}
-              loading={posting}
-              disabled={comment.trim() === '' || guard.disabledReason !== null}
-              title={guard.disabledReason ?? undefined}
-            >
-              {identity ? 'Comment' : 'Sign in'}
-            </Button>
+            {isPrivate ? null : (
+              <Button
+                variant="primary"
+                onClick={postComment}
+                loading={posting}
+                disabled={comment.trim() === '' || guard.disabledReason !== null}
+                title={guard.disabledReason ?? undefined}
+              >
+                {identity ? 'Comment' : 'Sign in'}
+              </Button>
+            )}
           </div>
         </div>
-        {open && identity !== null && pull.headOid ? (
+        {open && identity !== null && pull.headOid && !isPrivate ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">
               Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
