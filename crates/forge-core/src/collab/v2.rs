@@ -933,7 +933,8 @@ pub struct Collab<'a> {
     signer: Option<(&'a LoadedIdentity, &'a BridgeIdentity)>,
     keyring: crate::repo::KeyringCache,
     /// A private repo's decrypted ref updates, read once per `Collab` (a PR list folds every
-    /// row's base against them), keyed by repository id.
+    /// row's base against them), keyed by repository id. Dropped by
+    /// [`Collab::refs_changed`] after a push this command made.
     private_updates: std::sync::Mutex<Option<([u8; 32], Arc<crate::refs::PrivateUpdates>)>>,
 }
 
@@ -995,6 +996,16 @@ impl<'a> Collab<'a> {
             || async move { signer.keyring(repo).await },
         )
         .await
+    }
+
+    /// The repository's refs changed since this `Collab` read them (a push the command made,
+    /// through git): the next base-branch fold reads them again. Without it a PR merged by
+    /// pushing its head would still read as unmerged against the reflog read before the push.
+    pub fn refs_changed(&self) {
+        *self
+            .private_updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// The keys of private `repo` read NOW, replacing the cached ones: a writer re-reads the

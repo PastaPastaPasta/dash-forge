@@ -45,6 +45,7 @@ SCENARIOS=(
   "11-release-asset"
   "12-star-unstar"
   "13-init-push"
+  "14-auth-limited-key"
   "15-private-repo"
   "16-private-burn-repair"
   "17-ref-force-back-and-pr-base"
