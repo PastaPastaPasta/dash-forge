@@ -171,16 +171,23 @@ Work:
 ### Later
 Organizations (multi-member admin sets, key custody guide), template versioning, audit-log compaction, large files through pointers to the user's bucket, SHA-256 repos, optional user-run indexer for global search.
 
-### Execution tracker (updated 2026-09-26)
+### Execution tracker (updated 2026-09-27)
 Landed on master:
 - **Phase 0:** #4 browse index · #6 honest UI · #8 PR/commit diffs · #10 + #14 nightly green (CLI and Playwright, fixture isolation, keyset ref reads) · #11 per-network config.
-- **Phase 1:** #12 bring-your-own storage on push (SigV4 S3, IPFS/pinning, replication, `dg storage`, `dg reseed --from-local`).
-- **Phase 2 (forge-v2 on devnet moutai):** #5 devnet tooling · #7 forge-v2 contracts · #9 FORGE_RULES_V2 + authorEvent · #15 SDK 4.2 · #18 CLI data plane (repo create ≈0.001 DASH, consensus-enforced membership) · #17 web reads · #25 moutai re-registration · #22 CLI issues/PRs/releases/forks · #23 web writes · #26 web fork reads · #27 relay (chain-encrypted webhook secrets) · #30 forge-import on v2 (`dg import`).
-- **Phase 4:** #24 web limited-key sign-in, vault and in-browser identity creation · #31 GitHub Mirror Action.
-- **Adoption:** #13 release pipeline + install.sh · #16 actionable errors (`docs/errors.md`) · #19 user guides.
-- **D-M:** forge-v1 removed; forge.dashhq.org and the nightly ("Devnet Nightly") target moutai.
+- **Phase 1:** #12 bring-your-own storage on push (SigV4 S3, IPFS/pinning, replication, `dg storage`, `dg reseed --from-local`) · #37 web storage wizard, credentials in the browser vault, and the browser upload path · #41 `dg storage add` prompts with the OS keychain, `dg init` / `dg repo create --push` (storage chosen before any spend, E508).
+- **Phase 2 (forge-v2 on devnet moutai):** #5 devnet tooling · #7 forge-v2 contracts · #9 FORGE_RULES_V2 + authorEvent · #15 SDK 4.2 · #18 CLI data plane (repo create ≈0.0013 DASH, consensus-enforced membership) · #17 web reads · #25 moutai re-registration · #22 CLI issues/PRs/real merges/releases/forks/stars · #23 web writes and cost UX (previews, spend ledger) · #26 web fork reads · #27 relay (chain-encrypted webhook secrets) · #39 relay durable retry queue · #30 forge-import on v2 (`dg import`) · #33 import estimate calibrated as an upper bound · #35 v2 rule parity (ref-name hashes, protected merges) and the concurrent-write hang fix.
+- **Phase 3 (private repos):** #21 cryptographic design (reviewed) · #29 crypto core and the contract fields (no user-facing create/read yet).
+- **Phase 4:** #24 web limited-key sign-in, vault and in-browser identity creation · #31 GitHub Mirror Action · #32 key top-up in place (`IdentityKeyLimitsUpdate`) · #42 `dg auth new/login/status/keys/name/export/logout`: limited keys on the OS keychain (passphrase-sealed fallback), `dfk1:` runner keys, DPNS registration · #43 mobile Dash wallet sign-in (D-L) speaking the shipped wallets' key exchange on both response contracts, with a second approval for forge-collab and warnings for their unlimited keys ([design/wallet-login.md](design/wallet-login.md); upstream drafts in `docs/upstream/`).
+- **Phase 5:** #32 local notifications inbox, Explore, header with jump box · #34 Verification card with the two-source quorum-key cross-check, repo home, clone box with zip, short URLs, releases pages · #40 publish a release with assets from the browser.
+- **Adoption:** #13 release pipeline + install.sh (no release tagged yet) · #16 actionable errors (`docs/errors.md`) and `dg doctor` sections · #19 user guides, refreshed for the forge-v2 product.
+- **D-M:** #38 forge-v1 removed; forge.dashhq.org and the nightly ("Devnet Nightly") target moutai.
 
-Next: private repos (Phase 3, design: [docs/security/private-repos.md](security/private-repos.md), reviewed; its §13 lists contract changes required before mainnet registration) · storage wizard in web · Explore/notifications · register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there.
+Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1, 2, 3, 4, 5, 6, 7, 9, 11, 18, 19, 20 · done except a CLI-side part: 8 (the web spend ledger is done; `dg cost audit` totals pending), 10 (the private-repo state waits for private repos), 17 (pipeline merged; first tag pending) · in progress 12 and 13 (web PR create, inline review, browser merge) and 14 (web Fork; `dg repo fork` is done) · open 15 (private repos, after its security review) and 16 (`/mirror` wizard; the Action itself is done).
+
+Next:
+- **In progress:** web PR create, inline review, Fork and browser merge · private-repo create/read paths (Phase 3; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), filed upstream with dashpay.
+- **Not started:** DPNS in `dash://` and `dg` (the web app already resolves names) · the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app · the survivability drill in CI · `dg cost audit` spend totals.
+- **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
 

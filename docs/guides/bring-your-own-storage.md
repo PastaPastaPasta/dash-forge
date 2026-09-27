@@ -8,6 +8,7 @@ This guide covers:
 
 1. [How it fits together](#how-it-fits-together)
    - [The quick way: `dg storage add` asks](#the-quick-way-dg-storage-add-asks)
+   - [In the browser: the storage wizard](#in-the-browser-the-storage-wizard)
 2. [Cloudflare R2](#cloudflare-r2)
 3. [Backblaze B2](#backblaze-b2)
 4. [AWS S3](#aws-s3)
@@ -94,6 +95,17 @@ Use it in a repo: dg storage use r2-main
 - With `--json`, `--yes`, or no terminal, nothing is asked: `dg storage add` without a name fails with [E201](../errors.md#e201) and tells you to pass the flags.
 
 Keychain entries you created by hand (`security add-generic-password -s dash-forge -a <name> -w`, or `secret-tool store … service dash-forge account <name>`) keep resolving: a `keychain:` reference is looked up through the OS credential store first and the command-line tool second.
+
+### In the browser: the storage wizard
+
+The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself, for example a release's assets; `git push` keeps using `dg`'s profiles.
+
+- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, MinIO or other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.28 DASH/MiB). Each field has a "where to find this" hint.
+- **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
+- **Credentials stay in this browser**, sealed in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits), and are never sent anywhere else or written on chain. Lock the vault and they are unreadable.
+- **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
+- **Only public https addresses are recorded on chain.** The wizard can reach a MinIO or kubo on `localhost` for testing, but it refuses to record a loopback, private or plain-http URL, and readers skip such URLs even if a manifest names one.
+- **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page.
 
 **macOS asks once per program.** macOS lets the program that created a keychain item read it silently. The first time `git-remote-dash` reads a secret that `dg` stored, macOS asks whether to allow it. Choose **Always Allow**. A rebuilt or reinstalled binary can ask again. Over SSH nobody can answer, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
 
@@ -318,7 +330,7 @@ A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
 - each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
 - when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned.
 
-The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash` and `dg` embed it, and the web app is meant to import the same file when its storage settings land. Override it in `storage.toml`:
+The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. Override it for the CLI in `storage.toml`:
 
 ```toml
 [read]

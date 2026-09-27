@@ -26,7 +26,7 @@ You create an identity by locking some Dash in an *asset lock* transaction. The 
 
 Create one from the terminal with `dg auth new`, in the web app (**Sign in → Create a new identity**), or with the Dash bridge (<https://bridge.thepasta.org>). All three derive the same keys from the same 12 words, so an identity made in one opens in the others. The [quick start](quick-start.md#2-get-an-identity) walks through `dg auth new`.
 
-**Usernames.** Platform has a name service, DPNS. Register a username with `dg auth name register <label>` (it needs your identity file or the 12 words once) or in the bridge. Names of 3–19 characters made only of `a`–`z`, `0`, `1` and `-` are *contested*: they go to a masternode vote, and `dg` refuses them. Forge does not resolve usernames in addresses yet: `dash://alice/project` and `dg … alice/project` need the identity id in place of `alice` for now.
+**Usernames.** Platform has a name service, DPNS. Register a username with `dg auth name register <label>` (it needs your identity file or the 12 words once) or in the bridge. Names of 3–19 characters made only of `a`–`z`, `0`, `1` and `-` are *contested*: they go to a masternode vote, and `dg` refuses them. The web app resolves usernames: `forge.dashhq.org/alice/project`, `@alice` in the header's jump box, and names on profiles and in the wallet sign-in confirmation. The CLI does not yet: `dash://alice/project` and `dg … alice/project` need the identity id in place of `alice`. **Coming soon:** DPNS names in `dash://` addresses and `dg`.
 
 ---
 
@@ -40,13 +40,14 @@ An identity file from the bridge, the web app or `dg auth new` has five keys, al
 | 1 | AUTHENTICATION | HIGH | Signing documents: pushes, issues, comments, reviews, releases. |
 | 2 | AUTHENTICATION | CRITICAL | What HIGH does. Forge uses it only when the file has no HIGH key. |
 | 3 | TRANSFER | CRITICAL | Moving credits to another identity, or withdrawing them. |
-| 4 | ENCRYPTION | MEDIUM | Reserved for private repositories (coming soon). |
+| 4 | ENCRYPTION | MEDIUM | Decrypting webhook secrets addressed to a relay you run, and private repositories (coming soon). An identity without one can add it with `dg auth keys add --encryption`. |
 | 5+ | AUTHENTICATION | HIGH | [Limited keys](#limited-keys): what `dg`, `git push` and the web app sign with day to day. |
 
 What each tool signs with:
 
 - `git push` (`git-remote-dash`) and every `dg` command that writes, including `dg repo create` and `dg collab add/remove`, sign with the key `dg auth` stored: a **limited key**. Given a full identity file instead they use its **HIGH** key, falling back to CRITICAL. Without one they fail with [`E302`](../errors.md#e302).
-- The MASTER key signs only one-time steps: registering or disabling a limited key (`dg auth login`, `dg auth keys add|disable`, `dg auth logout --disable`). `dg` uses it for that one signature and does not store it.
+- The web app signs with this browser's [limited key](#limited-keys).
+- The MASTER key signs only one-time steps: registering, topping up or disabling a limited key (`dg auth login`, `dg auth keys add|disable`, `dg auth logout --disable`, and the web app's Import, Renew, Top up and Revoke). It is used for that one signature and not stored.
 
 ---
 
@@ -64,6 +65,7 @@ If you lose a laptop but still have the words or a backup of the file, nothing i
 
 1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that.
 2. Disable the lost machine's key: `dg auth keys list` shows it, `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
+3. In a browser, **Sign in → Import an identity file or recovery phrase** registers a fresh limited key for that browser; the words alone are enough.
 
 Your **repository data** needs no backup of its own. Refs, issues and PRs are on Platform. Pack bytes are on Platform or in the storage you chose. Any clone also holds a full copy of the history, and [`dg reseed --from-local`](bring-your-own-storage.md#restoring-a-lost-copy) can restore a lost pack copy from it.
 
@@ -74,15 +76,16 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 | Tool | Where the key is | How it finds it |
 |---|---|---|
 | `dg` | A **limited key** in the OS keychain: macOS Keychain, Secret Service (Linux) or Windows Credential Manager, service `dash-forge`, account `<network>/<identity id>`. Without a keychain: `~/.config/dash-forge/identities/<network>-<id>.key`, sealed under a passphrase (Argon2id + XChaCha20-Poly1305, 0600) | `--identity <source>` > `DASH_FORGE_KEY` > the default `dg auth` recorded in `config.toml` |
-| `git-remote-dash` | The same | `DASH_FORGE_KEY`, else the default `dg auth` recorded, else `~/.config/dash-forge/identities/<owner>.identity.json` |
+| `git-remote-dash` | The same | `DASH_FORGE_KEY`, else `~/.config/dash-forge/identities/<owner>.identity.json` if that file exists, else the default `dg auth` recorded |
 | `forge-import` | The same | `--identity <source>` > `DASH_FORGE_KEY` |
+| Mirror Action | A CI secret: an inline runner key, or a CI-only identity file | the `DASH_FORGE_KEY` secret ([mirror guide](mirror-a-github-repo.md#the-ci-secret)) |
 | Web app | A **limited key** only, encrypted in the browser's IndexedDB (passkey or passphrase), unlocked for the session | Registered once from your identity file, recovery phrase, a new identity, or your wallet; see [below](#limited-keys) |
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
 - a path to an identity file (bridge JSON), or to a file `dg auth` sealed under a passphrase (the passphrase comes from `DASH_FORGE_PASSPHRASE`, or a prompt);
 - `keychain:dash-forge/<network>/<identity id>`, an OS keychain entry;
-- `dfk1:<network>:<identity id>:<key id>:<wif>`, one limited key in one value, for CI secrets. Pass it in the environment, not as `--identity` (arguments are visible to other users).
+- `dfk1:<network>:<identity id>:<key id>:<wif>`, one limited key in one value, for CI secrets. Pass it in the environment, not as `--identity` (arguments are visible to other users). `dg`, `git-remote-dash`, `forge-import` and the Mirror Action all accept it.
 
 Things to know:
 
@@ -102,7 +105,7 @@ A web page is whoever served it. If the page, or a script it loads, is compromis
 - For CI, give a pipeline its own limited key: `dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1` makes one, and the file's one line is the `DASH_FORGE_KEY` secret.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
-With limited keys (below) the web app keeps nothing but a limited key. The master key is used only in one-time steps: registering, renewing or revoking a limited key.
+With limited keys (below) the web app keeps nothing but a limited key. The master key is used only in one-time steps: registering, topping up, renewing or revoking a limited key.
 
 ---
 
@@ -123,6 +126,8 @@ When to rotate:
 
 - a laptop or CI secret that held a key was lost or leaked: **disable that key**;
 - a limited key's budget is nearly spent or it is about to expire: `dg auth keys add --replace <old id>` (or `dg auth login … --replace <old id>`) registers a fresh one and disables the old in the same update.
+
+A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
 
 If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred, and the attacker now controls everything only the owner can do, such as adding and removing members.
 
@@ -162,17 +167,42 @@ Ways to get one in the web app (**Sign in**):
 | Route | What happens |
 |---|---|
 | Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. |
-| Create a new identity | 12 words, a short backup check, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. |
+| Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. |
 | Use my Dash wallet | Scan the QR code with Dash Wallet (or tap **Open in Dash Wallet** on the phone) and approve; the first time, approve a second code that adds Forge's key to your identity. Your wallet hands the key over encrypted. **Check that the identity shown is yours**: a response does not prove who answered, and anyone who saw the QR code could answer. The app refuses if more than one identity answers. Today's Dash Wallet grants one contract per approval and **no spending limit or expiry**: issues and pull requests take one more approval, and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
-| Advanced: paste a key | A HIGH or CRITICAL key, for this tab only. It has no limits Forge set. Never paste a master key. |
+| Advanced: paste a key | A HIGH or CRITICAL key, for this tab only, lost on reload. It has no limits Forge set. Never paste a master key. |
 
-The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. **Settings → This browser's key** shows the budget and expiry and has these actions:
+The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. A write that would overrun either is refused before it is signed, and the sheet that opens says which one blocks. **Settings → This browser's key** shows the budget and expiry and has these actions:
 
+- **Top up key budget** adds budget to the same key (0.05 DASH by default) and can push its expiry out, up to 365 days. It is a protocol-14 `IdentityKeyLimitsUpdate`, signed once by your master key from the identity file or recovery phrase, and costs about 0.00002 DASH.
 - **Renew key** registers a fresh key and disables the previous one in the same update.
+- **Lock** drops the unlocked key from memory; unlock again with the passkey or passphrase.
 - **Revoke on chain** disables this browser's key. It needs your identity file once.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
 
+For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key** and **Revoke on chain** reads **Disable key on chain**.
+
 Losing a device costs nothing beyond that key's remaining budget. Register a new key and disable the old one.
+
+### Signing in with the Dash Wallet app: what works today
+
+The **Use my Dash wallet** tile speaks the key exchange that today's Dash Wallet for Android and iOS already implement, and reads answers both from their key-exchange contract and from the protocol-14 App Connect contract. The shipped wallets set real limits on what it can do ([wallet-login.md](../design/wallet-login.md) has the full analysis):
+
+| Wallet | Network | Works today |
+|---|---|---|
+| Dash Wallet iOS | devnet moutai | **Yes**, after pointing the wallet at Forge's key-exchange contract (Settings → Devnet → DashConnect login contract `E2ykCqF8mysgjVWNMRFdMzT6X7wgnFdaV5UdohpzUkDK`) with a DashPay identity on moutai. Not yet run on a real device. |
+| Dash Wallet iOS and Android | testnet | Once forge-v2 is on testnet (protocol 14). |
+| Dash Wallet Android | devnets | No: it pins the testnet contract. |
+| Dash Wallet Android | mainnet | No: the feature is off on mainnet builds. |
+| A wallet that grants group-bound, limited keys through App Connect | moutai, and every network at protocol 14 | Yes: one approval, and no warning. |
+
+What to expect with today's wallets:
+
+- **Two approvals.** A wallet grants a key for one contract per approval. The first covers repositories and pushes (forge-core). The first issue, PR, review or star asks for one more approval (**Approve issues and pull requests**), for forge-collab. The first sign-in also asks you to approve a second code that adds Forge's key to your identity.
+- **No spending limit or expiry.** The wallets register the key without a budget or an expiry (Android's is not even bound to a contract), and Platform cannot add limits to such a key later. The app warns about it on the confirmation step and in Settings, and prefers a passkey to protect it. **Replace with a limited key** (your identity file or 12 words, once) swaps it for a normal budgeted key and disables the wallet's keys in the same update.
+- **A disabled wallet key can come back.** The wallet derives the same key every time, so after you disable it, signing in with that wallet again would re-register the same key. Forge refuses that sign-in; use Import instead.
+- **Check the identity yourself.** The answer does not prove who sent it: on the wallets' contract, whoever answers the QR code first is the identity Forge shows. Compare the full identity id with what your wallet shows, character for character. Forge warns when the identity has no username, a username less than a day old, or is not the one this browser already knows. A request expires after 5 minutes; keep the QR code private.
+
+The wallet-side fixes (group-scoped, limited grants; a signature that proves which identity answered) are filed upstream as drafts in [`docs/upstream/`](../upstream/app-connect-responder-auth.md).
 
 CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file. `dg auth export --format dfk1` writes only limited keys.
 
@@ -194,4 +224,5 @@ What the vault does **not** protect against:
 
 - **The contract group id** comes from `forge-contracts/deployments/<network>.json`, which is built into the app and `dg`. Before binding a key to the group, the app checks on chain that the group holds forge-core and forge-collab; `dg` checks that it holds those two and nothing but Forge's own contracts (earlier versions `forge-contracts/deployments/<network>.json` lists as superseded in the same group). Both checks happen when a key is bound: **the group's owner is a trust root**. The group's owner (and any admins) can **add** contracts to it later, and every group-bound key can then sign for those contracts too. Binding a key to the group means trusting its owner. On devnet moutai that is the deployer `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`.
 - **The block explorer** (Insight, changeable in Settings, `dg auth new --explorer <url>`) is used only while creating an identity. Its amounts are not trusted: each deposit output is proven from its raw funding transaction, fetched and hashed against its txid, before the asset lock is signed. A lying explorer can delay you or hide funds, but it cannot redirect or burn them. `dg` broadcasts the asset lock through DAPI first and uses the explorer as the fallback; the web app broadcasts through the explorer, because the JS SDK has no Core broadcast. If either drops it, the signed bytes are kept and sent again.
-- **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read.
+- **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read. The web app compares them with a second source on each repository page ([Verify Forge](verify-forge.md#the-web-app-cross-checks-the-keys-with-a-second-source)).
+- **The code doing the checking**: the web app you loaded, or the `dg` you built. If you do not trust forge.dashhq.org, [serve the app yourself](verify-forge.md#run-your-own-copy-of-the-web-app).
