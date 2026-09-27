@@ -12,7 +12,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
+  asIdentifierString,
+  byteFieldToHex,
   num,
+  readAnchor,
   readIssue,
   readPull,
   readReviews,
@@ -21,6 +24,7 @@ import {
   repoSource,
   str,
   wellFormed,
+  type CommentAnchor,
   type IssueView,
   type PullView,
   type RepoRef,
@@ -29,13 +33,40 @@ import {
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { countApprovals, type Approvals, type Role } from '../rules/v2'
+import { summarizeReviews, type ReviewSummary } from './review-fold'
 
 /** One comment on an issue/PR. */
 export interface CommentView {
   readonly id: string
   readonly author: string
+  /** The body to render: an anchor block, when there was one, is stripped. */
   readonly body: string
   readonly createdAt: number
+  /** The parent comment of a threaded reply (`replyTo`), or null. */
+  readonly replyTo: string | null
+  /** Where an inline comment points (the contract fields, else the body block), or null. */
+  readonly anchor: CommentAnchor | null
+}
+
+/** A comment document as a {@link CommentView} (anchor fields first, then the body block). */
+export function toCommentView(d: PlainDocument): CommentView {
+  const n = (f: string): number | undefined => (d[f] === undefined || d[f] === null ? undefined : num(d, f))
+  const { anchor, body } = readAnchor({
+    ...(typeof d['path'] === 'string' ? { path: d['path'] } : {}),
+    ...(n('line') !== undefined ? { line: n('line') } : {}),
+    ...(n('side') !== undefined ? { side: n('side') } : {}),
+    commitOid: byteFieldToHex(d, 'commitOid'),
+    body: str(d, 'body'),
+  })
+  const replyTo = asIdentifierString(d['replyTo'])
+  return {
+    id: str(d, '$id'),
+    author: str(d, '$ownerId'),
+    body,
+    createdAt: num(d, '$createdAt'),
+    replyTo: replyTo === '' ? null : replyTo,
+    anchor,
+  }
 }
 
 
@@ -63,12 +94,7 @@ export async function readComments(sdk: EvoSDK, repo: RepoRef, targetId: string)
   return documents
     .filter((d) => wellFormed(repo, 'comment', d))
     .filter((d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null)
-    .map((d) => ({
-      id: str(d, '$id'),
-      author: str(d, '$ownerId'),
-      body: str(d, 'body'),
-      createdAt: num(d, '$createdAt'),
-    }))
+    .map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */
@@ -125,12 +151,16 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
 export interface PullApprovals extends Approvals {
   /** Each counted reviewer's current role (null once revoked — then they do not count). */
   readonly roles: ReadonlyMap<string, Role | null>
+  /** Every reviewer's standing, counted or not, for the header (`summarizeReviews`). */
+  readonly summary: ReviewSummary
 }
 
 /** A full PR detail: the folded pull + its merged timeline. */
 export interface PullThread {
   readonly pull: PullView
   readonly timeline: TimelineItem[]
+  /** Every comment, for placing inline threads on the diff. */
+  readonly comments: readonly CommentView[]
   /**
    * The reviews that count on the current head (`countApprovals`). Null when the membership
    * could not be read.
@@ -156,8 +186,8 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
   ])
   const pull = await readPull(sdk, repo, doc, log)
   const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
-  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed)
-  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), approvals }
+  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed, pull.author)
+  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals }
 }
 
 /** A PR's counted approvals, or null when the membership could not be read. */
@@ -167,23 +197,24 @@ async function readApprovals(
   reviews: readonly ReviewView[],
   headOid: string,
   dismissed: ReadonlySet<string>,
+  author: string,
 ): Promise<PullApprovals | null> {
   try {
     const oracle = await readRoleOracle(sdk, repo)
-    const counted = countApprovals(
-      reviews.map((r) => ({
-        id: r.id,
-        reviewer: r.reviewer,
-        verdict: r.verdictCode,
-        commitOid: r.commitOid,
-        createdAt: r.createdAt,
-      })),
-      oracle,
-      headOid,
-      dismissed,
-    )
+    const input = reviews.map((r) => ({
+      id: r.id,
+      reviewer: r.reviewer,
+      verdict: r.verdictCode,
+      commitOid: r.commitOid,
+      createdAt: r.createdAt,
+    }))
+    const counted = countApprovals(input, oracle, headOid, dismissed)
     const reviewers = [...counted.approvers, ...counted.changesRequested]
-    return { ...counted, roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])) }
+    return {
+      ...counted,
+      roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
+      summary: summarizeReviews(input, oracle, headOid, author),
+    }
   } catch {
     return null
   }
