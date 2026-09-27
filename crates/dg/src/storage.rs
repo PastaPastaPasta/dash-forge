@@ -34,7 +34,7 @@ use crate::{ProfileKindArg, StorageAddArgs, StorageCommand};
 pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
     match cmd {
         StorageCommand::Status { repo } => status(ctx, repo).await,
-        StorageCommand::Add(args) => add(ctx, args),
+        StorageCommand::Add(args) => add(ctx, args).await,
         StorageCommand::List => list(ctx),
         StorageCommand::Remove { name } => remove(ctx, name),
         StorageCommand::Test { name } => test(ctx, name).await,
@@ -61,7 +61,10 @@ fn secret_ref(value: Option<&String>, flag: &str) -> Result<Option<SecretRef>> {
 }
 
 /// Build a profile from `dg storage add` flags.
-fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
+pub(crate) fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
+    let kind = a.kind.ok_or_else(|| {
+        crate::errors::usage("--kind is required (s3, ipfs-kubo, ipfs-pinning-service or platform)")
+    })?;
     let s3_only = [
         ("endpoint", a.endpoint.is_some()),
         ("region", a.region.is_some()),
@@ -92,7 +95,7 @@ fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
         }
         Ok(())
     };
-    let profile = match a.kind {
+    let profile = match kind {
         ProfileKindArg::S3 => {
             reject(&ipfs_only, "s3")?;
             reject(&pin_only, "s3")?;
@@ -151,21 +154,27 @@ fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
     Ok(profile)
 }
 
-fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
-    if !valid_profile_name(&args.name) {
-        return Err(crate::errors::usage(format!(
-            "profile name {:?} must be letters, digits, '-', '_' or '.'",
-            args.name
-        )));
-    }
-    let profile = profile_from_args(args)?;
-    let path = StorageProfiles::default_path()?;
-    let mut profiles = StorageProfiles::load_from(&path)?;
-    let replaced = profiles
-        .profiles
-        .insert(args.name.clone(), profile.clone())
-        .is_some();
-    profiles.save_to(&path)?;
+/// `dg storage add`: from flags, or — with no arguments at all, in a terminal — the prompt
+/// flow ([`crate::storage_wizard`]).
+async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
+    let Some(name) = args.name.as_deref() else {
+        let no_args = *args == StorageAddArgs::default();
+        if no_args && ctx.interactive() {
+            return crate::storage_wizard::run(&mut crate::prompt::TtyPrompter)
+                .await
+                .map(drop);
+        }
+        return Err(UserError::new(codes::USAGE, "storage profile not added: no profile name")
+            .cause(if no_args {
+                "the interactive setup needs a terminal, and runs only without --json and --yes"
+            } else {
+                "flags were given without the profile name"
+            })
+            .fix("pass the profile as flags: `dg storage add <name> --kind s3 --endpoint … --bucket …` (see `dg storage add --help`)")
+            .fix("run `dg storage add` with no arguments in a terminal to be asked for each value")
+            .into());
+    };
+    let (profile, path, replaced) = save_profile(name, args)?;
     let unresolved: Vec<String> = profile
         .secret_refs()
         .iter()
@@ -175,26 +184,47 @@ fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
     ctx.emit(
         json!({
             "status": if replaced { "replaced" } else { "added" },
-            "profile": args.name,
+            "profile": name,
             "kind": profile.kind(),
             "path": path.display().to_string(),
             "unresolvedSecrets": unresolved,
         }),
         || {
             println!(
-                "{} storage profile {:?} ({}) in {}",
+                "{} storage profile {name:?} ({}) in {}",
                 if replaced { "Replaced" } else { "Added" },
-                args.name,
                 profile.kind(),
                 path.display()
             );
             for u in &unresolved {
                 println!("  note: secret {u} does not resolve yet (set it before pushing)");
             }
-            println!("  next: dg storage test {}", args.name);
+            println!("  next: dg storage test {name}");
         },
     );
     Ok(())
+}
+
+/// Validate `name` and the flags, then add (or replace) the profile in storage.toml.
+/// Returns the profile, the file, and whether a profile of that name was replaced.
+pub(crate) fn save_profile(
+    name: &str,
+    args: &StorageAddArgs,
+) -> Result<(Profile, std::path::PathBuf, bool)> {
+    if !valid_profile_name(name) {
+        return Err(crate::errors::usage(format!(
+            "profile name {name:?} must be letters, digits, '-', '_' or '.'"
+        )));
+    }
+    let profile = profile_from_args(args)?;
+    let path = StorageProfiles::default_path()?;
+    let mut profiles = StorageProfiles::load_from(&path)?;
+    let replaced = profiles
+        .profiles
+        .insert(name.to_string(), profile.clone())
+        .is_some();
+    profiles.save_to(&path)?;
+    Ok((profile, path, replaced))
 }
 
 /// A one-line, secret-free description of a profile.
@@ -280,35 +310,37 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// One `dg storage test` step.
+/// One storage check.
 struct Step {
     name: &'static str,
     ok: bool,
     detail: String,
 }
 
-/// The checks `dg storage test` ran, plus the provider fixes to print.
+/// The checks [`run_checks`] ran, plus the provider fixes to print.
 #[derive(Default)]
-struct Report {
+pub(crate) struct Report {
     steps: Vec<Step>,
-    fixes: Vec<String>,
+    pub fixes: Vec<String>,
+    /// Print each row as it is recorded (human mode), so a slow check shows progress.
+    live: bool,
 }
 
 impl Report {
+    fn record(&mut self, name: &'static str, ok: bool, detail: String) {
+        if self.live {
+            let mark = if ok { " OK " } else { "FAIL" };
+            println!("  [{mark}] {name:<14} {detail}");
+        }
+        self.steps.push(Step { name, ok, detail });
+    }
+
     fn pass(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.steps.push(Step {
-            name,
-            ok: true,
-            detail: detail.into(),
-        });
+        self.record(name, true, detail.into());
     }
 
     fn fail(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.steps.push(Step {
-            name,
-            ok: false,
-            detail: detail.into(),
-        });
+        self.record(name, false, detail.into());
     }
 
     /// Record `res` as step `name`; `Some(value)` on success.
@@ -330,9 +362,49 @@ impl Report {
         }
     }
 
-    fn ok(&self) -> bool {
+    pub fn ok(&self) -> bool {
         self.steps.iter().all(|s| s.ok)
     }
+
+    /// The names of the failing checks.
+    pub fn failed(&self) -> Vec<&'static str> {
+        self.steps
+            .iter()
+            .filter(|s| !s.ok)
+            .map(|s| s.name)
+            .collect()
+    }
+
+    /// The `--json` rows.
+    pub fn steps_json(&self) -> Vec<serde_json::Value> {
+        self.steps
+            .iter()
+            .map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail}))
+            .collect()
+    }
+}
+
+/// Run every check for `profile` (the same ones for `dg storage test` and the end of the
+/// `dg storage add` prompts): a signed PUT, a signed GET, an anonymous GET through the
+/// public URL, the browser CORS preflight for `Range`, and a delete of the probe (IPFS:
+/// add + pin, gateway reads, unpin). `live` prints each row as it finishes.
+pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
+    let http = forge_core::storage::http_client();
+    let mut r = Report {
+        live,
+        ..Report::default()
+    };
+    match profile {
+        Profile::Platform(_) => r.pass(
+            "platform",
+            "on-chain storage needs no probe; `dg auth balance` shows the credits it spends",
+        ),
+        Profile::S3(p) => test_s3(p, &http, &mut r).await,
+        Profile::IpfsKubo(_) | Profile::IpfsPinningService(_) => {
+            test_ipfs(profile, &http, &mut r).await;
+        }
+    }
+    r
 }
 
 /// A unique probe body (so a cached/stale object can never pass for this run's upload).
@@ -382,36 +454,23 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
     let profile = profiles
         .get(name)
         .with_context(|| format!("no storage profile {name:?} (see `dg storage list`)"))?;
-    let http = forge_core::storage::http_client();
-    let mut r = Report::default();
-    match &profile {
-        Profile::Platform(_) => r.pass(
-            "platform",
-            "on-chain storage needs no probe; `dg auth balance` shows the credits it spends",
-        ),
-        Profile::S3(p) => test_s3(p, &http, &mut r).await,
-        Profile::IpfsKubo(_) | Profile::IpfsPinningService(_) => {
-            test_ipfs(&profile, &http, &mut r).await;
-        }
+    if !ctx.json {
+        println!("Testing storage profile {name:?} ({}):", profile.kind());
     }
+    let r = run_checks(&profile, !ctx.json).await;
 
     let ok = r.ok();
     let body = json!({
         "profile": name,
         "kind": profile.kind(),
         "ok": ok,
-        "steps": r.steps.iter().map(|s| json!({"step": s.name, "ok": s.ok, "detail": s.detail})).collect::<Vec<_>>(),
+        "steps": r.steps_json(),
         "fixes": r.fixes,
     });
     if ctx.json && !ok {
         // Printed once, with the error block, by the renderer.
     } else {
         ctx.emit(body.clone(), || {
-            println!("Testing storage profile {name:?} ({}):", profile.kind());
-            for s in &r.steps {
-                let mark = if s.ok { " OK " } else { "FAIL" };
-                println!("  [{mark}] {:<14} {}", s.name, s.detail);
-            }
             for f in &r.fixes {
                 println!("\nFix:\n{f}");
             }
@@ -427,7 +486,7 @@ async fn test(ctx: &Ctx, name: &str) -> Result<()> {
     if ok {
         return Ok(());
     }
-    let failed: Vec<&str> = r.steps.iter().filter(|s| !s.ok).map(|s| s.name).collect();
+    let failed = r.failed();
     let mut err = UserError::new(
         codes::STORAGE_TEST,
         format!("storage profile {name:?} failed its checks"),
@@ -608,7 +667,7 @@ async fn test_pinning_auth(p: &PinningProfile, http: &reqwest::Client, r: &mut R
     });
 }
 
-fn git_config(global: bool, args: &[&str]) -> Result<()> {
+pub(crate) fn git_config(global: bool, args: &[&str]) -> Result<()> {
     let mut cmd = Process::new("git");
     cmd.arg("config");
     if global {
@@ -845,11 +904,11 @@ async fn probe_rows(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use clap::Parser as _;
 
-    fn add_args(argv: &[&str]) -> StorageAddArgs {
+    pub(crate) fn add_args(argv: &[&str]) -> StorageAddArgs {
         let mut full = vec!["dg", "storage", "add"];
         full.extend_from_slice(argv);
         match crate::Cli::parse_from(full).command {
@@ -915,5 +974,14 @@ mod tests {
         assert!(profile_from_args(&a).is_err());
         let a = add_args(&["k", "--kind", "ipfs-kubo"]);
         assert!(format!("{:#}", profile_from_args(&a).unwrap_err()).contains("--api"));
+        // No kind: a usage error naming --kind.
+        let a = add_args(&["k"]);
+        assert!(format!("{:#}", profile_from_args(&a).unwrap_err()).contains("--kind"));
+    }
+
+    #[test]
+    fn no_arguments_parse_as_the_empty_args_the_prompts_start_from() {
+        assert_eq!(add_args(&[]), StorageAddArgs::default());
+        assert_ne!(add_args(&["x"]), StorageAddArgs::default());
     }
 }

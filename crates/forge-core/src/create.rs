@@ -32,6 +32,7 @@ use crate::platform::{
     self, BroadcastOutcome, FieldValue, LoadedContract, LoadedIdentity, PlatformClient,
     WriteEngine, WriteIntent,
 };
+use crate::repo::BACKEND_URIS_V2;
 use crate::resolve::{find_named, repo_slug, DOC_REPO};
 use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
@@ -55,6 +56,9 @@ pub struct CreateRepoOpts {
     pub default_branch: String,
     /// `config.backend.mode` (`0` platform, `1` ipfs, `2` s3, `3` https, `4` mixed).
     pub backend_mode: u8,
+    /// `config.backend.uris`: the public read bases readers can use (at most
+    /// [`BACKEND_URIS_V2`]); empty = none recorded.
+    pub backend_uris: Vec<String>,
     /// The visibility. Only public is supported until the private-repo release.
     pub visibility: Visibility,
     /// The parent repository's id when this is a fork (`repo.forkOf`, immutable).
@@ -70,6 +74,7 @@ impl CreateRepoOpts {
             description: String::new(),
             default_branch: "main".into(),
             backend_mode: 0,
+            backend_uris: Vec::new(),
             visibility: Visibility::Public,
             fork_of: None,
         }
@@ -242,6 +247,12 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
         "defaultBranch".into(),
         FieldValue::text(&opts.default_branch),
     );
+    if !opts.backend_uris.is_empty() {
+        backend.insert(
+            "uris".into(),
+            FieldValue::text_list(opts.backend_uris.iter().cloned()),
+        );
+    }
     p.insert("backend".into(), FieldValue::Object(backend));
     p.insert("archived".into(), FieldValue::boolean(false));
     p
@@ -382,6 +393,12 @@ fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
         return Err(Error::Config(format!(
             "invalid default branch {:?}",
             opts.default_branch
+        )));
+    }
+    if !BACKEND_URIS_V2.fits(&opts.backend_uris) {
+        return Err(Error::Config(format!(
+            "config.backend.uris holds at most {} URLs of at most {} bytes each",
+            BACKEND_URIS_V2.max_items, BACKEND_URIS_V2.max_item_len
         )));
     }
     let mut opts = opts.clone();
@@ -549,7 +566,16 @@ mod tests {
         let c = config_props(&opts);
         assert!(!c.contains_key("repoId"), "the scope adds repoId");
         assert!(!c.contains_key("protectedPatterns"));
-        assert!(matches!(c.get("backend"), Some(FieldValue::Object(b)) if b.contains_key("mode")));
+        assert!(matches!(c.get("backend"), Some(FieldValue::Object(b))
+            if b.contains_key("mode") && !b.contains_key("uris")));
+        opts.backend_mode = 2;
+        opts.backend_uris = vec!["https://pub.r2.dev".into()];
+        let c = config_props(&opts);
+        assert!(matches!(c.get("backend"), Some(FieldValue::Object(b))
+            if b.get("uris") == Some(&FieldValue::text_list(["https://pub.r2.dev"]))));
+        assert!(validated(&opts).is_ok());
+        opts.backend_uris = vec!["https://x".into(); 5];
+        assert!(validated(&opts).is_err(), "more than 4 uris");
     }
 
     #[test]

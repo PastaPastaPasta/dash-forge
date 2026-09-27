@@ -48,6 +48,16 @@ pub const DOCS_URL: &str =
 /// The web app origin (repo pages are `…/repo?owner=<id>&name=<name>`).
 pub const WEB_ORIGIN: &str = crate::storage::cors::PROBE_ORIGIN;
 
+/// A repo's page in the web app.
+pub fn web_url(owner_id: &str, name: &str) -> String {
+    use crate::backends::sigv4::uri_encode;
+    format!(
+        "{WEB_ORIGIN}/repo?owner={}&name={}",
+        uri_encode(owner_id, false),
+        uri_encode(name, false)
+    )
+}
+
 /// Where to top up an identity's credits from any Dash wallet.
 pub const TOP_UP_URL: &str = "https://bridge.thepasta.org";
 
@@ -72,6 +82,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     ),
     (codes::INVALID_CONFIG, "invalid configuration"),
     (codes::UNSUPPORTED, "unsupported git operation"),
+    (codes::GIT_REPO, "git repository not usable"),
     (codes::NO_IDENTITY, "no identity configured"),
     (codes::KEY_CANNOT_SIGN, "this key can't sign that"),
     (codes::IDENTITY_UNREADABLE, "identity file unreadable"),
@@ -87,6 +98,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::STORAGE_SECRET, "storage credentials unavailable"),
     (codes::STORAGE_TEST, "storage profile failed its checks"),
     (codes::RECORDED_COPY_LOST, "recorded pack copy unreachable"),
+    (codes::NO_STORAGE, "no storage configured"),
     (codes::NOT_A_WRITER, "not a writer of this repository"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
@@ -126,6 +138,9 @@ pub mod codes {
     pub const INVALID_CONFIG: &str = "E204";
     /// A git operation dash:// does not support (shallow clone).
     pub const UNSUPPORTED: &str = "E205";
+    /// `dg init` / `dg repo create --push` cannot use the local git repository: not inside
+    /// one, or the remote name is taken by another URL.
+    pub const GIT_REPO: &str = "E206";
     /// No identity file configured.
     pub const NO_IDENTITY: &str = "E301";
     /// The identity has no key of the level this operation needs.
@@ -150,6 +165,8 @@ pub mod codes {
     pub const STORAGE_TEST: &str = "E506";
     /// A re-push found the pack already recorded, with no copy readable.
     pub const RECORDED_COPY_LOST: &str = "E507";
+    /// A new repository has no storage profile to push to; stopped before any spend.
+    pub const NO_STORAGE: &str = "E508";
     /// Consensus refused a write: no `writer`/`maintainer` document (40120).
     pub const NOT_A_WRITER: &str = "E601";
     // E602 (token suspended) is retired with forge-v1 and stays reserved.
