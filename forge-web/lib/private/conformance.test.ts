@@ -591,7 +591,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(163)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(168)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })

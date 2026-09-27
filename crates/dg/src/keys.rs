@@ -106,7 +106,7 @@ fn status_json(kr: &Keyring) -> Value {
         "writeEpoch": r.write_epoch,
         "readableEpochs": kr.readable_epochs(),
         "burnedEpochs": r.burned,
-        "burnedBy": kr.burned_by().map(encode_identifier),
+        "burnedBy": kr.burned_by().map(|(_, by)| encode_identifier(by)),
         "unanchoredEpochs": r.unanchored,
         "anchors": anchors,
         "alerts": r.alerts.iter().map(alert_text).collect::<Vec<_>>(),
@@ -145,7 +145,7 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
         }
         None => println!("  no key epoch exists yet (the repository was not finished)"),
     }
-    if let (Some(epoch), Some(by)) = (res.current_epoch, kr.burned_by()) {
+    if let Some((epoch, by)) = kr.burned_by() {
         println!(
             "  key epoch {epoch} is burned: {} closed it (its key may have reached someone it must not); nothing is written under it until a maintainer rotates",
             encode_identifier(by)

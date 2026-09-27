@@ -335,14 +335,7 @@ async fn rotate_after_removal(
     // removed member; the repair check then says rotate again. Once more settles what this
     // removal changed. Anything else (another maintainer's burned epoch, a missing wrap) is
     // theirs or `dg repo keys repair`'s to pay for, with a confirmation: not spent silently here.
-    let member_id = forge_core::platform::decode_identifier(member)?;
-    let kr = signer.keyring(repo).await?;
-    let still_holds = kr
-        .resolution()
-        .repair
-        .as_ref()
-        .is_some_and(|r| r.rotate && r.non_members.contains(&member_id));
-    if !still_holds {
+    if !still_holds_current_key(signer, repo, member).await? {
         return Ok(first);
     }
     let report = forge_core::keyring::repair(signer, repo)

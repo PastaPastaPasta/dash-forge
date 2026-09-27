@@ -102,8 +102,8 @@ pub enum Alert {
         #[serde(with = "hex32")]
         author: [u8; 32],
     },
-    /// A current maintainer's config for an epoch above the first missing epoch number: not an
-    /// anchor, since epochs exist only contiguously from 0 (§5.3).
+    /// A current maintainer's config for an epoch that does not exist: above the first missing
+    /// epoch number, or posted before the epoch below it was anchored (§5.3).
     #[serde(rename_all = "camelCase")]
     EpochGap {
         /// The epoch it names.
@@ -284,29 +284,53 @@ impl EpochResolution {
 }
 
 /// anchor(e) for every epoch (§5.3): the first config for `e` by `($createdAtBlockHeight, $id)`
-/// whose author is a current maintainer, whether or not the reader can open it, kept only for
-/// the contiguous run of epoch numbers from 0. Returns the anchors and the candidates above the
-/// first gap (each an `EpochGap`).
+/// whose author is a current maintainer, whether or not the reader can open it, and, for
+/// `e ≥ 1`, strictly after **stated(e − 1)** in that order: the first config for `e − 1` (itself
+/// after stated(e − 2)) that carries anchor(e − 1)'s commitment, by anyone, i.e. when that
+/// epoch's key was first stated on chain. `config` is maintainer-gated and non-deletable, so
+/// this is fixed history: a config posted before the epoch below it had its key is never an
+/// anchor (no honest flow pre-posts), while a re-anchor after a maintainer's removal repeats the
+/// commitment and so leaves the epochs above it intact. Epochs are kept only for the contiguous
+/// run from 0. Returns the anchors and, for every other epoch a current maintainer named, its
+/// first config (each an `EpochGap`).
 fn select_anchors<'c>(
     configs: &'c [ConfigRow],
     maintainers: &BTreeSet<[u8; 32]>,
 ) -> (BTreeMap<u32, &'c ConfigRow>, Vec<&'c ConfigRow>) {
-    let mut first: BTreeMap<u32, &ConfigRow> = BTreeMap::new();
-    for c in configs.iter().filter(|c| maintainers.contains(&c.owner)) {
-        let slot = first.entry(c.epoch).or_insert(c);
-        if (c.created_at_block_height, &c.id) < (slot.created_at_block_height, &slot.id) {
-            *slot = c;
-        }
+    let order = |c: &ConfigRow| (c.created_at_block_height, c.id);
+    let mut by_epoch: BTreeMap<u32, Vec<&ConfigRow>> = BTreeMap::new();
+    for c in configs {
+        by_epoch.entry(c.epoch).or_default().push(c);
     }
-    // the run 0, 1, 2, … ends at the first missing number; everything above it is a gap
-    let run = first
-        .keys()
-        .zip(0u32..)
-        .take_while(|(&e, i)| e == *i)
-        .count();
-    let mut anchors = first;
-    let gap = u32::try_from(run).map_or_else(|_| BTreeMap::new(), |r| anchors.split_off(&r));
-    (anchors, gap.into_values().collect())
+    for cs in by_epoch.values_mut() {
+        cs.sort_by_key(|c| order(c));
+    }
+    let mut anchors: BTreeMap<u32, &ConfigRow> = BTreeMap::new();
+    let mut stated: Option<(u64, [u8; 32])> = None;
+    for e in 0..=u32::MAX {
+        let Some(cs) = by_epoch.get(&e) else { break };
+        let valid: Vec<&ConfigRow> = cs
+            .iter()
+            .copied()
+            .filter(|c| stated.is_none_or(|b| order(c) > b))
+            .collect();
+        let Some(&anchor) = valid.iter().find(|c| maintainers.contains(&c.owner)) else {
+            break;
+        };
+        let commit = anchor_of(anchor).commit;
+        let first = valid
+            .iter()
+            .find(|c| commit.is_some() && anchor_of(c).commit == commit)
+            .map_or(anchor, |c| *c);
+        anchors.insert(e, anchor);
+        stated = Some(order(first));
+    }
+    let gaps = by_epoch
+        .iter()
+        .filter(|(e, _)| !anchors.contains_key(e))
+        .filter_map(|(_, cs)| cs.iter().find(|c| maintainers.contains(&c.owner)).copied())
+        .collect();
+    (anchors, gaps)
 }
 
 fn anchor_of(c: &ConfigRow) -> Anchor {
@@ -322,7 +346,7 @@ fn anchor_of(c: &ConfigRow) -> Anchor {
 
 /// Walk the `prevEpochKey` chain down from `start` (§5.3, L2), adding every epoch it reaches to
 /// `keys`, and raising `ChainBroken` where it stops early. Each anchor links to exactly the
-/// epoch below it (`prevEpoch = e − 1`); a burned flag on the way is recorded in `burned`.
+/// epoch below it (`prevEpoch = e − 1`).
 fn walk_chain(
     repo_id: &[u8; 32],
     start: u32,
@@ -365,7 +389,7 @@ fn walk_chain(
     }
 }
 
-/// The anchors among `epochs` whose sealed config carries the burned flag (§5.3): only the
+/// The readable epochs (`keys`) whose anchor's sealed config carries the burned flag (§5.3): only the
 /// anchor's flag counts, and only an epoch the reader holds the key of can be judged.
 fn burned_epochs(
     repo_id: &[u8; 32],

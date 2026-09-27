@@ -651,6 +651,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 163, "ran {ran} private vectors, expected 163+");
+    assert!(ran >= 168, "ran {ran} private vectors, expected 168+");
     println!("private conformance: {ran} vectors green");
 }

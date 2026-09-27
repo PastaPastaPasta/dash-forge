@@ -525,12 +525,12 @@ impl Keyring {
     /// Who anchored the current epoch, when it is burned (§5.3): the maintainer whose rotation
     /// closed it.
     #[must_use]
-    pub fn burned_by(&self) -> Option<[u8; 32]> {
+    pub fn burned_by(&self) -> Option<(u32, [u8; 32])> {
         let n = self.resolution.current_epoch?;
         self.resolution
             .burned
             .contains(&n)
-            .then(|| self.resolution.anchors[&n].owner)
+            .then(|| (n, self.resolution.anchors[&n].owner))
     }
 
     /// The seams to write with: [`Private`] over the write epoch, or the reason there is none
@@ -622,7 +622,7 @@ impl Keyring {
         if let Some(e) = self.alert_error(repo) {
             return e;
         }
-        if let (Some(n), Some(by)) = (self.resolution.current_epoch, self.burned_by()) {
+        if let Some((n, by)) = self.burned_by() {
             return UserError::new(
                 codes::ROTATION_PENDING,
                 format!("private repo {}: key epoch {n} is burned", repo.display()),
@@ -1039,6 +1039,35 @@ struct WriteCtx {
 }
 
 impl PrivateSigner<'_> {
+    /// A fresh proved read of the keyring, re-using `w`'s contract, scope and keys.
+    async fn reload(&self, w: &WriteCtx, repo: &RepoRef) -> Result<Keyring> {
+        let io = KeyringIo {
+            client: self.client,
+            core: &w.core,
+            scope: &w.scope,
+        };
+        Keyring::load_with(&io, repo, &self.identity.id(), &w.enc).await
+    }
+
+    /// Reload up to `polls` times, `ANCHOR_POLL_DELAY` apart, until `check` returns `Some`.
+    async fn poll<T>(
+        &self,
+        w: &WriteCtx,
+        repo: &RepoRef,
+        polls: usize,
+        mut check: impl FnMut(&Keyring) -> Option<T>,
+    ) -> Result<Option<T>> {
+        for attempt in 0..polls {
+            if let Some(t) = check(&self.reload(w, repo).await?) {
+                return Ok(Some(t));
+            }
+            if attempt + 1 < polls {
+                tokio::time::sleep(ANCHOR_POLL_DELAY).await;
+            }
+        }
+        Ok(None)
+    }
+
     async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
         let scope = repo.scope()?;
         let core = self.client.fetch_contract(&scope.contract_id).await?;
@@ -1123,15 +1152,9 @@ pub async fn create_private_state(
         return Ok(false);
     }
     // Resume: our own epoch-0 self-wrap, if it landed, is the key.
-    let resumed =
-        w.kr.wraps
-            .iter()
-            .filter(|x| x.epoch == 0 && x.member == w.me && x.owner == w.me)
-            .find_map(|x| x.key.clone());
-    let key = if let Some(k) = resumed {
-        k
-    } else {
-        self_wrap(signer, &w, 0, EpochKey::generate()?).await?.0
+    let key = match pending_key(&w.kr, w.me, 0) {
+        Some(k) => k,
+        None => self_wrap(signer, &w, 0, EpochKey::generate()?).await?.0,
     };
     signer
         .post_anchor(
@@ -1218,7 +1241,7 @@ pub async fn member_can_receive(
 }
 
 /// What [`rotate`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rotation {
     /// The new epoch.
     pub epoch: u32,
@@ -1287,6 +1310,7 @@ pub async fn rotate(
     if removing {
         member_list_is_stable(signer, repo, &me_b58, exclude, &targets).await?;
     }
+    let cfg = w.kr.config();
     let mut burned = None;
     loop {
         let epoch = from
@@ -1305,21 +1329,23 @@ pub async fn rotate(
         // An earlier run's key may already sit with someone who must not have it: a removal
         // cannot trust a read that may lag that run's wrap to the member being removed, and any
         // run can see such a wrap once it is visible.
-        let mut done = None;
         let leaked = (removing && (resumed || adopted))
             || !stray_wraps(signer, &w, repo, epoch, &targets)
                 .await?
                 .is_empty();
-        if !leaked {
+        let done = if leaked {
+            None
+        } else {
             match wrap_all(signer, &w, epoch, &key, &targets).await? {
-                Ok(ws) => done = Some(ws),
+                Ok(ws) => Some(ws),
                 // a standing wrap of ours to a key the member no longer uses cannot be replaced
                 // within the epoch: close it and wrap everyone again at the next one
                 Err(member) => {
                     tracing::info!(epoch, %member, "a resumed epoch holds an unusable wrap; burning it");
+                    None
                 }
             }
-        }
+        };
         let Some((wrapped, skipped)) = done else {
             if burned.is_some() {
                 return Err(UserError::new(
@@ -1332,17 +1358,13 @@ pub async fn rotate(
                 ))
                 .into());
             }
-            let cfg = w.kr.config();
             let input = AnchorInput::current(cfg, epoch, &key, Some((from.0, &from.1)), true);
             if anchor_and_confirm(signer, &w, repo, &input).await? != w.me {
                 // another maintainer's anchor for this epoch won: theirs stands, and posting
                 // n + 2 from a key that is not the epoch's would fork the chain
                 return Ok(Rotation {
                     epoch,
-                    wrapped: Vec::new(),
-                    skipped: Vec::new(),
-                    won: false,
-                    burned: None,
+                    ..Rotation::default()
                 });
             }
             burned = Some(epoch);
@@ -1355,7 +1377,6 @@ pub async fn rotate(
         {
             return Err(stray_error(epoch, *stray));
         }
-        let cfg = w.kr.config();
         let input = AnchorInput::current(cfg, epoch, &key, Some((from.0, &from.1)), false);
         let owner = anchor_and_confirm(signer, &w, repo, &input).await?;
         return Ok(Rotation {
@@ -1382,27 +1403,26 @@ async fn anchor_and_confirm(
     anchor: &AnchorInput<'_>,
 ) -> Result<[u8; 32]> {
     signer.post_anchor(w, anchor).await?;
-    let io = KeyringIo {
-        client: signer.client,
-        core: &w.core,
-        scope: &w.scope,
-    };
-    for attempt in 0..ANCHOR_POLLS {
-        let now = Keyring::load_with(&io, repo, &signer.identity.id(), &w.enc).await?;
-        if let Some(a) = now.resolution.anchors.get(&anchor.epoch) {
-            let preempted = anchor
-                .epoch
-                .checked_add(1)
-                .and_then(|next| now.resolution.anchors.get(&next))
-                .filter(|n| a.owner == w.me && n.height < a.height);
-            if let Some(n) = preempted {
-                return Err(UserError::new(
+    let seen = signer
+        .poll(w, repo, ANCHOR_POLLS, |now| {
+            let anchors = &now.resolution.anchors;
+            let a = anchors.get(&anchor.epoch)?;
+            let next = anchor.epoch.checked_add(1).and_then(|n| anchors.get(&n));
+            let preempted = next
+                .filter(|n| a.owner == w.me && n.height < a.height)
+                .map(|n| n.owner);
+            Some((a.owner, preempted))
+        })
+        .await?;
+    match seen {
+        None => Err(Error::Timeout { retryable: true }),
+        Some((_, Some(by))) => Err(UserError::new(
                     codes::ROTATION_PENDING,
                     format!(
                         "key epoch {} of {} was pre-empted by {}",
                         anchor.epoch + 1,
                         repo.display(),
-                        platform::encode_identifier(n.owner)
+                        platform::encode_identifier(by)
                     ),
                 )
                 .cause(format!(
@@ -1411,15 +1431,9 @@ async fn anchor_and_confirm(
                     anchor.epoch
                 ))
                 .fix("ask them, or remove them as a maintainer and rotate; `dg repo keys status` shows the epochs")
-                .into());
-            }
-            return Ok(a.owner);
-        }
-        if attempt + 1 < ANCHOR_POLLS {
-            tokio::time::sleep(ANCHOR_POLL_DELAY).await;
-        }
+                .into()),
+        Some((owner, None)) => Ok(owner),
     }
-    Err(Error::Timeout { retryable: true })
 }
 
 /// Wrap `key` of `epoch` to every target but the first (self, already wrapped): `Ok` with who
@@ -1623,22 +1637,21 @@ pub async fn reanchor_before_removal(
     }
     // A later config of the same epoch by another current maintainer, earlier than the
     // re-anchor, would become the anchor instead: check the outcome, not the intent.
-    let io = KeyringIo {
-        client: signer.client,
-        core: &w.core,
-        scope: &w.scope,
-    };
     let polls = if posted { ANCHOR_POLLS } else { 1 };
     let mut changed = None;
-    for attempt in 0..polls {
-        let now = Keyring::load_with(&io, repo, &signer.identity.id(), &w.enc).await?;
-        match removal_preserves(before, &now.resolution_if(leaving, false), top) {
-            Ok(()) => return Ok(out),
-            Err(e) => changed = Some(e),
-        }
-        if attempt + 1 < polls {
-            tokio::time::sleep(ANCHOR_POLL_DELAY).await;
-        }
+    let ok = signer
+        .poll(&w, repo, polls, |now| {
+            match removal_preserves(before, &now.resolution_if(leaving, false), top) {
+                Ok(()) => Some(()),
+                Err(e) => {
+                    changed = Some(e);
+                    None
+                }
+            }
+        })
+        .await?;
+    if ok.is_some() {
+        return Ok(out);
     }
     Err(UserError::new(
         codes::ROTATION_PENDING,
@@ -1713,12 +1726,7 @@ async fn stray_wraps(
         .iter()
         .filter_map(|t| platform::decode_identifier(t).ok())
         .collect();
-    let io = KeyringIo {
-        client: signer.client,
-        core: &w.core,
-        scope: &w.scope,
-    };
-    let now = Keyring::load_with(&io, repo, &signer.identity.id(), &w.enc).await?;
+    let now = signer.reload(w, repo).await?;
     Ok(now
         .wraps
         .iter()
@@ -1850,35 +1858,7 @@ mod tests {
         }
     }
 
-    /// A keyring with members and wraps and no anchors above epoch 0.
-    fn keyring(members: Vec<Member>, wraps: Vec<WrapDoc>) -> Keyring {
-        let mut resolution = EpochResolution::default();
-        resolution.anchors.insert(
-            0,
-            crate::private::epoch::Anchor {
-                id: [0xa0; 32],
-                owner: [1; 32],
-                height: 1,
-                commit: None,
-            },
-        );
-        Keyring {
-            repo_id: [0x11; 32],
-            reader: [1; 32],
-            members,
-            configs: Vec::new(),
-            wraps,
-            resolution,
-            rows: Rows::default(),
-            ctx: OpenContext::default(),
-            config: PrivateConfig::default(),
-            unreadable_wraps: Vec::new(),
-        }
-    }
-
-    /// A keyring resolved from real rows: `configs` are `(owner, epoch, key byte, height,
-    /// burned)`, each sealed with the chain link to `epoch - 1` under key byte `epoch`'s
-    /// predecessor as the fixture's keys are `[e + 1; 32]` per epoch unless given.
+    /// Rows for `resolve_epochs`, built with `config`/`wrap`; `keyring(reader)` resolves them.
     struct Fixture {
         repo_id: [u8; 32],
         members: Vec<MemberRow>,
@@ -2037,7 +2017,7 @@ mod tests {
             (1, k(11)),
             "the next epoch is 2, chained from burned 1"
         );
-        assert_eq!(kr.burned_by(), Some(ALICE));
+        assert_eq!(kr.burned_by(), Some((1, ALICE)));
         let r = kr.resolution.repair.as_ref().unwrap();
         assert!(
             r.rotate && r.non_members.is_empty(),
@@ -2047,18 +2027,15 @@ mod tests {
 
     #[test]
     fn a_pending_self_wrap_is_the_next_epochs_key() {
-        let (alice, bob) = ([1; 32], [2; 32]);
-        let kr = keyring(
-            vec![member(alice, Role::Maintainer), member(bob, Role::Writer)],
-            vec![
-                wrap(alice, alice, 1, Some(9)),
-                wrap(alice, bob, 1, None),
-                wrap(bob, alice, 2, Some(7)),
-            ],
-        );
-        assert_eq!(pending_key(&kr, alice, 1), Some(k(9)));
+        let mut kr = Fixture::new(&[(ALICE, Role::Maintainer), (BOB, Role::Writer)]).keyring(ALICE);
+        kr.wraps = vec![
+            wrap(ALICE, ALICE, 1, Some(9)),
+            wrap(ALICE, BOB, 1, None),
+            wrap(BOB, ALICE, 2, Some(7)),
+        ];
+        assert_eq!(pending_key(&kr, ALICE, 1), Some(k(9)));
         assert_eq!(
-            pending_key(&kr, alice, 2),
+            pending_key(&kr, ALICE, 2),
             None,
             "only this signer's own self-wrap"
         );
@@ -2198,10 +2175,10 @@ mod tests {
         g.configs.pop();
         g.config(ALICE, 1, 0x77, Some(10), 35, true);
         let kr = g.keyring(ALICE);
-        // epoch 2's link to 1 no longer opens: 0 and 1 are lost to the remover
+        // epoch 1's anchor changes (and with it epoch 2, which came before this key was stated)
         assert_eq!(
             removal_preserves(&before, &kr.resolution_if(DAVE, false), 2),
-            Err(0)
+            Err(1)
         );
     }
 

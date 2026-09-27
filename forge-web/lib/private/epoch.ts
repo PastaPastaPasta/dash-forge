@@ -98,42 +98,64 @@ function anchorCommit(enc: Uint8Array): Bytes | null {
   return enc.length >= MIN_CONFIG_ENC && enc[0] === 0x02 ? enc.slice(1, 33) : null
 }
 
+/** Whether `a` comes strictly after `b` in anchor order: (block height, id bytes). */
+function after(a: ConfigRow, b: ConfigRow): boolean {
+  return a.createdAtBlockHeight > b.createdAtBlockHeight || (a.createdAtBlockHeight === b.createdAtBlockHeight && compareBytes(a.id, b.id) > 0)
+}
+
+function anchorOf(c: ConfigRow): Anchor {
+  return { id: c.id, height: c.createdAtBlockHeight, owner: c.owner, commit: anchorCommit(c.enc), config: c }
+}
+
+/** Every config by epoch (any author), each list in anchor order (block height, id bytes). */
+function configsByEpoch(configs: readonly ConfigRow[]): Map<number, ConfigRow[]> {
+  const ordered = configs
+    .filter((c) => isU32(c.epoch))
+    .sort((a, b) => a.createdAtBlockHeight - b.createdAtBlockHeight || compareBytes(a.id, b.id))
+  const byEpoch = new Map<number, ConfigRow[]>()
+  for (const c of ordered) byEpoch.set(c.epoch, [...(byEpoch.get(c.epoch) ?? []), c])
+  return byEpoch
+}
+
 /**
- * Anchor of each epoch (§5.3): the first current-maintainer config by (block height, id bytes),
- * kept only for the contiguous run of epochs from 0 (an epoch `e >= 1` exists only when `e - 1`
- * does). Candidates above the first gap are not anchors: see {@link gapCandidates}.
+ * Anchor of each epoch (§5.3): the first current-maintainer config by (block height, id bytes)
+ * and, for `e >= 1`, strictly after stated(e - 1) in that order: the first config for `e - 1`
+ * (itself after stated(e - 2)), by anyone, carrying anchor(e - 1)'s commitment, i.e. when that
+ * epoch's key was first stated on chain. Config history is fixed (maintainer-gated,
+ * non-deletable), so a config posted before the epoch below it had its key is never an anchor,
+ * and a re-anchor after a maintainer's removal (same commitment) leaves the epochs above it
+ * intact. Kept only for the contiguous run from 0; every other epoch a current maintainer named
+ * is a gap ({@link gapCandidates}).
  */
 export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet): Map<number, Anchor> {
-  const candidates = candidateAnchors(configs, maintainers)
+  const byEpoch = configsByEpoch(configs)
   const anchors = new Map<number, Anchor>()
-  for (let e = 0; candidates.has(e); e++) anchors.set(e, candidates.get(e) as Anchor)
-  return anchors
-}
-
-/** The candidates above the first gap (each raises an `epochGap` alert), by epoch. */
-export function gapCandidates(configs: readonly ConfigRow[], maintainers: IdSet): Anchor[] {
-  const candidates = candidateAnchors(configs, maintainers)
-  const kept = selectAnchors(configs, maintainers)
-  return [...candidates.values()].filter((a) => !kept.has(a.config.epoch)).sort((a, b) => a.config.epoch - b.config.epoch)
-}
-
-/** The first current-maintainer config of every epoch by (block height, id bytes), gaps included. */
-function candidateAnchors(configs: readonly ConfigRow[], maintainers: IdSet): Map<number, Anchor> {
-  const ordered = configs
-    .filter((c) => maintainers.has(c.owner) && isU32(c.epoch))
-    .sort((a, b) => a.createdAtBlockHeight - b.createdAtBlockHeight || compareBytes(a.id, b.id))
-  const anchors = new Map<number, Anchor>()
-  for (const c of ordered) {
-    if (anchors.has(c.epoch)) continue
-    anchors.set(c.epoch, {
-      id: c.id,
-      height: c.createdAtBlockHeight,
-      owner: c.owner,
-      commit: anchorCommit(c.enc),
-      config: c,
-    })
+  let stated: ConfigRow | null = null
+  for (let e = 0; e <= 0xffff_ffff; e++) {
+    const below: ConfigRow | null = stated
+    const valid: ConfigRow[] = (byEpoch.get(e) ?? []).filter((x: ConfigRow) => below === null || after(x, below))
+    const anchor = valid.find((x: ConfigRow) => maintainers.has(x.owner))
+    if (anchor === undefined) break
+    const commit = anchorCommit(anchor.enc)
+    const same = (x: ConfigRow): boolean => {
+      const c = anchorCommit(x.enc)
+      return commit !== null && c !== null && bytesEqual(c, commit)
+    }
+    anchors.set(e, anchorOf(anchor))
+    stated = valid.find(same) ?? anchor
   }
   return anchors
+}
+
+/** The first current-maintainer config of every epoch that is not an epoch (each an `epochGap` alert), by epoch. */
+export function gapCandidates(configs: readonly ConfigRow[], maintainers: IdSet): Anchor[] {
+  const kept = selectAnchors(configs, maintainers)
+  const out: Anchor[] = []
+  for (const [e, cs] of [...configsByEpoch(configs)].sort(([a], [b]) => a - b)) {
+    const first = cs.find((c) => maintainers.has(c.owner))
+    if (!kept.has(e) && first !== undefined) out.push(anchorOf(first))
+  }
+  return out
 }
 
 function matchesAnchor(keys: EpochKeys, anchor: Anchor): boolean {

@@ -200,7 +200,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
                     PREV_EPOCH => f.prev_epoch = Some(u32::from_be_bytes(value.try_into().ok()?)),
                     PREV_EPOCH_KEY => f.prev_epoch_key = EpochKey::from_slice(value),
                     // the flag has one value; any other byte is malformed
-                    _ if value == [0x01] => f.burned = true,
+                    BURNED if value == [0x01] => f.burned = true,
                     _ => return None,
                 }
             }

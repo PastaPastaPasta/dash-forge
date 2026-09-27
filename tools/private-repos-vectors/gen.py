@@ -952,6 +952,53 @@ def epoch_vectors():
        [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1), wrap("w1e", ALICE, ERIN, 1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1, unanchored=[0xFFFFFFFF],
             alerts=[dict(kind="epochGap", epoch=0xFFFFFFFF, author=ERIN)], repair=ok_repair))
+    ev("preposted_future_config_ignored",
+       "a current maintainer's config for epoch 2 at block 500, before epoch 1 was anchored (block 1000), is never "
+       "epoch 2's anchor, though it is first by block height: the later config is, and the reader's wrap of its key is "
+       "accepted.",
+       team, [c0, c1, config("c2-pre", ALICE, 2, Kd, 500, prev=(1, K1)), config("c2", ALICE, 2, K2, 2000, prev=(1, K1))],
+       [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2)],
+       dict(currentEpoch=2, anchors={"0": "c0", "1": "c1", "2": "c2"}, readable=[0, 1, 2], writeEpoch=2,
+            repair=ok_repair))
+    ev("preposted_config_ignored_after_regrant",
+       "dave pre-posted configs for epochs 1 and 2 (blocks 5 and 500) while an earlier maintainer, lost the role, and "
+       "was granted it again: neither comes after the anchor below it, so alice's configs stay the anchors; an epoch "
+       "whose only config is pre-posted does not exist (EpochGap).",
+       team + [member(DAVE, "maintainer")],
+       [c0, c1, config("c1-dave", DAVE, 1, Kd, 5, prev=(0, K0)), config("c2-dave", DAVE, 2, Kd, 500, prev=(1, K1)),
+        config("c3-dave", DAVE, 3, Kd, 600, prev=(2, Kd))],
+       [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1), wrap("w1d", ALICE, DAVE, 1),
+        wrap("w2d", DAVE, BOB, 2, Kd)],
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1, unanchored=[2, 3],
+            alerts=[dict(kind="epochGap", epoch=2, author=DAVE), dict(kind="epochGap", epoch=3, author=DAVE)],
+            repair=ok_repair))
+    EXPLICIT_IDS["c0-hi"], EXPLICIT_IDS["c1-lo"] = b"\x90" * 32, b"\x10" * 32
+    ev("anchor_tie_at_same_height_after_prev_by_id",
+       "epoch 1's only config shares epoch 0's anchor block height: it counts only if its $id is greater (raw bytes); "
+       "here it is smaller, so epoch 1 does not exist.",
+       team, [config("c0-hi", ALICE, 0, K0, 10), config("c1-lo", ALICE, 1, K1, 10, prev=(0, K0))],
+       [wrap("w0a", ALICE, ALICE, 0), wrap("w0b", ALICE, BOB, 0, K0), wrap("w1b", ALICE, BOB, 1, K1)],
+       dict(currentEpoch=0, anchors={"0": "c0-hi"}, readable=[0], writeEpoch=0, unanchored=[1],
+            alerts=[dict(kind="epochGap", epoch=1, author=ALICE)], repair=ok_repair))
+    ev("reanchor_of_middle_epoch_keeps_epochs_above",
+       "dave anchored epoch 1 and was removed; alice re-anchored it (block 3500) after epoch 2's anchor (block 2000). "
+       "Epoch 2 still counts: it comes after epoch 1's key was first stated (dave's config, block 1000, the same "
+       "commitment), which no removal moves.",
+       team, [c0, config("c1-dave", DAVE, 1, K1, 1000, prev=(0, K0)), config("c2", ALICE, 2, K2, 2000, prev=(1, K1)),
+              config("c1-re", ALICE, 1, K1, 3500, prev=(0, K0))],
+       [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2)],
+       dict(currentEpoch=2, anchors={"0": "c0", "1": "c1-re", "2": "c2"}, readable=[0, 1, 2], writeEpoch=2,
+            repair=ok_repair))
+    ev("preposted_after_other_key_ignored",
+       "a since-removed maintainer's config for epoch 1 (block 500, another key) states nothing about epoch 1's key: "
+       "erin's config for epoch 2 at block 700, before alice's epoch-1 anchor (block 1000) stated K_1, never counts, "
+       "and the later epoch-2 config is the anchor.",
+       team + [member(ERIN, "maintainer")],
+       [c0, config("c1-dave", DAVE, 1, Kd, 500, prev=(0, K0)), c1, config("c2-pre", ERIN, 2, Ky, 700, prev=(1, K1)),
+        config("c2", ALICE, 2, K2, 2000, prev=(1, K1))],
+       [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2), wrap("w2e", ALICE, ERIN, 2)],
+       dict(currentEpoch=2, anchors={"0": "c0", "1": "c1", "2": "c2"}, readable=[0, 1, 2], writeEpoch=2,
+            repair=ok_repair))
     ev("chain_walk_reaches_epoch_0_from_one_wrap", "one wrap for epoch 2 reads epochs 2, 1 and 0 through the chain.",
        team, [c0, c1, config("c2", ALICE, 2, K2, 2000, prev=(1, K1))],
        [wrap("w2a", ALICE, ALICE, 2), wrap("w2b", ALICE, BOB, 2, K2)],
