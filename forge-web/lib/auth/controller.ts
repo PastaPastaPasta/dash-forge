@@ -28,6 +28,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
+import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
@@ -355,11 +356,17 @@ export class AuthController {
     } catch (e) {
       this.setState({ isLoading: false, error: errorMessage(e), step: null })
       throw e
+    } finally {
+      this.stepTimer(null)
     }
   }
 
+  /** Times the named steps (`lib/step-timing.ts`, L-20). */
+  private readonly stepTimer = stepClock('sign-in')
+
   /** Name the step a running sign-in is on. */
   private step(text: string): void {
+    this.stepTimer(text)
     this.setState({ step: text })
   }
 
@@ -578,7 +585,8 @@ export class AuthController {
     const core = NETWORKS[this.network].v2?.core
     if (core === undefined) return
     try {
-      const keyId = await importEncryptionKey(await this.getSdk(), this.network, identityId, core, material)
+      const sdk = await timed('enable-private-repos', 'connect', () => this.getSdk())
+      const keyId = await importEncryptionKey(sdk, this.network, identityId, core, material)
       if (keyId === null) {
         this.setState({
           notice:

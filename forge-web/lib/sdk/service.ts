@@ -21,7 +21,10 @@
  * connection it started on, and a writer holding the handle keeps working across a swap.
  * A new connection is built:
  *   - every {@link REFRESH_MS} while the tab is visible, before the keys go stale;
- *   - when a read fails on stale keys or on no usable node: one reconnect, then one retry.
+ *   - when a read fails on stale keys or on no usable node: one reconnect, then one retry;
+ *   - before a write whose SDK call never refreshes the keys itself ({@link EvoSdkService.ensureFresh}):
+ *     wasm-sdk's `identityCreate` verifies its result against the connection's keys as they are
+ *     (L-06), unlike the broadcast facade's calls, which run `refresh_quorums` first.
  * A connect that fails is retried with backoff (D-058). Every connection is trusted: a
  * failure never falls back to unverified reads.
  */
@@ -75,6 +78,8 @@ export interface Connection {
 
 /** Reconnect this often while the tab is visible, well inside a quorum's lifetime (D-024). */
 export const REFRESH_MS = 5 * 60_000
+/** A write that needs fresh quorum keys ({@link EvoSdkService.ensureFresh}) reuses a connection this young. */
+export const FRESH_WRITE_MS = 30_000
 /** A failed read triggers a reconnect at most this often. */
 export const RECOVER_GAP_MS = 15_000
 /** Before reconnecting after "no available addresses", wait out rate-limit holds up to this. */
@@ -109,7 +114,7 @@ const RETRYABLE_READS = new Set([
   'query', 'get', 'count', 'composite', 'chained', 'fetch', 'fetchUnproved', 'getMany', 'getLatestVersions',
   'balance', 'balances', 'nonce', 'contractNonce', 'keysRemainingBudgets', 'getKeys', 'status',
   'current', 'info', 'members', 'currentQuorumsInfo', 'resolveName', 'username', 'usernames',
-  'sum', 'average', 'ranked', 'having', 'history',
+  'sum', 'average', 'ranked', 'having', 'history', 'pathElements',
 ])
 
 /** The EvoSDK facades (evo-sdk 4.2 `sdk.d.ts`). */
@@ -153,6 +158,8 @@ type Facades = Record<string, Record<string, AnyFn>>
 
 export class EvoSdkService {
   private current: Connection | null = null
+  /** When {@link current} went live: its quorum keys are this old. */
+  private installedAt = -Infinity
   private generationNo = 0
   private initPromise: Promise<void> | null = null
   private config: EvoSdkConfig | null = null
@@ -332,6 +339,7 @@ export class EvoSdkService {
   private install(connection: Connection): void {
     const first = this.current === null
     this.current = connection
+    this.installedAt = this.clock.now()
     this.generationNo++
     if (this.failures > 0) {
       // Back from an outage (a scheduled retry, "Try again", or a refresh that got through).
@@ -371,6 +379,18 @@ export class EvoSdkService {
       if (this.config === config && this.current !== null) this.scheduleRefresh()
     })
     return run
+  }
+
+  /**
+   * Before a write whose result is proof-checked against the connection's quorum keys by an SDK
+   * call that never refreshes them (wasm-sdk `identityCreate`, L-06): build a new connection
+   * unless the current one is at most `maxAgeMs` old. Resolves to whether the connection is that
+   * fresh; a failed rebuild keeps the current one (the caller checks what landed instead).
+   */
+  async ensureFresh(maxAgeMs = FRESH_WRITE_MS): Promise<boolean> {
+    if (this.current === null) return false
+    if (this.clock.now() - this.installedAt <= maxAgeMs) return true
+    return this.refresh()
   }
 
   /** Force a fresh connection (e.g. after a network drop). Preserves the config. */

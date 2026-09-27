@@ -4,6 +4,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import {
   CONNECT_BACKOFF_MS,
   EvoSdkService,
+  FRESH_WRITE_MS,
   REFRESH_MS,
   RECOVER_GAP_MS,
   isStaleConnectionError,
@@ -264,6 +265,43 @@ describe('EvoSdkService: unreachable Platform (D-058, D-702)', () => {
     expect(svc.getStatus().phase).toBe('ready')
     expect(svc.recoveryCount).toBe(before + 1)
     expect(await svc.getSdk().documents.query({} as never)).toBe('back')
+  })
+})
+
+describe('EvoSdkService.ensureFresh: before a write that never refreshes its quorum keys (L-06)', () => {
+  it('reuses a connection at most FRESH_WRITE_MS old, else builds a new one first', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => 'a')
+    const b = fakeSdk('b', async () => 'b')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockResolvedValueOnce(connection(b.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    expect(await svc.ensureFresh()).toBe(true)
+    expect(connector).toHaveBeenCalledTimes(1)
+
+    await clock.advance(FRESH_WRITE_MS + 1)
+    expect(await svc.ensureFresh()).toBe(true)
+    expect(connector).toHaveBeenCalledTimes(2)
+    // The handle a writer already holds now sends the create on the new connection.
+    await svc.getSdk().documents.create({} as never)
+    expect(b.create).toHaveBeenCalledTimes(1)
+    expect(a.create).not.toHaveBeenCalled()
+  })
+
+  it('a failed rebuild keeps the current connection and says so', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => 'a')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockRejectedValueOnce(new Error('quorum service down'))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    await clock.advance(FRESH_WRITE_MS + 1)
+    expect(await svc.ensureFresh()).toBe(false)
+    await svc.getSdk().documents.create({} as never)
+    expect(a.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('is false before any connection', async () => {
+    expect(await new EvoSdkService(vi.fn(), manualClock()).ensureFresh()).toBe(false)
   })
 })
 

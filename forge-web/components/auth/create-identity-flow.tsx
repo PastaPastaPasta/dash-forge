@@ -37,6 +37,7 @@ import {
   depositAddressOf,
   depositBalance,
   readCreationJournal,
+  IdentityNotCreatedError,
   MIN_DEPOSIT_DUFFS,
   type CreateStage,
   type CreationJournal,
@@ -74,6 +75,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [stage, setStage] = useState<string | null>(null)
   const [seen, setSeen] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  // The last run's IdentityCreate did not land and its asset lock is unused (L-06): "Try again"
+  // sends it again with the same deposit.
+  const [sameDeposit, setSameDeposit] = useState(false)
+  // The words of the last run, for "Try again" (a resumed creation's words are typed, not shown).
+  const runWords = useRef<string | null>(null)
   const [running, setRunning] = useState(false)
   // Checking typed words before a run (the library may still be downloading).
   const [preparing, setPreparing] = useState(false)
@@ -137,6 +143,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     () => () => {
       run.current?.abort()
       mnemonicRef.current = null
+      runWords.current = null
     },
     [],
   )
@@ -177,6 +184,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     }
     const deposit = await checkWords(m)
     if (deposit === null) return
+    runWords.current = m
+    setSameDeposit(false)
     const controllerRun = new AbortController()
     run.current = controllerRun
     setRunning(true)
@@ -202,11 +211,15 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       await controller.openStored(identityId, null, key.limits)
       await clearCreationJournal(network)
       setMnemonic(null)
+      runWords.current = null
       onDone()
     } catch (e) {
       // Never leave an unlocked key in memory without a session.
       controller.logout()
-      if (!isAbort(e)) setError(errorMessage(e))
+      if (!isAbort(e)) {
+        setError(errorMessage(e))
+        setSameDeposit(e instanceof IdentityNotCreatedError)
+      }
       reloadVaults()
     } finally {
       if (run.current === controllerRun) run.current = null
@@ -383,9 +396,15 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       </p>
       {error && !running ? (
         <StepFailed
-          error={`${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).`}
+          error={
+            sameDeposit
+              ? error
+              : `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).`
+          }
+          retryLabel={sameDeposit ? 'Try again with the same deposit' : undefined}
           onRetry={() => {
-            if (mnemonic) void start(mnemonic)
+            const words = runWords.current ?? mnemonic
+            if (words) void start(words)
             else {
               setStep('loading')
               setAttempt((a) => a + 1)

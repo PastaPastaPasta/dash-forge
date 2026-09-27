@@ -65,12 +65,12 @@ export function Waiting({ label }: { label: string }): JSX.Element {
 }
 
 /** A step that failed or timed out: what, and a way to try again. */
-export function StepFailed({ error, onRetry }: { error: string; onRetry: () => void }): JSX.Element {
+export function StepFailed({ error, onRetry, retryLabel = 'Try again' }: { error: string; onRetry: () => void; retryLabel?: string }): JSX.Element {
   return (
     <div className="space-y-3" data-testid="signin-failed">
       <ErrorBox error={error} />
       <Button variant="outline" className="w-full" onClick={onRetry}>
-        <RefreshCw className="h-4 w-4" aria-hidden /> Try again
+        <RefreshCw className="h-4 w-4" aria-hidden /> {retryLabel}
       </Button>
     </div>
   )

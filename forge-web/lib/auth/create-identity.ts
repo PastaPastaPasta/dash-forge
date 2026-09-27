@@ -19,6 +19,15 @@
  * the user types again. If the identity already exists on resume (created, but the tab closed
  * before the key was confirmed), the mnemonic's master key registers a fresh limited key. The
  * caller clears the journal only once the key is adopted.
+ *
+ * L-06: wasm-sdk's `identityCreate` broadcasts and then proof-checks the answer against the
+ * connection's quorum keys without refreshing them first (the broadcast facade's calls refresh
+ * them), so a quorum rotation fails a create that Platform accepted ("Quorum not found in
+ * cache"). The connection is renewed right before the create (`freshen`); when the answer still
+ * cannot be verified, the flow asks Platform what happened instead of reporting a failure:
+ *   - the identity is there: it was created, so finish (check key 5, else renew it as above);
+ *   - it is not, and the asset lock is still unspent: {@link IdentityNotCreatedError}. "Try
+ *     again" sends the creation again with the same lock (the journal keeps it): no new payment.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -28,7 +37,9 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import type { Network } from '../constants'
 import type { GroupTrust } from '../deployments'
 import { idbDelete, idbGet, idbPut } from '../idb'
-import { authSdk } from '../sdk/facade'
+import { authSdk, isAbort, sleep } from '../sdk/facade'
+import { evoSdkService, isStaleConnectionError } from '../sdk/service'
+import { errorMessage } from '../utils'
 import {
   broadcastTx,
   buildAssetLock,
@@ -96,6 +107,84 @@ export type CreateStage = 'waiting-deposit' | 'locking' | 'proving' | 'registeri
 export const BROWSER_KEY_ID = CANONICAL_KEYS.length
 
 /**
+ * An IdentityCreate whose answer could not be verified, and Platform shows neither the identity
+ * nor a used asset lock: it was not created. The journal still holds the lock, so creating again
+ * reuses it; nothing new has to be paid.
+ */
+export class IdentityNotCreatedError extends Error {
+  constructor(
+    readonly identityId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Platform did not record identity ${identityId} (${errorMessage(cause)}). Your deposit is still locked for it: "Try again" sends the creation again with the same deposit, with nothing new to pay.`,
+    )
+    this.name = 'IdentityNotCreatedError'
+  }
+}
+
+/**
+ * Whether an IdentityCreate error leaves the outcome open: Platform may have executed the
+ * transition although the SDK could not verify or wait for the answer. Stale quorum keys and
+ * proof failures (L-06), transport errors and timeouts, no usable node, and "already used" /
+ * "already exists" (an earlier attempt landed). A consensus refusal (bad signature, too little
+ * in the lock) is definite and reported as it is.
+ */
+export function createOutcomeUnknown(e: unknown): boolean {
+  return (
+    isStaleConnectionError(e) ||
+    /proof verification|context provider|invalid quorum|dapi client error|deadline exceeded|timeout|timed out|already completely used|already exists/i.test(errorMessage(e, ''))
+  )
+}
+
+/** Reads of an identity whose create reported an error (a node may be a block behind). */
+export const LANDED_CHECKS = 8
+/** Between those reads. */
+export const LANDED_CHECK_MS = 2_000
+
+/** Where Platform records the asset-lock outpoints it has used (rs-drive `RootTree::SpentAssetLockTransactions`). */
+const SPENT_ASSET_LOCKS = Uint8Array.of(72)
+
+/**
+ * Whether Platform has used the asset lock at `outPoint` (its 36 bytes: txid, then vout LE). No
+ * element: never used. An empty item: fully used. Any other item: partly used, value left
+ * (rs-drive `fetch_asset_lock_outpoint_info`). A proven read, like every other.
+ */
+async function assetLockUsed(sdk: EvoSDK, outPoint: Uint8Array): Promise<'unused' | 'partly' | 'fully'> {
+  const [element] = await authSdk(sdk).system.pathElements([SPENT_ASSET_LOCKS], [outPoint])
+  if (element?.elementType === undefined) return 'unused'
+  return element.valueBytes === undefined || element.valueBytes.length === 0 ? 'fully' : 'partly'
+}
+
+/**
+ * After an IdentityCreate whose outcome is unknown: did it land? Reads the identity a bounded
+ * number of times, then asks whether the lock is still unused. `unknown` when neither answers
+ * (the lock is used but the identity is not visible yet, or Platform cannot be read).
+ */
+async function probeCreate(
+  sdk: EvoSDK,
+  identityId: string,
+  outPoint: Uint8Array,
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<'landed' | 'not-landed' | 'unknown'> {
+  let readFailed = false
+  for (let i = 0; i < LANDED_CHECKS; i++) {
+    if (i > 0) await sleep(delayMs, signal)
+    try {
+      if ((await authSdk(sdk).identities.fetch(identityId)) !== undefined) return 'landed'
+      readFailed = false
+    } catch (e) {
+      if (isAbort(e)) throw e
+      readFailed = true
+    }
+  }
+  if (readFailed) return 'unknown'
+  const lock = await assetLockUsed(sdk, outPoint).catch(() => null)
+  return lock === 'unused' || lock === 'partly' ? 'not-landed' : 'unknown'
+}
+
+/**
  * Run (or resume) the creation from the funded deposit onward. Resolves with the new identity
  * id and this browser's limited key. `persistKey` is called with the key before it is
  * registered on chain (store it in the vault there), so a tab closed mid-create can never
@@ -122,6 +211,14 @@ export async function createIdentityFromMnemonic(
      * key was lost, the key registration.
      */
     readonly onCharge?: (identityId: string, charge: { kind: 'identity:create' | 'key:renew'; keyId: number | null; balanceBefore: bigint | null }) => void
+    /**
+     * Renews the connection's quorum keys before the IdentityCreate, which verifies its answer
+     * against them without refreshing them itself (L-06). Default: the SDK service's
+     * `ensureFresh`.
+     */
+    readonly freshen?: () => Promise<unknown>
+    /** Between reads of an identity whose create reported an error (default {@link LANDED_CHECK_MS}). */
+    readonly landedCheckMs?: number
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
@@ -182,19 +279,21 @@ export async function createIdentityFromMnemonic(
   await save({ identityId })
 
   const limits = params.limits ?? defaultLimits()
-  const existingBalance = await authSdk(sdk).identities.balance(identityId).catch(() => undefined)
-  if (existingBalance !== undefined) {
-    // Created by an earlier run whose browser key was lost: the master key renews it.
+  /** The identity exists, but this browser holds none of its keys: the master key renews key 5. */
+  const renewBrowserKey = async (balanceBefore: bigint | null): Promise<{ identityId: string; key: LimitedKey }> => {
     params.onStage?.('registering', 'The identity exists; registering a key for this browser…')
     const master = await deriveMasterKey(mnemonic, network)
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
     // the same update, so no key nobody holds stays live.
     // The group was checked at the start of this run (assertGroupHolds above).
     const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
-    params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore: existingBalance })
+    params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore })
     await params.persistKey(identityId, key)
     return { identityId, key }
   }
+  const existingBalance = await authSdk(sdk).identities.balance(identityId).catch(() => undefined)
+  // Created by an earlier run whose browser key was lost.
+  if (existingBalance !== undefined) return renewBrowserKey(existingBalance)
 
   // 4: the browser key goes to the vault first, then IdentityCreate registers it.
   params.onStage?.('registering')
@@ -204,6 +303,8 @@ export async function createIdentityFromMnemonic(
   const identity = new Identity(identityId)
   const signer = new IdentitySigner()
   const assetLockPrivateKey = PrivateKey.fromWIF(lockKey.wif)
+  // The create reported an error, but the identity turned out to be there.
+  let landedAfterError = false
   try {
     for (const k of CANONICAL_KEYS) {
       const d = await deriveAt(mnemonic, identityKeyPath(network, k.id), network)
@@ -233,7 +334,24 @@ export async function createIdentityFromMnemonic(
       }),
     )
     signer.addKey(browserKey)
-    await authSdk(sdk).identities.create({ identity, assetLockProof, assetLockPrivateKey, signer })
+    // L-06: the create verifies its answer against the connection's quorum keys as they are.
+    await (params.freshen ?? (() => evoSdkService.ensureFresh()))()
+    try {
+      await authSdk(sdk).identities.create({ identity, assetLockProof, assetLockPrivateKey, signer })
+    } catch (e) {
+      const outPoint = assetLockProof.outPoint?.toBytes()
+      if (isAbort(e) || !createOutcomeUnknown(e) || outPoint === undefined) throw e
+      // The answer could not be verified: ask Platform whether the identity is there.
+      params.onStage?.('registering', 'Checking whether Platform recorded your identity…')
+      const outcome = await probeCreate(sdk, identityId, outPoint, params.landedCheckMs ?? LANDED_CHECK_MS, params.signal)
+      if (outcome === 'not-landed') throw new IdentityNotCreatedError(identityId, e)
+      if (outcome === 'unknown') {
+        throw new Error(
+          `Could not confirm whether identity ${identityId} was created (${errorMessage(e)}). "Try again" checks first and reuses your deposit, so nothing is paid twice.`,
+        )
+      }
+      landedAfterError = true
+    }
     // 1 duff = 1000 credits (rs-dpp `CREDITS_PER_DUFF`); a journal from an older build lacks it.
     const lockCredits = typeof journal.lockedDuffs === 'number' ? BigInt(journal.lockedDuffs) * 1000n : null
     params.onCharge?.(identityId, { kind: 'identity:create', keyId: null, balanceBefore: lockCredits })
@@ -244,6 +362,13 @@ export async function createIdentityFromMnemonic(
   }
 
   params.onStage?.('verifying')
-  const verified = await verifyLimitedKey(sdk, identityId, BROWSER_KEY_ID, group, network, wif, limits)
-  return { identityId, key: { keyId: BROWSER_KEY_ID, wif, limits: verified } }
+  try {
+    const verified = await verifyLimitedKey(sdk, identityId, BROWSER_KEY_ID, group, network, wif, limits)
+    return { identityId, key: { keyId: BROWSER_KEY_ID, wif, limits: verified } }
+  } catch (e) {
+    // The identity found after an unverified create may be an earlier attempt's, with that
+    // attempt's key 5 (this one was refused as a duplicate): the master key renews it.
+    if (!landedAfterError || isAbort(e)) throw e
+    return renewBrowserKey((await authSdk(sdk).identities.balance(identityId).catch(() => undefined)) ?? null)
+  }
 }
