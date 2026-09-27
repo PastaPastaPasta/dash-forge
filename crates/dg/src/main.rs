@@ -864,13 +864,7 @@ impl RoleArg {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    forge_core::logging::init_cli();
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,

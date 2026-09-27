@@ -43,6 +43,8 @@ pub mod funding;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;
+#[cfg(feature = "cli-logging")]
+pub mod logging;
 pub mod members;
 pub mod network;
 pub mod pack;

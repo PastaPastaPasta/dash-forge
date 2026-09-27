@@ -73,6 +73,7 @@ case "$INPUT_STORAGE_KIND" in
         [ -z "$INPUT_S3_REGION" ] || args+=(--region "$INPUT_S3_REGION")
         [ -z "$INPUT_S3_PUBLIC_URL" ] || args+=(--public-url "$INPUT_S3_PUBLIC_URL")
         [ -z "$INPUT_S3_PREFIX" ] || args+=(--prefix "$INPUT_S3_PREFIX")
+        [ "${INPUT_S3_VIRTUAL_HOSTED:-false}" != true ] || args+=(--virtual-hosted)
         ;;
     ipfs-pinning)
         [ -n "${PINNING_TOKEN:-}" ] || die "storage-kind ipfs-pinning needs the PINNING_TOKEN secret in 'env:'."

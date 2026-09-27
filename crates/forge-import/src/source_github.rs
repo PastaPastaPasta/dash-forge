@@ -115,45 +115,33 @@ pub fn collect(
         return Ok(out);
     }
 
-    let mut items: Vec<GhIssue> = gh
-        .issues(since)?
-        .into_iter()
-        .filter(|i| {
-            if i.is_pull_request() {
-                classes.prs
-            } else {
-                classes.issues
-            }
-        })
-        .collect();
+    let keep = |i: &GhIssue| {
+        if i.is_pull_request() {
+            classes.prs
+        } else {
+            classes.issues
+        }
+    };
+    // `--limit` reads only the pages holding the first `limit` items, and then only their
+    // threads, one request each: on a repository with thousands of items that is a few
+    // requests instead of every comment it ever had. A full run reads the repository-wide
+    // listings instead (100 per request beats a request per item).
+    // PRs only, and no `since` (the pulls listing cannot filter by update time): the pulls
+    // listing, so an issue-heavy repository's issues are not paged through.
+    let (mut items, truncated) = if limit > 0 && classes.prs && !classes.issues && since.is_none() {
+        gh.first_pulls(limit)?
+    } else if limit > 0 {
+        gh.first_issues(since, limit, keep)?
+    } else {
+        (gh.issues(since)?.into_iter().filter(keep).collect(), false)
+    };
     items.sort_by_key(|i| i.number);
-    if limit > 0 && items.len() > limit {
-        items.truncate(limit);
-        out.truncated = true;
-    }
-    let wanted: BTreeSet<u64> = items.iter().map(|i| i.number).collect();
-
-    // Comments, grouped by parent number, in creation order.
-    let mut comments: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
-    let mut review_comments: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
-    if !wanted.is_empty() {
-        for c in gh.issue_comments(since)? {
-            if let Some(n) = c.number().filter(|n| wanted.contains(n)) {
-                comments.entry(n).or_default().push(c);
-            }
-        }
-        if classes.prs {
-            for c in gh.review_comments(since)? {
-                if let Some(n) = c.number().filter(|n| wanted.contains(n)) {
-                    review_comments.entry(n).or_default().push(c);
-                }
-            }
-        }
-    }
+    out.truncated = truncated;
+    let mut threads = threads(gh, &items, classes, since, limit > 0)?;
 
     // PR details from the listing (one call per 100 PRs); a PR the listing missed (it
-    // changed mid-read) falls back to its own call.
-    let mut pulls = if classes.prs && items.iter().any(GhIssue::is_pull_request) {
+    // changed mid-read), or any PR of a `--limit` run, is read by its own call.
+    let mut pulls = if limit == 0 && classes.prs && items.iter().any(GhIssue::is_pull_request) {
         gh.pulls(since)?
     } else {
         BTreeMap::new()
@@ -163,8 +151,7 @@ pub fn collect(
             continue;
         };
         let mut t = target(src, i, number);
-        let mut thread = comments.remove(&i.number).unwrap_or_default();
-        thread.extend(review_comments.remove(&i.number).unwrap_or_default());
+        let mut thread = threads.remove(&i.number).unwrap_or_default();
         thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
         if i.is_pull_request() {
@@ -200,6 +187,45 @@ pub fn collect(
                 .collect();
         }
         out.targets.push(t);
+    }
+    Ok(out)
+}
+
+/// Every comment (conversation and review) on `items`, by parent number. `per_item` (a
+/// `--limit` run) reads each item's own thread; otherwise the repository-wide listings are
+/// read once and filtered (100 per request beats a request per item).
+fn threads(
+    gh: &GithubClient,
+    items: &[GhIssue],
+    classes: Classes,
+    since: Option<&str>,
+    per_item: bool,
+) -> Result<BTreeMap<u64, Vec<GhComment>>> {
+    let mut out: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
+    if per_item {
+        for i in items {
+            let thread = out.entry(i.number).or_default();
+            if i.comments > 0 {
+                thread.extend(gh.comments_on(i.number, since)?);
+            }
+            if i.is_pull_request() {
+                thread.extend(gh.review_comments_on(i.number, since)?);
+            }
+        }
+        return Ok(out);
+    }
+    if items.is_empty() {
+        return Ok(out);
+    }
+    let wanted: BTreeSet<u64> = items.iter().map(|i| i.number).collect();
+    let mut all = gh.issue_comments(since)?;
+    if classes.prs {
+        all.extend(gh.review_comments(since)?);
+    }
+    for c in all {
+        if let Some(n) = c.number().filter(|n| wanted.contains(n)) {
+            out.entry(n).or_default().push(c);
+        }
     }
     Ok(out)
 }
@@ -343,6 +369,167 @@ mod tests {
 
     fn src() -> GithubRepoRef {
         GithubRepoRef::parse("o/r").unwrap()
+    }
+
+    /// A large repository served from memory: 250 issues and PRs (every third a PR), each
+    /// with one conversation comment, and every request recorded.
+    struct BigRepo(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    const BIG: u64 = 250;
+
+    fn issue_json(n: u64) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "number": n, "title": format!("item {n}"), "state": "open",
+            "user": {"login": "bob"}, "comments": 1,
+            "html_url": format!("https://github.com/o/r/issues/{n}"),
+            "created_at": "2020-01-02T03:04:05Z",
+        });
+        if n.is_multiple_of(3) {
+            v["pull_request"] = serde_json::json!({});
+        }
+        v
+    }
+
+    fn comment_json(n: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": n, "body": "hi", "user": null,
+            "html_url": format!("https://github.com/o/r/issues/{n}#issuecomment-{n}"),
+            "created_at": "2020-01-02T03:04:05Z",
+            "issue_url": format!("https://api.github.com/repos/o/r/issues/{n}"),
+        })
+    }
+
+    fn pull_json(n: u64) -> serde_json::Value {
+        serde_json::json!({
+            "number": n, "head": {"ref": "f", "sha": "ab".repeat(20)},
+            "base": {"ref": "main", "sha": "cd".repeat(20)},
+        })
+    }
+
+    impl BigRepo {
+        fn answer(path: &str) -> Vec<serde_json::Value> {
+            let rest = path.strip_prefix("repos/o/r/").unwrap();
+            let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
+            let page: u64 = query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("page="))
+                .map_or(0, |p| p.parse().unwrap());
+            let range = |page: u64| {
+                if page == 0 {
+                    1..=BIG
+                } else {
+                    (page - 1) * 100 + 1..=(page * 100).min(BIG)
+                }
+            };
+            let parts: Vec<&str> = route.split('/').collect();
+            match parts.as_slice() {
+                ["issues"] => range(page).map(issue_json).collect(),
+                ["issues", "comments"] => (1..=BIG).map(comment_json).collect(),
+                ["issues", n, "comments"] => vec![comment_json(n.parse().unwrap())],
+                ["pulls"] => range(page)
+                    .filter(|n| n.is_multiple_of(3))
+                    .map(pull_json)
+                    .collect(),
+                ["pulls", "comments"] | ["pulls", _, "comments" | "reviews"] => Vec::new(),
+                other => panic!("unexpected request {other:?}"),
+            }
+        }
+    }
+
+    impl crate::github::GhApi for BigRepo {
+        fn json(&self, path: &str) -> Result<Vec<u8>> {
+            self.0.borrow_mut().push(path.to_string());
+            let rest = path.strip_prefix("repos/o/r/pulls/").unwrap_or("");
+            if let Ok(n) = rest.parse::<u64>() {
+                return Ok(serde_json::to_vec(&pull_json(n))?);
+            }
+            let issue = path.strip_prefix("repos/o/r/issues/").unwrap_or("");
+            if let Ok(n) = issue.parse::<u64>() {
+                return Ok(serde_json::to_vec(&issue_json(n))?);
+            }
+            Ok(serde_json::to_vec(&Self::answer(path))?)
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<String>> {
+            self.0.borrow_mut().push(format!("{path} (all pages)"));
+            Ok(Self::answer(path).iter().map(ToString::to_string).collect())
+        }
+    }
+
+    fn big_repo() -> (GithubClient, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        let log = std::rc::Rc::default();
+        let gh = GithubClient::with_api(src(), Box::new(BigRepo(std::rc::Rc::clone(&log))));
+        (gh, log)
+    }
+
+    /// F-10: `--limit 2` on a large repository read every comment of the repository (tens
+    /// of thousands on `octocat/Spoon-Knife`). It must read only the chosen items' threads,
+    /// and only the first page of the listing.
+    #[test]
+    fn a_limited_run_reads_only_the_chosen_items() {
+        let (gh, log) = big_repo();
+        let all = Classes::parse("issues,prs").unwrap();
+        let out = collect(&gh, &src(), all, None, 2).unwrap();
+        assert_eq!(
+            out.targets.iter().map(|t| t.number).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(out.truncated);
+        assert!(out.targets.iter().all(|t| t.comments.len() == 1));
+        assert!(out.targets[0].comments[0].body.contains("by @ghost"));
+        // Repository-wide listings are what a limited run must not page through; one
+        // item's thread may span pages.
+        let repo_wide = |p: &String| {
+            p.contains("(all pages)")
+                && (p.contains("issues?")
+                    || p.contains("issues/comments?")
+                    || p.contains("pulls?")
+                    || p.contains("pulls/comments?"))
+        };
+        let log = log.borrow();
+        assert!(
+            !log.iter().any(repo_wide),
+            "a limited run paged a whole listing: {log:#?}"
+        );
+        assert_eq!(log.len(), 3, "one listing page and two threads: {log:#?}");
+
+        // A PR among the chosen items: its detail, reviews and line comments, by number.
+        let (gh, log) = big_repo();
+        let out = collect(&gh, &src(), all, None, 3).unwrap();
+        assert_eq!(out.targets[2].kind, TargetKind::Patch);
+        assert!(!log.borrow().iter().any(repo_wide));
+        assert!(log.borrow().iter().any(|p| p.ends_with("pulls/3")));
+    }
+
+    /// `--sync prs --limit`: the pulls listing, never the issue listing.
+    #[test]
+    fn a_limited_prs_only_run_reads_the_pulls_listing() {
+        let (gh, log) = big_repo();
+        let out = collect(&gh, &src(), Classes::parse("prs").unwrap(), None, 2).unwrap();
+        assert_eq!(
+            out.targets.iter().map(|t| t.number).collect::<Vec<_>>(),
+            [3, 6]
+        );
+        assert!(out.truncated);
+        assert!(out.targets.iter().all(|t| t.kind == TargetKind::Patch));
+        let log = log.borrow();
+        assert!(!log.iter().any(|p| p.contains("issues?")), "{log:#?}");
+    }
+
+    /// Without `--limit`, the repository-wide listings stay: one paged read per kind beats
+    /// a request per item.
+    #[test]
+    fn a_full_run_reads_comments_repository_wide() {
+        let (gh, log) = big_repo();
+        let out = collect(&gh, &src(), Classes::parse("issues").unwrap(), None, 0).unwrap();
+        assert_eq!(out.targets.len(), 167);
+        assert!(!out.truncated);
+        assert!(out.targets.iter().all(|t| t.comments.len() == 1));
+        let log = log.borrow();
+        assert!(log
+            .iter()
+            .any(|p| p.contains("issues/comments?") && p.contains("(all pages)")));
+        assert!(log.len() <= 3, "{log:#?}");
     }
 
     #[test]

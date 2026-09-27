@@ -104,13 +104,7 @@ impl Goal {
 }
 
 fn run(goal: &mut Goal) -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    forge_core::logging::init_cli();
 
     let args: Vec<String> = std::env::args().collect();
 
@@ -244,7 +238,8 @@ fn protocol_loop<R: BufRead, W: Write>(
             "list" => {
                 goal.set(line.contains("for-push"), &opts);
                 fail_if_shallow(&opts)?;
-                let out = rt.block_on(helper.list()).context("list refs")?;
+                let for_push = line.split_whitespace().nth(1) == Some("for-push");
+                let out = rt.block_on(helper.list(for_push)).context("list refs")?;
                 for l in &out {
                     writeln!(writer, "{l}")?;
                 }

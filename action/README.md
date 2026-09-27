@@ -62,6 +62,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `sync` | `code,releases` | Comma list of `code`, `issues`, `prs`, `releases`, `labels`. |
 | `storage-kind` | `platform` | Where pack bytes go: `platform`, `s3` or `ipfs-pinning`. Refs, manifests, issues and PRs are always on Platform. |
 | `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket (R2, B2, S3, MinIO). `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |
+| `s3-virtual-hosted` | `false` | `true`: virtual-hosted addressing (`https://<bucket>.<endpoint host>/<key>`), the same as `dg storage add --virtual-hosted`. Use it for AWS S3, which deprecates path-style. |
 | `pinning-endpoint` | | `ipfs-pinning`: Pinning Service API base URL. |
 | `ipfs-api` | `http://127.0.0.1:5001` | `ipfs-pinning`: the kubo RPC API the job runs, for example as a service container. |
 | `replicas` | `1` | Storage confirmations a push needs. The Action never falls back to Platform storage silently. |
