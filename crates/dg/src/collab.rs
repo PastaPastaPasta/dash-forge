@@ -143,7 +143,16 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     // A private removal rotates. Also when the member was already gone but the repair check
     // still names them (an earlier removal whose rotation did not finish): re-running
     // `dg collab remove` finishes it.
+    // Dropping only the writer role of someone who stays a maintainer changes nobody's access
+    // to the key: no rotation (dropping the maintainer role of someone who stays a writer does
+    // rotate, since their wraps stop counting, §5.4; they are wrapped the new key).
+    let stays_maintainer = role == forge_core::rules::v2::Role::Writer
+        && MemberReader::new(client)
+            .role_doc(handle, member, forge_core::rules::v2::Role::Maintainer)
+            .await?
+            .is_some();
     let needs_rotation = private
+        && !stays_maintainer
         && (removed
             || still_holds_current_key(&signer, handle, member)
                 .await

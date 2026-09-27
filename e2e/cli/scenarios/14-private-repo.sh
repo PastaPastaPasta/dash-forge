@@ -142,6 +142,31 @@ else
   bad "unexpected objects in the removed member's clone"
 fi
 
+step "COLLAB rejoins as a maintainer and anchors a new epoch (dg repo keys rotate)"
+if dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-addm.json" 2>"$LOG-addm.err" \
+   && dg_as "$ID_COLLAB" -y --json repo keys rotate "$REPO" >"$LOG-rot.json" 2>"$LOG-rot.err"; then
+  EPOCH_M="$(json_field "$LOG-rot.json" 'd["rotation"]["epoch"]')"
+  ok "COLLAB anchored epoch ${EPOCH_M}"
+  step "OWNER removes maintainer COLLAB: their epoch is re-anchored first, then rotated"
+  if dg_as "$ID_OWNER" -y --json collab remove "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-rmm.json" 2>"$LOG-rmm.err"; then
+    EPOCH="$(json_field "$LOG-rmm.json" 'd["rotation"]["epoch"]')"
+    [[ "$EPOCH" -gt "$EPOCH_M" ]] && ok "rotated to epoch ${EPOCH} (above ${EPOCH_M}; no number reused)" || bad "epoch after maintainer removal: ${EPOCH}"
+    CLONE_O2="${WORKROOT}/s14-owner2"
+    if _retry "$LOG-co2.err" git_dash "$ID_OWNER" "$LOG-co2" clone "$REMOTE" "$CLONE_O2" \
+        && [[ "$(git -C "$CLONE_O2" rev-parse HEAD)" == "$TIP2" ]]; then
+      ok "owner still reads every epoch after the anchoring maintainer's removal"
+    else
+      cat "$LOG-co2.err" >&2; bad "owner clone after the maintainer removal"
+    fi
+  else
+    cat "$LOG-rmm.err" "$LOG-rmm.json" >&2; bad "removing maintainer COLLAB failed"
+  fi
+else
+  cat "$LOG-addm.err" "$LOG-rot.err" "$LOG-rot.json" >&2
+  is_flake "$LOG-rot.err" && skip_scenario "maintainer rotation failed on a flake"
+  bad "COLLAB could not rejoin and rotate as a maintainer"
+fi
+
 step "dg repo keys status"
 if dg_read_retry "$ID_OWNER" "$LOG-keys.json" "$LOG-keys.err" --json repo keys status "$REPO"; then
   [[ "$(json_field "$LOG-keys.json" 'd["currentEpoch"]')" == "$EPOCH" ]] && ok "current epoch $EPOCH" || bad "keys status epoch"

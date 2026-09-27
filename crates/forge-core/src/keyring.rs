@@ -1308,6 +1308,18 @@ pub async fn reanchor_before_removal(
             .await?;
         done.push(epoch);
     }
+    // Wraps from `leaving` stop counting with their role too (§5.4 (2)). If this signer's only
+    // accepted wrap of the current epoch is theirs, it would lose the epoch it must chain the
+    // coming rotation from: wrap it to itself first (older epochs follow through the chain).
+    if let Some(n) = w.kr.resolution.current_epoch {
+        let held_otherwise =
+            w.kr.wraps
+                .iter()
+                .any(|x| x.epoch == n && x.member == w.me && x.owner != leaving && x.key.is_some());
+        if let (false, Some(key)) = (held_otherwise, w.kr.epoch_key(n).cloned()) {
+            self_wrap(signer, &w, n, key).await?;
+        }
+    }
     Ok((done, unreadable))
 }
 
