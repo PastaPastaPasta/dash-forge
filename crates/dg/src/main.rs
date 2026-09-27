@@ -166,7 +166,7 @@ pub enum Command {
     /// Webhooks a relay delivers (forge-v2).
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
-    /// Import (or re-sync) a GitHub repository into forge-v2: code, issues, PRs, releases.
+    /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {

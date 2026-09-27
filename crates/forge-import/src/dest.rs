@@ -286,7 +286,9 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
         }
         Ok(())
             if summary.status == Status::Ok
-                && (summary.counts.skipped > 0 || summary.counts.git_skipped > 0) =>
+                && (summary.counts.skipped > 0
+                    || summary.counts.git_skipped > 0
+                    || summary.incomplete) =>
         {
             summary.status = Status::Partial;
         }
