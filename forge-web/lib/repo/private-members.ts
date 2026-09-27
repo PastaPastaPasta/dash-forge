@@ -237,12 +237,8 @@ function senderKey(session: PrivateSession, c: PrivateWriteContext): IdentityPub
  * from a current maintainer whose key matches the anchor). The caller wipes it.
  */
 async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {
-  const want = session.resolution.keys.get(epoch)
-  if (want === undefined) throw new PrivateMembersError(`you can't read epoch ${epoch}`, 'E306')
-  const self = decodeIdentifier(c.auth.identityId)
-  for (const w of session.wraps) {
-    if (w.row.epoch !== epoch || w.row.keys === undefined || !bytesEqual(w.row.memberId, self)) continue
-    if (!bytesEqual(w.row.keys.commit, want.commit)) continue
+  if (!session.resolution.keys.has(epoch)) throw new PrivateMembersError(`you can't read epoch ${epoch}`, 'E306')
+  for (const w of acceptedOwnWraps(session, c.auth.identityId, epoch)) {
     return c.ops.unwrapRaw({
       document: w.raw,
       counterpartyKey: keyOf(session, base58Encode(w.row.owner), w.senderKeyId),
@@ -251,6 +247,21 @@ async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoc
     })
   }
   throw new PrivateMembersError(`no wrap of epoch ${epoch} to you was found`, 'E306')
+}
+
+/** The reader's own wraps for `epoch` whose key is the epoch's key (accepted, §5.4). */
+function acceptedOwnWraps(session: PrivateSession, self: string, epoch: number): WrapDoc[] {
+  const want = session.resolution.keys.get(epoch)
+  if (want === undefined) return []
+  const selfId = decodeIdentifier(self)
+  return session.wraps.filter(
+    (w) =>
+      w.row.epoch === epoch &&
+      w.row.keys !== undefined &&
+      bytesEqual(w.row.memberId, selfId) &&
+      bytesEqual(w.row.keys.commit, want.commit) &&
+      isMaintainer(session, base58Encode(w.row.owner)),
+  )
 }
 
 /** Post one `repoKey` wrapping `raw` (epoch `keys.epoch`) to `identity`'s key `keyId`. */
@@ -452,14 +463,43 @@ export async function removePrivateMember(
  * The cost shown before removing `role` from `memberId`: re-anchoring their epochs (a maintainer),
  * then the rotation when there is one (the delete itself refunds, and is not counted).
  */
-export function removalCost(session: PrivateSession, memberId: string, role: Role, plan: RotationPlan | null): CostPreview {
+export function removalCost(session: PrivateSession, self: string, memberId: string, role: Role, plan: RotationPlan | null): CostPreview {
   const reanchors = role === 'maintainer' ? epochsAnchoredBy(session, memberId).map(() => previewCreate('config')) : []
-  return sumPreviews([...reanchors, ...(plan !== null ? [rotationCost(plan)] : [])])
+  const keep = role === 'maintainer' && needsKeepWrap(session, self, memberId) ? [previewCreate('repoKey')] : []
+  return sumPreviews([...keep, ...reanchors, ...(plan !== null ? [rotationCost(plan)] : [])])
 }
 
 /** The epochs whose anchor `memberId` wrote (the ones that go when their maintainer role does). */
 export function epochsAnchoredBy(session: PrivateSession, memberId: string): number[] {
   return [...session.anchors.values()].filter((a) => a.owner === memberId).map((a) => a.epoch).sort((a, b) => a - b)
+}
+
+/**
+ * Before a maintainer's role is deleted: the remover must keep the current epoch `n` it chains the
+ * rotation from. When its only accepted wraps for `n` come from the leaving maintainer (whose
+ * wraps stop counting, §5.4 check 2), it posts a self-wrap of `K_n` first. A reader that holds
+ * `n` only through the chain has no wrap to unwrap: refused.
+ */
+/** Whether `self` needs a self-wrap of the current key before `leaving`'s maintainer role goes. */
+export function needsKeepWrap(session: PrivateSession, self: string, leaving: string): boolean {
+  const n = session.resolution.currentEpoch
+  if (n === null) return false
+  const leavingId = decodeIdentifier(leaving)
+  return !acceptedOwnWraps(session, self, n).some((w) => !bytesEqual(w.row.owner, leavingId))
+}
+
+async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, leaving: string, intent: string): Promise<void> {
+  const n = session.resolution.currentEpoch
+  if (n === null || !needsKeepWrap(session, c.auth.identityId, leaving)) return
+  if (acceptedOwnWraps(session, c.auth.identityId, n).length === 0) {
+    throw new PrivateMembersError(`you hold the current key (epoch ${n}) only through the key chain; ask another maintainer to remove this one`, 'E309')
+  }
+  const kn = await rawEpochKey(session, c, n)
+  try {
+    await postWrap(c, session, kn.keys, kn.raw, c.auth.identityId, c.ops.keyId, `${intent}:keep`)
+  } finally {
+    kn.raw.fill(0)
+  }
 }
 
 /**
@@ -484,6 +524,7 @@ async function reanchorEpochsOf(
     )
   }
   const self = decodeIdentifier(c.auth.identityId)
+  await keepCurrentKey(c, session, memberId, intent)
   for (const e of epochs) {
     const keys = session.resolution.keys.get(e) as EpochKeys
     const anchor = session.resolution.anchors.get(e)

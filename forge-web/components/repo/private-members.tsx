@@ -247,7 +247,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             ? null
             : removalPlan.plan === null && removing.role === 'writer'
               ? previewDelete(removing.role)
-              : removalCost(session, removing.member, removing.role, removalPlan.plan)
+              : removalCost(session, identity ?? '', removing.member, removing.role, removalPlan.plan)
         }
         confirmLabel="Sign & remove"
         onConfirm={async (intent) => {

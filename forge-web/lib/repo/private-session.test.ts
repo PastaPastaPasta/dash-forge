@@ -29,7 +29,7 @@ import { openPrivateArtifact, readPrivateRange } from '../view/private-packs'
 import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
 import { listIssues, readReviews } from './issues'
-import { epochsAnchoredBy, planRepair, planRotation, removalEffect, rotationCost } from './private-members'
+import { epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
 import { assertNoPlaintext } from './writes'
@@ -465,6 +465,17 @@ describe('rotation and repair planning', () => {
     expect(removalEffect(s.members, b58(ALICE), 'maintainer')).toBe('rotate-exclude')
     expect(epochsAnchoredBy(s, b58(ALICE))).toEqual([0, 1])
     expect(epochsAnchoredBy(s, b58(BOB))).toEqual([])
+  })
+
+  it('keeps the current key when the remover holds it only from the leaving maintainer', async () => {
+    const w = await world()
+    // BOB, a maintainer, is wrapped epoch 0 only by ALICE; removing ALICE would drop BOB's key.
+    w.members.push({ identity: b58(BOB), role: 'maintainer', createdAt: 50 })
+    const bob = await sessionFor(w, BOB)
+    expect(needsKeepWrap(bob, b58(BOB), b58(ALICE))).toBe(true)
+    // With a second wrap from another current maintainer (BOB's own), no keep-wrap is needed.
+    w.wraps.push(wrapDoc(BOB, BOB, 0, 70))
+    expect(needsKeepWrap(await sessionFor(w, BOB), b58(BOB), b58(ALICE))).toBe(false)
   })
 
   it('needs the current epoch to be readable, and a maintainer', async () => {
