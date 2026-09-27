@@ -387,7 +387,23 @@ export async function scanAssignedAndMentions(
     }
   })
   const repoOf = new Map(scanned.map((r) => [r.repo.id, r.repo]))
-  const assignedRows = await readTargetsByIds(sdk, forge, scanned.flatMap((r) => r.assignedIds))
+  // Assignments in ANY repo, from the sparse `event.addressee (refId)` index: an assign names
+  // the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member events can be
+  // assign kinds, and only those carrying `refId` are indexed, so this is a small read.
+  const addressed = await read(sdk, {
+    dataContractId: forge.collab,
+    documentTypeName: DOC.event,
+    where: [['refId', '==', me]],
+    orderBy: [['refId', 'asc']],
+    limit: 100,
+  }).catch(() => [] as PlainDocument[])
+  const indexed = parseDocs(eventDoc, addressed).filter((e) => e.kind === ASSIGN || e.kind === UNASSIGN)
+  const fromIndex = assignedTargets(indexed, me)
+  // The per-repo scan also sees older assigns written without `refId`. A target the index
+  // folds as unassigned was unassigned by a newer, indexed event: drop it from the scan's set.
+  const unassigned = new Set(indexed.map((e) => e.targetId).filter((t) => !fromIndex.has(t)))
+  const scannedIds = scanned.flatMap((r) => r.assignedIds).filter((t) => !unassigned.has(t))
+  const assignedRows = await readTargetsByIds(sdk, forge, [...new Set([...scannedIds, ...fromIndex])])
   const newestFirst = (a: TargetRow, b: TargetRow): number => b.createdAt - a.createdAt
   return {
     assigned: [...assignedRows.values()].map((t) => ({ ...t, repo: repoOf.get(t.repoId) ?? null })).sort(newestFirst),

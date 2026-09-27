@@ -104,7 +104,7 @@ export function MarkdownEditor({
     )
   return (
     <div className={className}>
-      <div role="tablist" aria-label={`${label} editor`} className="flex gap-1">
+      <div role="tablist" aria-label="Write or preview" className="flex gap-1">
         <button type="button" role="tab" aria-selected={tab === 'write'} className={tabClass(tab === 'write')} onClick={() => setTab('write')}>
           Write
         </button>
@@ -118,7 +118,7 @@ export function MarkdownEditor({
           <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="min-h-[120px] rounded-tl-none" autoFocus={autoFocus} />
         </>
       ) : (
-        <div role="tabpanel" aria-label={`${label} preview`} className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
+        <div role="tabpanel" aria-label="Rendered preview" className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
           {value.trim() === '' ? <p className="italic text-anvil-500 dark:text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} />}
         </div>
       )}

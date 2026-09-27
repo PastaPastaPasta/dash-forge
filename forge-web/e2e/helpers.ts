@@ -176,7 +176,10 @@ export async function runAxe(page: import('@playwright/test').Page, label: strin
 
 /** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/). */
 export function idFile(name: string): string {
-  return join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+  // A spec's own identities (not the shared pool) can live elsewhere: E2E_ID_DIR names it.
+  const dir = process.env['E2E_ID_DIR'] ?? join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`)
+  const own = join(dir, `${name}.identity.json`)
+  return existsSync(own) ? own : join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
 }
 
 export const PASSPHRASE = 'e2e passphrase for the vault'

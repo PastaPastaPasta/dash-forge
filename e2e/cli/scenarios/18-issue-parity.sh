@@ -84,9 +84,11 @@ if dg_write "$ID_OWNER" "$LOG-assign" issue assign "$REPO" "$N" me; then
   check "assignee reads back" until_read "$LOG-av" "d['state']['assignees'] == ['$E2E_OWNER_ID']" issue view "$REPO" "$N"
   check "list --assignee me finds it" until_read "$LOG-al" "$N in [i['number'] for i in d['issues']]" issue list "$REPO" --assignee me --limit 100
   # The event's refId, read raw: the sparse addressee index holds only events with a refId.
-  CHAIN="${E2E_REPO_ROOT}/../dash-forge-qa/bin/chain-doc.mjs"
-  if [[ -f "$CHAIN" ]]; then
-    if node "$CHAIN" collab event "[[\"refId\",\"==\",\"$E2E_OWNER_ID\"]]" --limit 100 >"$LOG-addr.json" 2>"$LOG-addr.err"; then
+  # E2E_CHAIN_DOC: the QA harness's independent reader (bin/chain-doc.mjs), pointed at this
+  # checkout's deployment record. Optional: skipped (not failed) when absent.
+  CHAIN="${E2E_CHAIN_DOC:-}"
+  if [[ -n "$CHAIN" && -f "$CHAIN" ]]; then
+    if FORGE_SRC="$E2E_REPO_ROOT" node "$CHAIN" collab event "[[\"refId\",\"==\",\"$E2E_OWNER_ID\"]]" --limit 100 >"$LOG-addr.json" 2>"$LOG-addr.err"; then
       check "the addressee index finds the assign event" assert_file_contains "$LOG-addr.json" "$EV"
     else
       info "addressee read skipped: $(tail -1 "$LOG-addr.err")"
