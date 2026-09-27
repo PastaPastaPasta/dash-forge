@@ -23,7 +23,7 @@ type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 type Obj = { [k: string]: Json }
 
 /** Props the writers hand over as bytes (ids and byte arrays), hex in the vectors. */
-const BYTE_PROPS = new Set(['targetId', 'patchId', 'sourceRepoId', 'replyTo', 'reviewId', 'headOid', 'commitOid', 'patchManifestHash', 'baseRefNameHash', 'sourceRefNameHash', 'enc'])
+const BYTE_PROPS = new Set(['targetId', 'patchId', 'sourceRepoId', 'replyTo', 'reviewId', 'headOid', 'commitOid', 'patchManifestHash', 'baseRefNameHash', 'sourceRefNameHash', 'refId', 'enc'])
 
 const DIR = resolve(process.cwd(), '..', 'forge-contracts', 'vectors')
 const FILES = readdirSync(DIR)
@@ -44,7 +44,7 @@ function toJson(props: Record<string, unknown>): Json {
 
 describe('the shared private_collab_seal vectors through the web writer', () => {
   it('finds them', () => {
-    expect(FILES.length).toBeGreaterThanOrEqual(19)
+    expect(FILES.length).toBeGreaterThanOrEqual(23)
   })
 
   for (const f of FILES) {

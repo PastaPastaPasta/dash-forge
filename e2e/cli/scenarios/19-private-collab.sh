@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Scenario 19: sealed issues, pull requests, comments and reviews in a private repository
-# (docs/security/private-repos.md §4, §8).
+# Scenario 19: sealed issues, pull requests, comments, reviews and labels in a private repository
+# (docs/security/private-repos.md §4, §7, §8).
 #
 # Runs under two identities minted for this run (P_OWNER, P_MEMBER; no shared-identity nonce
 # races), plus the shared CONTRIB as a reader who never joins.
 #
 #   1. P_OWNER `dg repo create --private`, pushes main and a feature branch, adds P_MEMBER
-#   2. P_OWNER opens issue #1 and PR #1 (feature → main); P_MEMBER comments on the issue and
-#      approves the PR with a body
-#   3. the stored documents carry no plaintext title, body, branch name or path: every one
-#      has `epoch` + `enc`, and the PR's base hash is not sha256("refs/heads/main")
-#   4. P_MEMBER reads the issue (title, body, comment) and the PR (title, base, approval);
+#   2. P_OWNER opens issue #1 and PR #1 (feature → main); P_MEMBER comments on the issue,
+#      labels it, and approves the PR with a body
+#   3. the stored documents carry no plaintext title, body, branch name, path or label name:
+#      every one has `epoch` + `enc`, and the PR's base hash is not sha256("refs/heads/main")
+#   4. P_MEMBER reads the issue (title, body, comment, label) and the PR (title, base, approval);
 #      CONTRIB (never a member) is refused (E307) and lists nothing readable
 #   5. P_OWNER merges the PR (1 approval counted from the sealed review)
 #
 # Needs the moutai funding key (MOUTAI_FUNDING, default the QA harness's) and
 # tools/mint-identity's node modules; skips without them.
-SCENARIO_NAME="19 private repository: sealed issues, PRs, comments and reviews"
+SCENARIO_NAME="19 private repository: sealed issues, PRs, comments, reviews and labels"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
@@ -82,7 +82,9 @@ fi
 
 ISSUE_TITLE="sealed issue ${RUN_ID}"
 PR_TITLE="sealed pr ${RUN_ID}"
-step "P_OWNER opens an issue and a PR; P_MEMBER comments and approves"
+LABEL="secret-label-${RUN_ID}"
+LABEL="${LABEL:0:120}"
+step "P_OWNER opens an issue and a PR; P_MEMBER comments, labels and approves"
 if dg_as "$P_OWNER" -y --json issue create "$REPO" --title "$ISSUE_TITLE" --body "secret body ${RUN_ID}" >"$LOG-issue.json" 2>"$LOG-issue.err" \
    && dg_as "$P_OWNER" -y --json pr create "$REPO" --head feature --base main --title "$PR_TITLE" --body "pr body ${RUN_ID}" >"$LOG-pr.json" 2>"$LOG-pr.err"; then
   ISSUE="$(json_field "$LOG-issue.json" 'd["number"]')"; PR="$(json_field "$LOG-pr.json" 'd["number"]')"
@@ -91,18 +93,19 @@ else
   cat "$LOG-issue.err" "$LOG-issue.json" "$LOG-pr.err" "$LOG-pr.json" >&2; bad "opening failed"; finish_scenario
 fi
 if dg_as "$P_MEMBER" -y --json issue comment "$REPO" "$ISSUE" --body "member comment ${RUN_ID}" >"$LOG-com.json" 2>"$LOG-com.err" \
+   && dg_as "$P_MEMBER" -y --json issue label "$REPO" "$ISSUE" --add "$LABEL" >"$LOG-lab.json" 2>"$LOG-lab.err" \
    && dg_as "$P_MEMBER" -y --json pr review "$REPO" "$PR" --approve --body "looks right ${RUN_ID}" >"$LOG-rev.json" 2>"$LOG-rev.err"; then
-  ok "P_MEMBER commented and approved"
+  ok "P_MEMBER commented, labelled and approved"
 else
-  cat "$LOG-com.err" "$LOG-com.json" "$LOG-rev.err" "$LOG-rev.json" >&2; bad "member writes failed"; finish_scenario
+  cat "$LOG-com.err" "$LOG-com.json" "$LOG-lab.err" "$LOG-lab.json" "$LOG-rev.err" "$LOG-rev.json" >&2; bad "member writes failed"; finish_scenario
 fi
 
 step "the chain holds no plaintext: every document is sealed"
 if DASH_FORGE_KEY="$P_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remote-dash" --dump-collab "$ID_P_OWNER" "$NAME" >"$LOG-dump.txt" 2>"$LOG-dump.err"; then
   rows="$(grep -c "^  type=" "$LOG-dump.txt")"
-  if [[ "$rows" -ge 4 ]] && ! grep -q "$RUN_ID" "$LOG-dump.txt" && ! grep -q 'plaintext=\[[^]]' "$LOG-dump.txt" \
-     && ! grep -q 'epoch=- \| enc=0 ' "$LOG-dump.txt"; then
-    ok "$rows documents, each with epoch + enc and no plaintext text"
+  if [[ "$rows" -ge 5 ]] && grep -q '^  type=event ' "$LOG-dump.txt" && ! grep -q "$RUN_ID" "$LOG-dump.txt" \
+     && ! grep -q 'plaintext=\[[^]]' "$LOG-dump.txt" && ! grep -q 'epoch=- \| enc=0 ' "$LOG-dump.txt"; then
+    ok "$rows documents (the label event too), each with epoch + enc and no plaintext text"
   else
     cat "$LOG-dump.txt" >&2; bad "plaintext or unsealed collaboration documents on chain"
   fi
@@ -124,6 +127,15 @@ if dg_read_retry "$P_MEMBER" "$LOG-iv.json" "$LOG-iv.err" --json issue view "$RE
    && dg_read_retry "$P_MEMBER" "$LOG-pv.json" "$LOG-pv.err" --json pr view "$REPO" "$PR"; then
   [[ "$(json_field "$LOG-iv.json" 'd["title"]')" == "$ISSUE_TITLE" && "$(json_field "$LOG-iv.json" 'd["comments"][0]["body"]')" == "member comment ${RUN_ID}" ]] \
     && ok "issue #$ISSUE: title and comment decrypt" || { cat "$LOG-iv.json" >&2; bad "issue view"; }
+  [[ "$(json_field "$LOG-iv.json" 'd["state"]["labels"]')" == "['$LABEL']" ]] \
+    && ok "issue #$ISSUE: the sealed label opens" || { cat "$LOG-iv.json" >&2; bad "issue label"; }
+  # the list folds every issue from the repo's event feed: the sealed label filters it too
+  if dg_read_retry "$P_MEMBER" "$LOG-il.json" "$LOG-il.err" --json issue list "$REPO" --label "$LABEL" --state all \
+     && [[ "$(json_field "$LOG-il.json" '[i["number"] for i in d["issues"]]')" == "[$ISSUE]" ]]; then
+    ok "dg issue list --label finds issue #$ISSUE by its sealed label"
+  else
+    cat "$LOG-il.json" "$LOG-il.err" >&2; bad "issue list --label"
+  fi
   [[ "$(json_field "$LOG-pv.json" 'd["title"]')" == "$PR_TITLE" && "$(json_field "$LOG-pv.json" 'd["baseRef"]')" == refs/heads/main \
      && "$(json_field "$LOG-pv.json" 'len(d["approvedBy"])')" == 1 ]] \
     && ok "PR #$PR: title, base branch and the sealed approval" || { cat "$LOG-pv.json" >&2; bad "pr view"; }

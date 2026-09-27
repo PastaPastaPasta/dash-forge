@@ -185,7 +185,22 @@ async fn run_inner<'a>(
     let code_estimate = push_estimates.first().map_or(0, |p| p.est_credits);
     let heads_estimate = push_estimates.get(1).map_or(0, |p| p.est_credits);
     let git_estimate = code_estimate + heads_estimate;
-    let dry = dest::dry_collab(client, dest.existing.clone(), signer, &collab_src).await?;
+    // An existing private destination is priced on what it will get (no plaintext label
+    // definitions unless asked; releases are skipped there too).
+    let priced = match &dest.existing {
+        Some(r) if r.visibility == forge_core::rules::v2::Visibility::Private => {
+            let definitions = cfg.classes.include_label_definitions;
+            dest::collab_plan(
+                &collab_src,
+                forge_core::rules::v2::Role::Maintainer,
+                true,
+                definitions,
+            )
+            .0
+        }
+        _ => collab_src.clone(),
+    };
+    let dry = dest::dry_collab(client, dest.existing.clone(), signer, &priced).await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let estimate = create_credits + git_estimate + collab_estimate;
@@ -279,7 +294,17 @@ async fn run_inner<'a>(
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases (required).
-    dest::write_collab(client, signer, role, repo, &collab_src, outcome).await?;
+    let definitions = cfg.classes.include_label_definitions;
+    dest::write_collab(
+        client,
+        signer,
+        role,
+        repo,
+        &collab_src,
+        definitions,
+        outcome,
+    )
+    .await?;
 
     // 4. The open PRs' heads, last: optional, so they may only use what the required writes
     //    left (a stranger's huge or unfetchable PR must never stop the mirror).

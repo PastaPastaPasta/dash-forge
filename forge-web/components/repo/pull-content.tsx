@@ -44,7 +44,7 @@ import { PullMerge } from '@/components/repo/pull-merge'
 import { inlineCommentIds } from '@/lib/view/inline-threads'
 import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { retryWhileMissing } from '@/lib/view/retry'
-import { HiddenNote } from '@/components/repo/hidden-note'
+import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 
 type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
 
@@ -255,6 +255,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
 
       {conversation.length > 0 ? <Timeline items={conversation} /> : null}
       <HiddenNote hidden={0} what="comments and reviews" home={home} by={data.hidden} />
+      <EventValuesNote counts={data.eventValues} />
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>

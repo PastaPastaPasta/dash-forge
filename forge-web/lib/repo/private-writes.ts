@@ -1,9 +1,10 @@
 /**
  * Sealed writes to a private repo (`docs/security/private-repos.md` §4, §5.3, §8): the content
- * fields of an `issue`, `patch`, `comment`, `review`, `refUpdate` / `protectedRefUpdate` go
- * into `enc` under the current write epoch; their bind fields stay plaintext; ref names become
- * keyed hashes. Every seal reads the anchors fresh (§5.3: a writer never seals under an epoch
- * it last saw minutes ago), so a rotation that just happened is honoured.
+ * fields of an `issue`, `patch`, `comment`, `review`, `refUpdate` / `protectedRefUpdate`, and
+ * an `event`'s `value`, go into `enc` under the current write epoch; their bind fields stay
+ * plaintext; ref names become keyed hashes. Every seal reads the anchors fresh (§5.3: a writer
+ * never seals under an epoch it last saw minutes ago), so a rotation that just happened is
+ * honoured.
  *
  * Callers: `writeRepoDoc` (`writes.ts`; `review-writes.ts` goes through it), `writeRefUpdate`
  * (`push.ts`), and `storeAndRecordPack` via {@link sealArtifact} (`storage/index.ts`). Each
@@ -17,7 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { EpochKeys, MalformedError, TooLargeError, type EpochResolution, openPack, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
+import { EpochKeys, MalformedError, TooLargeError, type EpochResolution, openPack, propOf, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
@@ -31,6 +32,7 @@ const SEALED_FIELDS: Readonly<Record<PrivateDocType, readonly (keyof DocFields)[
   refUpdate: ['refName'],
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
+  event: ['eventValue'],
 }
 
 /**
@@ -138,6 +140,11 @@ export const SEALED_TEXT_LIMIT = { issue: 5085, patch: 5079, comment: 5085, revi
 /** The sealed types a user writes text into. */
 export type SealedKind = keyof typeof SEALED_TEXT_LIMIT
 
+/** Whether `type` is a {@link SealedKind}. */
+export function isSealedKind(type: string): type is SealedKind {
+  return Object.hasOwn(SEALED_TEXT_LIMIT, type)
+}
+
 /** Plaintext fields (`data`) with bytes or base58 ids, as the writers build them. */
 type Data = Record<string, unknown>
 
@@ -152,22 +159,18 @@ function idOf(v: unknown): Uint8Array | undefined {
   return undefined
 }
 
-/** The fields each user-written type moves into `enc`. */
-export const SEALED_FIELDS_OF: Readonly<Record<SealedKind, readonly string[]>> = {
-  issue: SEALED_FIELDS.issue,
-  patch: SEALED_FIELDS.patch,
-  comment: SEALED_FIELDS.comment,
-  review: SEALED_FIELDS.review,
-}
-
 /**
  * The text bytes `data` puts into a sealed `type` (`used`, over `fields` non-empty text
  * fields), and that type's limit (null for none).
  */
-export function sealedTextUse(type: PrivateDocType, data: Readonly<Record<string, unknown>>): { used: number; fields: number; limit: number | null } {
-  const present = SEALED_FIELDS[type].filter((f) => typeof data[f] === 'string' && data[f] !== '')
-  const used = present.reduce((n, f) => n + new TextEncoder().encode(data[f] as string).length, 0)
-  return { used, fields: present.length, limit: type in SEALED_TEXT_LIMIT ? SEALED_TEXT_LIMIT[type as SealedKind] : null }
+export function sealedTextUse(
+  type: PrivateDocType,
+  data: Readonly<Record<string, unknown>>,
+): { used: number; fields: number; limit: number | null; props: readonly string[] } {
+  const props = SEALED_FIELDS[type].map(propOf)
+  const present = props.filter((p) => typeof data[p] === 'string' && data[p] !== '')
+  const used = present.reduce((n, p) => n + new TextEncoder().encode(data[p] as string).length, 0)
+  return { used, fields: present.length, limit: isSealedKind(type) ? SEALED_TEXT_LIMIT[type] : null, props }
 }
 
 /**
@@ -213,8 +216,9 @@ export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId
   const out: Data = { ...data }
   const fields: Record<string, unknown> = {}
   for (const f of SEALED_FIELDS[type]) {
-    const v = out[f]
-    delete out[f]
+    const prop = propOf(f)
+    const v = out[prop]
+    delete out[prop]
     if (v === undefined || v === null || v === '') continue
     fields[f] = v
   }
@@ -247,6 +251,7 @@ export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId
       }
       break
     case 'comment':
+    case 'event':
       doc.targetId = idOf(out['targetId'])
       break
     case 'review':

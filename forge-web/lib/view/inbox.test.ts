@@ -157,6 +157,13 @@ describe('toItems', () => {
     )
     expect(items.map((i) => i.what)).toEqual(['marked merged', 'labelled bug'])
   })
+  it('in a private repo, never shows an event value: the feed has no keys to open or check it (L4)', () => {
+    const repo = { ...REPO, private: true }
+    const t = thread({ since: 0, repo })
+    const f: Feed = { kind: 'state', type: 'event', repo, threads: [t] }
+    const items = toItems(f, [doc(OTHER, 170, { targetId: t.id, kind: 4, value: 'planted' }), doc(OTHER, 171, { targetId: t.id, kind: 6, value: ME })], ME)
+    expect(items.map((i) => i.what)).toEqual(['labelled', 'assigned someone'])
+  })
   it('names review verdicts and pushes', () => {
     const reviews = toItems({ kind: 'reviews', thread: thread() }, [doc(OTHER, 5, { verdict: 1 }), doc(OTHER, 6, { verdict: 2 })], ME)
     expect(reviews.map((i) => i.what)).toEqual(['approved', 'requested changes'])
@@ -173,6 +180,14 @@ describe('stateWhat', () => {
     expect(stateWhat(6, ME, ME)).toBe('assigned you')
     expect(stateWhat(6, OTHER, ME)).toBe('assigned someone')
     expect(stateWhat(99, undefined, ME)).toBeNull()
+  })
+})
+
+describe('assigned in a private repo (L4)', () => {
+  it('ignores event values the scan cannot open or check', () => {
+    const ev = { $id: 'a', targetId: 't', kind: 6, value: ME, $createdAt: 1 }
+    expect([...assignedTargets([ev], ME)]).toEqual(['t'])
+    expect([...assignedTargets([ev], ME, true)]).toEqual([])
   })
 })
 

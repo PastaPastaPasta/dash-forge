@@ -84,6 +84,10 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::INVALID_CONFIG, "invalid configuration"),
     (codes::UNSUPPORTED, "unsupported git operation"),
     (codes::GIT_REPO, "git repository not usable"),
+    (
+        codes::PRIVATE_UNSUPPORTED,
+        "not supported for a private repository",
+    ),
     (codes::NO_IDENTITY, "no identity configured"),
     (codes::KEY_CANNOT_SIGN, "this key can't sign that"),
     (codes::IDENTITY_UNREADABLE, "identity file unreadable"),
@@ -165,6 +169,9 @@ pub mod codes {
     /// `dg init` / `dg repo create --push` cannot use the local git repository: not inside
     /// one, or the remote name is taken by another URL.
     pub const GIT_REPO: &str = "E206";
+    /// An operation a private repository does not support (a release, a fork, a webhook):
+    /// refused before anything is written.
+    pub const PRIVATE_UNSUPPORTED: &str = "E207";
     /// No identity file configured.
     pub const NO_IDENTITY: &str = "E301";
     /// The identity has no key of the level this operation needs.

@@ -153,6 +153,7 @@ const COLLAB_BYTES: &[&str] = &[
     "patchManifestHash",
     "baseRefNameHash",
     "sourceRefNameHash",
+    "refId",
     "enc",
 ];
 
@@ -744,6 +745,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 205, "ran {ran} private vectors, expected 205+");
+    assert!(ran >= 221, "ran {ran} private vectors, expected 221+");
     println!("private conformance: {ran} vectors green");
 }

@@ -41,7 +41,8 @@ import {
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
-import { privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter, type SealedKind } from './private-writes'
+import type { PrivateDocType } from '../private'
+import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -115,7 +116,11 @@ function afterWrite(repo: RepoRef, network: Network, documentType: string): void
   invalidateMembers(repo, network)
 }
 
-/** The content fields each type encrypts in a private repo (`private-repos.md` §4.3). */
+/**
+ * The content fields each type encrypts in a private repo (`private-repos.md` §4.3). Written out
+ * by hand on purpose, apart from the sealer's `SEALED_FIELDS`: the plaintext guard must not be
+ * derived from the code it guards. What gets sealed is {@link sealedTypeOf}.
+ */
 const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   issue: ['title', 'body'],
   patch: ['title', 'body', 'baseRefName', 'sourceRefName'],
@@ -124,11 +129,13 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   refUpdate: ['refName'],
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
+  event: ['value'],
 }
 
 /**
  * Refuse a write that would put a private repo's content in plaintext on chain (a sealed write
- * carries `enc` and no content field). Every private write goes through here.
+ * carries `enc` and no content field; an event without a value has nothing to seal). Every
+ * private write goes through here.
  */
 export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>): void {
   if (repo.visibility !== 'private') return
@@ -137,17 +144,22 @@ export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Rea
   if (leaked.length > 0) {
     throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to a private repo`)
   }
-  if (fields.length > 0 && data['enc'] === undefined) {
+  if (fields.length > 0 && data['enc'] === undefined && documentType !== DOC.event) {
     throw new Error(`refusing to write an unencrypted ${documentType} to a private repo`)
   }
 }
 
 /**
- * The document types whose content a private repo seals in `enc` (`docs/security/private-repos.md`
- * §4): an `issue`, `patch`, `comment` or `review` written in plaintext would publish it and be
- * malformed for members (`is_well_formed`). Events, labels and releases are plaintext by design.
+ * The type a private repo's `documentType` write with `data` is sealed as, or null
+ * (`docs/security/private-repos.md` §4): an `issue`, `patch`, `comment` or `review` always (in
+ * plaintext it would publish its text and be malformed for members), an `event` when it carries
+ * a `value`. Labels and releases are plaintext in this release.
  */
-const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+function sealedTypeOf(documentType: string, data: Readonly<Record<string, unknown>>): PrivateDocType | null {
+  if (isSealedKind(documentType)) return documentType
+  const value = data['value']
+  return documentType === DOC.event && typeof value === 'string' && value !== '' ? 'event' : null
+}
 
 /**
  * Refuse a replace of sealed content in a private repo (a replace would publish plaintext next
@@ -155,16 +167,16 @@ const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.com
  * seals creates.
  */
 export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): void {
-  if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
+  if (repo.visibility === 'private' && isSealedKind(documentType)) {
     throw new Error(`this ${documentType} would be written in plaintext into a private repo; writing private content from here is not supported yet`)
   }
 }
 
 /**
  * Create one repo-scoped document: the right contract, `repoId` set, then drop the caches
- * the write invalidates. In a private repo an issue, PR, comment or review is sealed first
- * (`private-writes.ts`: its content into `enc` under the current epoch), and nothing leaves
- * here with plaintext content ({@link assertNoPlaintext}).
+ * the write invalidates. In a private repo an issue, PR, comment or review, or an event's
+ * value, is sealed first ({@link sealedTypeOf}; `private-writes.ts`: into `enc` under the
+ * current epoch), and nothing leaves here with plaintext content ({@link assertNoPlaintext}).
  */
 export async function writeRepoDoc(
   sdk: EvoSDK,
@@ -176,9 +188,10 @@ export async function writeRepoDoc(
   /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
   writer?: PrivateWriter,
 ): Promise<WriteResult> {
-  if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
+  const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
+  if (sealedType !== null) {
     const w = writer ?? (await privateWriter(sdk, auth, repo))
-    data = await sealForRepo(sdk, auth, repo, documentType as SealedKind, data, w)
+    data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
     intent = sealedIntent(intent, w.keys)
   }
   assertNoPlaintext(repo, documentType, data)

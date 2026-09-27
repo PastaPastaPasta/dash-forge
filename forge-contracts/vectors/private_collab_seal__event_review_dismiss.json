@@ -1,0 +1,31 @@
+{
+  "name": "event_review_dismiss",
+  "description": "a review dismissal: the reason is sealed; refId (the dismissed review) stays plaintext.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "event",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "4444444444444444444444444444444444444444444444444444444444444444",
+      "targetNumber": 3,
+      "kind": 15,
+      "value": "the approval predates the force-push",
+      "refId": "9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "4444444444444444444444444444444444444444444444444444444444444444",
+      "targetNumber": 3,
+      "kind": 15,
+      "refId": "9999999999999999999999999999999999999999999999999999999999999999",
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b11700b86ab57cc182f0c66dcb64a912ec96f1aa204866af479e2ea39b9fbaa8372051dfba7324b9977577325f86bfb39d537bf63204910"
+    }
+  }
+}

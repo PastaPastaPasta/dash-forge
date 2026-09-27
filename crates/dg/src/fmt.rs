@@ -121,9 +121,39 @@ pub fn hidden_note(repo: &forge_core::scope::RepoRef, hidden: usize) -> String {
     }
 }
 
+/// What a private repo's event values were read as (`TargetLog::hidden_values`,
+/// `plaintext_values`): a note when any label, assignee or milestone could not be shown, or is
+/// not encrypted. `None` when there is nothing to say.
+#[must_use]
+pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if hidden > 0 {
+        parts.push(format!(
+            "{hidden} event value(s) (labels, assignees, milestones) not readable with your keys"
+        ));
+    }
+    if plaintext > 0 {
+        parts.push(format!(
+            "{plaintext} event value(s) written by an older client, not encrypted"
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("({})", parts.join("; ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_values_note_says_what_it_counts() {
+        assert_eq!(event_values_note(0, 0), None);
+        let n = event_values_note(2, 1).unwrap();
+        assert!(
+            n.contains("2 event value(s)") && n.contains("1 event value(s)"),
+            "{n}"
+        );
+        assert!(n.contains("not encrypted"), "{n}");
+    }
 
     #[test]
     fn short_never_splits_a_character() {

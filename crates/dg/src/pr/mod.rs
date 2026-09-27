@@ -714,6 +714,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "comments": comments_json(&comments),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
+            "hiddenEventValues": v.log.hidden_values,
+            "plaintextEventValues": v.log.plaintext_values,
         }),
         || {
             println!(
@@ -813,6 +815,11 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                     "\n{}",
                     crate::fmt::hidden_note(handle, hidden_comments + hidden_reviews)
                 );
+            }
+            if let Some(n) =
+                crate::fmt::event_values_note(v.log.hidden_values, v.log.plaintext_values)
+            {
+                println!("\n{n}");
             }
         },
     );

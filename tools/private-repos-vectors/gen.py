@@ -140,7 +140,7 @@ def bind(doc, K):
     t = doc["type"]
     if t in ("issue", "patch"):
         return u32(doc["number"])
-    if t == "comment":
+    if t in ("comment", "event"):
         return bytes.fromhex(doc["targetId"])
     if t == "review":
         return bytes.fromhex(doc["patchId"])
@@ -323,6 +323,8 @@ REF_UPDATE_DEV = dict(REF_UPDATE, refNameHash=H(ref_hash(K0, 0, "refs/heads/dev"
 REF_TLV = tlv((3, b"refs/heads/main"))
 COMMENT = dict(type="comment", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
 COMMENT_TLV = tlv((2, b"nit: rename"), (10, b"src/lib.rs"))
+EVENT = dict(type="event", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
+EVENT_TLV = tlv((15, b"bug"))
 CONFIG0 = dict(type="config", ownerId=H(ownerId), epoch=0)
 CONFIG0_TLV = tlv((6, b"refs/heads/main"))
 CONFIG1 = dict(type="config", ownerId=H(ownerId), epoch=1)
@@ -439,6 +441,8 @@ def doc_seal_vectors():
          "inline review comment: path is TLV tag 10 (§4.3)."),
         ("patch", PATCH, K0, PATCH_FIELDS, PATCH_TLV, None, "patch with base and source ref names (tags 4, 5)."),
         ("review_empty", REVIEW, K0, {}, b"", None, "a review may have an empty plaintext."),
+        ("event_label", EVENT, K0, {"eventValue": "bug"}, EVENT_TLV, None,
+         "a label event: its value is TLV tag 15; the AD binds targetId like a comment's (§4.3, §4.4)."),
         ("config_anchor_epoch0", CONFIG0, K0, {"defaultBranch": "refs/heads/main"}, CONFIG0_TLV, True,
          "config anchor for epoch 0: enc v0x02 carries COMMIT_0, which the AD binds (§4.2)."),
         ("config_anchor_epoch1", CONFIG1, K1,
@@ -490,6 +494,10 @@ def doc_seal_vectors():
          "refName is not an issue field."),
         ("patch_base_hash_without_name", PATCH, K0, {"title": "Add the feature", "sourceRefName": "refs/heads/feature"},
          None, "a writer never seals a patch whose baseRefNameHash names no baseRefName (H3)."),
+        ("event_without_value", EVENT, K0, {}, None, "an event is sealed only for its value: none, nothing to seal."),
+        ("event_value_121_chars", EVENT, K0, {"eventValue": "v" * 121}, None,
+         "an event value over 120 characters is refused (the schema's cap)."),
+        ("event_title", EVENT, K0, {"eventValue": "bug", "title": "t"}, None, "title is not an event field."),
         ("body_over_enc_cap", ISSUE, K0, {"title": "t", "body": "b" * 5085}, None,
          "title + body over 5085 bytes does not fit a 5120-byte enc (§4.3 combined size)."),
     ]
@@ -624,7 +632,9 @@ def doc_open_vectors():
     strict = [
         ("tlv_title_twice", "tag 1 twice is malformed.", T + T + B, MALFORMED),
         ("tlv_out_of_order", "tags out of order (2 then 1) are malformed.", B + T, MALFORMED),
-        ("tlv_reserved_tag", "reserved tag 15 is malformed.", T + B + rec(15, b"x"), MALFORMED),
+        ("tlv_reserved_tag", "reserved tag 16 is malformed.", T + B + rec(16, b"x"), MALFORMED),
+        ("tlv_event_value_in_issue", "tag 15 (an event value) in an issue is malformed.", T + B + rec(15, b"x"),
+         MALFORMED),
         ("tlv_imported_in_issue", "tags 13 and 14 (imported.author, imported.url) open in an issue.",
          T + B + rec(13, b"octocat") + rec(14, b"https://github.com/acme/secret/issues/12"),
          readable(dict(ISSUE_FIELDS, importedAuthor="octocat", importedUrl="https://github.com/acme/secret/issues/12"))),
@@ -700,6 +710,23 @@ def doc_open_vectors():
     v("issue_edited_by_member_shown", "an edit after the grace period by a current member is shown.",
       dict(ISSUE, updatedAtBlockHeight=5000), K0, ISSUE_TLV,
       ctx({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}, members=[H(ownerId)]), readable(ISSUE_FIELDS), height=500)
+    v("event_label", "a sealed label event opens to its value.", EVENT, K0, EVENT_TLV, CTX0,
+      readable({"eventValue": "bug"}))
+    _, event_enc = seal_doc(EVENT, K0, EVENT_TLV)
+    v("event_other_target", "the AD binds targetId: an event's enc moved onto another issue fails the tag.",
+      dict(EVENT, targetId="34" * 32), K0, None, CTX0, unreadable("badTag"), enc=event_enc)
+    v("event_empty", "an event whose TLV has no value is malformed (the value is required).", EVENT, K0, b"", CTX0,
+      MALFORMED)
+    v("event_title", "tag 1 in an event is malformed.", EVENT, K0, tlv((1, b"t"), (15, b"bug")), CTX0, MALFORMED)
+    v("event_value_480_bytes", "120 four-byte characters are 480 bytes: at both caps, fine.", EVENT, K0,
+      rec(15, "\U0001F600".encode() * 120), CTX0, readable({"eventValue": "\U0001F600" * 120}))
+    v("event_not_judged_late",
+      "an event is member-gated at consensus (a removed member cannot write one), so the late rule does not "
+      "apply: under epoch 0 past the epoch-1 anchor plus grace, by a non-member, it still opens (§8.1 step 7).",
+      EVENT, K0, EVENT_TLV, CTX01, readable({"eventValue": "bug"}), height=1000 + GRACE_BLOCKS + 1)
+    v("event_without_height",
+      "the event schema carries no $createdAtBlockHeight: a sealed event without one opens (content types "
+      "without it are malformed).", EVENT, K0, EVENT_TLV, CTX0, readable({"eventValue": "bug"}), height=None)
     v("tlv_nine_patterns", "more than 8 protectedPattern records are malformed.", dict(CONFIG0, id="c0-later"), K0,
       b"".join(rec(7, b"refs/heads/p") for _ in range(9)), CTX0, MALFORMED)
 
@@ -1218,10 +1245,10 @@ def epoch_vectors():
 # --- §4 sealed collaboration documents (the CLI's and the web's writers, same bytes) -------------
 
 SEALED = {"issue": ("title", "body"), "patch": ("title", "body", "baseRefName", "sourceRefName"),
-          "comment": ("body", "path"), "review": ("body",)}
+          "comment": ("body", "path"), "review": ("body",), "event": ("value",)}
 TLV_TAG = {"title": 1, "body": 2, "baseRefName": 4, "sourceRefName": 5, "path": 10, "importedAuthor": 13,
-           "importedUrl": 14}
-BIND_OF = {"issue": "number", "patch": "number", "comment": "targetId", "review": "patchId"}
+           "importedUrl": 14, "value": 15}
+BIND_OF = {"issue": "number", "patch": "number", "comment": "targetId", "review": "patchId", "event": "targetId"}
 # the plaintext text cap per type: enc 5120 - v0x01 framing 29 - 3 bytes per TLV record
 TEXT_CAP = {"issue": 5120 - 29 - 6, "patch": 5120 - 29 - 12, "comment": 5120 - 29 - 6, "review": 5120 - 29 - 3}
 
@@ -1292,6 +1319,18 @@ def collab_seal_vectors():
            imported=dict(author="octocat", createdAt=1700000000, url="https://github.com/acme/secret/issues/12")))
     v("comment_imported_author_only", "an imported comment whose source gave only an author.", "comment",
       dict(targetId="33" * 32, body="+1", imported=dict(author="hubot", createdAt=1700000001)))
+    v("event_label_add",
+      "a label event: the label name (value) is sealed (TLV 15); targetId (bound), targetNumber and kind stay "
+      "plaintext, so the kind (label added) is visible and the name is not.", "event",
+      dict(targetId="33" * 32, targetNumber=7, kind=4, value="security"))
+    v("event_milestone_set", "a milestone event: the milestone name is sealed.", "event",
+      dict(targetId="33" * 32, targetNumber=7, kind=17, value="v1.0 launch"))
+    v("event_review_dismiss",
+      "a review dismissal: the reason is sealed; refId (the dismissed review) stays plaintext.", "event",
+      dict(targetId="44" * 32, targetNumber=3, kind=15, value="the approval predates the force-push",
+           refId="99" * 32))
+    v("event_retarget", "a retarget: the new base branch name is sealed.", "event",
+      dict(targetId="44" * 32, targetNumber=3, kind=8, value="refs/heads/release"))
     for t, base in (("issue", dict(number=10, title="t")), ("comment", dict(targetId="33" * 32, body="b")),
                     ("review", dict(patchId="44" * 32, verdict=2, commitOid="dd" * 20)),
                     ("patch", dict(number=11, title="t", baseRefName="refs/heads/main", sourceRefName="refs/heads/f",

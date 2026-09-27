@@ -404,6 +404,7 @@ Allowed by `validate_update` v1: new document types and new optional properties;
 | `repo.renamedTo` (optional identifier, `refersTo permanentDocument repo`) | Rename/move with client-side redirect |
 | `repo` doctype `documentsCountable: true` | "N repositories" on Explore | 
 | `repo.language` (optional string ≤ 30) written by the pusher's helper from the flatIndex | Explore language filter without a client join (**cheap; optional**) |
+| `enc`/`epoch` on `release` and `label`: optional `enc` (`schemaDefs.enc`) and `epoch`, `dependentRequired {enc: [epoch]}` (new optional properties) | Private repos: a release's tag name, title, notes and asset list, and a label definition's name, colour and description, sealed like every other content type (private-repos.md §7, §13 item 6). Until this lands `dg release create` refuses a private repo ([E207](../errors.md#e207)) and `dg label create` warns that the definition is plaintext; the labels put on issues (`event.value`) are already sealed |
 
 Cost: 2 types × 0.02 + 4 indexes × 0.01 ≈ 0.08 DASH plus storage, paid once by the deployer.
 

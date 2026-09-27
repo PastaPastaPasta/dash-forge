@@ -61,8 +61,8 @@ const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: stri
  * (`crates/dg/src/publish.rs` `PRIVATE_FACTS`; `ux-dx-spec.md` §9 "Create"), verbatim.
  */
 const PRIVATE_FACTS: readonly string[] = [
-  'private: code, ref names, issues, PRs, comments and reviews are encrypted to members',
-  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and release notes, labels and event values (not encrypted in this release)',
+  'private: code, ref names, issues, PRs, comments, reviews and the labels on them are encrypted to members',
+  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and releases and label definitions (not encrypted in this release)',
   'members keep whatever they could already read, even after they are removed',
   'no recovery: if every member loses their encryption key, the contents are gone',
 ]

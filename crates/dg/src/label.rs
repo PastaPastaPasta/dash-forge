@@ -97,9 +97,10 @@ async fn define(
 ) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "label not changed").await?;
     let verb = if retired { "Retire" } else { "Define" };
-    // docs/security/private-repos.md §7: label names and descriptions stay plaintext
+    // docs/security/private-repos.md §7: a label definition (name, colour, description) stays
+    // plaintext; the labels put on issues are sealed
     let plaintext = if s.repo.visibility == Visibility::Private {
-        "; note: label names and descriptions are not encrypted in this release"
+        "; note: label definitions (names and descriptions) are not encrypted in this release"
     } else {
         ""
     };

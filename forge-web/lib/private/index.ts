@@ -30,6 +30,7 @@ export {
 export {
   MalformedError,
   parseTlv,
+  propOf,
   type DocFields,
   type PrivateDocType,
   type TlvContext,

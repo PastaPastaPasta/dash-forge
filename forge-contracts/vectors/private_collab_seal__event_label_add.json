@@ -1,0 +1,29 @@
+{
+  "name": "event_label_add",
+  "description": "a label event: the label name (value) is sealed (TLV 15); targetId (bound), targetNumber and kind stay plaintext, so the kind (label added) is visible and the name is not.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "event",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "targetNumber": 7,
+      "kind": 4,
+      "value": "security"
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "targetNumber": 7,
+      "kind": 4,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b11702781a651990b36086d3a3d1b5f69885783cc518b8438ba4971"
+    }
+  }
+}

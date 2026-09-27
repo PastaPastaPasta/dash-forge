@@ -68,6 +68,12 @@ struct RunArgs {
     #[arg(long)]
     dry_run: bool,
 
+    /// A private destination: mirror the label definitions too. Their names, colours and
+    /// descriptions are not encrypted, so by default they are left out (the labels set on
+    /// issues and PRs are encrypted either way).
+    #[arg(long)]
+    include_label_definitions: bool,
+
     /// Do not ask for confirmation.
     #[arg(long, short = 'y')]
     yes: bool,
@@ -195,7 +201,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             let cfg = ImportConfig {
                 source: source::parse(&spec, &r.gitlab)?,
                 dest: r.repo.clone(),
-                classes: Classes::parse(&r.sync)?,
+                classes: Classes {
+                    include_label_definitions: r.include_label_definitions,
+                    ..Classes::parse(&r.sync)?
+                },
                 state_path: r.state.clone(),
                 work_dir: r.work_dir.clone(),
                 max_spend: r.max_spend.map(dash_to_credits).transpose()?,

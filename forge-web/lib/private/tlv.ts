@@ -15,6 +15,7 @@ export type PrivateDocType =
   | 'refUpdate'
   | 'protectedRefUpdate'
   | 'config'
+  | 'event'
 
 /** The decrypted content of a private document; only present fields are set. */
 export interface DocFields {
@@ -46,6 +47,11 @@ export interface DocFields {
   readonly importedAuthor?: string
   /** Tag 14 (issue, patch, comment, review): an imported document's `imported.url` (§7). */
   readonly importedUrl?: string
+  /**
+   * Tag 15 (event): the event's `value` (a label or milestone name, a dismiss reason, an
+   * assignee, a retarget base), sealed in a private repo (§7).
+   */
+  readonly eventValue?: string
 }
 
 /** A §4.3 violation. */
@@ -71,6 +77,7 @@ export const TAG = {
   skipEpochKey: 12,
   importedAuthor: 13,
   importedUrl: 14,
+  eventValue: 15,
 } as const
 
 type TextField =
@@ -83,6 +90,7 @@ type TextField =
   | 'path'
   | 'importedAuthor'
   | 'importedUrl'
+  | 'eventValue'
 
 interface TextSpec {
   readonly field: TextField | 'protectedPattern'
@@ -103,6 +111,7 @@ const TEXT: Readonly<Record<number, TextSpec>> = {
   10: { field: 'path', minOne: false, maxChars: 500, maxBytes: 1000 },
   13: { field: 'importedAuthor', minOne: true, maxChars: 120, maxBytes: 480 },
   14: { field: 'importedUrl', minOne: true, maxChars: 300, maxBytes: 300 },
+  15: { field: 'eventValue', minOne: true, maxChars: 120, maxBytes: 480 },
 }
 
 const TAGS_OF: Readonly<Record<PrivateDocType, readonly number[]>> = {
@@ -113,10 +122,19 @@ const TAGS_OF: Readonly<Record<PrivateDocType, readonly number[]>> = {
   refUpdate: [3],
   protectedRefUpdate: [3],
   config: [6, 7, 8, 9, 11, 12],
+  event: [15],
+}
+
+/**
+ * The document property a sealed field is written from and opened back into: the field's own
+ * name, except an event's `value` (TLV `eventValue`, tag 15).
+ */
+export function propOf(field: keyof DocFields): string {
+  return field === 'eventValue' ? 'value' : field
 }
 
 const MAX_PATTERNS = 8
-const FIRST_RESERVED = 15
+const FIRST_RESERVED = 16
 const FIRST_EXTENSION = 64
 
 /** What the parser needs to know about the document besides its bytes. */
@@ -232,6 +250,9 @@ function requireFields(f: DocFields, ctx: TlvContext, anchorWithPrev: boolean): 
         throw new MalformedError('a config for epoch >= 1 needs prevEpochKey')
       }
       return
+    case 'event':
+      if (f.eventValue === undefined) throw new MalformedError('event without a value')
+      return
     case 'review':
       return
   }
@@ -266,6 +287,7 @@ export function encodeTlv(fields: DocFields): Bytes {
   if (fields.skipEpochKey !== undefined) parts.push(record(TAG.skipEpochKey, fields.skipEpochKey))
   text(TAG.importedAuthor, fields.importedAuthor)
   text(TAG.importedUrl, fields.importedUrl)
+  text(TAG.eventValue, fields.eventValue)
   return concat(...parts)
 }
 

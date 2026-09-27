@@ -22,7 +22,8 @@ const BURNED: u8 = 11;
 const SKIP_EPOCH_KEY: u8 = 12;
 const IMPORTED_AUTHOR: u8 = 13;
 const IMPORTED_URL: u8 = 14;
-/// Tags 15..=63 are reserved (malformed); 64..=255 are extensions (skipped).
+const EVENT_VALUE: u8 = 15;
+/// Tags 16..=63 are reserved (malformed); 64..=255 are extensions (skipped).
 const FIRST_EXTENSION: u8 = 64;
 const MAX_PATTERNS: usize = 8;
 
@@ -87,6 +88,10 @@ pub struct Fields {
     /// (`imported.url`), sealed in a private repo (§7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_url: Option<String>,
+    /// Tag 15 (event): an event's `value` (label or milestone name, dismiss reason, assignee,
+    /// retarget base), sealed in a private repo (§7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_value: Option<String>,
 }
 
 /// Decrypted content is private: `Debug` shows only which fields are present and their byte
@@ -109,6 +114,7 @@ impl std::fmt::Debug for Fields {
             .field("skip_epoch_key", &self.skip_epoch_key)
             .field("imported_author_len", &len(&self.imported_author))
             .field("imported_url_len", &len(&self.imported_url))
+            .field("event_value_len", &len(&self.event_value))
             .finish()
     }
 }
@@ -157,7 +163,8 @@ fn cap(tag: u8) -> Cap {
             chars: 500,
             bytes: 1000,
         },
-        IMPORTED_AUTHOR => Cap::Text {
+        // an importer's author handle and an event value share the schema's 120 / 480 cap
+        IMPORTED_AUTHOR | EVENT_VALUE => Cap::Text {
             min: 1,
             chars: 120,
             bytes: 480,
@@ -181,6 +188,7 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
         DocKind::Comment => matches!(tag, BODY | PATH) || imported,
         DocKind::Review => tag == BODY || imported,
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => tag == REF_NAME,
+        DocKind::Event => tag == EVENT_VALUE,
         DocKind::Config => {
             matches!(tag, DEFAULT_BRANCH | PROTECTED_PATTERN)
                 || (anchor_with_prev
@@ -219,7 +227,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
             continue; // forward compatibility: skipped, never interpreted
         }
         if !allowed(kind, tag, anchor_with_prev) {
-            return None; // reserved 15..=63, tag 0, or not a field of this kind
+            return None; // reserved 16..=63, tag 0, or not a field of this kind
         }
         if tag == PROTECTED_PATTERN {
             patterns += 1;
@@ -261,6 +269,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
                     PATH => f.path = Some(s),
                     IMPORTED_AUTHOR => f.imported_author = Some(s),
                     IMPORTED_URL => f.imported_url = Some(s),
+                    EVENT_VALUE => f.event_value = Some(s),
                     _ => unreachable!(),
                 }
             }
@@ -280,6 +289,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
                     })
         }
         DocKind::Review => true,
+        DocKind::Event => f.event_value.is_some(),
     };
     required.then_some(f)
 }
@@ -333,6 +343,9 @@ pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     }
     if let Some(u) = &f.imported_url {
         rec(IMPORTED_URL, u.as_bytes());
+    }
+    if let Some(v) = &f.event_value {
+        rec(EVENT_VALUE, v.as_bytes());
     }
     out
 }

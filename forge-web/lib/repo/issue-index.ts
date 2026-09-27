@@ -35,7 +35,7 @@ import {
   onRepoInvalidated,
   seedRepoFeed,
   settleIssueCount,
-  toEvents,
+  toLog,
   type IssueView,
   type TargetLog,
 } from './issues'
@@ -202,7 +202,9 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
       rest(sdk, feedQuery(DOC.event), docsAt(res, 2), FEED_MAX_PAGES),
       rest(sdk, feedQuery(DOC.authorEvent), docsAt(res, 3), FEED_MAX_PAGES),
     ])
-    feed = groupFeed(toEvents(allEvents), toEvents(allAuthorEvents))
+    // A private repo's member events are read through `readableEvents` (values opened).
+    const log = await toLog(repo, allEvents, allAuthorEvents)
+    feed = groupFeed(log.events, log.authorEvents)
     // The pulls page and the header's PR count fold from the same feed.
     seedRepoFeed(repo, feed)
   } catch (e) {

@@ -41,6 +41,15 @@ describe('the private compose gate', () => {
 })
 
 describe('the composer cost on a private repo', () => {
+  it('prices a private event with a value as sealed: the 29-byte frame and 3 bytes of framing on top (L9)', () => {
+    const pub = composeCost(PUB, 'event', { value: 'security' })
+    const priv = composeCost(PRIV, 'event', { value: 'security' })
+    expect(priv.credits - pub.credits).toBe(composeCost(PRIV, 'event', { value: 'x' }).credits - composeCost(PUB, 'event', { value: 'x' }).credits)
+    expect(priv.credits).toBeGreaterThan(pub.credits)
+    // no value, nothing sealed: the plaintext price
+    expect(composeCost(PRIV, 'event', {}).credits).toBe(composeCost(PUB, 'event', {}).credits)
+  })
+
   it('is the sealed document’s: it grows with the text and the path, and differs from the plaintext price', () => {
     const small = composeCost(PRIV, 'comment', { body: 'hi' })
     const withPath = composeCost(PRIV, 'comment', { body: 'hi', path: 'src/a/very/long/path.rs' })

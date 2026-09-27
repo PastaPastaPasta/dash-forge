@@ -78,6 +78,7 @@ Useful flags (see `forge-import --help`):
 | `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. |
 | `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
 | `--dry-run` | Price only. |
+| `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
 | `--limit <n>` | At most `n` issues and PRs (the oldest), for a cheap trial. Only those items and their comments are read, so a trial on a repository with thousands of issues takes a few requests. |
 | `--yes` | No confirmation prompt, for CI. |
 | `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. `forge-import` only. |

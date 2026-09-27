@@ -44,9 +44,9 @@ const PRIVATE_CREATE_ESTIMATE_CREDITS: u64 = 260_000_000;
 /// The four facts a private create states before it spends (ux-dx-spec §9 "Create"), and
 /// what stays visible (`docs/security/private-repos.md` §7).
 const PRIVATE_FACTS: &[&str] = &[
-    "private: code, ref names, issues, PRs, comments and reviews are encrypted to members",
+    "private: code, ref names, issues, PRs, comments, reviews and the labels on them are encrypted to members",
     "visible to everyone: that it exists, its name, owner, members, sizes and timing,",
-    "  commit ids, and release notes, labels and event values (not encrypted in this release)",
+    "  commit ids, and releases and label definitions (not encrypted in this release)",
     "members keep whatever they could already read, even after they are removed",
     "no recovery: if every member loses their encryption key, the contents are gone",
 ];

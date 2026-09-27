@@ -1,0 +1,29 @@
+{
+  "name": "event_milestone_set",
+  "description": "a milestone event: the milestone name is sealed.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "event",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "targetNumber": 7,
+      "kind": 17,
+      "value": "v1.0 launch"
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "targetNumber": 7,
+      "kind": 17,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b11702484f21cdc59331d61dda34397b396e061c963e294fdf8fe8caa2ddd"
+    }
+  }
+}

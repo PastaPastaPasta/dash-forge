@@ -55,7 +55,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssigneeAvatars, EditedMarker, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
-import { HiddenNote } from '@/components/repo/hidden-note'
+import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { cn } from '@/lib/utils'
 import { BODY_MAX, isIdentityId, utf8Length } from '@/lib/view/issue-query'
@@ -111,7 +111,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
-  const { issue, timeline, labels, members, hidden } = data
+  const { issue, timeline, labels, members, hidden, eventValues } = data
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
@@ -194,12 +194,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const pendingCost = ((): Cost => {
     switch (pending?.kind) {
       case 'label':
-        return previewCreate('event', { value: pending.label })
+        return composeCost(home.repo, 'event', { value: pending.label })
       case 'assign':
-        return previewCreate('event', { value: pending.who })
+        return composeCost(home.repo, 'event', { value: pending.who })
       case 'defineLabel': {
         const def = previewCreate('label', { name: pending.name, color: pending.color, description: pending.description })
-        const apply = previewCreate('event', { value: pending.name })
+        const apply = composeCost(home.repo, 'event', { value: pending.name })
         return pending.apply ? { ...def, credits: def.credits + apply.credits } : def
       }
       case 'editIssue':
@@ -306,6 +306,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         ) : null}
 
         <HiddenNote hidden={0} what="comments" home={home} by={hidden} />
+        <EventValuesNote counts={eventValues} />
 
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
@@ -364,7 +365,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
             onDefine={(name, color, description) => setPending({ kind: 'defineLabel', name, color, description, apply: true })}
           />
-          {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Labels are not encrypted in private repositories.</p> : null}
+          {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">The labels on this issue are encrypted; the label definitions (names, colours, descriptions) are not.</p> : null}
         </SidebarSection>
       </aside>
 

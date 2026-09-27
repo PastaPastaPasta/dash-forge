@@ -43,7 +43,7 @@ import {
 } from './contract'
 import { readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates } from './refs'
-import { HiddenTally, admitAll, gateFor, type HiddenCounts } from './private-content'
+import { HiddenTally, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -246,6 +246,10 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
 export interface TargetLog {
   readonly events: Event[]
   readonly authorEvents: Event[]
+  /** Private repos: member events whose sealed value is not readable here (kept, without it). */
+  readonly hiddenValues?: number
+  /** Private repos: member events whose value an older client wrote in plaintext. */
+  readonly plaintextValues?: number
 }
 
 const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
@@ -406,6 +410,15 @@ export function toEvents(documents: readonly PlainDocument[]): Event[] {
   return documents.map(toEvent).filter((e): e is Event => e !== null)
 }
 
+/**
+ * A target's member `event` and `authorEvent` documents as a {@link TargetLog}: a private
+ * repo's member events read through {@link readableEvents} (their values opened, and counted).
+ */
+export async function toLog(repo: RepoRef, events: readonly PlainDocument[], authorEvents: readonly PlainDocument[]): Promise<TargetLog> {
+  const r = await readableEvents(repo, events)
+  return { events: toEvents(r.docs), authorEvents: toEvents(authorEvents), hiddenValues: r.hiddenValues, plaintextValues: r.plaintextValues }
+}
+
 /** One target's complete {@link TargetLog} (see {@link readEvents} on completeness). */
 export async function readTargetLog(
   sdk: EvoSDK,
@@ -413,21 +426,19 @@ export async function readTargetLog(
   targetId: string,
 ): Promise<TargetLog> {
   const source = repoSource(repo)
-  const read = async (type: string): Promise<Event[]> =>
-    toEvents(
-      await queryAllDocuments(
-        sdk,
-        source.targetQuery(type, {
-          where: [['targetId', '==', targetId]],
-          orderBy: [
-            ['targetId', 'asc'],
-            ['$createdAt', 'asc'],
-          ],
-        }),
-      ),
+  const read = (type: string): Promise<PlainDocument[]> =>
+    queryAllDocuments(
+      sdk,
+      source.targetQuery(type, {
+        where: [['targetId', '==', targetId]],
+        orderBy: [
+          ['targetId', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+      }),
     )
   const [events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
-  return { events, authorEvents }
+  return toLog(repo, events, authorEvents)
 }
 
 /**
@@ -438,16 +449,15 @@ export async function readTargetLog(
  */
 async function readRepoFeed(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
   const source = repoSource(repo)
-  const read = async (type: string): Promise<Event[]> =>
-    toEvents(
-      await queryAllDocuments(sdk, source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] }), {
-        maxPages: FEED_MAX_PAGES,
-      }),
-    )
+  const read = (type: string): Promise<PlainDocument[]> =>
+    queryAllDocuments(sdk, source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] }), {
+      maxPages: FEED_MAX_PAGES,
+    })
   let events: Event[]
   let authorEvents: Event[]
   try {
-    ;[events, authorEvents] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
+    const [e, a] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
+    ;({ events, authorEvents } = await toLog(repo, e, a))
   } catch (e) {
     // Too much activity to read up front: the caller folds rows one target at a time.
     if (e instanceof IncompleteReadError) return null

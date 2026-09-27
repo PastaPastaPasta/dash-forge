@@ -4,6 +4,24 @@ import { useAuth } from '@/contexts/auth-context'
 import type { RepoHome } from '@/lib/view'
 import { HIDDEN_REASON_TEXT, totalHidden, type HiddenCounts, type HiddenReason } from '@/lib/repo/private-content'
 import { isMaintainer } from '@/lib/repo/private-session'
+import type { EventValueCounts } from '@/lib/view/issues-view'
+
+/**
+ * A private repo's event values (labels, assignees, milestones) that could not be shown, or
+ * that an older client wrote unencrypted (`private-repos.md` §8.1): every reader sees it, since
+ * the missing or exposed values are on the page they are reading.
+ */
+export function EventValuesNote({ counts }: { counts: EventValueCounts }): JSX.Element | null {
+  const parts: string[] = []
+  if (counts.hidden > 0) parts.push(`${counts.hidden} label, assignee or milestone change${counts.hidden === 1 ? ' is' : 's are'} not readable with your keys`)
+  if (counts.plaintext > 0) parts.push(`${counts.plaintext} ${counts.plaintext === 1 ? 'was' : 'were'} written by an older client and ${counts.plaintext === 1 ? 'is' : 'are'} not encrypted`)
+  if (parts.length === 0) return null
+  return (
+    <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="event-values-note">
+      {parts.join('; ')}.
+    </p>
+  )
+}
 
 /**
  * The line a list shows when it skipped documents: not well-formed for the repo (plaintext in

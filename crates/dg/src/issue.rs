@@ -8,7 +8,7 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, IssueView, Target};
+use forge_core::collab::v2::{IssueView, Target};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::{EventKind, IssueState};
 
@@ -160,7 +160,8 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     };
     // Every issue and the whole feed, folded once: the filters see the whole repo, not the
     // newest page (SR-04), and there is no per-row read.
-    let (all, hidden) = Collab::reader(&s.client).issues_with_state(&s.repo).await?;
+    // The session's signer, not a bare reader: a private repo's issues open with its keys.
+    let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
     let matching: Vec<Row> = all
         .into_iter()
         .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
@@ -251,6 +252,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .into_iter()
         .map(|c| (c.author, c.body))
         .collect::<Vec<_>>();
+    let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
+    let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
@@ -265,6 +268,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "comments": comments.iter().map(|(a, b)| json!({"author": a, "body": b})).collect::<Vec<_>>(),
             "hiddenComments": hidden,
+            "hiddenEventValues": hidden_values,
+            "plaintextEventValues": plaintext_values,
         }),
         || {
             let mark = if state.open { "open" } else { "closed" };
@@ -281,6 +286,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             }
             if hidden > 0 {
                 println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
+            }
+            if let Some(n) = &values_note {
+                println!("\n{n}");
             }
         },
     );
@@ -450,14 +458,9 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
     };
     let s = Session::open_for_write(ctx, repo, "label not changed").await?;
     let target = target(&s, repo, number).await?;
-    // docs/security/private-repos.md §7: label names are event values, never encrypted
-    let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
-        "; note: label names are not encrypted in this release"
-    } else {
-        ""
-    };
+    // a private repo seals the label name into the event's `enc` (private-repos.md §7)
     ctx.confirm_or_cancel(&format!(
-        "{} label(s) {} on issue #{number}? (one small document each; members only{plaintext})",
+        "{} label(s) {} on issue #{number}? (one small document each; members only)",
         if add { "Add" } else { "Remove" },
         names.join(", ")
     ))?;

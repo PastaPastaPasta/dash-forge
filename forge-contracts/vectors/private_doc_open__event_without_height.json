@@ -1,6 +1,6 @@
 {
-  "name": "tlv_reserved_tag",
-  "description": "reserved tag 16 is malformed.",
+  "name": "event_without_height",
+  "description": "the event schema carries no $createdAtBlockHeight: a sealed event without one opens (content types without it are malformed).",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -18,15 +18,17 @@
       "members": []
     },
     "doc": {
-      "type": "issue",
+      "type": "event",
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
-      "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c4116ac06bb836f703461a7bbfb50009130d6c506e",
-      "createdAtBlockHeight": 50
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "01000102030405060708090a0b11702c90b655344280f4e4dfe2b5d0052b38ada8757c"
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "readable",
+    "fields": {
+      "eventValue": "bug"
+    }
   }
 }

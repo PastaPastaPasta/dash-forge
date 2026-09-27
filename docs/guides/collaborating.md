@@ -92,9 +92,10 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Code: every pack, index and browse artifact | That the repository exists; its name, owner, description, display name and topics |
 | Branch and tag names | Members and their roles; when each joined; key epochs and who rotated them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
-| Issue and PR titles and bodies, comment and review text, an inline comment's file path | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
+| Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
 | | Sizes: pack sizes, object counts, the approximate length of every encrypted field |
-| | **Not encrypted in this release:** release names, notes and assets; labels; label names and other event values; check runs; webhook URLs |
+| | That a label was added, a milestone set or a review dismissed (the kind of each event), and when; who is assigned (the assignee identity is indexed for "assigned to me") |
+| | **Not encrypted in this release:** release names, notes and assets; label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
 
 Leave the description empty if the project's purpose is itself sensitive.
 
