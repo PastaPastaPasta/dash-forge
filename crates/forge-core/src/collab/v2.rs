@@ -1204,16 +1204,16 @@ impl<'a> Collab<'a> {
         Ok(Some(IssueView { issue, state }))
     }
 
-    /// The base ref as merge verification sees it ([`rules::merge_base_tips`]): every oid it
-    /// has validly pointed at (the monotonic merge-reachability set, the same one forge-web
-    /// uses), its newest tip and where it points now. A plain `refUpdate` on a protected
-    /// branch is inert (§4) and contributes nothing. With `opened_at` (a PR's `$createdAt`)
-    /// it is [`rules::pr_base_tips`]: a base that was no branch then has no tips (D-501).
+    /// The base ref as merge verification sees it for a PR opened at `opened_at`
+    /// ([`rules::pr_base_tips`]): every oid it has validly pointed at (the monotonic
+    /// merge-reachability set, the same one forge-web uses), its newest tip and where it points
+    /// now. A plain `refUpdate` on a protected branch is inert (§4) and contributes nothing,
+    /// and a base that was no branch when the PR was opened has no tips (D-501).
     pub async fn base_ref_tips(
         &self,
         repo: &RepoRef,
         base_ref_name: &str,
-        opened_at: Option<u64>,
+        opened_at: u64,
     ) -> Result<rules::MergeBaseTips> {
         let core = self.core_contract(repo).await?;
         crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name, opened_at)
@@ -1226,7 +1226,7 @@ impl<'a> Collab<'a> {
     pub async fn patch_view(&self, repo: &RepoRef, patch: Patch) -> Result<PatchView> {
         let log = self.target_log(repo, &patch.document_id).await?;
         let base = self
-            .base_ref_tips(repo, &patch.base_ref_name, Some(patch.created_at))
+            .base_ref_tips(repo, &patch.base_ref_name, patch.created_at)
             .await?;
         let state = fold_pr_state_v2(
             &log.events,

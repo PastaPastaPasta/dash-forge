@@ -135,8 +135,12 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         c
     };
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-    let (source, source_refs, head_ref, head_oid) =
-        resolve_head(args, &cwd, &svc, candidates).await?;
+    let PrHead {
+        source,
+        source_refs,
+        ref_name: head_ref,
+        oid: head_oid,
+    } = resolve_head(args, &cwd, &svc, candidates).await?;
     // The base branch: --base, else the target's default branch. It must be a branch of the
     // target now (D-501): a merge counts only into a base that existed when the PR was opened.
     let base = if let Some(b) = &args.base {
@@ -149,15 +153,11 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         git::full_ref(&d)
     };
     let target_refs = if source.id() == handle.id() {
-        None
+        source_refs
     } else {
-        Some(svc.read_refs(handle).await?)
+        svc.read_refs(handle).await?
     };
-    require_base_branch(
-        handle,
-        &base,
-        target_refs.as_deref().unwrap_or(&source_refs),
-    )?;
+    require_base_branch(handle, &base, &target_refs)?;
     let title = match &args.title {
         Some(t) => t.clone(),
         None => git::git(&cwd, &["log", "-1", "--format=%s", &head_oid], &[])
@@ -232,7 +232,7 @@ async fn resolve_head(
     cwd: &Path,
     svc: &forge_core::repo::RepoService<'_>,
     candidates: Vec<Repo>,
-) -> Result<(Repo, Vec<(String, RefState)>, String, String)> {
+) -> Result<PrHead> {
     let head_ref =
         match (&args.head, git::current_branch(cwd)) {
             (Some(h), _) => git::full_ref(h),
@@ -289,7 +289,25 @@ async fn resolve_head(
             short(&remote_tip)
         );
     }
-    Ok((source, source_refs, head_ref, head_oid))
+    Ok(PrHead {
+        source,
+        source_refs,
+        ref_name: head_ref,
+        oid: head_oid,
+    })
+}
+
+/// Where a new PR's head lives ([`resolve_head`]).
+struct PrHead {
+    /// The repository holding the branch.
+    source: Repo,
+    /// Every ref of `source`, as read to find the branch (reused to check the base when the
+    /// source is the target).
+    source_refs: Vec<(String, RefState)>,
+    /// The branch, `refs/heads/<name>`.
+    ref_name: String,
+    /// The commit the PR names (hex).
+    oid: String,
 }
 
 /// Refuse a PR base that is not a branch of `target` (never pushed, a typo, or deleted): a
@@ -297,16 +315,16 @@ async fn resolve_head(
 /// branch (D-501). `refs` are the target's refs as `read_refs` returns them.
 fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -> Result<()> {
     git::require_branch_ref(base)?;
-    if refs
+    let mut live = refs
         .iter()
-        .any(|(n, st)| n == base && !matches!(st, RefState::Unborn))
-    {
+        .filter(|(_, st)| !matches!(st, RefState::Unborn))
+        .map(|(n, _)| n.as_str());
+    if live.clone().any(|n| n == base) {
         return Ok(());
     }
-    let mut branches: Vec<&str> = refs
-        .iter()
-        .filter(|(n, st)| n.starts_with("refs/heads/") && !matches!(st, RefState::Unborn))
-        .map(|(n, _)| n.trim_start_matches("refs/heads/"))
+    let mut branches: Vec<&str> = live
+        .by_ref()
+        .filter_map(|n| n.strip_prefix("refs/heads/"))
         .collect();
     branches.sort_unstable();
     let known = if branches.is_empty() {
@@ -820,12 +838,12 @@ fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Resul
     let (headline, cause) = if view.base_tips.is_empty() {
         (
             format!("{base} was not a branch when PR #{number} was opened"),
-            "a merge counts only into a branch that existed when the PR was opened, so this PR can never show as merged".to_string(),
+            "a merge counts only into a branch that existed when the PR was opened, so this PR can never show as merged",
         )
     } else if view.base_tip.is_none() && !event_only {
         (
             format!("the base branch {base} has been deleted"),
-            "merging would push to it and re-create it".to_string(),
+            "merging would push to it and re-create it",
         )
     } else {
         return Ok(());

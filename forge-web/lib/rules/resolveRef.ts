@@ -65,7 +65,8 @@ function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
     let end = start
     while (end < sorted.length && (sorted[end] as RefUpdate).createdAt === (sorted[start] as RefUpdate).createdAt) end++
     const block = sorted.slice(start, end)
-    const waiting = block.map((v, i) => block.filter((u, j) => j !== i && buildsOn(v, u)).length)
+    // How many unplaced updates of the block each builds on (never itself: a different tip).
+    const waiting = block.map((v) => block.filter((u) => buildsOn(v, u)).length)
     const placed = block.map(() => false)
     for (let n = 0; n < block.length; n++) {
       let next = block.findIndex((_, i) => !placed[i] && waiting[i] === 0)
@@ -132,7 +133,7 @@ export function prBaseTips(
     configHistory,
     refNameHash,
   )
-  return before.current !== null ? tips : { historical: [], tip: null, current: tips.current }
+  return before.current !== null ? tips : { ...tips, historical: [], tip: null }
 }
 
 /**

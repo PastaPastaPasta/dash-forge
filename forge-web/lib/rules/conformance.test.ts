@@ -337,15 +337,11 @@ function runCaseV2(v: Vector): void {
       expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
       break
     }
-    case 'merge_base_tips': {
-      onlyKeys(v, ['updates', 'configHistory', 'refNameHash'])
-      expect(baseTipsOf(v.input as BaseHistory)).toEqual(v.expected)
-      break
-    }
+    case 'merge_base_tips':
     case 'pr_base_tips': {
       onlyKeys(v, ['updates', 'configHistory', 'refNameHash', 'openedAt'])
       const inp = v.input as BaseHistory
-      expect(inp.openedAt, `vector ${v.name}: pr_base_tips needs openedAt`).toBeTypeOf('number')
+      expect(inp.openedAt !== undefined, `vector ${v.name}: openedAt is given exactly for pr_base_tips`).toBe(v.case === 'pr_base_tips')
       expect(baseTipsOf(inp)).toEqual(v.expected)
       break
     }

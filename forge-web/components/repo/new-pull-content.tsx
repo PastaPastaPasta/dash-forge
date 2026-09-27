@@ -123,7 +123,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // after the PR never counts.
   const noBase = baseRef === undefined
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
-  const nothing = !noBase && head !== null && head.oid === baseTip
+  const nothing = head !== null && head.oid === baseTip
 
   // The head commit's subject becomes the title until the author types one.
   const [sides, setSides] = useState<DiffSides | null>(null)

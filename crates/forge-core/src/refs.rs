@@ -247,36 +247,26 @@ pub async fn read_config_history(
         .collect())
 }
 
-/// The history of the ref named `ref_name` that a PR merge into it is verified against
-/// ([`crate::rules::merge_base_tips`]): its updates and the config timeline, folded so that a
-/// plain `refUpdate` on a protected ref (inert, §4) never counts as a base tip. With
-/// `opened_at` (the PR's `$createdAt`) it is [`crate::rules::pr_base_tips`]: a base that was
-/// no branch when the PR was opened has no tips.
+/// The history of the ref named `ref_name` that a PR opened at `opened_at` (its `$createdAt`)
+/// is merged against ([`crate::rules::pr_base_tips`]): its updates and the config timeline,
+/// folded so that a plain `refUpdate` on a protected ref (inert, §4) never counts as a base
+/// tip, and a base that was no branch when the PR was opened has no tips.
 pub async fn read_merge_base(
     client: &PlatformClient,
     contract: &LoadedContract,
     scope: &DocScope,
     ref_name: &str,
-    opened_at: Option<u64>,
+    opened_at: u64,
 ) -> Result<MergeBaseTips> {
     let hash = crate::backends::sha256(ref_name.as_bytes());
     let updates = read_ref_history(client, contract, scope, hash).await?;
     let configs = read_config_history(client, contract, scope).await?;
-    Ok(base_tips(&updates, &configs, &hex::encode(hash), opened_at))
-}
-
-/// [`crate::rules::pr_base_tips`] for a PR opened at `opened_at`, else
-/// [`crate::rules::merge_base_tips`].
-fn base_tips(
-    updates: &[RefUpdate],
-    configs: &[ConfigDoc],
-    hash_hex: &str,
-    opened_at: Option<u64>,
-) -> MergeBaseTips {
-    match opened_at {
-        Some(at) => crate::rules::pr_base_tips(updates, configs, hash_hex, at),
-        None => crate::rules::merge_base_tips(updates, configs, hash_hex),
-    }
+    Ok(crate::rules::pr_base_tips(
+        &updates,
+        &configs,
+        &hex::encode(hash),
+        opened_at,
+    ))
 }
 
 /// Every ref of a PRIVATE repository and its resolved state (`docs/security/private-repos.md`
@@ -317,17 +307,15 @@ pub async fn read_private_merge_base(
     scope: &DocScope,
     keyring: &crate::keyring::Keyring,
     ref_name: &str,
-    opened_at: Option<u64>,
 ) -> Result<MergeBaseTips> {
     let updates = read_private_updates(client, contract, scope, keyring)
         .await?
         .remove(ref_name)
         .unwrap_or_default();
-    Ok(base_tips(
+    Ok(crate::rules::merge_base_tips(
         &updates,
         &keyring.config().history,
         &hex::encode(crate::backends::sha256(ref_name.as_bytes())),
-        opened_at,
     ))
 }
 

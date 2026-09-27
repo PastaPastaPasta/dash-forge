@@ -329,20 +329,13 @@ fn builds_on(v: &RefUpdate, u: &RefUpdate) -> bool {
 fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
     updates.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
     let mut out = Vec::with_capacity(updates.len());
-    let mut rest = updates.as_slice();
-    while let Some(first) = rest.first() {
-        let len = rest
+    for block in updates.chunk_by(|a, b| a.created_at == b.created_at) {
+        let len = block.len();
+        // `waiting[v]`: how many unplaced updates of the block `v` builds on (never itself:
+        // `builds_on` needs a different tip).
+        let mut waiting: Vec<usize> = block
             .iter()
-            .take_while(|u| u.created_at == first.created_at)
-            .count();
-        let (block, tail) = rest.split_at(len);
-        // `waiting[v]`: how many unplaced updates of the block `v` builds on.
-        let mut waiting: Vec<usize> = (0..len)
-            .map(|v| {
-                (0..len)
-                    .filter(|&u| u != v && builds_on(block[v], block[u]))
-                    .count()
-            })
+            .map(|&v| block.iter().filter(|&&u| builds_on(v, u)).count())
             .collect();
         let mut placed = vec![false; len];
         for _ in 0..len {
@@ -359,7 +352,6 @@ fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
                 }
             }
         }
-        rest = tail;
     }
     out
 }
@@ -574,7 +566,7 @@ pub fn pr_base_tips(
     MergeBaseTips {
         historical: Vec::new(),
         tip: None,
-        current: tips.current,
+        ..tips
     }
 }
 
@@ -1681,16 +1673,12 @@ mod tests {
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
-            "merge_base_tips" => {
+            "merge_base_tips" | "pr_base_tips" => {
                 let inp: BaseHistory = input(v);
-                assert!(inp.opened_at.is_none(), "vector `{ctx}`: use pr_base_tips");
-                assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
-            }
-            "pr_base_tips" => {
-                let inp: BaseHistory = input(v);
-                assert!(
+                assert_eq!(
                     inp.opened_at.is_some(),
-                    "vector `{ctx}`: pr_base_tips needs openedAt"
+                    v.case == "pr_base_tips",
+                    "vector `{ctx}`: openedAt is given exactly for pr_base_tips"
                 );
                 assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
