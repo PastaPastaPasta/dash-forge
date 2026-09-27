@@ -135,7 +135,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       {/* Header */}
       <div>
         <h1 className="text-2xl">
-          {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-400">#{issue.number}</span>
+          {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{issue.number}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
           <span
@@ -149,7 +149,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <Author identityId={issue.author} link={false} /> opened this {timeAgo(issue.createdAt)}
           </span>
           {issue.state.labels.map((l) => (
-            <span key={l} className="inline-flex items-center gap-1 rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-600 dark:text-forge-400">
+            <span key={l} className="inline-flex items-center gap-1 rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-800 dark:text-forge-400">
               {l}
               {isMember ? (
                 <button
@@ -171,10 +171,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
           <Author identityId={issue.author} />
-          <span className="text-anvil-400">authored {timeAgo(issue.createdAt)}</span>
+          <span className="text-anvil-500 dark:text-anvil-400">authored {timeAgo(issue.createdAt)}</span>
         </div>
         <div className="px-4 py-3">
-          {issue.body ? <MarkdownView source={issue.body} /> : <p className="italic text-anvil-400">No description.</p>}
+          {issue.body ? <MarkdownView source={issue.body} /> : <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>}
         </div>
       </div>
 
@@ -185,12 +185,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       {/* Labels (members) */}
       {isMember ? (
         <div className="flex flex-wrap items-end gap-2 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800">
-          <Tag className="mb-2 h-4 w-4 text-anvil-400" aria-hidden />
+          <Tag className="mb-2 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <div className="min-w-[12rem] flex-1">
             <label htmlFor="label-name" className="sr-only">Label</label>
             <Input id="label-name" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="Add a label (e.g. bug)" maxLength={120} />
             {home.repo.visibility === 'private' ? (
-              <p className="mt-1 text-[11px] text-caution">Labels are not encrypted in this release: anyone can read them.</p>
+              <p className="mt-1 text-[11px] text-caution-700 dark:text-caution-400">Labels are not encrypted in this release: anyone can read them.</p>
             ) : null}
           </div>
           <Button
@@ -249,7 +249,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         ) : null}
         {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
         {commentError ? (
-          <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
+          <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
         ) : null}
       </div>
 

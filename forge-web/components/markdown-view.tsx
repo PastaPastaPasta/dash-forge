@@ -9,6 +9,7 @@
 import { Fragment, memo, type ReactNode } from 'react'
 import { formatBytes, MARKDOWN_MAX_CHARS, parseMarkdown, type Block, type Inline, type TableAlignment } from '@/lib/view'
 import { cn } from '@/lib/utils'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 
 function tableAlignClass(align: TableAlignment): string {
   if (align === 'center') return 'text-center'
@@ -27,7 +28,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
       case 'em':
         return <em key={key}>{renderInline(n.c, key)}</em>
       case 'del':
-        return <del key={key} className="text-anvil-400">{renderInline(n.c, key)}</del>
+        return <del key={key} className="text-anvil-500 dark:text-anvil-400">{renderInline(n.c, key)}</del>
       case 'code':
         return (
           <code key={key} className="rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] text-forge-700 dark:bg-anvil-800 dark:text-forge-300">
@@ -41,7 +42,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
             href={n.href}
             target={n.href.startsWith('http') ? '_blank' : undefined}
             rel="noreferrer noopener"
-            className="text-forge-600 underline decoration-forge-600/30 underline-offset-2 hover:decoration-forge-600 dark:text-forge-400"
+            className="text-forge-700 underline decoration-forge-700/30 underline-offset-2 hover:decoration-forge-700 dark:text-forge-400"
           >
             {renderInline(n.c, key)}
           </a>
@@ -80,9 +81,9 @@ function renderBlock(b: Block, key: string): ReactNode {
       return <p key={key} className="my-3 leading-relaxed">{renderInline(b.c, key)}</p>
     case 'code':
       return (
-        <pre key={key} className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
+        <ScrollRegion as="pre" key={key} label="Code block" className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
           <code>{b.v}</code>
-        </pre>
+        </ScrollRegion>
       )
     case 'list':
       return b.ordered ? (
@@ -102,7 +103,7 @@ function renderBlock(b: Block, key: string): ReactNode {
       )
     case 'table':
       return (
-        <div key={key} className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
+        <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
           <table className="min-w-full border-collapse text-dense leading-5">
             <thead className="bg-anvil-50 text-anvil-900 dark:bg-anvil-900 dark:text-anvil-50">
               <tr>
@@ -138,7 +139,7 @@ function renderBlock(b: Block, key: string): ReactNode {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       )
     case 'hr':
       return <hr key={key} className="my-5 border-anvil-200 dark:border-anvil-800" />

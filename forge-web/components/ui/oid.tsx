@@ -63,9 +63,9 @@ export function Oid({ value, chars = 7, copyable = true, label, className }: Oid
     >
       <span>{shown}</span>
       {copied ? (
-        <Check className="h-3 w-3 text-verify" aria-hidden />
+        <Check className="h-3 w-3 text-verify-700 dark:text-verify-400" aria-hidden />
       ) : (
-        <Copy className="h-3 w-3 text-anvil-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+        <Copy className="h-3 w-3 text-anvil-500 dark:text-anvil-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
       )}
       <span className="sr-only">{copied ? 'Copied' : `Copy ${label ?? 'full identifier'}`}</span>
     </button>

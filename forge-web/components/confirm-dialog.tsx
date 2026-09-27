@@ -123,17 +123,17 @@ export function ConfirmDialog({
         )}
 
         {!check.ok ? (
-          <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution">
+          <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
             {check.blocker === 'key-budget'
               ? `This browser's key has ${creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left; this write needs ${creditsAsDash(cost?.credits ?? 0)}. Renew the key to continue.`
               : `Not enough credits: short by ${creditsAsDash(Number(check.shortfall))} DASH.`}
           </div>
         ) : null}
 
-        {done ? <p className="text-dense text-verify">{successNote}</p> : null}
+        {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote}</p> : null}
 
         {error ? (
-          <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">
             {error}
           </div>
         ) : null}

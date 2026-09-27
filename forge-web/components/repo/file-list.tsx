@@ -20,11 +20,11 @@ function iconFor(kind: ReturnType<typeof modeKind>): JSX.Element {
     case 'submodule':
       return <GitCommitHorizontal className="h-4 w-4 text-dash" aria-hidden />
     case 'link':
-      return <Link2 className="h-4 w-4 text-anvil-400" aria-hidden />
+      return <Link2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
     case 'exe':
-      return <FileCog className="h-4 w-4 text-anvil-400" aria-hidden />
+      return <FileCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
     default:
-      return <File className="h-4 w-4 text-anvil-400" aria-hidden />
+      return <File className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
   }
 }
 
@@ -68,11 +68,11 @@ export function FileList({
         const inner = (
           <>
             <span className="shrink-0">{iconFor(kind)}</span>
-            <span className={cn('min-w-0 flex-1 truncate font-mono', href && 'group-hover:text-forge-600 dark:group-hover:text-forge-400')}>
+            <span className={cn('min-w-0 flex-1 truncate font-mono', href && 'group-hover:text-forge-800 dark:group-hover:text-forge-400')}>
               {e.name}
             </span>
             {kind === 'submodule' ? (
-              <span className="font-mono text-[11px] text-anvil-400">@ {e.oid.slice(0, 7)}</span>
+              <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400">@ {e.oid.slice(0, 7)}</span>
             ) : null}
           </>
         )

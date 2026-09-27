@@ -28,7 +28,7 @@ import { cn } from '@/lib/utils'
 const META: Readonly<Record<RowState, { word: string; klass: string; Icon: typeof CheckCircle2 }>> = {
   pending: { word: 'waiting', klass: 'text-anvil-500 dark:text-anvil-400', Icon: CircleDashed },
   running: { word: 'testing', klass: 'text-anvil-500 dark:text-anvil-400', Icon: Loader2 },
-  ok: { word: 'ok', klass: 'text-verify-700 dark:text-verify', Icon: CheckCircle2 },
+  ok: { word: 'ok', klass: 'text-verify-700 dark:text-verify-400', Icon: CheckCircle2 },
   fail: { word: 'FAIL', klass: 'text-danger-700 dark:text-danger-400', Icon: XCircle },
   skipped: { word: 'skipped', klass: 'text-anvil-500 dark:text-anvil-400', Icon: MinusCircle },
 }
@@ -120,7 +120,7 @@ export function StorageTest({ profile, onDone }: { profile: StorageProfile; onDo
       {corsFailed && fix.text ? (
         <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 p-3" data-testid="cors-fix">
           <p className="flex items-start gap-2 text-dense text-anvil-800 dark:text-anvil-100">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution" aria-hidden />
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
             <span>
               <span className="font-medium">Fix CORS.</span> {fix.where}
             </span>

@@ -176,7 +176,7 @@ export default function NewRepoPage(): JSX.Element {
           <Field label="Repository name" htmlFor="repo-name" hint="Lowercase; letters, digits, and . _ - (max 63). The name is permanent.">
             <Input id="repo-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="forge-core" className="font-mono" spellCheck={false} autoFocus />
           </Field>
-          {nameError ? <p className="-mt-2 text-[12px] text-danger">{nameError}</p> : null}
+          {nameError ? <p className="-mt-2 text-[12px] text-danger-700 dark:text-danger-400">{nameError}</p> : null}
 
           <Field label="Description" htmlFor="repo-desc" hint="Shown in discovery. Optional; editable later.">
             <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[72px]" maxLength={500} />
@@ -184,13 +184,13 @@ export default function NewRepoPage(): JSX.Element {
 
           <Field label="Default branch" htmlFor="repo-branch">
             <div className="relative">
-              <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-400" aria-hidden />
+              <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
               <Input id="repo-branch" value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} className="pl-8 font-mono" />
             </div>
           </Field>
 
           {differs ? (
-            <p className="text-[12px] text-caution">
+            <p className="text-[12px] text-caution-700 dark:text-caution-400">
               An unfinished creation of this name started with a different description or branch; finishing it keeps those
               values. Change them after it exists.
             </p>
@@ -205,9 +205,9 @@ export default function NewRepoPage(): JSX.Element {
               {STEPS.map(({ step, label }) => (
                 <li key={step} className="flex items-center gap-2 text-dense">
                   {progress[step] === 'done' ? (
-                    <Check className="h-4 w-4 text-verify" aria-hidden />
+                    <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
                   ) : progress[step] === 'running' ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-anvil-400" aria-hidden />
+                    <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
                   ) : (
                     <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
                   )}

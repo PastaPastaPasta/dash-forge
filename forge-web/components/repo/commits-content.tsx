@@ -53,10 +53,10 @@ function LogBody({ reader, tipOid, addr }: { reader: BrowseReader; tipOid: strin
       {data.map((entry: LogEntry) => (
         <div key={entry.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
           <div className="min-w-0 flex-1">
-            <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block truncate text-dense font-medium text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
+            <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block truncate text-dense font-medium text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
               {entry.subject || '(no message)'}
             </Link>
-            <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-400">
+            <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               <span>{entry.commit.author.name || 'unknown'}</span>
               <span>· {timeAgo(entry.commit.author.when)}</span>
             </div>

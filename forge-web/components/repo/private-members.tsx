@@ -137,7 +137,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   return (
     <div className="space-y-3" data-testid="private-members">
       <p className="flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300" data-testid="key-epoch">
-        <KeyRound className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+        <KeyRound className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
         {current === null ? (
           'No key epoch yet.'
         ) : (
@@ -157,11 +157,11 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {session.members.map((m) => (
           <div key={`${m.role}:${m.identity}`} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
             <Author identityId={m.identity} link={false} />
-            <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-600 dark:text-forge-400">
+            <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-800 dark:text-forge-400">
               {m.role}
             </span>
             {m.identity === repo.ownerId ? (
-              <span className="text-[12px] text-anvil-400">owner</span>
+              <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
             ) : isOwner ? (
               <Button
                 size="sm"
@@ -196,7 +196,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
                   role="radio"
                   aria-checked={role === r}
                   onClick={() => setRole(r)}
-                  className={'rounded px-3 py-1.5 text-dense font-medium ' + (role === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')}
+                  className={'rounded px-3 py-1.5 text-dense font-medium ' + (role === r ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
                 >
                   {r}
                 </button>
@@ -212,19 +212,19 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               Add
             </Button>
           </div>
-          {idError ? <p className="mt-1 text-[12px] text-danger">{idError}</p> : null}
+          {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
           {noKey ? (
-            <p className="mt-2 text-[12px] text-caution" data-testid="member-no-key">
+            <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-no-key">
               {noEncryptionKeyMessage(shortId(trimmed))}
             </p>
           ) : null}
-          {keyCheck.error ? <p className="mt-1 text-[12px] text-danger">Couldn&apos;t read that identity: {keyCheck.error}</p> : null}
+          {keyCheck.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read that identity: {keyCheck.error}</p> : null}
           {locked ? (
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Keys) to add or remove members.</p>
           ) : null}
         </div>
       ) : (
-        <p className="text-[12px] text-anvil-400">Only the owner can add or remove members.</p>
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only the owner can add or remove members.</p>
       )}
 
       <ConfirmDialog
@@ -268,15 +268,15 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         }}
       />
       {removing?.role === 'maintainer' ? <VanishingNote session={session} leaving={removing.member} /> : null}
-      {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}
+      {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && write.context !== null && removalPlan.plan.recipients[0]?.keyId !== write.context.ops.keyId ? (
-        <p className="text-[12px] text-caution">
+        <p className="text-[12px] text-caution-700 dark:text-caution-400">
           Your identity has a newer encryption key (key {removalPlan.plan.recipients[0]?.keyId}) than the one in this browser, and the new repo
           key goes to it: add that key here (Settings → Keys) to keep reading this repo after the rotation.
         </p>
       ) : null}
       {removing !== null && removalPlan.plan !== null && removalPlan.plan.unreachable.length > 0 ? (
-        <p className="text-[12px] text-caution">
+        <p className="text-[12px] text-caution-700 dark:text-caution-400">
           {removalPlan.plan.unreachable.length} remaining {removalPlan.plan.unreachable.length === 1 ? 'member has' : 'members have'} no
           encryption key and won&apos;t get the new key.
         </p>
@@ -297,7 +297,7 @@ function VanishingNote({ session, leaving }: { session: PrivateSession; leaving:
   const { epochs, losing } = vanishing(session, leaving)
   if (epochs.length === 0) return null
   return (
-    <p className="text-[12px] text-caution" data-testid="removal-vanishing">
+    <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="removal-vanishing">
       Key epoch {epochs.join(', ')} was set by {shortId(leaving)} and no other maintainer holds it: it goes with their role, and anything
       written under it becomes unreadable
       {losing.length > 0 ? (

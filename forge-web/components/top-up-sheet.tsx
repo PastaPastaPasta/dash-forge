@@ -77,7 +77,7 @@ export function TopUpSheet(): JSX.Element | null {
           </>
         )}
         {faucet ? (
-          <a href={faucet} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-forge-600 underline dark:text-forge-400">
+          <a href={faucet} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
             {ACTIVE_NETWORK.key} faucet <ExternalLink className="h-3 w-3" aria-hidden />
           </a>
         ) : null}

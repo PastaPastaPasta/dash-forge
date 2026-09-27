@@ -59,6 +59,16 @@ function over(fg: Rgb, bg: Rgb, alpha: number): Rgb {
   return fg.map((c, i) => c * alpha + (bg[i] as number) * (1 - alpha)) as Rgb
 }
 
+/** The app's React sources (app/ and components/), for the class-string checks below. */
+const root = resolve(__dirname, '../..')
+function sources(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) return sources(p)
+    return /\.tsx$/.test(e.name) ? [p] : []
+  })
+}
+
 /** WCAG AA for normal-size text; every dash-blue label here is 11–15px. */
 const AA_TEXT = 4.5
 
@@ -92,14 +102,113 @@ describe('dash-blue text tokens meet WCAG AA', () => {
 
 describe('Verification state words meet WCAG AA', () => {
   // `text-{state}-700 dark:text-{state}`: the -700 shade on light surfaces, the base on dark.
-  it.each([['verify'], ['caution']])('%s', (state) => {
+  // `text-{state}-700 dark:text-{state}-400`, on the plain surfaces and on the state's own
+  // 5–15 % tint (a note box, the funds pill, the devnet network badge).
+  it.each([['verify'], ['caution'], ['danger']])('%s on surfaces and its own tints', (state) => {
     const ramp = colors[state] as Record<string, string>
+    const tint = rgb(ramp.DEFAULT!)
+    for (const alpha of [0, 0.05, 0.1, 0.15]) {
+      for (const bg of Object.values(LIGHT_SURFACES)) {
+        expect(contrast(rgb(ramp['700']!), over(tint, rgb(bg!), alpha)), `${state}-700 @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
+      }
+      for (const bg of Object.values(DARK_SURFACES)) {
+        expect(contrast(rgb(ramp['400']!), over(tint, rgb(bg!), alpha)), `${state}-400 @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
+      }
+    }
+  })
+
+  it('the network badge that failed on every light page now passes', () => {
+    // D-046: `text-caution` (#d97706) on `bg-caution/10` over anvil-50 measured 2.75:1.
+    const caution = colors['caution'] as Record<string, string>
+    const badgeBg = over(rgb(caution.DEFAULT!), rgb(anvil['50']!), 0.1)
+    expect(contrast(rgb(caution.DEFAULT!), badgeBg)).toBeLessThan(3)
+    expect(contrast(rgb(caution['700']!), badgeBg)).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+})
+
+describe('neutral and ember text meets WCAG AA', () => {
+  const forge = colors['forge'] as Record<string, string>
+  it('muted text: anvil-500 on light surfaces (incl. anvil-100 chips), anvil-400 on dark', () => {
     for (const bg of Object.values(LIGHT_SURFACES)) {
-      expect(contrast(rgb(ramp['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(anvil['500']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+      // The selected tab of a segmented control: muted text beside an ember tint.
+      expect(contrast(rgb(anvil['500']!), over(rgb(forge['500']!), rgb(bg!), 0.15))).toBeGreaterThanOrEqual(AA_TEXT)
     }
     for (const bg of Object.values(DARK_SURFACES)) {
-      expect(contrast(rgb(ramp.DEFAULT!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(anvil['400']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
     }
+  })
+
+  it('anvil-400 is not a light-theme text color (2.41:1 on anvil-50)', () => {
+    expect(contrast(rgb(anvil['400']!), rgb(anvil['50']!))).toBeLessThan(AA_TEXT)
+  })
+
+  it('ember links: forge-700 on light surfaces, forge-800 on an ember tint, forge-400 on dark', () => {
+    for (const bg of Object.values(LIGHT_SURFACES)) {
+      expect(contrast(rgb(forge['700']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+      for (const alpha of [0.1, 0.15, 0.2]) {
+        expect(contrast(rgb(forge['800']!), over(rgb(forge['500']!), rgb(bg!), alpha))).toBeGreaterThanOrEqual(AA_TEXT)
+      }
+    }
+    for (const bg of Object.values(DARK_SURFACES)) {
+      expect(contrast(rgb(forge['400']!), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(forge['400']!), over(rgb(forge['500']!), rgb(bg!), 0.15))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+    // forge-600 as light text was the 3.4–3.6:1 link failure on the release pages.
+    expect(contrast(rgb(forge['600']!), rgb('#ffffff'))).toBeLessThan(AA_TEXT)
+  })
+})
+
+describe('no component uses a light-theme text color that fails AA', () => {
+  // Light-theme text classes measured under 4.5:1 on the light surfaces, bare or as a (group-)
+  // hover shade: a hover recolors the same text. Graphics are exempt (WCAG 1.4.11 asks 3:1):
+  // an aria-hidden icon, a labelled icon, or a decorative icon wrapper.
+  const FAILS = /(?<![\w:/-])(?:(?:group-)?hover:)?text-(?:anvil-[34]00|forge-[56]00|caution|verify|danger)(?![\w/-])/
+  const EXEMPT = /aria-hidden|aria-label="private"/
+  // Icon-only elements whose colour sits on a graphic, not on text (checked by hand).
+  const ICON_ONLY = [
+    /className="rounded p-0\.5 text-anvil-500 hover:text-danger dark:text-anvil-400"/, // gateway remove (X icon)
+    /^\s*className="hover:text-danger"\s*$/, // issue label remove (X icon)
+    /rounded-full bg-forge-500\/10 text-forge-500">$/, // the empty-state icon badge
+  ]
+
+  it('finds none outside graphics', () => {
+    const offenders = ['app', 'components']
+      .flatMap((d) => sources(join(root, d)))
+      .flatMap((file) =>
+        readFileSync(file, 'utf8')
+          .split('\n')
+          .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
+          .filter(({ text }) => FAILS.test(text) && !EXEMPT.test(text) && !ICON_ONLY.some((re) => re.test(text))),
+      )
+      .map(({ where }) => where)
+    expect(offenders).toEqual([])
+  })
+
+  it('catches the regressions it exists for', () => {
+    expect(FAILS.test('<span className="text-caution">low</span>')).toBe(true)
+    expect(FAILS.test('<span className="text-anvil-400">3d ago</span>')).toBe(true)
+    expect(FAILS.test('<a className="text-forge-600 underline">x</a>')).toBe(true)
+    // The file-list hover the first codemod pass missed.
+    expect(FAILS.test("'group-hover:text-forge-600 dark:group-hover:text-forge-400'")).toBe(true)
+    expect(FAILS.test('<a className="hover:text-forge-600">x</a>')).toBe(true)
+    expect(FAILS.test('<span className="text-caution-700 dark:text-caution-400">low</span>')).toBe(false)
+    expect(FAILS.test('<span className="text-anvil-500 dark:text-anvil-400">x</span>')).toBe(false)
+    expect(FAILS.test('<a className="hover:text-forge-800 dark:hover:text-forge-400">x</a>')).toBe(false)
+  })
+
+  it('every forge hover shade on light has a dark counterpart', () => {
+    // A light hover shade alone applies in dark mode too: forge-800 on anvil-950 is 2.65:1.
+    const offenders = ['app', 'components']
+      .flatMap((d) => sources(join(root, d)))
+      .flatMap((file) =>
+        readFileSync(file, 'utf8')
+          .split('\n')
+          .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
+          .filter(({ text }) => /(?<![\w:-])(?:group-)?hover:text-forge-\d00/.test(text) && !/dark:(?:group-)?hover:text-/.test(text)),
+      )
+      .map(({ where }) => where)
+    expect(offenders).toEqual([])
   })
 })
 
@@ -119,15 +228,6 @@ describe('danger text meets WCAG AA', () => {
 })
 
 describe('no component renders text in the raw brand blue', () => {
-  const root = resolve(__dirname, '../..')
-
-  function sources(dir: string): string[] {
-    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-      const p = join(dir, e.name)
-      if (e.isDirectory()) return sources(p)
-      return /\.tsx$/.test(e.name) ? [p] : []
-    })
-  }
 
   // Any dash-blue text class other than the AA shades: `text-dash`, and opacity variants
   // like `text-dash/80`, which are lower contrast still.
@@ -227,15 +327,6 @@ describe('identity-pill avatar fills keep the white initial at AA', () => {
 })
 
 describe('white text on solid fills meets WCAG AA', () => {
-  const root = resolve(__dirname, '../..')
-
-  function sources(dir: string): string[] {
-    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-      const p = join(dir, e.name)
-      if (e.isDirectory()) return sources(p)
-      return /\.tsx$/.test(e.name) ? [p] : []
-    })
-  }
 
   // Every `bg-…` class, including `hover:` / `dark:` / `focus:` variants (a hover fill sits
   // behind the same white text), arbitrary values and `/NN` tints. The token captured is

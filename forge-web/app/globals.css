@@ -61,7 +61,7 @@
  * ------------------------------------------------------------------------- */
 .hljs-comment,
 .hljs-quote {
-  color: #a8a29e; /* anvil-400 */
+  color: #6b6460; /* anvil-500: 5.6:1 on anvil-50 (anvil-400 was 2.4:1) */
   font-style: italic;
 }
 .hljs-keyword,
@@ -100,7 +100,7 @@
 }
 .hljs-meta,
 .hljs-comment.hljs-doctag {
-  color: #78716c; /* anvil-500 */
+  color: #6b6460; /* anvil-500 */
 }
 .hljs-deletion {
   color: #b91c1c; /* red-700 */
@@ -114,7 +114,7 @@
 
 .dark .hljs-comment,
 .dark .hljs-quote {
-  color: #78716c; /* anvil-500 */
+  color: #a8a29e; /* anvil-400: 7.7:1 on anvil-950 (#78716c was 4.0:1) */
 }
 .dark .hljs-keyword,
 .dark .hljs-selector-tag,

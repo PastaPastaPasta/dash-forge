@@ -204,7 +204,7 @@ export function MergePanel({
   return (
     <section aria-label="Merge" data-testid="merge-panel" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
       <div className="flex flex-wrap items-center gap-3">
-        <GitMerge className="h-4 w-4 text-anvil-400" aria-hidden />
+        <GitMerge className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="text-dense text-anvil-700 dark:text-anvil-200">
           Into <span className="font-mono">{baseRefName.replace(/^refs\/heads\//, '')}</span>
           {baseTipOid ? (
@@ -238,7 +238,7 @@ export function MergePanel({
         </div>
       ) : null}
       {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && !identityOk ? (
-        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution">
+        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           A browser merge commit is authored with your name and email. Set them in{' '}
           <Link href="/settings" className="underline">
             Settings
@@ -292,13 +292,13 @@ export function MergePanel({
 function StepIcon({ state }: { state: StepState }): JSX.Element {
   switch (state) {
     case 'done':
-      return <Check className="h-4 w-4 text-verify" aria-hidden />
+      return <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
     case 'running':
-      return <Loader2 className="h-4 w-4 animate-spin text-anvil-400" aria-hidden />
+      return <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
     case 'skipped':
-      return <Minus className="h-4 w-4 text-anvil-400" aria-hidden />
+      return <Minus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
     case 'failed':
-      return <X className="h-4 w-4 text-danger" aria-hidden />
+      return <X className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
     default:
       return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
   }

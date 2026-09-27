@@ -30,9 +30,36 @@ import { FundsPill } from '@/components/funds-pill'
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
 
+/** Whether a key press is typing into a field (where `/` must stay a character). */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
+}
+
+/** `/` focuses the jump box (the visible one: the header's, or the phone row's). */
+function useSlashToSearch(): void {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || isTyping(e.target)) return
+      // An open modal keeps the keyboard.
+      if (document.querySelector('[aria-modal="true"]') !== null) return
+      const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(
+        (el) => el.getClientRects().length > 0,
+      )
+      if (box === undefined) return
+      e.preventDefault()
+      box.focus()
+      box.select()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+}
+
 export function AppHeader(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
   const { identity, balance, logout } = useAuth()
+  useSlashToSearch()
 
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
@@ -171,9 +198,11 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
       <label htmlFor={id} className="sr-only">
         Jump to a repo, a profile, or an issue or PR number
       </label>
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500" aria-hidden />
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
       <input
         id={id}
+        data-jump-box
+        aria-keyshortcuts="/"
         value={query}
         onChange={(e) => {
           setQuery(e.target.value)
@@ -185,8 +214,19 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         placeholder={inRepo ? 'owner/name, @name or #n' : 'owner/name or @name'}
         aria-describedby={note ? `${id}-note` : undefined}
         aria-busy={busy}
-        className="h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-2 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') e.currentTarget.blur()
+        }}
+        className="peer h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-7 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
       />
+      {compact ? null : (
+        <kbd
+          aria-hidden
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-anvil-300 px-1 font-mono text-[11px] leading-4 text-anvil-500 peer-focus:hidden dark:border-anvil-700 dark:text-anvil-400"
+        >
+          /
+        </kbd>
+      )}
       {note ? (
         <p
           id={`${id}-note`}
@@ -352,7 +392,7 @@ function AccountMenu({
               setOpen(false)
               onLogout(false)
             }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger hover:bg-danger/5"
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
             <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
           </button>

@@ -113,7 +113,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
         {!isSelf && canFollow ? (
           <div className="ml-auto flex items-center gap-2">
             {follow.error ? (
-              <span role="alert" className="max-w-[18rem] text-[12px] text-danger">{follow.error}</span>
+              <span role="alert" className="max-w-[18rem] text-[12px] text-danger-700 dark:text-danger-400">{follow.error}</span>
             ) : null}
             <Button
               variant={following ? 'subtle' : 'primary'}

@@ -35,7 +35,7 @@ function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }):
         <>
           <Author identityId={doc.ownerId} link={false} />
           <span>/</span>
-          <Link href={repoHref('/repo', { owner: doc.ownerId, name: doc.name })} className="font-mono hover:text-forge-600 dark:hover:text-forge-400">
+          <Link href={repoHref('/repo', { owner: doc.ownerId, name: doc.name })} className="font-mono hover:text-forge-800 dark:hover:text-forge-400">
             {doc.name}
           </Link>
         </>
@@ -78,8 +78,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center gap-2 text-prose">
           <Author identityId={home.repo.ownerId} link />
-          <span className="text-anvil-300 dark:text-anvil-600">/</span>
-          <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
+          <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
+          <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
             {home.repo.name || addr.name}
           </Link>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
@@ -99,7 +99,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       ) : null}
 
       {home.config?.archived ? (
-        <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution">
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution-700 dark:text-caution-400">
           <Archive className="h-3.5 w-3.5" aria-hidden /> The owner has marked this repo archived.
         </div>
       ) : null}

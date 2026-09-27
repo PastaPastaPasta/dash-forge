@@ -66,7 +66,7 @@ export function SpendPanel(): JSX.Element {
         </p>
       ) : null}
       {s.missed > 0 ? (
-        <p className="flex items-center gap-1 text-[12px] text-caution">
+        <p className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400">
           <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> {s.missed} estimate{s.missed === 1 ? '' : 's'} missed by more than 25 %.
         </p>
       ) : null}
@@ -86,7 +86,7 @@ export function SpendPanel(): JSX.Element {
               <td className="py-1">{timeAgo(r.at)}</td>
               <td className="py-1 font-mono">{r.kind}</td>
               <td className="py-1 text-right"><Dash credits={r.estimateCredits} /></td>
-              <td className={`py-1 text-right ${estimateMissed(r) ? 'text-caution' : ''}`}>
+              <td className={`py-1 text-right ${estimateMissed(r) ? 'text-caution-700 dark:text-caution-400' : ''}`}>
                 {r.actualCredits === null ? '—' : <Dash credits={r.actualCredits} />}
               </td>
             </tr>

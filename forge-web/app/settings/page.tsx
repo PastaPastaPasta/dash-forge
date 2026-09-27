@@ -72,10 +72,10 @@ export default function SettingsPage(): JSX.Element {
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Balance</h2>
           <div className="font-mono text-2xl text-dash-600 dark:text-dash-400">{balanceToDash(balance ?? '0')} DASH</div>
-          <div className="mt-1 font-mono text-dense text-anvil-400">
+          <div className="mt-1 font-mono text-dense text-anvil-500 dark:text-anvil-400">
             {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
           </div>
-          <button type="button" onClick={() => openTopUp()} className="mt-3 inline-block text-dense text-forge-600 underline dark:text-forge-400">
+          <button type="button" onClick={() => openTopUp()} className="mt-3 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Top up →
           </button>
         </section>
@@ -109,7 +109,7 @@ export default function SettingsPage(): JSX.Element {
 
         {gateways}
 
-        <p className="text-center text-[12px] text-anvil-400">
+        <p className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">
           <Link href="/" className="hover:underline">Back to discovery</Link>
         </p>
       </div>

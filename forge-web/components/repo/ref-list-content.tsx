@@ -69,10 +69,10 @@ export function RefListContent({
                 key={ref.refName}
                 className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
               >
-                <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-400" aria-hidden />
+                <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
                 <Link
                   href={repoHref('/repo', addr, browseRef ? { ref: browseRef } : {})}
-                  className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400"
+                  className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400"
                 >
                   {shortName}
                 </Link>
@@ -82,14 +82,14 @@ export function RefListContent({
                   </span>
                 ) : null}
                 {isDiverged(ref) ? (
-                  <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution">
+                  <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
                     diverged
                   </span>
                 ) : null}
                 {tip ? (
                   <Link
                     href={repoHref('/repo/commit', addr, { oid: tip })}
-                    className="hover:text-forge-600 dark:hover:text-forge-400"
+                    className="hover:text-forge-800 dark:hover:text-forge-400"
                   >
                     <Oid value={tip} copyable={false} />
                   </Link>
@@ -118,10 +118,10 @@ export function RefListContent({
                 className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
               >
                 <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-300 dark:text-anvil-600" aria-hidden />
-                <span className="min-w-0 flex-1 truncate font-mono text-dense text-anvil-400 line-through decoration-anvil-300 dark:decoration-anvil-600">
+                <span className="min-w-0 flex-1 truncate font-mono text-dense text-anvil-500 dark:text-anvil-400 line-through decoration-anvil-300 dark:decoration-anvil-600">
                   {short(ref)}
                 </span>
-                <span className="rounded-full border border-anvil-200 px-2 py-0.5 text-[11px] text-anvil-400 dark:border-anvil-700">
+                <span className="rounded-full border border-anvil-200 px-2 py-0.5 text-[11px] text-anvil-500 dark:text-anvil-400 dark:border-anvil-700">
                   deleted
                 </span>
               </div>

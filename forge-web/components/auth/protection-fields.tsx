@@ -77,7 +77,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
     <div className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
       {preferPasskey && !passkey ? (
-        <p className="text-[12px] text-caution" data-testid="prefer-passkey">
+        <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">
           This key has no spending limit: use a passkey. A passphrase alone can be guessed offline by anyone who copies this browser&apos;s storage.
         </p>
       ) : null}
@@ -89,7 +89,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Recommended: Touch ID, Windows Hello or a security key.</span>
         </div>
       ) : null}
-      {passkeyError ? <p className="text-[12px] text-caution">{passkeyError}</p> : null}
+      {passkeyError ? <p className="text-[12px] text-caution-700 dark:text-caution-400">{passkeyError}</p> : null}
       <Field
         label={passkey ? 'Passphrase (optional backup)' : 'Passphrase'}
         htmlFor="vault-passphrase"
@@ -114,7 +114,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
 export function ErrorBox({ error }: { error: string | null }): JSX.Element | null {
   if (!error) return null
   return (
-    <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">
+    <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">
       {error}
     </div>
   )
@@ -150,7 +150,7 @@ export function GroupNotice({ check }: { check: () => Promise<{ notice: string |
       data-testid="group-notice"
       className={
         text.kind === 'refusal'
-          ? 'rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] text-danger break-words'
+          ? 'rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] text-danger-700 dark:text-danger-400 break-words'
           : 'rounded-md border border-anvil-200 px-3 py-2 text-[12px] text-anvil-600 break-words dark:border-anvil-800 dark:text-anvil-300'
       }
     >
