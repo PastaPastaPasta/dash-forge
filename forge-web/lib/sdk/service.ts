@@ -22,9 +22,7 @@
  * A new connection is built:
  *   - every {@link REFRESH_MS} while the tab is visible, before the keys go stale;
  *   - when a read fails on stale keys or on no usable node: one reconnect, then one retry;
- *   - before a write whose SDK call never refreshes the keys itself ({@link EvoSdkService.ensureFresh}):
- *     wasm-sdk's `identityCreate` verifies its result against the connection's keys as they are
- *     (L-06), unlike the broadcast facade's calls, which run `refresh_quorums` first.
+ *   - before a write whose SDK call never refreshes the keys itself (L-06, {@link EvoSdkService.ensureFresh}).
  * A connect that fails is retried with backoff (D-058). Every connection is trusted: a
  * failure never falls back to unverified reads.
  */

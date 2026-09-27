@@ -75,8 +75,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [stage, setStage] = useState<string | null>(null)
   const [seen, setSeen] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  // The last run's IdentityCreate did not land and its asset lock is unused (L-06): "Try again"
-  // sends it again with the same deposit.
+  // The last run's IdentityCreate did not land and its lock is unused: "Try again" reuses it.
   const [sameDeposit, setSameDeposit] = useState(false)
   // The words of the last run, for "Try again" (a resumed creation's words are typed, not shown).
   const runWords = useRef<string | null>(null)
@@ -176,6 +175,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const start = async (phrase: string): Promise<void> => {
     if (!protection || running || preparing) return
     setError(null)
+    setSameDeposit(false)
     const m = normalizeMnemonic(phrase)
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
@@ -185,7 +185,6 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     const deposit = await checkWords(m)
     if (deposit === null) return
     runWords.current = m
-    setSameDeposit(false)
     const controllerRun = new AbortController()
     run.current = controllerRun
     setRunning(true)
@@ -396,12 +395,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       </p>
       {error && !running ? (
         <StepFailed
-          error={
-            sameDeposit
-              ? error
-              : `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).`
-          }
-          retryLabel={sameDeposit ? 'Try again with the same deposit' : undefined}
+          {...(sameDeposit
+            ? { error, retryLabel: 'Try again with the same deposit' }
+            : { error: `${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).` })}
           onRetry={() => {
             const words = runWords.current ?? mnemonic
             if (words) void start(words)

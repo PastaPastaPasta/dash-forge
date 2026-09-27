@@ -42,7 +42,7 @@ import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS } from './connect'
 import { withTimeout } from '../timeout'
 import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
-import { encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
   disableHeldKeys,
   isForgeBrowserKey,
@@ -339,6 +339,9 @@ export class AuthController {
     return { identityId, network, getSigningKeyWif: pick }
   }
 
+  /** Times the named sign-in steps (`lib/step-timing.ts`, L-20). */
+  private readonly stepTimer = stepClock('sign-in')
+
   /** The verified scopes of the open session's keys (main, and extra grants by key id). */
   private scopes: { main: KeyScope | null; extra: Map<number, KeyScope> } = { main: null, extra: new Map() }
 
@@ -360,9 +363,6 @@ export class AuthController {
       this.stepTimer(null)
     }
   }
-
-  /** Times the named steps (`lib/step-timing.ts`, L-20). */
-  private readonly stepTimer = stepClock('sign-in')
 
   /** Name the step a running sign-in is on. */
   private step(text: string): void {
@@ -585,7 +585,7 @@ export class AuthController {
     const core = NETWORKS[this.network].v2?.core
     if (core === undefined) return
     try {
-      const sdk = await timed('enable-private-repos', 'connect', () => this.getSdk())
+      const sdk = await timed(PRIVATE_REPOS_FLOW, 'connect', () => this.getSdk())
       const keyId = await importEncryptionKey(sdk, this.network, identityId, core, material)
       if (keyId === null) {
         this.setState({

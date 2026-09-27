@@ -112,10 +112,7 @@ export const BROWSER_KEY_ID = CANONICAL_KEYS.length
  * reuses it; nothing new has to be paid.
  */
 export class IdentityNotCreatedError extends Error {
-  constructor(
-    readonly identityId: string,
-    cause: unknown,
-  ) {
+  constructor(identityId: string, cause: unknown) {
     super(
       `Platform did not record identity ${identityId} (${errorMessage(cause)}). Your deposit is still locked for it: "Try again" sends the creation again with the same deposit, with nothing new to pay.`,
     )
@@ -138,9 +135,9 @@ export function createOutcomeUnknown(e: unknown): boolean {
 }
 
 /** Reads of an identity whose create reported an error (a node may be a block behind). */
-export const LANDED_CHECKS = 8
+const LANDED_CHECKS = 8
 /** Between those reads. */
-export const LANDED_CHECK_MS = 2_000
+const LANDED_CHECK_MS = 2_000
 
 /** Where Platform records the asset-lock outpoints it has used (rs-drive `RootTree::SpentAssetLockTransactions`). */
 const SPENT_ASSET_LOCKS = Uint8Array.of(72)
@@ -168,20 +165,21 @@ async function probeCreate(
   delayMs: number,
   signal?: AbortSignal,
 ): Promise<'landed' | 'not-landed' | 'unknown'> {
-  let readFailed = false
+  let lastReadFailed = false
   for (let i = 0; i < LANDED_CHECKS; i++) {
     if (i > 0) await sleep(delayMs, signal)
     try {
       if ((await authSdk(sdk).identities.fetch(identityId)) !== undefined) return 'landed'
-      readFailed = false
+      lastReadFailed = false
     } catch (e) {
       if (isAbort(e)) throw e
-      readFailed = true
+      lastReadFailed = true
     }
   }
-  if (readFailed) return 'unknown'
+  if (lastReadFailed) return 'unknown'
   const lock = await assetLockUsed(sdk, outPoint).catch(() => null)
-  return lock === 'unused' || lock === 'partly' ? 'not-landed' : 'unknown'
+  // Fully used without a visible identity, or unreadable: nothing to conclude yet.
+  return lock === 'fully' || lock === null ? 'unknown' : 'not-landed'
 }
 
 /**
@@ -212,9 +210,8 @@ export async function createIdentityFromMnemonic(
      */
     readonly onCharge?: (identityId: string, charge: { kind: 'identity:create' | 'key:renew'; keyId: number | null; balanceBefore: bigint | null }) => void
     /**
-     * Renews the connection's quorum keys before the IdentityCreate, which verifies its answer
-     * against them without refreshing them itself (L-06). Default: the SDK service's
-     * `ensureFresh`.
+     * Renews the connection's quorum keys before the IdentityCreate (L-06, see the module
+     * comment). Default: the SDK service's `ensureFresh`.
      */
     readonly freshen?: () => Promise<unknown>
     /** Between reads of an identity whose create reported an error (default {@link LANDED_CHECK_MS}). */
@@ -279,6 +276,7 @@ export async function createIdentityFromMnemonic(
   await save({ identityId })
 
   const limits = params.limits ?? defaultLimits()
+  const readBalance = (): Promise<bigint | undefined> => authSdk(sdk).identities.balance(identityId).catch(() => undefined)
   /** The identity exists, but this browser holds none of its keys: the master key renews key 5. */
   const renewBrowserKey = async (balanceBefore: bigint | null): Promise<{ identityId: string; key: LimitedKey }> => {
     params.onStage?.('registering', 'The identity exists; registering a key for this browser…')
@@ -291,7 +289,7 @@ export async function createIdentityFromMnemonic(
     await params.persistKey(identityId, key)
     return { identityId, key }
   }
-  const existingBalance = await authSdk(sdk).identities.balance(identityId).catch(() => undefined)
+  const existingBalance = await readBalance()
   // Created by an earlier run whose browser key was lost.
   if (existingBalance !== undefined) return renewBrowserKey(existingBalance)
 
@@ -334,8 +332,7 @@ export async function createIdentityFromMnemonic(
       }),
     )
     signer.addKey(browserKey)
-    // L-06: the create verifies its answer against the connection's quorum keys as they are.
-    await (params.freshen ?? (() => evoSdkService.ensureFresh()))()
+    await (params.freshen ? params.freshen() : evoSdkService.ensureFresh())
     try {
       await authSdk(sdk).identities.create({ identity, assetLockProof, assetLockPrivateKey, signer })
     } catch (e) {
@@ -369,6 +366,6 @@ export async function createIdentityFromMnemonic(
     // The identity found after an unverified create may be an earlier attempt's, with that
     // attempt's key 5 (this one was refused as a duplicate): the master key renews it.
     if (!landedAfterError || isAbort(e)) throw e
-    return renewBrowserKey((await authSdk(sdk).identities.balance(identityId).catch(() => undefined)) ?? null)
+    return renewBrowserKey((await readBalance()) ?? null)
   }
 }

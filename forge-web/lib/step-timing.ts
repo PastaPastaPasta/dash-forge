@@ -8,8 +8,6 @@
  * Timing only: nothing here changes what a step does, and a failure to record is ignored.
  */
 
-const PREFIX = 'forge:'
-
 function now(): number {
   return typeof performance === 'undefined' ? Date.now() : performance.now()
 }
@@ -24,7 +22,7 @@ function logging(): boolean {
 
 function record(flow: string, step: string, start: number, end: number): void {
   try {
-    performance.measure(`${PREFIX}${flow}:${step}`, { start, end })
+    performance.measure(`forge:${flow}:${step}`, { start, end })
   } catch {
     // No User Timing (an old engine): the console line below still works.
   }

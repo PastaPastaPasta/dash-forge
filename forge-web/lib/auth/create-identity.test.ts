@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { resetMemoryStores } from '../idb'
+import { idbPut, resetMemoryStores } from '../idb'
 import type { GroupTrust } from '../deployments'
 import {
   IdentityNotCreatedError,
@@ -17,7 +17,6 @@ import {
   readCreationJournal,
   type CreationJournal,
 } from './create-identity'
-import { idbPut } from '../idb'
 
 const IDENTITY = '4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF'
 const OUTPOINT = new Uint8Array(36).fill(9)
@@ -107,7 +106,7 @@ const chain = vi.hoisted(() => ({
   key5: 'ours' as 'ours' | 'earlier',
   lock: 'unused' as 'unused' | 'fully',
   /** What `identities.create` does before it throws (or not). */
-  create: 'lands-then-stale' as 'lands-then-stale' | 'refused-then-stale' | 'ok',
+  create: 'lands-then-stale' as 'lands-then-stale' | 'refused-then-stale' | 'refused' | 'ok',
   /** Reads of the identity that answer "not found" after it exists (a lagging node). */
   lag: 0,
   fetchFails: false,
@@ -134,6 +133,7 @@ function fakeSdk(): EvoSDK {
           chain.exists = true
           return
         }
+        if (chain.create === 'refused') throw new Error('Failed to create identity: invalid signature')
         if (chain.create === 'lands-then-stale') {
           chain.exists = true
           chain.lock = 'fully'
@@ -168,10 +168,12 @@ function run(overrides: { freshen?: () => Promise<unknown> } = {}) {
   const persisted: { keyId: number; wif: string }[] = []
   const charges: string[] = []
   const stages: string[] = []
-  const freshen = overrides.freshen ?? vi.fn(async () => {
-    chain.events.push('freshen')
-    return true
-  })
+  const freshen =
+    overrides.freshen ??
+    (async () => {
+      chain.events.push('freshen')
+      return true
+    })
   const promise = createIdentityFromMnemonic(fakeSdk(), {
     network: 'devnet',
     mnemonic: 'abandon '.repeat(11) + 'about',
@@ -185,7 +187,7 @@ function run(overrides: { freshen?: () => Promise<unknown> } = {}) {
     freshen,
     landedCheckMs: 1,
   })
-  return { promise, persisted, charges, stages, freshen }
+  return { promise, persisted, charges, stages }
 }
 
 beforeEach(async () => {
@@ -200,8 +202,7 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
     chain.create = 'ok'
     const { promise } = run()
     await expect(promise).resolves.toMatchObject({ identityId: IDENTITY })
-    expect(chain.events.indexOf('freshen')).toBeGreaterThanOrEqual(0)
-    expect(chain.events.indexOf('freshen')).toBeLessThan(chain.events.indexOf('create'))
+    expect(chain.events).toEqual(['freshen', 'create'])
   })
 
   it('the identity landed: the flow finishes instead of failing', async () => {
@@ -221,7 +222,6 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
   })
 
   it('an earlier attempt landed with its own key 5: the master key renews it', async () => {
-    chain.create = 'lands-then-stale'
     chain.key5 = 'earlier'
     const { promise, persisted } = run()
     const out = await promise
@@ -258,20 +258,8 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
   })
 
   it('an error that says nothing about the outcome is reported as it is', async () => {
-    const sdk = fakeSdk() as unknown as { identities: { create: () => Promise<void> } }
-    sdk.identities.create = async () => {
-      throw new Error('Failed to create identity: invalid signature')
-    }
-    const err = await createIdentityFromMnemonic(sdk as unknown as EvoSDK, {
-      network: 'devnet',
-      mnemonic: 'abandon '.repeat(11) + 'about',
-      group: GROUP,
-      trust: {} as GroupTrust,
-      persistKey: async () => undefined,
-      freshen: async () => true,
-      landedCheckMs: 1,
-    }).catch((e: unknown) => e)
-    expect((err as Error).message).toBe('Failed to create identity: invalid signature')
+    chain.create = 'refused'
+    await expect(run().promise).rejects.toThrow(/^Failed to create identity: invalid signature$/)
     expect(chain.events).not.toContain('fetch')
   })
 
@@ -283,21 +271,17 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
 })
 
 describe('createOutcomeUnknown', () => {
-  it('open outcomes', () => {
-    for (const m of [
-      STALE.message,
-      'no available addresses to retry, last error: x',
-      'SDK operation timeout 30 secs reached: wait',
-      'Failed to create identity: Dapi client error: transport error: deadline exceeded',
-      'Asset lock transaction ab output 0 already completely used',
-      'Identity 4Ef… already exists',
-    ]) {
-      expect(createOutcomeUnknown(new Error(m)), m).toBe(true)
-    }
+  it.each([
+    STALE.message,
+    'no available addresses to retry, last error: x',
+    'SDK operation timeout 30 secs reached: wait',
+    'Failed to create identity: Dapi client error: transport error: deadline exceeded',
+    'Asset lock transaction ab output 0 already completely used',
+    'Identity 4Ef… already exists',
+  ])('open outcome: %s', (m) => {
+    expect(createOutcomeUnknown(new Error(m))).toBe(true)
   })
-  it('definite refusals', () => {
-    for (const m of ['invalid signature', 'Failed to create identity: Protocol error: insufficient balance']) {
-      expect(createOutcomeUnknown(new Error(m)), m).toBe(false)
-    }
+  it.each(['invalid signature', 'Failed to create identity: Protocol error: insufficient balance'])('definite refusal: %s', (m) => {
+    expect(createOutcomeUnknown(new Error(m))).toBe(false)
   })
 })
