@@ -1,0 +1,7 @@
+{"status":"error","network":"devnet-moutai","source":"github.com/sindresorhus/is-docker",
+ "repo":{"owner":"F2qB8HMqYkRbWYWUMqS7hq697CoKY3Rw5Xirfnhzg5ec","name":"qa-s6-isdocker","id":"BhaSq5aMJ1UfMKM8SbFujGyV5M1piaye2QcZjiX4een6","url":"dash://F2qB8HMqYkRbWYWUMqS7hq697CoKY3Rw5Xirfnhzg5ec/qa-s6-isdocker","created":false},
+ "counts":{"refs":2,"packs":0,"packBytes":0,"issues":0,"prs":0,"comments":0,"reviews":0,"events":0,"releases":0,"labels":0,"skipped":0,"gitSkipped":0},
+ "estimateCredits":426428388,"spentCredits":471392700,"creditsPerDash":100000000000,"balanceCredits":288792006750,
+ "key":{"id":1,"budgetCredits":null,"remainingCredits":null,"expiresAt":null},
+ "warnings":["the git push (branches and tags) failed after writing 2 ref update(s) and 0 pack(s); they are on chain, and a re-run does not write them again"],
+ "error":"pushing to dash://F2qB8HMqYkRbWYWUMqS7hq697CoKY3Rw5Xirfnhzg5ec/qa-s6-isdocker failed:\nerror: failed to push some refs"}

@@ -96,6 +96,13 @@ pub struct PushReport {
 }
 
 impl PushReport {
+    /// Count one pack of `bytes` bytes and `objects` objects.
+    fn add_pack(&mut self, bytes: u64, objects: u64) {
+        self.packs += 1;
+        self.pack_bytes += bytes;
+        self.objects += objects;
+    }
+
     /// What [`Self::est_credits`] adds on top of the helper's price.
     pub fn overhead(&self) -> u64 {
         self.est_credits.saturating_sub(self.helper_credits)
@@ -106,16 +113,15 @@ impl PushReport {
 /// (`stdout`) into a [`PushReport`].
 pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
     let mut r = PushReport::default();
-    for line in stderr.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
-        };
+    for v in events(stderr) {
         let num = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
         match v.get("event").and_then(Value::as_str) {
-            Some("plan") if num("objects") > 0 => {
-                r.packs += 1;
-                r.pack_bytes += num("bytes");
-                r.objects += num("objects");
+            Some("plan") if num("objects") > 0 => r.add_pack(num("bytes"), num("objects")),
+            // A dry run found the pack already recorded by the pusher: a push stores only
+            // the refs (the `platform` event that follows prices just those).
+            Some("recorded") => {
+                r.packs = r.packs.saturating_sub(1);
+                (r.pack_bytes, r.objects) = (0, 0);
             }
             Some("platform") => {
                 r.chunks += num("chunks");
@@ -136,6 +142,47 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
         .count() as u64;
     r
 }
+
+/// The helper's JSON events in `stderr` (one object per line; other lines skipped).
+fn events(stderr: &str) -> impl Iterator<Item = Value> + '_ {
+    stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+}
+
+/// What a FAILED push still wrote, from the helper's `stored` and `refUpdate` events (each
+/// emitted the moment its document landed). A push can store its pack and move some refs,
+/// then fail at a later ref or at the read-back: those writes are paid for and on chain, and
+/// the run must say so rather than report nothing (D-601).
+pub fn parse_landed(stderr: &str) -> PushReport {
+    let mut r = PushReport::default();
+    for v in events(stderr) {
+        let num = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        match v.get("event").and_then(Value::as_str) {
+            Some("stored") => r.add_pack(num("bytes"), num("objects")),
+            Some("refUpdate") => r.refs += 1,
+            _ => {}
+        }
+    }
+    r
+}
+
+/// A push that failed, with what it still wrote before failing ([`parse_landed`]).
+#[derive(Debug)]
+pub struct PushFailed {
+    /// What landed on chain before the failure.
+    pub landed: PushReport,
+    /// Why it failed.
+    pub error: anyhow::Error,
+}
+
+impl std::fmt::Display for PushFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for PushFailed {}
 
 /// Pushes a bare mirror to a `dash://` remote through `git-remote-dash`.
 pub struct GitPusher {
@@ -260,6 +307,32 @@ pub fn sync_pull_heads(git_dir: &Path, open: &[u64], source_prefix: &str) -> Res
         bail!("git update-ref failed in {}", git_dir.display());
     }
     Ok(())
+}
+
+/// Whether commit `ancestor` is reachable from `tip` in the mirror at `git_dir` (itself
+/// included). `false` when either is missing locally.
+pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
+    ancestor == tip
+        || Command::new("git")
+            .arg("-C")
+            .arg(git_dir)
+            .args(["merge-base", "--is-ancestor", ancestor, tip])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
+/// The commit `ref_name` points at in the mirror, if it exists there.
+pub fn local_tip(git_dir: &Path, ref_name: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(git_dir)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("{ref_name}^{{commit}}"))
+        .output()
+        .ok()?;
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !oid.is_empty()).then_some(oid)
 }
 
 /// The tips of the mirror's refs matching `patterns`.
@@ -450,14 +523,27 @@ impl GitPusher {
                 .lines()
                 .filter(|l| !l.trim_start().starts_with('{'))
                 .collect();
-            bail!(
+            let error = anyhow!(
                 "pushing to {}{} failed:\n{}",
                 self.url,
                 if dry_run { " (dry run)" } else { "" },
                 why.join("\n").trim()
             );
+            return Err(PushFailed {
+                landed: parse_landed(&stderr),
+                error,
+            }
+            .into());
         }
-        Ok(parse_push(&stdout, &stderr))
+        let mut report = parse_push(&stdout, &stderr);
+        if !dry_run {
+            // Packs actually stored (`stored` events), not packs planned: a pack an earlier
+            // run already recorded is planned again but never stored twice.
+            let landed = parse_landed(&stderr);
+            (report.packs, report.pack_bytes, report.objects) =
+                (landed.packs, landed.pack_bytes, landed.objects);
+        }
+        Ok(report)
     }
 }
 
@@ -512,6 +598,48 @@ dash: some human line"#;
                 ref_updates: 2,
                 objects: 3,
             }
+        );
+    }
+
+    /// D-601: a push that stored its pack and moved two refs, then failed, reported "0 ref
+    /// updates". The helper's `stored` / `refUpdate` events say what landed.
+    #[test]
+    fn a_failed_push_still_reports_what_landed() {
+        let stderr = r#"{"event":"plan","repo":"o/r","refs":["main","feature"],"tip":"ab","objects":3,"bytes":900}
+{"event":"platform","chunks":1,"manifests":2,"refUpdates":3,"estCredits":1234}
+{"event":"stored","packHash":"cd","bytes":900,"objects":3}
+{"event":"refUpdate","ref":"refs/heads/feature","newOid":null}
+{"event":"refUpdate","ref":"refs/heads/main","newOid":"1fe5ecd3"}
+dash: push failed: ref did not converge to pushed tip"#;
+        let landed = parse_landed(stderr);
+        assert_eq!(
+            (landed.refs, landed.packs, landed.pack_bytes, landed.objects),
+            (2, 1, 900, 3)
+        );
+        // Nothing landed (refused before storing): nothing reported.
+        assert_eq!(
+            parse_landed(r#"{"event":"plan","objects":3,"bytes":9}"#),
+            PushReport::default()
+        );
+    }
+
+    /// D-601: a retry of a push whose pack is already recorded by the pusher is priced for
+    /// its refs only, and a real push counts only the packs it actually stored.
+    #[test]
+    fn a_recorded_pack_is_not_priced_or_counted_again() {
+        let dry = r#"{"event":"plan","repo":"o/r","refs":["main"],"tip":"ab","objects":3,"bytes":900}
+{"event":"recorded","packHash":"cd"}
+{"event":"platform","chunks":0,"manifests":0,"refUpdates":1,"estCredits":55}"#;
+        let r = parse_push("*\trefs/heads/main:refs/heads/main\t[new branch]\n", dry);
+        assert_eq!(
+            (r.packs, r.pack_bytes, r.manifests, r.ref_updates),
+            (0, 0, 0, 1)
+        );
+        let priced = price_helper_estimate(r, false);
+        assert_eq!(
+            priced.est_credits,
+            55 + REF_UPDATE_INDEX_OVERHEAD,
+            "the refs only, never a pack"
         );
     }
 
@@ -572,6 +700,43 @@ dash: some human line"#;
         // PR 1 closed: its head leaves the local namespace, so `--prune` deletes it.
         sync_pull_heads(d, &[2], "refs/pull/").unwrap();
         assert_eq!(heads(), "refs/mirror/pull/2/head");
+    }
+
+    /// D-602: the importer names a pushed base tip that contains the merge commit; this is
+    /// the ancestry test it relies on (git's own, over the local mirror).
+    #[test]
+    fn a_merge_commit_is_contained_in_later_base_tips_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-q", "-b", "main"]);
+        git(d, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = git(d, &["rev-parse", "HEAD"]);
+        git(d, &["checkout", "-q", "-b", "feature"]);
+        git(d, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(d, &["checkout", "-q", "main"]);
+        git(d, &["commit", "-q", "--allow-empty", "-m", "other"]);
+        git(
+            d,
+            &["merge", "-q", "--no-ff", "feature", "-m", "Merge PR #1"],
+        );
+        let merge = git(d, &["rev-parse", "HEAD"]);
+        git(d, &["commit", "-q", "--allow-empty", "-m", "later"]);
+        let later = git(d, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            local_tip(d, "refs/heads/main").as_deref(),
+            Some(later.as_str())
+        );
+        assert_eq!(local_tip(d, "refs/heads/gone"), None);
+        assert!(
+            is_ancestor(d, &merge, &later),
+            "a later tip contains the merge"
+        );
+        assert!(is_ancestor(d, &merge, &merge), "the merge itself counts");
+        assert!(!is_ancestor(d, &merge, &base), "an earlier tip does not");
+        assert!(
+            !is_ancestor(d, &"ab".repeat(20), &later),
+            "a commit not in the mirror"
+        );
     }
 
     /// A repository with ~200 KiB of incompressible history, like the one in F-9.

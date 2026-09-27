@@ -2,7 +2,7 @@
 //! repository, check the signer can write what the run needs, and read the signing key's
 //! limits for the summary.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -324,6 +324,7 @@ pub async fn dry_collab<'a>(
     existing: Option<RepoRef>,
     signer: Option<&'a Signer>,
     src: &SrcCollab,
+    mirror: Option<PathBuf>,
 ) -> Result<Ledger<'a>> {
     // A private destination is read with the signer's keys (its documents are sealed).
     let collab = match signer {
@@ -334,7 +335,8 @@ pub async fn dry_collab<'a>(
         collab,
         existing,
         Ledger::new(client, signer.map(Signer::id), true, Budget::new(None)),
-    );
+    )
+    .with_mirror(mirror);
     dry.sync(src).await?;
     Ok(dry.ledger)
 }
@@ -393,6 +395,15 @@ pub fn collab_plan(
     (plan, warnings)
 }
 
+/// What the collaboration write reads: the source data, and the local git mirror merged PRs
+/// are proved against ([`Sink::with_mirror`]).
+pub struct CollabSource<'s> {
+    /// The collaboration data read from the source.
+    pub src: &'s SrcCollab,
+    /// The run's bare git mirror (`None` without `--sync code`).
+    pub mirror: Option<PathBuf>,
+}
+
 /// Write the collaboration documents missing from `repo` with the run's ledger (taken from
 /// `outcome` and put back, so the summary sees it however this ends); what is written is
 /// [`collab_plan`]'s.
@@ -401,10 +412,11 @@ pub async fn write_collab<'a>(
     signer: &'a Signer,
     role: Role,
     repo: RepoRef,
-    src: &SrcCollab,
+    source: CollabSource<'_>,
     include_label_definitions: bool,
     outcome: &mut Outcome<'a>,
 ) -> Result<()> {
+    let CollabSource { src, mirror } = source;
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
     let private = repo.visibility == Visibility::Private;
     let (plan, warnings) = collab_plan(src, role, private, include_label_definitions);
@@ -415,7 +427,8 @@ pub async fn write_collab<'a>(
         Collab::new(client, &signer.identity, &signer.bridge),
         Some(repo),
         ledger,
-    );
+    )
+    .with_mirror(mirror);
     let result = sink.sync(&plan).await;
     outcome.ledger = Some(sink.ledger);
     result
@@ -440,6 +453,7 @@ mod tests {
                     name: "v1".into(),
                     notes: String::new(),
                     assets: Vec::new(),
+                    dropped: 0,
                 }]
             }),
             ..SrcCollab::default()

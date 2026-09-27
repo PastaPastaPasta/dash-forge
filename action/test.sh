@@ -86,6 +86,17 @@ expect md '### Forge mirror failed'
 expect ann '::error title=Forge mirror error::GitHub API: 404 Not Found (alice/project)'
 expect out 'status=error'
 
+# D-601: a push that failed after some refs landed reports them, not "0 ref updates".
+case=error-partial-push
+run_summary error-partial-push.json
+expect md '### Forge mirror failed'
+expect md '| Written before it stopped | |'
+expect md '| Ref updates | 2 |'
+reject md '| Written | |'
+expect ann '::warning title=Forge mirror::the git push (branches and tags) failed after writing 2 ref update(s)'
+expect ann '::error title=Forge mirror error::pushing to dash://'
+expect out 'status=error'
+
 case=garbage
 run_summary garbage.json
 expect ann '::error title=Forge mirror failed::no run summary was written'

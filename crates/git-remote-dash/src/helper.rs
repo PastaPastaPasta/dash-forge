@@ -490,6 +490,7 @@ impl Helper {
             .filter(|p| p.reject.is_none())
             .filter_map(|p| p.new_oid.clone())
             .collect();
+        let mut sealed_cache = None;
         if let (false, Some(push_policy)) = (want_tips.is_empty(), push_policy.as_ref()) {
             let ctx = PushContext {
                 svc: &svc,
@@ -505,6 +506,7 @@ impl Helper {
                 progress,
                 dry_run,
                 identity: conn.identity().id(),
+                sealed: std::cell::RefCell::default(),
             };
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
@@ -513,6 +515,7 @@ impl Helper {
             if let Some(est) = upload_push_pack(&ctx, &want_tips, &remote_refs).await? {
                 est_credits = est;
             }
+            sealed_cache = ctx.sealed.take();
             // Test affordance, compiled only with `--features test-hooks`: stop after the
             // manifest landed and before any ref is written — the state a push interrupted
             // between the two leaves behind. e2e/cli/storage-byo.sh uses it to exercise
@@ -525,25 +528,8 @@ impl Helper {
 
         // Apply ref updates for accepted specs.
         if !dry_run {
-            for p in planned.iter().filter(|p| p.reject.is_none()) {
-                let new_bytes = match &p.new_oid {
-                    Some(oid) => oid_to_bytes(oid)?,
-                    None => vec![0u8; 20], // delete = zero oid
-                };
-                let prev_bytes = match &p.prev_oid {
-                    Some(oid) => Some(oid_to_bytes(oid)?),
-                    None => None,
-                };
-                svc.write_ref_update(
-                    &conn.repo,
-                    &p.spec.dst,
-                    &new_bytes,
-                    prev_bytes.as_deref(),
-                    p.spec.force,
-                )
-                .await
-                .with_context(|| format!("writing ref update for {}", p.spec.dst))?;
-            }
+            write_ref_updates(&svc, &conn.repo, &planned, progress).await?;
+            forget_sealed(sealed_cache.as_deref());
         }
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
@@ -846,7 +832,7 @@ fn packs_unreadable(
         .map(|u| {
             format!(
                 "pack {}…: {}",
-                &u.hash[..u.hash.len().min(12)],
+                progress::abbrev(&u.hash, 12),
                 brief(&u.error)
             )
         })
@@ -947,6 +933,48 @@ fn packs_to_fetch(
         "downloading the packs not already local"
     );
     wanted
+}
+
+/// Write the `refUpdate` of every accepted spec, in plan order. Each one that lands is
+/// reported at once (`dash: updated …` / a `refUpdate` event): a later failure (another
+/// ref's write, the read-back) must not hide what is already on chain (D-601).
+async fn write_ref_updates(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    planned: &[Planned],
+    progress: Progress,
+) -> Result<()> {
+    for (written, p) in planned.iter().filter(|p| p.reject.is_none()).enumerate() {
+        // Test affordance (`--features test-hooks` only): fail after `n` ref updates landed,
+        // the state a push that dies part-way leaves behind (e2e scenario 32).
+        #[cfg(feature = "test-hooks")]
+        if std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            == Some(written)
+        {
+            bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
+        }
+        #[cfg(not(feature = "test-hooks"))]
+        let _ = written;
+        let new_bytes = match &p.new_oid {
+            Some(oid) => oid_to_bytes(oid)?,
+            None => vec![0u8; 20], // delete = zero oid
+        };
+        let prev_bytes = p.prev_oid.as_deref().map(oid_to_bytes).transpose()?;
+        svc.write_ref_update(
+            repo,
+            &p.spec.dst,
+            &new_bytes,
+            prev_bytes.as_deref(),
+            p.spec.force,
+        )
+        .await
+        .with_context(|| format!("writing ref update for {}", p.spec.dst))?;
+        let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+        progress.emit(&text, &event);
+    }
+    Ok(())
 }
 
 /// The provisional tip oid of a resolved (or diverged, newest-head) ref; `None` for an
@@ -1100,6 +1128,9 @@ struct PushContext<'a> {
     dry_run: bool,
     /// The pushing identity (base58).
     identity: String,
+    /// The sealed-pack cache path this push used ([`sealed_cache_path`]); dropped once the
+    /// push's refs land ([`forget_sealed`]).
+    sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
 }
 
 impl PushContext<'_> {
@@ -1184,27 +1215,23 @@ async fn upload_push_pack(
         })
     };
     if ctx.dry_run {
-        let (text, event) = platform_writes(&estimate, resolved.platform);
+        let full = platform_writes(&estimate, resolved.platform);
+        let (text, event) = dry_run_writes(ctx, &job, &pack.bytes, progress, full).await;
         progress.emit(&format!("{text} (dry run: nothing stored)"), &event);
         return Ok(None);
     }
     // Resolve every secret BEFORE asking the user to pay: a missing env var must fail
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
+    if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
+        return Ok(Some(refs_only));
+    }
     policy::enforce(
         estimate.total(),
         ctx.policy,
         resolved.platform,
         policy::NOTE_NOTHING_STORED,
     )?;
-
-    // An earlier push may already have recorded this exact pack. Decide BEFORE paying.
-    if already_recorded(ctx, &job).await? {
-        // The browse index is left alone: the earlier push published (or tried to) the
-        // fragment for this pack, and a missing one is rebuilt by the next repack.
-        let _ = std::fs::remove_file(sealed_cache_path(ctx, &pack.bytes));
-        return Ok(Some(policy::estimate_ref_updates(ctx.refs.len())));
-    }
 
     let jpath = crate::journal::journal_path(
         ctx.git_dir,
@@ -1238,7 +1265,8 @@ async fn upload_push_pack(
     // chunks an interrupted Platform upload wrote; retire it only when this manifest
     // references those chunks. Otherwise keep it and say so — those chunks are paid for,
     // referenced by nothing, and reclaimable only while the journal names them.
-    let _ = std::fs::remove_file(sealed_cache_path(ctx, &pack.bytes));
+    // The kept sealed bytes stay until the refs land ([`forget_sealed`]): a push that fails
+    // at its refs is retried with the same sealed pack, found recorded, and not paid twice.
     if replication.has_platform() {
         let _ = std::fs::remove_file(&jpath);
     } else if jpath.exists() {
@@ -1276,6 +1304,7 @@ async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
         return Ok(plain.to_vec());
     };
     let path = sealed_cache_path(ctx, plain);
+    *ctx.sealed.borrow_mut() = Some(path.clone());
     if let Ok(cached) = std::fs::read(&path) {
         if cached_seal_is_current(private, &cached, plain) {
             return Ok(cached);
@@ -1324,6 +1353,16 @@ fn sealed_cache_path(ctx: &PushContext<'_>, plain: &[u8]) -> std::path::PathBuf 
         ctx.repo.id(),
         hex::encode(forge_core::private::keys::sha256(plain))
     ))
+}
+
+/// Drop the sealed pack this push kept ([`sealed_cache_path`]) once its refs landed: a retry
+/// no longer needs it. Kept until then, so a push that stored its pack and failed at the refs
+/// is retried with the same sealed bytes (the same hash: found recorded, not stored and paid
+/// for again, D-601). Only this push's own file: another pack's pending retry keeps its own.
+fn forget_sealed(path: Option<&std::path::Path>) {
+    if let Some(p) = path {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// The pack being pushed, with the facts every storage step needs.
@@ -1522,6 +1561,14 @@ async fn record_pack(
         )
         .await
         .context("writing pack manifest")?;
+    // Paid for and recorded: say so now (a `stored` event), so a push that then fails at its
+    // refs still reports it (D-601).
+    let (text, event) = progress::stored_line(
+        &job.meta.pack_hash,
+        job.bytes.len() as u64,
+        job.object_count,
+    );
+    ctx.progress.emit(&text, &event);
     let confirmed: Vec<&str> = replication
         .replicas
         .iter()
@@ -1529,12 +1576,72 @@ async fn record_pack(
         .collect();
     ctx.say(&format!(
         "pack {} ({}) stored on {} ({} verified)",
-        &job.meta.pack_hash[..12],
+        progress::abbrev(&job.meta.pack_hash, 12),
         human_bytes(job.bytes.len() as u64),
         confirmed.join(", "),
         confirmed.len()
     ));
     Ok(())
+}
+
+/// A dry run's price when this identity already recorded the pack (a retry of a push that
+/// stored it, then failed at its refs): the real push never stores it again (its own manifest
+/// is accepted, or the push refuses, E507), so only the refs are priced, and a retry is
+/// neither charged for the pack again nor refused by a spend cap for it (D-601). Says so
+/// (`recorded`) and returns the `platform` line.
+/// Otherwise `full`, the pack's price.
+async fn dry_run_writes(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    plain: &[u8],
+    progress: Progress,
+    full: (String, serde_json::Value),
+) -> (String, serde_json::Value) {
+    if !recorded_by_me(ctx, job, plain).await {
+        return full;
+    }
+    let (text, event) = progress::recorded_line(&job.meta.pack_hash);
+    progress.emit(&text, &event);
+    progress::platform_line(&PlatformWrites {
+        chunks: 0,
+        manifests: 0,
+        ref_updates: ctx.refs.len(),
+        est_credits: policy::estimate_ref_updates(ctx.refs.len()),
+    })
+}
+
+/// An earlier push may already have recorded this exact pack (a retry after a push that
+/// stored it, then failed at its refs). Decided BEFORE the cost guard, so the guard weighs what
+/// this push actually pays, the refs only: a retry capped below the pack's price is not refused
+/// for it (D-601). `Some(price of the refs)` when the pack is reused.
+async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Option<u64>> {
+    if !already_recorded(ctx, job).await? {
+        return Ok(None);
+    }
+    let refs_only = policy::estimate_ref_updates(ctx.refs.len());
+    policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
+    // The browse index is left alone: the earlier push published (or tried to) the fragment
+    // for this pack, and a missing one is rebuilt by the next repack. The kept sealed bytes
+    // stay until the refs land ([`forget_sealed`]): this push may still fail at its refs.
+    Ok(Some(refs_only))
+}
+
+/// Whether this identity already wrote a `packManifest` for this pack (one indexed read, no
+/// download). Unreadable counts as no: the dry run then prices the pack in full.
+///
+/// A dry run prices the plaintext pack (it seals nothing), while a private repository records
+/// the SEALED pack's hash. The sealed bytes an earlier push kept for this plaintext
+/// ([`sealed_cache_path`]) are what a real push would store again, so their hash is the one
+/// looked up when they are there.
+async fn recorded_by_me(ctx: &PushContext<'_>, job: &PackJob<'_>, plain: &[u8]) -> bool {
+    let sealed = std::fs::read(sealed_cache_path(ctx, plain))
+        .ok()
+        .and_then(|b| PackMeta::for_bytes(&b).pack_hash_bytes().ok());
+    let hash = sealed.unwrap_or(job.pack_hash);
+    ctx.svc
+        .read_pack_copies(ctx.repo, hash)
+        .await
+        .is_ok_and(|copies| copies.iter().any(|m| m.owner_id == ctx.identity))
 }
 
 /// Whether this pack is already recorded and readable, so the push stores nothing. `false`
@@ -1557,7 +1664,7 @@ async fn already_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<bo
         Err(e) if !copies.iter().any(|m| m.owner_id == ctx.identity) => {
             ctx.say(&format!(
                 "no recorded copy of pack {} is readable ({e:#}); storing this push's own copy",
-                &job.meta.pack_hash[..12]
+                progress::abbrev(&job.meta.pack_hash, 12)
             ));
             Ok(false)
         }
@@ -1580,7 +1687,7 @@ async fn confirm_existing_manifest(
     job: &PackJob<'_>,
     copies: &[forge_core::repo::PackManifestInfo],
 ) -> Result<()> {
-    let short = &job.meta.pack_hash[..12];
+    let short = progress::abbrev(&job.meta.pack_hash, 12);
     let mine_on_chain = copies.iter().any(|m| {
         m.storage == 0
             && m.owner_id == ctx.identity
@@ -2071,8 +2178,8 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, blames_set_aside_packs, head_outcome, hidden_packs_needed, is_head,
-        list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
+        archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
+        is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
         write_denied, PushOutcome, PushSpec, Unreadable,
     };
     use forge_core::network::NetworkSettings;
@@ -2413,6 +2520,21 @@ mod tests {
     fn oid_rejects_bad_input() {
         assert!(oid_to_bytes("nothex").is_err());
         assert!(oid_to_bytes("abcd").is_err()); // too short
+    }
+
+    /// D-601: the sealed pack a private push kept outlives the push until its refs land, and
+    /// only that pack's is dropped then (another pack's pending retry keeps its own).
+    #[test]
+    fn landed_refs_drop_only_the_pushed_packs_sealed_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ours, other) = (tmp.path().join("R1-aa.pack"), tmp.path().join("R1-bb.pack"));
+        std::fs::write(&ours, b"x").unwrap();
+        std::fs::write(&other, b"y").unwrap();
+        forget_sealed(Some(&ours));
+        assert!(!ours.exists() && other.exists());
+        // A public push kept none; a missing file is not an error.
+        forget_sealed(None);
+        forget_sealed(Some(&ours));
     }
 
     #[test]

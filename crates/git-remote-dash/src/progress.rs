@@ -114,7 +114,7 @@ pub fn plan_line(f: &PlanFacts<'_>) -> (String, Value) {
     } else {
         f.refs.join(", ")
     };
-    let short = &f.tip[..f.tip.len().min(7)];
+    let short = abbrev(f.tip, 7);
     (
         format!(
             "dash: {} ← {refs} ({short}, {} objects, {})",
@@ -251,6 +251,54 @@ pub fn platform_line(w: &PlatformWrites) -> (String, Value) {
     )
 }
 
+/// A pack this push stored and recorded (its `packManifest` landed): `dash: stored pack …`.
+/// Emitted the moment the manifest is on chain, so a caller reading the events learns what
+/// was paid for even when the push fails later (D-601).
+pub fn stored_line(pack_hash: &str, bytes: u64, objects: u64) -> (String, Value) {
+    (
+        format!(
+            "dash: stored pack {} ({}, {objects} objects)",
+            abbrev(pack_hash, 12),
+            human_bytes(bytes)
+        ),
+        json!({
+            "event": "stored",
+            "packHash": pack_hash,
+            "bytes": bytes,
+            "objects": objects,
+        }),
+    )
+}
+
+/// A dry run found the pack already recorded by this identity: a push stores only the refs.
+pub fn recorded_line(pack_hash: &str) -> (String, Value) {
+    (
+        format!(
+            "dash: pack {} is already recorded by you; a push stores only the refs",
+            abbrev(pack_hash, 12)
+        ),
+        json!({ "event": "recorded", "packHash": pack_hash }),
+    )
+}
+
+/// One ref update written on chain: `dash: updated main → 8f3e2a1`. Emitted after each
+/// `refUpdate` lands, before the push reads the refs back, so a push that fails part-way
+/// still says which refs moved (D-601).
+pub fn ref_update_line(ref_name: &str, new_oid: Option<&str>) -> (String, Value) {
+    let text = match new_oid {
+        Some(oid) => format!("dash: updated {} → {}", short_ref(ref_name), abbrev(oid, 7)),
+        None => format!("dash: deleted {}", short_ref(ref_name)),
+    };
+    (
+        text,
+        json!({
+            "event": "refUpdate",
+            "ref": ref_name,
+            "newOid": new_oid,
+        }),
+    )
+}
+
 /// What the push cost on Platform, as far as the helper can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Charge {
@@ -294,6 +342,11 @@ pub fn done_line(
             "url": url,
         }),
     )
+}
+
+/// The first `n` characters of an oid or hash, for display (all of it when shorter).
+pub fn abbrev(hex: &str, n: usize) -> &str {
+    &hex[..hex.len().min(n)]
 }
 
 /// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`.
@@ -440,5 +493,27 @@ mod tests {
         );
         assert_eq!(short_ref("refs/heads/feature/x"), "feature/x");
         assert_eq!(short_ref("refs/tags/v1"), "v1");
+    }
+
+    /// D-601: what landed is reported as it lands, in a shape forge-import parses.
+    #[test]
+    fn stored_packs_and_ref_updates_are_events() {
+        let (t, ev) = stored_line(&"ab".repeat(32), 2048, 7);
+        assert_eq!(t, "dash: stored pack abababababab (2.0 KiB, 7 objects)");
+        assert_eq!(
+            (
+                ev["event"].as_str(),
+                ev["bytes"].as_u64(),
+                ev["objects"].as_u64()
+            ),
+            (Some("stored"), Some(2048), Some(7))
+        );
+        let (t, ev) = ref_update_line("refs/heads/main", Some("8f3e2a1c0ffee"));
+        assert_eq!(t, "dash: updated main → 8f3e2a1");
+        assert_eq!(ev["event"], "refUpdate");
+        assert_eq!(ev["ref"], "refs/heads/main");
+        let (t, ev) = ref_update_line("refs/heads/gone", None);
+        assert_eq!(t, "dash: deleted gone");
+        assert!(ev["newOid"].is_null());
     }
 }
