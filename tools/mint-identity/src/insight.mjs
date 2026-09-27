@@ -2,14 +2,46 @@
 // Ported from mainnet-bridge/src/api/insight.ts (browser fetch -> Node fetch).
 import { hexToBytes } from './bytes.mjs';
 
+const REQUEST_TIMEOUT_MS = 20000;
+// The faucet address's UTXO list is ~45 MB.
+const UTXO_TIMEOUT_MS = 90000;
+
+/** An Insight error carrying the HTTP status (undefined for network errors and timeouts). */
+export class InsightError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'InsightError';
+    this.status = status;
+  }
+
+  /** True when Insight itself is unhealthy (5xx, timeout, connection failure), not when it answered "not found". */
+  get unavailable() {
+    return this.status === undefined || this.status >= 500 || this.status === 429;
+  }
+}
+
 export class InsightClient {
-  constructor(config) {
+  constructor(config, { fetchImpl = fetch } = {}) {
     this.baseUrl = config.insightApiUrl;
+    this.fetch = fetchImpl;
+  }
+
+  async request(path, what, { timeoutMs = REQUEST_TIMEOUT_MS, ...init } = {}) {
+    let res;
+    try {
+      res = await this.fetch(`${this.baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      throw new InsightError(`${what}: ${err.message}`, undefined);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new InsightError(`${what}: ${res.status} ${res.statusText}${text ? ` - ${text.slice(0, 200)}` : ''}`, res.status);
+    }
+    return res;
   }
 
   async getUTXOs(address) {
-    const res = await fetch(`${this.baseUrl}/addr/${address}/utxo`);
-    if (!res.ok) throw new Error(`Insight API error: ${res.status} ${res.statusText}`);
+    const res = await this.request(`/addr/${address}/utxo`, 'Insight API error', { timeoutMs: UTXO_TIMEOUT_MS });
     const data = await res.json();
     return data.map((u) => ({
       txid: u.txid,
@@ -21,22 +53,17 @@ export class InsightClient {
   }
 
   async broadcastTransaction(txHex) {
-    const res = await fetch(`${this.baseUrl}/tx/send`, {
+    const res = await this.request('/tx/send', 'Broadcast failed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rawtx: txHex }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Broadcast failed: ${res.status} - ${text}`);
-    }
     const result = await res.json();
     return result.txid;
   }
 
   async getTransaction(txid) {
-    const res = await fetch(`${this.baseUrl}/tx/${txid}`);
-    if (!res.ok) throw new Error(`Failed to get transaction: ${res.status}`);
+    const res = await this.request(`/tx/${txid}`, 'Failed to get transaction');
     const data = await res.json();
     const rawHeight = typeof data.blockheight === 'number' ? data.blockheight : undefined;
     return {
@@ -48,8 +75,7 @@ export class InsightClient {
   }
 
   async getRawTransactionBytes(txid) {
-    const res = await fetch(`${this.baseUrl}/rawtx/${txid}`);
-    if (!res.ok) throw new Error(`Failed to get raw transaction ${txid}: ${res.status}`);
+    const res = await this.request(`/rawtx/${txid}`, `Failed to get raw transaction ${txid}`);
     return hexToBytes((await res.json()).rawtx);
   }
 

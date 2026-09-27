@@ -8,7 +8,8 @@
 //                      then prove it with a ChainAssetLockProof at the tx's block
 //                      height. Drive accepts that once
 //                      tx height <= proof height <= its last committed core height.
-import { InsightClient, sleep } from './insight.mjs';
+import { sleep } from './insight.mjs';
+import { ChainClient } from './chain.mjs';
 import { waitForInstantSendLock } from './islock.mjs';
 import * as platform from './platform.mjs';
 
@@ -16,18 +17,17 @@ const CHAIN_LOCK_TIMEOUT_MS = 15 * 60 * 1000;
 const ISLOCK_TIMEOUT_MS = 150000;
 const POLL_MS = 5000;
 
-/** Wait until Insight reports `txid` mined; returns its block height. */
-export async function waitForTxHeight(network, txid, { timeoutMs = CHAIN_LOCK_TIMEOUT_MS, log = () => {} } = {}) {
-  const insight = new InsightClient(network);
+/** Wait until `txid` is mined (Insight, or DAPI Core when Insight is down); returns its block height. */
+export async function waitForTxHeight(network, txid, { timeoutMs = CHAIN_LOCK_TIMEOUT_MS, log = () => {}, chain = new ChainClient(network, { log }), pollMs = POLL_MS } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const tx = await insight.getTransaction(txid);
+      const tx = await chain.getTransaction(txid);
       if (tx.blockheight !== undefined) return tx.blockheight;
     } catch (err) {
       log(`  tx status poll error (${txid}): ${err.message}`);
     }
-    await sleep(POLL_MS);
+    await sleep(pollMs);
   }
   throw new Error(`Timed out waiting for ${txid} to be mined after ${timeoutMs}ms`);
 }
