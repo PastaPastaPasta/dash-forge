@@ -39,7 +39,9 @@ export async function recordSpend(event: SpendEvent): Promise<void> {
   const at = Date.now()
   const { balanceBefore, ...rest } = event
   const row: SpendRow = { ...rest, at }
-  const key = `${prefix(event.network, event.identityId)}${String(at).padStart(15, '0')}:${event.documentId}`
+  // The kind is part of the key: two spends on one document in the same millisecond (a key's
+  // registration, then its top-up) are two rows, never one overwriting the other.
+  const key = `${prefix(event.network, event.identityId)}${String(at).padStart(15, '0')}:${event.documentId}:${event.kind}`
   await idbPut('spend', key, row)
   const bk = baselineKey(event.network, event.identityId)
   if (balanceBefore !== null && (await idbGet<Baseline>('spend', bk)) === undefined) {

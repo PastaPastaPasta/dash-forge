@@ -19,6 +19,7 @@ import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
+import { PendingRenewal } from '@/components/pending-renewal'
 
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM =
@@ -50,6 +51,7 @@ export function KeysPanel(): JSX.Element {
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
+      {identity ? <PendingRenewal identityId={identity} /> : null}
       {storage === 'session' ? (
         <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-danger-700 dark:text-danger-400">
           This tab signs with a pasted key that has no Forge limits. It is forgotten on reload.

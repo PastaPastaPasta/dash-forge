@@ -26,6 +26,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, RefreshCw, Smartphone } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
+import { PendingRenewalChoiceError } from '@/lib/auth/controller'
 import { Button } from '@/components/ui/button'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
@@ -63,6 +65,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const [step, setStep] = useState<Step | null>(null)
   const [status, setStatus] = useState<PollStatus>('waiting')
   const [error, setError] = useState<string | null>(null)
+  /** An unfinished renewal on this device (D-016): the choice to finish it or give it up. */
+  const [pendingRenewal, setPendingRenewal] = useState<string | null>(null)
   // What the request is waiting for before its QR can show.
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
@@ -77,6 +81,25 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   latest.current = { addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) }
   // A grant is for the signed-in identity: a different one (or signing out) starts over.
   const grantFor = mode === 'grant' ? identity : null
+  const openLogin = useUiStore((s) => s.openLogin)
+  /** Unlock view of the sign-in sheet (finishes an unfinished renewal with its passphrase). */
+  const openUnlock = (): void => openLogin()
+
+  /** Store the wallet's keys; `discard`: give up an unfinished renewal on this device first. */
+  const finish = async (discard: boolean): Promise<void> => {
+    const g = grant.current
+    if (!protection || !g) return
+    setError(null)
+    try {
+      await adoptWalletKeys(g.identityId, g.keys, protection, discard ? { discardPendingRenewal: true } : undefined)
+      grant.current = null
+      setPendingRenewal(null)
+      onDone()
+    } catch (e) {
+      if (e instanceof PendingRenewalChoiceError) setPendingRenewal(e.message)
+      else setError(errorMessage(e))
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -186,20 +209,23 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           className="w-full"
           loading={isLoading}
           disabled={!confirmed || protection === null || isLoading}
-          onClick={async () => {
-            const g = grant.current
-            if (!protection || !g) return
-            try {
-              await adoptWalletKeys(g.identityId, g.keys, protection)
-              grant.current = null
-              onDone()
-            } catch (e) {
-              setError(errorMessage(e))
-            }
-          }}
+          onClick={() => void finish(false)}
         >
           Finish signing in
         </Button>
+        {pendingRenewal !== null ? (
+          <div role="alert" className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400" data-testid="pending-renewal-choice">
+            <p>{pendingRenewal}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => openUnlock()}>
+                Finish the renewal (unlock)
+              </Button>
+              <Button variant="danger" size="sm" loading={isLoading} onClick={() => void finish(true)}>
+                Continue with the wallet
+              </Button>
+            </div>
+          </div>
+        ) : null}
         {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
         <ErrorBox error={error} />
       </div>

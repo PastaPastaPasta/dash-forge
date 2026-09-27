@@ -36,7 +36,7 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 import type { Network } from '../constants'
-import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
+import { idbDelete, idbEntries, idbGet, idbPut, idbUpdate } from '../idb'
 import { withTimeout } from '../timeout'
 
 /** Unlocked vaults lock themselves after this long (spec §2.3). */
@@ -119,6 +119,11 @@ interface VaultRecord {
   readonly iv: Uint8Array
   readonly ciphertext: Uint8Array
   readonly slots: readonly Slot[]
+  /**
+   * A staged record (D-016): the key id of the main record it is meant to replace, or null
+   * when there was none (a first import). Finishing it replaces only that record.
+   */
+  readonly replaces?: number | null
 }
 
 /** What the UI may know about a stored vault (no secrets). */
@@ -127,6 +132,8 @@ export interface VaultInfo {
   readonly keyId: number
   readonly createdAt: number
   readonly methods: readonly ('passkey' | 'passphrase')[]
+  /** Only a key whose registration was not finished is stored (unlocking finishes it). */
+  readonly staged?: true
 }
 
 const enc = new TextEncoder()
@@ -145,6 +152,15 @@ function storageBlobKey(network: Network, identityId: string): string {
 
 function encryptionBlobKey(network: Network, identityId: string): string {
   return `vault-enc:${network}:${identityId}`
+}
+
+/**
+ * A key registered by a renewal or import that is still in flight (D-016): stored here, and
+ * read back, BEFORE the identity update is signed, and moved over the main record once the
+ * update has landed. If the tab dies in between, the next unlock finds it here.
+ */
+function stagedKey(network: Network, identityId: string): string {
+  return `vault-staged:${network}:${identityId}`
 }
 
 /** The extra wallet grants ({@link ExtraKey}), sealed like the storage settings. */
@@ -325,7 +341,33 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
   return { credentialId, prfSalt, output: new Uint8Array(first) }
 }
 
-/** Evaluate the PRF of an enrolled passkey (a user-verified assertion). */
+/**
+ * The PRF output of the last passkey assertion, briefly: finishing a staged renewal right after
+ * a passkey unlock opens a record sealed with the same credential and salt, and must not prompt
+ * a second time. Kept for {@link PRF_REUSE_MS}, then wiped; never stored.
+ */
+let lastPrf: { credentialId: string; prfSalt: string; output: Uint8Array; at: number } | null = null
+const PRF_REUSE_MS = 60_000
+
+function prfCacheKey(b: Uint8Array): string {
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+}
+
+/** Evaluate the PRF of an enrolled passkey (a user-verified assertion), reusing a fresh one. */
+async function evaluatePasskeyOnce(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
+  const c = prfCacheKey(credentialId)
+  const s = prfCacheKey(prfSalt)
+  if (lastPrf !== null && lastPrf.credentialId === c && lastPrf.prfSalt === s && Date.now() - lastPrf.at < PRF_REUSE_MS) {
+    return lastPrf.output.slice().buffer
+  }
+  const out = await evaluatePasskey(credentialId, prfSalt)
+  if (out !== null) {
+    lastPrf?.output.fill(0)
+    lastPrf = { credentialId: c, prfSalt: s, output: new Uint8Array(out.slice(0)), at: Date.now() }
+  }
+  return out
+}
+
 async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
   const assertion = (await passkeyCeremony((signal) => navigator.credentials.get({
     signal,
@@ -365,19 +407,265 @@ export interface StoreOutcome {
    * key was renewed). It is deleted; the user imports it again in Settings → Keys.
    */
   readonly encryptionKeyDropped: boolean
+  /**
+   * The record was written but did not read back: this browser's storage may not keep it. The
+   * session works; the UI warns to keep the identity file handy.
+   */
+  readonly readBackFailed?: true
+}
+
+/** Refuse a protection the vault cannot seal with (before any work is done). */
+function assertProtection(protection: Protection): void {
+  if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
+  if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
+    throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
+  }
+}
+
+/** The encrypted record of `main` under a fresh data key, wrapped by each protection. */
+async function sealRecord(network: Network, main: Omit<VaultSecret, 'extra'>, protection: Protection, dataKey: Uint8Array): Promise<VaultRecord> {
+  const { identityId } = main
+  const body = await seal(dataKey, enc.encode(JSON.stringify(main)), aad(network, identityId, 'body'))
+  const slots: Slot[] = []
+  if (protection.passkey) {
+    const kek = prfKey(protection.passkey.output, network, identityId)
+    const w = await seal(kek, dataKey, aad(network, identityId, 'passkey'))
+    kek.fill(0)
+    slots.push({ kind: 'passkey', credentialId: protection.passkey.credentialId, prfSalt: protection.passkey.prfSalt, iv: w.iv, wrapped: w.ct })
+  }
+  if (protection.passphrase) {
+    const salt = random(16)
+    const kek = await passphraseKey(protection.passphrase, salt)
+    const w = await seal(kek, dataKey, aad(network, identityId, 'passphrase'))
+    kek.fill(0)
+    slots.push({ kind: 'passphrase', salt, params: ARGON2_PARAMS, iv: w.iv, wrapped: w.ct })
+  }
+  return { version: 1, network, identityId, keyId: main.keyId, createdAt: Date.now(), iv: body.iv, ciphertext: body.ct, slots }
+}
+
+/**
+ * Read the record at `at` back from storage and open it with `dataKey`: it must hold exactly
+ * `main`. Throws when the browser did not keep what was written (storage blocked, full, or
+ * lost): the caller has not changed anything on chain yet (D-016).
+ */
+async function readBack(network: Network, at: string, main: Omit<VaultSecret, 'extra'>, dataKey: Uint8Array): Promise<void> {
+  const stored = await idbGet<VaultRecord>('vault', at)
+  let ok = false
+  if (stored !== undefined) {
+    try {
+      const body = await open(dataKey, stored.iv, stored.ciphertext, aad(network, main.identityId, 'body'))
+      const parsed = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
+      body.fill(0)
+      ok = parsed.identityId === main.identityId && parsed.keyId === main.keyId && parsed.wif === main.wif
+    } catch {
+      ok = false
+    }
+  }
+  if (!ok) {
+    throw new VaultLockedError(
+      "This browser could not keep the new key (its storage is blocked, full or cleared), so nothing was changed on Platform and your current key still works. Allow site storage, or use another browser, and try again.",
+    )
+  }
+}
+
+/**
+ * Store a key that is about to be registered (D-016): sealed like the vault record, under its
+ * own slot, so the current key stays usable if the registration never happens, then read
+ * back. Call before signing the identity update; {@link storeInVault} of the same key id
+ * replaces the main record with it once the update has landed.
+ *
+ * A stage for another key id already here is a registration that may have landed and not been
+ * finished: it is never overwritten ({@link PendingRenewalError}); unlocking finishes it first.
+ */
+export async function stageInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<void> {
+  assertDedicatedOrigin()
+  assertProtection(protection)
+  const { extra: _extra, ...main } = secret
+  const at = stagedKey(network, secret.identityId)
+  // Fails fast, before the slow sealing; checked again inside the write below.
+  const existing = await idbGet<VaultRecord>('vault', at)
+  if (existing !== undefined && existing.keyId !== secret.keyId) throw new PendingRenewalError()
+  const replaces = (await idbGet<VaultRecord>('vault', key(network, secret.identityId)))?.keyId ?? null
+  const dataKey = random(32)
+  try {
+    const record: VaultRecord = { ...(await sealRecord(network, main, protection, dataKey)), replaces }
+    await idbUpdate<VaultRecord>('vault', at, (current) => {
+      if (current !== undefined && current.keyId !== secret.keyId) throw new PendingRenewalError()
+      return [[at, record]]
+    })
+    await readBack(network, at, main, dataKey)
+  } finally {
+    dataKey.fill(0)
+  }
+}
+
+/** A key renewal on this device may have landed and is not finished: unlock to finish it first. */
+export class PendingRenewalError extends VaultLockedError {
+  constructor() {
+    super('A key renewal on this device is not finished yet (it may already be on Platform). Unlock with the passphrase or passkey you chose for that renewal to finish it, then try again.')
+    this.name = 'PendingRenewalError'
+  }
+}
+
+/** Whether a registration was left in flight for (network, identity). */
+export async function hasStaged(network: Network, identityId: string): Promise<boolean> {
+  return (await idbGet<VaultRecord>('vault', stagedKey(network, identityId))) !== undefined
+}
+
+/** What Platform says about a staged key (see {@link recoverStaged}). */
+export type StagedKeyState =
+  /**
+   * On the identity under its key id: the renewal landed (and replaced the old key). Live,
+   * or since expired or disabled: registered either way.
+   */
+  | 'registered'
+  /** Provably never registered: its key id holds another key. */
+  | 'never'
+  /** Not visible yet, or not provable either way (a node behind, an update in flight). */
+  | 'unknown'
+
+/** Open a record with one unlock method, trying only that record's own slots. */
+async function openRecord(
+  network: Network,
+  record: VaultRecord,
+  method: { passphrase: string } | 'passkey',
+  withExtra: boolean,
+): Promise<{ secret: VaultSecret; blobKeys: BlobKeys } | null> {
+  if (method === 'passkey') {
+    const slot = record.slots.find((s) => s.kind === 'passkey')
+    if (!slot || slot.kind !== 'passkey') return null
+    const output = await evaluatePasskeyOnce(slot.credentialId, slot.prfSalt)
+    if (!output) return null
+    const raw = new Uint8Array(output)
+    const kek = prfKey(raw, network, record.identityId)
+    raw.fill(0)
+    return unwrapWith(network, record, kek, slot, withExtra).catch(() => null)
+  }
+  const slot = record.slots.find((s) => s.kind === 'passphrase')
+  if (!slot || slot.kind !== 'passphrase' || JSON.stringify(slot.params) !== JSON.stringify(ARGON2_PARAMS)) return null
+  return unwrapWith(network, record, await passphraseKey(method.passphrase, slot.salt), slot, withExtra).catch(() => null)
+}
+
+/** How finishing a staged key went ({@link recoverStaged}). */
+export type RecoverResult =
+  /** Adopted as the main record (now unlocked). */
+  | { readonly status: 'adopted'; readonly secret: VaultSecret; readonly outcome: StoreOutcome }
+  /** Provably never registered: the staged record was deleted. */
+  | { readonly status: 'discarded' }
+  /** Not provable yet (not visible, or a node behind): kept for a later unlock. */
+  | { readonly status: 'pending' }
+  /** This unlock method does not open it (it was protected differently): kept. */
+  | { readonly status: 'locked' }
+  /**
+   * Registered, but the main record changed since it was staged (another sign-in, e.g. a
+   * wallet, replaced it): kept, the main record untouched; the user decides.
+   */
+  | { readonly status: 'conflict' }
+
+/**
+ * Finish a registration this device did not live to finish (D-016). The staged record is
+ * opened with its OWN slots (it was sealed with the protection chosen for the renewal, which
+ * may differ from the main record's), with `method`:
+ *
+ * - Platform shows the key registered (live, or since expired or disabled: it was registered
+ *   and replaced the old key either way): it becomes the main record, but only over the record
+ *   it was staged to replace (`replaces`), or when there is none. The old record's storage
+ *   settings and encryption key are carried over when this session holds them open, else
+ *   dropped and reported, like any renewal made while locked.
+ * - Provably never registered: the staged record is deleted.
+ * - Not known yet: nothing changes; the next unlock asks again. A key is never deleted on a
+ *   read that could be a node behind.
+ */
+export async function recoverStaged(
+  network: Network,
+  identityId: string,
+  method: { passphrase: string } | 'passkey',
+  state: (secret: VaultSecret) => Promise<StagedKeyState>,
+): Promise<RecoverResult> {
+  assertDedicatedOrigin()
+  const at = stagedKey(network, identityId)
+  const record = await idbGet<VaultRecord>('vault', at)
+  if (record === undefined) return { status: 'discarded' }
+  const opened = await openRecord(network, record, method, false)
+  if (opened === null) return { status: 'locked' }
+  const s = await state(opened.secret)
+  if (s === 'never') {
+    await idbUpdate<VaultRecord>('vault', at, (current) => (current?.keyId === record.keyId ? [[at, undefined]] : []))
+    return { status: 'discarded' }
+  }
+  if (s !== 'registered') return { status: 'pending' }
+  // Adopt only over the record it was staged to replace (or none, or itself): a newer sign-in
+  // stored since is never overwritten. Checked again inside the write's transaction.
+  const replaceable = (main: VaultRecord | undefined): boolean =>
+    main === undefined || main.keyId === (record.replaces ?? null) || main.keyId === record.keyId
+  if (!replaceable(await idbGet<VaultRecord>('vault', key(network, identityId)))) return { status: 'conflict' }
+  // Carry the old record's blobs across when this session has them open (the old key was
+  // unlocked just before), sealed under the staged record's blob keys.
+  const carried = await readStorageBlob(network, identityId).catch(() => null)
+  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlob(network, identityId).catch(() => null) : null
+  const hadBlob = (await idbGet('vault', storageBlobKey(network, identityId))) !== undefined
+  const hadEnc = (await idbGet('vault', encryptionBlobKey(network, identityId))) !== undefined
+  let encBlob: EncryptionBlob | undefined
+  try {
+    encBlob = carriedEnc !== null ? await sealEncryptionBlob(opened.blobKeys.encryption, network, identityId, carriedEnc.keyId, carriedEnc.secret) : undefined
+  } finally {
+    carriedEnc?.secret.fill(0)
+  }
+  const blob = carried !== null ? await sealBlob(opened.blobKeys.storage, network, identityId, carried) : undefined
+  const { replaces: _replaces, ...promoted } = record
+  let raced = false
+  await idbUpdate<VaultRecord>(
+    'vault',
+    at,
+    (current, [main]) => {
+      if (current?.keyId !== record.keyId) throw new VaultLockedError('the pending key renewal changed while it was being finished; unlock again')
+      if (!replaceable(main as VaultRecord | undefined)) {
+        raced = true
+        return []
+      }
+      return [
+      [key(network, identityId), promoted],
+      [at, undefined],
+      [storageBlobKey(network, identityId), blob],
+      // Wallet grants were disabled by the renewal's update; none survives it.
+      [extraBlobKey(network, identityId), undefined],
+      [encryptionBlobKey(network, identityId), encBlob],
+      ]
+    },
+    [key(network, identityId)],
+  )
+  if (raced) return { status: 'conflict' }
+  setUnlocked(network, opened.secret, opened.blobKeys)
+  return {
+    status: 'adopted',
+    secret: opened.secret,
+    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: hadEnc && carriedEnc === null },
+  }
+}
+
+/**
+ * Give up a pending renewal (the user chose another sign-in instead): its staged record is
+ * deleted. The key stays registered on chain, unused, until disabled (Settings → Keys).
+ */
+export async function abandonStaged(network: Network, identityId: string): Promise<void> {
+  await idbDelete('vault', stagedKey(network, identityId))
+}
+
+/** The pending (staged) key of (network, identity), without secrets, or null. */
+export async function stagedInfo(network: Network, identityId: string): Promise<{ keyId: number; createdAt: number; methods: readonly ('passkey' | 'passphrase')[] } | null> {
+  const r = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
+  return r === undefined ? null : { keyId: r.keyId, createdAt: r.createdAt, methods: r.slots.map((x) => x.kind) }
 }
 
 /**
  * Seal `secret` into the vault for `network`, replacing any earlier record for its identity,
  * and keep it unlocked for this session. At least one protection is required. The record and
- * the (re-sealed or deleted) storage settings are written in one transaction.
+ * the (re-sealed or deleted) storage settings are written in one transaction, then the record
+ * is read back (D-016); a staged copy of the same key is dropped.
  */
 export async function storeInVault(network: Network, secret: VaultSecret, protection: Protection): Promise<StoreOutcome> {
   assertDedicatedOrigin()
-  if (!protection.passphrase && !protection.passkey) throw new Error('the vault needs a passphrase or a passkey')
-  if (protection.passphrase !== undefined && protection.passphrase.length < MIN_PASSPHRASE) {
-    throw new Error(`use a passphrase of at least ${MIN_PASSPHRASE} characters`)
-  }
+  assertProtection(protection)
   const { identityId } = secret
   // A renewal replaces the record (and its data key): carry the storage settings across when
   // this session can open them; otherwise they cannot be opened any more and are dropped.
@@ -390,34 +678,11 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
+  let readBackOk = true
   // The extra grants live in their own blob, so a later grant can be added without the data key.
   const { extra, ...main } = secret
   try {
-    const body = await seal(dataKey, enc.encode(JSON.stringify(main)), aad(network, identityId, 'body'))
-    const slots: Slot[] = []
-    if (protection.passkey) {
-      const kek = prfKey(protection.passkey.output, network, identityId)
-      const w = await seal(kek, dataKey, aad(network, identityId, 'passkey'))
-      kek.fill(0)
-      slots.push({ kind: 'passkey', credentialId: protection.passkey.credentialId, prfSalt: protection.passkey.prfSalt, iv: w.iv, wrapped: w.ct })
-    }
-    if (protection.passphrase) {
-      const salt = random(16)
-      const kek = await passphraseKey(protection.passphrase, salt)
-      const w = await seal(kek, dataKey, aad(network, identityId, 'passphrase'))
-      kek.fill(0)
-      slots.push({ kind: 'passphrase', salt, params: ARGON2_PARAMS, iv: w.iv, wrapped: w.ct })
-    }
-    const record: VaultRecord = {
-      version: 1,
-      network,
-      identityId,
-      keyId: secret.keyId,
-      createdAt: Date.now(),
-      iv: body.iv,
-      ciphertext: body.ct,
-      slots,
-    }
+    const record = await sealRecord(network, main, protection, dataKey)
     storageKey = await deriveStorageKey(dataKey, network, identityId)
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
@@ -431,18 +696,32 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
       }
     }
     // One transaction: a crash between the writes must not leave settings sealed under a
-    // data key no record holds any more.
-    await idbBatch('vault', [
+    // data key no record holds any more. The key is now the main record, so a staged copy of
+    // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
+    // from another tab, not finished) stays, for its unlock to finish.
+    const at = stagedKey(network, identityId)
+    await idbUpdate<VaultRecord>('vault', at, (staged) => [
       [key(network, identityId), record],
       [storageBlobKey(network, identityId), blob],
       [extraBlobKey(network, identityId), extraBlob],
       [encryptionBlobKey(network, identityId), encBlob],
+      ...(staged?.keyId === secret.keyId ? ([[at, undefined]] as const) : []),
     ])
+    // The key is on chain and was staged and read back first: a failed read-back here is not a
+    // reason to fail the sign-in (the staged copy, when there was one, is still the safe copy).
+    readBackOk = await readBack(network, key(network, identityId), main, dataKey).then(
+      () => true,
+      () => false,
+    )
   } finally {
     dataKey.fill(0)
   }
   setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey })
-  return { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: hadEnc && carriedEnc === null }
+  return {
+    storageSettingsDropped: hadBlob && carried === null,
+    encryptionKeyDropped: hadEnc && carriedEnc === null,
+    ...(readBackOk ? {} : { readBackFailed: true }),
+  }
 }
 
 /**
@@ -514,15 +793,24 @@ function unlockedStorageKey(network: Network, identityId: string): CryptoKey | n
 /** The vaults stored for `network` (no secrets). */
 export async function listVaults(network: Network): Promise<VaultInfo[]> {
   const rows = await idbEntries<VaultRecord>('vault', `vault:${network}:`)
-  return rows.map(([, r]) => ({
+  const out: VaultInfo[] = rows.map(([, r]) => ({
     identityId: r.identityId,
     keyId: r.keyId,
     createdAt: r.createdAt,
     methods: r.slots.map((s) => s.kind),
   }))
+  // An identity with only a staged key (a first import whose tab closed after registering,
+  // D-016) must still be offered for unlock, or the key it paid for is unreachable.
+  const known = new Set(out.map((v) => v.identityId))
+  for (const [, r] of await idbEntries<VaultRecord>('vault', `vault-staged:${network}:`)) {
+    if (!known.has(r.identityId)) {
+      out.push({ identityId: r.identityId, keyId: r.keyId, createdAt: r.createdAt, methods: r.slots.map((s) => s.kind), staged: true })
+    }
+  }
+  return out
 }
 
-async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
+async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array, slot: Slot, withExtra = true): Promise<{ secret: VaultSecret; blobKeys: BlobKeys }> {
   const dataKey = await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind))
   try {
     const body = await open(dataKey, record.iv, record.ciphertext, aad(network, record.identityId, 'body'))
@@ -530,7 +818,7 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
     body.fill(0)
     if (parsed.identityId !== record.identityId) throw new VaultLockedError('vault record does not match its identity')
     const storageKey = await deriveStorageKey(dataKey, network, record.identityId)
-    const extra = await readExtraKeys(network, record.identityId, storageKey)
+    const extra = withExtra ? await readExtraKeys(network, record.identityId, storageKey) : []
     const secret: VaultSecret = { identityId: parsed.identityId, keyId: parsed.keyId, wif: parsed.wif, ...(extra.length ? { extra } : {}) }
     return { secret, blobKeys: { storage: storageKey, encryption: await deriveEncryptionKey(dataKey, network, record.identityId) } }
   } finally {
@@ -541,32 +829,45 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
 
 /** Unlock with a passphrase. Throws {@link VaultLockedError} on a wrong one. */
 export async function unlockWithPassphrase(network: Network, identityId: string, passphrase: string): Promise<VaultSecret> {
-  assertDedicatedOrigin()
-  const record = await idbGet<VaultRecord>('vault', key(network, identityId))
-  const slot = record?.slots.find((s) => s.kind === 'passphrase')
-  if (!record || !slot || slot.kind !== 'passphrase') throw new VaultLockedError('no passphrase-protected key for this identity here')
-  // The parameters are pinned, never read from the (unauthenticated) record: a tampered
-  // record cannot make unlock allocate gigabytes.
-  if (JSON.stringify(slot.params) !== JSON.stringify(ARGON2_PARAMS)) throw new VaultLockedError('this key was stored with unsupported settings')
-  const { secret, blobKeys } = await unwrapWith(network, record, await passphraseKey(passphrase, slot.salt), slot)
-  setUnlocked(network, secret, blobKeys)
-  return secret
+  return unlockWith(network, identityId, { passphrase })
 }
 
 /** Unlock with the enrolled passkey (a WebAuthn assertion with the PRF extension). */
 export async function unlockWithPasskey(network: Network, identityId: string): Promise<VaultSecret> {
+  return unlockWith(network, identityId, 'passkey')
+}
+
+/**
+ * Open the main record with `method`; when that fails (or there is none) and a key whose
+ * registration was not finished is staged here (D-016), try the staged record's own slots:
+ * a renewal may have been protected with another passphrase or passkey than the key it
+ * replaces. The controller then asks Platform and finishes or keeps the staged key. Each
+ * record is only ever opened with its own slots; neither stands in for the other.
+ */
+async function unlockWith(network: Network, identityId: string, method: { passphrase: string } | 'passkey'): Promise<VaultSecret> {
   assertDedicatedOrigin()
-  const record = await idbGet<VaultRecord>('vault', key(network, identityId))
-  const slot = record?.slots.find((s) => s.kind === 'passkey')
-  if (!record || !slot || slot.kind !== 'passkey') throw new VaultLockedError('no passkey-protected key for this identity here')
-  const output = await evaluatePasskey(slot.credentialId, slot.prfSalt)
-  if (!output) throw new VaultLockedError('the passkey did not return its PRF output')
-  const raw = new Uint8Array(output)
-  const kek = prfKey(raw, network, identityId)
-  raw.fill(0)
-  const { secret, blobKeys } = await unwrapWith(network, record, kek, slot)
-  setUnlocked(network, secret, blobKeys)
-  return secret
+  const main = await idbGet<VaultRecord>('vault', key(network, identityId))
+  const staged = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
+  const kind = method === 'passkey' ? 'passkey' : 'passphrase'
+  if (!main?.slots.some((s) => s.kind === kind) && !staged?.slots.some((s) => s.kind === kind)) {
+    throw new VaultLockedError(`no ${kind}-protected key for this identity here`)
+  }
+  // The Argon2 parameters are pinned, never read from the (unauthenticated) record: a tampered
+  // record cannot make unlock allocate gigabytes (openRecord refuses other parameters).
+  for (const [record, withExtra] of [[main, true], [staged, false]] as const) {
+    if (record === undefined) continue
+    const opened = await openRecord(network, record, method, withExtra)
+    if (opened !== null) {
+      setUnlocked(network, opened.secret, opened.blobKeys)
+      return opened.secret
+    }
+  }
+  throw new VaultLockedError(method === 'passkey' ? 'the passkey did not open the key stored here' : 'wrong passphrase or passkey')
+}
+
+/** Whether the only key here for (network, identity) is a staged one (no main record). */
+export async function onlyStaged(network: Network, identityId: string): Promise<boolean> {
+  return (await idbGet('vault', key(network, identityId))) === undefined && (await hasStaged(network, identityId))
 }
 
 /** Delete the stored vault for an identity (sign out and forget this browser). */
@@ -576,6 +877,7 @@ export async function forgetVault(network: Network, identityId: string): Promise
   await idbDelete('vault', storageBlobKey(network, identityId))
   await idbDelete('vault', extraBlobKey(network, identityId))
   await idbDelete('vault', encryptionBlobKey(network, identityId))
+  await idbDelete('vault', stagedKey(network, identityId))
   clearSignedWrites()
   notifyEncryptionKeyChange()
 }
@@ -785,6 +1087,8 @@ export async function withEncryptionKey<T>(network: Network, identityId: string,
 
 /** Forget the unlocked secret (sign-out, auto-lock). The stored record stays. */
 export function lockVault(): void {
+  lastPrf?.output.fill(0)
+  lastPrf = null
   const wasUnlocked = unlocked !== null
   unlocked = null
   if (lockTimer) clearTimeout(lockTimer)

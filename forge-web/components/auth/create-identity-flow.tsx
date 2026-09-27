@@ -193,7 +193,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         trust: controller.groupTrust(),
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
-        persistKey: (id, k) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection),
+        persistKey: (id, k, o) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection, o),
         onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),
         onDeposit: setSeen,
         onCharge: (id, charge) => controller.reportCharge(id, charge),

@@ -34,7 +34,8 @@ import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIden
 import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
-import { normalizeToWif } from './wif'
+import { controlsKey, normalizeToWif } from './wif'
+import { retryWhileMissing } from '../view/retry'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
@@ -65,6 +66,13 @@ import {
   onVaultLock,
   clearSignedWrites,
   storeInVault,
+  stageInVault,
+  hasStaged,
+  recoverStaged,
+  abandonStaged,
+  stagedInfo,
+  type RecoverResult,
+  type StagedKeyState,
   unlockWithPasskey,
   unlockWithPassphrase,
   unlockedSecret,
@@ -446,17 +454,35 @@ export class AuthController {
   }
 
   /**
+   * Move a registered key into the vault's main record. Registered and staged (D-016) but not
+   * moved: the key is safe on this device, and the next unlock finishes the move.
+   */
+  private async commitKey(secret: VaultSecret, protection: Protection): Promise<StoreOutcome> {
+    try {
+      return await storeInVault(this.network, secret, protection)
+    } catch (e) {
+      if (await hasStaged(this.network, secret.identityId).catch(() => false)) {
+        throw new Error(`The new key is registered and saved on this device, but finishing sign-in failed (${errorMessage(e)}). Unlock to continue.`)
+      }
+      throw e
+    }
+  }
+
+  /**
    * Store a freshly registered limited key in the vault and open its session. If the key is
    * stored but the session cannot open yet (a read failed), say so: the key is safe and
    * unlocking will continue.
    */
-  private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
+  private async adopt(identityId: string, key: LimitedKey, protection: Protection, committed?: StoreOutcome): Promise<AuthSession> {
     const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
-    const outcome = await storeInVault(this.network, secret, protection)
+    const outcome = committed ?? (await this.commitKey(secret, protection))
     this.noteDropped(
       outcome,
       'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
     )
+    if (outcome.readBackFailed) {
+      this.setState({ notice: "Signed in, but this browser may not keep the key after it closes (its storage did not read back). Keep your identity file or recovery phrase handy." })
+    }
     try {
       return await this.open(secret, 'vault', key.limits)
     } catch (e) {
@@ -468,8 +494,9 @@ export class AuthController {
    * Store a key in the vault before it is registered on chain (identity creation). It stays
    * unlocked for the {@link openStored} that follows; a failed run calls {@link logout}.
    */
-  async persistKey(secret: VaultSecret, protection: Protection): Promise<void> {
-    await storeInVault(this.network, secret, protection)
+  async persistKey(secret: VaultSecret, protection: Protection, options: { readonly staged?: boolean } = {}): Promise<void> {
+    if (options.staged) await stageInVault(this.network, secret, protection)
+    else await storeInVault(this.network, secret, protection)
   }
 
   /**
@@ -538,8 +565,14 @@ export class AuthController {
       // The master key lives in this closure until the update is signed (a JS string cannot be
       // wiped; nothing else keeps a reference to it).
       const signWith = masterWif
-      const key = await this.charged(identityId, previous ? 'key:renew' : 'key:register', (k) => k?.keyId ?? null, () =>
-        registerLimitedKey(sdk, {
+      // D-016: stage (store and read back) → the identity update that registers the key and
+      // disables the old key and wallet grants → commit to the main record, all under this
+      // identity's one writer lock, so another tab cannot stage or commit in between. If this
+      // browser cannot keep the key, nothing changes on chain. A failure after the stage keeps
+      // it: the next unlock asks Platform whether it was registered, and adopts it or keeps
+      // waiting (it is only dropped on proof it never was).
+      const { key, committed } = await this.charged(identityId, previous ? 'key:renew' : 'key:register', (r) => r?.key.keyId ?? null, async () => {
+        const registered = await registerLimitedKey(sdk, {
           network: this.network,
           identityId,
           masterWif: signWith,
@@ -548,10 +581,12 @@ export class AuthController {
           ...(held.length ? { disableHeld: held } : {}),
           trust: this.groupTrust(),
           ...(request ? { request } : {}),
-        }),
-      )
-      this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
-      const session = await this.adopt(identityId, key, protection)
+          persist: (k) => stageInVault(this.network, { identityId, keyId: k.keyId, wif: k.wif }, protection),
+        })
+        this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
+        return { key: registered, committed: await this.commitKey({ identityId, keyId: registered.keyId, wif: registered.wif }, protection) }
+      })
+      const session = await this.adopt(identityId, key, protection, committed)
       if (material !== null) {
         this.step('Enabling private repos')
         await this.enableEncryption(identityId, material)
@@ -616,12 +651,25 @@ export class AuthController {
    * Adopt the keys a wallet granted (verified on chain by the caller): the first is the vault's
    * main key, each further one is kept as the grant for the contract it covers.
    */
-  async adoptWalletKeys(identityId: string, keys: readonly WalletKey[], protection: Protection): Promise<AuthSession> {
+  async adoptWalletKeys(
+    identityId: string,
+    keys: readonly WalletKey[],
+    protection: Protection,
+    options: { readonly discardPendingRenewal?: boolean } = {},
+  ): Promise<AuthSession> {
     return this.run(async () => {
       const [main, ...rest] = keys
       if (!main) throw new Error('the wallet granted no key')
       const forge = NETWORKS[this.network].v2
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      // An unfinished renewal here (D-016): the user chooses to finish it (unlock) or to carry
+      // on with the wallet, which gives it up (its key stays registered, unused, until it is
+      // disabled). Never a silent overwrite, never a dead end.
+      const pending = await stagedInfo(this.network, identityId)
+      if (pending !== null) {
+        if (options.discardPendingRenewal !== true) throw new PendingRenewalChoiceError(pending.keyId)
+        await abandonStaged(this.network, identityId)
+      }
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
       // Nothing this browser holds for the identity is dropped: the keys it held before stay
@@ -685,6 +733,10 @@ export class AuthController {
             ? await unlockWithPassphrase(this.network, identityId, method.passphrase)
             : null)
       if (!secret) throw new VaultLockedError('unlock to continue')
+      if (method !== null) {
+        const { secret: finished } = await this.finishStagedRenewal(identityId, method)
+        if (finished) return this.open(finished, 'vault')
+      }
       return this.open(secret, 'vault', limits)
     })
   }
@@ -697,12 +749,95 @@ export class AuthController {
       this.step('Connecting to Dash Platform')
       await this.getSdk()
       this.step(method === 'passkey' ? 'Unlocking with your passkey' : 'Unlocking')
+      // Opens the main record, or the staged one when the method is the renewal's (D-016).
       const secret =
         method === 'passkey'
           ? await unlockWithPasskey(this.network, identityId)
           : await unlockWithPassphrase(this.network, identityId, method.passphrase)
+      const { secret: finished, status } = await this.finishStagedRenewal(identityId, method)
+      if (finished) return this.open(finished, 'vault')
+      const main = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+      if (main === undefined || secret.keyId !== main.keyId) {
+        // What opened is the staged key, not adopted: no session to open with it. Say why.
+        lockVault()
+        throw new VaultLockedError(stagedUnlockMessage(status, main !== undefined))
+      }
       return this.open(secret, 'vault')
     })
+  }
+
+  /**
+   * A renewal or first import this device did not live to finish (the tab closed, or storing
+   * failed, after the key was staged and registered; D-016) is finished here: when Platform has
+   * the staged key live it becomes this browser's key. Called on every unlock and on a
+   * restored session. Returns the adopted secret, or null (nothing staged, or not visible yet).
+   * Throws when `method` does not open the staged record: the user chose another passphrase or
+   * passkey for that renewal, and is told to use it (never a silent fallback to the old key).
+   */
+  async finishStagedRenewal(
+    identityId: string,
+    method: { passphrase: string } | 'passkey',
+  ): Promise<{ readonly secret: VaultSecret | null; readonly status: RecoverResult['status'] | 'none' }> {
+    if (!(await hasStaged(this.network, identityId).catch(() => false))) return { secret: null, status: 'none' }
+    const r = await recoverStaged(this.network, identityId, method, (s) => this.stagedKeyState(s))
+    switch (r.status) {
+      case 'adopted':
+        this.noteDropped(
+          r.outcome,
+          'Your storage settings were sealed with the key a renewal replaced, so they could not be carried over. Add your storage again in Settings → Storage.',
+        )
+        return { secret: r.secret, status: r.status }
+      case 'locked':
+        // Opened the current key; the renewal was protected differently. Keep working with the
+        // current key and say how to finish the renewal (never a dead end).
+        this.setState({
+          notice:
+            "This device has an unfinished key renewal, protected with another passphrase or passkey than this one. Lock and unlock with that one to finish it, or discard it in Settings → Keys.",
+        })
+        break
+      case 'conflict':
+        this.setState({
+          notice:
+            'This device has an unfinished key renewal from before your latest sign-in. It was kept; finish or discard it in Settings → Keys.',
+        })
+        break
+    }
+    return { secret: null, status: r.status }
+  }
+
+  /**
+   * Give up this device's unfinished renewal (the user signs in another way instead, or does not
+   * have its passphrase any more). Its key stays registered on chain, unused, until disabled in
+   * Settings → Keys (revoke) or by the next renewal.
+   */
+  async abandonPendingRenewal(identityId: string): Promise<void> {
+    await abandonStaged(this.network, identityId)
+  }
+
+  /** This device's unfinished renewal for `identityId`, if any (Settings → Keys shows it). */
+  pendingRenewal(identityId: string): ReturnType<typeof stagedInfo> {
+    return stagedInfo(this.network, identityId)
+  }
+
+  /**
+   * What Platform says about a staged key: live, provably never registered, or not known.
+   * "Never" needs proof: its key id is held on the identity by a different public key (another
+   * update took the id, so this key can never be added under it). Anything else, including
+   * "not there yet", is unknown: a node a block behind, or an update still in flight, must not
+   * make this device delete a key it paid to register. Read a few times, as after a write.
+   */
+  private async stagedKeyState(secret: VaultSecret): Promise<StagedKeyState> {
+    const sdk = await this.getSdk()
+    // The key under the staged id, read a few times (a node a block behind shows none yet).
+    const atId = await retryWhileMissing(async () => {
+      const identity = await authSdk(sdk).identities.fetch(secret.identityId)
+      return identity?.publicKeys.find((k) => k.keyId === secret.keyId) ?? null
+    }, 4).catch(() => null)
+    if (atId === null) return 'unknown'
+    // This key under its id: the renewal landed. Live, or since expired or disabled, it was
+    // registered and replaced the old key either way; adopting it lets a later renewal replace
+    // it the normal way.
+    return controlsKey(atId, secret.wif, this.network) ? 'registered' : 'never'
   }
 
   /**
@@ -863,6 +998,39 @@ export class AuthController {
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()
     await forgetVault(this.network, identityId)
+  }
+}
+
+/**
+ * Why a passphrase or passkey that opened only the staged renewal (D-016) opens no session,
+ * from what finishing it found. `hasMain`: an earlier key is stored and still opens.
+ */
+function stagedUnlockMessage(status: RecoverResult['status'] | 'none', hasMain: boolean): string {
+  const earlier = hasMain
+    ? 'Unlock with your earlier passphrase or passkey to keep using the current key.'
+    : 'Sign in again with your identity file or recovery phrase.'
+  switch (status) {
+    case 'discarded':
+      return `That passphrase or passkey was for a key renewal that never reached Platform, so it was discarded. ${earlier}`
+    case 'conflict':
+      return 'That passphrase or passkey is for an unfinished key renewal from before your latest sign-in. It was kept: unlock with your current passphrase or passkey, then finish or discard it in Settings → Keys.'
+    default:
+      return hasMain
+        ? `That passphrase or passkey is the one for this device's unfinished key renewal, which Platform does not show yet. Try again in a minute, or: ${earlier}`
+        : "This device's new key is not on Platform yet (its registration may still be arriving). Try unlocking again in a minute; if it never appears, sign in again with your identity file or recovery phrase."
+  }
+}
+
+/**
+ * A wallet sign-in found an unfinished key renewal on this device: the UI offers to finish it
+ * (unlock with its passphrase or passkey) or to continue with the wallet and give it up.
+ */
+export class PendingRenewalChoiceError extends Error {
+  constructor(readonly keyId: number) {
+    super(
+      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: the renewal's key then stays registered on Platform but unused, and you can disable it later in Settings → Keys.`,
+    )
+    this.name = 'PendingRenewalChoiceError'
   }
 }
 
