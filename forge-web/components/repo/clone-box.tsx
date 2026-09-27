@@ -58,6 +58,9 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           </p>
           <CopyRow text={`dg repo clone ${slug}`} />
         </div>
+        <p className="mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
+          A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
+        </p>
         <ZipDownload home={home} addr={addr} selected={selected} />
         <p className="mt-2 hidden text-[11px] leading-snug text-anvil-500 dark:text-anvil-400 sm:block">
           No https clone URL: that needs a git server, and Forge runs none. git talks to the chain and your storage

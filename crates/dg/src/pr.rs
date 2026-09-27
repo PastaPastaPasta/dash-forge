@@ -679,15 +679,8 @@ async fn merge(
     } else {
         None
     };
-    // Only members can merge (the merge event is member-gated at consensus): refuse before
-    // any git work.
-    collab
-        .require_role(
-            handle,
-            Role::Writer,
-            &format!("merge pull request #{number}"),
-        )
-        .await?;
+    let base = (!event_only).then_some(view.patch.base_ref_name.as_str());
+    require_merge_rights(&s, handle, number, base).await?;
     let mut steps = Steps {
         json: ctx.json,
         done: Vec::new(),
@@ -902,6 +895,55 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
 }
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
+/// E601 before any git work. Only members can merge (the merge event is member-gated at
+/// consensus); and when the merge pushes to `base`, a writer cannot move a protected one (only a
+/// maintainer's `protectedRefUpdate` can, and the helper would refuse the push after the merge
+/// was built). An unreadable role or config proceeds; the helper and consensus still refuse.
+async fn require_merge_rights(
+    s: &Session,
+    handle: &Repo,
+    number: u64,
+    base: Option<&str>,
+) -> Result<()> {
+    s.collab()
+        .require_role(
+            handle,
+            Role::Writer,
+            &format!("merge pull request #{number}"),
+        )
+        .await?;
+    let Some(base) = base else {
+        return Ok(());
+    };
+    if !forge_core::collab::v2::precheck_enabled() {
+        return Ok(());
+    }
+    let Ok(role) = s.collab().signer_role(handle).await else {
+        return Ok(());
+    };
+    if role == Some(Role::Maintainer) {
+        return Ok(());
+    }
+    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+    let Ok(patterns) = svc.protected_patterns(handle).await else {
+        return Ok(());
+    };
+    if !forge_core::rules::matches_protected(base, &patterns) {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::NOT_A_WRITER,
+        format!(
+            "merge failed: only maintainers of {} can update {base}",
+            handle.display()
+        ),
+    )
+    .cause("the base branch matches the repo's protected patterns, and you are a writer")
+    .fix("ask a maintainer to merge it (`dg pr merge` as a maintainer)")
+    .note("checked before fetching or paying for anything; no merge event was posted")
+    .into())
+}
+
 fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
     if let Some(u) = e.downcast_ref::<UserError>() {
         return u.clone();

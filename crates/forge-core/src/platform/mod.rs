@@ -42,7 +42,9 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::dashcore::secp256k1::rand::{rngs::StdRng, Rng, SeedableRng};
 use dash_sdk::dpp::dashcore::Network as DashcoreNetwork;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, INITIAL_REVISION};
+use dash_sdk::dpp::document::{
+    Document, DocumentV0, DocumentV0Getters, DocumentV0Setters, INITIAL_REVISION,
+};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
@@ -975,6 +977,8 @@ pub enum WriteOp {
     Create,
     /// A document delete.
     Delete,
+    /// A document replace (an edit of a mutable document by its owner).
+    Replace,
 }
 
 /// A signed, ready-to-broadcast document write — built and signed exactly once.
@@ -1543,6 +1547,112 @@ impl<'a> WriteEngine<'a> {
                     );
                 }
                 _ => return Ok(()),
+            }
+        }
+        Err(Error::Nonce)
+    }
+
+    /// Replace the signer's own document `document_id` of `document_type`: `changes` set (a
+    /// `None` value removes the property), everything else kept as stored. Returns `false`
+    /// when the stored document already holds every change (nothing signed or paid).
+    ///
+    /// Signed once, at revision + 1 (Drive requires exactly that,
+    /// `batch/transformer/v0` "expected_revision = previous_revision + 1"); a spent nonce is
+    /// settled by re-reading, and a replace that another write beat is re-prepared from the
+    /// new stored revision. Consensus refuses a non-owner and any `immutable` property change.
+    pub async fn replace_document(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<bool> {
+        let doc_id = parse_id(document_id, "document id")?;
+        let data_contract = &contract.0;
+        let doc_type_ref = data_contract
+            .document_type_for_name(document_type)
+            .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
+        let fetch = || async {
+            let query = DocumentQuery::new(Arc::clone(data_contract), document_type)
+                .map_err(|e| Error::Platform(format!("building document query: {e}")))?
+                .with_document_id(&doc_id);
+            retry_transient_read("fetch document", || {
+                Document::fetch(self.client.sdk(), query.clone())
+            })
+            .await
+            .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
+        };
+        let holds = |doc: &Document| {
+            changes.iter().all(|(k, v)| {
+                let stored = doc.properties().get(k).and_then(FieldValue::from_value);
+                stored.as_ref() == v.as_ref()
+            })
+        };
+        for _ in 0..3 {
+            let Some(mut doc) = fetch().await? else {
+                return Err(Error::NotFound);
+            };
+            if doc.owner_id() != self.owner_id {
+                return Err(Error::Config(format!(
+                    "{document_type} {document_id} belongs to another identity; only its owner can edit it"
+                )));
+            }
+            if holds(&doc) {
+                return Ok(false);
+            }
+            let next = doc
+                .revision()
+                .unwrap_or(INITIAL_REVISION)
+                .checked_add(1)
+                .ok_or_else(|| Error::Platform("document revision overflow".into()))?;
+            doc.set_revision(Some(next));
+            let props = doc.properties_mut();
+            for (k, v) in changes {
+                match v {
+                    Some(v) => props.insert(k.clone(), v.clone().into_value()),
+                    None => props.remove(k),
+                };
+            }
+            let nonce = self
+                .client
+                .sdk()
+                .get_identity_contract_nonce(self.owner_id, data_contract.id(), true, None)
+                .await
+                .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
+            let state_transition =
+                BatchTransition::new_document_replacement_transition_from_document(
+                    doc,
+                    doc_type_ref,
+                    &self.signing_key,
+                    nonce,
+                    0,
+                    None,
+                    &self.signer,
+                    self.client.sdk().version(),
+                    None,
+                )
+                .await
+                .map_err(|e| Error::Platform(format!("signing replace transition: {e}")))?;
+            let prepared = PreparedWrite {
+                document_id: document_id.to_string(),
+                document_type: document_type.to_string(),
+                op: WriteOp::Replace,
+                signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
+            };
+            match self.execute(&prepared).await? {
+                BroadcastOutcome::NonceConsumed => {
+                    // Ours landed (its answer lost), or another write took the nonce: the
+                    // stored document says which.
+                    for attempt in 0..CONFIRM_ATTEMPTS {
+                        if fetch().await?.is_some_and(|d| holds(&d)) {
+                            return Ok(true);
+                        }
+                        if attempt + 1 < CONFIRM_ATTEMPTS {
+                            tokio::time::sleep(CONFIRM_DELAY).await;
+                        }
+                    }
+                }
+                _ => return Ok(true),
             }
         }
         Err(Error::Nonce)

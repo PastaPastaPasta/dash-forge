@@ -1,14 +1,11 @@
 'use client'
 
 /**
- * SettingsContent — repo administration: the storage backend, the members (the repo's
- * `maintainer` / `writer` documents), and the raw Platform identifiers. Each member write has
- * a pre-sign cost + confirm. Consensus is the real gate; the UI shows the controls and
- * surfaces the on-chain result.
- *
- * There is deliberately no "Archive" control: the web app has no config write, and the
- * config `archived` flag is display-only (members can still write), so a button here could
- * only pretend.
+ * SettingsContent — repo administration, GitHub-style: General (default branch, description,
+ * topics), Branches (protected patterns, branch policy), Collaborators (the repo's
+ * `maintainer` / `writer` documents), Storage, and the Danger zone (archive). Every write has a
+ * pre-sign cost + confirm. Consensus is the real gate; the UI shows the controls and surfaces
+ * the on-chain result. The config and policy sections live in `repo-settings-sections.tsx`.
  */
 
 import { useState } from 'react'
@@ -34,9 +31,11 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
 
-export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
-  return <RepoSettings home={home} repo={home.repo} />
+export function SettingsContent({ home, reload }: { home: RepoHome; reload: () => void }): JSX.Element {
+  return <RepoSettings home={home} repo={home.repo} reload={reload} />
 }
 
 /**
@@ -44,11 +43,12 @@ export function SettingsContent({ home }: { home: RepoHome }): JSX.Element {
  * ACL consensus enforces), and the ids a CLI or SDK user needs. The owner adds a member by
  * creating their document and removes one by deleting it; consensus refuses anyone else.
  */
-function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.Element {
+function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; reload: () => void }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const isOwner = identity === repo.ownerId
+  const viewerRole = useViewerRole(repo).role
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),
     [ready, repo.repoId, network],
@@ -88,15 +88,13 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
   }
   return (
     <div className="mx-auto max-w-2xl space-y-8">
-      <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
-      </Section>
+      <SettingsNav />
 
-      <Section title="Your browser pushes" icon={<HardDrive className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <RepoStoragePolicy repoId={repo.repoId} />
-      </Section>
+      <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
-      <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+      <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+
+      <Section id="collaborators" title="Collaborators" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -206,6 +204,16 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
         )}
       </Section>
 
+      <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
+        <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
+          <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
+        </h3>
+        <RepoStoragePolicy repoId={repo.repoId} />
+      </Section>
+
+      <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
+
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
@@ -249,26 +257,6 @@ function StorageBackend({ backend, emptyText }: { backend: RepoHome['backend']; 
         <span className="text-dense text-anvil-500 dark:text-anvil-400">{emptyText}</span>
       )}
     </div>
-  )
-}
-
-function Section({
-  title,
-  icon,
-  children,
-}: {
-  title: string
-  icon: React.ReactNode
-  children: React.ReactNode
-}): JSX.Element {
-  return (
-    <section>
-      <h2 className="mb-3 flex items-center gap-2 text-prose">
-        {icon}
-        {title}
-      </h2>
-      <div>{children}</div>
-    </section>
   )
 }
 

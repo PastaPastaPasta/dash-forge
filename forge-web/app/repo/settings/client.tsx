@@ -8,7 +8,7 @@ export function SettingsClient(): JSX.Element {
   const addr = useRepoAddress()
   return (
     <RepoScaffold addr={addr} rail={false} sealedOk>
-      {(home) => <SettingsContent home={home} />}
+      {(home, reload) => <SettingsContent home={home} reload={reload} />}
     </RepoScaffold>
   )
 }

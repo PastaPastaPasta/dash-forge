@@ -274,6 +274,12 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 **v1 repository is read only.** Retired with forge-v1 (2026-09-26), which the tools no longer read or write. The number stays reserved.
 
+## E606
+
+**Repository archived.** A maintainer marked the repository archived (`config.archived`, set with `dg repo archive` or Settings → Danger zone). Archiving is a client rule, not access control: consensus still admits a member's writes, so the tools refuse them instead. The push helper stops before building or paying for anything.
+
+Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`), or, if you are sure, push anyway with the push option `-o allow-archived`.
+
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.

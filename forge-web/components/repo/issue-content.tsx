@@ -46,6 +46,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
+  const archived = home.config?.archived === true
 
   // Just created here: a node that has not applied the block yet answers "not found", so keep
   // asking for a few seconds rather than telling the author their issue does not exist.
@@ -197,7 +198,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           </div>
           <Button
             variant="outline"
-            disabled={newLabel.trim() === '' || guard.disabledReason !== null}
+            disabled={newLabel.trim() === '' || guard.disabledReason !== null || archived}
             onClick={() => setPending({ kind: 'label', label: newLabel.trim(), remove: false })}
           >
             Add label
@@ -222,7 +223,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               <Button
                 variant="outline"
                 onClick={() => setPending({ kind: 'state' })}
-                disabled={!signer || guard.disabledReason !== null}
+                disabled={!signer || guard.disabledReason !== null || archived}
                 title={guard.disabledReason ?? undefined}
               >
                 {open ? 'Close issue' : 'Reopen issue'}
@@ -232,7 +233,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               variant="primary"
               onClick={postComment}
               loading={posting}
-              disabled={comment.trim() === '' || guard.disabledReason !== null}
+              disabled={comment.trim() === '' || guard.disabledReason !== null || archived}
               title={guard.disabledReason ?? undefined}
             >
               {identity ? 'Comment' : 'Sign in to comment'}

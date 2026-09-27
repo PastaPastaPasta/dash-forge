@@ -16,6 +16,7 @@ import {
   byteFieldToHex,
   num,
   readIssue,
+  readPolicy,
   readPull,
   readReviews,
   readRoleOracle,
@@ -31,7 +32,7 @@ import {
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
-import { anchorOf, countApprovals, groupReviewComments, type Anchor, type Approvals, type Role } from '../rules/v2'
+import { anchorOf, countApprovals, groupReviewComments, meetsPolicy, type Anchor, type Approvals, type Policy, type PolicyStatus, type Role } from '../rules/v2'
 import { summarizeReviews, type ReviewSummary } from './review-fold'
 
 /** One comment on an issue/PR. */
@@ -180,6 +181,9 @@ export interface PullApprovals extends Approvals {
   readonly roles: ReadonlyMap<string, Role | null>
   /** Every reviewer's standing, counted or not, for the header (`summarizeReviews`). */
   readonly summary: ReviewSummary
+  /** The branch policy in force (null: none), and how these approvals stand against it. */
+  readonly policy: Policy | null
+  readonly policyStatus: PolicyStatus | null
 }
 
 /** A full PR detail: the folded pull + its merged timeline. */
@@ -230,7 +234,7 @@ async function readApprovals(
   author: string,
 ): Promise<PullApprovals | null> {
   try {
-    const oracle = await readRoleOracle(sdk, repo)
+    const [oracle, policy] = await Promise.all([readRoleOracle(sdk, repo), readPolicy(sdk, repo)])
     const input = reviews.map((r) => ({
       id: r.id,
       reviewer: r.reviewer,
@@ -244,6 +248,8 @@ async function readApprovals(
       ...counted,
       roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
       summary: summarizeReviews(input, oracle, headOid, author, dismissed),
+      policy,
+      policyStatus: policy === null ? null : meetsPolicy(counted, oracle, policy),
     }
   } catch {
     return null

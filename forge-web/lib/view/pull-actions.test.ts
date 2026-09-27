@@ -97,6 +97,48 @@ describe('pullActions — close / reopen', () => {
   })
 })
 
+describe('pullActions — protected base and branch policy (D-503)', () => {
+  const MAIN = 'refs/heads/main'
+  const protectedMain = { protectedPatterns: [MAIN] }
+
+  it('refuses a writer the merge into a protected base, and says why', () => {
+    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, ...protectedMain })
+    expect(a.canMarkMerged).toBe(false)
+    expect(a.baseProtected).toBe(true)
+    expect(a.mergeHint).toMatch(/main is a protected branch: only maintainers/)
+  })
+
+  it('offers a maintainer the merge into a protected base', () => {
+    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: MAINTAINER, holdings: MAINTAIN, ...protectedMain })
+    expect(a.canMarkMerged).toBe(true)
+    expect(a.policyOverride).toBe(false)
+  })
+
+  it('matches the base with the FORGE_RULES globs, not by name', () => {
+    const release = pull({ baseRefName: 'refs/heads/release/1.x' })
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/release/*'] }).canMarkMerged).toBe(false)
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/*'] }).canMarkMerged).toBe(true)
+    // A bare branch name is not a full-ref pattern and protects nothing.
+    expect(pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMarkMerged).toBe(true)
+  })
+
+  it('disables a writer on an unmet policy and offers a maintainer the override', () => {
+    const unmet = { met: false, have: 0, need: 2 }
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: unmet })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/needs 2 approvals \(0 so far\)/)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet })
+    expect(m.canMarkMerged).toBe(true)
+    expect(m.policyOverride).toBe(true)
+  })
+
+  it('lets a writer merge once the policy is met on an unprotected base', () => {
+    const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2 } })
+    expect(a.canMarkMerged).toBe(true)
+    expect(a.policyOverride).toBe(false)
+  })
+})
+
 describe('pullActions agrees with the fold', () => {
   const mergeBy = (actor: string): Event => ({ id: 'e1', kind: 'merge', actor, oid: HEAD, createdAt: 10 })
 

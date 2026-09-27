@@ -21,6 +21,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keyring::{sealed_error, Keyring, PrivateSigner};
@@ -844,106 +846,126 @@ impl<'a> RepoService<'a> {
         backend_mode: u8,
         new_uris: Option<&[String]>,
     ) -> Result<String> {
-        if let Some(list) = new_uris {
-            if !BACKEND_URIS_V2.fits(list) {
-                return Err(Error::Config(format!(
-                    "config.backend.uris holds at most {} URLs of at most {} bytes each",
-                    BACKEND_URIS_V2.max_items, BACKEND_URIS_V2.max_item_len
-                )));
-            }
+        let change = ConfigChange {
+            backend_mode: Some(backend_mode),
+            backend_uris: new_uris.map(<[String]>::to_vec),
+            ..ConfigChange::default()
+        };
+        Ok(self.update_config(repo, &change).await?.unwrap_or_default())
+    }
+
+    /// The repository's current configuration (the newest well-formed `config`; a private
+    /// repo's decrypted), or the defaults when none exists.
+    pub async fn current_config(&self, repo: &RepoRef) -> Result<CurrentConfig> {
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            kr.require_key(repo)?;
+            return Ok(CurrentConfig::of_private(kr.config()));
         }
+        let (scope, contract) = self.readable(repo).await?;
+        Ok(self
+            .newest_config(&scope, &contract)
+            .await?
+            .as_ref()
+            .map_or_else(CurrentConfig::default, CurrentConfig::of_doc))
+    }
+
+    /// Append a `config` applying `change` over the current one (config is append-only,
+    /// newest wins; every field not in `change` carries over). Maintainer-gated at consensus.
+    /// A private repository's config is re-sealed (a v0x02 non-anchor config under the write
+    /// epoch, carrying the anchor's chain link). `Ok(None)` when the current config already
+    /// holds every change: nothing is signed.
+    pub async fn update_config(
+        &self,
+        repo: &RepoRef,
+        change: &ConfigChange,
+    ) -> Result<Option<String>> {
+        change.validate()?;
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
+            let (w, kr) = self.private_writer(repo).await?;
+            let now = CurrentConfig::of_private(kr.config());
+            let next = now.apply(change);
+            if next == now {
+                return Ok(None);
+            }
+            let epoch = w.write_epoch();
+            let owner = platform::decode_identifier(&self.identity_id()?)?;
+            // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can
+            // serve as the anchor if the anchor's author stops being a maintainer.
+            let base = Fields {
+                default_branch: Some(next.default_branch.clone()),
+                protected_patterns: next.protected_patterns.clone(),
+                ..Fields::default()
+            };
+            let fields = match kr.link_of(epoch)? {
+                Some(l) => l.apply(base),
+                None => base,
+            };
+            let enc = w.seal_doc(&DocHeader::new(DocKind::Config, owner, epoch), &fields)?;
+            let props = scope.props([
+                ("enc", FieldValue::bytes(enc)),
+                ("epoch", FieldValue::integer(u64::from(epoch))),
+                ("backend", next.backend_value()),
+                ("archived", FieldValue::boolean(next.archived)),
+            ]);
             return self
-                .set_private_backend(repo, &scope, &contract, backend_mode, new_uris)
-                .await;
+                .doc_engine()?
+                .create_document(&contract, DOC_CONFIG, props)
+                .await
+                .map(Some);
         }
-        let newest = self.newest_config(&scope, &contract).await?;
-        let default_branch = newest
+        let now = self
+            .newest_config(&scope, &contract)
+            .await?
             .as_ref()
-            .and_then(|d| d.field_str("defaultBranch"))
-            .unwrap_or_else(|| "main".to_string());
-        let patterns = newest
-            .as_ref()
-            .map(|d| scope::doc_text_list(d, "protectedPatterns"))
-            .unwrap_or_default();
-        let archived = newest.as_ref().is_some_and(|d| d.field_bool("archived"));
-        let uris = match new_uris {
-            Some(list) => list.to_vec(),
-            None => newest.as_ref().map(scope::backend_uris).unwrap_or_default(),
-        };
-
-        let mut backend = BTreeMap::new();
-        backend.insert(
-            "mode".to_string(),
-            FieldValue::integer(u64::from(backend_mode)),
-        );
-        if !uris.is_empty() {
-            backend.insert("uris".to_string(), FieldValue::text_list(uris));
+            .map_or_else(CurrentConfig::default, CurrentConfig::of_doc);
+        let next = now.apply(change);
+        if next == now {
+            return Ok(None);
         }
         let mut props = scope.props([
-            ("defaultBranch", FieldValue::text(default_branch)),
-            ("backend", FieldValue::Object(backend)),
-            ("archived", FieldValue::boolean(archived)),
+            ("defaultBranch", FieldValue::text(&next.default_branch)),
+            ("backend", next.backend_value()),
+            ("archived", FieldValue::boolean(next.archived)),
         ]);
-        if !patterns.is_empty() {
-            props.insert("protectedPatterns".into(), FieldValue::text_list(patterns));
+        // An empty list is the same as none (`is_well_formed`), and omitting it is smaller.
+        if !next.protected_patterns.is_empty() {
+            props.insert(
+                "protectedPatterns".into(),
+                FieldValue::text_list(next.protected_patterns.clone()),
+            );
         }
         self.doc_engine()?
             .create_document(&contract, DOC_CONFIG, props)
             .await
+            .map(Some)
     }
 
-    /// [`Self::set_backend`] for a private repository: the decrypted current `defaultBranch`
-    /// and `protectedPatterns` re-sealed (a v0x02 non-anchor config under the write epoch),
-    /// the plaintext `backend` replaced.
-    async fn set_private_backend(
-        &self,
-        repo: &RepoRef,
-        scope: &DocScope,
-        contract: &LoadedContract,
-        backend_mode: u8,
-        new_uris: Option<&[String]>,
-    ) -> Result<String> {
-        let (w, kr) = self.private_writer(repo).await?;
-        let cfg = kr.config();
-        let uris = match new_uris {
-            Some(list) => list.to_vec(),
-            None => match &cfg.backend {
-                Some(FieldValue::Object(b)) => scope::text_list(b.get("uris")),
-                _ => Vec::new(),
-            },
-        };
-        let mut backend = BTreeMap::new();
-        backend.insert(
-            "mode".to_string(),
-            FieldValue::integer(u64::from(backend_mode)),
-        );
-        if !uris.is_empty() {
-            backend.insert("uris".to_string(), FieldValue::text_list(uris));
+    /// Edit the `repo` document's description and topics (only its owner may: `repo` is
+    /// owner-mutable; `name`, `visibility` and `forkOf` are immutable). `Ok(false)` when it
+    /// already holds them. Plaintext by design, private repos included (private-repos.md §7).
+    pub async fn edit_repo(&self, repo: &RepoRef, edit: &RepoEdit) -> Result<bool> {
+        edit.validate()?;
+        let (_, contract) = self.writable(repo).await?;
+        let mut changes = BTreeMap::new();
+        if let Some(d) = &edit.description {
+            changes.insert(
+                "description".to_string(),
+                (!d.is_empty()).then(|| FieldValue::text(d)),
+            );
         }
-        let epoch = w.write_epoch();
-        let owner = platform::decode_identifier(&self.identity_id()?)?;
-        // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can serve
-        // as the anchor if the anchor's author stops being a maintainer.
-        let base = Fields {
-            default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
-            protected_patterns: cfg.protected_patterns.clone(),
-            ..Fields::default()
-        };
-        let fields = match kr.link_of(epoch)? {
-            Some(l) => l.apply(base),
-            None => base,
-        };
-        let enc = w.seal_doc(&DocHeader::new(DocKind::Config, owner, epoch), &fields)?;
-        let props = scope.props([
-            ("enc", FieldValue::bytes(enc)),
-            ("epoch", FieldValue::integer(u64::from(epoch))),
-            ("backend", FieldValue::Object(backend)),
-            ("archived", FieldValue::boolean(cfg.archived)),
-        ]);
+        if let Some(t) = &edit.topics {
+            changes.insert(
+                "topics".to_string(),
+                (!t.is_empty()).then(|| FieldValue::text_list(t.clone())),
+            );
+        }
+        if changes.is_empty() {
+            return Ok(false);
+        }
         self.doc_engine()?
-            .create_document(contract, DOC_CONFIG, props)
+            .replace_document(&contract, "repo", repo.id(), &changes)
             .await
     }
 
@@ -1820,6 +1842,255 @@ pub async fn read_valid_tips(
         .collect())
 }
 
+/// The default branch a repo without one (or without any config) uses.
+pub const DEFAULT_BRANCH: &str = "main";
+
+/// `config.protectedPatterns` holds at most this many globs (forge-core schema).
+pub const MAX_PROTECTED_PATTERNS: usize = 8;
+/// …of at most this many characters each.
+pub const MAX_PATTERN_CHARS: usize = 100;
+/// `repo.description` holds at most this many characters and bytes (forge-core schema).
+pub const MAX_DESCRIPTION: (usize, usize) = (500, 1000);
+/// `repo.topics`: at most 10 unique, `^[a-z0-9][a-z0-9-]*$`, 1–30 characters.
+pub const MAX_TOPICS: usize = 10;
+
+/// A repository's current configuration, as a settings reader and writer sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentConfig {
+    /// The default branch, short (`main`).
+    pub default_branch: String,
+    /// The protected-ref globs (`refs/heads/main`).
+    pub protected_patterns: Vec<String>,
+    /// The `archived` flag (a client rule; consensus does not enforce it).
+    pub archived: bool,
+    /// `backend.mode`.
+    pub backend_mode: u8,
+    /// `backend.uris`.
+    pub backend_uris: Vec<String>,
+}
+
+impl Default for CurrentConfig {
+    fn default() -> Self {
+        Self {
+            default_branch: DEFAULT_BRANCH.into(),
+            protected_patterns: Vec::new(),
+            archived: false,
+            backend_mode: 0,
+            backend_uris: Vec::new(),
+        }
+    }
+}
+
+impl CurrentConfig {
+    /// A public `config` document's fields.
+    fn of_doc(d: &FetchedDocument) -> Self {
+        let (backend_mode, backend_uris) = backend_parts(d.fields.get("backend"));
+        Self {
+            default_branch: d
+                .field_str("defaultBranch")
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| DEFAULT_BRANCH.into()),
+            protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
+            archived: d.field_bool("archived"),
+            backend_mode,
+            backend_uris,
+        }
+    }
+
+    /// A private repository's decrypted config.
+    fn of_private(cfg: &crate::keyring::PrivateConfig) -> Self {
+        let (backend_mode, backend_uris) = backend_parts(cfg.backend.as_ref());
+        Self {
+            default_branch: cfg
+                .default_branch
+                .clone()
+                .unwrap_or_else(|| DEFAULT_BRANCH.into()),
+            protected_patterns: cfg.protected_patterns.clone(),
+            archived: cfg.archived,
+            backend_mode,
+            backend_uris,
+        }
+    }
+
+    /// `self` with `change` applied (unset fields carry over).
+    #[must_use]
+    pub fn apply(&self, change: &ConfigChange) -> Self {
+        let mut next = self.clone();
+        if let Some(b) = &change.default_branch {
+            next.default_branch = short_branch_name(b).to_string();
+        }
+        if let Some(p) = &change.protected_patterns {
+            next.protected_patterns.clone_from(p);
+        }
+        if let Some(a) = change.archived {
+            next.archived = a;
+        }
+        if let Some(m) = change.backend_mode {
+            next.backend_mode = m;
+        }
+        if let Some(u) = &change.backend_uris {
+            next.backend_uris.clone_from(u);
+        }
+        next
+    }
+
+    /// The `backend` object to write.
+    fn backend_value(&self) -> FieldValue {
+        let mut backend = BTreeMap::new();
+        backend.insert(
+            "mode".to_string(),
+            FieldValue::integer(u64::from(self.backend_mode)),
+        );
+        if !self.backend_uris.is_empty() {
+            backend.insert(
+                "uris".to_string(),
+                FieldValue::text_list(self.backend_uris.clone()),
+            );
+        }
+        FieldValue::Object(backend)
+    }
+}
+
+/// `backend.mode` and `backend.uris` of a config's `backend` object.
+fn backend_parts(backend: Option<&FieldValue>) -> (u8, Vec<String>) {
+    match backend {
+        Some(FieldValue::Object(b)) => (
+            b.get("mode")
+                .and_then(FieldValue::as_u64)
+                .and_then(|m| u8::try_from(m).ok())
+                .unwrap_or(0),
+            scope::text_list(b.get("uris")),
+        ),
+        _ => (0, Vec::new()),
+    }
+}
+
+/// `refs/heads/main` → `main` (the form `config.defaultBranch` stores); a short name as is.
+#[must_use]
+pub fn short_branch_name(b: &str) -> &str {
+    b.strip_prefix("refs/heads/").unwrap_or(b)
+}
+
+/// A change to a repository's configuration; `None` fields carry over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigChange {
+    /// The new default branch (`main` or `refs/heads/main`).
+    pub default_branch: Option<String>,
+    /// The new protected-ref globs (the whole list).
+    pub protected_patterns: Option<Vec<String>>,
+    /// Archive (`true`) or unarchive.
+    pub archived: Option<bool>,
+    /// The new backend mode.
+    pub backend_mode: Option<u8>,
+    /// The new advertised read bases.
+    pub backend_uris: Option<Vec<String>>,
+}
+
+impl ConfigChange {
+    /// Refuse what the `config` schema would refuse, before anything is signed.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(b) = &self.default_branch {
+            let short = short_branch_name(b);
+            let full = format!("refs/heads/{short}");
+            if short.is_empty() || full.len() > 255 || !rules::is_legal_ref_name(&full) {
+                return Err(Error::Config(format!(
+                    "{b:?} is not a branch name (1-244 bytes, no spaces or control characters)"
+                )));
+            }
+        }
+        if let Some(p) = &self.protected_patterns {
+            check_patterns(p)?;
+        }
+        if let Some(u) = &self.backend_uris {
+            if !BACKEND_URIS_V2.fits(u) {
+                return Err(Error::Config(format!(
+                    "config.backend.uris holds at most {} URLs of at most {} bytes each",
+                    BACKEND_URIS_V2.max_items, BACKEND_URIS_V2.max_item_len
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Refuse a protected-pattern list the `config` schema would refuse: at most 8 globs of 1–100
+/// characters, no whitespace or control characters, no duplicates.
+pub fn check_patterns(patterns: &[String]) -> Result<()> {
+    if patterns.len() > MAX_PROTECTED_PATTERNS {
+        return Err(Error::Config(format!(
+            "a repository holds at most {MAX_PROTECTED_PATTERNS} protected patterns"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for p in patterns {
+        let chars = p.chars().count();
+        if chars == 0 || chars > MAX_PATTERN_CHARS {
+            return Err(Error::Config(format!(
+                "protected pattern {p:?} must be 1-{MAX_PATTERN_CHARS} characters"
+            )));
+        }
+        if p.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(Error::Config(format!(
+                "protected pattern {p:?} holds whitespace or a control character"
+            )));
+        }
+        if !seen.insert(p.as_str()) {
+            return Err(Error::Config(format!(
+                "protected pattern {p:?} is listed twice"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// An edit of the `repo` document; `None` fields are left as they are, an empty value clears.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoEdit {
+    /// The new description (`""` clears it).
+    pub description: Option<String>,
+    /// The new topics (the whole list; empty clears them).
+    pub topics: Option<Vec<String>>,
+}
+
+impl RepoEdit {
+    /// Refuse what the `repo` schema would refuse, before anything is signed.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(d) = &self.description {
+            let (chars, bytes) = MAX_DESCRIPTION;
+            if d.chars().count() > chars || d.len() > bytes {
+                return Err(Error::Config(format!(
+                    "a description holds at most {chars} characters and {bytes} bytes"
+                )));
+            }
+        }
+        if let Some(t) = &self.topics {
+            if t.len() > MAX_TOPICS {
+                return Err(Error::Config(format!(
+                    "a repository has at most {MAX_TOPICS} topics"
+                )));
+            }
+            let mut seen = BTreeSet::new();
+            for topic in t {
+                let ok = (1..=30).contains(&topic.len())
+                    && topic
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    && !topic.starts_with('-');
+                if !ok {
+                    return Err(Error::Config(format!(
+                        "topic {topic:?}: use 1-30 of a-z, 0-9 and '-', not starting with '-'"
+                    )));
+                }
+                if !seen.insert(topic.as_str()) {
+                    return Err(Error::Config(format!("topic {topic:?} is listed twice")));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A `config` document flattened to what protection resolution needs.
 pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
     ConfigDoc {
@@ -2573,5 +2844,116 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["bb", "aa"]
         );
+    }
+
+    mod settings {
+        use super::super::{
+            check_patterns, short_branch_name, ConfigChange, CurrentConfig, RepoEdit,
+        };
+
+        #[test]
+        fn a_change_carries_every_unset_field_over() {
+            let now = CurrentConfig {
+                default_branch: "main".into(),
+                protected_patterns: vec!["refs/heads/main".into()],
+                archived: false,
+                backend_mode: 2,
+                backend_uris: vec!["https://b.example/".into()],
+            };
+            let next = now.apply(&ConfigChange {
+                default_branch: Some("refs/heads/trunk".into()),
+                ..ConfigChange::default()
+            });
+            assert_eq!(next.default_branch, "trunk");
+            assert_eq!(next.protected_patterns, now.protected_patterns);
+            assert_eq!(
+                (next.backend_mode, &next.backend_uris),
+                (2, &now.backend_uris)
+            );
+            let archived = now.apply(&ConfigChange {
+                archived: Some(true),
+                ..ConfigChange::default()
+            });
+            assert!(archived.archived && archived.default_branch == "main");
+            // A change to what already holds is no change: nothing is signed.
+            assert_eq!(now.apply(&ConfigChange::default()), now);
+            assert_eq!(
+                now.apply(&ConfigChange {
+                    default_branch: Some("main".into()),
+                    ..ConfigChange::default()
+                }),
+                now
+            );
+        }
+
+        #[test]
+        fn short_branch_names_strip_refs_heads_only() {
+            assert_eq!(short_branch_name("refs/heads/main"), "main");
+            assert_eq!(short_branch_name("release/1.x"), "release/1.x");
+        }
+
+        #[test]
+        fn patterns_are_checked_against_the_schema() {
+            let ok = |v: &[&str]| {
+                check_patterns(&v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
+            };
+            assert!(ok(&["refs/heads/main", "refs/heads/release/*"]).is_ok());
+            assert!(ok(&[]).is_ok());
+            assert!(ok(&["refs/heads/a", "refs/heads/a"]).is_err(), "duplicate");
+            assert!(ok(&[""]).is_err(), "empty");
+            assert!(ok(&["refs/heads/a b"]).is_err(), "whitespace");
+            assert!(ok(&[&"x".repeat(101)]).is_err(), "too long");
+            assert!(
+                ok(&["1", "2", "3", "4", "5", "6", "7", "8", "9"]).is_err(),
+                "nine"
+            );
+            assert!(ok(&[&"x".repeat(100)]).is_ok());
+        }
+
+        #[test]
+        fn default_branch_must_be_a_legal_branch_name() {
+            let change = |b: &str| ConfigChange {
+                default_branch: Some(b.into()),
+                ..ConfigChange::default()
+            };
+            assert!(change("main").validate().is_ok());
+            assert!(change("refs/heads/release/1.x").validate().is_ok());
+            assert!(change("").validate().is_err());
+            assert!(change("refs/heads/").validate().is_err());
+            assert!(change("a b").validate().is_err());
+            assert!(change(&"x".repeat(250)).validate().is_err());
+        }
+
+        #[test]
+        fn repo_edits_are_checked_against_the_schema() {
+            let topics = |v: &[&str]| RepoEdit {
+                topics: Some(v.iter().map(|s| (*s).to_string()).collect()),
+                ..RepoEdit::default()
+            };
+            assert!(topics(&["rust", "dash-platform", "v2"]).validate().is_ok());
+            assert!(topics(&["Rust"]).validate().is_err(), "uppercase");
+            assert!(topics(&["-x"]).validate().is_err(), "leading dash");
+            assert!(topics(&["a_b"]).validate().is_err(), "underscore");
+            assert!(topics(&["a", "a"]).validate().is_err(), "duplicate");
+            assert!(topics(&[&"a".repeat(31)]).validate().is_err(), "too long");
+            let many: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
+            assert!(RepoEdit {
+                topics: Some(many),
+                ..RepoEdit::default()
+            }
+            .validate()
+            .is_err());
+            let desc = |d: String| RepoEdit {
+                description: Some(d),
+                ..RepoEdit::default()
+            };
+            assert!(desc("x".repeat(500)).validate().is_ok());
+            assert!(desc("x".repeat(501)).validate().is_err());
+            assert!(desc("\u{e9}".repeat(500)).validate().is_ok(), "1000 bytes");
+            assert!(
+                desc("\u{20ac}".repeat(400)).validate().is_err(),
+                "1200 bytes"
+            );
+        }
     }
 }

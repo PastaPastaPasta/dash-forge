@@ -9,11 +9,21 @@
  * will count now (the head is already on the base branch) or stay inert until the code gets
  * there by a push.
  *
+ * Two branch rules then narrow it for a writer (`review-parity-spec.md` §4.8):
+ *
+ * - A **protected** base (its full ref name matches `config.protectedPatterns`): only a
+ *   maintainer can move it (`protectedRefUpdate` is maintainer-gated at consensus, and a plain
+ *   `refUpdate` there is inert), so a writer's merge could never land. Refused for writers.
+ * - An unmet **branch policy** (`policy`, newest wins): a client rule. A writer's button is
+ *   disabled; a maintainer is offered "Merge anyway (policy override)". Nothing at consensus
+ *   requires approvals.
+ *
  * Close/reopen stay available to the PR author as well (an `authorEvent`), but not to anyone
  * consensus would refuse.
  */
 
-import { isOidHex, isPlainBranchRef, type Holdings } from '../rules'
+import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
+import type { PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -30,10 +40,20 @@ export interface PullActions {
   readonly markCountsNow: boolean
   /** A short reason shown when the merge control is withheld; null when shown. */
   readonly mergeHint: string | null
+  /** The base branch is protected (only maintainers can update it). */
+  readonly baseProtected: boolean
+  /**
+   * The branch policy is not met and the viewer is a maintainer: the mark is offered as an
+   * explicit override ("Merge anyway (policy override)").
+   */
+  readonly policyOverride: boolean
 }
 
 export interface PullActionInputs {
-  readonly pull: Pick<PullView, 'author' | 'headOid' | 'headOnBase' | 'stateComplete' | 'state'>
+  readonly pull: Pick<PullView, 'author' | 'headOid' | 'headOnBase' | 'stateComplete' | 'state'> & {
+    /** The full base ref (`refs/heads/main`); absent when unknown. */
+    readonly baseRefName?: string
+  }
   /** The signed-in identity, or null when logged out. */
   readonly viewer: string | null
   /**
@@ -41,6 +61,10 @@ export interface PullActionInputs {
    * not be read — permission unknown, controls withheld with a reason.
    */
   readonly holdings: Holdings | null | 'loading'
+  /** `config.protectedPatterns` in force (empty or absent: nothing protected). */
+  readonly protectedPatterns?: readonly string[]
+  /** How the PR's approvals stand against the branch policy; null or absent: no policy. */
+  readonly policy?: PolicyStatus | null
 }
 
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
@@ -111,16 +135,30 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
   }
 }
 
+/**
+ * Why every write control is disabled in an archived repo. Archiving is a client rule
+ * (`config.archived`): consensus still admits a member's writes, so the clients refuse them
+ * (the CLI helper with E606).
+ */
+export const ARCHIVED_REASON = 'This repo is archived: it is read-only until a maintainer unarchives it.'
+
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
-export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullActions {
+export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
+  const maintainer = known && holdings.maintain
   const holder = known && (holdings.write || holdings.maintain)
   const isAuthor = viewer !== null && viewer === pull.author
   const { merged, open } = pull.state
   // A PR whose event log was not read completely has no trustworthy state to act on.
   const actionable = pull.stateComplete && !merged
+  const base = pull.baseRefName ?? ''
+  const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
+  const policyUnmet = policy !== null && !policy.met
 
-  const canMarkMerged = actionable && open && viewer !== null && holder && pull.headOid !== ''
+  const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''
+  // A writer can neither move a protected base nor override the policy.
+  const writerBlocked = !maintainer && (baseProtected || policyUnmet)
+  const canMarkMerged = eligible && !writerBlocked
   const canCloseReopen = actionable && viewer !== null && (holder || isAuthor)
 
   let mergeHint: string | null = null
@@ -129,8 +167,12 @@ export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullA
       mergeHint = `Couldn't read this repo's ${ACL_NAME}, so merge permission is unknown.`
     } else if (pull.headOid === '') {
       mergeHint = 'This PR records no head commit to mark as merged.'
-    } else {
+    } else if (!holder) {
       mergeHint = "Only this repo's maintainers and writers can mark a PR as merged."
+    } else if (baseProtected) {
+      mergeHint = `${shortRef(base)} is a protected branch: only maintainers can merge into it.`
+    } else if (policy !== null && policyUnmet) {
+      mergeHint = `The branch policy needs ${policy.need} approval${policy.need === 1 ? '' : 's'} (${policy.have} so far). Only a maintainer can merge before then.`
     }
   }
 
@@ -139,6 +181,8 @@ export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullA
     canCloseReopen,
     markCountsNow: pull.headOnBase,
     mergeHint,
+    baseProtected,
+    policyOverride: canMarkMerged && maintainer && policyUnmet,
   }
 }
 
@@ -182,4 +226,8 @@ export function mergeRefProblem(
   }
   if (!isOidHex(headOid)) return 'The PR names no valid head commit.'
   return null
+}
+
+function shortRef(ref: string): string {
+  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }

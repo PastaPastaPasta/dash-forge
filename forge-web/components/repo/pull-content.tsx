@@ -13,11 +13,12 @@
  */
 
 import { useEffect, useState } from 'react'
-import { GitMerge, GitPullRequest, GitPullRequestClosed } from 'lucide-react'
+import { Check, GitMerge, GitPullRequest, GitPullRequestClosed, ShieldCheck, X } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
-import { loadPullThread, pullActions, timeAgo } from '@/lib/view'
+import { ARCHIVED_REASON, loadPullThread, pullActions, timeAgo } from '@/lib/view'
 import { addEvent, createComment, createReview, readViewerPermissions, repoContractIds, repoKey, setTargetState, type VerdictInput } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
+import type { Policy, PolicyStatus } from '@/lib/rules/v2'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -98,7 +99,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     viewer: identity,
     // Signed in but not yet read: withhold the controls without a "can't" message.
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
+    protectedPatterns: home.config?.protectedPatterns ?? [],
+    policy: data.approvals?.policyStatus ?? null,
   })
+  const archived = home.config?.archived === true
   const base = pull.baseRefName || 'the base branch'
 
   const status = merged
@@ -214,11 +218,20 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         repo={home.repo}
         home={home}
         pull={pull}
-        canMerge={actions.canMarkMerged}
+        canMerge={actions.canMarkMerged && !archived}
         isMaintainer={holdings.data?.maintain === true}
         checkout={checkoutCommand(home.repo, pull.number)}
         onMerged={reload}
       />
+
+      {open && (actions.baseProtected || data.approvals?.policyStatus) ? (
+        <BranchRules
+          base={pull.baseRefName}
+          baseProtected={actions.baseProtected}
+          policy={data.approvals?.policy ?? null}
+          status={data.approvals?.policyStatus ?? null}
+        />
+      ) : null}
 
       <PullDiff
         pull={pull}
@@ -256,13 +269,18 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
           <div className="flex flex-wrap items-center gap-2">
             {actions.canCloseReopen ? (
-              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null}>
+              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null || archived}>
                 {open ? 'Close' : 'Reopen'}
               </Button>
             ) : null}
             {actions.canMarkMerged ? (
-              <Button variant="primary" onClick={() => setPending('merge')} disabled={!signer || guard.disabledReason !== null}>
-                <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged
+              <Button
+                variant={actions.policyOverride ? 'danger' : 'primary'}
+                onClick={() => setPending('merge')}
+                disabled={!signer || guard.disabledReason !== null || archived}
+                title={archived ? ARCHIVED_REASON : undefined}
+              >
+                <GitMerge className="h-3.5 w-3.5" aria-hidden /> {actions.policyOverride ? 'Merge anyway (policy override)' : 'Mark as merged'}
               </Button>
             ) : null}
             {writeBlocked ? null : (
@@ -270,7 +288,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant="primary"
                 onClick={postComment}
                 loading={posting}
-                disabled={comment.trim() === '' || guard.disabledReason !== null}
+                disabled={comment.trim() === '' || guard.disabledReason !== null || archived}
                 title={guard.disabledReason ?? undefined}
               >
                 {identity ? 'Comment' : 'Sign in'}
@@ -288,7 +306,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 key={v}
                 size="sm"
                 variant={v === 'approve' ? 'primary' : 'outline'}
-                disabled={guard.disabledReason !== null}
+                disabled={guard.disabledReason !== null || archived}
                 onClick={() => {
                   if (guard.check(composeCost(home.repo, 'review', { body: comment.trim() }).credits, 'collab')) setPending({ review: v, body: comment.trim() })
                 }}
@@ -329,7 +347,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         }
         description={
           pending === 'merge'
-            ? `Appends a merge event naming ${pull.headOid.slice(0, 9)}. This does not merge any code. ${
+            ? `${actions.policyOverride ? 'Overrides the branch policy (a client rule; the merge event records who merged). ' : ''}Appends a merge event naming ${pull.headOid.slice(0, 9)}. This does not merge any code. ${
                 actions.markCountsNow
                   ? `That commit is already on ${base}, so the PR will show as merged.`
                   : `That commit is not on ${base} yet, so the PR stays open until a push puts it there. If ${base} has moved on, the commit that lands will be a merge commit, not this head; record that merge with the CLI instead (dg pr merge --merge-oid).`
@@ -366,4 +384,49 @@ function DiffMounted({ onChange }: { onChange: (shown: boolean) => void }): null
 /** The copy-to-shell checkout line, from the resolved repo (never the URL's own text). */
 export function checkoutCommand(repo: { readonly ownerId: string; readonly name: string }, number: number): string {
   return `dg pr checkout ${repo.ownerId}/${repo.name} ${number}`
+}
+
+/**
+ * The base branch's rules (review-parity spec §4.8): protection (consensus-backed: only a
+ * maintainer's `protectedRefUpdate` can move it) and the branch policy (a client rule).
+ */
+function BranchRules({
+  base,
+  baseProtected,
+  policy,
+  status,
+}: {
+  base: string
+  baseProtected: boolean
+  policy: Policy | null
+  status: PolicyStatus | null
+}): JSX.Element {
+  const short = base.startsWith('refs/heads/') ? base.slice('refs/heads/'.length) : base
+  return (
+    <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
+      {baseProtected ? (
+        <p className="flex items-center gap-2" data-testid="protected-base">
+          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
+          <span>
+            <span className="font-mono">{short}</span> is protected: only maintainers can merge into it. Enforced by
+            Platform (a writer&apos;s update of it is refused or inert).
+          </span>
+        </p>
+      ) : null}
+      {policy !== null && status !== null ? (
+        <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+          {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
+          <span>
+            {status.have} of {status.need} required approval{status.need === 1 ? '' : 's'}
+            {policy.approverRole === 1 ? ' (maintainers)' : ''}
+          </span>
+        </p>
+      ) : null}
+      {policy !== null ? (
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+          Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.
+        </p>
+      ) : null}
+    </section>
+  )
 }
