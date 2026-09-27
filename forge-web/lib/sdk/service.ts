@@ -207,7 +207,11 @@ function versionOf(sdk: EvoSDK): number | undefined {
   }
 }
 
-/** Free a connection's wasm SDK once nothing uses it (wasm-bindgen defers while borrowed). */
+/**
+ * Free a connection's wasm SDK. Only for a connection no call is using: wasm-bindgen's explicit
+ * `free()` takes ownership and traps if an async call still borrows the object (the service
+ * frees a retired connection once its last call returned, {@link EvoSdkService.retire}).
+ */
 function dispose(connection: Connection): void {
   try {
     ;(connection.sdk.wasm as unknown as { free?: () => void }).free?.()
@@ -256,6 +260,10 @@ export class EvoSdkService {
   private progressAt = -Infinity
   private progressTimer: unknown = null
   private readonly aborts = new Set<AbortController>()
+  /** Calls running through the handle, per connection. */
+  private readonly inFlight = new Map<Connection, number>()
+  /** Replaced connections waiting for their last call before they are freed. */
+  private readonly retired = new Set<Connection>()
   private readonly handle: EvoSDK
 
   constructor(
@@ -464,9 +472,7 @@ export class EvoSdkService {
     // match): are the seeded contracts still the network's current versions?
     if (this.network !== null) void revalidateSeeded(connection, NETWORKS[this.network].key, replaced)
     this.setStatus({ phase: 'ready' })
-    // A call already running on the old connection keeps it alive until it returns
-    // (wasm-bindgen defers the free of a borrowed object).
-    if (previous !== null) dispose(previous)
+    if (previous !== null) this.retire(previous)
   }
 
   /**
@@ -564,13 +570,13 @@ export class EvoSdkService {
   async withRecovery<T>(read: (sdk: EvoSDK) => Promise<T>): Promise<T> {
     const used = this.live()
     try {
-      return await read(used.sdk)
+      return await this.track(used, read)
     } catch (e) {
       if (!isStaleConnectionError(e)) throw e
       if (this.current === used && !(await this.recover(e))) throw e
       const now = this.current
       if (now === null || now === used) throw e
-      return read(now.sdk)
+      return this.track(now, read)
     }
   }
 
@@ -625,7 +631,7 @@ export class EvoSdkService {
     this.epoch++
     this.aborts.forEach((a) => a.abort())
     this.aborts.clear()
-    if (this.current !== null) dispose(this.current)
+    if (this.current !== null) this.retire(this.current)
     this.current = null
     setStaleContractHandler(null)
     this.network = null
@@ -683,6 +689,37 @@ export class EvoSdkService {
     this.listeners.forEach((l) => l())
   }
 
+  /** Free `connection` now if no call is running on it, else when the last one returns. */
+  private retire(connection: Connection): void {
+    if ((this.inFlight.get(connection) ?? 0) === 0) dispose(connection)
+    else this.retired.add(connection)
+  }
+
+  /** Run `call` on `connection`, counted so a retired connection is freed only once idle. */
+  private track<T>(connection: Connection, call: (sdk: EvoSDK) => T): T {
+    this.inFlight.set(connection, (this.inFlight.get(connection) ?? 0) + 1)
+    const done = (): void => {
+      const left = (this.inFlight.get(connection) ?? 1) - 1
+      if (left > 0) {
+        this.inFlight.set(connection, left)
+        return
+      }
+      this.inFlight.delete(connection)
+      if (this.retired.delete(connection)) dispose(connection)
+    }
+    let result: T
+    try {
+      result = call(connection.sdk)
+    } catch (e) {
+      done()
+      throw e
+    }
+    if (result instanceof Promise) {
+      void result.then(done, done)
+    } else done()
+    return result
+  }
+
   /** Remember the highest protocol version `sdk` has proved (a new connection may report its floor). */
   private learn(sdk: EvoSDK): number | undefined {
     const v = versionOf(sdk)
@@ -720,7 +757,7 @@ export class EvoSdkService {
               const value = (this.live().sdk as unknown as Facades)[name]?.[method as string]
               if (typeof value !== 'function' || typeof method !== 'string') return value
               const call = (sdk: EvoSDK, args: unknown[]): unknown => (sdk as unknown as Facades)[name]![method]!(...args)
-              if (!RETRYABLE_READS.has(`${name}.${method}`)) return (...args: unknown[]) => call(this.live().sdk, args)
+              if (!RETRYABLE_READS.has(`${name}.${method}`)) return (...args: unknown[]) => this.track(this.live(), (sdk) => call(sdk, args))
               return (...args: unknown[]) => {
                 if (name === 'documents' || name === 'contracts') this.noteContract(args)
                 return this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>)

@@ -685,3 +685,22 @@ describe('EvoSdkService: an outage after a connect keeps retrying', () => {
     expect(svc.getStatus().phase).toBe('ready')
   })
 })
+
+describe('EvoSdkService: freeing a replaced connection', () => {
+  it('waits for a call still running on it (an explicit free of a borrowed wasm object traps)', async () => {
+    const clock = manualClock()
+    const slow = deferred<unknown>()
+    const a = fakeSdk('a', () => slow.promise)
+    const b = fakeSdk('b', async () => 'b')
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockResolvedValueOnce(connection(b.sdk))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    const running = svc.getSdk().documents.query({} as never)
+    await svc.refresh()
+    expect(a.free).not.toHaveBeenCalled()
+    slow.resolve('a done')
+    await expect(running).resolves.toBe('a done')
+    await flush()
+    expect(a.free).toHaveBeenCalledTimes(1)
+  })
+})
