@@ -167,6 +167,13 @@ impl Helper {
                 .with_context(|| {
                     format!("connecting to Dash Platform ({})", self.target.network)
                 })?;
+            // The repository's append-only history lives with the clone
+            // (`.git/dash/history`), so a fetch or push reads only what landed since the last.
+            if let Ok(git_dir) = LocalRepo::git_dir() {
+                client
+                    .history()
+                    .set_dir(git_dir.join("dash").join("history"));
+            }
             let repo = match &self.url {
                 DashUrl::Named { owner, repo } => {
                     forge_core::resolve::resolve_named(&client, owner, repo)
@@ -240,30 +247,52 @@ impl Helper {
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
         // runs, since a present commit may need its filtered blobs materialized.)
-        if options.filter.is_none()
-            && !wants.is_empty()
-            && wants.iter().all(|w| LocalRepo::object_exists(&w.oid))
-        {
+        if wants_already_local(wants, options) {
             tracing::info!(
                 wants = wants.len(),
                 "all wanted objects already local; skipping fetch"
             );
             return Ok(());
         }
+        // The record of packs already held is advisory: if the wanted history is still
+        // incomplete after an incremental fetch (a gc pruned objects of a recorded pack, or
+        // the record came from another clone), or the incremental pass failed, fetch every
+        // pack.
+        let incremental = self.fetch_packs(wants, options, true).await;
+        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
+        let complete = incremental_fetch_complete(incremental.is_ok(), options, &want_oids, || {
+            LocalRepo::history_has_gaps(&want_oids)
+        });
+        if !complete {
+            tracing::info!(
+                error = ?incremental.err(),
+                "the wanted history is incomplete after an incremental fetch; fetching every pack"
+            );
+            self.fetch_packs(wants, options, false).await?;
+        }
+        Ok(())
+    }
 
+    /// [`Self::fetch`]'s download: every stored git pack, or (`incremental`) only those not
+    /// recorded as already held.
+    async fn fetch_packs(
+        &mut self,
+        wants: &[Want],
+        options: &OptionState,
+        incremental: bool,
+    ) -> Result<()> {
         let conn = self.ensure_conn().await?;
         let svc = conn.service();
 
         let manifests = svc.read_pack_manifests(&conn.repo).await?;
-        let git_packs: Vec<_> = manifests
-            .into_iter()
-            .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
-            .collect();
-
+        let git_dir = LocalRepo::git_dir().ok();
+        let have = git_dir
+            .as_deref()
+            .map(|d| crate::fetched::FetchedPacks::load(d, conn.repo.id()))
+            .unwrap_or_default();
+        let skip_held = incremental && options.filter.is_none();
+        let git_packs = packs_to_fetch(manifests, skip_held.then_some(&have));
         if git_packs.is_empty() {
-            // Nothing stored: an empty repo. git tolerates a fetch that delivers no objects
-            // as long as the wants were not real (they cannot be, with no packs).
-            tracing::warn!("no git packs stored for repo; delivering nothing");
             return Ok(());
         }
 
@@ -291,7 +320,7 @@ impl Helper {
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
-        let fetched: Vec<Got> = stream::iter(packs.iter().map(|(h, copies)| async move {
+        let fetched: Vec<([u8; 32], Got)> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
             let got = match svc.fetch_best_copy(repo, contract, copies, roles, reader).await {
                 // A private repository's copy verified by its (ciphertext) hash; open it.
@@ -308,7 +337,7 @@ impl Helper {
                         Ok(b) => Ok((b, m)),
                         Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
                             tracing::info!(pack = %hash, "{u}; continuing without it");
-                            return Ok(Got::Hidden(*u));
+                            return Ok((*h, Got::Hidden(*u)));
                         }
                         Err(e) => {
                             return Err(anyhow::Error::from(e)
@@ -340,19 +369,42 @@ impl Helper {
                 // timeout), so this cannot hang.
                 Err(e) => {
                     tracing::info!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; continuing without it");
-                    return Ok(Got::Unreadable(Unreadable {
+                    return Ok((*h, Got::Unreadable(Unreadable {
                         hash,
                         error: e.to_string(),
-                    }));
+                    })));
                 }
             };
-            Ok(Got::Bytes(bytes))
+            Ok((*h, Got::Bytes(bytes)))
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect()
         .await?;
         let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
-        index_fetched(fetched, &want_oids, options, &repo.display(), packs.len())
+        let indexed: Vec<[u8; 32]> = fetched
+            .iter()
+            .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+            .map(|(h, _)| *h)
+            .collect();
+        index_fetched(
+            fetched.into_iter().map(|(_, g)| g).collect(),
+            &want_oids,
+            options,
+            &repo.display(),
+            packs.len(),
+        )?;
+        // Record the packs indexed whole (not a partial clone's filtered subset), so the next
+        // fetch downloads only what is new.
+        if options.filter.is_none() {
+            if let Some(d) = git_dir.as_deref() {
+                let mut have = have;
+                for h in indexed {
+                    have.insert(h);
+                }
+                have.save(d, conn.repo.id());
+            }
+        }
+        Ok(())
     }
 
     /// Serve a `push` batch: fast-forward-check each refspec against the current remote
@@ -841,6 +893,60 @@ fn brief(error: &str) -> String {
         .join(" ")
 }
 
+/// Whether an incremental fetch left the local odb holding the whole wanted history. Checking
+/// only that the wanted TIPS exist is not enough: a gc may have pruned objects of a pack the
+/// record says is held, and a newer pack deltas against them (review M-4). So a plain fetch
+/// with wants runs git's connectivity walk (`has_gaps`); a failed pass is never complete.
+fn incremental_fetch_complete(
+    ok: bool,
+    options: &OptionState,
+    want_oids: &[String],
+    has_gaps: impl FnOnce() -> bool,
+) -> bool {
+    ok && (options.filter.is_some() || want_oids.is_empty() || !has_gaps())
+}
+
+/// Whether a plain (unfiltered) fetch has nothing to do: every wanted object is already in
+/// the local odb. A promisor fetch always runs (a present commit may need its filtered blobs).
+fn wants_already_local(wants: &[Want], options: &OptionState) -> bool {
+    options.filter.is_none()
+        && !wants.is_empty()
+        && wants.iter().all(|w| LocalRepo::object_exists(&w.oid))
+}
+
+/// The git packs a fetch downloads: every stored kind-0 pack, less those `held` records.
+///
+/// Incremental fetch: a pack this clone already indexed whole (an earlier full fetch) or
+/// pushed itself is not downloaded again; its objects are in the local odb. Every push stores
+/// a new pack, so this turns "download every pack" into "download the new ones". A partial
+/// clone (`--filter`) indexes a filtered subset, never a whole pack, so it passes no `held`.
+fn packs_to_fetch(
+    manifests: Vec<forge_core::repo::PackManifestInfo>,
+    held: Option<&crate::fetched::FetchedPacks>,
+) -> Vec<forge_core::repo::PackManifestInfo> {
+    let git_packs: Vec<_> = manifests
+        .into_iter()
+        .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
+        .collect();
+    if git_packs.is_empty() {
+        // Nothing stored: an empty repo. git tolerates a fetch that delivers no objects as
+        // long as the wants were not real (they cannot be, with no packs).
+        tracing::warn!("no git packs stored for repo; delivering nothing");
+        return git_packs;
+    }
+    let total = group_by_hash(&git_packs).len();
+    let wanted: Vec<_> = git_packs
+        .into_iter()
+        .filter(|m| held.is_none_or(|h| !h.contains(&m.pack_hash)))
+        .collect();
+    tracing::info!(
+        new = group_by_hash(&wanted).len(),
+        total,
+        "downloading the packs not already local"
+    );
+    wanted
+}
+
 /// The provisional tip oid of a resolved (or diverged, newest-head) ref; `None` for an
 /// unborn ref. The single mapping every ref-state read goes through.
 fn tip_oid(state: &RefState) -> Option<String> {
@@ -1123,6 +1229,8 @@ async fn upload_push_pack(
         }
     }
     record_pack(ctx, &job, &replication).await?;
+    // This clone holds the pack's objects: a later fetch need not download it.
+    crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
 
     // Push fully landed (copies + manifest). The chunk journal is the only record of
     // chunks an interrupted Platform upload wrote; retire it only when this manifest
@@ -1969,6 +2077,37 @@ mod tests {
     };
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};
+
+    /// Review M-4: an incremental fetch whose wanted tips exist but whose history has a gap (a
+    /// pruned object of a pack the record says is held) is NOT complete; the helper then
+    /// fetches every pack. The connectivity walk runs for a plain fetch with wants.
+    #[test]
+    fn an_incremental_fetch_with_a_history_gap_refetches_everything() {
+        use super::incremental_fetch_complete;
+        let plain = crate::options::OptionState::default();
+        let wants = vec!["a".repeat(40)];
+        assert!(
+            !incremental_fetch_complete(true, &plain, &wants, || true),
+            "a gap"
+        );
+        assert!(incremental_fetch_complete(true, &plain, &wants, || false));
+        assert!(
+            !incremental_fetch_complete(false, &plain, &wants, || false),
+            "a failed pass"
+        );
+        // No wants, or a filtered fetch (gaps are by design): no walk, complete.
+        let walked = std::cell::Cell::new(false);
+        assert!(incremental_fetch_complete(true, &plain, &[], || {
+            walked.set(true);
+            true
+        }));
+        assert!(!walked.get());
+        let filtered = crate::options::OptionState {
+            filter: Some("blob:none".into()),
+            ..Default::default()
+        };
+        assert!(incremental_fetch_complete(true, &filtered, &wants, || true));
+    }
 
     #[test]
     fn unreadable_packs_the_history_needs_are_e503_with_the_reseed_fix() {

@@ -27,6 +27,7 @@
 //! dash://…`), else testnet. See `helper::network_target`.
 
 mod admin;
+mod fetched;
 mod git;
 mod helper;
 mod journal;
