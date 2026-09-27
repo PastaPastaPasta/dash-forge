@@ -118,8 +118,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const head = options.find((o) => o.key === headKey) ?? options.find((o) => !(o.repo.repoId === repo.repoId && o.refName === base)) ?? null
   const baseRef = branches.find((b) => b.refName === base)
   const baseTip = tipOidOf(baseRef) ?? ''
+  // The base must be a branch of this repo now (D-501): a `?base=` link or a kept draft can
+  // name one that was never pushed or has been deleted, and a merge into a branch created
+  // after the PR never counts.
+  const noBase = baseRef === undefined
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
-  const nothing = head !== null && head.oid === baseTip
+  const nothing = !noBase && head !== null && head.oid === baseTip
 
   // The head commit's subject becomes the title until the author types one.
   const [sides, setSides] = useState<DiffSides | null>(null)
@@ -135,7 +139,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
   const cost = previewCreate('patch', input ?? { title: title.trim(), body })
-  const blocked = input === null || title.trim() === '' || sameBranch || nothing
+  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing
 
   const submit = async (): Promise<void> => {
     if (pending || blocked || input === null) return
@@ -174,6 +178,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             onChange={(e) => setBase(e.target.value)}
             className="h-9 rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
           >
+            {noBase ? <option value={base}>{short(base)} (not a branch)</option> : null}
             {branches.map((b) => (
               <option key={b.refName} value={b.refName}>
                 {short(b.refName)}
@@ -225,6 +230,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         <CopyRow text={`git push dash://${you}/${repo.name} HEAD:my-fix`} />
       </div>
 
+      {noBase ? (
+        <p role="alert" className="text-dense text-caution-700 dark:text-caution">
+          {branches.length === 0
+            ? `${repo.name} has no branches yet. Push a base branch before opening a pull request.`
+            : `${short(base)} is not a branch of ${repo.name}. Pick an existing base branch: a merge into a branch created later never counts.`}
+        </p>
+      ) : null}
       {sameBranch ? <p className="text-dense text-caution-700 dark:text-caution">Pick a branch other than the base to compare.</p> : null}
       {nothing && !sameBranch ? <p className="text-dense text-caution-700 dark:text-caution">{short(base)} already points at this commit; there is nothing to merge.</p> : null}
 
@@ -284,7 +296,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         ) : null}
       </div>
 
-      {head !== null && !sameBranch ? (
+      {head !== null && !sameBranch && !noBase ? (
         <ComparisonDiff
           key={`${repoKey(repo)}:${base}:${head.key}`}
           baseRepo={repo}

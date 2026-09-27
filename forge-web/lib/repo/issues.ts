@@ -16,6 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import {
   compareKey,
   mergeBaseTips,
+  prBaseTips,
   type ConfigDoc,
   type Event,
   type IsAncestor,
@@ -581,7 +582,8 @@ export interface BaseRefTips {
   /**
    * Every oid a VALID update set the ref to (deletions excluded), oldest first, each once:
    * the merge-reachability set. A plain `refUpdate` on a protected ref is inert (§4) and not
-   * in it ({@link mergeBaseTips}).
+   * in it ({@link mergeBaseTips}). Empty when the base was no branch when the PR was opened
+   * ({@link prBaseTips}, D-501).
    */
   readonly historical: readonly string[]
   /** The newest of those: the fold's base tip. */
@@ -595,9 +597,9 @@ export interface BaseRefTips {
 
 /**
  * Derive {@link BaseRefTips} from a ref's full update history and the repo's config
- * timeline: `historical` and `tip` are the shared {@link mergeBaseTips} rule (parity with
- * forge-core `read_merge_base`), `atOpen` is where the valid history pointed when the PR
- * was opened.
+ * timeline: `historical` and `tip` are the shared {@link prBaseTips} rule (parity with
+ * forge-core `read_merge_base`; a base that was no branch when the PR was opened has none,
+ * D-501), `atOpen` is where the valid history pointed when the PR was opened.
  */
 export function baseRefTips(
   updates: readonly RefUpdate[],
@@ -605,7 +607,7 @@ export function baseRefTips(
   refNameHashHex: string,
   openedAt: number,
 ): BaseRefTips {
-  const tips = mergeBaseTips(updates, configHistory, refNameHashHex)
+  const tips = prBaseTips(updates, configHistory, refNameHashHex, openedAt)
   const before = mergeBaseTips(
     updates.filter((u) => u.createdAt <= openedAt),
     configHistory,
