@@ -132,7 +132,9 @@ test('i1. the contributor opens a draft PR from the fork; tabs, counts and the r
   await waitForRepoResolved(page)
   await eventually(page, () => expect(page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()).toBeAttached({ timeout: 45_000 }))
   await page.getByLabel('Compare (your branch)').selectOption({ label: `${FORK}: feature/greet` })
-  await expect(page.getByLabel('Title', { exact: true })).toHaveValue(TITLE, { timeout: 90_000 })
+  // The diff renders before anything is signed (the fork's head read through its packs).
+  await expect(page.getByText('src/greet.rs').first()).toBeVisible({ timeout: 180_000 })
+  await page.getByLabel('Title', { exact: true }).fill(TITLE)
   await page.getByLabel('Description', { exact: true }).fill('Greets the forge. Fixes #1')
   await page.getByLabel('Open as a draft').check()
   await page.getByRole('button', { name: 'Create draft pull request' }).click()
