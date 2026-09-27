@@ -122,7 +122,8 @@ test('w6. owner approves the fixture PR, then removes the writer', async ({ brow
   // The ledger lives in IndexedDB on this device, so it survives the reload.
   await settings.getByRole('banner').getByRole('button', { name: 'Account menu' }).click()
   await settings.getByRole('link', { name: /settings & spend/i }).click()
-  await expect(settings.getByTestId('spend-panel')).toContainText('delete:writer', { timeout: 30_000 })
+  // The ledger names the write for people since #84 (`spendKindLabel`: delete:writer → "delete writer").
+  await expect(settings.getByTestId('spend-panel')).toContainText('delete writer', { timeout: 30_000 })
   await expect(settings.getByTestId('spend-reconcile')).toBeVisible()
   await shot(settings, 'v2w-06-spend')
 })
