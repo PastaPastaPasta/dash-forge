@@ -60,11 +60,14 @@ RAW_TIP="$(python3 - "refs/heads/${BR}" "$LOG-dump.out" <<'PY'
 import sys,re
 want=sys.argv[1]
 rows=[]
+# One `key=value` field per property, in any order (the dump gained `hash=` and `enc=` for
+# private refs; a parser that pinned the order read no rows at all).
 for ln in open(sys.argv[2]):
-    m=re.search(r'ref="([^"]*)"\s+new=(\w*)\s+prev=(\w*)\s+force=(\w+)\s+createdAt=(\d+)',ln)
+    m=re.search(r'\bref="([^"]*)"',ln)
     if not m: continue
-    ref,new,prev,force,ts=m.group(1),m.group(2),m.group(3),m.group(4),int(m.group(5))
-    if ref==want: rows.append((ts,new,prev,force))
+    f=dict(re.findall(r'\b(new|prev|force|createdAt)=(\w*)',ln))
+    if m.group(1)==want and f.get("createdAt","").isdigit():
+        rows.append((int(f["createdAt"]),f.get("new",""),f.get("prev",""),f.get("force","")))
 if not rows:
     print("NONE"); sys.exit(0)
 rows.sort(key=lambda r:r[0])

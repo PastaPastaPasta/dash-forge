@@ -250,6 +250,32 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
+/// E503 for an asset none of whose recorded copies this reader will follow (plain http, this
+/// machine, a private network, a bucket with no profile here). Without it the empty candidate
+/// list surfaced as "not found" on Platform, though the release itself was read.
+fn no_readable_copy(asset: &ReleaseAsset) -> UserError {
+    // The URIs are whatever the publisher recorded: printable, few and short.
+    let shown: Vec<String> = asset
+        .uris
+        .iter()
+        .take(4)
+        .map(|u| crate::fmt::safe(&u.chars().take(200).collect::<String>()).into_owned())
+        .collect();
+    UserError::new(
+        codes::PACKS_UNREADABLE,
+        format!(
+            "asset {:?} has no copy this computer will download from",
+            crate::fmt::safe(&asset.name)
+        ),
+    )
+    .cause(format!(
+        "none of its recorded copies is one this computer reads from (a public https URL, \
+         an IPFS CID with a gateway, or a bucket or host of your own storage profiles): {}",
+        shown.join(", ")
+    ))
+    .fix("if you trust that host (your own storage), add a storage profile whose public_url is it; for an ipfs:// copy, set `[read] ipfs_gateways`; then retry")
+}
+
 /// Download a release asset, accepting only bytes that hash to the recorded sha256.
 async fn download(
     ctx: &Ctx,
@@ -282,8 +308,15 @@ async fn download(
         bail!("asset {:?} records no URI to download from", asset.name);
     }
     // The gateway the uploader recorded reaches its node: try it before the shared list.
-    let bytes = PackReader::from_user_config()
-        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris))
+    let reader = PackReader::from_user_config()
+        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris));
+    // Every recorded copy may be one this reader will not follow (plain http, this machine, a
+    // private network, a bucket with no profile here). Say that, rather than let the empty
+    // candidate list surface as "not found" on Platform (the release itself was read).
+    if !reader.has_candidates(&asset.uris) {
+        return Err(no_readable_copy(&asset).into());
+    }
+    let bytes = reader
         .fetch_verified(
             &asset.uris,
             &asset.sha256.to_ascii_lowercase(),
@@ -339,4 +372,36 @@ async fn download(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod no_readable_copy_tests {
+    use super::*;
+
+    #[test]
+    fn an_asset_with_no_followable_copy_is_e503_with_its_copies_made_printable() {
+        let asset = ReleaseAsset {
+            name: "tool\u{1b}[2J.tar.gz".into(),
+            sha256: "00".repeat(32),
+            size_bytes: 1,
+            uris: vec![
+                "http://127.0.0.1:9000/forge-byo/a.tar.gz".into(),
+                format!("http://10.0.0.1/\u{1b}]8;;evil\u{7}{}", "x".repeat(400)),
+            ],
+            uri: None,
+        };
+        let e = no_readable_copy(&asset);
+        assert_eq!(e.code, "E503");
+        let cause = e.cause.unwrap_or_default();
+        assert!(
+            cause.contains("http://127.0.0.1:9000/forge-byo/a.tar.gz"),
+            "{cause}"
+        );
+        assert!(
+            !cause.contains('\u{1b}') && !cause.contains('\u{7}'),
+            "{cause:?}"
+        );
+        assert!(!e.message.contains('\u{1b}'), "{:?}", e.message);
+        assert!(cause.len() < 600, "each copy is capped: {}", cause.len());
+    }
 }

@@ -5,8 +5,9 @@
 #   2. OWNER publishes release e2e-<run> with one asset: the file goes to RustFS (SigV4),
 #      is re-read and verified, and the release records {name, sha256, sizeBytes, uris}.
 #   3. `dg release list` shows it, published by OWNER, with the recorded sha256.
-#   4. A reader with NO storage credentials downloads it through the public URL; the bytes
-#      are sha256-verified and identical to the file.
+#   4. A reader who has not configured that host is refused with E503: a loopback URL from a
+#      manifest is never followed. A reader with NO storage credentials whose profile names the
+#      RustFS public URL downloads it; the bytes are sha256-verified and identical to the file.
 #
 # Needs infra/docker-compose.yml up (RustFS). SKIPs when RustFS is down (the nightly starts it;
 # locally `make infra-up`). The asset lives on this machine's RustFS, which is
@@ -43,7 +44,24 @@ secret_access_key = "env:FORGE_E2E_S3_SECRET"
 # A loopback S3 URL: a local fixture, never readable by anyone else.
 allow_private_uri = true
 EOF
-printf '[read]\nipfs_gateways = []\n' >"$READER_CFG"
+# The reader has no credentials. It trusts this RustFS the way a user trusts their own storage,
+# with a profile whose public_url is it. A reader without one never follows a loopback URL that
+# a manifest recorded, which is what UNTRUSTED_CFG checks.
+cat >"$READER_CFG" <<EOF
+[read]
+ipfs_gateways = []
+
+[profiles.rustfs-public]
+kind = "s3"
+endpoint = "${S3}"
+region = "us-east-1"
+bucket = "forge-byo"
+path_style = true
+public_url = "${S3}/forge-byo"
+allow_private_uri = true
+EOF
+UNTRUSTED_CFG="${WORKROOT}/s11-untrusted.toml"
+printf '[read]\nipfs_gateways = []\n' >"$UNTRUSTED_CFG"
 head -c 20000 /dev/urandom | gzip -c >"$ASSET"
 SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$ASSET")"
 
@@ -82,6 +100,15 @@ PY
 }
 li=1; for _ in $(seq 1 10); do listed 2>/dev/null && { li=0; break; }; sleep 3; done
 check "listed, published by OWNER, sha256 intact" test "$li" -eq 0
+
+step "a reader who does not trust that host is told why (E503), not \"not found\""
+if DASH_FORGE_STORAGE_CONFIG="$UNTRUSTED_CFG" dg_as "$ID_CONTRIB" --json release download "$REPO" "$TAG" \
+    --output "${WORKROOT}/s11-untrusted" >"$LOG-untrusted.json" 2>"$LOG-untrusted.err"; then
+  bad "downloaded from a loopback URL the reader never configured"
+else
+  check "E503" assert_eq "E503" "$(jq_py "$LOG-untrusted.json" 'd["error"]["code"]')"
+  check "names the untrusted copy" assert_file_contains "$LOG-untrusted.json" "${S3}/forge-byo/"
+fi
 
 step "a reader with no storage credentials downloads and verifies it"
 OUT="${WORKROOT}/s11-download"
