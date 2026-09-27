@@ -51,21 +51,68 @@ function buildsOn(v: RefUpdate, u: RefUpdate): boolean {
   return !isNullOid(v.prevOid) && v.prevOid === u.newOid && v.newOid !== u.newOid
 }
 
-/** Whether unplaced `block[start]` builds, through unplaced updates, on itself. Parity: `on_cycle`. */
-function onCycle(block: readonly RefUpdate[], placed: readonly boolean[], start: number): boolean {
-  const seen = block.map(() => false)
-  const stack = [start]
-  for (let v = stack.pop(); v !== undefined; v = stack.pop()) {
-    for (let u = 0; u < block.length; u++) {
-      if (placed[u] || !buildsOn(block[v] as RefUpdate, block[u] as RefUpdate)) continue
-      if (u === start) return true
-      if (!seen[u]) {
-        seen[u] = true
-        stack.push(u)
+/**
+ * The update of `block` to place when every unplaced one waits on another: the smallest-index
+ * (smallest-`id`) unplaced update all of whose unplaced predecessors build back on it (they
+ * share its strongly connected component). Tarjan's algorithm, iterative, O(n²). Parity:
+ * forge-core `rules::cycle_to_break`.
+ */
+function cycleToBreak(block: readonly RefUpdate[], placed: readonly boolean[]): number {
+  const n = block.length
+  const edge = (v: number, u: number): boolean => !placed[u] && buildsOn(block[v] as RefUpdate, block[u] as RefUpdate)
+  const index: number[] = new Array<number>(n).fill(-1)
+  const low: number[] = new Array<number>(n).fill(0)
+  const comp: number[] = new Array<number>(n).fill(-1)
+  const onStack: boolean[] = new Array<boolean>(n).fill(false)
+  const stack: number[] = []
+  let nextIndex = 0
+  let comps = 0
+  const visit = (u: number): void => {
+    index[u] = nextIndex
+    low[u] = nextIndex
+    nextIndex++
+    stack.push(u)
+    onStack[u] = true
+  }
+  for (let root = 0; root < n; root++) {
+    if (placed[root] || index[root] !== -1) continue
+    const call: [number, number][] = [[root, 0]]
+    visit(root)
+    while (call.length > 0) {
+      const top = call[call.length - 1] as [number, number]
+      const v = top[0]
+      let u = top[1]
+      while (u < n && !(edge(v, u) && (index[u] === -1 || onStack[u]))) u++
+      if (u < n) {
+        top[1] = u + 1
+        if (index[u] === -1) {
+          visit(u)
+          call.push([u, 0])
+        } else {
+          low[v] = Math.min(low[v] as number, index[u] as number)
+        }
+        continue
+      }
+      call.pop()
+      const parent = call[call.length - 1]
+      if (parent !== undefined) low[parent[0]] = Math.min(low[parent[0]] as number, low[v] as number)
+      if (low[v] === index[v]) {
+        for (let w = stack.pop(); w !== undefined; w = stack.pop()) {
+          onStack[w] = false
+          comp[w] = comps
+          if (w === v) break
+        }
+        comps++
       }
     }
   }
-  return false
+  for (let v = 0; v < n; v++) {
+    if (placed[v]) continue
+    let inside = true
+    for (let u = 0; u < n && inside; u++) inside = !edge(v, u) || comp[u] === comp[v]
+    if (inside) return v
+  }
+  throw new Error('unreachable: a component nothing waits on has every predecessor inside')
 }
 
 /**
@@ -73,7 +120,8 @@ function onCycle(block: readonly RefUpdate[], placed: readonly boolean[], start:
  * (one block) an update that builds on another comes after it; remaining ties, and chain
  * cycles, by ascending `id`. Within a block: Kahn's sort taking the smallest-`id` unplaced
  * update that builds on no other unplaced one, else (every one waits on a cycle) the
- * smallest-`id` unplaced one that lies on a cycle, never one merely downstream of it.
+ * smallest-`id` one that waits on nothing outside its own cycle ({@link cycleToBreak}), so an
+ * update is never placed before one it builds on unless that one builds back on it.
  * Parity: forge-core `rules::causal_order`.
  */
 function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
@@ -88,7 +136,7 @@ function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
     const placed = block.map(() => false)
     for (let n = 0; n < block.length; n++) {
       let next = block.findIndex((_, i) => !placed[i] && waiting[i] === 0)
-      if (next < 0) next = block.findIndex((_, i) => !placed[i] && onCycle(block, placed, i))
+      if (next < 0) next = cycleToBreak(block, placed)
       placed[next] = true
       const u = block[next] as RefUpdate
       out.push(u)
