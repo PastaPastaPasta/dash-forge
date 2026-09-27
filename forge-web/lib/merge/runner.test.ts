@@ -198,6 +198,7 @@ describe('merge step runner', () => {
     for (const d of [
       deps({ pull: { id: 'P', number: 7, baseRefName: 'refs/tags/v1' } }),
       deps({ pull: { id: 'P', number: 7, baseRefName: 'refs/heads/a..b' } }),
+      deps({ pull: { id: 'P', number: 7, baseRefName: 'refs/heads/next', openedBaseRefName: 'refs/heads/main' } }),
       deps({ input: { ...deps().input, headOid: 'x'.repeat(40) } }),
     ]) {
       calls.length = 0

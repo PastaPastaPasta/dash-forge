@@ -148,16 +148,17 @@ export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullA
  * - the base must be a branch now (`currentTip`, the resolved branch; never the PR's historical
  *   tip): pushing to a deleted base would re-create it;
  * - the PR's own base must have been a branch when the PR was opened: its `baseTipOid` is empty
- *   otherwise (`prBaseTips`), and a merge event into it would never count.
- * A retargeted PR merges into its new base, whose tip is all there is to check.
+ *   otherwise (`prBaseTips`), and a merge event into it would never count;
+ * - the PR must not have been retargeted: the fold checks a merge against the base the PR was
+ *   opened with, so a merge into the new base would move that branch and never count
+ *   ({@link mergeRefProblem} says what to do instead, as `dg pr merge` does).
  */
 export function mergeBaseTip(
   pull: Pick<PullView, 'baseRefName' | 'baseTipOid'>,
   baseRefName: string,
   currentTip: string | null,
 ): string {
-  const ownBase = baseRefName === pull.baseRefName
-  if (currentTip === null || (ownBase && pull.baseTipOid === '')) return ''
+  if (currentTip === null || baseRefName !== pull.baseRefName || pull.baseTipOid === '') return ''
   return currentTip
 }
 
@@ -166,7 +167,15 @@ export function mergeBaseTip(
  * branch that exists (`refs/heads/<name>`, check-ref-format; parity with `dg`'s
  * `require_branch_ref`) and the head a full commit id. Null when both hold.
  */
-export function mergeRefProblem(baseRefName: string, baseTipOid: string, headOid: string): string | null {
+export function mergeRefProblem(
+  baseRefName: string,
+  baseTipOid: string,
+  headOid: string,
+  openedBaseRefName: string = baseRefName,
+): string | null {
+  if (baseRefName !== openedBaseRefName) {
+    return 'This PR was retargeted, and a merge counts only into the base it was opened against. Merge it by hand into the new base, then record it with `dg pr merge --event-only --merge-oid <commit>`.'
+  }
   if (!isPlainBranchRef(baseRefName)) return `The PR's base "${baseRefName.slice(0, 80)}" is not a plain branch (refs/heads/<name>); it is not merged in the browser.`
   if (!isOidHex(baseTipOid)) {
     return 'The base branch does not exist, or was not a branch when this PR was opened, so a merge into it would not count. Open a new PR against an existing branch.'
