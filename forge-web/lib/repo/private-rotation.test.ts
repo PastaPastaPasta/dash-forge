@@ -114,6 +114,8 @@ let revokeFails = false
 const keyless = new Set<string>()
 /** Identities that still list an older encryption key 3 beside key 4. */
 const oldKey = new Set<string>()
+/** Identities that added a newer encryption key 5 this browser (key 4) does not hold. */
+const newerKey = new Set<string>()
 /** What a lagging node answers for the member list (null: the truth). */
 let staleMembers: Membership[] | null = null
 /** How many more member-list reads fail (a node that does not answer). */
@@ -168,7 +170,12 @@ const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNum
 
 const sdk = {
   documents: { query: async (q: DocumentQuery) => query(q), count: async () => new Map() },
-  identities: { fetch: async (id: string) => ({ publicKeys: keyless.has(id) ? [] : oldKey.has(id) ? [encKey(3), encKey()] : [encKey()], balance: 0n }) },
+  identities: {
+    fetch: async (id: string) => ({
+      publicKeys: keyless.has(id) ? [] : oldKey.has(id) ? [encKey(3), encKey()] : newerKey.has(id) ? [encKey(), encKey(5)] : [encKey()],
+      balance: 0n,
+    }),
+  },
 } as unknown as EvoSDK
 
 /** Fake wrap ops: a wrap "encrypts" the raw key as itself; anyone in the test can open it. */
@@ -239,6 +246,7 @@ beforeEach(async () => {
   membersFail = 0
   keyless.clear()
   oldKey.clear()
+  newerKey.clear()
   members = [
     { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
     { identity: b58(BOB), role: 'writer', createdAt: 2 },
@@ -764,5 +772,21 @@ describe('correctness review of the burn fixes', () => {
       if (st.kind === 'lost') membersFail = 1
     })
     await expect(run).rejects.toMatchObject({ outcome: 'lost' })
+  })
+})
+
+describe('a rotation from a browser holding an older key', () => {
+  it('refuses before writing anything, naming both keys, instead of wrapping the new key to one it cannot read', async () => {
+    newerKey.add(b58(ALICE))
+    const before = { wraps: (chain['repoKey'] ?? []).length, configs: (chain['config'] ?? []).length }
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rot-old')).rejects.toThrow(/holds encryption key 4.*current key is 5|key 5.*key 4/)
+    expect((chain['repoKey'] ?? []).length).toBe(before.wraps)
+    expect((chain['config'] ?? []).length).toBe(before.configs)
+  })
+
+  it('a removal from that browser is refused before the membership is deleted', async () => {
+    newerKey.add(b58(ALICE))
+    await expect(removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-old')).rejects.toThrow(/current key is 5/)
+    expect(members.some((m) => m.identity === b58(CAROL))).toBe(true)
   })
 })

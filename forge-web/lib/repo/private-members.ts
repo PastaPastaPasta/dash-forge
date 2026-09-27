@@ -170,10 +170,21 @@ export function planRotation(
       unreachable.push(id)
       continue
     }
+    // §5.2: the new key goes to each member's newest usable key, the rotator's own included. If
+    // this browser holds an older one, the rotator would lose the epoch it creates: refused.
+    if (id === self && key.keyId !== heldKeyId) throw staleHeldKey(heldKeyId, key.keyId)
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
   return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
+}
+
+/** This browser holds encryption key `held`, but the identity's newest usable key is `current`. */
+function staleHeldKey(held: number, current: number): PrivateMembersError {
+  return new PrivateMembersError(
+    `this browser holds encryption key ${held}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Keys), or rotate from the CLI with it.`,
+    'E306',
+  )
 }
 
 /** A pending self-wrap of `epoch` to a key of ours this browser does not hold: it cannot be resumed here. */
@@ -985,7 +996,8 @@ export async function removePrivateMember(
         )
       }
     }
-    if (removalEffect(s.members, memberId, role) === 'none') return
+    const effect = removalEffect(s.members, memberId, role)
+    if (effect === 'none') return
     const kept = chainFrom(s, memberId, role)
     if (kept !== null && !s.resolution.keys.has(kept)) {
       const holders = role === 'maintainer' ? vanishing(s, memberId).holders.filter((h) => h !== c.auth.identityId) : []
@@ -995,6 +1007,11 @@ export async function removePrivateMember(
           : `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
         'E310',
       )
+    }
+    // The rotation after the delete is planned now (its own checks: the rotator's key among them),
+    // so a removal it would refuse is refused before the membership goes.
+    if (kept !== null && s.resolution.keys.has(kept)) {
+      planRotation(s, c.auth.identityId, effect === 'rotate-exclude' ? [memberId] : [], c.repo.forge.core, c.ops.keyId, kept)
     }
     // Another staying maintainer's config that would come before this browser's re-anchor, and
     // is not the same anchor, is known now: refuse before paying for anything.
