@@ -169,13 +169,17 @@ export class MergeBaseSearchLimitError extends Error {
  * cannot run away) — even if a candidate was already seen, since a later one could be better —
  * and with the read error when a commit cannot be read.
  */
-export async function findMergeBase(
-  reader: ObjectReader,
-  baseOid: string,
-  headOid: string,
-  cap = MERGE_BASE_COMMIT_CAP,
-): Promise<string | null> {
-  if (baseOid === headOid) return headOid
+export async function findMergeBase(reader: ObjectReader, baseOid: string, headOid: string, cap = MERGE_BASE_COMMIT_CAP): Promise<string | null> {
+  return (await findMergeBases(reader, baseOid, headOid, cap))[0] ?? null
+}
+
+/**
+ * Every best merge base of `baseOid` and `headOid` (`git merge-base --all`), newest first:
+ * more than one for a criss-cross history. Empty when they share no commit; rejects as
+ * {@link findMergeBase} does.
+ */
+export async function findMergeBases(reader: ObjectReader, baseOid: string, headOid: string, cap = MERGE_BASE_COMMIT_CAP): Promise<string[]> {
+  if (baseOid === headOid) return [headOid]
   const BASE = 1
   const HEAD = 2
   const STALE = 4
@@ -228,8 +232,8 @@ export async function findMergeBase(
     throw e
   }
 
-  if (candidates.length <= 1) return candidates[0] ?? null
-  // Drop a candidate that is an ancestor of another; of what remains, take the newest.
+  if (candidates.length <= 1) return candidates
+  // Drop a candidate that is an ancestor of another; what remains, newest first.
   const isAncestorOf = async (ancestor: string, of: string): Promise<boolean> => {
     const seen = new Set<string>()
     const stack = [of]
@@ -242,8 +246,8 @@ export async function findMergeBase(
     }
     return false
   }
-  const newest = (oids: readonly string[]): string =>
-    [...oids].sort((a, b) => (commits.get(b)?.when ?? 0) - (commits.get(a)?.when ?? 0) || (a < b ? -1 : 1))[0] as string
+  const newest = (oids: readonly string[]): string[] =>
+    [...oids].sort((a, b) => (commits.get(b)?.when ?? 0) - (commits.get(a)?.when ?? 0) || (a < b ? -1 : 1))
   try {
     const kept: string[] = []
     for (const c of candidates) {

@@ -21,10 +21,19 @@ colors: {
   },
   verify: {            // proof/hash verified
     DEFAULT:'#16a34a', // icons, borders, tints
-    700:'#15803d'      // solid fill behind white text
+    400:'#22c55e',     // TEXT on dark surfaces and dark tints
+    700:'#16713a'      // TEXT on light surfaces and tints; solid fill behind white text
   },
-  caution:'#d97706',   // degraded availability
-  danger: '#dc2626',   // force-push, delete, failed verification
+  caution: {           // degraded availability
+    DEFAULT:'#d97706', // icons, borders, tints only
+    400:'#f59e0b',     // TEXT on dark
+    700:'#a14a08'      // TEXT on light
+  },
+  danger: {            // force-push, delete, failed verification
+    DEFAULT:'#dc2626', // icons, borders, tints
+    400:'#f87171',     // TEXT on dark
+    700:'#b91c1c'      // TEXT on light
+  },
   dash: {              // Dash brand blue — reserved for identity/credits/network UI only
     DEFAULT:'#008de4', // fills, tints, icons
     400:'#4aaef0',     // TEXT on dark surfaces
@@ -34,6 +43,7 @@ colors: {
 }
 ```
 - **Dash-blue text is `text-dash-600 dark:text-dash-400`**, never plain `text-dash`: the brand value is under WCAG AA's 4.5:1 as text on every surface in both themes (4.28:1 on `anvil-800`). `forge-web/lib/design/contrast.test.ts` pins the ratios and fails on a raw `text-dash` that is not an icon.
+- **Every text colour is a light/dark pair**, never a bare semantic or ember value: `text-{verify|caution|danger}-700 dark:text-{…}-400`, `text-forge-700 dark:text-forge-400` for links (`text-forge-800` on an ember tint), and `text-anvil-500 dark:text-anvil-400` for muted text (`anvil-400` is 2.4:1 as light text). Pairs are checked on the plain surfaces *and* on their own 5–15 % tints (chips, note boxes, the network badge). The same test fails on a light-theme text class it has measured under AA, outside an `aria-hidden` icon.
 - **White text sits on `-700` fills**: `bg-dash-700`, `bg-verify-700`, `bg-forge-700`, and a hover darkens (`hover:bg-forge-800`) rather than brightens. The base `dash` (3.54:1) and `verify` (3.3:1) values and `forge-600` (3.56:1) fail AA behind white. The same test checks every `bg-*` (hover:/dark: variants included) behind `text-white`, and fails on any fill it cannot resolve. The identity pill's avatar fill is darkened per hue until its white initial clears 4.5:1 (`lib/design/avatar.ts`).
 - **Dark mode is the primary theme** (class-based, `next-themes`); light mode fully supported. Backgrounds: `anvil-950/900/850` layered surfaces (dark), `anvil-50/white` (light).
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
@@ -57,7 +67,9 @@ colors: {
 4. **Backend badge** — `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed` on repo headers and clone box.
 
 ### Accessibility
-- WCAG 2.1 AA contrast (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (`forge-400`); diff colors pass for color-blind users (blue/orange diff option); `prefers-reduced-motion` kills all animation.
+- WCAG 2.1 AA contrast in **both** themes (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (`forge-400`); diff colors pass for color-blind users (blue/orange diff option, which also recolors the A/D file letters); `prefers-reduced-motion` kills all animation.
+- Keyboard: a "Skip to content" link is the first Tab stop; `/` focuses the jump box; modals (`components/ui/dialog.tsx`) move focus to their `autoFocus` field, trap Tab/Shift+Tab, answer Escape, and return focus to the opener. Scroll containers (code, diffs, wide tables) use `ScrollRegion`, which joins the Tab order only while it overflows.
+- Theme: one toggle cycles dark → light → system, persisted (`localStorage.theme`) and applied before first paint. Test the light theme by setting that key, not by emulating `prefers-color-scheme` (the default is dark, so emulation alone renders dark). `e2e/a11y.spec.ts` runs axe on every route in both themes.
 
 ## B. Engineering conventions
 

@@ -64,6 +64,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
   const totals = useRepoTotals(home.repo)
+  // A private repo's issues are sealed; this browser does not write sealed issues yet, and
+  // never writes them in plaintext.
+  const canCompose = home.repo.visibility !== 'private'
 
   // The list query lives in the URL: parse it on every render, write it with router.replace.
   const query = useMemo(() => parseIssueQuery(params), [params])
@@ -117,20 +120,22 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
           <label htmlFor="issue-search" className="sr-only">Search issues</label>
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-400" aria-hidden />
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
             <Input id="issue-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
           </div>
         </form>
-        <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
-          <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
-        </Button>
+        {canCompose ? (
+          <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
+            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
+          </Button>
+        ) : null}
       </div>
 
       {filtered ? (
         <button
           type="button"
           onClick={() => setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })}
-          className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-600"
+          className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
         </button>
@@ -199,20 +204,20 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             icon={CircleDot}
             title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : 'No open issues'}
             body={filtered ? 'Try fewer filters.' : query.state === 'closed' ? 'Nothing has been closed yet.' : 'Everything is quiet. Open the first issue to start the conversation.'}
-            action={filtered ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
+            action={filtered || !canCompose ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
           />
         ) : (
           <ul aria-label="Issues" aria-busy={loading}>
             {data?.rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
                 {issue.state.open ? (
-                  <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-label="Open" />
+                  <><CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /><span className="sr-only">Open</span></>
                 ) : (
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-label="Closed" />
+                  <><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden /><span className="sr-only">Closed</span></>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="text-dense font-medium text-anvil-900 hover:text-forge-600 dark:text-anvil-50">
+                    <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="text-dense font-medium text-anvil-900 hover:text-forge-700 dark:hover:text-forge-400 dark:text-anvil-50">
                       {issue.title || '(untitled)'}
                     </Link>
                     {issue.state.labels.map((l) => (
@@ -221,12 +226,12 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                       </button>
                     ))}
                   </div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-400">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{issue.number}</span>
                     <span>opened {timeAgo(issue.createdAt)} by</span>
                     <Author identityId={issue.author} link={false} />
                     {!issue.stateComplete ? (
-                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger" title="This repository's event history could not be read completely, so the open/closed state, labels and assignees are unverified.">
+                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This repository's event history could not be read completely, so the open/closed state, labels and assignees are unverified.">
                         state unverified
                       </span>
                     ) : null}
@@ -260,7 +265,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         onPage={(page) => change({ page })}
       />
 
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} />
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
         open={composing}
@@ -492,16 +497,16 @@ function ComposeIssueDialog({
           placeholder="What happened, and how to reproduce it."
           links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
         />
-        {bodyBytes > 5120 ? <p className="text-dense text-danger">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
+        {bodyBytes > 5120 ? <p className="text-dense text-danger-700 dark:text-danger-400">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500">
             This template suggests the labels {template.labels.join(', ')}. A maintainer or writer applies labels after the issue is opened.
           </p>
         ) : null}
         <CostPreview cost={cost} />
-        {note ? <p className="text-dense text-caution">{note}</p> : null}
+        {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}
         {error ? (
-          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{error}</div>
+          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{error}</div>
         ) : null}
       </div>
     </Dialog>

@@ -1,0 +1,26 @@
+{
+  "name": "burned_with_skip_key",
+  "description": "nor skipEpochKey.",
+  "case": "private_doc_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "doc": {
+      "type": "config",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1
+    },
+    "fields": {
+      "defaultBranch": "refs/heads/main",
+      "prevEpoch": 0,
+      "burned": true,
+      "skipEpochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    },
+    "nonce": "000102030405060708090a0b",
+    "anchor": true
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

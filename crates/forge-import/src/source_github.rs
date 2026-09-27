@@ -17,6 +17,7 @@
 //! on the window being exact.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -27,49 +28,51 @@ use crate::github::{iso8601_to_unix, GhComment, GhIssue, GithubClient, GithubRep
 use crate::model::{
     self, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcReview, SrcTarget,
 };
+use crate::source::{Classes, Source, SourceMeta};
 
-/// Which classes to sync.
-#[derive(Debug, Clone, Copy, Default)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct Classes {
-    /// Branches and tags (and PR heads when `prs`).
-    pub code: bool,
-    /// Issues (with comments and state).
-    pub issues: bool,
-    /// Pull requests (with comments, reviews and state).
-    pub prs: bool,
-    /// Releases.
-    pub releases: bool,
-    /// Label definitions.
-    pub labels: bool,
+/// A GitHub repository as a [`Source`].
+pub struct GithubSource {
+    repo: GithubRepoRef,
+    gh: GithubClient,
 }
 
-impl Classes {
-    /// Parse `code,issues,prs,releases,labels` (`all` = every class).
-    pub fn parse(s: &str) -> Result<Self> {
-        let mut c = Self::default();
-        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            match part {
-                "all" => {
-                    c = Self {
-                        code: true,
-                        issues: true,
-                        prs: true,
-                        releases: true,
-                        labels: true,
-                    }
-                }
-                "code" => c.code = true,
-                "issues" => c.issues = true,
-                "prs" | "pulls" => c.prs = true,
-                "releases" => c.releases = true,
-                "labels" => c.labels = true,
-                other => anyhow::bail!(
-                    "unknown sync class {other:?}: use code, issues, prs, releases, labels or all"
-                ),
-            }
+impl GithubSource {
+    /// Read `repo` through `gh`.
+    pub fn new(repo: GithubRepoRef) -> Self {
+        Self {
+            gh: GithubClient::new(repo.clone()),
+            repo,
         }
-        Ok(c)
+    }
+}
+
+impl Source for GithubSource {
+    fn display(&self) -> String {
+        format!("github.com/{}", self.repo.slug())
+    }
+
+    fn default_name(&self) -> String {
+        self.repo.repo.to_ascii_lowercase()
+    }
+
+    fn meta(&self) -> Result<SourceMeta> {
+        let m = self.gh.repo_meta()?;
+        Ok(SourceMeta {
+            default_branch: m.default_branch,
+            description: m.description,
+        })
+    }
+
+    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
+        collect(&self.gh, &self.repo, classes, since, limit)
+    }
+
+    fn sync_mirror(&self, dir: &Path) -> Result<()> {
+        self.gh.sync_mirror(dir)
+    }
+
+    fn pull_head_prefix(&self) -> &'static str {
+        "refs/pull/"
     }
 }
 
@@ -77,13 +80,8 @@ impl Classes {
 fn labels(gh: &GithubClient) -> Result<Vec<SrcLabel>> {
     Ok(gh
         .labels()?
-        .into_iter()
-        .filter(|l| !l.name.trim().is_empty())
-        .map(|l| SrcLabel {
-            name: model::label_name(&l.name),
-            color: model::color(&l.color),
-            description: model::clip(l.description.as_deref().unwrap_or(""), 200, 400),
-        })
+        .iter()
+        .filter_map(|l| model::label(&l.name, &l.color, l.description.as_deref()))
         .collect())
 }
 
@@ -109,7 +107,8 @@ pub fn collect(
         );
     }
     if classes.code && classes.prs {
-        out.open_pulls = gh.open_pulls()?;
+        // A failed listing fails the run (`?`): an empty list here always means "none open".
+        out.open_pulls = Some(gh.open_pulls()?);
     }
     if !(classes.issues || classes.prs) {
         return Ok(out);
@@ -347,21 +346,8 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
             uris: vec![model::clip(&a.browser_download_url, 300, 300)],
             uri: None,
         })
-        .collect::<Vec<_>>();
-    SrcRelease {
-        tag_name: r.tag_name.clone(),
-        name: model::clip(r.name.as_deref().unwrap_or(&r.tag_name), 120, 480),
-        notes: model::clip(r.body.as_deref().unwrap_or(""), 5120, 5120),
-        assets: fit_assets(assets),
-    }
-}
-
-/// Keep as many assets as fit the release's 4096-byte `assets` field.
-fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
-    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
-        assets.pop();
-    }
-    assets
+        .collect();
+    model::release(&r.tag_name, r.name.as_deref(), r.body.as_deref(), assets)
 }
 
 #[cfg(test)]
@@ -516,6 +502,29 @@ mod tests {
         assert!(out.targets.iter().all(|t| t.kind == TargetKind::Patch));
         let log = log.borrow();
         assert!(!log.iter().any(|p| p.contains("issues?")), "{log:#?}");
+    }
+
+    #[test]
+    fn a_failed_open_pr_listing_fails_the_run() {
+        // The GitHub path has no partial read of the open PRs: a failed listing fails the
+        // run, so an empty `open_pulls` never means "unknown" and a heads push never prunes
+        // against a list that was not read. (Pinned: see the GitLab counterpart.)
+        struct Refusing;
+        impl crate::github::GhApi for Refusing {
+            fn json(&self, _: &str) -> Result<Vec<u8>> {
+                anyhow::bail!("HTTP 403")
+            }
+            fn list(&self, path: &str) -> Result<Vec<String>> {
+                anyhow::bail!("`gh api {path}` failed: HTTP 403")
+            }
+        }
+        let gh = GithubClient::with_api(src(), Box::new(Refusing));
+        let code_and_prs = Classes::parse("code,prs").unwrap();
+        assert!(collect(&gh, &src(), code_and_prs, None, 0).is_err());
+        // Read (even empty): `Some`, so closed heads are pruned.
+        let (gh, _) = big_repo();
+        let out = collect(&gh, &src(), Classes::parse("code,prs").unwrap(), None, 0).unwrap();
+        assert!(out.open_pulls.is_some());
     }
 
     /// Without `--limit`, the repository-wide listings stay: one paged read per kind beats

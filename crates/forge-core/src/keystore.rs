@@ -148,9 +148,22 @@ pub fn is_inline_key(source: &Path) -> bool {
     source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
 }
 
+/// Whether a key source that should be a path is instead key material pasted into it: an
+/// identity JSON (a CI variable of the wrong type holds the file's text, not its path), or
+/// anything multi-line. Such a value must never be echoed.
+pub fn looks_like_pasted_key(source: &Path) -> bool {
+    let s = source.to_string_lossy();
+    let t = s.trim_start();
+    t.starts_with('{') || t.contains('\n') || t.len() > 4096
+}
+
 /// How to name a key source in messages: the path of an identity file, or for an inline
-/// `dfk1:` key everything but its WIF.
+/// `dfk1:` key everything but its WIF. Pasted key material (see [`looks_like_pasted_key`])
+/// is never shown.
 pub fn describe_key_source(source: &Path) -> String {
+    if looks_like_pasted_key(source) {
+        return "[an identity's contents, not a path: redacted]".to_string();
+    }
     match source.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
         Some(inline) => {
             let parts: Vec<&str> = inline[DFK1_PREFIX.len()..].splitn(4, ':').collect();
@@ -656,12 +669,22 @@ impl BridgeIdentity {
             })?;
             return Self::from_source_text(text.expose());
         }
-        let raw =
-            zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
-                Error::Io(format!("reading identity file {}: {e}", path.display()))
-            })?);
+        if looks_like_pasted_key(path) {
+            // The value is the identity itself where a path was expected (a CI variable of
+            // the wrong type). Say so without echoing a byte of it.
+            return Err(Error::Config(
+                "the identity source holds an identity's contents, not a path to it: store it \
+                 as a file (in GitLab CI, a File-type variable) and pass that file's path"
+                    .into(),
+            ));
+        }
+        let shown = describe_key_source(path);
+        let raw = zeroize::Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| Error::Io(format!("reading identity file {shown}: {e}")))?,
+        );
         if crate::sealed::is_sealed(&raw) {
-            let pass = crate::sealed::passphrase(&path.display().to_string(), false)?;
+            let pass = crate::sealed::passphrase(&shown, false)?;
             let plain = crate::sealed::open(&raw, pass.expose())?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
@@ -669,8 +692,7 @@ impl BridgeIdentity {
         }
         if path.extension().is_some_and(|e| e == "key") {
             tracing::warn!(
-                "{} holds an unencrypted identity key (stored with --insecure-plaintext)",
-                path.display()
+                "{shown} holds an unencrypted identity key (stored with --insecure-plaintext)"
             );
         }
         Self::from_source_text(&raw)
@@ -964,6 +986,23 @@ mod tests {
         );
         assert!(super::is_inline_key(std::path::Path::new(v)));
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
+    }
+
+    /// An identity JSON passed where a path belongs (a GitLab CI variable of type Variable,
+    /// not File) is refused without a byte of it in the message.
+    #[test]
+    fn pasted_identity_contents_are_never_echoed() {
+        let pasted = r#"{"identityId":"X","identityKeys":[{"privateKeyWif":"cSECRETwif"}]}"#;
+        let p = std::path::Path::new(pasted);
+        assert!(super::looks_like_pasted_key(p));
+        assert!(!super::describe_key_source(p).contains("cSECRET"));
+        let e = super::BridgeIdentity::load_from_file(p)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("cSECRET") && e.contains("File-type"), "{e}");
+        assert!(!super::looks_like_pasted_key(std::path::Path::new(
+            "/tmp/id.json"
+        )));
     }
 
     #[test]

@@ -49,7 +49,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
           <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>
           <span className="flex items-center gap-1">commit <Oid value={oid} chars={9} /></span>
           {commit.parents.map((p) => (
-            <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="flex items-center gap-1 hover:text-forge-600">
+            <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
               parent <Oid value={p} chars={7} copyable={false} />
             </Link>
           ))}

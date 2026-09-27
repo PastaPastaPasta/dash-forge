@@ -24,7 +24,7 @@ import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
@@ -32,6 +32,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
+import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
@@ -74,7 +75,7 @@ export function LoginModal(): JSX.Element {
   return (
     <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
       {back ? (
-        <button type="button" onClick={back} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-anvil-800 dark:hover:text-anvil-100">
+        <button type="button" onClick={back} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-anvil-800 dark:hover:text-anvil-100">
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> All options
         </button>
       ) : null}
@@ -166,7 +167,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       />
       {walletFirst ? null : walletTile}
       <div className="pt-2">
-        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:hover:text-anvil-100">
+        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
           Advanced
         </button>
         {advanced ? (
@@ -211,7 +212,7 @@ function FilePicker({ label, detail, onFile, disabled }: { label: string; detail
       >
         <Upload className="h-5 w-5 text-forge-500" aria-hidden />
         <span className="text-dense font-medium">{label}</span>
-        {detail ? <span className="font-mono text-[12px] text-anvil-500">{detail}</span> : null}
+        {detail ? <span className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">{detail}</span> : null}
       </button>
       <input
         ref={ref}
@@ -260,7 +261,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-dense">
-        <Lock className="h-4 w-4 text-anvil-400" aria-hidden />
+        <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         This browser holds a key for{' '}
         {vaults.length > 1 ? (
           <select aria-label="Identity" value={pick} onChange={(e) => setPick(Number(e.target.value))} className="rounded border border-anvil-300 bg-transparent px-1 font-mono dark:border-anvil-700">
@@ -302,7 +303,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         </Button>
       ) : null}
       <div className="flex justify-between pt-1 text-[12px]">
-        <button type="button" onClick={onOther} className="text-anvil-500 underline">
+        <button type="button" onClick={onOther} className="text-anvil-500 dark:text-anvil-400 underline">
           Other sign-in options
         </button>
         <button
@@ -310,7 +311,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
           onClick={() => {
             if (window.confirm(FORGET_CONFIRM)) void forget(v.identityId).then(() => setPick(0))
           }}
-          className="text-danger underline"
+          className="text-danger-700 dark:text-danger-400 underline"
         >
           Forget this key
         </button>
@@ -323,7 +324,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 }
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, vaults, identity } = useAuth()
+  const { importIdentity, isLoading, vaults, identity, controller } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -341,6 +342,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const [identityId, setIdentityId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
+  // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
+  const [enablePrivate, setEnablePrivate] = useState(false)
   const who = mode === 'file' ? fileIdentity : identityId.trim()
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
   // signed-in identity (then the old key is disabled in the same update).
@@ -370,7 +373,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     try {
       const text = fileRef.current
       if (mode === 'file' && text === null) return
-      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection)
+      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, undefined, {
+        enablePrivateRepos: enablePrivate,
+      })
       fileRef.current = null
       setMnemonic('')
       onDone()
@@ -389,7 +394,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
             aria-selected={mode === m}
             type="button"
             onClick={() => setMode(m)}
-            className={cn('rounded px-3 py-1.5 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')}
+            className={cn('rounded px-3 py-1.5 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
           >
             {m === 'file' ? 'Identity file' : 'Recovery phrase'}
           </button>
@@ -410,20 +415,36 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       {alreadyStored ? (
         <div className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
           This device already holds a key for this identity.{' '}
-          <button type="button" className="text-forge-600 underline dark:text-forge-400" onClick={() => onStored(who)}>
+          <button type="button" className="text-forge-700 underline dark:text-forge-400" onClick={() => onStored(who)}>
             Unlock it instead
           </button>{' '}
           or continue to replace it (the old key is disabled in the same update).
         </div>
       ) : null}
       {fields}
+      <label className="flex items-start gap-2 rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={enablePrivate}
+          onChange={(e) => setEnablePrivate(e.target.checked)}
+          data-testid="enable-private-repos"
+        />
+        <span>
+          <span className="font-medium">Enable private repos</span>
+          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+            Also keep this identity&apos;s encryption key here, protected the same way. {ENCRYPTION_KEY_BLAST_RADIUS}
+          </span>
+        </span>
+      </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days (~0.0005 DASH, one master-key signature).
       </p>
+      {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
         Create this browser&apos;s key
       </Button>
-      {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
+      {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       <ErrorBox error={error} />
     </div>
   )
@@ -447,7 +468,7 @@ function AdvancedView({ onDone }: { onDone: () => void }): JSX.Element {
   }
   return (
     <div className="space-y-3">
-      <div role="note" className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger">
+      <div role="note" className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
         A pasted key has no limits Forge set: anything it can sign, this tab can sign. Never paste a master key. Prefer importing
         your identity once so Forge gets a limited key instead.
       </div>

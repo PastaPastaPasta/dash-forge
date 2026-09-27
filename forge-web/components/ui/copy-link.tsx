@@ -37,7 +37,7 @@ export function CopyLinkButton({
         className,
       )}
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-verify" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
+      {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Link2 className="h-3.5 w-3.5" aria-hidden />}
       {copied ? 'Copied' : 'Copy link'}
     </button>
   )

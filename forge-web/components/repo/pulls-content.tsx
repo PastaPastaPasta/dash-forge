@@ -5,10 +5,7 @@
  * is the FORGE_RULES fold of the event log including the historical-tips merge predicate (core
  * listPulls).
  *
- * Read-only. The web app lists PRs and shows their timelines, including reviews posted from
- * the CLI; it cannot yet OPEN a PR (that needs a pushed head branch and a `patch` write path)
- * or record a review verdict. Its "Mark as merged" appends a merge event, which is not a git
- * merge — see PullContent.
+ * "New pull request" (forge-v2) opens `/repo/pulls/new` to propose an already-pushed branch.
  */
 
 import { useMemo, useState } from 'react'
@@ -32,11 +29,11 @@ type Filter = 'open' | 'closed' | 'all'
 
 function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: string } {
   // A fold over a partial event log is not a state. Say unverified rather than guess.
-  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger' }
+  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
   if (p.state.merged) return { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }
-  if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger' }
-  if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-400' }
-  return { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-verify' }
+  if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
+  if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-500 dark:text-anvil-400' }
+  return { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-verify-700 dark:text-verify-400' }
 }
 
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -59,7 +56,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
         {(['open', 'closed', 'all'] as Filter[]).map((f) => (
           <button
             key={f}
@@ -73,6 +71,13 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           </button>
         ))}
       </div>
+      <Link
+          href={repoHref('/repo/pulls/new', addr)}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800"
+        >
+          <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
+        </Link>
+      </div>
 
       {loading ? (
         <LoadingBlock label="Folding PR state" />
@@ -82,7 +87,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <EmptyState
           icon={GitPullRequest}
           title="No pull requests"
-          body="Push a head branch with the git-remote-dash helper, then open a PR with dg pr create."
+          body="Push a branch with the git-remote-dash helper (to this repo, or to your fork), then open a PR here or with dg pr create."
         />
       ) : (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -97,7 +102,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                 <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                 <div className="min-w-0 flex-1">
                   <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title || '(untitled)'}</span>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-400">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{p.number}</span>
                     <span>{st.label} · into <span className="font-mono">{p.baseRefName || '?'}</span> · {timeAgo(p.createdAt)} by</span>
                     <Author identityId={p.author} link={false} />
@@ -109,7 +114,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           })}
         </div>
       )}
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} />
+      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} home={home} by={data?.hiddenBy} />
     </div>
   )
 }

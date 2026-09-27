@@ -19,6 +19,12 @@ export interface ContractRecord {
   readonly status?: string
 }
 
+/** A superseded contract's record: which group it was left in. */
+export interface SupersededRecord {
+  readonly contractId?: string | null
+  readonly contractGroupId?: string | null
+}
+
 /** The fields forge-web reads from a deployment file. */
 export interface DeploymentFile {
   readonly dapiAddresses?: readonly string[]
@@ -33,6 +39,11 @@ export interface DeploymentFile {
     readonly forgeCore?: ContractRecord
     readonly forgeCollab?: ContractRecord
     readonly contractGroupId?: string
+    /** The group `deploy-v2.mjs` verified on chain: its id and owner (the deployer). */
+    readonly contractGroup?: { readonly id?: string; readonly owner?: string }
+    /** Earlier contracts `deploy-v2.mjs` superseded, some left in the current group. */
+    readonly forgeCoreSuperseded?: readonly SupersededRecord[]
+    readonly forgeCollabSuperseded?: readonly SupersededRecord[]
     /** The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used. */
     readonly devnet?: { readonly addresses?: readonly string[] }
   }
@@ -71,6 +82,37 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   const collab = registeredId(file?.v2?.forgeCollab)
   const group = file?.v2?.contractGroupId || null
   return core && collab && group ? { core, collab, group } : null
+}
+
+/**
+ * What binding a key to the forge contract group trusts, as the bundled deployment file pins it
+ * (`docs/contracts/forge-v2.md` § Contract group trust; parity with forge-core `ForgeIds`).
+ */
+export interface GroupTrust {
+  readonly group: string
+  readonly core: string
+  readonly collab: string
+  /** The group's owner, the Forge deployer: null when the file records none. The group must also have no admins. */
+  readonly owner: string | null
+  /** Forge's own earlier contracts left in the same group. */
+  readonly superseded: readonly string[]
+}
+
+/**
+ * A file's group trust root, or null when it has no forge-v2 deployment. The owner is the
+ * verified `contractGroup` record for this group, else forge-core's owner (its create
+ * transition registered the group).
+ */
+export function groupTrust(file: DeploymentFile | undefined): GroupTrust | null {
+  const ids = forgeV2Ids(file)
+  const v2 = file?.v2
+  if (!ids || !v2) return null
+  const recorded = v2.contractGroup?.id === ids.group ? v2.contractGroup : undefined
+  const owner = recorded?.owner || v2.forgeCore?.ownerId || null
+  const superseded = [...(v2.forgeCoreSuperseded ?? []), ...(v2.forgeCollabSuperseded ?? [])]
+    .filter((r) => r.contractGroupId === ids.group && r.contractId)
+    .map((r) => r.contractId as string)
+  return { ...ids, owner, superseded }
 }
 
 /**

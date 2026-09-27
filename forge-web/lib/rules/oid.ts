@@ -37,6 +37,37 @@ export function isLegalRefName(name: string): boolean {
   return true
 }
 
+/**
+ * `git check-ref-format` for a full ref name (the rules of `refs.c` `check_refname_format`,
+ * without `--allow-onelevel` or `--refspec-pattern`): at least two `/`-separated components;
+ * no component empty, starting with `.`, or ending with `.lock`; no `..`, no `@{`; not `@`
+ * alone; no control bytes, space, DEL, or any of `~ ^ : ? * [ \`; no trailing `/` or `.`.
+ */
+export function isCheckRefFormat(name: string): boolean {
+  if (name === '@' || name.endsWith('/') || name.endsWith('.') || name.includes('..') || name.includes('@{')) return false
+  const bytes = new TextEncoder().encode(name)
+  for (const b of bytes) {
+    if (b < 0x20 || b === 0x7f || b === 0x20) return false
+    if (b === 0x7e || b === 0x5e || b === 0x3a || b === 0x3f || b === 0x2a || b === 0x5b || b === 0x5c) return false
+  }
+  const parts = name.split('/')
+  if (parts.length < 2) return false
+  return parts.every((p) => p.length > 0 && !p.startsWith('.') && !p.endsWith('.lock'))
+}
+
+/**
+ * A plain branch a merge may move: `refs/heads/<name>` that {@link isCheckRefFormat} accepts,
+ * with no refspec or glob syntax (`+`). Parity: `dg` `require_branch_ref`.
+ */
+export function isPlainBranchRef(name: string): boolean {
+  return name.startsWith('refs/heads/') && name.length > 'refs/heads/'.length && !name.includes('+') && isCheckRefFormat(name)
+}
+
+/** A full 40-hex lowercase git object id. */
+export function isOidHex(s: string): boolean {
+  return /^[0-9a-f]{40}$/.test(s)
+}
+
 /** Whether `h` is a real 32-byte content hash rendered as 64 hex chars. */
 export function isContentHash(h: string): boolean {
   if (h.length !== 64) return false

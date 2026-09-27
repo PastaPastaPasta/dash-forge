@@ -20,15 +20,15 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
     <div className="group rounded-lg border border-anvil-200 bg-white p-4 transition-colors hover:border-forge-400/60 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
         {repo.visibility === 'private' ? (
-          <Lock className="h-4 w-4 shrink-0 text-anvil-400" aria-label="private" />
+          <Lock className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label="private" />
         ) : (
-          <GitBranch className="h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
+          <GitBranch className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
         )}
-        <Link href={href} className="truncate font-mono text-prose text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400">
+        <Link href={href} className="truncate font-mono text-prose text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
           {repo.name}
         </Link>
         {repo.role ? (
-          <span className="ml-auto shrink-0 rounded bg-forge-500/10 px-1.5 py-0.5 text-[11px] text-forge-700 dark:text-forge-300">
+          <span className="ml-auto shrink-0 rounded bg-forge-500/10 px-1.5 py-0.5 text-[11px] text-forge-800 dark:text-forge-300">
             {repo.role}
           </span>
         ) : null}

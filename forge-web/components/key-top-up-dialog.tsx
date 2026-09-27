@@ -169,14 +169,14 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
       {pending !== null && done === null ? (
         <div className="space-y-3 text-dense" data-testid="key-top-up-pending" role="status">
           {landed ? (
-            <p className="flex items-center gap-2 text-verify">
+            <p className="flex items-center gap-2 text-verify-700 dark:text-verify-400">
               <CheckCircle2 className="h-4 w-4" aria-hidden /> The update landed: this key now has{' '}
               {dash(keyLimits?.total ?? null)} of budget
               {keyLimits?.expiresAt ? `, until ${formatDate(keyLimits.expiresAt)}` : ''}.
             </p>
           ) : (
             <>
-              <p className="text-caution">
+              <p className="text-caution-700 dark:text-caution-400">
                 The update was sent, but the chain does not show the new limits yet. Do not send it again: a second top-up would
                 add the budget twice.
               </p>
@@ -197,7 +197,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
         </div>
       ) : done ? (
         <div className="space-y-3 text-dense" data-testid="key-top-up-done">
-          <p className="flex items-center gap-2 text-verify">
+          <p className="flex items-center gap-2 text-verify-700 dark:text-verify-400">
             <CheckCircle2 className="h-4 w-4" aria-hidden /> Key limits updated on chain.
           </p>
           <dl className="grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-1">
@@ -234,7 +234,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
           <Field label="Add to the budget (DASH)" htmlFor="topup-amount" hint={keyLimits?.total != null ? `Now ${dash(keyLimits.remaining)} left of ${dash(keyLimits.total)}.` : undefined}>
             <Input id="topup-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={amountError !== null} />
           </Field>
-          {amountError ? <p className="text-[12px] text-danger">{amountError}</p> : null}
+          {amountError ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{amountError}</p> : null}
           <div className="space-y-1.5">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={extend} onChange={(e) => setExtend(e.target.checked)} className="h-4 w-4 accent-forge-600" />
@@ -245,7 +245,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
                 <Input id="topup-expiry" type="date" value={expiry} min={isoDay(Date.now() + DAY_MS)} max={isoDay(Date.now() + TOP_UP_MAX_DAYS * DAY_MS)} onChange={(e) => setExpiry(e.target.value)} aria-invalid={expiryError !== null} />
               </Field>
             ) : null}
-            {expiryError ? <p className="text-[12px] text-danger">{expiryError}</p> : null}
+            {expiryError ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{expiryError}</p> : null}
           </div>
 
           <fieldset className="space-y-2 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
@@ -259,7 +259,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
                   type="button"
                   aria-pressed={mode === m}
                   onClick={() => setMode(m)}
-                  className={cn('rounded px-3 py-1 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-700 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
+                  className={cn('rounded px-3 py-1 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
                 >
                   {m === 'file' ? 'Identity file' : 'Recovery phrase'}
                 </button>

@@ -1,0 +1,98 @@
+{
+  "name": "skip_key_walks_past_burned",
+  "description": "epoch 2 is burned; epoch 3's anchor carries prevEpochKey = K_2 and skipEpochKey = K_1, the nearest epoch below that is not burned: one wrap for 3 reads 3, 2, then 1 and 0.",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "727e3dc6444d1b37aaa9424737fcd604d12cd10038b1bdd887c7404a074a91fd",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 2,
+        "createdAtBlockHeight": 2000,
+        "createdAt": 2000000,
+        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a063cf586332769bb74720e94dcf97aa4bdc5dee8f"
+      },
+      {
+        "id": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 3,
+        "createdAtBlockHeight": 3000,
+        "createdAt": 3000000,
+        "enc": "02c8e91e8a64a309b4601baf2233497f90770a80f0b823796337741fe2da0f19c9000102030405060708090a0b2d383d5eb1e4d976729e4ed1063f18cf625e23273b3ec408afe38232744cabb831deaf7530e27e71fa9ccbedea3239339f787ea5b82c73b9b668e814d9b9703f1474bed5831951c4561f89eb692c4b04ab12ff07bd72d8d3b77c4c4041"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "346fb09eb7d015d6ed47cc9048f4d3f8612ed83accd32b6cf126ba1c9c52de81",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 3,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "ae61deb75bea8d5686e7186b8630a1c3d42eb7b68362dc2496d0e2632be6524f",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 3,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 3,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+      "2": "727e3dc6444d1b37aaa9424737fcd604d12cd10038b1bdd887c7404a074a91fd",
+      "3": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d"
+    },
+    "readable": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "writeEpoch": 3,
+    "unanchored": [],
+    "alerts": [],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}

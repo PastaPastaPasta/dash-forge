@@ -97,7 +97,7 @@ export default function ExplorePage(): JSX.Element {
             <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Read straight from {NETWORKS[network].key}, proof-checked. No server ranks or filters this.</p>
           </div>
           <p role="note" className="flex items-center gap-2 rounded-md border border-anvil-200 px-3 py-1.5 text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" data-testid="trending-note">
-            <Info className="h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+            <Info className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
             <span>
               {TRENDING} (
               <a href={INDEXER_DOCS} className="text-forge-700 underline dark:text-forge-300" target="_blank" rel="noopener noreferrer">
@@ -187,7 +187,7 @@ export default function ExplorePage(): JSX.Element {
             <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800">
               {d.rows.map((r) => (
                 <li key={`${r.repo.id}:${r.tagName}`} className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
-                  <Package className="h-4 w-4 text-anvil-500" aria-hidden />
+                  <Package className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
                   <Link href={repoHref('/repo/tags', { owner: r.repo.ownerId, name: r.repo.name, repoId: r.repo.id })} className="font-mono hover:underline">
                     {r.repo.name} {r.tagName}
                   </Link>
@@ -295,7 +295,7 @@ function RepoLinks({ repos, more }: { repos: readonly RepoLite[]; more: boolean 
               href={repoHref('/repo', { owner: r.ownerId, name: r.name, repoId: r.id })}
               className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 px-2.5 py-1 font-mono text-dense hover:border-forge-400 dark:border-anvil-800"
             >
-              <Star className="h-3.5 w-3.5 text-anvil-500" aria-hidden /> {r.name}
+              <Star className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> {r.name}
             </Link>
           </li>
         ))}
@@ -315,7 +315,7 @@ function TargetList({ rows, more, label }: { rows: readonly TargetRow[]; more: b
           const addr = t.repo ? { owner: t.repo.ownerId, name: t.repo.name, repoId: t.repo.id } : null
           return (
             <li key={t.id} className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
-              <Icon className="h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+              <Icon className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
               <span className="sr-only">{t.kind === 'issue' ? 'Issue' : 'Pull request'}</span>
               {addr ? (
                 <Link href={repoHref(t.kind === 'issue' ? '/repo/issue' : '/repo/pull', addr, { number: String(t.number) })} className="min-w-0 flex-1 truncate hover:underline">
@@ -326,7 +326,7 @@ function TargetList({ rows, more, label }: { rows: readonly TargetRow[]; more: b
                 </Link>
               ) : (
                 <span className="min-w-0 flex-1 truncate">
-                  #{t.number} {t.title} <span className="text-anvil-500">(repo not found)</span>
+                  #{t.number} {t.title} <span className="text-anvil-500 dark:text-anvil-400">(repo not found)</span>
                 </span>
               )}
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(t.createdAt)}</span>

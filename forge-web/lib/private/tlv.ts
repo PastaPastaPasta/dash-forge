@@ -32,6 +32,16 @@ export interface DocFields {
   readonly prevEpochKey?: Uint8Array
   /** Tag 10 (inline review comment). */
   readonly path?: string
+  /**
+   * Tag 11 (config, `e >= 1`): the epoch is burned (§5.3): its key reached someone it must not,
+   * so it is chain-only, never a write epoch. Only the anchor's flag decides.
+   */
+  readonly burned?: true
+  /**
+   * Tag 12 (config, `e >= 1`, not burned): `skipEpochKey`, the key of the nearest epoch below a
+   * burned run that is not burned, so the chain steps over the run (§5.3). Secret: wipe after import.
+   */
+  readonly skipEpochKey?: Uint8Array
 }
 
 /** A §4.3 violation. */
@@ -53,6 +63,8 @@ export const TAG = {
   prevEpoch: 8,
   prevEpochKey: 9,
   path: 10,
+  burned: 11,
+  skipEpochKey: 12,
 } as const
 
 type TextField = 'title' | 'body' | 'refName' | 'baseRefName' | 'sourceRefName' | 'defaultBranch' | 'path'
@@ -83,11 +95,11 @@ const TAGS_OF: Readonly<Record<PrivateDocType, readonly number[]>> = {
   review: [2],
   refUpdate: [3],
   protectedRefUpdate: [3],
-  config: [6, 7, 8, 9],
+  config: [6, 7, 8, 9, 11, 12],
 }
 
 const MAX_PATTERNS = 8
-const FIRST_RESERVED = 11
+const FIRST_RESERVED = 13
 const FIRST_EXTENSION = 64
 
 /** What the parser needs to know about the document besides its bytes. */
@@ -146,14 +158,21 @@ export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
     if (tag >= FIRST_RESERVED) throw new MalformedError(`reserved tag ${tag}`)
     if (!allowed.includes(tag)) throw new MalformedError(`tag ${tag} is not a ${ctx.type} field`)
     const value = pt.subarray(start, end)
-    if (tag === TAG.prevEpoch || tag === TAG.prevEpochKey) {
+    if (tag === TAG.burned) {
+      if (!anchorWithPrev) throw new MalformedError('burned outside a config for epoch >= 1')
+      if (len !== 1 || value[0] !== 0x01) throw new MalformedError('burned is not the single byte 0x01')
+      out.burned = true
+      continue
+    }
+    if (tag === TAG.prevEpoch || tag === TAG.prevEpochKey || tag === TAG.skipEpochKey) {
       if (!anchorWithPrev) throw new MalformedError(`tag ${tag} outside a config for epoch >= 1`)
       if (tag === TAG.prevEpoch) {
         if (len !== 4) throw new MalformedError('prevEpoch is not 4 bytes')
         out.prevEpoch = view.getUint32(start)
       } else {
-        if (len !== 32) throw new MalformedError('prevEpochKey is not 32 bytes')
-        out.prevEpochKey = value.slice()
+        if (len !== 32) throw new MalformedError(`tag ${tag} is not 32 bytes`)
+        if (tag === TAG.prevEpochKey) out.prevEpochKey = value.slice()
+        else out.skipEpochKey = value.slice()
       }
       continue
     }
@@ -185,8 +204,15 @@ function requireFields(f: DocFields, ctx: TlvContext, anchorWithPrev: boolean): 
       if (f.refName === undefined) throw new MalformedError(`${ctx.type} without a refName`)
       return
     case 'config':
-      if (anchorWithPrev && (f.prevEpoch === undefined || f.prevEpochKey === undefined)) {
-        throw new MalformedError('a config for epoch >= 1 needs prevEpoch and prevEpochKey')
+      if (!anchorWithPrev) return
+      if (f.prevEpoch === undefined) throw new MalformedError('a config for epoch >= 1 needs prevEpoch')
+      if (f.burned === true) {
+        // the burned key may sit with someone who never held the key below (§5.3)
+        if (f.prevEpochKey !== undefined || f.skipEpochKey !== undefined) {
+          throw new MalformedError('a burned config carries neither prevEpochKey nor skipEpochKey')
+        }
+      } else if (f.prevEpochKey === undefined) {
+        throw new MalformedError('a config for epoch >= 1 needs prevEpochKey')
       }
       return
     case 'review':
@@ -219,6 +245,8 @@ export function encodeTlv(fields: DocFields): Bytes {
   if (fields.prevEpoch !== undefined) parts.push(record(TAG.prevEpoch, u32(fields.prevEpoch)))
   if (fields.prevEpochKey !== undefined) parts.push(record(TAG.prevEpochKey, fields.prevEpochKey))
   text(TAG.path, fields.path)
+  if (fields.burned === true) parts.push(record(TAG.burned, new Uint8Array([0x01])))
+  if (fields.skipEpochKey !== undefined) parts.push(record(TAG.skipEpochKey, fields.skipEpochKey))
   return concat(...parts)
 }
 

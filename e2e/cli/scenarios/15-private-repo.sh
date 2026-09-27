@@ -13,7 +13,7 @@
 #   6. COLLAB (removed) clones                                    -> refused with E307 (no key for epoch 1)
 #      but COLLAB's earlier clone still holds the old content (encryption can't take it back)
 #   7. COLLAB rejoins as a maintainer and anchors epoch 2 (`dg repo keys rotate`); OWNER removes
-#      them: their epoch is re-anchored first, then rotated to epoch 3 (no number reused), and
+#      them: their epoch is re-anchored first, then rotated to epoch 3 (always current + 1), and
 #      OWNER still reads every epoch
 #   8. `dg repo keys status` shows the current epoch, no alerts, nothing to repair
 #
@@ -172,7 +172,7 @@ if dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role maintain
   step "OWNER removes maintainer COLLAB: their epoch is re-anchored first, then rotated"
   if dg_as "$ID_OWNER" -y --json collab remove "$REPO" "$IDID_COLLAB" --role maintainer >"$LOG-rmm.json" 2>"$LOG-rmm.err"; then
     EPOCH="$(json_field "$LOG-rmm.json" 'd["rotation"]["epoch"]')"
-    [[ "$EPOCH" -gt "$EPOCH_M" ]] && ok "rotated to epoch ${EPOCH} (above ${EPOCH_M}; no number reused)" || bad "epoch after maintainer removal: ${EPOCH}"
+    [[ "$EPOCH" -gt "$EPOCH_M" ]] && ok "rotated to epoch ${EPOCH} (the next after ${EPOCH_M})" || bad "epoch after maintainer removal: ${EPOCH}"
     CLONE_O2="${WORKROOT}/s15-owner2"
     if _retry "$LOG-co2.err" git_dash "$ID_OWNER" "$LOG-co2" clone "$REMOTE" "$CLONE_O2" \
         && [[ "$(git -C "$CLONE_O2" rev-parse HEAD)" == "$TIP2" ]]; then

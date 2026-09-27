@@ -17,6 +17,17 @@ use anyhow::{anyhow, bail, Result};
 use forge_core::pack::ensure_safe_rev;
 use std::io::Write as _;
 
+/// How every downloaded pack is checked as it is indexed: git's own object checks (the ones
+/// `git fsck --strict` and `index-pack --strict` run — tree order, `.git` look-alikes,
+/// `.gitmodules` URLs and paths, idents and dates, ...), so a hostile pack is refused
+/// before any of it lands in the odb, even with `transfer.fsckObjects` off.
+///
+/// Not `--strict`: that also requires every object a pack's commits and trees name to be in
+/// this pack or already in the odb, and a repo's history is split across packs indexed one
+/// at a time in no guaranteed order, so a valid multi-pack fetch would fail. Connectivity is
+/// checked by git itself once the fetch completes.
+pub(crate) const INDEX_PACK_CHECKS: &str = "--fsck-objects";
+
 /// Run `git <args>`, optionally in `cwd`, optionally with the ambient `GIT_DIR`/
 /// `GIT_WORK_TREE` cleared, optionally feeding `stdin`. Returns captured stdout on a zero
 /// exit; a non-zero exit is an error carrying git's stderr.
@@ -140,11 +151,11 @@ impl LocalRepo {
     }
 
     /// Index a self-contained pack into the local odb, returning the pack's sha. Feeds the
-    /// bytes to `git index-pack --stdin --fix-thin` (our stored packs are already
-    /// self-contained, so `--fix-thin` is a no-op safety net).
+    /// bytes to `git index-pack --stdin --fix-thin` with [`INDEX_PACK_CHECKS`] (our stored
+    /// packs are already self-contained, so `--fix-thin` is a no-op safety net).
     pub fn index_pack(pack_bytes: &[u8]) -> Result<String> {
         let out = run_git(
-            &["index-pack", "--stdin", "--fix-thin"],
+            &["index-pack", "--stdin", "--fix-thin", INDEX_PACK_CHECKS],
             None,
             false,
             Some(pack_bytes),
@@ -196,10 +207,10 @@ impl ScratchRepo {
         Ok(Self { dir })
     }
 
-    /// Index a self-contained pack into the scratch odb.
+    /// Index a self-contained pack into the scratch odb, with [`INDEX_PACK_CHECKS`].
     pub fn index_pack(&self, pack_bytes: &[u8]) -> Result<()> {
         run_git(
-            &["index-pack", "--stdin", "--fix-thin"],
+            &["index-pack", "--stdin", "--fix-thin", INDEX_PACK_CHECKS],
             Some(&self.dir),
             true,
             Some(pack_bytes),
@@ -229,5 +240,109 @@ impl ScratchRepo {
 impl Drop for ScratchRepo {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{run_git, ScratchRepo};
+    use std::path::Path;
+
+    /// Write `body` into `repo` as a loose object of `kind`, without git's checks.
+    fn put(repo: &Path, kind: &str, body: &[u8]) -> String {
+        let out = run_git(
+            &["hash-object", "--literally", "-w", "-t", kind, "--stdin"],
+            Some(repo),
+            true,
+            Some(body),
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap().trim().to_string()
+    }
+
+    fn entry(mode: &str, name: &str, oid: &str) -> Vec<u8> {
+        let mut e = format!("{mode} {name}\0").into_bytes();
+        e.extend(hex::decode(oid).unwrap());
+        e
+    }
+
+    fn commit_text(tree: &str, parent: Option<&str>, when: u32) -> String {
+        let parent = parent.map_or(String::new(), |p| format!("parent {p}\n"));
+        format!("tree {tree}\n{parent}author A <a@b> {when} +0000\ncommitter A <a@b> {when} +0000\n\nm\n")
+    }
+
+    /// `git pack-objects --revs` of `revs` in `repo` (it does not check objects).
+    fn pack(repo: &Path, revs: &str) -> Vec<u8> {
+        run_git(
+            &["pack-objects", "--revs", "--stdout"],
+            Some(repo),
+            true,
+            Some(revs.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    /// Builds a tree's entry bytes, writing the objects they name into the given repo.
+    type TreeEntries = dyn Fn(&Path) -> Vec<u8>;
+
+    /// A self-contained pack of one commit whose root tree is `entries`.
+    fn pack_with(entries: &TreeEntries) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(&["init", "-q", "--bare"], Some(dir.path()), true, None).unwrap();
+        let tree = put(dir.path(), "tree", &entries(dir.path()));
+        let commit = put(dir.path(), "commit", commit_text(&tree, None, 1).as_bytes());
+        pack(dir.path(), &format!("{commit}\n"))
+    }
+
+    #[test]
+    fn a_well_formed_pack_indexes() {
+        let pack = pack_with(&|d| entry("100644", "a.txt", &put(d, "blob", b"a\n")));
+        ScratchRepo::init().unwrap().index_pack(&pack).unwrap();
+    }
+
+    #[test]
+    fn hostile_packs_are_refused_before_they_land() {
+        let gitmodules = |d: &Path| {
+            let url = b"[submodule \"x\"]\n\tpath = x\n\turl = --upload-pack=touch /tmp/pwn\n";
+            entry("100644", ".gitmodules", &put(d, "blob", url))
+        };
+        let dot_git = |d: &Path| entry("100644", ".GIT", &put(d, "blob", b"a\n"));
+        let ntfs_symlink = |d: &Path| entry("120000", "gi7eba~1", &put(d, "blob", b"x"));
+        let unsorted = |d: &Path| {
+            let b = put(d, "blob", b"a\n");
+            [entry("100644", "b", &b), entry("100644", "a", &b)].concat()
+        };
+        let cases: [(&str, &TreeEntries); 4] = [
+            ("a .gitmodules whose url is an option", &gitmodules),
+            ("a .git look-alike", &dot_git),
+            (
+                "a .gitmodules symlink under its NTFS short name",
+                &ntfs_symlink,
+            ),
+            ("an unsorted tree", &unsorted),
+        ];
+        for (label, entries) in cases {
+            let indexed = ScratchRepo::init().unwrap().index_pack(&pack_with(entries));
+            assert!(indexed.is_err(), "{label} was indexed");
+        }
+    }
+
+    #[test]
+    fn packs_split_across_a_fetch_index_in_any_order() {
+        // History is split over packs indexed one at a time: a pack whose commit names a
+        // parent in a pack not yet indexed must still index (connectivity is git's check
+        // after the fetch), or valid multi-pack fetches would fail.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
+        let t1 = put(d, "tree", &entry("100644", "a", &put(d, "blob", b"1\n")));
+        let c1 = put(d, "commit", commit_text(&t1, None, 1).as_bytes());
+        let t2 = put(d, "tree", &entry("100644", "a", &put(d, "blob", b"2\n")));
+        let c2 = put(d, "commit", commit_text(&t2, Some(&c1), 2).as_bytes());
+        let first = pack(d, &format!("{c1}\n"));
+        let second = pack(d, &format!("{c2}\n^{c1}\n"));
+        let scratch = ScratchRepo::init().unwrap();
+        scratch.index_pack(&second).unwrap();
+        scratch.index_pack(&first).unwrap();
     }
 }

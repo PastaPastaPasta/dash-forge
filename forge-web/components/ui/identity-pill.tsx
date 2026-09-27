@@ -54,7 +54,7 @@ export function IdentityPill({
         <span
           className={cn(
             'rounded px-1 text-[10px] font-semibold uppercase tracking-wide',
-            'bg-forge-500/15 text-forge-600 dark:text-forge-400',
+            'bg-forge-500/15 text-forge-800 dark:text-forge-400',
           )}
         >
           {role}

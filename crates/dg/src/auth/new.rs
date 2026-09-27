@@ -37,6 +37,7 @@ use forge_core::platform::identity::{
 use forge_core::platform::PlatformClient;
 use forge_core::user_error::{codes, UserError};
 
+use super::group::GroupCheck;
 use super::{
     check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store,
     KeyLimitArgs, StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
@@ -617,6 +618,7 @@ async fn fund_and_lock(
 
 /// Store this computer's limited key, then register the identity with it (or, when an earlier
 /// run already created the identity, register a fresh limited key with the words' master key).
+#[allow(clippy::too_many_arguments)]
 async fn register(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -625,6 +627,7 @@ async fn register(
     proof: &LockProof,
     identity_id: &str,
     spec: &LimitedKeySpec,
+    checked: &GroupCheck,
 ) -> Result<(u32, store::Stored)> {
     let network = ctx.network_label();
     let insecure = args.storage.insecure_plaintext;
@@ -654,7 +657,7 @@ async fn register(
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);
-        return register_and_store(ctx, client, &master, spec, replace, insecure).await;
+        return register_and_store(ctx, client, &master, spec, replace, checked, insecure).await;
     }
     let limited = FreshKey::generate(ctx.network());
     let dfk1 = forge_core::keystore::dfk1(
@@ -696,7 +699,8 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
         }
     }
     let client = ctx.connect().await?;
-    check_group(ctx, &client, &spec.group).await?;
+    let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    checked.print_notice(ctx, "");
 
     let backup_pass = backup_passphrase(args)?;
     let (keys, mut j) = start_or_resume(ctx, &client, args, backup_pass.as_ref()).await?;
@@ -705,7 +709,17 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     j.identity_id = Some(identity_id.clone());
     save_journal(&j)?;
 
-    let (key_id, stored) = register(ctx, &client, args, &keys, &proof, &identity_id, &spec).await?;
+    let (key_id, stored) = register(
+        ctx,
+        &client,
+        args,
+        &keys,
+        &proof,
+        &identity_id,
+        &spec,
+        &checked,
+    )
+    .await?;
     store::set_default(ctx, &identity_id, &stored.source())?;
     clear_journal(&network);
     if let Some(path) = &args.backup.backup_file {
@@ -728,7 +742,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     }
 
     ctx.emit(
-        json!({
+        super::group::with_group_fields(json!({
             "status": "created",
             "identityId": identity_id,
             "network": network,
@@ -743,7 +757,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
             "balanceDash": credits_to_dash(balance),
             "name": name,
             "backupFile": args.backup.backup_file.as_ref().map(|p| p.display().to_string()),
-        }),
+        }), Some(&checked)),
         || {
             println!("✓ identity {identity_id} created on {network}");
             if let Some(n) = &name {

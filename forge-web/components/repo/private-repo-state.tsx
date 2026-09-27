@@ -1,0 +1,48 @@
+'use client'
+
+import { Lock } from 'lucide-react'
+import { readPublicRepoFacts, repoContractIds, type RepoRef } from '@/lib/repo'
+import { formatBytes, timeAgo } from '@/lib/view'
+import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
+import { Author } from '@/components/author'
+import type { RepoAddress } from '@/hooks/use-query-param'
+
+/**
+ * A private repo seen by a non-member (`ux-dx-spec.md` §6.3): only what is public by design
+ * (name, owner, member count, size, last activity). Nothing is decrypted or rendered from
+ * encrypted fields, titles included.
+ */
+export function PrivateRepoState({ repo, addr, member = false }: { repo: RepoRef; addr: RepoAddress; member?: boolean }): JSX.Element {
+  const { sdk, ready } = useSdk(repoContractIds(repo))
+  const facts = useAsync(() => readPublicRepoFacts(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null })
+  return (
+    <section
+      aria-label="Private repository"
+      data-testid="private-repo"
+      className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <Lock className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <h2 className="text-prose font-mono">{repo.name || addr.name}</h2>
+      </div>
+      <p className="text-dense text-anvil-700 dark:text-anvil-200">
+        {member
+          ? 'Private: contents are encrypted for members. Add your encryption key to this browser to read them.'
+          : "Private: contents are encrypted for members. You're not one."}
+      </p>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-dense">
+        <dt className="text-anvil-500 dark:text-anvil-400">Owner</dt>
+        <dd>
+          <Author identityId={repo.ownerId} />
+        </dd>
+        <dt className="text-anvil-500 dark:text-anvil-400">Members</dt>
+        <dd>{facts.data ? facts.data.members : facts.error ? '–' : '…'}</dd>
+        <dt className="text-anvil-500 dark:text-anvil-400">Size</dt>
+        <dd>{facts.data ? formatBytes(facts.data.storedBytes) : facts.error ? '–' : '…'}</dd>
+        <dt className="text-anvil-500 dark:text-anvil-400">Last activity</dt>
+        <dd>{facts.data ? (facts.data.lastActivity ? timeAgo(facts.data.lastActivity) : 'none yet') : facts.error ? '–' : '…'}</dd>
+      </dl>
+    </section>
+  )
+}

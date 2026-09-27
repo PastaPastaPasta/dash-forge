@@ -49,7 +49,7 @@ export function KeysPanel(): JSX.Element {
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
       {storage === 'session' ? (
-        <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-danger">
+        <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-danger-700 dark:text-danger-400">
           This tab signs with a pasted key that has no Forge limits. It is forgotten on reload.
         </p>
       ) : keyLimits ? (
@@ -84,7 +84,7 @@ export function KeysPanel(): JSX.Element {
         </div>
       ) : null}
       {low ? (
-        <p className="text-caution">This browser&apos;s key is nearly used up. Top it up or renew it (uses your master key once).</p>
+        <p className="text-caution-700 dark:text-caution-400">This browser&apos;s key is nearly used up. Top it up or renew it (uses your master key once).</p>
       ) : null}
       <div className="flex flex-wrap gap-2">
         {canTopUp ? (
@@ -137,7 +137,7 @@ export function KeysPanel(): JSX.Element {
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
       </p>
-      {revokeError ? <p role="alert" className="text-[12px] text-danger">{revokeError}</p> : null}
+      {revokeError ? <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{revokeError}</p> : null}
       <Field
         label="Fallback block explorer (asked only if the network's nodes cannot see an identity deposit)"
         htmlFor="explorer-url"

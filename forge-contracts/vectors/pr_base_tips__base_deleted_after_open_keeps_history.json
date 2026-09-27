@@ -1,0 +1,42 @@
+{
+  "name": "base_deleted_after_open_keeps_history",
+  "description": "Deleting the base after the PR was opened keeps its tips (a PR merged into a deleted branch stays merged).",
+  "case": "pr_base_tips",
+  "rules": "v2",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "0000000000000000000000000000000000000000",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "openedAt": 200
+  },
+  "expected": {
+    "historical": [
+      "A"
+    ],
+    "tip": "A",
+    "current": null
+  }
+}

@@ -28,7 +28,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import { queryComposite, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, type PlainDocument } from '../sdk'
-import { DOC, asIdentifierString, str, wellFormed, type RepoRef } from './contract'
+import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
 import {
   groupFeed,
   invalidateRepoFeed,
@@ -41,7 +41,8 @@ import {
   type TargetLog,
 } from './issues'
 import { newestLabels, type LabelDef } from './labels'
-import { readRoleOracle } from './members'
+import { HiddenTally, gateFor, type ContentGate, type HiddenCounts } from './private-content'
+import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 
 /** An issue row: the folded issue and its comment count (null: not counted). */
@@ -79,22 +80,28 @@ interface IndexState {
   readonly rows: Map<string, IssueRow>
   /** Ids proven not to be (well-formed, shown) issues of this repo: patches, malformed, hidden. */
   readonly notIssues: Set<string>
-  hidden: number
+  /** Issues left out: not well-formed for the repo, or (private) not readable with the session keys. */
+  readonly hidden: HiddenTally
   readonly desc: Walk
   readonly asc: Walk
   /** The tail of in-flight `$id in` resolutions ({@link resolveIds}). */
   resolving: Promise<void>
   /** Issues per author, once read from the `author` index. */
   readonly byAuthor: Map<string, Set<string>>
-  /** Private repo: shows a row only when its author is a current member (strangers' ciphertext is hidden). */
-  shown: (d: PlainDocument) => boolean
+  /** The repo's content gate: well-formedness, and for a private repo decryption with the session keys. */
+  readonly gate: ContentGate
 }
 
 const indexes = new Map<string, Promise<IndexState>>()
-const indexKey = (repo: RepoRef, network: Network): string => `${network}:${repo.forge.collab}:${repo.repoId}`
+/** Per network, repo and (private) reader session: a private index holds decrypted titles and bodies. */
+const indexKey = (repo: RepoRef, network: Network): string => `${network}:${repo.forge.collab}:${repoKey(repo)}`
 
 onRepoInvalidated((repo) => {
-  for (const key of [...indexes.keys()]) if (key.endsWith(`:${repo.forge.collab}:${repo.repoId}`)) indexes.delete(key)
+  const at = `:${repo.forge.collab}:${repo.repoId}`
+  for (const key of [...indexes.keys()]) if (key.endsWith(at) || key.includes(`${at}#`)) indexes.delete(key)
+})
+onPrivateSessionEnded((id) => {
+  for (const key of [...indexes.keys()]) if (key.endsWith(`#${id}`)) indexes.delete(key)
 })
 
 function sortRowsNewest(a: IssueRow, b: IssueRow): number {
@@ -115,19 +122,20 @@ function chunkSubs(network: Network): CompositeSub[] {
 }
 
 /** Record a chunk's issue documents (and what its sub-queries said about them). */
-function addDocs(state: IndexState, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null, walk: Walk | null): void {
-  for (const d of docs) {
-    const id = str(d, '$id')
+async function addDocs(state: IndexState, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null, walk: Walk | null): Promise<void> {
+  for (const raw of docs) {
+    const id = str(raw, '$id')
     if (id === '' || state.rows.has(id) || state.notIssues.has(id)) {
       if (walk !== null && state.rows.has(id) && !walk.ids.includes(id)) walk.ids.push(id)
       continue
     }
-    if (!wellFormed(state.repo, 'issue', d) || !state.shown(d)) {
+    const admitted = await state.gate.admit('issue', raw)
+    if (!admitted.ok) {
       state.notIssues.add(id)
-      state.hidden += 1
+      state.hidden.add(admitted.reason)
       continue
     }
-    const view = issueViewOf(d, state.feed?.get(id) ?? EMPTY_LOG)
+    const view = issueViewOf(admitted.doc, state.feed?.get(id) ?? EMPTY_LOG)
     state.rows.set(id, {
       ...view,
       stateComplete: state.feed !== null,
@@ -199,7 +207,6 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     labelsComplete = false
   }
 
-  const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo, network) : null
   const state: IndexState = {
     repo,
     network,
@@ -208,22 +215,22 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     labelsComplete,
     rows: new Map(),
     notIssues: new Set(),
-    hidden: 0,
+    hidden: new HiddenTally(),
     desc: { ids: [], bound: null, done: false },
     asc: { ids: [], bound: null, done: false },
     byAuthor: new Map(),
     resolving: Promise.resolve(),
-    shown: (d) => oracle === null || oracle.currentRole(str(d, '$ownerId')) !== null,
+    gate: gateFor(repo),
   }
-  addChunk(state, state.desc, res.page, counts?.kind === 'counts' ? counts.counts : null)
+  await addChunk(state, state.desc, res.page, counts?.kind === 'counts' ? counts.counts : null)
   await seedNames(network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
   return state
 }
 
 /** Record one keyset chunk and move its walk's bound. */
-function addChunk(state: IndexState, walk: Walk, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null): void {
+async function addChunk(state: IndexState, walk: Walk, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null): Promise<void> {
   const before = walk.ids.length
-  addDocs(state, docs, counts, walk)
+  await addDocs(state, docs, counts, walk)
   if (docs.length < CHUNK) {
     walk.done = true
   } else {
@@ -257,7 +264,7 @@ async function loadChunk(sdk: EvoSDK, state: IndexState, direction: 'desc' | 'as
   })
   const [counts, domains] = res.subs
   const wasFirst = walk.bound === null
-  addChunk(state, walk, res.page, counts?.kind === 'counts' ? counts.counts : null)
+  await addChunk(state, walk, res.page, counts?.kind === 'counts' ? counts.counts : null)
   if (!wasFirst && walk.done && walk === state.desc) state.asc.done = state.asc.done || state.desc.ids.length === state.rows.size
   await seedNames(state.network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
 }
@@ -294,7 +301,7 @@ async function resolveNow(sdk: EvoSDK, state: IndexState, ids: readonly string[]
     // the event's repo), but the read is by id, so check.
     const mine = res.page.filter((d) => asIdentifierString(d['repoId']) === state.repo.repoId)
     const [counts, domains] = res.subs
-    addDocs(state, mine, counts?.kind === 'counts' ? counts.counts : null, null)
+    await addDocs(state, mine, counts?.kind === 'counts' ? counts.counts : null, null)
     for (const id of batch) if (!state.rows.has(id)) state.notIssues.add(id)
     await seedNames(state.network, mine, domains?.kind === 'documents' ? domains.documents : undefined)
   }
@@ -353,6 +360,8 @@ export interface IssueListPage {
   readonly stateComplete: boolean
   readonly labels: readonly LabelDef[]
   readonly hidden: number
+  /** `hidden` by reason (private repos: shown to maintainers). */
+  readonly hiddenBy: HiddenCounts
 }
 
 /** Whether a row's folded state passes the state tab. */
@@ -438,7 +447,7 @@ async function authorCandidates(sdk: EvoSDK, state: IndexState, author: string):
       subQueries: chunkSubs(state.network),
     })
     const [counts, domains] = res.subs
-    addDocs(state, res.page, counts?.kind === 'counts' ? counts.counts : null, null)
+    await addDocs(state, res.page, counts?.kind === 'counts' ? counts.counts : null, null)
     for (const d of res.page) if (state.rows.has(str(d, '$id'))) out.add(str(d, '$id'))
     await seedNames(state.network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
     const last = res.page[res.page.length - 1]?.['number']
@@ -484,7 +493,7 @@ async function exactCounts(sdk: EvoSDK, state: IndexState, total: number | null)
   // far. In a private repo anyone's ciphertext counts in the total but is not shown, so only a
   // full read proves the open count there.
   if (state.repo.visibility === 'private') return null
-  const open = total - closed - state.hidden
+  const open = total - closed - state.hidden.total
   return open >= 0 ? { open, closed } : null
 }
 
@@ -571,7 +580,8 @@ export async function queryIssues(
     searchedOf: searched === null ? null : { searched, total },
     stateComplete: state.feed !== null,
     labels: state.labels,
-    hidden: state.hidden,
+    hidden: state.hidden.total,
+    hiddenBy: state.hidden.value,
   }
 }
 

@@ -46,9 +46,9 @@ export function FundsPill(): JSX.Element | null {
       className={cn(
         'hidden flex-col items-stretch rounded-full border px-2.5 py-0.5 text-[12px] sm:flex',
         level === 'empty'
-          ? 'border-danger/50 bg-danger/10 text-danger'
+          ? 'border-danger/50 bg-danger/10 text-danger-700 dark:text-danger-400'
           : level === 'low'
-            ? 'border-caution/50 bg-caution/10 text-caution'
+            ? 'border-caution/50 bg-caution/10 text-caution-700 dark:text-caution-400'
             : 'border-anvil-200 text-anvil-600 dark:border-anvil-750 dark:text-anvil-300',
       )}
     >

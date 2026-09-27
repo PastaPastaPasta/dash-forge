@@ -1,0 +1,51 @@
+{
+  "name": "base_deleted_at_open_has_no_tips",
+  "description": "The base had been deleted when the PR was opened; recreating it later does not make it the PR's base.",
+  "case": "pr_base_tips",
+  "rules": "v2",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "0000000000000000000000000000000000000000",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "w",
+        "createdAt": 400
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "openedAt": 300
+  },
+  "expected": {
+    "historical": [],
+    "tip": null,
+    "current": "B"
+  }
+}

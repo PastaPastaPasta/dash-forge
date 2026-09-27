@@ -50,7 +50,7 @@ export function NetworkBadge({
       data-testid="network-badge"
       className={cn(
         'whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[11px] uppercase',
-        devnet || !deployed ? 'bg-caution/10 text-caution' : 'bg-dash/10 text-dash-600 dark:text-dash-400',
+        devnet || !deployed ? 'bg-caution/10 text-caution-700 dark:text-caution-400' : 'bg-dash/10 text-dash-600 dark:text-dash-400',
         className,
       )}
     >
@@ -72,7 +72,7 @@ export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: Network
       data-testid="not-deployed"
       className="flex flex-col items-center justify-center rounded-lg border border-caution/30 bg-caution/5 px-6 py-10 text-center"
     >
-      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-caution/10 text-caution">
+      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-caution/10 text-caution-700 dark:text-caution-400">
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
       <h3 className="text-prose text-anvil-900 dark:text-anvil-50">

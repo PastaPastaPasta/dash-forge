@@ -1,6 +1,6 @@
 {
   "name": "chain_with_skipped_epoch_number",
-  "description": "epoch 2's anchor names prevEpoch 0: epoch numbers need not be contiguous.",
+  "description": "epoch 2's anchor names prevEpoch 0 and there is no epoch 1: epoch 2 is above a gap, so it is not an epoch (EpochGap), and the reader's wrap for it is ignored.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -38,6 +38,23 @@
     ],
     "wraps": [
       {
+        "id": "7821e4726b0b9f2404421149c8c00bf6a74b8619a6c02256c04febd587703ea1",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "cd824834ae1415564fb0e0699c445a2dc71f190baa00d7bcd74a6907c6707c36",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 0,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      {
         "id": "48fe6ff2e3153b73f766b77224bcbd7acf944ecdd77993b75c1cf926ecd6321e",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -57,18 +74,24 @@
     ]
   },
   "expected": {
-    "currentEpoch": 2,
+    "currentEpoch": 0,
     "anchors": {
-      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
-      "2": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed"
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926"
     },
     "readable": [
-      0,
+      0
+    ],
+    "writeEpoch": 0,
+    "unanchored": [
       2
     ],
-    "writeEpoch": 2,
-    "unanchored": [],
-    "alerts": [],
+    "alerts": [
+      {
+        "kind": "epochGap",
+        "epoch": 2,
+        "author": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      }
+    ],
     "repair": {
       "rotate": false,
       "nonMembers": [],

@@ -67,8 +67,15 @@ impl Stored {
     }
 }
 
-/// Describe an arbitrary key source the same way (for `dg auth status`).
+/// Describe an arbitrary key source the same way (for `dg auth status`). Key material
+/// pasted where a path belongs (an identity JSON in `DASH_FORGE_KEY`) is never shown.
 pub fn describe_source(source: &str) -> (String, &'static str) {
+    if keystore::looks_like_pasted_key(std::path::Path::new(source)) {
+        return (
+            keystore::describe_key_source(std::path::Path::new(source)),
+            "pasted",
+        );
+    }
     if source.starts_with(keystore::KEYCHAIN_PREFIX) {
         let s = Stored::Keychain {
             source: source.to_string(),
@@ -319,5 +326,14 @@ mod tests {
         let (d, kind) = describe_source("dfk1:testnet:ID:5:cWIF");
         assert_eq!(kind, "inline");
         assert!(!d.contains("cWIF"));
+    }
+
+    /// `dg auth status` with an identity JSON pasted into `DASH_FORGE_KEY` never prints it.
+    #[test]
+    fn a_pasted_identity_is_never_described() {
+        let pasted = r#"{"identityId":"X","identityKeys":[{"privateKeyWif":"cSECRETwif"}]}"#;
+        let (d, kind) = describe_source(pasted);
+        assert_eq!(kind, "pasted");
+        assert!(!d.contains("cSECRET"), "{d}");
     }
 }

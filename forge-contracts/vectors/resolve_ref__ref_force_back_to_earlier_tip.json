@@ -1,0 +1,56 @@
+{
+  "name": "ref_force_back_to_earlier_tip",
+  "description": "A -> B (fast-forward) -> force back to A (prevOid B). The older A -> B update's prevOid equals the newest tip, but an oid match is not a causal link to a newer document: the force wins and the ref resolves to A (D-600).",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "A",
+        "force": true,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 300
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "B"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "A",
+    "author": "bob",
+    "createdAt": 300
+  }
+}

@@ -23,6 +23,7 @@ const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.refUpdate,
   DOC.protectedRefUpdate,
   DOC.config,
+  DOC.repoKey,
   DOC.packManifest,
   DOC.manifestPart,
   DOC.chunk,

@@ -1,0 +1,107 @@
+{
+  "name": "huge_epoch_from_current_maintainer_is_a_gap",
+  "description": "a current maintainer's config at epoch 4294967295 is above a gap: an EpochGap alert, never the current epoch, so it cannot exhaust the epoch numbers.",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "role": "maintainer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "f5eb572c5971310b89b167dba122681677d1387bfa98182a5e813ecd2f609da1",
+        "owner": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "epoch": 4294967295,
+        "createdAtBlockHeight": 5000,
+        "createdAt": 5000000,
+        "enc": "02f1716aed4ec3abf1912a86a73f021805a0abad700206086f18c9f25551964898000102030405060708090a0bef7622a7e98e62f6ad50d70390803b24340eb2821fd38f722652f977ea2552de5d48263735141ffd901e79fc0ffd8aef7896c7b96c3878cc657a"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "25c096e6e15a1071b9496163844ff62e95516c508d3f457793397599b51e832a",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 1,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86"
+    },
+    "readable": [
+      0,
+      1
+    ],
+    "writeEpoch": 1,
+    "unanchored": [
+      4294967295
+    ],
+    "alerts": [
+      {
+        "kind": "epochGap",
+        "epoch": 4294967295,
+        "author": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+      }
+    ],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}

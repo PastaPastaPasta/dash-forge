@@ -42,7 +42,7 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
     >
       <div className="flex items-center justify-between border-b border-anvil-200 px-3 py-2 dark:border-anvil-800">
         <h2 className="flex items-center gap-1.5 text-dense font-medium">
-          <TerminalSquare className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> Clone
+          <TerminalSquare className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Clone
         </h2>
         <BackendBadge backend={home.backend} />
       </div>
@@ -52,7 +52,7 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           <CopyRow text={`git clone ${remote}`} />
           <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
             needs git-remote-dash ·{' '}
-            <button type="button" onClick={() => setInstalling(true)} className="underline hover:text-forge-600 dark:hover:text-forge-400">
+            <button type="button" onClick={() => setInstalling(true)} className="underline hover:text-forge-800 dark:hover:text-forge-400">
               install
             </button>
           </p>
@@ -118,7 +118,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
   return (
     <div className="mt-2">
       {tooLargeRef === tip ? (
-        <p className="text-[12px] text-caution-700 dark:text-caution">This ref is too large for a browser zip; clone instead.</p>
+        <p className="text-[12px] text-caution-700 dark:text-caution-400">This ref is too large for a browser zip; clone instead.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={() => void run()} disabled={busy || state.kind !== 'ready'} loading={busy} data-testid="zip-download">

@@ -33,7 +33,7 @@ export function LabelChip({
       data-label={name}
       className={cn(
         'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4',
-        text === null && 'bg-forge-500/10 text-forge-700 dark:text-forge-300',
+        text === null && 'bg-forge-500/10 text-forge-800 dark:text-forge-400',
         className,
       )}
       style={text === null ? undefined : { backgroundColor: def?.color, color: text }}
@@ -70,7 +70,7 @@ export function AssigneeAvatars({ ids, names }: { ids: readonly string[]; names?
 export function EditedMarker({ createdAt, updatedAt }: { createdAt: number; updatedAt: number | undefined }): JSX.Element | null {
   if (updatedAt === undefined || updatedAt <= createdAt) return null
   return (
-    <span className="text-anvil-400" title={`Edited ${timeAgo(updatedAt)}`} data-testid="edited-marker">
+    <span className="text-anvil-500 dark:text-anvil-400" title={`Edited ${timeAgo(updatedAt)}`} data-testid="edited-marker">
       · edited
     </span>
   )
@@ -119,7 +119,7 @@ export function MarkdownEditor({
         </>
       ) : (
         <div role="tabpanel" aria-label={`${label} preview`} className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
-          {value.trim() === '' ? <p className="italic text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} />}
+          {value.trim() === '' ? <p className="italic text-anvil-500 dark:text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} />}
         </div>
       )}
       <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Markdown supported. #12 links an issue, @name a profile.</p>

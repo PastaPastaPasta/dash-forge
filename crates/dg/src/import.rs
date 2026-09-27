@@ -8,9 +8,8 @@ use anyhow::Result;
 
 use forge_core::user_error::{codes, UserError};
 use forge_import::budget::dash_to_credits;
-use forge_import::github::GithubRepoRef;
 use forge_import::importer::{self, ImportConfig};
-use forge_import::source_github::Classes;
+use forge_import::source::{self, Classes};
 use forge_import::summary::{Status, Summary};
 
 use crate::context::Ctx;
@@ -18,16 +17,20 @@ use crate::context::Ctx;
 /// `dg import` options.
 #[derive(Debug, clap::Args)]
 pub struct ImportArgs {
-    /// The GitHub repository: `github.com/owner/repo`, its URL, or `owner/repo`.
+    /// The source. GitHub: `github.com/owner/repo`, its URL, or `owner/repo`. GitLab:
+    /// `gitlab.com/group/project` or its URL, or `group/project` with `--gitlab-url`
+    /// (token: `GITLAB_TOKEN`).
     pub url: String,
-    /// Destination repository (`owner/name`, or a bare name of yours; default: the GitHub
+    #[command(flatten)]
+    pub gitlab: source::GitlabOptions,
+    /// Destination repository (`owner/name`, or a bare name of yours; default: the source's
     /// name). Created when missing.
     #[arg(long)]
     pub repo: Option<String>,
     /// What to import: code, issues, prs, releases, labels, or all.
     #[arg(long, default_value = "all")]
     pub sync: String,
-    /// Incremental state file (only GitHub items updated since the last run are read).
+    /// Incremental state file (only items updated at the source since the last run are read).
     #[arg(long)]
     pub state: Option<PathBuf>,
     /// Hard cap in DASH, checked before every write.
@@ -60,10 +63,14 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
         Status::Ok | Status::DryRun => None,
         Status::Partial => Some(
             UserError::new(codes::PARTIAL, "some items were not mirrored")
-                .cause(format!(
-                    "{} item(s) and {} optional git push(es) skipped; see the warnings",
-                    summary.counts.skipped, summary.counts.git_skipped
-                ))
+                .cause(if summary.incomplete {
+                    "the source refused part of what was asked for; see the warnings".to_string()
+                } else {
+                    format!(
+                        "{} item(s) and {} optional git push(es) skipped; see the warnings",
+                        summary.counts.skipped, summary.counts.git_skipped
+                    )
+                })
                 .fix("re-run later: skipped items are retried, and written ones are not written again"),
         ),
         Status::CapExceeded => Some(
@@ -98,8 +105,9 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
 /// `dg import`.
 pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
     let cfg = ImportConfig {
-        source: GithubRepoRef::parse(&a.url).map_err(|e| {
-            UserError::new(codes::USAGE, "not a GitHub repository").cause(e.to_string())
+        source: source::parse(&a.url, &a.gitlab).map_err(|e| {
+            UserError::new(codes::USAGE, "not a GitHub repository or GitLab project")
+                .cause(e.to_string())
         })?,
         dest: a.repo.clone(),
         classes: Classes::parse(&a.sync)

@@ -30,6 +30,7 @@ import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -140,9 +141,9 @@ function BlobBody({
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
       <div className="flex items-center justify-between gap-3 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
         <div className="flex min-w-0 items-center gap-2">
-          <FileText className="h-3.5 w-3.5 shrink-0 text-anvil-400" aria-hidden />
+          <FileText className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span className="truncate font-mono">{name}</span>
-          <span className="shrink-0 text-anvil-400">{formatBytes(data.bytes.length)}</span>
+          <span className="shrink-0 text-anvil-500 dark:text-anvil-400">{formatBytes(data.bytes.length)}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Oid value={data.oid} chars={9} />
@@ -159,12 +160,12 @@ function BlobBody({
       </div>
 
       {data.text !== null ? (
-        <div className="overflow-x-auto">
+        <ScrollRegion label={`Contents of ${path}`} className="overflow-x-auto">
           <table className="hljs w-full border-collapse bg-transparent font-mono text-[13px]">
             <tbody>
               {plainLines.map((line, i) => (
                 <tr key={i} className="hover:bg-anvil-50 dark:hover:bg-anvil-900/60">
-                  <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 text-right align-top text-anvil-400 dark:border-anvil-850">
+                  <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 text-right align-top text-anvil-500 dark:text-anvil-400 dark:border-anvil-850">
                     {i + 1}
                   </td>
                   {hlLines ? (
@@ -182,7 +183,7 @@ function BlobBody({
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       ) : (
         <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
           Binary file ({formatBytes(data.bytes.length)}) — use Raw to download.

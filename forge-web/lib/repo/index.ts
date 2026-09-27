@@ -13,6 +13,7 @@
 export {
   DOC,
   asIdentifierString,
+  byteFieldToHex,
   num,
   str,
   stringArray,
@@ -158,6 +159,8 @@ export {
   checkRepoInput,
   createComment,
   createIssue,
+  createPatch,
+  patchData,
   createRelease,
   createRepo,
   createReview,
@@ -173,6 +176,7 @@ export {
   stateEventRoute,
   type CreateRepoInput,
   type CreateRepoStep,
+  type PatchInput,
   type Relation,
   type RepoCreationJournal,
   type VerdictInput,
@@ -205,3 +209,27 @@ export {
   type SubmitProgress,
   type SubmittedReview,
 } from './review-writes'
+export {
+  manifestUrisProblem,
+  refNameHash,
+  refUpdateData,
+  refUpdateType,
+  writePackManifest,
+  writeRefUpdate,
+  type PackManifestInput,
+  type RefUpdateInput,
+} from './push'
+export {
+  checkForkName,
+  findForks,
+  forkManifest,
+  forkRepoV2,
+  planFork,
+  planManifests,
+  planRefs,
+  platformLocator,
+  type ForkNameCheck,
+  type ForkProgress,
+  type ForkResult,
+  type ForkStep,
+} from './fork'

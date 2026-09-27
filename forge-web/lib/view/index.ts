@@ -27,7 +27,7 @@ export {
   type GitIdent,
   type TreeEntry,
 } from './git-objects'
-export { parseMarkdown, splitRefs, type Block, type Inline, type RefPiece, type TableAlignment } from './markdown'
+export { MARKDOWN_MAX_CHARS, parseMarkdown, splitRefs, type Block, type Inline, type RefPiece, type TableAlignment } from './markdown'
 export {
   compactDiffLines,
   diffStat,
@@ -111,8 +111,10 @@ export {
 export { ACL_NAME, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
 export {
   backendInfo,
+  loadPrivateHome,
   loadRepoHome,
   type BackendInfo,
+  type PrivateAccess,
   type RepoHome,
 } from './repo-view'
 export { namesFromDomains, prefetchDpnsNames, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'

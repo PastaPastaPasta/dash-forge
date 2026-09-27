@@ -1,0 +1,56 @@
+{
+  "name": "ref_same_createdat_mutual_chain_uses_id",
+  "description": "Two updates in one block that chain off each other (A -> B and B -> A, both at 100) give the prevOid chain no direction, so the ($createdAt, $id) order decides: u3 sorts last and supersedes u2 (a force). Never Unborn.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 50
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "A",
+        "force": true,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 100
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "B"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "A",
+    "author": "bob",
+    "createdAt": 100
+  }
+}

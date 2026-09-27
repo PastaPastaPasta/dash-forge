@@ -166,10 +166,10 @@ The AEAD layouts, key derivation, anchors, rotation and conformance vectors are 
 | Push authorization | consensus: `ownerRefersTo` M or W |
 | Protected refs | consensus: M gate on `protectedRefUpdate`. **Routing is a rule**: consensus cannot read `protectedPatterns`, so a plain `refUpdate` naming a protected ref can exist, and it is inert by the as-of config rule — for ref resolution and for merge verification alike (`merge_base_tips`: the base history a merge is checked against holds only valid updates, so a plain update cannot put a PR head "on" a protected branch; vectors `merge_base_tips__*`, `fold_pr*__merge_via_*`) |
 | Revocation | delete the `maintainer`/`writer` document; the next write is refused (40120) |
-| Event actor authorization | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability is a rule**: `merge` needs `oid` reachable from the base tip |
+| Event actor authorization | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability is a rule**: `merge` needs `oid` reachable from the base tip, and the base must have been a branch when the PR was opened (`pr_base_tips`, vectors `pr_base_tips__*`, `fold_pr_v2__merge_into_base_*`): a base with no valid tip at the patch's `$createdAt` (never pushed, or deleted then) has no tips, so a merge into a branch created later never counts. The fold reads the base the patch was opened against (`baseRefName`, at its `$createdAt`), so a retarget does not change it. This applies to merge events already on chain: a PR that read as merged because its merge created its base now reads open. Clients refuse to open a PR against a base that is not a branch, and `dg pr merge` and the browser merge refuse to push to a base that does not exist (it would create it) |
 | Repository listing | the `repo` document is the listing; its `$ownerId` is the owner |
 | Owner lock-out prevention | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
-| Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | client rules (the base rules, shared by every client) |
+| Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | client rules (the base rules, shared by every client). Ref resolution (`resolve_ref`, vectors `resolve_ref__*`) folds a ref's valid updates in consensus-clock order (`$createdAt`, required on both ref update types); only inside one block does the `prevOid` chain order them (an update naming another's tip comes after it), then `$id`, a chain cycle inside one block being broken at its smallest-`$id` member. A `prevOid` names a commit, not a document, and a ref can hold the same commit twice (`A → B → force A`), so a chain match against a newer update is no causal link; the fold only lets a later update supersede an earlier one, and a ref whose newest update names a commit is never unborn |
 | Issue and PR numbering | client rule, see below |
 | PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current head (the folded head: the newest `headUpdate`, else `patch.headOid`) and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3), unknown verdicts and dismissed reviews (`reviewDismiss`) neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
 | Review comments belong to their review | consensus: `comment.reviewId`'s `propertyAgreement` (`$ownerId`, `repoId`, `targetId` = `patchId`). Readers also filter by owner (`group_review_comments`) |
@@ -210,6 +210,7 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | Rule | Functions | Vectors |
 |---|---|---|
 | Issue/PR fold over `event` + `authorEvent` (§3) | `fold_issue_state_v2`, `fold_pr_state_v2` | `fold_issue_v2__*`, `fold_pr_v2__*` |
+| A PR's base history (§6 merge reachability) | `merge_base_tips`, `pr_base_tips` | `merge_base_tips__*`, `pr_base_tips__*` |
 | Membership | `RoleOracle::{role_at, member_at, current_role}` | through `approvals__*` |
 | Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
 | Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
@@ -296,6 +297,25 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
+
+### Contract group trust
+
+A limited key is bound to the `dash-forge` contract group, and a group-bound key can sign documents for **every member** of the group, including members added after the key was registered. Binding a key therefore trusts whoever can add members. On protocol 14 that is only the group's owner or one of its admins:
+
+- A member joins in the create transition of its own contract (`contract_group_memberships`). drive-abci (`data_contract_create/state/v1`) accepts the join only when the signer is the group's owner or an admin (`ContractGroupOwner::may_add_members`). A contract cannot enrol another contract, and no other transition adds members.
+- The owner and admins are fixed when the group is registered. No transition changes them, and memberships are creation-only.
+
+So `dg` and the web app pin the **trust root**, not the member list. Before offering to bind a key to the group (before the confirmation prompt), each one checks, with every read proof-verified:
+
+1. **Owner pin.** `getContractGroupInfo` returns the owner recorded in the bundled `deployments/<network>.json` (`v2.contractGroup.owner` when its `id` is the current group, else forge-core's `ownerId`), and **no admins** (`deploy-v2.mjs` registers none). A different owner, any admin, or a missing group is refused. With this pin, consensus alone guarantees that every member was created by the Forge deployer.
+2. **The current pair.** forge-core and forge-collab are whole-contract members. This is checked before any member contract is read.
+3. **Member owners, as a cross-check.** Every other member (a whole contract, a document type or a token) should belong to a contract whose `$ownerId` is the pinned owner. The client reads each unknown member contract, up to 64 of them, and refuses on a proof-verified owner mismatch.
+4. **Unknown members are shown, not refused.** A member the client does not know passes and is listed before the key is confirmed. Examples are a newer forge-collab revision or a trending-index contract. `dg` prints a `note:` line (part of the key explanation, or right after the group check in `dg auth new`), and reports `unknownGroupMembers` in `--json` output. The web app shows the note on the key-creation screen. The note reads "newer Forge contract revision(s)", or "additional group member(s)" when a member is a document type or token of a contract the client already knows. Earlier contracts the deployment lists as superseded in the same group count as known.
+5. **Strict mode (`dg` only).** `dg auth … --strict-group`, or `DASH_FORGE_STRICT_GROUP=1` for CI, accepts only the known set: the current pair and its superseded predecessors. Anything else is refused, and no member contract is read. The web app has no strict mode.
+
+**Trade-off: a member the client cannot read is accepted.** A member contract that cannot be fetched or decoded (for example, a contract format newer than the installed binary) is accepted. The note names it ("could not read contract X; accepted because the group owner is pinned"), and `--json` lists it under `uncheckedGroupMembers`. The same applies to unknown members past the cap of 64. Rule 1 is what bounds a key: only the pinned owner can add members, and consensus enforces that, so rule 3 adds no security that rule 1 lacks. Refusing on a read failure would turn every future contract format into an outage for every installed client, which is the failure this design removes. Only a proof-verified owner that differs from the pin is refused.
+
+Registering a new Forge contract into the group (`deploy-v2.mjs --only collab --force-new`) therefore breaks no installed client. Only a change of owner or admins does, and that would need a new group, and so a new deployment file.
 
 ## 9. Rules that changed from the brief
 

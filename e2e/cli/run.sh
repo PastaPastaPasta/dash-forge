@@ -46,6 +46,9 @@ SCENARIOS=(
   "12-star-unstar"
   "13-init-push"
   "15-private-repo"
+  "16-private-burn-repair"
+  "17-ref-force-back-and-pr-base"
+  "18-issue-parity"
 )
 
 # Optional subset filter (match by leading number or substring).

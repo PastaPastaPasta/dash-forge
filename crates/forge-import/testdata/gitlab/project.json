@@ -1,0 +1,6 @@
+{
+  "id": 444821,
+  "path_with_namespace": "gitlab-org/gitlab-runner-docker-cleanup",
+  "default_branch": "master",
+  "description": "GitLab Runner Cleanup Tool a tool to automatically manage free space when using Docker"
+}

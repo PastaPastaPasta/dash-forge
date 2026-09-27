@@ -55,6 +55,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssigneeAvatars, EditedMarker, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
+import { HiddenNote } from '@/components/repo/hidden-note'
 import { cn } from '@/lib/utils'
 
 /** The write the confirm dialog is about to sign. */
@@ -110,7 +111,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
-  const { issue, timeline, labels, members } = data
+  const { issue, timeline, labels, members, hidden } = data
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
@@ -222,7 +223,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           ) : (
             <div className="flex items-start gap-3">
               <h1 className="flex-1 text-2xl">
-                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-400">#{issue.number}</span>
+                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{issue.number}</span>
               </h1>
               {isAuthor ? (
                 <Button
@@ -256,7 +257,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
             <Author identityId={issue.author} />
-            <span className="text-anvil-400">authored {timeAgo(issue.createdAt)}</span>
+            <span className="text-anvil-500 dark:text-anvil-400">authored {timeAgo(issue.createdAt)}</span>
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
@@ -265,7 +266,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             ) : issue.body ? (
               <MarkdownView source={issue.body} links={links} />
             ) : (
-              <p className="italic text-anvil-400">No description.</p>
+              <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
             )}
           </div>
         </div>
@@ -289,9 +290,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           />
         ) : null}
 
+        <HiddenNote hidden={0} what="comments" home={home} by={hidden} />
+
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+          {isPrivate ? (
+            <p className="mb-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
+              Comments on private repos aren&apos;t supported yet.
+            </p>
+          ) : null}
           <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <CostPreview cost={commentCost} />
@@ -310,17 +318,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 variant="primary"
                 onClick={postComment}
                 loading={posting}
-                disabled={comment.trim() === '' || bytes(comment) > BODY_MAX || guard.disabledReason !== null}
+                disabled={isPrivate || comment.trim() === '' || bytes(comment) > BODY_MAX || guard.disabledReason !== null}
                 title={guard.disabledReason ?? undefined}
               >
                 {identity ? 'Comment' : 'Sign in to comment'}
               </Button>
             </div>
           </div>
-          {bytes(comment) > BODY_MAX ? <p className="mt-2 text-dense text-danger">A comment holds 5,120 bytes; this one is {bytes(comment)}.</p> : null}
+          {bytes(comment) > BODY_MAX ? <p className="mt-2 text-dense text-danger-700 dark:text-danger-400">A comment holds 5,120 bytes; this one is {bytes(comment)}.</p> : null}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
-            <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
+            <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
           ) : null}
         </div>
       </div>
@@ -440,7 +448,7 @@ function commentSlots({
       type="button"
       onClick={() => onEdit({ id: c.id, body: c.body })}
       disabled={disabled}
-      className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-600 disabled:opacity-50"
+      className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400 disabled:opacity-50"
       aria-label="Edit comment"
     >
       <Pencil className="h-3 w-3" aria-hidden /> Edit
@@ -476,7 +484,7 @@ function AssigneePicker({
       </ul>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-600">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit assignees
           </button>
           {open ? (
@@ -552,7 +560,7 @@ function LabelPicker({
       </div>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-600">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit labels
           </button>
           {open ? (
@@ -573,7 +581,7 @@ function LabelPicker({
                     >
                       <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
                       <LabelChip name={n} def={def} />
-                      {def?.description ? <span className="truncate text-[11px] text-anvil-400">{def.description}</span> : null}
+                      {def?.description ? <span className="truncate text-[11px] text-anvil-500 dark:text-anvil-400">{def.description}</span> : null}
                     </button>
                   )
                 })}

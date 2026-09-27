@@ -73,6 +73,10 @@ export interface ConfigBundle {
  * scans for a maximum), but ascending is the same order forge-core returns.
  */
 export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<ConfigBundle> {
+  // A private repo's config is sealed: a member's session holds the decrypted timeline, and
+  // nobody else reads any of it (only the plaintext backend, via readConfig).
+  if (repo.session !== undefined) return { config: repo.session.config, history: [...repo.session.configHistory] }
+  if (repo.visibility === 'private') return { config: await readConfig(sdk, repo), history: [] }
   const documents = (
     await queryAllDocuments(
       sdk,
@@ -117,6 +121,7 @@ export async function readConfigHistory(sdk: EvoSDK, repo: RepoRef): Promise<Con
  * `resolveRef` considers in force. forge-core `read_default_branch` makes the same trade.
  */
 export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
+  if (repo.session !== undefined) return repo.session.config
   // A malformed config is skipped (`forge-v2.md` §5), so read a few to find the newest
   // well-formed one.
   const { documents } = await queryDocumentsWithProof(
@@ -127,7 +132,9 @@ export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig
     }),
   )
   const doc = documents.find((d) => wellFormed(repo, 'config', d))
-  return doc === undefined ? null : toRepoConfig(doc)
+  if (doc === undefined) return null
+  // Without a session a private config shows only what is plaintext by design: the backend.
+  return repo.visibility === 'private' ? { ...toRepoConfig(doc), defaultBranch: 'main', protectedPatterns: [] } : toRepoConfig(doc)
 }
 
 /** Convenience: the default branch name (falls back to `main`). */

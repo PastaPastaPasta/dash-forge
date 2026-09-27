@@ -1,6 +1,6 @@
 {
   "name": "current_epoch_is_highest_anchored",
-  "description": "epochs 0, 1, 3 exist (not contiguous): the current epoch is 3.",
+  "description": "epochs 0, 1 and 2 exist: the current epoch is 2, though the reader holds only epoch 1 (and 0 through the chain), so it has no write epoch.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -36,53 +36,54 @@
         "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
       },
       {
-        "id": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d",
+        "id": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 3,
-        "createdAtBlockHeight": 3000,
-        "createdAt": 3000000,
-        "enc": "02c8e91e8a64a309b4601baf2233497f90770a80f0b823796337741fe2da0f19c9000102030405060708090a0b2d383d5eb1e4da76729e2eb1665f78af023e43475b5ea468cf83e252142ccbd851becf1550821e119afc549287a74f7f73fbf1f0c051546d6ca6"
+        "epoch": 2,
+        "createdAtBlockHeight": 2000,
+        "createdAt": 2000000,
+        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a061cf7942ab2ec075bba43fe84f2972597b0ffa595a1e8a4572a2492136b5a6a24083b217d0612174a25d133153b61d4c19522e"
       }
     ],
     "wraps": [
       {
-        "id": "346fb09eb7d015d6ed47cc9048f4d3f8612ed83accd32b6cf126ba1c9c52de81",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 3,
-        "recipientKeyId": 4,
-        "keyEnabled": true
-      },
-      {
-        "id": "ae61deb75bea8d5686e7186b8630a1c3d42eb7b68362dc2496d0e2632be6524f",
+        "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
-        "epoch": 3,
+        "epoch": 1,
         "recipientKeyId": 4,
         "keyEnabled": true,
-        "key": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "48fe6ff2e3153b73f766b77224bcbd7acf944ecdd77993b75c1cf926ecd6321e",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 2,
+        "recipientKeyId": 4,
+        "keyEnabled": true
       }
     ]
   },
   "expected": {
-    "currentEpoch": 3,
+    "currentEpoch": 2,
     "anchors": {
       "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
       "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
-      "3": "da79e80feb84d37c707dd56f544af14d0fbae536880b37afcc9701e47e3e2e5d"
+      "2": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed"
     },
     "readable": [
       0,
-      1,
-      3
+      1
     ],
-    "writeEpoch": 3,
+    "writeEpoch": null,
     "unanchored": [],
     "alerts": [],
     "repair": {
       "rotate": false,
       "nonMembers": [],
-      "missingWraps": []
+      "missingWraps": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
     }
   }
 }

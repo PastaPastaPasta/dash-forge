@@ -15,11 +15,11 @@ export const TRUST_META: Readonly<
   Record<TrustState, { label: string; klass: string; Icon: typeof ShieldCheck }>
 > = {
   // The base green is under AA as text on light surfaces; -700 carries the word there.
-  verified: { label: TRUST_LABEL.verified, klass: 'text-verify-700 dark:text-verify', Icon: ShieldCheck },
-  partial: { label: TRUST_LABEL.partial, klass: 'text-caution-700 dark:text-caution', Icon: ShieldHalf },
-  unverified: { label: TRUST_LABEL.unverified, klass: 'text-caution-700 dark:text-caution', Icon: ShieldAlert },
+  verified: { label: TRUST_LABEL.verified, klass: 'text-verify-700 dark:text-verify-400', Icon: ShieldCheck },
+  partial: { label: TRUST_LABEL.partial, klass: 'text-caution-700 dark:text-caution-400', Icon: ShieldHalf },
+  unverified: { label: TRUST_LABEL.unverified, klass: 'text-caution-700 dark:text-caution-400', Icon: ShieldAlert },
   pending: { label: TRUST_LABEL.pending, klass: 'text-anvil-500 dark:text-anvil-400', Icon: ShieldEllipsis },
-  failed: { label: TRUST_LABEL.failed, klass: 'text-danger', Icon: ShieldX },
+  failed: { label: TRUST_LABEL.failed, klass: 'text-danger-700 dark:text-danger-400', Icon: ShieldX },
 }
 
 export interface ChipSegment {

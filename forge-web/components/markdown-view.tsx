@@ -6,15 +6,15 @@
  * accents; code blocks render monospace in an inset surface.
  */
 
-import { Fragment, createContext, useContext, type ReactNode } from 'react'
+import { Fragment, createContext, memo, useContext, type ReactNode } from 'react'
 import Link from 'next/link'
-import { parseMarkdown, splitRefs, type Block, type Inline, type TableAlignment } from '@/lib/view'
+import { formatBytes, MARKDOWN_MAX_CHARS, parseMarkdown, splitRefs, type Block, type Inline, type TableAlignment } from '@/lib/view'
 import { cn } from '@/lib/utils'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 
 /**
  * Where `#n` and `@name` in plain text link to (GitHub's autolinks, D-223). Omitted: they stay
- * text (release notes, READMEs). `issueHref(n)` is the repo's issue route; the page shows the
- * issue, or offers the PR of that number when there is no such issue.
+ * text (release notes, READMEs). `issueHref(n)` is the repo's issue route.
  */
 export interface MarkdownLinks {
   readonly issueHref: (n: number) => string
@@ -23,7 +23,7 @@ export interface MarkdownLinks {
 
 const LinksContext = createContext<MarkdownLinks | null>(null)
 
-const LINK_CLASS = 'text-forge-600 underline decoration-forge-600/30 underline-offset-2 hover:decoration-forge-600 dark:text-forge-400'
+const LINK_CLASS = 'text-forge-700 underline decoration-forge-700/30 underline-offset-2 hover:decoration-forge-700 dark:text-forge-400'
 
 /** Plain text with its `#n` / `@name` references linked. */
 function AutolinkedText({ text }: { text: string }): JSX.Element {
@@ -70,7 +70,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
       case 'em':
         return <em key={key}>{renderInline(n.c, key)}</em>
       case 'del':
-        return <del key={key} className="text-anvil-400">{renderInline(n.c, key)}</del>
+        return <del key={key} className="text-anvil-500 dark:text-anvil-400">{renderInline(n.c, key)}</del>
       case 'code':
         return (
           <code key={key} className="rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] text-forge-700 dark:bg-anvil-800 dark:text-forge-300">
@@ -84,7 +84,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
             href={n.href}
             target={n.href.startsWith('http') ? '_blank' : undefined}
             rel="noreferrer noopener"
-            className="text-forge-600 underline decoration-forge-600/30 underline-offset-2 hover:decoration-forge-600 dark:text-forge-400"
+            className="text-forge-700 underline decoration-forge-700/30 underline-offset-2 hover:decoration-forge-700 dark:text-forge-400"
           >
             {renderInline(n.c, key)}
           </a>
@@ -123,9 +123,9 @@ function renderBlock(b: Block, key: string): ReactNode {
       return <p key={key} className="my-3 leading-relaxed">{renderInline(b.c, key)}</p>
     case 'code':
       return (
-        <pre key={key} className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
+        <ScrollRegion as="pre" key={key} label="Code block" className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
           <code>{b.v}</code>
-        </pre>
+        </ScrollRegion>
       )
     case 'list':
       return b.ordered ? (
@@ -145,7 +145,7 @@ function renderBlock(b: Block, key: string): ReactNode {
       )
     case 'table':
       return (
-        <div key={key} className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
+        <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
           <table className="min-w-full border-collapse text-dense leading-5">
             <thead className="bg-anvil-50 text-anvil-900 dark:bg-anvil-900 dark:text-anvil-50">
               <tr>
@@ -181,7 +181,7 @@ function renderBlock(b: Block, key: string): ReactNode {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       )
     case 'hr':
       return <hr key={key} className="my-5 border-anvil-200 dark:border-anvil-800" />
@@ -190,13 +190,35 @@ function renderBlock(b: Block, key: string): ReactNode {
   }
 }
 
-export function MarkdownView({ source, className, links }: { source: string; className?: string; links?: MarkdownLinks }): JSX.Element {
-  const blocks = parseMarkdown(source)
+/**
+ * Memoized on `source`, so a page that re-renders on every composer keystroke does not
+ * re-parse and re-render each issue, comment and README body it shows.
+ */
+export const MarkdownView = memo(function MarkdownView({
+  source,
+  className,
+  links,
+}: {
+  source: string
+  className?: string
+  /** Link `#n` / `@name` (issue and PR pages); keep it referentially stable (memo). */
+  links?: MarkdownLinks
+}): JSX.Element {
+  if (source.length > MARKDOWN_MAX_CHARS) {
+    return (
+      <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
+        <p className="my-3 text-dense italic text-anvil-500 dark:text-anvil-400">
+          Too large to render as Markdown ({formatBytes(source.length)}); shown as plain text.
+        </p>
+        <pre className="whitespace-pre-wrap break-words font-mono text-[13px]">{source}</pre>
+      </div>
+    )
+  }
   return (
     <LinksContext.Provider value={links ?? null}>
       <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
-        {blocks.map((b, i) => renderBlock(b, `b-${i}`))}
+        {parseMarkdown(source).map((b, i) => renderBlock(b, `b-${i}`))}
       </div>
     </LinksContext.Provider>
   )
-}
+})

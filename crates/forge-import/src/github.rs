@@ -557,17 +557,7 @@ impl GithubClient {
         });
         let mut cmd = Command::new("git");
         if let Some(h) = &header {
-            // Appended after any GIT_CONFIG_* entries the caller already set.
-            let n: usize = std::env::var("GIT_CONFIG_COUNT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
-                .env(
-                    format!("GIT_CONFIG_KEY_{n}"),
-                    "http.https://github.com/.extraheader",
-                )
-                .env(format!("GIT_CONFIG_VALUE_{n}"), h);
+            append_git_config(&mut cmd, "http.https://github.com/.extraheader", h);
         }
         if dir.join("HEAD").exists() {
             cmd.arg("-C")
@@ -592,6 +582,18 @@ impl GithubClient {
     }
 }
 
+/// Give `cmd` one more git config entry through `GIT_CONFIG_*`, appended after any the
+/// caller already set (the Mirror Action and the CI templates scope their settings that way).
+pub(crate) fn append_git_config(cmd: &mut Command, key: &str, value: &str) {
+    let n: usize = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    cmd.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{n}"), key)
+        .env(format!("GIT_CONFIG_VALUE_{n}"), value);
+}
+
 fn with_since(path: &str, since: Option<&str>) -> String {
     match since {
         Some(s) => format!("{path}&since={s}"),
@@ -611,6 +613,11 @@ fn gh_token() -> Option<String> {
     let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
     let t = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !t.is_empty()).then_some(t)
+}
+
+/// Standard base64 of `input` (for git's HTTP auth headers).
+pub fn base64(input: &[u8]) -> String {
+    base64_lite::encode(input)
 }
 
 /// Minimal standard base64 (for the git auth header); avoids a dependency for 20 lines.
