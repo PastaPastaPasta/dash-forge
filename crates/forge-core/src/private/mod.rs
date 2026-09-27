@@ -16,10 +16,9 @@
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
 //!   pure function over flattened rows (§5.3–§5.6).
 //!
-//! The seams the data plane already routes through ([`RefNameHasher`], [`RepoCodec`],
-//! [`PackCipher`], [`RepoKeyReader`]) get their private implementations in [`Private`]. Push,
-//! fetch and the web UI adopt them in later changes; until then [`for_visibility`] still refuses a
-//! private repository, so nothing writes one half-finished.
+//! The seams the data plane routes through ([`RefNameHasher`], [`RepoCodec`], [`PackCipher`],
+//! [`RepoKeyReader`]) have their private implementations in [`Private`], built from the
+//! resolution [`crate::keyring::Keyring`] reads from Platform.
 
 // The deterministic seal constructors behind `vectors` reuse nonces and file ids by design; a
 // release build must never carry them.
@@ -41,7 +40,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::rules::v2::Visibility;
 
 pub use doc::{open_content, DocHeader, OpenContext, Opened, Unreadable};
 pub use epoch::{resolve_epochs, Alert, EpochResolution, Repair};
@@ -316,16 +314,7 @@ impl RepoKeyReader for Private {
 }
 
 fn not_supported() -> Error {
-    Error::Config("private repositories are not supported by this version of the CLI yet".into())
-}
-
-/// The seams for a repository of `visibility`. Private repositories are refused until push and
-/// fetch adopt [`Private`] (a later change), so nothing writes one half-finished.
-pub fn for_visibility(visibility: Visibility) -> Result<Public> {
-    match visibility {
-        Visibility::Public => Ok(Public),
-        Visibility::Private => Err(not_supported()),
-    }
+    Error::Config("a public repository has no keys".into())
 }
 
 #[cfg(test)]
@@ -334,7 +323,7 @@ mod tests {
 
     #[test]
     fn public_seams_are_the_identity_and_sha256() {
-        let p = for_visibility(Visibility::Public).unwrap();
+        let p = Public;
         assert_eq!(
             hex::encode(p.hash(7, "refs/heads/main").unwrap()),
             hex::encode(crate::backends::sha256(b"refs/heads/main"))
@@ -346,10 +335,5 @@ mod tests {
         );
         assert!(p.open(b"pack".to_vec(), 5).is_err(), "sizeBytes is checked");
         assert!(p.epoch_key(0).is_err());
-    }
-
-    #[test]
-    fn private_repositories_are_refused() {
-        assert!(for_visibility(Visibility::Private).is_err());
     }
 }

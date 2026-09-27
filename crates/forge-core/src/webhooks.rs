@@ -680,6 +680,7 @@ mod tests {
             id: "doc".into(),
             owner_id: "OWNER".into(),
             created_at: Some(5),
+            created_at_block_height: None,
             fields: BTreeMap::from([
                 ("repoId".into(), FieldValue::identifier([1; 32])),
                 ("hookId".into(), FieldValue::bytes32([2; 32])),

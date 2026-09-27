@@ -717,7 +717,7 @@ impl<'a> Collab<'a> {
 
     /// The forge-v2 contracts of `repo`, refusing private repos.
     fn forge(repo: &RepoRef) -> Result<&ForgeIds> {
-        repo.require_readable()?;
+        repo.require_public("issues, pull requests and releases")?;
         Ok(repo.forge())
     }
 
@@ -1902,6 +1902,7 @@ mod tests {
             id: "x".into(),
             owner_id: "o".into(),
             created_at: Some(5),
+            created_at_block_height: None,
             fields: p,
         };
         let issue = issue_from_doc(&doc);
@@ -2021,6 +2022,7 @@ mod tests {
             id: "x".into(),
             owner_id: "o".into(),
             created_at: Some(1),
+            created_at_block_height: None,
             fields,
         };
         let ok = doc(issue_props(1, "t", "", None).unwrap());
@@ -2051,6 +2053,7 @@ mod tests {
             id: "x".into(),
             owner_id: "o".into(),
             created_at: Some(1),
+            created_at_block_height: None,
             fields,
         };
         let honest = patch_props(1, &input, None).unwrap();

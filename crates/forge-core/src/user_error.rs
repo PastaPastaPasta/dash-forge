@@ -79,6 +79,11 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         codes::IDENTITY_NOT_FOUND,
         "identity not found on this network",
     ),
+    (codes::NO_ENCRYPTION_KEY, "no encryption key for private repositories"),
+    (codes::NOT_A_KEY_HOLDER, "no key for this private repository"),
+    (codes::KEY_MISMATCH, "a maintainer gave you the wrong key"),
+    (codes::KEY_CHAIN_BROKEN, "the repository's key chain is broken"),
+    (codes::ROTATION_PENDING, "key rotation or repair pending"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),
     (codes::STORAGE_POLICY, "storage policy not met"),
@@ -87,6 +92,8 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::STORAGE_SECRET, "storage credentials unavailable"),
     (codes::STORAGE_TEST, "storage profile failed its checks"),
     (codes::RECORDED_COPY_LOST, "recorded pack copy unreachable"),
+    (codes::SEALED_PACK_CORRUPT, "sealed pack corrupt"),
+    (codes::LATE_CONTENT, "written after the key was rotated"),
     (codes::NOT_A_WRITER, "not a writer of this repository"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
@@ -134,6 +141,16 @@ pub mod codes {
     pub const IDENTITY_UNREADABLE: &str = "E303";
     /// The identity does not exist on the selected network.
     pub const IDENTITY_NOT_FOUND: &str = "E304";
+    /// A private repository needs an `ENCRYPTION` key the identity file holds.
+    pub const NO_ENCRYPTION_KEY: &str = "E305";
+    /// No accepted `repoKey` wrap opens this private repository for the identity.
+    pub const NOT_A_KEY_HOLDER: &str = "E306";
+    /// A current maintainer's wrap holds a key that is not the epoch's (§5.4 KeyMismatch).
+    pub const KEY_MISMATCH: &str = "E307";
+    /// The `prevEpochKey` chain stops before an epoch the content needs (ChainBroken).
+    pub const KEY_CHAIN_BROKEN: &str = "E308";
+    /// The current epoch cannot be written under yet: a rotation or a repair is pending.
+    pub const ROTATION_PENDING: &str = "E309";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
     /// `dash.storage` names an unknown profile, or storage.toml is invalid.
@@ -150,6 +167,10 @@ pub mod codes {
     pub const STORAGE_TEST: &str = "E506";
     /// A re-push found the pack already recorded, with no copy readable.
     pub const RECORDED_COPY_LOST: &str = "E507";
+    /// A sealed (private-repository) artifact failed its checks after its hash verified.
+    pub const SEALED_PACK_CORRUPT: &str = "E508";
+    /// Content under a superseded key epoch, written after the rotation by a non-member.
+    pub const LATE_CONTENT: &str = "E509";
     /// Consensus refused a write: no `writer`/`maintainer` document (40120).
     pub const NOT_A_WRITER: &str = "E601";
     // E602 (token suspended) is retired with forge-v1 and stays reserved.
@@ -599,6 +620,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         CoreError::Io(msg) if mentions_identity(chain) => identity_unreadable(msg),
         CoreError::Config(msg) => from_config(msg, chain, ctx),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
+        CoreError::User(u) => (**u).clone(),
         _ => return None,
     })
 }

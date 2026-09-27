@@ -133,4 +133,15 @@ pub enum Error {
     /// crate's public boundary.
     #[error("platform error: {0}")]
     Platform(String),
+
+    /// A failure already phrased for a person (code, cause, fix): the private-repository key
+    /// checks raise these where the reason is understood. Rendered as-is at the boundary.
+    #[error("{0}")]
+    User(Box<crate::user_error::UserError>),
+}
+
+impl From<crate::user_error::UserError> for Error {
+    fn from(u: crate::user_error::UserError) -> Self {
+        Self::User(Box::new(u))
+    }
 }

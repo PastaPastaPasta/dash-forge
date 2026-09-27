@@ -877,6 +877,10 @@ pub struct FetchedDocument {
     pub owner_id: String,
     /// Consensus `$createdAt` in ms, when the document type records it.
     pub created_at: Option<u64>,
+    /// `$createdAtBlockHeight`, set by the network, when the document type records it
+    /// (required on every private-repo type: anchors and the late-content rule order by it,
+    /// `docs/security/private-repos.md` §13).
+    pub created_at_block_height: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
 }
@@ -886,6 +890,7 @@ impl FetchedDocument {
         let id = doc.id().to_string(Encoding::Base58);
         let owner_id = doc.owner_id().to_string(Encoding::Base58);
         let created_at = doc.created_at();
+        let created_at_block_height = doc.created_at_block_height();
         let fields = doc
             .properties()
             .iter()
@@ -895,6 +900,7 @@ impl FetchedDocument {
             id,
             owner_id,
             created_at,
+            created_at_block_height,
             fields,
         }
     }
@@ -2520,6 +2526,7 @@ mod tests {
             id: format!("d-{i:06}"),
             owner_id: "owner".to_string(),
             created_at: Some(i as u64),
+            created_at_block_height: None,
             fields: BTreeMap::new(),
         }
     }

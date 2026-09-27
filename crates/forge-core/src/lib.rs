@@ -21,6 +21,8 @@
 //!   membership, numbering, approvals and the pack reader rule.
 //! - [`cost`] — fee constants and the storage-cost estimator.
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
+//! - [`keyring`] — a private repository's keys on Platform: load and resolve the epochs,
+//!   open sealed documents, and write wraps, anchors, rotations and repairs.
 //! - [`envelope`] — the `encryptedFor` scheme (`ecdh-secp256k1-aes256-cbc`), matching Platform.
 //! - [`webhooks`] — forge-v2 `webhook` documents: create/list/remove, newest-wins, secrets.
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
@@ -37,6 +39,7 @@ pub mod create;
 pub mod envelope;
 pub mod error;
 pub mod fork;
+pub mod keyring;
 pub mod keystore;
 pub mod members;
 pub mod network;

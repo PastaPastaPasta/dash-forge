@@ -121,6 +121,36 @@ Fix: check the path (`dg auth status` shows which file is in use), or export the
 
 Fix: select the network the identity was created on: `--network testnet|mainnet`, or `--network devnet --devnet-name <name>`.
 
+## E305
+
+**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key, and the identity file in use holds none that matches an enabled key on the identity (or, for `dg collab add`, the member you named has none).
+
+Fix: `dg auth keys add --encryption` adds one (one identity update signed by the master key, a fraction of a cent). A member you are adding runs it themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+
+## E306
+
+**No key for this private repository.** No `repoKey` wrap from a current maintainer opens this repository for your identity: you are not a member, you were removed, or a maintainer added you and has not wrapped the key to you yet.
+
+Fix: ask a maintainer to add you (`dg collab add <owner>/<repo> <your identity id>`). If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none.
+
+## E307
+
+**A maintainer gave you the wrong key.** A current maintainer's `repoKey` for you holds a key that is not the one the epoch's anchor commits to (a split view, or the leftover wrap of a maintainer who lost a concurrent rotation). The client never falls back to another key; the alert names the wrap's author.
+
+Fix: ask a maintainer to run `dg repo keys status <owner>/<repo>` and `dg repo keys repair`; the wrap's author is named in the cause.
+
+## E308
+
+**The repository's key chain is broken.** The anchor of an epoch does not carry a previous-epoch key that opens the epoch before it, so older content cannot be reached from the keys you hold.
+
+Fix: ask the maintainer named in the cause to re-wrap the older epoch to you; `dg repo keys status` lists the epochs you can read.
+
+## E309
+
+**Key rotation or repair pending.** The repository's current key epoch is one your identity cannot write under yet (a rotation landed and no current maintainer has wrapped its key to you), or a repair is needed before new content is written.
+
+Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Nothing was written.
+
 ## E401
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
@@ -173,6 +203,18 @@ Fix: apply the printed fix, then run `dg storage test <name>` again. `git push` 
 **Recorded pack copy unreachable.** An earlier push recorded this exact pack, and none of the copies it recorded can be read now. The push was refused **before** paying for anything.
 
 Fix: restore that storage, or re-upload the pack from this clone with `dg reseed <owner>/<repo> --from-local` (run inside the repository). Then push again.
+
+## E508
+
+**Sealed pack corrupt.** A private repository's sealed artifact hash-verified against its manifest but failed decryption: a segment tag, the header, or the length does not check out. The uploader stored bytes no honest client writes, so every copy of that pack is the same bad bytes.
+
+Fix: ask the member who pushed it to push again (`git push` re-stores it under a new hash). `dg repo keys status` shows which epochs you can read.
+
+## E509
+
+**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
+
+Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 
 ## E601
 
