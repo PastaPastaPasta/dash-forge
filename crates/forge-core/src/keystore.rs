@@ -361,14 +361,22 @@ fn replace_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// A unique `.<name>.<pid>.<nonce>.tmp` path next to `path` (skipped by the copy).
+/// A unique `.<name>.<pid>.<seq>.<nonce>.tmp` path next to `path` (in `.` for a bare file
+/// name). Unique per process, thread and call; callers create it with `create_new`, which
+/// refuses any collision. The legacy-config copy skips these names.
 fn temp_sibling(path: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
     let mut nonce = [0u8; 8];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(
-        ".{name}.{}.{}.tmp",
+    dir.join(format!(
+        ".{name}.{}.{}.{}.tmp",
         std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         hex::encode(nonce)
     ))
 }
@@ -551,7 +559,6 @@ pub fn configured_default_source() -> Option<String> {
 /// followed) that is then renamed over `path`. A parent directory under the Forge config
 /// directory is created and kept 0700.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(io)?;
@@ -570,19 +577,10 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::Io(format!("{} names no file", path.display())))?;
-    // Unique per process, thread and call; create_new refuses any collision.
-    let mut nonce = [0u8; 8];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let tmp = dir.join(format!(
-        ".{}.{}.{}.{}.tmp",
-        name.to_string_lossy(),
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        hex::encode(nonce)
-    ));
+    if path.file_name().is_none() {
+        return Err(Error::Io(format!("{} names no file", path.display())));
+    }
+    let tmp = temp_sibling(path);
     if let Err(e) = create_private_file(&tmp, bytes) {
         // Never leave a partial secret behind.
         let _ = std::fs::remove_file(&tmp);

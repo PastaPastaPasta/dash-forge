@@ -44,6 +44,13 @@ fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str
     }
 }
 
+/// The E802 for a prompt that cannot be asked, with `cause`; callers add the fixes.
+fn confirmation_required(cause: String) -> UserError {
+    UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
+        .cause(cause)
+        .note("nothing was written")
+}
+
 /// Stack the network layers in `dg`'s precedence order and resolve them.
 ///
 /// Precedence, field by field: flags (`--network` / `--devnet-name` / `--dapi-addresses`) >
@@ -184,16 +191,12 @@ impl Ctx {
     pub fn require_confirmable(&self, what: &str) -> Result<()> {
         match prompt_blocker(self.yes, self.json, self.stdin_tty) {
             None => Ok(()),
-            Some(why) => Err(
-                UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
-                    .cause(format!(
-                        "{what} asks for confirmation before it spends, and {why}"
-                    ))
-                    .fix("pass --yes (-y) to confirm without a prompt, as scripts and CI must")
-                    .fix("run it in a terminal to review the plan and answer the prompt")
-                    .note("nothing was written")
-                    .into(),
-            ),
+            Some(why) => Err(confirmation_required(format!(
+                "{what} asks for confirmation before it spends, and {why}"
+            ))
+            .fix("pass --yes (-y) to confirm without a prompt, as scripts and CI must")
+            .fix("run it in a terminal to review the plan and answer the prompt")
+            .into()),
         }
     }
 
@@ -202,13 +205,9 @@ impl Ctx {
             return Ok(true);
         }
         if let Some(why) = prompt_blocker(self.yes, self.json, self.stdin_tty) {
-            return Err(
-                UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
-                    .cause(format!("{prompt} — and {why}"))
-                    .fix("check the estimate, then run the same command with --yes")
-                    .note("nothing was written")
-                    .into(),
-            );
+            return Err(confirmation_required(format!("{prompt} — and {why}"))
+                .fix("check the estimate, then run the same command with --yes")
+                .into());
         }
         eprint!("{prompt} {} ", if default_yes { "[Y/n]" } else { "[y/N]" });
         std::io::stderr().flush().ok();
