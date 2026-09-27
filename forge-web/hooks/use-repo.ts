@@ -27,11 +27,11 @@ import { forgetPrivateHome } from '@/hooks/use-private-home'
 import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { evoSdkService } from '@/lib/sdk'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 export interface UseRepoResult extends AsyncState<RepoHome | null> {
   readonly ready: boolean
-  readonly sdkError: string | null
   readonly network: Network
 }
 
@@ -54,12 +54,20 @@ function homeCacheKey(network: Network, addr: RepoAddress): string {
   return `${network}/${addr.owner}/${addr.name}/${addr.repoId ?? ''}`
 }
 
+/**
+ * The last home each address resolved to in this tab, whatever its age: shown under the
+ * "can't reach Platform" banner when a revalidation fails (D-058). It was proof-checked when
+ * it was read; the banner says it is not being re-checked.
+ */
+const lastGood = new Map<string, { value: RepoHome | null }>()
+
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
   const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, { network, ...addr }) }
   homeCache.set(key, entry)
   entry.promise
     .then((value) => {
       entry.settled = { value }
+      lastGood.set(key, entry.settled)
     })
     .catch(() => {
       // Never cache a failed resolve — the next mount should retry against Platform.
@@ -90,7 +98,7 @@ function peekRepoHome(network: Network, addr: RepoAddress): { value: RepoHome | 
 }
 
 export function useRepoHome(addr: RepoAddress): UseRepoResult {
-  const { sdk, ready, error: sdkError, network } = useSdk()
+  const { sdk, ready, network, status: sdkStatus, recoveries } = useSdk()
   const enabled = ready && sdk !== null && addr.owner !== '' && (addr.name !== '' || !!addr.repoId)
   const key = homeCacheKey(network, addr)
   // Just created in this tab (`/new` adds `created=1`): ride out a node one block behind.
@@ -101,14 +109,19 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
         const home = await loadRepoHomeCached(sdk!, network, addr)
         if (home === null && justCreated) homeCache.delete(key)
         return home
-      }, justCreated ? 8 : 0),
-    [ready, key],
+      }, justCreated ? 8 : 0).catch((e: unknown) => {
+        // Platform unreachable: keep what this tab already read (under the banner).
+        const kept = lastGood.get(key)
+        if (kept !== undefined && evoSdkService.getStatus().phase === 'error') return kept.value
+        throw e
+      }),
+    [ready, key, recoveries],
     {
       enabled,
       // A cached not-found seeds `null` as a REAL settled value (instant "Repo not found");
       // only a cache miss returns undefined (no seed → loading shell).
       initial: () => {
-        const settled = peekRepoHome(network, addr)
+        const settled = peekRepoHome(network, addr) ?? (sdkStatus.phase === 'error' ? lastGood.get(key) : undefined)
         return settled === undefined ? undefined : settled.value
       },
     },
@@ -122,5 +135,5 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
     }
     rerun()
   }, [key, data, rerun])
-  return { ...state, reload, ready, sdkError, network }
+  return { ...state, reload, ready, network }
 }

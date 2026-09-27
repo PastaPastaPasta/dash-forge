@@ -11,6 +11,9 @@ importers:
       '@dashevo/evo-sdk':
         specifier: 4.2.0-beta.4
         version: 4.2.0-beta.4
+      '@dashevo/wasm-sdk':
+        specifier: 4.2.0-beta.4
+        version: 4.2.0-beta.4
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.2.0

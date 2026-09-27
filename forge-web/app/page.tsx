@@ -15,6 +15,7 @@ import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
 import { VerificationChip } from '@/components/ui/verification-chip'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { DownloadProgressBar, UnreachableBanner } from '@/components/ui/platform-status'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -22,7 +23,7 @@ import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { connectionTrust, deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
-  const { sdk, ready, trusted, error: sdkError, network } = useSdk()
+  const { sdk, ready, trusted, network, status: sdkStatus, retry: retrySdk } = useSdk()
   const quorum = useQuorumCheck(network, ready && trusted)
   const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted), quorum)
   const deployed = isForgeDeployed()
@@ -60,7 +61,7 @@ export default function LandingPage(): JSX.Element {
               {
                 label: `${network} reads`,
                 state: proofs.state,
-                detail: proofs.checking ? 'Checking…' : undefined,
+                detail: sdkStatus.phase === 'error' ? 'Not connected' : proofs.checking ? 'Checking…' : undefined,
               },
             ]}
           />
@@ -88,9 +89,10 @@ export default function LandingPage(): JSX.Element {
 
         {!deployed ? (
           <NotDeployedState />
-        ) : sdkError ? (
-          <ErrorState title="Could not reach Platform" message={sdkError} />
-        ) : feed.error ? (
+        ) : sdkStatus.phase === 'error' ? (
+          <UnreachableBanner status={sdkStatus} onRetry={retrySdk} cached={feed.data !== null} />
+        ) : null}
+        {!deployed ? null : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />
         ) : feed.data && feed.data.length === 0 ? (
           <EmptyState
@@ -107,6 +109,8 @@ export default function LandingPage(): JSX.Element {
           />
         ) : feed.data ? (
           <RepoGrid repos={feed.data} />
+        ) : sdkStatus.phase === 'error' ? null : sdkStatus.phase === 'downloading' ? (
+          <DownloadProgressBar status={sdkStatus} />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {[0, 1, 2].map((i) => (

@@ -13,9 +13,11 @@ import { AppShell } from '@/components/app-shell'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
+import { ConnectingBlock, UnreachableBanner } from '@/components/ui/platform-status'
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoRail } from '@/components/repo/repo-rail'
 import { useRepoHome } from '@/hooks/use-repo'
+import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateHome } from '@/hooks/use-private-home'
 import { PrivateBanner } from '@/components/repo/private-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
@@ -40,7 +42,8 @@ export function RepoScaffold({
    */
   sealedOk?: boolean
 }): JSX.Element {
-  const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
+  const { data, loading, error, settled, ready, reload } = useRepoHome(addr)
+  const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
   const expiredLink = useExpiredLink()
@@ -66,22 +69,22 @@ export function RepoScaffold({
     )
   }
 
-  if (sdkError) {
-    return (
-      <AppShell wide>
-        <ErrorState title="Could not reach Platform" message={sdkError} />
-      </AppShell>
-    )
+  // Platform unreachable (D-058): keep what this tab already read (the home cache) under a
+  // banner that says it is not being re-checked; with nothing cached, the banner alone. Either
+  // way the connection retries with backoff, and "Try again" reconnects now.
+  const offline = sdkStatus.phase === 'error' ? <UnreachableBanner status={sdkStatus} onRetry={retrySdk} cached={data != null} /> : null
+  if (offline !== null && data == null) {
+    return <AppShell wide>{offline}</AppShell>
   }
 
   // While the SDK connects (or a cold resolve is in flight) show the shell — never flash
   // "not found" before the query has had a chance to run. A warm navigation is seeded
   // synchronously from the home cache (`settled`, including a cached not-found) and renders
   // its real state immediately, even while a background revalidation is still loading.
-  if (!ready || (loading && !settled)) {
+  if (offline === null && (!ready || (loading && !settled))) {
     return (
       <AppShell wide>
-        <LoadingBlock label={ready ? `Resolving ${addr.name}` : 'Connecting to Platform'} />
+        {ready ? <LoadingBlock label={`Resolving ${addr.name}`} /> : <ConnectingBlock status={sdkStatus} />}
       </AppShell>
     )
   }
@@ -128,6 +131,7 @@ export function RepoScaffold({
   if (expiredLink) {
     return (
       <AppShell wide>
+        {offline}
         <RepoHeader home={home} addr={addr} />
         <EmptyState
           icon={GitBranch}
@@ -149,6 +153,7 @@ export function RepoScaffold({
   if (sealed && !sealedOk) {
     return (
       <AppShell wide>
+        {offline}
         <RepoHeader home={home} addr={addr} />
         <PrivateBanner home={home} />
         <PrivateRepoState repo={home.repo} addr={addr} member={home.private?.access === 'no-key'} />
@@ -158,6 +163,7 @@ export function RepoScaffold({
 
   return (
     <AppShell wide>
+      {offline}
       <RepoHeader home={home} addr={addr} />
       <PrivateBanner home={home} />
       {rail ? (
