@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use forge_core::funding::{fetch_islock, CoreEndpoints, Insight};
-use forge_core::keystore::Secret;
+use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::platform::identity::{
     self, build_asset_lock, identity_id_for, verify_deposit, FreshKey, LimitedKeySpec, LockProof,
     NewIdentityKeys, SignedAssetLock, VerifiedUtxo, DUFFS_PER_DASH, FIRST_LIMITED_KEY_ID,
@@ -533,9 +533,11 @@ fn backup_passphrase(args: &NewArgs) -> Result<Option<Secret>> {
 /// Show the deposit request (QR + address + amount), human or `--json` event.
 fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64) {
     if ctx.json {
-        // Machine-readable progress for scripts driving the funding step.
-        crate::errors::print_json(
-            &json!({ "event": "awaiting_deposit", "address": address, "amountDuffs": duffs }),
+        // Machine-readable progress for scripts driving the funding step, on stderr so stdout
+        // stays one JSON document (the result).
+        eprintln!(
+            "{}",
+            json!({ "event": "awaiting_deposit", "address": address, "amountDuffs": duffs })
         );
         return;
     }
@@ -621,6 +623,21 @@ async fn register(
         );
         let master = keys.to_bridge(identity_id);
         let identity = client.fetch_identity(identity_id).await?;
+        // The earlier run stored key 5 before creating the identity: if that copy still
+        // controls a live key 5, it is this computer's key and nothing needs registering.
+        let stored_source = forge_core::keystore::keychain_source(&network, identity_id);
+        if let Ok(b) = BridgeIdentity::load_from_file(&stored_source) {
+            if identity.signing_key_id(&b, ctx.network()) == Some(FIRST_LIMITED_KEY_ID)
+                && identity.is_limited_key(FIRST_LIMITED_KEY_ID)
+            {
+                return Ok((
+                    FIRST_LIMITED_KEY_ID,
+                    store::Stored::Keychain {
+                        source: stored_source,
+                    },
+                ));
+            }
+        }
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);

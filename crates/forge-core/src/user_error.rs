@@ -692,7 +692,8 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     let m = msg.to_ascii_lowercase();
     // Protocol-14 key limits (PublicKeyBudgetExhaustedError / PublicKeyExpiredError), before
     // the balance rule: a spent key is not an empty identity.
-    if m.contains("has spent its whole budget") {
+    // … or IdentityPublicKeyBudgetExceededError: some budget left, but less than this costs.
+    if m.contains("has spent its whole budget") || m.contains("credits of budget left") {
         return Some(
             UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
                 .cause(one_line(msg))
@@ -771,7 +772,7 @@ fn not_found(chain: &str, ctx: &ErrorContext<'_>) -> UserError {
             ctx.headline("your identity does not exist on this network"),
         )
         .cause("Platform has no identity with the id in your identity file")
-        .fix("select the network the identity was created on (`--network`, or `dg auth login --identity <file> --network <net>`); `dg auth status` shows both");
+        .fix("select the network the identity was created on (`--network`, or sign in there: `dg auth login <file> --network <net>`); `dg auth status` shows both");
     }
     let repo = ctx.repo_or("the repository");
     if chain.contains("resolving") || chain.contains("fetching contract") {
@@ -1345,6 +1346,10 @@ mod tests {
                 codes::KEY_EXPIRED,
             ),
             ("Identity key 7 is disabled", codes::KEY_EXPIRED),
+            (
+                "Identity 5Dtb public key 7 has 1000 credits of budget left, the state transition requires 5000",
+                codes::KEY_BUDGET_SPENT,
+            ),
             (
                 "Identity public key 7 is disabled and can no longer sign",
                 codes::KEY_EXPIRED,

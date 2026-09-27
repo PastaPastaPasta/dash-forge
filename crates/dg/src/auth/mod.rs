@@ -58,7 +58,8 @@ pub enum AuthCommand {
     #[command(subcommand)]
     Name(NameCommand),
     /// Write the stored key to a file: passphrase-encrypted, or with --reveal-secrets as a plain
-    /// bridge-format file (0600) or a `dfk1:` value for CI (`--format dfk1`).
+    /// bridge-format file (0600) or a `dfk1:` value for CI (`--format dfk1`). Sign in elsewhere
+    /// with `dg auth login <file>`, or use the file as DASH_FORGE_KEY.
     Export(ExportArgs),
     /// Forget the stored key on this computer (the key stays valid on chain until disabled).
     Logout {
@@ -66,7 +67,7 @@ pub enum AuthCommand {
         #[arg(long)]
         disable: bool,
         /// The identity file or recovery words for --disable (see `dg auth login`).
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", requires = "disable")]
         master: Option<PathBuf>,
     },
 }
@@ -120,7 +121,7 @@ pub struct LoginArgs {
     #[arg(long)]
     pub full_key: bool,
     /// Replace this limited key (disable it in the same update), e.g. the one a lost laptop held.
-    #[arg(long, value_name = "KEY_ID")]
+    #[arg(long, value_name = "KEY_ID", conflicts_with = "full_key")]
     pub replace: Option<u32>,
     #[command(flatten)]
     pub limits: KeyLimitArgs,
@@ -294,6 +295,14 @@ pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Res
 /// Ask for the 12 recovery words without echo (never from the environment: child processes
 /// would inherit them).
 pub fn read_mnemonic() -> Result<Secret> {
+    if !forge_core::sealed::prompts_allowed() {
+        return Err(
+            UserError::new(codes::USAGE, "the recovery words could not be read")
+                .cause("this command does not prompt (--json)")
+                .fix("pass the identity file with --master <file> (or as the login file) instead")
+                .into(),
+        );
+    }
     let words =
         rpassword::prompt_password("Recovery words (12, hidden as you type): ").map_err(|e| {
             UserError::new(codes::USAGE, "the recovery words could not be read")
@@ -520,9 +529,10 @@ async fn login_source(
     client: &PlatformClient,
     args: &LoginArgs,
 ) -> Result<BridgeIdentity> {
+    // `--identity <file>` (the pre-spec spelling) still works as the source; DASH_FORGE_KEY
+    // and the stored default do not (a bare `dg auth login` must not re-import them).
     let file = args.file.clone().or_else(|| {
-        // `--identity <file>` (the pre-spec spelling) still works as the source.
-        ctx.identity_path
+        ctx.cli_identity
             .clone()
             .filter(|p| keystore::is_file_source(p) && !args.mnemonic)
     });
@@ -556,16 +566,19 @@ async fn login_source(
                     master.network
                 ))
                 .fix(format!(
-                    "add `--network {}` (and `--devnet-name` for a devnet)",
-                    master.network
+                    "add {}",
+                    match master.network.strip_prefix("devnet-") {
+                        Some(name) => format!("`--network devnet --devnet-name {name}`"),
+                        None => format!("`--network {}`", master.network),
+                    }
                 ))
                 .into(),
         );
     }
-    if master.master_key().is_none() {
+    if master.master_key().is_none() && master.doc_op_key().is_err() {
         return Err(
             UserError::new(codes::KEY_CANNOT_SIGN, "this file cannot sign in")
-                .cause("it has no MASTER key (a limited or dfk1 key cannot register keys; use it directly via DASH_FORGE_KEY)")
+                .cause("it holds neither a MASTER key nor a key that can sign writes")
                 .fix("use the identity file with the master key, or --mnemonic")
                 .into(),
         );
@@ -585,12 +598,22 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .context("fetching the signing identity")?;
 
     let insecure = args.storage.insecure_plaintext;
-    if args.full_key && insecure {
+    let full_key = args.full_key || ctx.target.v2.is_none();
+    if full_key && !args.full_key && !ctx.json {
+        eprintln!(
+            "note: {} has no forge-v2 contract group, so there is no limited key to register; \
+             storing the identity as given (master key included)",
+            ctx.network_label()
+        );
+    }
+    if full_key && insecure {
         return Err(crate::errors::usage(
             "--full-key keeps the master key: it goes to the keychain or behind a passphrase, never unencrypted (drop --insecure-plaintext)",
         ));
     }
-    let (stored, key_id, spec) = if args.full_key {
+    let (stored, key_id, spec) = if full_key || master.master_key().is_none() {
+        // --full-key, no forge-v2 here, or a file holding one limited key (an export of this
+        // or another computer's key): store it as it is.
         let text = master.to_json_with_secrets();
         let stored = store::store(&network, &master.identity_id, &text, insecure)?;
         (stored, None, None)
@@ -610,7 +633,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             "identityId": master.identity_id,
             "network": network,
             "keyId": key_id,
-            "fullKey": args.full_key,
+            "fullKey": full_key,
             "budgetCredits": spec.as_ref().map(|s| s.budget_credits),
             "expiresAt": spec.as_ref().map(|s| s.expires_at_ms),
             "storage": stored.kind(),
@@ -627,9 +650,10 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                     dash_amount(credits_to_dash(s.budget_credits)),
                     expiry_text(s.expires_at_ms)
                 ),
-                _ => println!(
+                _ if master.master_key().is_some() => println!(
                     "  full identity stored (master key included): keep this computer safe"
                 ),
+                _ => println!("  the key in the file is stored as it is (no new key registered)"),
             }
             println!("  stored in {}", stored.describe());
             println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
@@ -833,7 +857,6 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
             .fix(format!("pick a longer name or add a digit other than 0/1 (e.g. `{label}2`), or enter the contest from a wallet"))
             .into());
     }
-    let id = ctx.load_bridge().map(|b| b.identity_id).unwrap_or_default();
     let client = ctx.connect().await?;
     if !client.dpns_name_available(label).await? {
         return Err(
@@ -846,7 +869,14 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
                 .into(),
         );
     }
-    let full = master_identity(ctx, master, &id)?;
+    let full = match ctx.load_bridge() {
+        Ok(b) => master_identity(ctx, master, &b.identity_id)?,
+        // Nothing stored: the file given, or the words (found on chain by their master key).
+        Err(_) => match master {
+            Some(_) => master_identity(ctx, master, "")?,
+            None => identity_from_words(ctx, &client, &read_mnemonic()?).await?,
+        },
+    };
     let price = crate::fmt::dash_usd_price();
     if !ctx.json {
         eprintln!(
@@ -1011,7 +1041,7 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
                 println!("  use it as a CI secret: DASH_FORGE_KEY=<the file's contents>");
             } else if encrypted {
                 println!(
-                    "  sign in elsewhere with `dg auth login {}` (asks for the passphrase)",
+                    "  use it elsewhere: `dg auth login {}` (asks for the passphrase) stores it as that computer's key",
                     path.display()
                 );
             }
@@ -1021,17 +1051,27 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
 }
 
 async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> Result<()> {
-    let bridge = ctx.load_bridge()?;
     let network = ctx.network_label();
+    let mut config = Config::load().unwrap_or_default();
+    // Without --disable the key is not needed: a missing or locked keychain entry, or a sealed
+    // file whose passphrase is lost, must not stop a sign-out.
+    let identity_id = match (disable, ctx.load_bridge()) {
+        (_, Ok(b)) => b.identity_id,
+        (false, Err(_)) => config.default_identity_id.clone().ok_or_else(|| {
+            crate::errors::usage("no identity is signed in (nothing recorded to sign out of)")
+        })?,
+        (true, Err(e)) => return Err(e),
+    };
     let mut disabled = None;
     if disable {
+        let bridge = ctx.load_bridge()?;
         let client = ctx.connect().await?;
-        let identity = client.fetch_identity(&bridge.identity_id).await?;
+        let identity = client.fetch_identity(&identity_id).await?;
         let key_id = identity
             .signing_key_id(&bridge, ctx.network())
             .filter(|id| identity.is_limited_key(*id))
             .context("the stored key is not a live Forge limited key; nothing to disable")?;
-        let full = master_identity(ctx, master, &bridge.identity_id)?;
+        let full = master_identity(ctx, master, &identity_id)?;
         ctx.confirm_or_cancel(&format!("Disable key #{key_id} on chain?"))?;
         disable_key(&client, &full, key_id).await?;
         disabled = Some(key_id);
@@ -1040,17 +1080,16 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
         .identity_path
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
-    let removed = store::remove(&network, &bridge.identity_id, source.as_deref())?;
-    let mut config = Config::load().unwrap_or_default();
-    if config.default_identity_id.as_deref() == Some(bridge.identity_id.as_str()) {
+    let removed = store::remove(&network, &identity_id, source.as_deref())?;
+    if config.default_identity_id.as_deref() == Some(identity_id.as_str()) {
         config.default_identity = None;
         config.default_identity_id = None;
         config.save()?;
     }
     ctx.emit(
-        json!({ "status": "logged_out", "identityId": bridge.identity_id, "removed": removed, "disabledKeyId": disabled }),
+        json!({ "status": "logged_out", "identityId": identity_id, "removed": removed, "disabledKeyId": disabled }),
         || {
-            println!("✓ signed out of {}", bridge.identity_id);
+            println!("✓ signed out of {identity_id}");
             for r in &removed {
                 println!("  removed {r}");
             }

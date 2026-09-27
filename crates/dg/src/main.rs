@@ -912,6 +912,10 @@ fn exit_on_parse_error(e: &clap::Error) -> ! {
 
 /// Build the tokio runtime and dispatch the parsed command.
 fn run(cli: &Cli) -> Result<()> {
+    if cli.json {
+        // `--json` is for scripts: no hidden prompt may wait on a terminal.
+        forge_core::sealed::forbid_prompts();
+    }
     let config = Config::load().unwrap_or_default();
     let ctx = Ctx::resolve(cli, &config)?;
     let rt = Runtime::new()?;

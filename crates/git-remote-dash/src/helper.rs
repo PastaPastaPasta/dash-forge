@@ -1377,11 +1377,9 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("DASH_FORGE_KEY") {
         return Ok(PathBuf::from(p));
     }
-    // The identity `dg auth new` / `dg auth login` recorded as the default (a keychain entry
-    // or a key file), so a plain `git push` signs as `dg` does.
-    if let Some(src) = forge_core::keystore::configured_default_source() {
-        return Ok(PathBuf::from(src));
-    }
+    // Then a per-owner file (below) when one exists, else the identity `dg auth new` /
+    // `dg auth login` recorded as the default (a keychain entry or a key file), so a plain
+    // `git push` signs as `dg` does.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor HOME is set"))?;
@@ -1391,14 +1389,22 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     let owner = match url {
         DashUrl::Named { owner, .. } => owner.clone(),
         DashUrl::Id { .. } => {
-            return Err(no_identity(
-                "an id-addressed dash:// URL has no owner to pick a default key for",
-            ))
+            return forge_core::keystore::configured_default_source()
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    no_identity(
+                        "an id-addressed dash:// URL has no owner to pick a default key for",
+                    )
+                })
         }
     };
-    Ok(home
+    let per_owner = home
         .join(".config/dash-forge/identities")
-        .join(format!("{owner}.identity.json")))
+        .join(format!("{owner}.identity.json"));
+    if per_owner.exists() {
+        return Ok(per_owner);
+    }
+    Ok(forge_core::keystore::configured_default_source().map_or(per_owner, PathBuf::from))
 }
 
 #[cfg(test)]

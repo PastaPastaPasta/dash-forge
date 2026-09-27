@@ -157,6 +157,8 @@ fn finish(summary: &Summary, json: Option<&PathBuf>) -> ExitCode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Runs unattended (the Mirror Action): a sealed key file needs DASH_FORGE_PASSPHRASE.
+    forge_core::sealed::forbid_prompts();
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(

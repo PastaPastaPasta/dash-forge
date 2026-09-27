@@ -31,6 +31,21 @@ use crate::keystore::Secret;
 /// Environment variable a passphrase is read from before prompting.
 pub const PASSPHRASE_ENV: &str = "DASH_FORGE_PASSPHRASE";
 
+/// Set by a program that must never read from the terminal (the git remote helper, the
+/// importer, `dg --json`): a sealed file then needs [`PASSPHRASE_ENV`], and no prompt appears.
+static NO_PROMPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Never prompt for a passphrase in this process (see [`NO_PROMPT`]).
+pub fn forbid_prompts() {
+    NO_PROMPT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether prompts are allowed in this process.
+pub fn prompts_allowed() -> bool {
+    !NO_PROMPT.load(std::sync::atomic::Ordering::Relaxed)
+        && std::env::var_os("GIT_TERMINAL_PROMPT").is_none_or(|v| v != "0")
+}
+
 /// The shortest passphrase accepted when sealing.
 pub const MIN_PASSPHRASE_LEN: usize = 10;
 
@@ -185,6 +200,11 @@ pub fn passphrase(what: &str, confirm: bool) -> Result<Secret> {
             .into_string()
             .map_err(|_| Error::Config(format!("{PASSPHRASE_ENV} is not UTF-8")))?;
         return Ok(Secret::new(p));
+    }
+    if !prompts_allowed() {
+        return Err(Error::Config(format!(
+            "{what} needs a passphrase and this command does not prompt; set {PASSPHRASE_ENV}"
+        )));
     }
     let prompt = |label: &str| {
         rpassword::prompt_password(label).map_err(|e| {
