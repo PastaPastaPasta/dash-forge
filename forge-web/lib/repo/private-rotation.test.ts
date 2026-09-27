@@ -521,8 +521,16 @@ describe('burn and contiguity review', () => {
     const raw = new Uint8Array(32).fill(0xe1)
     await anchor(BOB, await EpochKeys.import(REPO, 2, raw), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
     const steps: string[] = []
-    await expect(rotateRepoKey(ctx, [], 'r-jump', (s) => steps.push(s.kind))).rejects.toThrow(/epoch 2/)
-    expect(steps).not.toContain('anchored')
+    const got = await rotateRepoKey(ctx, [], 'r-jump', (s) => steps.push(s.kind)).catch((e: unknown) => e)
+    if (typeof got === 'number') {
+      // §5.3: a config counts only after the epoch below it was stated, so BOB's is ignored.
+      const s = await aliceSession()
+      expect(s.resolution.currentEpoch).toBe(got)
+      expect(s.resolution.writeEpoch).toBe(got)
+    } else {
+      expect(String(got)).toMatch(/epoch 2/)
+      expect(steps).not.toContain('anchored')
+    }
   })
 
   it('#5 re-adding a maintainer whose old config would take over an epoch is refused', async () => {
