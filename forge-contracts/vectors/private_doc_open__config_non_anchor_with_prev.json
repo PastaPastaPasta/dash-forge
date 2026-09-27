@@ -1,6 +1,6 @@
 {
   "name": "config_non_anchor_with_prev",
-  "description": "tags 8/9 in a config that is not its epoch's anchor are malformed.",
+  "description": "a later config of epoch 1 that is not the anchor carries tags 8/9 like its anchor.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -32,6 +32,14 @@
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "readable",
+    "fields": {
+      "defaultBranch": "refs/heads/main",
+      "protectedPatterns": [
+        "refs/heads/main"
+      ],
+      "prevEpoch": 0,
+      "prevEpochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    }
   }
 }

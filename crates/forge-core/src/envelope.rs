@@ -106,6 +106,12 @@ impl PrivateKey {
         Self::from_hex(key.private_key_hex.expose())
     }
 
+    /// The raw scalar, wiped on drop: only for handing to another secp256k1 binding (the
+    /// SDK's `encryptedFor` helpers). Never log it.
+    pub(crate) fn secret_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0.secret_bytes())
+    }
+
     /// The compressed (33-byte) public key, as Platform stores an `ECDSA_SECP256K1` key.
     pub fn public_key(&self) -> [u8; 33] {
         PublicKey::from_secret_key(&Secp256k1::signing_only(), &self.0).serialize()

@@ -23,16 +23,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
+use crate::keyring::{sealed_error, Keyring, PrivateSigner};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
-    FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient,
-    PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
+    PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
-use crate::private::RefNameHasher;
-use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack};
+use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
+use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
 use crate::rules::{self, ConfigDoc, RefState};
 use crate::scope::{self, DocScope, RepoRef};
 use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
+use crate::user_error::{codes, UserError};
 
 // Document type names (the git data plane in forge-core).
 use crate::refs::DOC_CONFIG;
@@ -67,6 +69,8 @@ pub struct PackManifestInfo {
     pub uris: Vec<String>,
     /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
     pub supersedes: Vec<[u8; 32]>,
+    /// `$createdAtBlockHeight` (the private-repo late-content rule, §8.2); 0 when unknown.
+    pub created_at_block_height: u64,
 }
 
 /// Input for [`RepoService::write_pack_manifest`].
@@ -156,6 +160,26 @@ impl StoredArtifact {
             },
             uris: rep.manifest_uris(MANIFEST_URIS_V2)?,
         })
+    }
+}
+
+/// How a repository's artifacts are stored: as-is (public), or sealed under the current
+/// write epoch (private, §3). Reseeds and mirrors copy stored bytes verbatim and never
+/// re-seal (§3.4).
+pub enum PackCodec {
+    /// A public repository.
+    Public,
+    /// A private repository's write seams.
+    Private(Box<Private>),
+}
+
+impl PackCodec {
+    /// The bytes to store for artifact `plain`.
+    pub fn seal(&self, plain: Vec<u8>) -> Result<Vec<u8>> {
+        match self {
+            Self::Public => Ok(plain),
+            Self::Private(p) => crate::private::PackCipher::seal(p.as_ref(), plain),
+        }
     }
 }
 
@@ -345,7 +369,16 @@ pub struct RepoService<'a> {
     client: &'a PlatformClient,
     identity: &'a LoadedIdentity,
     bridge: &'a BridgeIdentity,
+    /// A private repository's keys, loaded once per service for reads and replaced by every
+    /// write-time reload ([`Self::private_writer`], §5.3), so a rotation a write picked up is
+    /// also what later reads (the push's convergence re-read, a locator fold) open with.
+    keyring: KeyringCache,
 }
+
+/// A private repository's keys as one or more [`RepoService`]s share them: every write-time
+/// reload replaces the entry, so a helper's later services (the push's convergence re-read, a
+/// fetch) open with the keys its writes used.
+pub type KeyringCache = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Keyring>>>>;
 
 impl<'a> RepoService<'a> {
     /// Bind the service to `client`, the signer `identity`, and its `bridge` key material.
@@ -358,6 +391,147 @@ impl<'a> RepoService<'a> {
             client,
             identity,
             bridge,
+            keyring: KeyringCache::default(),
+        }
+    }
+
+    /// [`Self::new`] sharing `cache`: a helper invocation reads a private repo's keys once, and
+    /// a reload by any of its services (every write re-reads them, [`Self::private_writer`])
+    /// is what the others open with next.
+    pub fn with_keyring(
+        client: &'a PlatformClient,
+        identity: &'a LoadedIdentity,
+        bridge: &'a BridgeIdentity,
+        cache: KeyringCache,
+    ) -> Self {
+        Self {
+            client,
+            identity,
+            bridge,
+            keyring: cache,
+        }
+    }
+
+    /// The signer's view for private-repository key operations.
+    pub fn signer(&self) -> PrivateSigner<'a> {
+        PrivateSigner {
+            client: self.client,
+            identity: self.identity,
+            bridge: self.bridge,
+        }
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<Keyring>>> {
+        self.keyring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The keys of private `repo` as this identity holds them: loaded once per service (and
+    /// per repository), refreshed by every write.
+    pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
+        let repo_id = repo.scope()?.repo_id;
+        if let Some(k) = self.cache().as_ref().filter(|k| *k.repo_id() == repo_id) {
+            return Ok(std::sync::Arc::clone(k));
+        }
+        let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        *self.cache() = Some(std::sync::Arc::clone(&fresh));
+        Ok(fresh)
+    }
+
+    /// The seams to write private `repo` with, from a keyring read NOW (§5.3: re-read the
+    /// anchors before every write, so nothing is written under a superseded epoch). The
+    /// reload also replaces the cached keyring.
+    pub async fn private_writer(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<(Private, std::sync::Arc<Keyring>)> {
+        let kr = std::sync::Arc::new(self.signer().keyring(repo).await?);
+        *self.cache() = Some(std::sync::Arc::clone(&kr));
+        let w = kr.writer(repo)?;
+        Ok((w, kr))
+    }
+
+    /// The pack codec for `repo`: identity for a public repo, sealing under the current write
+    /// epoch for a private one (re-resolved now).
+    pub async fn pack_codec(&self, repo: &RepoRef) -> Result<PackCodec> {
+        Ok(match repo.visibility {
+            Visibility::Public => PackCodec::Public,
+            Visibility::Private => PackCodec::Private(Box::new(self.private_writer(repo).await?.0)),
+        })
+    }
+
+    /// The bytes a reader hands to git for a fetched artifact: `sealed` itself for a public
+    /// repo; for a private one, the plaintext (§3.5), after the late-content rule (§8.2).
+    /// `manifest` is the copy the bytes came from; see [`Self::open_artifact_of`] to judge the
+    /// pack by all of its copies.
+    pub async fn open_artifact(
+        &self,
+        repo: &RepoRef,
+        manifest: &PackManifestInfo,
+        sealed: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        self.open_artifact_of(repo, &[manifest], manifest.size_bytes, sealed)
+            .await
+    }
+
+    /// [`Self::open_artifact`] for a pack whose manifests are `copies` (every copy names the
+    /// same sealed bytes): the late-content rule reads the pack if ANY copy qualifies, since
+    /// a current member attesting the bytes makes them readable whoever else uploaded them.
+    pub async fn open_artifact_of(
+        &self,
+        repo: &RepoRef,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let Some(manifest) = copies.first() else {
+            return Err(Error::NotFound);
+        };
+        if repo.visibility == Visibility::Public {
+            return Ok(sealed);
+        }
+        let kr = self.keyring(repo).await?;
+        let header = crate::private::PackHeader::parse(
+            sealed
+                .get(..crate::private::pack::HEADER_LEN)
+                .ok_or_else(|| sealed_error(&PrivateError::SealedPackCorrupt))?,
+            size_bytes,
+        )
+        .map_err(|e| sealed_error(&e))?;
+        // A manifest with no block height cannot be judged (§8.1): it never qualifies.
+        let readable = copies.iter().any(|m| {
+            m.created_at_block_height > 0
+                && platform::decode_identifier(&m.owner_id).is_ok_and(|owner| {
+                    kr.resolution()
+                        .manifest_standing(header.epoch(), m.created_at_block_height, &owner)
+                        .readable
+                })
+        });
+        if !readable {
+            return Err(UserError::new(
+                codes::LATE_CONTENT,
+                format!(
+                    "pack {} was uploaded under an old key after the key was rotated",
+                    &hex::encode(manifest.pack_hash)[..12]
+                ),
+            )
+            .cause(format!(
+                "its sealed header names epoch {} and its uploader {} is no longer a member",
+                header.epoch(),
+                manifest.owner_id
+            ))
+            .into());
+        }
+        match kr.open_pack(repo, &sealed, size_bytes) {
+            // Sealed under an epoch newer than the keys this service holds (a rotation landed
+            // while it ran): read the keys again once.
+            Err(_) if !kr.resolution().keys.contains_key(&header.epoch()) => {
+                let fresh = std::sync::Arc::new(self.signer().keyring(repo).await?);
+                *self.cache() = Some(std::sync::Arc::clone(&fresh));
+                fresh.open_pack(repo, &sealed, size_bytes)
+            }
+            other => other,
         }
     }
 
@@ -372,9 +546,8 @@ impl<'a> RepoService<'a> {
         self.client.fetch_contract(&repo.scope()?.contract_id).await
     }
 
-    /// The scope and contract of `repo`, for reading (a repo this client can read).
+    /// The scope and contract of `repo`, for reading.
     async fn readable(&self, repo: &RepoRef) -> Result<(DocScope, LoadedContract)> {
-        repo.require_readable()?;
         let scope = repo.scope()?;
         let contract = self.client.fetch_contract(&scope.contract_id).await?;
         Ok((scope, contract))
@@ -407,6 +580,13 @@ impl<'a> RepoService<'a> {
             )));
         }
         let (scope, contract) = self.writable(repo).await?;
+        if repo.visibility == Visibility::Private {
+            return self
+                .write_private_ref_update(
+                    repo, &scope, &contract, ref_name, new_oid, prev_oid, force,
+                )
+                .await;
+        }
         let hasher = crate::private::Public;
         let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
 
@@ -432,6 +612,57 @@ impl<'a> RepoService<'a> {
             .await
     }
 
+    /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
+    /// epoch re-resolved now, `refName` only inside `enc`, bound (AD) to the hash, the oids and
+    /// `force`. Protected routing uses the decrypted config timeline.
+    #[allow(clippy::too_many_arguments)]
+    async fn write_private_ref_update(
+        &self,
+        repo: &RepoRef,
+        scope: &DocScope,
+        contract: &LoadedContract,
+        ref_name: &str,
+        new_oid: &[u8],
+        prev_oid: Option<&[u8]>,
+        force: bool,
+    ) -> Result<String> {
+        let (w, kr) = self.private_writer(repo).await?;
+        let epoch = w.write_epoch();
+        let ref_name_hash = w.hash(epoch, ref_name)?;
+        let protected = rules::matches_protected(ref_name, &kr.config().protected_patterns);
+        let (doc_type, kind) = if protected {
+            (DOC_PROTECTED_REF_UPDATE, DocKind::ProtectedRefUpdate)
+        } else {
+            (DOC_REF_UPDATE, DocKind::RefUpdate)
+        };
+        let owner = platform::decode_identifier(&self.identity.id())?;
+        let mut header = DocHeader::new(kind, owner, epoch);
+        header.ref_name_hash = Some(ref_name_hash);
+        header.new_oid = Some(new_oid.to_vec());
+        header.prev_oid = prev_oid.map(<[u8]>::to_vec);
+        header.force = Some(force);
+        let enc = w.seal_doc(
+            &header,
+            &Fields {
+                ref_name: Some(ref_name.to_string()),
+                ..Fields::default()
+            },
+        )?;
+        let mut props = scope.props([
+            ("refNameHash", FieldValue::bytes32(ref_name_hash)),
+            ("newOid", FieldValue::bytes(new_oid.to_vec())),
+            ("force", FieldValue::boolean(force)),
+            ("enc", FieldValue::bytes(enc)),
+            ("epoch", FieldValue::integer(u64::from(epoch))),
+        ]);
+        if let Some(prev) = prev_oid {
+            props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
+        }
+        self.doc_engine()?
+            .create_document(contract, doc_type, props)
+            .await
+    }
+
     /// Enumerate every ref and its resolved [`RefState`].
     ///
     /// Every ref's history comes from [`crate::refs::read_all_ref_updates`] — a keyset scan
@@ -453,6 +684,11 @@ impl<'a> RepoService<'a> {
     /// deferred to the push-side pipeline that has the object store.
     pub async fn read_refs(&self, repo: &RepoRef) -> Result<Vec<(String, RefState)>> {
         let (scope, contract) = self.readable(repo).await?;
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            kr.require_key(repo)?; // no key at all: say so, rather than list nothing
+            return crate::refs::read_private_refs(self.client, &contract, &scope, &kr).await;
+        }
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
 
@@ -473,6 +709,14 @@ impl<'a> RepoService<'a> {
 
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
+        if repo.visibility == Visibility::Private {
+            return Ok(self
+                .keyring(repo)
+                .await?
+                .config()
+                .protected_patterns
+                .clone());
+        }
         let (scope, contract) = self.readable(repo).await?;
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         Ok(current_protected_patterns(&configs))
@@ -502,6 +746,9 @@ impl<'a> RepoService<'a> {
     /// The repo's current default branch from the newest `config` (e.g. `main`) — the
     /// branch `git-remote-dash` reports as the `HEAD` symref. `None` when there is none.
     pub async fn read_default_branch(&self, repo: &RepoRef) -> Result<Option<String>> {
+        if repo.visibility == Visibility::Private {
+            return Ok(self.keyring(repo).await?.config().default_branch.clone());
+        }
         let (scope, contract) = self.readable(repo).await?;
         Ok(self
             .newest_config(&scope, &contract)
@@ -528,6 +775,11 @@ impl<'a> RepoService<'a> {
             }
         }
         let (scope, contract) = self.writable(repo).await?;
+        if repo.visibility == Visibility::Private {
+            return self
+                .set_private_backend(repo, &scope, &contract, backend_mode, new_uris)
+                .await;
+        }
         let newest = self.newest_config(&scope, &contract).await?;
         let default_branch = newest
             .as_ref()
@@ -561,6 +813,60 @@ impl<'a> RepoService<'a> {
         }
         self.doc_engine()?
             .create_document(&contract, DOC_CONFIG, props)
+            .await
+    }
+
+    /// [`Self::set_backend`] for a private repository: the decrypted current `defaultBranch`
+    /// and `protectedPatterns` re-sealed (a v0x02 non-anchor config under the write epoch),
+    /// the plaintext `backend` replaced.
+    async fn set_private_backend(
+        &self,
+        repo: &RepoRef,
+        scope: &DocScope,
+        contract: &LoadedContract,
+        backend_mode: u8,
+        new_uris: Option<&[String]>,
+    ) -> Result<String> {
+        let (w, kr) = self.private_writer(repo).await?;
+        let cfg = kr.config();
+        let uris = match new_uris {
+            Some(list) => list.to_vec(),
+            None => match &cfg.backend {
+                Some(FieldValue::Object(b)) => scope::text_list(b.get("uris")),
+                _ => Vec::new(),
+            },
+        };
+        let mut backend = BTreeMap::new();
+        backend.insert(
+            "mode".to_string(),
+            FieldValue::integer(u64::from(backend_mode)),
+        );
+        if !uris.is_empty() {
+            backend.insert("uris".to_string(), FieldValue::text_list(uris));
+        }
+        let epoch = w.write_epoch();
+        let owner = platform::decode_identifier(&self.identity.id())?;
+        // Every config of an epoch >= 1 repeats its anchor's chain link (§4.3), so it can serve
+        // as the anchor if the anchor's author stops being a maintainer.
+        let prev = kr.prev_of(epoch)?;
+        let enc = w.seal_doc(
+            &DocHeader::new(DocKind::Config, owner, epoch),
+            &Fields {
+                default_branch: Some(cfg.default_branch.clone().unwrap_or_else(|| "main".into())),
+                protected_patterns: cfg.protected_patterns.clone(),
+                prev_epoch: prev.as_ref().map(|(p, _)| *p),
+                prev_epoch_key: prev.map(|(_, k)| k),
+                ..Fields::default()
+            },
+        )?;
+        let props = scope.props([
+            ("enc", FieldValue::bytes(enc)),
+            ("epoch", FieldValue::integer(u64::from(epoch))),
+            ("backend", FieldValue::Object(backend)),
+            ("archived", FieldValue::boolean(cfg.archived)),
+        ]);
+        self.doc_engine()?
+            .create_document(contract, DOC_CONFIG, props)
             .await
     }
 
@@ -885,7 +1191,7 @@ impl<'a> RepoService<'a> {
         let reader = PackReader::from_user_config();
         let mut pack_blobs = Vec::new();
         for (hash, copies) in group_by_hash(&git) {
-            let (bytes, _) = self
+            let (sealed, m) = self
                 .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
                 .await
                 .map_err(|e| {
@@ -894,21 +1200,33 @@ impl<'a> RepoService<'a> {
                         hex::encode(hash)
                     ))
                 })?;
-            pack_blobs.push(bytes);
+            // A pack this reader cannot open (late, or under an epoch it holds no key for) is
+            // left out, as reseed skips unreadable packs; the new pack is built from the tips
+            // and fails loudly if it needed objects only such a pack held.
+            match self
+                .open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                .await
+            {
+                Ok(plain) => pack_blobs.push(plain),
+                Err(e) => {
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "repack: skipping a pack this identity cannot open");
+                }
+            }
         }
         let tip_refs: Vec<&str> = tips.iter().map(String::as_str).collect();
         let consolidated = crate::pack::repack_from_packs(&pack_blobs, &tip_refs)?;
-        let new_bytes = consolidated.bytes;
-        let new_meta = PackMeta::for_bytes(&new_bytes);
-        let new_pack_hash = new_meta.pack_hash_bytes()?;
         let object_count = consolidated.parsed.object_count() as u64;
-
-        // Already a single optimal pack: nothing to gain, and nothing to write.
-        if git.iter().any(|m| m.pack_hash == new_pack_hash) {
+        // Already a single optimal pack: nothing to gain, and nothing to write. Compared on
+        // the plaintext: a private repo's stored hash is of the sealed bytes, which differ on
+        // every seal.
+        if pack_blobs.contains(&consolidated.bytes) {
             return Err(Error::Config(
                 "repack: the repo is already a single consolidated pack (nothing to do)".into(),
             ));
         }
+        let new_bytes = self.pack_codec(repo).await?.seal(consolidated.bytes)?;
+        let new_meta = PackMeta::for_bytes(&new_bytes);
+        let new_pack_hash = new_meta.pack_hash_bytes()?;
 
         let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);
         let stored = self
@@ -1129,7 +1447,13 @@ impl<'a> RepoService<'a> {
                 report.healthy.push(m.pack_hash);
                 continue;
             }
-            let Some(bytes) = crate::storage::local::find_local_pack(git_dir, m.pack_hash)? else {
+            // A private repo's recorded bytes are sealed; a fetched clone holds plaintext, so
+            // only the pusher's kept copy can restore them.
+            let local = match repo.visibility {
+                Visibility::Public => crate::storage::local::find_local_pack(git_dir, m.pack_hash)?,
+                Visibility::Private => crate::storage::local::find_kept_pack(git_dir, m.pack_hash)?,
+            };
+            let Some(bytes) = local else {
                 report.missing.push(m.pack_hash);
                 continue;
             };
@@ -1259,9 +1583,10 @@ impl<'a> RepoService<'a> {
         let reader = PackReader::from_user_config();
         let mut parts = Vec::with_capacity(live_locators.len() + 1);
         for m in live_locators.iter().rev() {
-            let bytes = self
+            let sealed = self
                 .fetch_artifact_from(repo, &contract, m, &reader)
                 .await?;
+            let bytes = self.open_artifact(repo, m, sealed).await?;
             parts.push(crate::pack::ObjectLocator::parse(&bytes)?);
         }
         parts.push(crate::pack::ObjectLocator::build(pack, pack_ref)?);
@@ -1297,7 +1622,10 @@ impl<'a> RepoService<'a> {
         supersedes: Vec<[u8; 32]>,
         target: RepackTarget<'_>,
     ) -> Result<String> {
-        let bytes = locator.as_bytes().to_vec();
+        let bytes = self
+            .pack_codec(repo)
+            .await?
+            .seal(locator.as_bytes().to_vec())?;
         let meta = PackMeta::for_bytes(&bytes);
         let pack_hash = meta.pack_hash_bytes()?;
         let stored = match target {
@@ -1340,7 +1668,8 @@ pub async fn read_valid_tips(
     repo: &RepoRef,
     ref_name: &str,
 ) -> Result<BTreeSet<String>> {
-    repo.require_readable()?;
+    // A verifier with no keys: a private repo's ref names are sealed and its hashes keyed.
+    repo.require_public("verifying tips without keys")?;
     let scope = repo.scope()?;
     let contract = client.fetch_contract(&scope.contract_id).await?;
     let configs = crate::refs::read_config_history(client, &contract, &scope).await?;
@@ -1620,6 +1949,7 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
         offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
         uris,
         supersedes,
+        created_at_block_height: d.created_at_block_height.unwrap_or_default(),
     })
 }
 
@@ -1699,6 +2029,7 @@ mod tests {
             offset_index_parts: 0,
             uris: Vec::new(),
             supersedes: Vec::new(),
+            created_at_block_height: 0,
         }
     }
 

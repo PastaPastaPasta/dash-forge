@@ -133,6 +133,36 @@ Fix: select the network the identity was created on: `--network testnet|mainnet`
 
 Fix: register a fresh one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
 
+## E306
+
+**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key, and the identity file in use holds none that matches an enabled key on the identity (or, for `dg collab add`, the member you named has none).
+
+Fix: if the identity has an ENCRYPTION key (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), use a key source that holds its private half: the limited key `dg auth login` stores holds only a signing key, so point `DASH_FORGE_KEY` at the identity file, or sign in with `dg auth login --full-key <identity file>` (a passphrase-sealed file). If it has none, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+
+## E307
+
+**No key for this private repository.** No `repoKey` wrap from a current maintainer opens this repository for your identity: you are not a member, you were removed, or a maintainer added you and has not wrapped the key to you yet.
+
+Fix: ask a maintainer to add you (`dg collab add <owner>/<repo> <your identity id>`). If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none.
+
+## E308
+
+**A maintainer gave you the wrong key.** A current maintainer's `repoKey` for you holds a key that is not the one the epoch's anchor commits to (a split view, or the leftover wrap of a maintainer who lost a concurrent rotation). The client never falls back to another key; the alert names the wrap's author.
+
+Fix: ask a maintainer to run `dg repo keys status <owner>/<repo>` and `dg repo keys repair`; the wrap's author is named in the cause.
+
+## E309
+
+**The repository's key chain is broken.** The anchor of an epoch does not carry a previous-epoch key that opens the epoch before it, so older content cannot be reached from the keys you hold.
+
+Fix: ask the maintainer named in the cause to re-wrap the older epoch to you; `dg repo keys status` lists the epochs you can read.
+
+## E310
+
+**Key rotation or repair pending.** The repository's current key epoch is one your identity cannot write under yet (a rotation landed and no current maintainer has wrapped its key to you), or a repair is needed before new content is written.
+
+Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Nothing was written.
+
 ## E401
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
@@ -197,6 +227,18 @@ Fix: restore that storage, or re-upload the pack from this clone with `dg reseed
 **No storage configured.** `dg repo create` or `dg init` found no storage profile for the new repository: no `--storage`, no `dash.storage` in git config (this repository's or your global one), and not exactly one profile in `storage.toml` to default to. Without one, every push would store its packs on Platform at about 0.28 DASH per MiB, so the command stops **before** creating anything. The cause line prices this repository's current size.
 
 Fix: add your own storage with `dg storage add` (a prompt flow when run with no arguments), or pass `--storage platform` to accept the Platform price. `git config --global dash.storage <profile>` sets a default for every new repository.
+
+## E509
+
+**Sealed pack corrupt.** A private repository's sealed artifact hash-verified against its manifest but failed decryption: a segment tag, the header, or the length does not check out. The uploader stored bytes no honest client writes, so every copy of that pack is the same bad bytes.
+
+Fix: ask the member who pushed it to push again (`git push` re-stores it under a new hash). `dg repo keys status` shows which epochs you can read.
+
+## E510
+
+**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
+
+Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 
 ## E601
 

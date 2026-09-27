@@ -20,11 +20,12 @@ import {
   awaitWalletAnswer,
   sameIdentifier,
   newLoginRequest,
+  walletSignInSupported,
   type ResponseSource,
 } from './app-connect'
 import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, scopeCovers, RevokedWalletKey } from './key-registration'
 import { heldToDisable } from './limited-key'
-import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, pairingCode, protocolUri } from './wallet-protocol'
+import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, protocolUri } from './wallet-protocol'
 import { deriveLoginKey, parseKeyRequest, parseStRequest, sealLoginKeys, DashConnectUriException } from './wallet-sim'
 import { decodeWif, encodeWif } from './wif'
 
@@ -64,7 +65,6 @@ describe('dash-key request: byte-compatible with the shipped wallets', () => {
       expect(base58Encode(parsed.contractId)).toBe(FORGE.core)
       expect(parsed.label).toBe('Dash Forge')
       expect(bytesToHex(hash160(parsed.appEphemeralPubKey))).toBe(bytesToHex(req.appEphemeralPubKeyHash))
-      expect(req.pairingCode).toBe(pairingCode(parsed.appEphemeralPubKey))
     }
   })
 
@@ -86,11 +86,14 @@ describe('dash-key request: byte-compatible with the shipped wallets', () => {
     expect(() => parseKeyRequest(`dash-key://${base58Encode(good)}?n=d&v=1`)).toThrow(/\/\//)
   })
 
-  it('derives the pairing code as Platform’s BrowserLoginKeyProtocol does', () => {
-    const pub = secp.getPublicKey(new Uint8Array(32).fill(1), true)
-    const d = hash160(pub)
-    const n = ((d[0]! << 24) | (d[1]! << 16) | (d[2]! << 8) | d[3]!) >>> 0
-    expect(pairingCode(pub)).toBe(String(n % 1_000_000).padStart(6, '0'))
+  it('carries no pairing code: the key-exchange protocol and the wallets have none', () => {
+    expect(Object.keys(newLoginRequest('devnet', FORGE.core))).not.toContain('pairingCode')
+  })
+
+  it('claims Dash Wallet support on testnet only (Android checkTestnet; iOS devnet is internal-only)', () => {
+    expect(walletSignInSupported('testnet')).toBe(true)
+    expect(walletSignInSupported('devnet')).toBe(false)
+    expect(walletSignInSupported('mainnet')).toBe(false)
   })
 })
 

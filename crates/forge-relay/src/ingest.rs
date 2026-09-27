@@ -585,6 +585,7 @@ mod tests {
             id: id.into(),
             owner_id: owner.into(),
             created_at: Some(1000),
+            created_at_block_height: None,
             fields: fields
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -849,6 +850,7 @@ mod tests {
             id: id.into(),
             owner_id: "O".into(),
             created_at: Some(t),
+            created_at_block_height: None,
             fields: BTreeMap::new(),
         }
     }

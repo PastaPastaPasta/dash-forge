@@ -10,6 +10,12 @@
 //!    ref).
 //! 3. the initial `config` — default branch and storage backend.
 //!
+//! A **private** repository (`docs/security/private-repos.md` §9 "Create") replaces step 3
+//! with epoch 0 of its key: the owner's self-`repoKey` wrap of a fresh epoch key, then the
+//! anchor `config` (sealed, `enc` v0x02, carrying the default branch). The identity must hold
+//! an `ENCRYPTION` key, checked before anything is written. The epoch key is never stored
+//! locally: a create interrupted after the wrap recovers it by unwrapping the wrap.
+//!
 //! **Resumable, never double-paying.** Before each document is broadcast, its signed
 //! transition is saved to a journal (`$XDG_STATE_HOME/dash-forge/journals/`). A session
 //! that dies anywhere — before a broadcast, mid-broadcast, between steps — is resumed by
@@ -59,7 +65,7 @@ pub struct CreateRepoOpts {
     /// `config.backend.uris`: the public read bases readers can use (at most
     /// [`BACKEND_URIS_V2`]); empty = none recorded.
     pub backend_uris: Vec<String>,
-    /// The visibility. Only public is supported until the private-repo release.
+    /// The visibility (immutable once created).
     pub visibility: Visibility,
     /// The parent repository's id when this is a fork (`repo.forkOf`, immutable).
     pub fork_of: Option<[u8; 32]>,
@@ -217,11 +223,20 @@ impl Step {
 fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert("name".into(), FieldValue::text(&opts.name));
-    p.insert("visibility".into(), FieldValue::text("public"));
-    p.insert(
-        "defaultBranch".into(),
-        FieldValue::text(&opts.default_branch),
-    );
+    match opts.visibility {
+        Visibility::Public => {
+            p.insert("visibility".into(), FieldValue::text("public"));
+            p.insert(
+                "defaultBranch".into(),
+                FieldValue::text(&opts.default_branch),
+            );
+        }
+        // A private repo's default branch lives only in its sealed config (§7 lists what a
+        // `repo` document shows everyone; the branch is not on it).
+        Visibility::Private => {
+            p.insert("visibility".into(), FieldValue::text("private"));
+        }
+    }
     if !opts.description.is_empty() {
         p.insert("description".into(), FieldValue::text(&opts.description));
     }
@@ -237,15 +252,23 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
 /// The initial `config` document's properties (no protected patterns: an empty list is the
 /// same as none, and omitting it keeps the document small).
 fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
-    let mut backend = BTreeMap::new();
-    backend.insert(
-        "mode".into(),
-        FieldValue::integer(u64::from(opts.backend_mode)),
-    );
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
         FieldValue::text(&opts.default_branch),
+    );
+    p.insert("backend".into(), backend_props(opts));
+    p.insert("archived".into(), FieldValue::boolean(false));
+    p
+}
+
+/// The initial `config.backend` object: the mode and the advertised read bases. Plaintext in
+/// a private repository too (§7: storage URIs are visible metadata).
+fn backend_props(opts: &CreateRepoOpts) -> FieldValue {
+    let mut backend = BTreeMap::new();
+    backend.insert(
+        "mode".into(),
+        FieldValue::integer(u64::from(opts.backend_mode)),
     );
     if !opts.backend_uris.is_empty() {
         backend.insert(
@@ -253,9 +276,7 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
             FieldValue::text_list(opts.backend_uris.iter().cloned()),
         );
     }
-    p.insert("backend".into(), FieldValue::Object(backend));
-    p.insert("archived".into(), FieldValue::boolean(false));
-    p
+    FieldValue::Object(backend)
 }
 
 /// Re-broadcast a saved transition and decide whether its document exists. `false` means
@@ -306,8 +327,8 @@ pub async fn create_repo(
         network: target.network.key(),
     })?;
     let opts = validated(opts)?;
-    crate::private::for_visibility(opts.visibility)?;
     let owner = identity.id();
+    require_encryption_key(&opts, identity, bridge, &forge.core, client.network())?;
     let owner_bytes = platform::decode_identifier(&owner)?;
     let core = client.fetch_contract(&forge.core).await?;
     let engine = WriteEngine::new(client, identity, bridge.doc_op_key()?)?;
@@ -337,9 +358,14 @@ pub async fn create_repo(
     steps.push((Step::Repo.doc_type(), outcome));
     let repo =
         find_repo_after_create(client, &forge, owner_bytes, &opts.name, &repo_doc_id).await?;
-    // An existing repo is adopted only if this client can finish it: a private repo's
-    // `config` must be sealed, which this version cannot write.
-    repo.require_readable()?;
+    // An existing repo is adopted only as what was asked for: finishing a private create as
+    // a public one (or the reverse) would write the wrong kind of config into it.
+    if repo.visibility != opts.visibility {
+        return Err(Error::Config(format!(
+            "{} already exists with the other visibility (visibility is immutable)",
+            repo.display()
+        )));
+    }
     let scope = repo.scope()?;
 
     // 2. the owner's maintainer document
@@ -359,24 +385,28 @@ pub async fn create_repo(
     .await?;
     steps.push((Step::Maintainer.doc_type(), outcome));
 
-    // 3. the initial config
-    let (_, outcome) = run_step(
-        &engine,
-        &core,
-        &mut journal,
-        Step::Config,
-        || async {
-            Ok(client
-                .query_documents(&core, DOC_CONFIG, &scope.filters([]), &[], 1, None)
-                .await?
-                .into_iter()
-                .next()
-                .map(|d| d.id))
-        },
-        || scope.scoped(config_props(&opts)),
-    )
-    .await?;
-    steps.push((Step::Config.doc_type(), outcome));
+    // 3. the initial config: for a private repo, epoch 0 (self-wrap, then the sealed anchor)
+    if opts.visibility == Visibility::Private {
+        steps.push(private_epoch_zero(client, identity, bridge, &repo, &opts).await?);
+    } else {
+        let (_, outcome) = run_step(
+            &engine,
+            &core,
+            &mut journal,
+            Step::Config,
+            || async {
+                Ok(client
+                    .query_documents(&core, DOC_CONFIG, &scope.filters([]), &[], 1, None)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|d| d.id))
+            },
+            || scope.scoped(config_props(&opts)),
+        )
+        .await?;
+        steps.push((Step::Config.doc_type(), outcome));
+    }
 
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
@@ -385,6 +415,56 @@ pub async fn create_repo(
         steps,
         cost_credits: balance_before.saturating_sub(balance_after),
     })
+}
+
+/// A private create needs an `ENCRYPTION` key the identity file holds (§9 "Create"): checked
+/// before anything is written.
+fn require_encryption_key(
+    opts: &CreateRepoOpts,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    core: &str,
+    network: &platform::Network,
+) -> Result<()> {
+    if opts.visibility == Visibility::Public {
+        return Ok(());
+    }
+    let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core, network);
+    if held.sender().is_none() {
+        return Err(crate::keyring::no_encryption_key(
+            "your identity",
+            "cannot create a private repository",
+        ));
+    }
+    Ok(())
+}
+
+/// Step 3 of a private create: the owner's self-wrap of a fresh epoch key, then the anchor.
+async fn private_epoch_zero(
+    client: &PlatformClient,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    repo: &RepoRef,
+    opts: &CreateRepoOpts,
+) -> Result<(&'static str, StepOutcome)> {
+    let signer = crate::keyring::PrivateSigner {
+        client,
+        identity,
+        bridge,
+    };
+    let wrote = crate::keyring::create_private_state(
+        &signer,
+        repo,
+        &opts.default_branch,
+        backend_props(opts),
+    )
+    .await?;
+    let outcome = if wrote {
+        StepOutcome::Created
+    } else {
+        StepOutcome::Existed
+    };
+    Ok(("repoKey + anchor config", outcome))
 }
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.
@@ -562,6 +642,14 @@ mod tests {
         opts.display_name = "Proj".into();
         let p = repo_props(&opts);
         assert!(p.contains_key("description") && p.contains_key("displayName"));
+
+        opts.visibility = Visibility::Private;
+        let p = repo_props(&opts);
+        assert_eq!(p.get("visibility"), Some(&FieldValue::text("private")));
+        assert!(
+            !p.contains_key("defaultBranch"),
+            "a private repo's default branch is sealed in its config, not on the repo"
+        );
 
         let c = config_props(&opts);
         assert!(!c.contains_key("repoId"), "the scope adds repoId");

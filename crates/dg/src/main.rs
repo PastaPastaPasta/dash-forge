@@ -17,6 +17,7 @@ mod fmt;
 mod git;
 mod import;
 mod issue;
+mod keys;
 mod label;
 mod maint;
 mod pr;
@@ -213,6 +214,11 @@ pub struct CreateOptions {
     /// The git remote to add for the repo (default: origin). Pushing flows only.
     #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
+    /// Create a private repository: contents (code, ref names, issues, PRs, comments,
+    /// reviews) are encrypted to its members. Needs an encryption key on your identity
+    /// (`dg auth keys add --encryption`). Visibility cannot be changed later.
+    #[arg(long)]
+    pub private: bool,
 }
 
 impl CreateOptions {
@@ -289,6 +295,29 @@ pub enum RepoCommand {
     /// Backend configuration.
     #[command(subcommand)]
     Backend(RepoBackendCommand),
+    /// A private repository's keys: epochs, wraps, pending rotation, repair.
+    #[command(subcommand)]
+    Keys(RepoKeysCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RepoKeysCommand {
+    /// Show the key epochs, who holds a wrap for the current one, alerts and pending repairs.
+    Status {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Run the repair check (maintainers): rotate if a non-member holds the current key,
+    /// else wrap it to every member who has none.
+    Repair {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Rotate to a new key epoch now (maintainers). Removing a member rotates on its own.
+    Rotate {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
