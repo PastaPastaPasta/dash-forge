@@ -66,7 +66,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const grant = useRef<{ identityId: string; keys: readonly WalletKey[] } | null>(null)
   const mobile = onMobile()
   const unlimited = step?.kind === 'confirm' && step.unlimited
-  const { fields, protection, problem } = useProtection({ requirePasskey: unlimited })
+  const { fields, protection, problem } = useProtection({ preferPasskey: unlimited })
 
   useEffect(() => {
     const controller = new AbortController()
