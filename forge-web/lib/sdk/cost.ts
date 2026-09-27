@@ -42,6 +42,12 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   event: 50_000_000,
   authorEvent: 56_600_000,
   review: 34_900_000,
+  // Measured on moutai (2026-09-27) under the review-parity forge-collab: a policy 33.9M; a
+  // draft patch with a 10-byte title 114.9M; an event carrying `refId` 64.6M–80.7M and an
+  // authorEvent carrying `oid` 71.9M, both on a PR's first such write (the rows above are
+  // steady-state writes into existing index subtrees; a target's first comment or event also
+  // pays for its subtree, ~10–25M more).
+  policy: 34_000_000,
   star: 27_800_000,
   follow: 38_400_000,
 }

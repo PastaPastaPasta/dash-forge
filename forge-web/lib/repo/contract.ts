@@ -33,6 +33,7 @@ export const DOC = {
   label: 'label',
   release: 'release',
   checkRun: 'checkRun',
+  policy: 'policy',
   webhook: 'webhook',
   star: 'star',
   follow: 'follow',

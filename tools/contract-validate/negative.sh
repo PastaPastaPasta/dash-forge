@@ -50,6 +50,12 @@ expect_reject agreement-kind-mismatch collab '.documentSchemas.event.properties.
 expect_reject key-id-not-integer core '.documentSchemas.repoKey.properties.recipientKeyId = {"type":"string","maxLength":10,"position":3}'
 expect_reject key-ref-on-identity-with-own-key collab '.documentSchemas.webhook.properties.senderKeyId.refersTo.identityProperty = "relayIdentityId"'
 expect_reject membership-non-deletable core '.documentSchemas.maintainer.canBeDeleted = false'
+# review parity (docs/design/review-parity-spec.md §3)
+expect_reject review-link-permanent-on-deletable collab '.documentSchemas.comment.properties.reviewId.refersTo.type = "permanentDocument"'
+expect_reject review-link-agreement-missing-prop collab '.documentSchemas.comment.properties.reviewId.refersTo.propertyAgreement.targetId = "nope"'
+expect_reject policy-gate-permanent-on-deletable collab '.documentSchemas.policy.ownerRefersTo.type = "permanentDocument"'
+expect_reject immutable-unknown-prop collab '.documentSchemas.patch.immutable += ["nope"]'
+expect_reject immutable-on-immutable-type collab '.documentSchemas.policy.immutable = ["repoId"]'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"
