@@ -3,7 +3,7 @@
  * names the step, so the sheet can offer "Try again" instead of spinning forever.
  *
  * Two phases, each with its own deadline:
- *   - downloading: the evo-sdk chunk (~8 MB gzipped, WASM inside) and its one-time init. Slow 3G
+ *   - downloading: the evo-sdk chunk, its separately fetched wasm (~8 MB gzipped) and its init. Slow 3G
  *     needs minutes for it, so the cap is generous (webpack itself gives up on a chunk that has
  *     not arrived after 120 s);
  *   - connecting: the trusted quorum keys, a DAPI node and the contract preload.
