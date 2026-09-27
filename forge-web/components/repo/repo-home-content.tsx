@@ -34,7 +34,7 @@ import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
-import { MarkdownView } from '@/components/markdown-view'
+import { MarkdownView, type MarkdownRepoContext } from '@/components/markdown-view'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
@@ -121,6 +121,7 @@ function RootBody({
     enabled: data !== null,
   })
   const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP), [tipOid], { enabled: data !== null })
+  const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
 
   if (loading && !data) return <LoadingBlock label="Reading root tree" />
   if (cause instanceof PackUnavailableError) {
@@ -131,6 +132,7 @@ function RootBody({
   if (!data) return <LoadingBlock />
 
   const commitsHref = repoHref('/repo/commits', addr, refParam ? { ref: refParam } : {})
+  // The README's relative links and images resolve against the repo root at this commit.
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
@@ -163,7 +165,7 @@ function RootBody({
           </div>
           <div className="px-5 py-4">
             {/\.(md|markdown)$/i.test(data.readmeName ?? '') ? (
-              <MarkdownView source={data.readme} />
+              <MarkdownView source={data.readme} images="auto" repo={readmeRepo} />
             ) : (
               <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-anvil-700 dark:text-anvil-200">
                 {data.readme}

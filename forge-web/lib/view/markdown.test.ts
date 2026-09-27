@@ -7,6 +7,7 @@ function inlineText(nodes: readonly Inline[]): string {
     .map((node) => {
       if (node.t === 'text' || node.t === 'code') return node.v
       if (node.t === 'image') return node.alt
+      if (node.t === 'br') return '\n'
       return inlineText(node.c)
     })
     .join('')

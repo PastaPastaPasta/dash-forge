@@ -101,3 +101,32 @@ export async function downloadVerifiedAsset(
   if (mismatch !== null) throw mismatch
   throw new Error(`the asset could not be downloaded: ${reasons.join('; ')}`)
 }
+
+/**
+ * Places a person can download an asset from directly, when the in-browser download cannot
+ * read it (D-056: GitHub asset URLs send no CORS header, so a page may link to them but not
+ * fetch them). Only https URLs the release records; the browser's own download takes it.
+ */
+export function directDownloadUrls(asset: ReleaseAssetView, gateways?: readonly string[]): string[] {
+  return externalFetchUrls(asset.uris, gateways).filter((u) => u.startsWith('https://'))
+}
+
+/**
+ * Check a file the person downloaded themselves against the published SHA-256 (and size),
+ * without uploading it anywhere: it is read and hashed in this tab.
+ */
+export async function checkDownloadedFile(
+  file: Blob,
+  asset: Pick<ReleaseAssetView, 'sha256' | 'size'>,
+): Promise<{ readonly ok: boolean; readonly sha256: string; readonly sizeMatches: boolean }> {
+  const hash = sha256.create()
+  const reader = file.stream().getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    hash.update(value)
+  }
+  const got = bytesToHex(hash.digest())
+  const sizeMatches = asset.size === null || asset.size === file.size
+  return { ok: got === asset.sha256 && sizeMatches, sha256: got, sizeMatches }
+}
